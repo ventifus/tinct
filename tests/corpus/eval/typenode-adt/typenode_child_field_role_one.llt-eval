@@ -1,0 +1,23 @@
+# Named-field constructor with @Child annotated field and bare TypeNode reference produces role "One".
+# This is the pattern used by TypeNode.Recursive in prelude.llt:
+#   [Recursive@[as-type: [fn [let r] r]  guarding: true]
+#     var:        String
+#     body@Child: TypeNode]
+#
+# infer_child_role_from_type_expr detects a bare VarRef (not [Seq T] or [Map K T]) → ChildRole::One.
+# The `field-annotations` key maps "body" to {role: "One"}.
+# Non-@Child fields (var: String) do NOT appear in field-annotations.
+[TreeNode: [type [Branch@[as-type: [fn [let r] r]  guarding: true]
+  label: String
+  child@Child: TreeNode]]]
+[ann: [annotation-of Branch]]
+[has-field-anns: [has? "field-annotations" ann]]
+[field-anns: [get "field-annotations" ann]]
+[role: [get "role" [get "child" field-anns]]]
+[no-label: [not [has? "label" field-anns]]]
+[result: [and has-field-anns [and [= role "One"] no-label]]]
+=== out
+Dict({"result": Bool(true)})
+
+=== warn
+cannot unify [] with _t1 at 16:31-16:41

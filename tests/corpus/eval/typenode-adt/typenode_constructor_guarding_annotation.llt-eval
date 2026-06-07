@@ -1,0 +1,19 @@
+# Unit constructor with @[as-type: fn  guarding: bool] annotation.
+# This is the exact pattern used by every leaf TypeNode constructor in prelude.llt:
+#   [Leaf@[as-type: [fn [let t] t]  guarding: true]]
+# etc.
+#
+# The @[...] annotation on a unit constructor embeds those key-value pairs in
+# FnAnnotation.extra via build_constructor_return_ann (T-1052) + T-1049.
+# annotation-of on the resulting Value::Annotated returns the annotation dict directly.
+#
+# Tests that both `as-type` and `guarding` keys are present with correct values.
+# Uses `guarding: true` (same as TypeNode.Int, TypeNode.Float, etc.) and an
+# identity function for `as-type` (same as all built-in TypeNode constructors).
+[MyNode: [type [Leaf@[as-type: [fn [let t] t]  guarding: true]]]]
+[ann: [annotation-of Leaf]]
+[has-as-type: [has? "as-type" ann]]
+[guarding-val: [get "guarding" ann]]
+[result: [and has-as-type guarding-val]]
+=== out
+Dict({"result": Bool(true)})

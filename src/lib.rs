@@ -913,10 +913,8 @@ pub fn visit_value<V: ValueVisitor>(
         value::Value::OneshotReceiver(_) => Err(Box::new(
             error::EvalError::value_not_serializable("OneshotReceiver".to_string(), span),
         )),
-        value::Value::Annotated { .. } => Err(Box::new(error::EvalError::value_not_serializable(
-            "Annotated".to_string(),
-            span,
-        ))),
+        // Annotated is transparent — delegate to inner value serialization.
+        value::Value::Annotated { inner, .. } => visit_value(inner, ctx, depth, visitor, span),
     }
 }
 

@@ -1,0 +1,26 @@
+# Named-field constructor with @Child on [Map K V] type produces role "MapValues".
+# This is the pattern used by TypeNode.Record in prelude.llt:
+#   [Record@[as-type: [fn [let r] r]  guarding: true]
+#     fields@Child: [Map String TypeNode]
+#     open:         Bool]
+#
+# infer_child_role_from_type_expr detects [Map K T] → ChildRole::MapValues.
+# The `field-annotations` key maps "fields" to {role: "MapValues"}.
+# Non-@Child fields (open: Bool) do NOT appear in field-annotations.
+[DictNode: [type [Record@[as-type: [fn [let r] r]  guarding: true]
+  fields@Child: [Map String DictNode]
+  open:         Bool]]]
+[ann: [annotation-of Record]]
+[has-field-anns: [has? "field-annotations" ann]]
+[field-anns: [get "field-annotations" ann]]
+[role: [get "role" [get "fields" field-anns]]]
+[no-open: [not [has? "open" field-anns]]]
+[result: [and has-field-anns [and [= role "MapValues"] no-open]]]
+=== out
+Dict({"result": Bool(true)})
+
+=== warn
+auto-indexed entries not supported in type expressions at 9:19-9:67
+undefined variable: Record at 12:22-12:28
+cannot unify [] with <error> at 13:44-13:47
+cannot unify [] with _t1 at 16:29-16:39

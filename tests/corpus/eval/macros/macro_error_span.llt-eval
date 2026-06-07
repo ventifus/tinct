@@ -14,17 +14,17 @@
 [expect-int "hello"]
 === error
 [E080] macro 'expect-int' expansion result failed to evaluate: builtin-get (key "span"): expected Dict, got Expression (defined at 13:1-13:21)
-  in [builtin-get ...] at stdlib/prelude.llt:900:25-900:47
+  in [builtin-get ...] at stdlib/prelude.llt:1169:25-1169:47
    |
-  900 | """] [let key@k dict@d] [builtin-get key dict]]
-      |                         ^^^^^^^^^^^^^^^^^^^^^^
-  in materialized at stdlib/prelude.llt:2888:3-2888:37
+  1169 | """] [let key@k dict@d] [builtin-get key dict]]
+       |                         ^^^^^^^^^^^^^^^^^^^^^^
+  in materialized at stdlib/prelude.llt:3159:3-3159:37
    |
-  2888 |   [builtin-macro-error span message]]
+  3159 |   [builtin-macro-error span message]]
        |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-macro-error ...] at stdlib/prelude.llt:2888:3-2888:37
+  in [builtin-macro-error ...] at stdlib/prelude.llt:3159:3-3159:37
    |
-  2888 |   [builtin-macro-error span message]]
+  3159 |   [builtin-macro-error span message]]
        |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   in materialized at 13:1-13:21
   in [if ...] at 7:3-9:63
@@ -33,17 +33,17 @@
 
 === warn
 [E080] macro 'expect-int' expansion result failed to evaluate: builtin-get (key "span"): expected Dict, got Expression (defined at 13:1-13:21)
-  in [builtin-get ...] at stdlib/prelude.llt:900:25-900:47
+  in [builtin-get ...] at stdlib/prelude.llt:1169:25-1169:47
    |
-  900 | """] [let key@k dict@d] [builtin-get key dict]]
-      |                         ^^^^^^^^^^^^^^^^^^^^^^
-  in materialized at stdlib/prelude.llt:2888:3-2888:37
+  1169 | """] [let key@k dict@d] [builtin-get key dict]]
+       |                         ^^^^^^^^^^^^^^^^^^^^^^
+  in materialized at stdlib/prelude.llt:3159:3-3159:37
    |
-  2888 |   [builtin-macro-error span message]]
+  3159 |   [builtin-macro-error span message]]
        |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-macro-error ...] at stdlib/prelude.llt:2888:3-2888:37
+  in [builtin-macro-error ...] at stdlib/prelude.llt:3159:3-3159:37
    |
-  2888 |   [builtin-macro-error span message]]
+  3159 |   [builtin-macro-error span message]]
        |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   in materialized at 13:1-13:21
   in [if ...] at 7:3-9:63

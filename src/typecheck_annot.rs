@@ -8,6 +8,7 @@ use super::{check_surface_expr, contains_unknown_or_top, infer_surface_expr, Typ
 use crate::ast::{Annotation, Span, Spanned, SurfaceEntry, SurfaceExpression, SurfaceNode};
 use crate::type_def::Variance;
 use crate::types::{Constraint, InferState, Kind, Row, Type, TypeAlias, TypeEnv, TypeError};
+use crate::value::{Key, Thunk, Value};
 
 /// Convert a variance annotation name to a `Variance` value (T-953).
 ///
@@ -1543,16 +1544,36 @@ fn resolve_property_dict_as_record(
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
 ) -> Result<Type, TypeError> {
-    resolve_type_dict(entries, env, span, state, ann_mapping, row_ann_mapping).or_else(|e| {
+    resolve_type_dict(
+        entries,
+        env,
+        span.clone(),
+        state,
+        ann_mapping,
+        row_ann_mapping,
+    )
+    .or_else(|e| {
         if entries_look_like_type_dict(entries) {
             Err(e)
         } else {
-            // For PropertyDict entries that don't look like a type dict and aren't recognized
-            // type constructors (or/all/without/Seq/Map already handled before this path),
-            // fall through with Unknown. This covers genuine metadata-style annotations
-            // (e.g., @[default: 42]) that reach this path via resolve_annotation's else branch.
-            let _ = e; // suppress the error — annotation is non-structural
-            Ok(Type::Unknown)
+            // The property dict is not a type-dict (no `or`/`all`/`without`/`Seq`/`Map`
+            // head, no matching record-field shape). Try evaluating it as a type-stage
+            // expression — user-defined type-stage combinators like `@[my-combinator args]`
+            // are handled by eval_type_stage_expr.
+            //
+            // Synthesize an Arc<SurfaceNode> from the PropertyDict entries so
+            // eval_type_stage_expr can evaluate it in the type-stage environment.
+            //
+            // Annotation PropertyDicts with all-positional entries whose first entry is
+            // a VarRef represent implied calls: @[my-combinator Int String] is parsed as
+            // PropertyDict([{key:None, val:VarRef("my-combinator")}, ...]) rather than as
+            // a Dict expression. We must detect this case and synthesize a Call node so
+            // the evaluator sees a function call, not an integer-keyed dict.
+            let _ = e; // suppress the type-dict resolution error
+            let synth_node = synthesize_type_stage_node(entries, span.clone());
+            // Return Unknown when type-stage evaluation fails: env unavailable,
+            // eval error, or the result is TypeNode.Recursive/RecursiveRef (deferred).
+            Ok(eval_type_stage_expr(&synth_node, env, state).unwrap_or(Type::Unknown))
         }
     })
 }
@@ -3474,6 +3495,704 @@ pub(crate) fn resolve_type_dict(
     });
     crate::types::check_kind_wellformed(&ty, &state.kind_env, span)?;
     Ok(ty)
+}
+
+// ============================================================================
+// Type-Stage Evaluation (T-1060, equirecursive-types)
+// ============================================================================
+
+/// Synthesize a `SurfaceNode` from PropertyDict entries for type-stage evaluation.
+///
+/// `Annotation::PropertyDict` entries that come from implied-call bracket expressions
+/// (e.g., `@[my-combinator Int String]`) are stored as positional entries where the
+/// first entry is a bare VarRef — the function to call. This mirrors the parser
+/// conversion at `parse_annotation` line ~565: `SurfaceExpression::Call { implied: true }`
+/// is lowered to a PropertyDict for the annotation resolver.
+///
+/// For type-stage evaluation we need to reverse this: reconstruct the original Call form
+/// so the evaluator sees a function call rather than an integer-keyed dict.
+///
+/// - **Implied call form** (first entry is positional VarRef, all entries positional):
+///   synthesize `SurfaceExpression::Call { implied: true, func, args }`.
+///
+/// - **Dict form** (keyed entries or first entry is not a VarRef):
+///   synthesize `SurfaceExpression::Dict(entries)`. Dict evaluation in the type-stage
+///   env produces an integer-keyed Dict value, which `typenode_value_to_type` will not
+///   recognize — this is the correct fallback for metadata-style annotations that reach
+///   the type-stage path (they will return `Type::Unknown` after failing conversion).
+fn synthesize_type_stage_node(entries: &[Spanned<SurfaceEntry>], span: Span) -> Arc<SurfaceNode> {
+    // Detect implied call: ALL entries are positional (key: None) AND the first entry
+    // is a VarRef. This matches the parser rule at parse_annotation.
+    let is_implied_call = !entries.is_empty()
+        && entries.iter().all(|e| e.node.key.is_none())
+        && matches!(
+            &entries[0].node.value.expr,
+            SurfaceExpression::VarRef { .. }
+        );
+
+    if is_implied_call {
+        let func = Arc::clone(&entries[0].node.value);
+        let args: Vec<Arc<SurfaceNode>> = entries[1..]
+            .iter()
+            .map(|e| Arc::clone(&e.node.value))
+            .collect();
+        Arc::new(SurfaceNode {
+            expr: SurfaceExpression::Call {
+                func,
+                args,
+                named_args: vec![],
+                implied: true,
+            },
+            span,
+        })
+    } else {
+        Arc::new(SurfaceNode {
+            expr: SurfaceExpression::Dict(entries.to_vec()),
+            span,
+        })
+    }
+}
+
+/// Extract and materialize the payload dict from a `Value::Variant` with a payload.
+///
+/// Returns `None` if:
+/// - The value is not a Variant, or has no payload.
+/// - The payload cannot be materialized (eval error).
+/// - The materialized payload is not a Dict.
+///
+/// Used by `typenode_value_to_type` to access named fields of structural TypeNode variants.
+fn variant_payload_dict(
+    val: &Value,
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> Option<HashMap<String, Value>> {
+    let payload_id = match val {
+        Value::Variant {
+            payload: Some(id), ..
+        } => *id,
+        _ => return None,
+    };
+    let payload_thunk = ctx.get_thunk(payload_id);
+    let payload_val = crate::eval::materialize_sync(&payload_thunk, None, ctx).ok()?;
+    match payload_val {
+        Value::Dict(dict) => {
+            // Extract each string-keyed field, materializing the field value.
+            let mut fields = HashMap::new();
+            for (key, thunk_id) in &dict {
+                if let Key::String(k) = key {
+                    let field_thunk = ctx.get_thunk(*thunk_id);
+                    if let Ok(v) = crate::eval::materialize_sync(&field_thunk, None, ctx) {
+                        fields.insert(k.to_string(), v);
+                    }
+                }
+            }
+            Some(fields)
+        }
+        _ => None,
+    }
+}
+
+/// Collect a tinct Seq (lazy linked list of `Seq.Cons`/`Seq.Nil` Variants) into a Vec.
+///
+/// Each element is passed through `typenode_value_to_type` to convert it to a `Type`.
+/// Returns `None` if any element fails to convert or the spine is malformed.
+///
+/// Used by `typenode_value_to_type` to process `TypeNode.Union.types`,
+/// `TypeNode.Intersect.types`, `TypeNode.Arrow.params`, and `TypeNode.TypeApplication.args`.
+fn collect_typenode_seq(seq_val: Value, ctx: &Arc<crate::eval::EvalContext>) -> Option<Vec<Type>> {
+    let mut result = Vec::new();
+    let mut current = seq_val;
+    // Depth limit to guard against malformed cycles (TypeNode seqs are always finite).
+    let mut depth = 0usize;
+    const MAX_SEQ_DEPTH: usize = 256;
+
+    loop {
+        if depth > MAX_SEQ_DEPTH {
+            return None;
+        }
+        depth += 1;
+
+        // Determine the next action without holding a borrow on `current` across
+        // the assignment `current = ...` below. We first extract the information we
+        // need (tag, payload_id) from `current`, then drop the borrow before mutating.
+        enum SeqStep {
+            Nil,
+            Cons(crate::value::ThunkId), // payload ThunkId from Seq.Cons
+            CollectedDict,               // already-collected integer-keyed dict
+            Annotated,                   // Value::Annotated wrapper
+            Unknown,                     // unrecognised shape
+        }
+        let step = match &current {
+            Value::Variant { tag, payload: None } if tag == "Seq.Nil" => SeqStep::Nil,
+            Value::Variant {
+                tag,
+                payload: Some(payload_id),
+            } if tag == "Seq.Cons" => SeqStep::Cons(*payload_id),
+            Value::Dict(_) => SeqStep::CollectedDict,
+            Value::Annotated { .. } => SeqStep::Annotated,
+            _ => SeqStep::Unknown,
+        };
+
+        match step {
+            SeqStep::Nil => {
+                // End of sequence — return collected elements.
+                return Some(result);
+            }
+            SeqStep::Cons(payload_id) => {
+                // Materialize the Seq.Cons payload dict to extract head and tail.
+                let payload_thunk = ctx.get_thunk(payload_id);
+                let payload_val = crate::eval::materialize_sync(&payload_thunk, None, ctx).ok()?;
+                let dict = match payload_val {
+                    Value::Dict(d) => d,
+                    _ => return None,
+                };
+                // Extract and convert the head element.
+                let head_id = *dict.get(&Key::String("head".into()))?;
+                let head_thunk = ctx.get_thunk(head_id);
+                let head_val = crate::eval::materialize_sync(&head_thunk, None, ctx).ok()?;
+                let head_ty = typenode_value_to_type(&head_val, ctx)?;
+                result.push(head_ty);
+                // Advance to tail (replaces `current` for the next iteration).
+                let tail_id = *dict.get(&Key::String("tail".into()))?;
+                let tail_thunk = ctx.get_thunk(tail_id);
+                current = crate::eval::materialize_sync(&tail_thunk, None, ctx).ok()?;
+            }
+            SeqStep::CollectedDict => {
+                // Integer-keyed dict (result of builtin-collect on a Seq) — iterate in order.
+                // Ownership of `current` is needed; extract the dict now.
+                let dict = match current {
+                    Value::Dict(d) => d,
+                    _ => return None,
+                };
+                if dict.is_empty() {
+                    // Empty dict is the terminal Seq value (Seq.Nil equivalent).
+                    return Some(result);
+                }
+                let mut i = 0i64;
+                loop {
+                    match dict.get(&Key::Int(i)) {
+                        Some(thunk_id) => {
+                            let thunk = ctx.get_thunk(*thunk_id);
+                            let val = crate::eval::materialize_sync(&thunk, None, ctx).ok()?;
+                            let ty = typenode_value_to_type(&val, ctx)?;
+                            result.push(ty);
+                            i += 1;
+                        }
+                        None => return Some(result),
+                    }
+                }
+            }
+            SeqStep::Annotated => {
+                // Unwrap Value::Annotated and retry with the inner value.
+                current = match current {
+                    Value::Annotated { inner, .. } => inner.as_ref().clone(),
+                    _ => return None,
+                };
+            }
+            SeqStep::Unknown => return None,
+        }
+    }
+}
+
+/// Convert a TypeNode `Value` to a `Type`.
+///
+/// Handles two formats produced by the type-stage evaluator:
+///
+/// 1. **Old-style kind-keyed dicts** — `{kind: "named", name: "Int"}`. The prelude
+///    combinators are fully migrated (T-1061), but user code may still construct kind-keyed
+///    dicts directly. Delegated to `crate::type_normalize::dict_to_type` as a fallback.
+///    Will be retired when `dict_to_type` is removed in a future cleanup sprint.
+///
+/// 2. **TypeNode Variant values** — `Variant { tag: "TypeNode.Int" }`, `Variant { tag:
+///    "TypeNode.Union", payload: ... }` etc., produced by the TypeNode ADT declared in the
+///    type-stage prelude (T-1058/T-1061). Matched by tag prefix `"TypeNode."`.
+///
+/// Returns `None` if the value cannot be recognized as a Type.
+///
+/// **Coverage:** All structural TypeNode variants are handled: Union, Intersect, Record,
+/// Arrow, TypeConstructor, TypeApplication, TypeVar. TypeNode.Recursive and
+/// TypeNode.RecursiveRef return `None` — they require the equirecursive CheckerType migration
+/// and are deferred to a future sprint.
+///
+/// Public (crate-internal) re-export for use by `type_normalize::evaluate_resolver`.
+/// The implementation is `typenode_value_to_type`; this wrapper adds the `pub(crate)` visibility.
+pub(crate) fn typenode_value_to_type_pub(
+    val: &Value,
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> Option<Type> {
+    typenode_value_to_type(val, ctx)
+}
+
+fn typenode_value_to_type(val: &Value, ctx: &Arc<crate::eval::EvalContext>) -> Option<Type> {
+    match val {
+        // Old-style kind-keyed dict fallback (type_normalize::dict_to_type).
+        // T-1061: prelude combinators are fully migrated to TypeNode Variants.
+        // This path handles any user code that still constructs kind:-keyed dicts
+        // directly (e.g. `[kind: "named" name: "Int"]`). It will be retired when
+        // dict_to_type is removed in a future cleanup sprint.
+        Value::Dict(_) => crate::type_normalize::dict_to_type(val, ctx),
+
+        // Annotated wrapper — TypeNode constructors with @[...] annotations on their
+        // constructor names (e.g. `[Int@[as-type: [fn [let t] t]  guarding: true]]`) are
+        // wrapped in Value::Annotated at runtime. The inner value is the bare Variant;
+        // the annotation dict carries the constructor metadata. Unwrap transparently.
+        Value::Annotated { inner, .. } => typenode_value_to_type(inner, ctx),
+
+        // TypeNode Variant values produced by the TypeNode ADT (T-1058 / T-1061).
+        Value::Variant { tag, payload: _ } => {
+            match tag.as_str() {
+                // ── Primitive leaf constructors ──────────────────────────────────────
+                // No payload — map directly to concrete Type variants.
+                "TypeNode.Int" => Some(Type::Int),
+                "TypeNode.Float" => Some(Type::Float),
+                "TypeNode.String" => Some(Type::Str),
+                "TypeNode.Bool" => Some(Type::Bool),
+                "TypeNode.Unknown" => Some(Type::Unknown),
+                "TypeNode.Never" => Some(Type::Never),
+                "TypeNode.Absent" => Some(Type::Record(Row {
+                    fields: HashMap::new(),
+                    tail: crate::type_def::RowTail::Empty,
+                })),
+
+                // ── Union ─────────────────────────────────────────────────────────────
+                // TypeNode.Union { types: [Seq TypeNode] } → Type::normalize_union(members)
+                "TypeNode.Union" => {
+                    let fields = variant_payload_dict(val, ctx)?;
+                    let types_val = fields.get("types")?.clone();
+                    let members = collect_typenode_seq(types_val, ctx)?;
+                    if members.is_empty() {
+                        return None; // Empty union is ill-formed — fall back to Unknown.
+                    }
+                    Some(Type::normalize_union(members))
+                }
+
+                // ── Intersect ────────────────────────────────────────────────────────
+                // TypeNode.Intersect { types: [Seq TypeNode] } → Type::normalize_intersection(members)
+                "TypeNode.Intersect" => {
+                    let fields = variant_payload_dict(val, ctx)?;
+                    let types_val = fields.get("types")?.clone();
+                    let members = collect_typenode_seq(types_val, ctx)?;
+                    if members.is_empty() {
+                        return None; // Empty intersection is ill-formed — fall back to Unknown.
+                    }
+                    Some(Type::normalize_intersection(members))
+                }
+
+                // ── Record ───────────────────────────────────────────────────────────
+                // TypeNode.Record { fields: [Map String TypeNode], open: Bool }
+                // → Type::Record(Row { fields: HashMap<String, Type>, tail: Empty | Uniform })
+                "TypeNode.Record" => {
+                    let payload_fields = variant_payload_dict(val, ctx)?;
+                    let fields_val = payload_fields.get("fields")?.clone();
+                    let open_val = payload_fields.get("open")?.clone();
+
+                    // `fields` is a Dict (Map String TypeNode) — string-keyed, values are TypeNodes.
+                    let record_fields = match fields_val {
+                        Value::Dict(ref dict) => {
+                            let mut out: HashMap<String, Type> = HashMap::new();
+                            for (key, thunk_id) in dict {
+                                if let Key::String(k) = key {
+                                    let thunk = ctx.get_thunk(*thunk_id);
+                                    let v =
+                                        crate::eval::materialize_sync(&thunk, None, ctx).ok()?;
+                                    let ty = typenode_value_to_type(&v, ctx)?;
+                                    out.insert(k.to_string(), ty);
+                                }
+                            }
+                            out
+                        }
+                        // Empty dict / Seq.Nil for empty record
+                        Value::Variant { tag, payload: None } if tag == "Seq.Nil" => HashMap::new(),
+                        _ => HashMap::new(),
+                    };
+
+                    let tail = if matches!(open_val, Value::Bool(true)) {
+                        crate::type_def::RowTail::Uniform {
+                            key: None,
+                            value: Box::new(Type::Unknown),
+                        }
+                    } else {
+                        crate::type_def::RowTail::Empty
+                    };
+
+                    Some(Type::Record(Row {
+                        fields: record_fields,
+                        tail,
+                    }))
+                }
+
+                // ── Arrow ─────────────────────────────────────────────────────────────
+                // TypeNode.Arrow { params: [Seq TypeNode], result: TypeNode }
+                // → Type::Function { params: Vec<(None, Type)>, ret: Box<Type>, variadic: false }
+                "TypeNode.Arrow" => {
+                    let fields = variant_payload_dict(val, ctx)?;
+                    let params_val = fields.get("params")?.clone();
+                    let result_val = fields.get("result")?.clone();
+
+                    let param_types = collect_typenode_seq(params_val, ctx)?;
+                    let ret_type = typenode_value_to_type(&result_val, ctx)?;
+
+                    let params: Vec<(Option<String>, Type)> =
+                        param_types.into_iter().map(|t| (None, t)).collect();
+
+                    Some(Type::Function {
+                        params,
+                        ret: Box::new(ret_type),
+                        variadic: false,
+                    })
+                }
+
+                // ── TypeConstructor ───────────────────────────────────────────────────
+                // TypeNode.TypeConstructor { name: String }
+                // Bare (transient): name without '.' → Type::TyCon(name) for expansion
+                // Qualified (leaf): name with '.' → Type::NominalVariant or TyCon leaf
+                "TypeNode.TypeConstructor" => {
+                    let fields = variant_payload_dict(val, ctx)?;
+                    let name_val = fields.get("name")?;
+                    let name = name_val.as_str()?.to_string();
+                    // Map known primitive names to their concrete Type variants.
+                    // (These arise when param-token TypeConstructors from parametric bodies
+                    // are passed to typenode_value_to_type without being substituted first.)
+                    match name.as_str() {
+                        "Int" => Some(Type::Int),
+                        "Float" => Some(Type::Float),
+                        "String" | "Str" => Some(Type::Str),
+                        "Bool" => Some(Type::Bool),
+                        "Unknown" => Some(Type::Unknown),
+                        "Never" => Some(Type::Never),
+                        "Absent" => Some(Type::Record(Row {
+                            fields: HashMap::new(),
+                            tail: crate::type_def::RowTail::Empty,
+                        })),
+                        _ => Some(Type::TyCon(name)),
+                    }
+                }
+
+                // ── TypeApplication ───────────────────────────────────────────────────
+                // TypeNode.TypeApplication { ctor: TypeNode, args: [Seq TypeNode] }
+                // → left-associative Type::App chain: App(App(ctor, args[0]), args[1])...
+                "TypeNode.TypeApplication" => {
+                    let fields = variant_payload_dict(val, ctx)?;
+                    let ctor_val = fields.get("ctor")?.clone();
+                    let args_val = fields.get("args")?.clone();
+
+                    let ctor_type = typenode_value_to_type(&ctor_val, ctx)?;
+                    let arg_types = collect_typenode_seq(args_val, ctx)?;
+
+                    if arg_types.is_empty() {
+                        // Zero-arg application — return the constructor itself.
+                        return Some(ctor_type);
+                    }
+
+                    // Build left-associative App chain.
+                    let mut result = ctor_type;
+                    for arg in arg_types {
+                        result = Type::App(Box::new(result), Box::new(arg));
+                    }
+                    Some(result)
+                }
+
+                // ── TypeVar ───────────────────────────────────────────────────────────
+                // TypeNode.TypeVar { name: String, level: Int }
+                // → Type::TypeVar(name, level)
+                "TypeNode.TypeVar" => {
+                    let fields = variant_payload_dict(val, ctx)?;
+                    let name_val = fields.get("name")?;
+                    let level_val = fields.get("level")?;
+                    let name = name_val.as_str()?.to_string();
+                    let level = match level_val {
+                        Value::Int(n) => *n as u32,
+                        _ => 0u32,
+                    };
+                    Some(Type::TypeVar(name, level))
+                }
+
+                // ── Recursive / RecursiveRef ──────────────────────────────────────────
+                // These require the CheckerType migration (equirecursive types full impl).
+                // Return None so the caller falls back gracefully to Type::Unknown.
+                "TypeNode.Recursive" | "TypeNode.RecursiveRef" => None,
+
+                // Unknown tag — not a recognized TypeNode constructor.
+                _ => None,
+            }
+        }
+
+        // Not a Dict, Annotated, or Variant — cannot be a TypeNode value.
+        _ => None,
+    }
+}
+
+/// Evaluate a type-stage tinct function value with the given arguments and convert the
+/// result to a `Type`.
+///
+/// This is the inner call protocol for type-stage dispatch — used by
+/// `eval_type_stage_expr` to invoke `TypeNode.as-type` (or any other type-stage
+/// function value) with pre-materialized argument values.
+///
+/// ## Behaviour
+///
+/// 1. Allocates materialized thunks for each argument value in `args`.
+/// 2. Calls `fn_val` synchronously via `invoke_function_sync` using a minimal
+///    `EvalContext` backed by the type-stage environment.
+/// 3. Materializes the result thunk.
+/// 4. Converts the result via `typenode_value_to_type`.
+///
+/// Returns `Err(TypeError)` if:
+/// - `fn_val` is not a function value.
+/// - The type-stage environment is unavailable (build_type_stage_env returned None).
+/// - Function invocation or materialization fails.
+/// - The result cannot be converted to a `Type` (TypeNode.Recursive/RecursiveRef require the
+///   equirecursive CheckerType migration — they return `None` and cause this error).
+///
+/// ## Usage
+///
+/// Called from `eval_type_stage_expr` to apply `TypeNode.as-type` normalization after
+/// evaluating an annotation expression. Also callable directly when the function value is
+/// already in hand (e.g., an `as-type:` fn extracted from a constructor annotation).
+///
+/// `state` is accepted for API consistency with future callers that will use it for level
+/// tracking once the equirecursive CheckerType migration is complete. Not used by the
+/// current implementation.
+pub(crate) fn eval_type_stage_value(
+    fn_val: &Value,
+    args: &[Value],
+    _state: &mut InferState,
+) -> Result<Type, TypeError> {
+    let origin_span = crate::ast::Span::origin();
+
+    // Obtain the type-stage environment for building the EvalContext.
+    let type_stage_env = crate::imports::build_type_stage_env().ok_or_else(|| {
+        TypeError::new(
+            "type-stage environment unavailable (bootstrap recursion guard fired)",
+            origin_span.clone(),
+        )
+    })?;
+
+    // Build a minimal EvalContext backed by the type-stage environment.
+    // AMBIENT-OK: type-stage evaluation performs no file I/O.
+    #[allow(clippy::disallowed_methods)]
+    let base_dir =
+        cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority()).map_err(|e| {
+            TypeError::new(
+                format!("type-stage eval: cannot open ambient dir: {e}"),
+                origin_span.clone(),
+            )
+        })?;
+    let ctx = crate::eval::EvalContext::new_empty(base_dir, type_stage_env, false);
+
+    // Allocate materialized thunks for each argument.
+    let arg_thunks: Vec<Arc<Thunk>> = args
+        .iter()
+        .map(|v| Arc::new(Thunk::new_materialized(v.clone(), origin_span.clone())))
+        .collect();
+
+    // Dispatch: fn_val must be a user-defined function (not a builtin).
+    // Builtin type-stage functions are not expected in as-type dispatch paths.
+    // Unwrap Value::Annotated transparently — annotated function bindings (e.g., a
+    // type-stage combinator declared with an @[doc: "..."] annotation) carry the function
+    // value in `inner`, not at the top level.
+    let fn_inner = match fn_val {
+        Value::Annotated { inner, .. } => inner.as_ref(),
+        other => other,
+    };
+    let result_thunk = match fn_inner {
+        Value::Function {
+            ref params,
+            ref body,
+            env: ref closure_env,
+            ..
+        } => {
+            let call_ctx = crate::eval_call::CallContext {
+                params,
+                body,
+                closure_env,
+                positional: &arg_thunks,
+                named: None,
+                default_env: closure_env,
+                call_span: origin_span.clone(),
+                origin: None,
+                ctx: &ctx,
+            };
+            crate::eval_call::invoke_function_sync(&call_ctx).map_err(|e| {
+                TypeError::new(
+                    format!("type-stage function call failed: {e}"),
+                    origin_span.clone(),
+                )
+            })?
+        }
+        // Not a function — as-type dispatch requires a callable value.
+        _ => {
+            return Err(TypeError::new(
+                "eval_type_stage_value: argument is not a function value",
+                origin_span,
+            ))
+        }
+    };
+
+    // Materialize the result synchronously.
+    let result_val = crate::eval::materialize_sync(&result_thunk, None, &ctx).map_err(|e| {
+        TypeError::new(
+            format!("type-stage materialization failed: {e}"),
+            origin_span.clone(),
+        )
+    })?;
+
+    // Convert TypeNode Value → Type.
+    typenode_value_to_type(&result_val, &ctx).ok_or_else(|| {
+        TypeError::new(
+            format!(
+                "type-stage result cannot be converted to Type: {result_val} \
+                 (TypeNode.Recursive/RecursiveRef require equirecursive CheckerType migration)"
+            ),
+            origin_span,
+        )
+    })
+}
+
+/// Evaluate a type-stage `SurfaceNode` annotation expression and convert the result to
+/// a `Type`.
+///
+/// This is the primary entry point for evaluating `@[expr]` annotations that contain
+/// user-defined type-stage expressions — such as user-defined type combinators, `mu`
+/// expressions, or any other type-stage call that the name-based combinator dispatch in
+/// `resolve_type_dict` does not recognize.
+///
+/// ## Evaluation Pipeline
+///
+/// ```text
+/// SurfaceNode (annotation expr)
+///   → Thunk::new_surface in type-stage env
+///   → materialize_sync   (produces TypeNode Value)
+///   → TypeNode.as-type lookup + eval_type_stage_value
+///       (normalizes user-defined constructors to primitive TypeNode forms)
+///   → typenode_value_to_type
+///   → Type
+/// ```
+///
+/// ## Error Behaviour
+///
+/// Returns `Err(TypeError)` if:
+/// - The type-stage environment is unavailable (bootstrap / recursion guard).
+/// - Evaluation of the expression fails (runtime error in type-stage code).
+/// - The evaluated value cannot be converted to a Type (only `TypeNode.Recursive` and
+///   `TypeNode.RecursiveRef` fall into this category — they require the equirecursive
+///   CheckerType migration and are deferred to a future sprint).
+///
+/// In the fallback call sites (`resolve_property_dict_as_record`), errors are caught with
+/// `.unwrap_or(Type::Unknown)`, preserving existing gradual-typing behaviour for
+/// annotations that cannot be resolved to a precise type.
+///
+/// ## TypeNode.as-type dispatch (T-1059 hook)
+///
+/// After evaluating the expression, this function looks up `TypeNode` in the type-stage
+/// environment and tries to call `TypeNode.as-type` on the result.  The `as-type`
+/// protocol function (added to the TypeNode dict by T-1059 via `[merge TypeNode [...]]`)
+/// normalizes user-defined TypeNode constructors to primitive forms before conversion.
+///
+/// If `TypeNode.as-type` is not found in the TypeNode dict (e.g., the merge was not yet
+/// evaluated), the raw value is passed directly to `typenode_value_to_type`. Primitive
+/// TypeNode constructors (`TypeNode.Int`, `TypeNode.Float`, etc.) and kind-keyed dicts
+/// are both handled without `as-type` dispatch.
+pub(crate) fn eval_type_stage_expr(
+    node: &Arc<SurfaceNode>,
+    _env: &TypeEnv,
+    state: &mut InferState,
+) -> Result<Type, TypeError> {
+    let node_span = node.span.clone();
+
+    // Obtain the type-stage environment.
+    let type_stage_env = crate::imports::build_type_stage_env().ok_or_else(|| {
+        TypeError::new(
+            "type-stage environment unavailable (bootstrap recursion guard fired)",
+            node_span.clone(),
+        )
+    })?;
+
+    // Build a minimal EvalContext backed by the type-stage environment.
+    // AMBIENT-OK: type-stage evaluation performs no file I/O.
+    #[allow(clippy::disallowed_methods)]
+    let base_dir =
+        cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority()).map_err(|e| {
+            TypeError::new(
+                format!("type-stage eval: cannot open ambient dir: {e}"),
+                node_span.clone(),
+            )
+        })?;
+    let ctx = crate::eval::EvalContext::new_empty(base_dir, Arc::clone(&type_stage_env), false);
+
+    // Create empty resolution and annotation tables (no prior resolution pass for
+    // synthetic type-stage nodes; names are resolved at eval time from the env chain).
+    let res_table = crate::ast::empty_resolution_table_arc();
+    let types_table = crate::ast::empty_type_annotation_table_arc();
+
+    // Wrap the SurfaceNode in a lazy thunk that will evaluate it in the type-stage env.
+    let surface_thunk = Arc::new(Thunk::new_surface(
+        Arc::clone(node),
+        res_table,
+        types_table,
+        Arc::clone(&type_stage_env),
+        Arc::clone(&ctx),
+        node_span.clone(),
+    ));
+
+    // Materialize synchronously — type-stage evaluation is pure compute, no I/O.
+    let typenode_val = crate::eval::materialize_sync(&surface_thunk, Some(&node_span), &ctx)
+        .map_err(|e| {
+            TypeError::new(
+                format!("type-stage expression evaluation failed: {e}"),
+                node_span.clone(),
+            )
+        })?;
+
+    // Attempt TypeNode.as-type dispatch (T-1059 hook).
+    //
+    // Look up `TypeNode` in the type-stage environment and retrieve its `as-type` key.
+    // If the key exists (after T-1059 adds it via `[merge TypeNode [...]]`), call it with
+    // `typenode_val` to normalize user-defined TypeNode constructors to primitive forms.
+    // `eval_type_stage_value` calls the function and converts the result to a `Type`.
+    //
+    // If the lookup fails (pre-T-1059, when `TypeNode.as-type` has not been added to the
+    // TypeNode dict by the protocol-functions merge), fall through to direct conversion via
+    // `typenode_value_to_type`.  This is correct for T-1060: primitive TypeNode constructors
+    // (`TypeNode.Int`, `TypeNode.Float`, etc.) and kind-keyed dicts both convert without
+    // needing `as-type` dispatch.
+    let as_type_dispatch: Option<Type> = (|| {
+        // Look up the TypeNode dict in the type-stage environment.
+        let typenode_thunk = type_stage_env.read().ok()?.get("TypeNode")?;
+        let typenode_dict_val = crate::eval::materialize_sync(&typenode_thunk, None, &ctx).ok()?;
+
+        // Retrieve the as-type function from the TypeNode dict.
+        // This key is added by `[merge TypeNode [...]]` in T-1059; absent until then.
+        let as_type_fn = match &typenode_dict_val {
+            Value::Dict(ref d) => {
+                let as_type_id = d.get(&Key::String("as-type".into()))?;
+                let as_type_thunk = ctx.get_thunk(*as_type_id);
+                crate::eval::materialize_sync(&as_type_thunk, None, &ctx).ok()?
+            }
+            _ => return None,
+        };
+
+        // Call TypeNode.as-type(typenode_val) to normalize and convert to Type.
+        // eval_type_stage_value handles: call fn → materialize → typenode_value_to_type.
+        // Returns None on failure (non-function value, eval error, unrecognized result).
+        eval_type_stage_value(&as_type_fn, &[typenode_val.clone()], state).ok()
+    })();
+
+    // If as-type dispatch succeeded, return its result (the normalized Type).
+    if let Some(ty) = as_type_dispatch {
+        return Ok(ty);
+    }
+
+    // Fall through to direct conversion: raw typenode_val → Type (no as-type normalization).
+    // Handles TypeNode primitive variants and old-style kind-keyed dicts.
+    typenode_value_to_type(&typenode_val, &ctx).ok_or_else(|| {
+        TypeError::new(
+            format!(
+                "type-stage expression produced an unrecognized value: {typenode_val} \
+                 (TypeNode.Recursive/RecursiveRef require equirecursive CheckerType migration)"
+            ),
+            node_span,
+        )
+    })
 }
 
 /// Detect `[Fn@Return [ParamTypes]]` -- a Dict with two auto-indexed entries

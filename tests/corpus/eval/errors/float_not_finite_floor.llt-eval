@@ -2,29 +2,29 @@
 # Division by zero produces infinity: 1.0 / 0.0 = inf
 [floor [quot 1.0 0.0]]
 === error
-[E033] /: inf is not a finite number (defined at stdlib/prelude.llt:755:37-755:54) (called at stdlib/prelude.llt:661:14-661:39)
-  --> stdlib/prelude.llt:755:37-755:54
+[E033] /: inf is not a finite number (defined at stdlib/prelude.llt:1024:37-1024:54) (called at stdlib/prelude.llt:930:14-930:39)
+  --> stdlib/prelude.llt:1024:37-1024:54
    |
-  755 | """] [let a@Number b@Number] [trunc [builtin-div a b]]]
-      |                                     ^^^^^^^^^^^^^^^^^
-  in [builtin-div ...] at stdlib/prelude.llt:755:37-755:54
+  1024 | """] [let a@Number b@Number] [trunc [builtin-div a b]]]
+       |                                     ^^^^^^^^^^^^^^^^^
+  in [builtin-div ...] at stdlib/prelude.llt:1024:37-1024:54
    |
-  755 | """] [let a@Number b@Number] [trunc [builtin-div a b]]]
-      |                                     ^^^^^^^^^^^^^^^^^
-  in [builtin-lt ...] at stdlib/prelude.llt:742:25-742:41
+  1024 | """] [let a@Number b@Number] [trunc [builtin-div a b]]]
+       |                                     ^^^^^^^^^^^^^^^^^
+  in [builtin-lt ...] at stdlib/prelude.llt:1011:25-1011:41
    |
-  742 | """] [let x@a y@a] [not [builtin-lt x y]]]
-      |                         ^^^^^^^^^^^^^^^^
-  in [builtin-if ...] at stdlib/prelude.llt:661:14-661:39
+  1011 | """] [let x@a y@a] [not [builtin-lt x y]]]
+       |                         ^^^^^^^^^^^^^^^^
+  in [builtin-if ...] at stdlib/prelude.llt:930:14-930:39
    |
-  661 | """] [let x] [builtin-if x false true]]
+  930 | """] [let x] [builtin-if x false true]]
       |              ^^^^^^^^^^^^^^^^^^^^^^^^^
-  in materialized at stdlib/prelude.llt:787:21-787:61
+  in materialized at stdlib/prelude.llt:1056:21-1056:61
    |
-  787 | """] [let x@Number] [builtin-if [>= x 0] [floor x] [ceil x]]]
-      |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-if ...] at stdlib/prelude.llt:787:21-787:61
+  1056 | """] [let x@Number] [builtin-if [>= x 0] [floor x] [ceil x]]]
+       |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  in [builtin-if ...] at stdlib/prelude.llt:1056:21-1056:61
    |
-  787 | """] [let x@Number] [builtin-if [>= x 0] [floor x] [ceil x]]]
-      |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  1056 | """] [let x@Number] [builtin-if [>= x 0] [floor x] [ceil x]]]
+       |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   in [floor ...] at 2:1-2:23

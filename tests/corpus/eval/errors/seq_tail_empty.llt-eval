@@ -1,13 +1,13 @@
 # tail: error on empty seq
 [tail []]
 === error
-[E010] tail: expected Seq, got Dict (defined at stdlib/prelude.llt:2577:15-2577:32)
-  --> stdlib/prelude.llt:2577:15-2577:32
+[E010] tail: expected Seq, got Dict (defined at stdlib/prelude.llt:2848:15-2848:32)
+  --> stdlib/prelude.llt:2848:15-2848:32
    |
-  2577 | """] [let xs] [builtin-tail xs]]
+  2848 | """] [let xs] [builtin-tail xs]]
        |               ^^^^^^^^^^^^^^^^^
-  in [builtin-tail ...] at stdlib/prelude.llt:2577:15-2577:32
+  in [builtin-tail ...] at stdlib/prelude.llt:2848:15-2848:32
    |
-  2577 | """] [let xs] [builtin-tail xs]]
+  2848 | """] [let xs] [builtin-tail xs]]
        |               ^^^^^^^^^^^^^^^^^
   in [tail ...] at 1:1-1:10

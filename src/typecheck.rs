@@ -20,9 +20,12 @@ use crate::types::{
 
 // Split modules — annotation resolution and dict inference
 #[path = "typecheck_annot.rs"]
-mod typecheck_annot;
+pub(crate) mod typecheck_annot;
 #[path = "typecheck_dict.rs"]
 mod typecheck_dict;
+// Generic TypeNode traversal walkers (T-1062, equirecursive sprint)
+#[path = "typecheck_walk.rs"]
+pub(crate) mod typecheck_walk;
 // Special-case type refinement dispatchers for polymorphic builtins
 #[path = "typecheck_special.rs"]
 pub(crate) mod typecheck_special;

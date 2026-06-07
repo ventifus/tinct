@@ -181,6 +181,10 @@ pub fn normalize(ty: &Type, subst: &Substitution, ctx: &mut NormCtxt) -> Type {
 // normalize_union and normalize_intersection moved to impl Type in type_def.rs
 
 /// Helper: allocate a string value as a materialized thunk in `ctx`.
+// Scaffolding for equirecursive types (T-1130): used by type_to_dict when building
+// TypeNode-compatible dict values from Type instances. Will be consumed or removed
+// when the full Type→TypeNode conversion path is implemented (T-1130).
+#[allow(dead_code)]
 fn alloc_str(s: &str, ctx: &Arc<crate::eval::EvalContext>) -> crate::arena::ThunkId {
     ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
         string_val(s),
@@ -205,6 +209,11 @@ fn alloc_str(s: &str, ctx: &Arc<crate::eval::EvalContext>) -> crate::arena::Thun
 /// | `Map K V` | `[kind: "map" key: <K> value: <V>]`       |
 ///
 /// Returns `None` if the type cannot be represented as a type-dict (e.g., TypeVar, Error).
+// Scaffolding for equirecursive types (T-1130): converts a runtime Type to a
+// kind-keyed dict value. Used when equirecursive type operations need to expose Type
+// instances to the type-stage prelude (e.g., TypeNodeResolve dispatch). Will be activated
+// or removed when the full Type→TypeNode conversion path is implemented (T-1130).
+#[allow(dead_code)]
 pub(crate) fn type_to_dict(ty: &Type, ctx: &Arc<crate::eval::EvalContext>) -> Option<Value> {
     let origin = crate::ast::Span::origin();
 
@@ -279,6 +288,9 @@ pub(crate) fn type_to_dict(ty: &Type, ctx: &Arc<crate::eval::EvalContext>) -> Op
 }
 
 /// Helper: create a `Value::String` from a static string slice.
+// Scaffolding for equirecursive types (T-1130): used by type_to_dict and alloc_str
+// to construct string values without an arena context. Dead until type_to_dict is activated.
+#[allow(dead_code)]
 fn string_val(s: &str) -> Value {
     let src: Rc<str> = Rc::from(s);
     let len = src.len();
@@ -347,15 +359,49 @@ pub(crate) fn dict_to_type(val: &Value, ctx: &Arc<crate::eval::EvalContext>) -> 
     }
 }
 
+/// Convert a `Type` to a TypeNode `Value` (T-1061).
+///
+/// After the type-stage combinator migration, resolver functions (`AddResult`, etc.)
+/// receive TypeNode Variant values as arguments, not kind-keyed dicts.
+///
+/// Handles primitive types that appear as arithmetic resolver arguments.
+/// Complex types (Seq, Map, Union, Record, etc.) return `None` — arithmetic
+/// resolvers never receive those as arguments.
+fn type_to_typenode(ty: &Type) -> Option<Value> {
+    // Build a leaf TypeNode Variant (no payload) for the given tag name.
+    let leaf = |tag: &str| -> Value {
+        Value::Variant {
+            tag: tag.to_string(),
+            payload: None,
+        }
+    };
+
+    match ty {
+        Type::Int | Type::IntLiteral(_) => Some(leaf("TypeNode.Int")),
+        Type::Float => Some(leaf("TypeNode.Float")),
+        Type::Str | Type::StringLiteral(_) => Some(leaf("TypeNode.String")),
+        Type::Bool => Some(leaf("TypeNode.Bool")),
+        Type::Unknown => Some(leaf("TypeNode.Unknown")),
+        Type::Never => Some(leaf("TypeNode.Never")),
+        // Number (supertype of Int and Float) — no direct TypeNode equivalent;
+        // use Unknown so the resolver produces a conservative result.
+        Type::Number => Some(leaf("TypeNode.Unknown")),
+        Type::Top => Some(leaf("TypeNode.Unknown")),
+        // Complex types — arithmetic resolvers never receive these.
+        // Return None so evaluate_resolver returns None (resolver returns None → Unknown fallback).
+        _ => None,
+    }
+}
+
 /// Evaluate a user-defined type-stage resolver function.
 ///
 /// Looks up `fn_name` in the type-stage environment, calls it with the given
-/// `Type` arguments (converted to type-dict values), and converts the result
-/// back to a `Type`.
+/// `Type` arguments (converted to TypeNode Variant values per T-1061) and converts
+/// the result back to a `Type` via `typenode_value_to_type`.
 ///
 /// Returns `None` if any step fails:
 /// - Resolver not found in env
-/// - Argument type cannot be represented as a type-dict
+/// - Argument type cannot be represented as a TypeNode value
 /// - Runtime error during evaluation
 /// - Result cannot be converted back to a `Type`
 pub(crate) async fn evaluate_resolver(
@@ -377,13 +423,14 @@ pub(crate) async fn evaluate_resolver(
     // Materialize the function value
     let fn_val = crate::eval::materialize(&fn_thunk, None, &ctx).await.ok()?;
 
-    // Convert each Type arg to a type-dict Value
+    // Convert each Type arg to a TypeNode Variant Value (T-1061).
+    // Resolver functions now receive TypeNode Variants, not kind-keyed dicts.
     let arg_thunks: Vec<Arc<Thunk>> = args
         .iter()
         .map(|ty| {
-            let dict_val = type_to_dict(ty, &ctx)?;
+            let typenode_val = type_to_typenode(ty)?;
             Some(Arc::new(Thunk::new_materialized(
-                dict_val,
+                typenode_val,
                 crate::ast::Span::origin(),
             )))
         })
@@ -419,8 +466,10 @@ pub(crate) async fn evaluate_resolver(
         .await
         .ok()?;
 
-    // Convert result dict back to Type
-    dict_to_type(&result_val, &ctx)
+    // Convert the TypeNode Variant result back to a Type (T-1061).
+    // typenode_value_to_type handles both TypeNode Variants (new path) and
+    // kind-keyed dicts (fallback for any pre-migration resolver code).
+    crate::typecheck::typecheck_annot::typenode_value_to_type_pub(&result_val, &ctx)
 }
 
 impl fmt::Display for Type {

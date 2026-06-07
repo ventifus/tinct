@@ -106,11 +106,34 @@ fn inject_adt_constructors_expr(expr: &SurfaceExpression, _span: Span) -> Surfac
             let syn_span = Span::origin();
             let mut new_entries: Vec<Spanned<SurfaceEntry>> = Vec::new();
             let mut has_injection = false;
-            // Track already-injected constructor names to prevent duplicates when two
-            // types in the same dict share a constructor name. Without deduplication,
-            // the second injection would cause E030 "duplicate key" at runtime.
-            let mut injected_names: std::collections::HashSet<String> =
-                std::collections::HashSet::new();
+            // Track names that must not be injected — pre-seeded with any explicit (non-TypeAlias)
+            // string key already present in this dict. This prevents E030 duplicate-key errors
+            // when a [type ...] constructor name collides with an explicit binding.
+            //
+            // Example: the type-stage prelude has `Int: [TypeNode.Int]` (explicit) followed later
+            // by `TypeNode: [type [Int@[...]] ...]` (TypeAlias). Without pre-seeding, inject_adt
+            // would emit a second `Int:` entry, causing a duplicate-key runtime error.
+            //
+            // The set is also updated as constructors are injected, so two [type ...] declarations
+            // in the same dict that share a constructor name don't produce duplicates either.
+            let mut injected_names: std::collections::HashSet<String> = entries
+                .iter()
+                .filter_map(|e| {
+                    // Only consider entries that are NOT declaration forms (TypeAlias, ClassDecl,
+                    // InstanceDecl, MacroDecl). All Decl forms are skipped at runtime by lower.rs
+                    // and produce no runtime binding, so they must not block constructor injection.
+                    if matches!(&e.node.value.expr, SurfaceExpression::Decl(_)) {
+                        return None;
+                    }
+                    // Extract the string key for non-Decl entries.
+                    match e.node.key.as_ref().map(|k| &k.expr) {
+                        Some(SurfaceExpression::Str(s)) => Some(s.clone()),
+                        Some(SurfaceExpression::VarRef { name, .. }) => Some(name.clone()),
+                        Some(SurfaceExpression::Annotated { name, .. }) => Some(name.clone()),
+                        _ => None,
+                    }
+                })
+                .collect();
 
             for se in entries {
                 // Check if this entry's value is a TypeAlias Decl
@@ -157,7 +180,8 @@ fn inject_adt_constructors_expr(expr: &SurfaceExpression, _span: Span) -> Surfac
                                 has_injection = true;
                                 for ctor in ctors {
                                     if !injected_names.insert(ctor.name.clone()) {
-                                        // Already injected by a prior type in this dict — skip.
+                                        // Name already present (explicit binding or prior injection)
+                                        // — skip to avoid E030 duplicate-key error.
                                         continue;
                                     }
                                     let qualified_tag = match &type_name {
@@ -899,7 +923,15 @@ fn build_constructor_return_ann(
 
 /// Build the SurfaceExpression value for an injected constructor entry.
 ///
-/// - Unit constructor (`ctor.fields` is empty): `[variant "TypeName.CtorName"]`
+/// - Unit constructor (`ctor.fields` is empty):
+///   - Unannotated: `[variant "TypeName.CtorName"]`
+///   - Annotated (`CtorName@[key: val ...]`):
+///     `[make-annotated [variant "TypeName.CtorName"] [key: val ...]]`
+///     The annotation PropertyDict entries are converted to a plain dict literal. At eval time,
+///     `make-annotated` (a prelude alias of `builtin-make-annotated`) materializes both the
+///     variant and the annotation dict and returns
+///     `Value::Annotated { inner: Variant(...), annotation: Dict({...}) }`.
+///
 /// - Named-field constructor (`ctor.fields` non-empty):
 ///   `[fn@[...] [...payload] [variant-payload "TypeName.CtorName" payload]]`
 ///   A variadic `...payload` param collects all named args into a dict at runtime
@@ -917,12 +949,13 @@ fn build_constructor_return_ann(
 ///   materialized Dict BEFORE any inner dict is constructed in the body. The body
 ///   `[variant-payload "Tag" payload]` simply references the already-bound `payload` param.
 ///
-/// **Annotation encoding (T-1053):** constructor-level `@[...]` entries and `field-annotations:`
-/// derived from `@Child` field annotations are encoded in `return_ann` as a `PropertyDict`.
-/// When T-1049 lands, the evaluator will read these from `return_ann` and populate
-/// `FnAnnotation.extra`, making them available via `annotation-of` on the constructor function.
-/// With T-1052 landed, `return_ann` carries the annotation data when the constructor
-/// is annotated (`CtorName@[...]`) or has `@Child`-annotated fields.
+/// **Annotation encoding:**
+/// - Unit constructors (T-1121): `build_constructor_return_ann` produces `Some(PropertyDict)`
+///   when the constructor is annotated. The PropertyDict entries are emitted as a plain dict
+///   literal argument to `make-annotated`, which wraps the result in `Value::Annotated`.
+/// - Named-field constructors (T-1053): the annotation is encoded in `return_ann` on the Fn node.
+///   The evaluator reads `return_ann` via `extract_fn_annotation_extra` and populates
+///   `FnAnnotation.extra`, making annotations available via `annotation-of` on the constructor.
 fn build_constructor_value(
     ctor: &AliasConstructor,
     qualified_tag: &str,
@@ -960,18 +993,20 @@ fn build_constructor_value(
     if ctor.fields.is_empty() {
         // Unit constructor: [variant "TypeName.CtorName"]
         //
-        // Unit constructors are a Call expression (not a Fn), so they cannot carry a
-        // return_ann directly. Constructor-level @[...] annotation on unit constructors
-        // requires Value::Annotated wrapping at eval time (T-1121). The Value::Annotated
-        // variant exists (T-1050 done), but wrapping unit constructors requires evaluating
-        // the annotation dict entries at runtime and wrapping the Call result — deferred to
-        // T-1121. Only named-field constructor Fn nodes currently carry annotations via
-        // return_ann.
+        // T-1121: When the constructor carries a @[...] annotation (constructor_return_ann is
+        // Some(Annotation::PropertyDict(entries))), wrap the unit variant in Value::Annotated
+        // by emitting:
+        //   [make-annotated [variant "TypeName.CtorName"] [key: val ...]]
         //
-        // TODO(T-1121): Wrap unit constructor value in Value::Annotated when
-        // constructor_return_ann is Some.
-        let _ = constructor_return_ann; // annotation unused for unit constructors until T-1121
-        Arc::new(SurfaceNode {
+        // The PropertyDict entries are converted directly to a SurfaceExpression::Dict node,
+        // so the annotation dict is evaluated at the same time as the constructor value.
+        // Both arguments are materialized by make-annotated's [Seq, Seq] strictness.
+        //
+        // When there is no annotation (constructor_return_ann is None), emit the plain variant
+        // call as before.
+
+        // Build [variant "TypeName.CtorName"]
+        let variant_call = Arc::new(SurfaceNode {
             expr: SurfaceExpression::Call {
                 func: unit_variant_fn,
                 args: vec![tag_arg],
@@ -979,7 +1014,50 @@ fn build_constructor_value(
                 implied: false,
             },
             span: syn_span.clone(),
-        })
+        });
+
+        // If there are annotation entries, wrap in [make-annotated variant-call ann-dict]
+        match constructor_return_ann {
+            Some(ann_spanned) => {
+                // Extract the PropertyDict entries from the annotation.
+                // build_constructor_return_ann always produces Annotation::PropertyDict when Some.
+                let Annotation::PropertyDict(ann_entries) = ann_spanned.node else {
+                    // Unexpected annotation form (not PropertyDict) — emit unannotated variant.
+                    // This branch is unreachable in practice: build_constructor_return_ann only
+                    // returns Some(PropertyDict). Guard here to avoid a panic.
+                    return variant_call;
+                };
+
+                // Convert the PropertyDict entries to a plain SurfaceExpression::Dict.
+                // The entries are already SurfaceEntry values with Str keys and expression values.
+                let ann_dict_node = Arc::new(SurfaceNode {
+                    expr: SurfaceExpression::Dict(ann_entries),
+                    span: syn_span.clone(),
+                });
+
+                // Build the make-annotated function reference (prelude wrapper of builtin-make-annotated).
+                // Consistent with using "variant" (not "builtin-variant") for unit variant calls.
+                let make_annotated_fn = Arc::new(SurfaceNode {
+                    expr: SurfaceExpression::VarRef {
+                        name: "make-annotated".to_string(),
+                        escaped: false,
+                    },
+                    span: syn_span.clone(),
+                });
+
+                // Emit [make-annotated [variant "Tag"] [key: val ...]]
+                Arc::new(SurfaceNode {
+                    expr: SurfaceExpression::Call {
+                        func: make_annotated_fn,
+                        args: vec![variant_call, ann_dict_node],
+                        named_args: vec![],
+                        implied: false,
+                    },
+                    span: syn_span.clone(),
+                })
+            }
+            None => variant_call,
+        }
     } else {
         // Named-field constructor: variadic fn that collects named args into a payload dict.
         //

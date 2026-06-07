@@ -11,18 +11,56 @@
 # before this file runs — no [include %rust "..."] calls needed.
 
 [
-  Int:     [kind: "named"  name: "Int"]
-  Str:     [kind: "named"  name: "String"]
-  Bool:    [kind: "named"  name: "Bool"]
-  Float:   [kind: "named"  name: "Float"]
-  Any:     [kind: "top"]
-  Never:   [kind: "never"]
-  Null:    [kind: "record"  fields: []]
-  Seq:     [fn [let elem]     [kind: "seq"          elem: elem]]
-  Map:     [fn [let key val]  [kind: "map"          key: key  value: val]]
-  union:   [fn [let types] [kind: "union"        members: types]]
-  all:     [fn [let types] [kind: "intersection" members: types]]
-  without: [fn [let t]        [kind: "negation"     inner: t]]
+  # ============================================================================
+  # Type-Stage Combinators (T-1061: migrated to TypeNode constructors)
+  # ============================================================================
+  #
+  # These return TypeNode Variant values (not kind:-keyed dicts). Migration is
+  # complete as of T-1061. The annotation resolver (typenode_value_to_type /
+  # eval_type_stage_expr) retains a dict fallback for user code that still
+  # constructs kind:-keyed dicts directly; that fallback will be retired in a
+  # future cleanup sprint.
+  #
+  # Naming:
+  #   Int, Str, Bool, Float, Never — leaf TypeNode constructors (no payload)
+  #   Any     — TypeNode.Unknown (the gradual "?" type — any value is consistent)
+  #   Null    — TypeNode.Record with empty fields (empty record = null / [])
+  #   Seq     — TypeNode.TypeApplication of TypeNode.TypeConstructor "Seq"
+  #   Map     — TypeNode.TypeApplication of TypeNode.TypeConstructor "Map"
+  #   union   — TypeNode.Union
+  #   all     — TypeNode.Intersect
+  #   without — TypeNode.Negation (placeholder; not yet in TypeNode ADT; falls back)
+  #
+  # Arithmetic resolvers use builtin-tag-of to dispatch on the TypeNode tag string
+  # ("TypeNode.Int", "TypeNode.Float", etc.) rather than the old .name field.
+
+  # TypeNode unit constructors: use builtin-variant directly because TypeNode is a [type ...]
+  # declaration (TypeAlias), which is skipped at runtime by lower.rs and is therefore NOT
+  # available as a runtime binding. TypeNode.Int etc. cannot be accessed via dot notation;
+  # instead we call builtin-variant directly to produce the unit Variant value.
+  Int:     [builtin-variant "TypeNode.Int"]
+  Str:     [builtin-variant "TypeNode.String"]
+  Bool:    [builtin-variant "TypeNode.Bool"]
+  Float:   [builtin-variant "TypeNode.Float"]
+  Any:     [builtin-variant "TypeNode.Unknown"]
+  Never:   [builtin-variant "TypeNode.Never"]
+  # Named-field TypeNode constructors: accessed directly by injected name (e.g. Record, Union)
+  # rather than via TypeNode.Record (which would require TypeNode to be a runtime dict).
+  Null:    [Record fields: []  open: false]
+  Seq:     [fn [let elem]
+    [TypeApplication
+      ctor: [TypeConstructor name: "Seq"]
+      args: [builtin-seq elem [builtin-variant "Seq.Nil"]]]]
+  Map:     [fn [let key val]
+    [TypeApplication
+      ctor: [TypeConstructor name: "Map"]
+      args: [builtin-seq key [builtin-seq val [builtin-variant "Seq.Nil"]]]]]
+  union:   [fn [let ...types] [Union types: [builtin-collect types]]]
+  all:     [fn [let ...types] [Intersect types: [builtin-collect types]]]
+  # TypeNode has no Negation constructor yet (T-1129).
+  # without used to produce kind: "negation" which dict_to_type never handled → Unknown.
+  # Preserve that behavior: return TypeNode.Unknown so the type checker sees a gradual type.
+  without: [fn [let t]        [builtin-variant "TypeNode.Unknown"]]
 
   # ============================================================================
   # Arithmetic Type-Stage Resolvers
@@ -30,43 +68,49 @@
   #
   # These resolvers compute result types for arithmetic operations with
   # functional dependencies (a, b) → c. They run at type-check time, not runtime.
+  #
+  # Arguments are TypeNode Variant values (after T-1061 migration).
+  # Dispatch uses builtin-tag-of to read the "TypeNode.Int" / "TypeNode.Float" tag.
+  # All else → TypeNode.Unknown (gradual typing fallback).
+  #
+  # Returns: TypeNode Variant values (using named type-stage aliases: Float, Int, Any).
 
   # Float dominates: Float+anything → Float. Int+Int → Int. All else → Unknown.
   AddResult: [fn [let a b]
-    [if [= a.name "Float"]
-      [kind: "named" name: "Float"]
-      [if [= b.name "Float"]
-        [kind: "named" name: "Float"]
-        [if [= a.name "Int"]
-          [if [= b.name "Int"]
-            [kind: "named" name: "Int"]
-            [kind: "named" name: "Unknown"]]
-          [kind: "named" name: "Unknown"]]]]]
+    [if [= [builtin-tag-of a] "TypeNode.Float"]
+      Float
+      [if [= [builtin-tag-of b] "TypeNode.Float"]
+        Float
+        [if [= [builtin-tag-of a] "TypeNode.Int"]
+          [if [= [builtin-tag-of b] "TypeNode.Int"]
+            Int
+            Any]
+          Any]]]]
 
   SubResult: [fn [let a b]
-    [if [= a.name "Float"]
-      [kind: "named" name: "Float"]
-      [if [= b.name "Float"]
-        [kind: "named" name: "Float"]
-        [if [= a.name "Int"]
-          [if [= b.name "Int"]
-            [kind: "named" name: "Int"]
-            [kind: "named" name: "Unknown"]]
-          [kind: "named" name: "Unknown"]]]]]
+    [if [= [builtin-tag-of a] "TypeNode.Float"]
+      Float
+      [if [= [builtin-tag-of b] "TypeNode.Float"]
+        Float
+        [if [= [builtin-tag-of a] "TypeNode.Int"]
+          [if [= [builtin-tag-of b] "TypeNode.Int"]
+            Int
+            Any]
+          Any]]]]
 
   MulResult: [fn [let a b]
-    [if [= a.name "Float"]
-      [kind: "named" name: "Float"]
-      [if [= b.name "Float"]
-        [kind: "named" name: "Float"]
-        [if [= a.name "Int"]
-          [if [= b.name "Int"]
-            [kind: "named" name: "Int"]
-            [kind: "named" name: "Unknown"]]
-          [kind: "named" name: "Unknown"]]]]]
+    [if [= [builtin-tag-of a] "TypeNode.Float"]
+      Float
+      [if [= [builtin-tag-of b] "TypeNode.Float"]
+        Float
+        [if [= [builtin-tag-of a] "TypeNode.Int"]
+          [if [= [builtin-tag-of b] "TypeNode.Int"]
+            Int
+            Any]
+          Any]]]]
 
   # Division always produces Float regardless of operand types.
-  DivResult: [fn [let a b] [kind: "named" name: "Float"]]
+  DivResult: [fn [let a b] Float]
 
   # IncludeCacheEntry: three-state variant for the content-addressed include cache.
   # Used by builtin-include-cache-get and builtin-include-cache-put Rust primitives.
@@ -101,6 +145,231 @@
       [fn [let acc k] [builtin-merge acc [$k: [f k [builtin-get k obj]]]]]
       []
       [builtin-keys obj]]]
+
+  # ============================================================================
+  # TypeNode: Primary Type Representation (T-1058, equirecursive-types)
+  # ============================================================================
+  #
+  # TypeNode is the type system's primary representation. The type checker works
+  # directly on TypeNode values. CheckerType is simply Node(Value) — a thin
+  # wrapper with no separate variant for inference variables. TypeVar IS a
+  # TypeNode constructor, making it findable by walk_type and handled uniformly.
+  #
+  # Each constructor carries @[as-type: fn  guarding: Bool] in its constructor-
+  # level annotation. @Child on field names marks TypeNode-valued fields for the
+  # traversal protocol (children, map-children) — derived generically by T-1059.
+  #
+  # Role inference from @Child field type:
+  #   @Child on TypeNode         → One      (single child)
+  #   @Child on [Seq TypeNode]   → Seq      (map over elements)
+  #   @Child on [Map K TypeNode] → MapValues (map over values, preserve keys)
+  # Fields without @Child are NonChild — passed through unchanged by map-children.
+  #
+  # Protocol functions (children, map-children, as-type) are added in T-1059
+  # via [merge TypeNode [...]].
+
+  TypeNode: [type
+    # Primitives — leaf constructors: no @Child fields
+    [Int@[as-type: [fn [let t] t]  guarding: true]]
+    [Float@[as-type: [fn [let t] t]  guarding: true]]
+    [String@[as-type: [fn [let t] t]  guarding: true]]
+    [Bool@[as-type: [fn [let t] t]  guarding: true]]
+    [Absent@[as-type: [fn [let t] t]  guarding: true]]
+    [Unknown@[as-type: [fn [let t] t]  guarding: true]]
+    [Never@[as-type: [fn [let t] t]  guarding: true]]
+    # Structural
+    [Record@[as-type: [fn [let r] r]  guarding: true]
+      fields@Child: [Map String TypeNode]   # @Child on Map → MapValues (map over values, preserve keys)
+      open:         Bool]                   # no @Child → NonChild, passes through
+    [Union@[as-type: [fn [let u] u]  guarding: false]
+      types@Child: [Seq TypeNode]]          # @Child on Seq → Seq (map over elements)
+    [Intersect@[as-type: [fn [let i] i]  guarding: false]
+      types@Child: [Seq TypeNode]]
+    # TypeConstructor — two roles:
+    #   Transient (pre-normalization): bare name lookup result, eliminated by expansion
+    #   Leaf identity (post-normalization): qualified name "Color.Red", carries nominal identity
+    [TypeConstructor@[as-type: [fn [let t] t]  guarding: true]
+      name: String]                         # no @Child → leaf
+    [TypeApplication@[as-type: [fn [let a] a]  guarding: true]
+      ctor@Child:  TypeNode                 # @Child on TypeNode → One
+      args@Child:  [Seq TypeNode]]          # @Child on Seq → Seq
+    [Arrow@[as-type: [fn [let a] a]  guarding: true]
+      params@Child: [Seq TypeNode]          # @Child on Seq → Seq
+      result@Child: TypeNode]              # @Child on TypeNode → One
+    # Recursive — equirecursive types; body is a concrete TypeNode with
+    # RecursiveRef(var) at recursive positions (not a function)
+    [Recursive@[as-type: [fn [let r] r]  guarding: true]
+      var:         String                   # no @Child → NonChild (binder name, not a type child)
+      body@Child:  TypeNode]               # @Child on TypeNode → One
+    # Internal sentinel — always a leaf; only appears inside Recursive bodies
+    [RecursiveRef@[as-type: [fn [let r] r]  guarding: false]
+      name: String]                         # no @Child → leaf
+    # Inference variable — leaf; name and level are not TypeNode children.
+    # TypeVar IS a TypeNode constructor — findable by walk_type, handled uniformly
+    # with all other TypeNode forms. level is the Kiselyov creation-time level;
+    # state.levels is the authoritative mutable current level (never read from payload).
+    [TypeVar@[as-type: [fn [let t] t]  guarding: false]
+      name:  String                         # e.g. "_t42"
+      level: Int]]                          # Kiselyov creation-time level
+
+  # ============================================================================
+  # TypeNode traversal helpers (T-1059, equirecursive-types)
+  # ============================================================================
+  #
+  # These helpers derive the traversal protocol generically from @Child field
+  # annotations stored in FnAnnotation.extra["field-annotations"], which is
+  # populated at desugar time for fields annotated @Child (T-1124).
+  #
+  # All helpers use only core builtins (builtin-* prefixed names, bare `+`/`=`/`if`,
+  # and bare `get?`) because the type-stage evaluator only has core_builtins() in
+  # scope. Unqualified names like `reduce`, `keys`, `get`, `has?` are NOT available
+  # here — they are defined in the runtime prelude (--- uses: ["core"]) section.
+
+  # TypeNode-ctor: return the TypeNode constructor function for a TypeNode value.
+  # Splits the tag string (e.g. "TypeNode.Int") on "." and looks up the last
+  # component (e.g. "Int") as a key in the TypeNode dict, returning the constructor.
+  TypeNode-ctor: [fn [let t]
+    [builtin-get [builtin-last [builtin-split "." [builtin-tag-of t]]] TypeNode]]
+
+  # child-fields: return the Dict of @Child field names for a constructor.
+  # Reads the "field-annotations" key from annotation-of(ctor) and returns its keys
+  # (a Dict of int-indexed field name strings). Returns [] when no @Child fields exist
+  # (i.e., leaf constructors) or when T-1124 has not yet populated field-annotations.
+  child-fields: [fn [let ctor]
+    [let ann [builtin-annotation-of ctor]]
+    [let fa [get? "field-annotations" ann]]
+    [if [= [builtin-type-of fa] "Absent"]
+      []
+      [builtin-keys fa]]]
+
+  # child-role: return the child role string ("One", "Seq", or "MapValues") for a
+  # given @Child field of a constructor.
+  #   "One"       — field type is TypeNode (a single child)
+  #   "Seq"       — field type is [Seq TypeNode] (a sequence of children)
+  #   "MapValues" — field type is [Map K TypeNode] (map; map over values, preserve keys)
+  child-role: [fn [let ctor field]
+    [builtin-get "role"
+      [builtin-get field
+        [builtin-get "field-annotations" [builtin-annotation-of ctor]]]]]
+
+  # child-field?: return true iff field is an @Child field of the constructor.
+  child-field?: [fn [let ctor field]
+    [let ann [builtin-annotation-of ctor]]
+    [let fa [get? "field-annotations" ann]]
+    [if [= [builtin-type-of fa] "Absent"]
+      false
+      [if [= [builtin-type-of [get? field fa]] "Absent"]
+        false
+        true]]]
+
+]
+
+# ============================================================================
+# Type-Stage Prelude (second dict) — TypeNode merge + TypeNodeResolve typeclass
+# ============================================================================
+#
+# This second dict is evaluated after the first dict above. The first dict's
+# bindings (TypeNode, object-map, TypeNode-ctor, child-fields, child-role,
+# child-field?) are in scope here via the parent environment chain.
+#
+# Placing TypeNode: [merge TypeNode [...]] here (rather than in the first dict)
+# avoids a duplicate-key parse error: the type-stage evaluator uses the doc's
+# sequential expression semantics — each dict shadows earlier dicts — so the
+# merged TypeNode replaces the original in the exported environment.
+
+[
+  # ============================================================================
+  # TypeNode merge: protocol functions children, map-children, as-type (T-1059)
+  # ============================================================================
+  #
+  # Merged into the TypeNode dict so callers access them as:
+  #   [TypeNode.children t]        — returns Seq of child TypeNode values
+  #   [TypeNode.map-children f t]  — returns same-shaped TypeNode with children mapped by f
+  #   [TypeNode.as-type t]         — normalizes t using its constructor's as-type annotation
+  #
+  # The Rust walk_type generic looks up TypeNode.children once at type-stage init time
+  # and calls it per node. expand_all_tycon_apps uses TypeNode.map-children for generic
+  # reconstruction without enumerating constructors explicitly.
+
+  TypeNode: [merge TypeNode [
+
+    # children: collect all @Child field values into a flat Seq of TypeNode values.
+    #
+    # Role "One":       wrap the single TypeNode field value in a 1-element Seq
+    # Role "Seq":       the field IS already a Seq of TypeNodes — use directly
+    # Role "MapValues": the field is a Map (string-keyed dict of TypeNode values) —
+    #                   extract values via builtin-each (returns them as a Seq)
+    #
+    # Leaf constructors (no @Child fields) return Seq.Nil (empty Seq).
+    # builtin-concat(Seq.Nil, Seq) = Seq, so the accumulator pattern is safe.
+    # match on string role values — stored as "One"/"Seq"/"MapValues" in field-annotations.
+    children: [fn [let t]
+      [let ctor [TypeNode-ctor t]]
+      [builtin-reduce
+        [fn [let acc field]
+          [let val [builtin-get field t]]
+          [builtin-concat acc
+            [match [child-role ctor field]
+              "One":       [builtin-seq val [builtin-variant "Seq.Nil"]]
+              "Seq":       val
+              "MapValues": [builtin-each val]]]]
+        [builtin-variant "Seq.Nil"]
+        [child-fields ctor]]]
+
+    # map-children: apply f to each @Child field value and reconstruct the same-shaped
+    # TypeNode variant. Non-@Child fields pass through unchanged.
+    #
+    # Uses builtin-variant for generic reconstruction — no per-constructor arms needed.
+    # object-map iterates over t's payload (auto-unpacked via require_dict on Variants),
+    # so passing t directly to object-map works for any TypeNode constructor.
+    # match on string role avoids [let role ...] binding inside an if-branch position
+    # (LetDecl is only valid as a multi-body sequential step, not inside if arms).
+    map-children: [fn [let f t]
+      [let ctor [TypeNode-ctor t]]
+      [builtin-variant [builtin-tag-of t]
+        [object-map t [fn [let field val]
+          [if [child-field? ctor field]
+            [match [child-role ctor field]
+              "One":       [f val]
+              "Seq":       [builtin-map f val]
+              "MapValues": [object-map val [fn [let k v] [f v]]]]
+            val]]]]]
+
+    # as-type: normalize a TypeNode value using its constructor's as-type annotation.
+    # The as-type annotation function (set at TypeNode declaration time on each constructor)
+    # maps the TypeNode to an existing built-in form. Built-in TypeNode constructors all
+    # carry [as-type: [fn [let t] t]] — the identity function.
+    # User-defined constructors (via open ADT extension, R-12) may carry a custom as-type
+    # to reduce to an existing TypeNode form before the type checker processes it.
+    as-type: [fn [let t]
+      [let ann [builtin-annotation-of [TypeNode-ctor t]]]
+      [let as-type-fn [get? "as-type" ann]]
+      [if [= [builtin-type-of as-type-fn] "Absent"]
+        t
+        [as-type-fn t]]]]]
+
+  # ============================================================================
+  # TypeNodeResolve: typeclass for as-type dispatch (T-1059)
+  # ============================================================================
+  #
+  # Rust eval_type_stage_expr calls TypeNodeResolve.as-type(t) to normalize any
+  # TypeNode value produced by type-stage expression evaluation before the type
+  # checker receives it. The dispatch goes through this typeclass; the per-constructor
+  # instance selects the appropriate as-type implementation.
+  #
+  # All built-in TypeNode constructors use identity — they return t unchanged.
+  # User-defined constructors declare their own instance to reduce to an existing form.
+  #
+  # A single instance for all TypeNode values suffices because every built-in
+  # constructor's as-type is the identity function. The class parameter @TypeNode
+  # matches any TypeNode variant value.
+
+  TypeNodeResolve: [class [let t]
+    as-type: [fn [let _] ...]]
+
+  TypeNodeResolveAll:
+    [instance TypeNodeResolve
+      [let t@TypeNode]: [as-type: [fn [let t] t]]]
 
 ]
 
@@ -2248,6 +2517,8 @@ type-of@[doc: "Return the type name of a value as a String"]: builtin-type-of
 ast-of@[doc: "Return the AST representation of an unevaluated expression as an Expression value"]: builtin-ast-of
 
 annotation-of@[doc: "Get the annotation dict from a function (FnAnnotation.extra + doc) or annotated value"]: builtin-annotation-of
+
+make-annotated@[doc: "Wrap a value in Value::Annotated with the given annotation dict. Used to attach runtime annotations to unit constructor variants (T-1121)."]: builtin-make-annotated
 
 source-of@[doc: "Get the body AST dict from ast-of result. NOTE: only works for unevaluated thunks (macro/quote context), not for fully-evaluated Value::Function — use ast-of directly for functions."]:
   [fn [let val] [get "body" [ast-of val]]]

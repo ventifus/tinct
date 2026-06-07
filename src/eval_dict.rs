@@ -13,7 +13,7 @@ use std::sync::{Arc, RwLock};
 use indexmap::IndexMap;
 
 use crate::arena::ThunkId;
-use crate::ast::{CoreEntry, CoreExpr, Span, Spanned};
+use crate::ast::{Annotation, CoreEntry, CoreExpr, Span, Spanned, SurfaceExpression};
 use crate::error::{EvalError, EvalResult};
 use crate::value::{string_val, Environment, Key, Thunk, Value};
 
@@ -29,6 +29,107 @@ fn value_to_key(value: &Value, span: &Span) -> EvalResult<Key> {
         Value::Int(n) => Ok(Key::Int(*n)),
         _ => Err(EvalError::type_mismatch("String or Int", value.type_name(), span.clone()).into()),
     }
+}
+
+/// Evaluate a PropertyDict annotation to a materialized Value::Dict.
+///
+/// The annotation PropertyDict contains SurfaceExpression nodes that need to be evaluated
+/// in the given environment context. This function evaluates each entry's key and value,
+/// materializes them, and builds a concrete Value::Dict.
+///
+/// Used by T-1119 to evaluate `@[...]` annotations on dict key entries.
+fn eval_annotation_property_dict(
+    entries: &[Spanned<crate::ast::SurfaceEntry>],
+    ctx: &Arc<EvalContext>,
+) -> EvalResult<Value> {
+    let mut dict_map: IndexMap<Key, ThunkId> = IndexMap::with_capacity(entries.len());
+    let mut auto_index: i64 = 0;
+
+    for entry in entries {
+        // Evaluate the key to get a concrete Key
+        let key = if let Some(key_node) = &entry.node.key {
+            // Evaluate the key expression (SurfaceExpression)
+            // We need to lower it to CoreExpr first, then evaluate
+            // For now, handle the common case of string literals directly
+            match &key_node.expr {
+                SurfaceExpression::Str(s) => Key::String(Rc::from(s.as_str())),
+                SurfaceExpression::Int(n) => Key::Int(*n),
+                SurfaceExpression::VarRef { name, .. } => Key::String(Rc::from(name.as_str())),
+                _ => {
+                    // For complex key expressions, we'd need to lower and evaluate
+                    // For now, treat as an error since annotation keys should be simple
+                    return Err(Box::new(EvalError::internal(
+                        format!(
+                            "annotation property dict keys must be string literals, int literals, or bare words, got: {:?}",
+                            key_node.expr
+                        ),
+                        key_node.span.clone(),
+                    )));
+                }
+            }
+        } else {
+            // Auto-indexed entry
+            let k = Key::Int(auto_index);
+            auto_index = auto_index.checked_add(1).ok_or_else(|| {
+                EvalError::integer_overflow(
+                    "annotation dict auto-index".to_string(),
+                    entry.span.clone(),
+                )
+            })?;
+            k
+        };
+
+        // Evaluate the value expression
+        // We need to lower SurfaceExpression to CoreExpr, then evaluate it
+        let value_thunk = {
+            // Simple path: annotations should use literal values for now (T-1124 handles full eval at fn definition)
+            match &entry.node.value.expr {
+                SurfaceExpression::Str(s) => Arc::new(Thunk::new_materialized(
+                    string_val(s),
+                    entry.node.value.span.clone(),
+                )),
+                SurfaceExpression::Int(n) => Arc::new(Thunk::new_materialized(
+                    Value::Int(*n),
+                    entry.node.value.span.clone(),
+                )),
+                SurfaceExpression::Float(f) => Arc::new(Thunk::new_materialized(
+                    Value::Float(*f),
+                    entry.node.value.span.clone(),
+                )),
+                SurfaceExpression::Bool(b) => Arc::new(Thunk::new_materialized(
+                    Value::Bool(*b),
+                    entry.node.value.span.clone(),
+                )),
+                _ => {
+                    // Non-literal annotation values (VarRef type names, fn expressions, etc.)
+                    // are skipped — they appear in function return-type annotations like
+                    // @[return: Dict  doc: "..."] where Dict is a type name, not a runtime value.
+                    // T-1124 handles expression evaluation at fn-definition time for fn annotations;
+                    // dict-key annotations only carry literal metadata (strings, ints, bools).
+                    continue;
+                }
+            }
+        };
+
+        let thunk_id = ctx.alloc_thunk(value_thunk);
+        if dict_map.insert(key, thunk_id).is_some() {
+            let key_str = match &entry.node.key {
+                Some(k_node) => match &k_node.expr {
+                    SurfaceExpression::Str(s) => s.clone(),
+                    SurfaceExpression::Int(n) => n.to_string(),
+                    SurfaceExpression::VarRef { name, .. } => name.clone(),
+                    _ => "<computed key>".to_string(),
+                },
+                None => (auto_index - 1).to_string(),
+            };
+            return Err(Box::new(EvalError::duplicate_key(
+                &key_str,
+                entry.span.clone(),
+            )));
+        }
+    }
+
+    Ok(Value::Dict(dict_map))
 }
 
 // ============================================================================
@@ -146,7 +247,7 @@ pub(crate) async fn eval_dict_core(
 
         // Fast path for literal values: Materialized thunks directly (Nix maybeThunk pattern).
         // Non-literal values become CoreExpr thunks pointing to dict_env.
-        let thunk = match &entry.node.value.node {
+        let value_thunk = match &entry.node.value.node {
             CoreExpr::Int(n) => Arc::new(Thunk::new_materialized(
                 Value::Int(*n),
                 entry.node.value.span.clone(),
@@ -174,6 +275,52 @@ pub(crate) async fn eval_dict_core(
                 Arc::clone(ctx),
                 entry.node.value.span.clone(),
             )),
+        };
+
+        // T-1119: If the key is annotated (e.g., Pi@[doc: "..."]), wrap the value in Value::Annotated.
+        // The annotation PropertyDict is evaluated to a Value::Dict at dict construction time.
+        let thunk = if let Some(key_expr) = &entry.node.key {
+            if let CoreExpr::Annotated { annotation, .. } = &key_expr.node {
+                // Only PropertyDict annotations produce Value::Annotated at runtime.
+                // Simple annotations (e.g., Pi@Number) are type-level metadata, not runtime values.
+                if let Annotation::PropertyDict(ann_entries) = &annotation.node {
+                    // Evaluate the annotation PropertyDict to a Value::Dict
+                    let annotation_value = eval_annotation_property_dict(ann_entries, ctx)?;
+
+                    // T-1123: Value::Annotated stores materialized inner.
+                    // Only wrap in Value::Annotated when the inner value is already materialized
+                    // (i.e., a literal: Int, Float, Bool, Str). For non-literal values (VarRefs,
+                    // function calls, etc.), skip the wrapping and use the plain thunk. This
+                    // preserves laziness: forcing a non-literal annotated entry at dict construction
+                    // time would evaluate VarRefs against the current env, potentially failing if
+                    // the referenced name is not yet in scope (e.g., net builtins like
+                    // builtin-connect referenced in the prelude's annotated wrapper entries).
+                    // The trade-off: annotation-of on a dict-key-annotated non-literal entry
+                    // returns {} instead of the annotation dict — acceptable since the primary use
+                    // case for annotation-of is functions (FnAnnotation.extra) and unit constructors
+                    // (Value::Annotated from make-annotated), not arbitrary non-literal dict entries.
+                    if let Some(inner_value) = value_thunk.try_get_materialized() {
+                        // Wrap it in Value::Annotated
+                        Arc::new(Thunk::new_materialized(
+                            Value::Annotated {
+                                inner: Box::new(inner_value),
+                                annotation: Box::new(annotation_value),
+                            },
+                            entry.node.value.span.clone(),
+                        ))
+                    } else {
+                        // Non-literal: skip Value::Annotated wrapping to preserve laziness
+                        value_thunk
+                    }
+                } else {
+                    // Simple/Annotated annotations are type-level only — use unannotated value
+                    value_thunk
+                }
+            } else {
+                value_thunk
+            }
+        } else {
+            value_thunk
         };
 
         // String keys become bindings so sibling entries can reference via $name (letrec).

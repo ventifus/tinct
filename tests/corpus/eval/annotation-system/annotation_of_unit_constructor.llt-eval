@@ -1,0 +1,16 @@
+# annotation-of on a unit constructor with a @[...] annotation (T-1121).
+# Unit constructors are a Call expression (not a Fn), so they cannot carry return_ann.
+# T-1121 fixes this by wrapping the unit variant in Value::Annotated at eval time:
+#   build_constructor_value emits [make-annotated [variant "Tag"] [key: val ...]]
+# annotation-of on the resulting Value::Annotated returns the annotation dict directly.
+#
+# Red@[category: "primary"] → annotation-of Red → Dict({"category": "primary"})
+[MyType: [type Red@[category: "primary"]]]
+[ann: [annotation-of Red]]
+[result: [= [get "category" ann] "primary"]]
+=== out
+Dict({"result": Bool(true)})
+
+=== warn
+unknown parameterized type: Red at 7:16-7:41
+undefined variable: Red at 8:22-8:25

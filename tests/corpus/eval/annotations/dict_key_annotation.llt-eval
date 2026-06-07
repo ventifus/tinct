@@ -1,0 +1,5 @@
+# Dict key with PropertyDict annotation creates Value::Annotated wrapper
+# The annotation dict is evaluated and the value is wrapped
+[Pi@[doc: "mathematical constant"  precision: 5]: 3.14159]
+=== out
+Dict({"Pi": Float(3.14159)})

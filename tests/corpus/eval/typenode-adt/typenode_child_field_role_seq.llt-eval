@@ -1,0 +1,24 @@
+# Named-field constructor with @Child annotated field and [Seq T] type produces role "Seq".
+# This is the exact pattern used by TypeNode.Union in prelude.llt:
+#   [Union@[as-type: [fn [let u] u]  guarding: false]
+#     types@Child: [Seq TypeNode]]
+#
+# build_constructor_return_ann (T-1052) generates:
+#   annotation: [as-type: fn  guarding: false  field-annotations: [types: [role: "Seq"]]]
+#
+# infer_child_role_from_type_expr detects `[Seq T]` → ChildRole::Seq → role string "Seq".
+# The `field-annotations` key is present in annotation-of(Union) and maps to a dict
+# whose "types" key holds {role: "Seq"}.
+[NodeType: [type [Union@[as-type: [fn [let u] u]  guarding: false]
+  items@Child: [Seq NodeType]]]]
+[ann: [annotation-of Union]]
+[has-field-anns: [has? "field-annotations" ann]]
+[role: [get "role" [get "items" [get "field-annotations" ann]]]]
+[result: [and has-field-anns [= role "Seq"]]]
+=== out
+Dict({"result": Bool(true)})
+
+=== warn
+invalid type expression in annotation: Call { func: SurfaceNode { expr: VarRef { name: "Seq", escaped: false }, span: Span { start: Position { offset: 603, line: 12, column: 17 }, end: Position { offset: 606, line: 12, column: 20 }, file: None } }, args: [SurfaceNode { expr: VarRef { name: "NodeType", escaped: false }, span: Span { start: Position { offset: 607, line: 12, column: 21 }, end: Position { offset: 615, line: 12, column: 29 }, file: None } }], named_args: [], implied: true } at 12:16-12:30
+undefined variable: Union at 13:22-13:27
+cannot unify [] with <error> at 14:44-14:47

@@ -3,10 +3,10 @@
 [send-datagram 42 "hello"]
 
 === error
-[E002] undefined variable: builtin-send-datagram (defined at stdlib/prelude.llt:2365:68-2365:89) (called at 2:1-2:27)
-  --> stdlib/prelude.llt:2365:68-2365:89
+[E002] undefined variable: builtin-send-datagram (defined at stdlib/prelude.llt:2636:68-2636:89) (called at 2:1-2:27)
+  --> stdlib/prelude.llt:2636:68-2636:89
    |
-  2365 | send-datagram@[doc: "Send a datagram packet (UDP/Unix datagram)"]: builtin-send-datagram
+  2636 | send-datagram@[doc: "Send a datagram packet (UDP/Unix datagram)"]: builtin-send-datagram
        |                                                                    ^^^^^^^^^^^^^^^^^^^^^
   in [send-datagram ...] at 2:1-2:27
 

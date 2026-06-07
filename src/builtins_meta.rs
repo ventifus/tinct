@@ -1262,6 +1262,58 @@ pub(crate) fn builtin_annotation_of(
     })
 }
 
+/// `make-annotated`: Wrap a value in `Value::Annotated` with the given annotation dict.
+///
+/// Forms:
+/// - `[make-annotated value annotation-dict]` — returns `Value::Annotated { inner: value, annotation: annotation-dict }`
+///
+/// Used internally by the desugar pass (`build_constructor_value`) to wrap unit constructor
+/// values in `Value::Annotated` when the constructor carries a `@[...]` annotation (T-1121).
+/// The annotation dict must be a `Value::Dict`; passing any other type is a type error.
+///
+/// Both arguments are pre-materialized by `pos_strictness = [Seq, Seq]`.
+pub(crate) fn builtin_make_annotated(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ..
+        } = ctx_arg;
+        crate::builtins::reject_named("make-annotated", named.as_ref(), call_span.clone())?;
+
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+
+        let inner_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by pos_strictness[0]=Seq");
+        let ann_val = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by pos_strictness[1]=Seq");
+
+        // annotation must be a Dict
+        if !matches!(ann_val, Value::Dict(_)) {
+            return Err(Box::new(EvalError::type_mismatch(
+                "Dict",
+                ann_val.type_name(),
+                call_span,
+            )));
+        }
+
+        ok_val(
+            Value::Annotated {
+                inner: Box::new(inner_val),
+                annotation: Box::new(ann_val),
+            },
+            call_span,
+        )
+    })
+}
+
 /// `variant`: Create a variant with the given tag and optional payload.
 ///
 /// Forms:
@@ -1457,7 +1509,8 @@ fn type_name(val: &Value) -> String {
         Value::BroadcastChannel(_) => "BroadcastChannel",
         Value::OneshotSender(_) => "OneshotSender",
         Value::OneshotReceiver(_) => "OneshotReceiver",
-        Value::Annotated { .. } => "Annotated",
+        // Annotated is transparent — delegate to inner value's type_name.
+        Value::Annotated { inner, .. } => return type_name(inner),
     }
     .to_string()
 }

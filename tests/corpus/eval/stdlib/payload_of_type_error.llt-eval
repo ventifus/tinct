@@ -2,8 +2,8 @@
 # merge creates a lazy Overlay; the error surfaces when the Overlay is flattened.
 [payload-of "not-a-variant"]
 === error
-[E010] value serialization: expected Dict, got String (defined at stdlib/prelude.llt:633:10-633:11)
-  --> stdlib/prelude.llt:633:10-633:11
+[E010] value serialization: expected Dict, got String (defined at stdlib/prelude.llt:902:10-902:11)
+  --> stdlib/prelude.llt:902:10-902:11
    |
-  633 |   [merge v []]]
+  902 |   [merge v []]]
       |          ^

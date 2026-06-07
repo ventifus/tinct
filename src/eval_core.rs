@@ -490,44 +490,88 @@ async fn eval_quote_walk(
 /// `IndexMap<String, Value>` for storage in `FnAnnotation.extra`.
 ///
 /// Standard keys (`return`, `constraint`, `doc`, `bind`, `kinds`) are filtered out since
-/// they are consumed by the type system. Only `String`, `Int`, `Float`, and `Bool` literal
-/// values are extracted; expression-valued fields (function/dict/call) are silently dropped
-/// (they cannot be evaluated at function-definition time without a full eval context;
-/// see T-1124 "Support expression-valued @[...] annotation fields").
+/// they are consumed by the type system. All annotation values are evaluated at function-definition
+/// time: literals are extracted directly, expression-valued fields (function/dict/call) are lowered
+/// to CoreExpr and evaluated in the definition-site environment.
+///
+/// This supports the TypeNode protocol requirement that annotations like `as-type: [fn [let u] u]`
+/// must be evaluable (see doc/whatif/equirecursive-types.md).
 ///
 /// Called from both `eval_core.rs` (CoreExpr::Fn arm) and `eval.rs` (Fn arm) to avoid
 /// duplicating this logic. The two call sites are identical except for crate-path prefixes.
-pub(crate) fn extract_fn_annotation_extra(
+pub(crate) async fn extract_fn_annotation_extra(
     return_ann: Option<&crate::ast::Spanned<crate::ast::Annotation>>,
-) -> IndexMap<String, Value> {
+    env: &Arc<RwLock<Environment>>,
+    ctx: &Arc<EvalContext>,
+) -> EvalResult<IndexMap<String, Value>> {
     const STANDARD_ANN_KEYS: &[&str] = &["return", "constraint", "doc", "bind", "kinds"];
-    if let Some(ann_spanned) = return_ann {
-        if let crate::ast::Annotation::PropertyDict(entries) = &ann_spanned.node {
-            return entries
-                .iter()
-                .filter_map(|e| {
-                    let key_str = match e.node.key.as_ref()?.expr {
-                        crate::ast::SurfaceExpression::Str(ref s) => s.clone(),
-                        _ => return None,
-                    };
-                    if STANDARD_ANN_KEYS.contains(&key_str.as_str()) {
-                        return None;
-                    }
-                    let val = match &e.node.value.expr {
-                        crate::ast::SurfaceExpression::Str(s) => string_val(s),
-                        crate::ast::SurfaceExpression::Int(n) => Value::Int(*n),
-                        crate::ast::SurfaceExpression::Float(f) => Value::Float(*f),
-                        crate::ast::SurfaceExpression::Bool(b) => Value::Bool(*b),
-                        // Null: SurfaceExpression has no Null literal; [] is Dict, not an annotation value.
-                        // Function/Dict/Call: deferred (need full eval context; see FIX LATER tracker item).
-                        _ => return None,
-                    };
-                    Some((key_str, val))
-                })
-                .collect();
+
+    let Some(ann_spanned) = return_ann else {
+        return Ok(IndexMap::new());
+    };
+
+    let crate::ast::Annotation::PropertyDict(entries) = &ann_spanned.node else {
+        return Ok(IndexMap::new());
+    };
+
+    let mut extra = IndexMap::new();
+
+    for e in entries {
+        // Extract string key; skip non-string keys
+        let Some(key_node) = e.node.key.as_ref() else {
+            continue;
+        };
+        let crate::ast::SurfaceExpression::Str(ref key_str) = key_node.expr else {
+            continue;
+        };
+
+        // Skip standard annotation keys processed by the type system
+        if STANDARD_ANN_KEYS.contains(&key_str.as_str()) {
+            continue;
         }
+
+        // Evaluate the annotation value: literals fast-path, expressions via eval
+        let val = match &e.node.value.expr {
+            // Fast path: literals extract directly without evaluation
+            crate::ast::SurfaceExpression::Str(s) => string_val(s),
+            crate::ast::SurfaceExpression::Int(n) => Value::Int(*n),
+            crate::ast::SurfaceExpression::Float(f) => Value::Float(*f),
+            crate::ast::SurfaceExpression::Bool(b) => Value::Bool(*b),
+
+            // Expression-valued fields: lower to CoreExpr, evaluate, materialize to Value.
+            // This is the T-1124 fix: annotations like `as-type: [fn [let u] u]` are now evaluable.
+            //
+            // If evaluation fails (e.g., VarRef to a type-level name like `Int`, `Str`, `String`
+            // that only exists in the type-stage env but not the runtime env), skip this entry
+            // rather than propagating the error. This preserves backward compatibility with
+            // annotations like `fn@[ok: Int  err: Str]` where `Int`/`Str` are type-level names.
+            _ => {
+                // Lower SurfaceNode → CoreExpr (using empty resolution/type tables since
+                // annotation expressions are evaluated in the definition-site environment).
+                let core_expr = crate::lower::lower(
+                    &e.node.value,
+                    crate::ast::empty_resolution_table(),
+                    crate::ast::empty_type_annotation_table(),
+                );
+
+                // Evaluate the CoreExpr to a thunk; skip this annotation entry on failure.
+                let thunk = match eval_core_expr(&core_expr, env, ctx).await {
+                    Ok(t) => t,
+                    Err(_) => continue,
+                };
+
+                // Materialize the thunk to a Value (annotation values are eager); skip on failure.
+                match materialize(&thunk, Some(&e.node.value.span), ctx).await {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                }
+            }
+        };
+
+        extra.insert(key_str.clone(), val);
     }
-    IndexMap::new()
+
+    Ok(extra)
 }
 
 /// Evaluate a CoreExpr to a thunk (transitional path for runtime-v2).
@@ -693,8 +737,9 @@ pub(crate) fn eval_core_expr<'a>(
                 let return_ann_clone: Option<crate::ast::Annotation> =
                     return_ann.as_ref().map(|a| a.node.clone());
 
-                // Populate extra from non-standard annotation fields (string/int/float literals).
-                let extra = extract_fn_annotation_extra(return_ann.as_ref());
+                // Populate extra from non-standard annotation fields (literals + expressions).
+                // T-1124: expression-valued fields are now evaluated at function-definition time.
+                let extra = extract_fn_annotation_extra(return_ann.as_ref(), env, ctx).await?;
 
                 // Always construct FnAnnotation — source_span is always available even for
                 // unannotated functions, enabling ast-of and LSP go-to-definition.

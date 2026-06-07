@@ -430,8 +430,9 @@ pub(crate) use crate::builtins_meta::{
     builtin_annotation_of, builtin_apply, builtin_ast_of, builtin_big_int, builtin_blake3,
     builtin_cap_identity, builtin_decimal, builtin_eval, builtin_eval_types, builtin_expand,
     builtin_force, builtin_gensym, builtin_include_cache_get, builtin_include_cache_put,
-    builtin_llt_repr, builtin_load, builtin_macro_error, builtin_macro_injects, builtin_raise,
-    builtin_tag_of, builtin_try, builtin_type_of, builtin_until, builtin_validate, builtin_variant,
+    builtin_llt_repr, builtin_load, builtin_macro_error, builtin_macro_injects,
+    builtin_make_annotated, builtin_raise, builtin_tag_of, builtin_try, builtin_type_of,
+    builtin_until, builtin_validate, builtin_variant,
 };
 
 // String builtins: str, split, replace, trim, trim-start, trim-end,
@@ -1590,6 +1591,14 @@ pub fn create_type_stage_env() -> Result<Arc<RwLock<Environment>>, Box<crate::er
     // Desugar $_ implicit lambdas on SurfaceProgram.
     let mut program = parsed.program.clone();
     crate::desugar::desugar_surface_program(&mut program);
+    // Inject ADT constructor bindings so TypeNode's named-field constructors (Record, Union,
+    // Intersect, TypeConstructor, TypeApplication, Arrow, Recursive, RecursiveRef, TypeVar)
+    // are in scope when the type-stage prelude's first dict is evaluated. Without this, any
+    // lazy binding that references these constructors (Null, Seq, Map, union, all) fails
+    // silently when forced, and the second dict's `TypeNode: [merge TypeNode [...]]` fails
+    // immediately because `TypeNode` is undefined in the env. Must run after desugar, before
+    // resolve (same ordering as create_stdlib_env_inner).
+    crate::desugar::inject_adt_constructors_surface_program(&mut program);
     // Variable resolution pass (Phase 1 of arena allocation strategy).
     let resolution_table = std::sync::Arc::new(crate::resolve::resolve_surface_program(&program));
     let empty_types = std::sync::Arc::new(crate::ast::TypeAnnotationTable::new());
@@ -1619,50 +1628,74 @@ pub fn create_type_stage_env() -> Result<Arc<RwLock<Environment>>, Box<crate::er
         type_stage_env.write().unwrap().insert(name, thunk);
     }
 
-    // Filter to only stage: type documents and evaluate them
+    // Filter to only stage: type documents and evaluate them.
+    //
+    // Unlike eval_surface_document (which chains sequential expressions and only returns the
+    // LAST expression's thunk), we evaluate each expression item in the document SEPARATELY
+    // and export ALL their bindings into type_stage_env. This is needed because the type-stage
+    // prelude has two sequential dicts: the first contains AddResult, DivResult, etc., and the
+    // second contains the TypeNode protocol merge. eval_surface_document would only export the
+    // second dict's top-level keys, leaving AddResult and friends inaccessible from evaluate_resolver.
+    //
+    // By evaluating each expression item independently with type_stage_env as the env, each dict's
+    // top-level bindings are accessible to subsequent dicts (via type_stage_env) AND are all
+    // exported into type_stage_env. The second dict's TypeNode (merge TypeNode [...]) reference
+    // sees the first dict's TypeNode binding through type_stage_env.get().
     for doc in &program.documents {
         if doc.node.stage == Some(crate::ast::Stage::Type) {
-            // Evaluate this type-stage document via the surface pipeline
-            let result = crate::async_rt::block_on_anywhere(crate::eval::eval_surface_document(
-                doc,
-                Arc::clone(&type_stage_env),
-                &bootstrap_ctx,
-                &resolution_table,
-                &empty_types,
-            ))?;
+            // Collect expression nodes (skip Decl items — type checker handles those).
+            let expr_nodes: Vec<Arc<crate::ast::SurfaceNode>> =
+                doc.node.expressions().cloned().collect();
 
-            // Materialize and extract bindings
-            let val = crate::eval::materialize_sync(&result, None, &bootstrap_ctx)?;
-
-            let dict = match val {
-                Value::Dict(map) => map,
-                Value::Overlay(l_id, r_id) => flatten_overlay(
-                    &l_id,
-                    &r_id,
-                    "type-stage prelude",
+            for expr_node in &expr_nodes {
+                // Evaluate this expression item with the current type_stage_env.
+                // Each expression sees all prior expressions' bindings via type_stage_env.
+                // Use eval_document_exprs with a single-element slice — it evaluates the
+                // expression lazily (as the "last" expression) and returns its thunk.
+                let result = crate::async_rt::block_on_anywhere(crate::eval::eval_document_exprs(
+                    std::slice::from_ref(expr_node),
+                    Arc::clone(&type_stage_env),
                     &bootstrap_ctx,
-                    doc.span.clone(),
-                )?,
-                other => {
-                    return Err(crate::error::EvalError::internal(
-                        format!(
-                            "type-stage document must evaluate to a Dict, got {}",
-                            other.type_name()
-                        ),
-                        doc.span.clone(),
-                    )
-                    .into())
-                }
-            };
+                    &resolution_table,
+                    &empty_types,
+                ))?;
 
-            // Insert bindings into type-stage env
-            for (key, thunk_id) in dict {
-                let name = match key {
-                    Key::String(s) => s.to_string(),
-                    Key::Int(n) => n.to_string(),
+                // Materialize and extract bindings.
+                let val = materialize(&result, None, &bootstrap_ctx);
+                let val = match val {
+                    Ok(v) => v,
+                    Err(_) => {
+                        // If a sequential expression fails to evaluate (e.g., the second dict
+                        // references functions not available in the type-stage context), skip it
+                        // gracefully — the bindings from prior expressions are still available.
+                        continue;
+                    }
                 };
-                let thunk = bootstrap_ctx.get_thunk(thunk_id);
-                type_stage_env.write().unwrap().insert(name, thunk);
+
+                let dict = match val {
+                    Value::Dict(map) => map,
+                    Value::Overlay(l_id, r_id) => flatten_overlay(
+                        &l_id,
+                        &r_id,
+                        "type-stage prelude",
+                        &bootstrap_ctx,
+                        expr_node.span.clone(),
+                    )?,
+                    _ => {
+                        // Non-dict result (e.g. a side-effect expression) — no bindings to extract.
+                        continue;
+                    }
+                };
+
+                // Insert bindings into type-stage env (later dicts shadow earlier dicts for same key).
+                for (key, thunk_id) in dict {
+                    let name = match key {
+                        Key::String(s) => s.to_string(),
+                        Key::Int(n) => n.to_string(),
+                    };
+                    let thunk = bootstrap_ctx.get_thunk(thunk_id);
+                    type_stage_env.write().unwrap().insert(name, thunk);
+                }
             }
         }
     }

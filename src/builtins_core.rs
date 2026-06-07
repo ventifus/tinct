@@ -56,8 +56,8 @@ use crate::builtins_meta::{
     builtin_builtin_module, builtin_cap_identity, builtin_decimal, builtin_eval,
     builtin_eval_types, builtin_expand, builtin_force, builtin_gensym, builtin_include_cache_get,
     builtin_include_cache_put, builtin_llt_repr, builtin_load, builtin_macro_error,
-    builtin_macro_injects, builtin_program, builtin_raise, builtin_tag_of, builtin_try,
-    builtin_type_of, builtin_until, builtin_validate, builtin_variant,
+    builtin_macro_injects, builtin_make_annotated, builtin_program, builtin_raise, builtin_tag_of,
+    builtin_try, builtin_type_of, builtin_until, builtin_validate, builtin_variant,
 };
 // I/O implementations.
 use crate::builtins_io::{
@@ -831,6 +831,11 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             "builtin-annotation-of",
             builtin_annotation_of,
             [Strictness::Seq]
+        ),
+        builtin!(
+            "builtin-make-annotated",
+            builtin_make_annotated,
+            [Strictness::Seq, Strictness::Seq]
         ),
         builtin!("builtin-decimal", builtin_decimal, [Strictness::Seq]),
         builtin!("builtin-big-int", builtin_big_int, [Strictness::Seq]),
@@ -1917,6 +1922,16 @@ pub fn core_type_env(env: &mut TypeEnv) {
         "annotation-of".to_string(),
         Type::Function {
             params: vec![(None, Type::Top)],
+            ret: Box::new(Type::Top),
+            variadic: false,
+        },
+    );
+    // make-annotated: wraps a value in Value::Annotated with the given annotation dict.
+    // Returns Top — the annotated wrapper is transparent to the type system.
+    env.insert(
+        "make-annotated".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Top), (None, Type::Top)],
             ret: Box::new(Type::Top),
             variadic: false,
         },
@@ -3758,6 +3773,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
         ("builtin-big-int", "big-int"),
         ("builtin-variant", "variant"),
         ("builtin-annotation-of", "annotation-of"),
+        ("builtin-make-annotated", "make-annotated"),
         // I/O (bare-name forms)
         ("builtin-emit", "emit"),
         ("builtin-env", "env"),

@@ -1471,348 +1471,368 @@ pub(crate) async fn apply_cont(
             let mut named = Some(named);
 
             match result.map_err(&decorate) {
-                Ok(func_value) => match func_value {
-                    Value::Function {
-                        params, body, env, ..
-                    } => {
-                        // TCO path: when tail_hint=true, skip Memoize and return EvalCore directly.
-                        //
-                        // Profiling span note: the non-TCO path pushes a Memoize continuation that
-                        // holds a ProfilingSpanGuard, so each call frame gets a distinct span in
-                        // profiling output. In the TCO path we skip Memoize entirely — no
-                        // ProfilingSpanGuard is created for the tail call, and the parent frame's
-                        // guard (if any) stays alive through the tail call body. This means tail
-                        // calls appear as part of the parent span in profiling output rather than
-                        // as separate child spans. This is a known limitation of O(1) TCO with the
-                        // current profiling infrastructure: adding a guard here would require either
-                        // a synthetic Memoize-like continuation solely to drop it, or a span-handoff
-                        // protocol between the abandoned thunk and the new EvalCore frame.
-                        if tail_hint {
-                            let invoke_result = {
-                                let call_ctx = CallContext {
-                                    params: &params,
-                                    body: &body,
-                                    closure_env: &env,
-                                    positional: args.as_deref().expect("args set above"),
-                                    named: named.as_ref().expect("named set above").as_deref(),
-                                    default_env: &caller_env,
-                                    call_span: call_span.clone(),
-                                    origin: origin.clone(),
-                                    ctx: &thunk_ctx,
+                Ok(func_value) => {
+                    // Value::Annotated is transparent for call dispatch — peel annotation layers
+                    // before dispatching. Annotated constructors (e.g., TypeNode.Int@[...]) must
+                    // be callable just like their un-annotated inner values. Annotations are purely
+                    // metadata and never affect callable semantics (mirrors type_name(), Display,
+                    // Debug, which all delegate to the inner value).
+                    let func_value = {
+                        let mut v = func_value;
+                        while let Value::Annotated { inner, .. } = v {
+                            v = *inner;
+                        }
+                        v
+                    };
+                    match func_value {
+                        Value::Function {
+                            params, body, env, ..
+                        } => {
+                            // TCO path: when tail_hint=true, skip Memoize and return EvalCore directly.
+                            //
+                            // Profiling span note: the non-TCO path pushes a Memoize continuation that
+                            // holds a ProfilingSpanGuard, so each call frame gets a distinct span in
+                            // profiling output. In the TCO path we skip Memoize entirely — no
+                            // ProfilingSpanGuard is created for the tail call, and the parent frame's
+                            // guard (if any) stays alive through the tail call body. This means tail
+                            // calls appear as part of the parent span in profiling output rather than
+                            // as separate child spans. This is a known limitation of O(1) TCO with the
+                            // current profiling infrastructure: adding a guard here would require either
+                            // a synthetic Memoize-like continuation solely to drop it, or a span-handoff
+                            // protocol between the abandoned thunk and the new EvalCore frame.
+                            if tail_hint {
+                                let invoke_result = {
+                                    let call_ctx = CallContext {
+                                        params: &params,
+                                        body: &body,
+                                        closure_env: &env,
+                                        positional: args.as_deref().expect("args set above"),
+                                        named: named.as_ref().expect("named set above").as_deref(),
+                                        default_env: &caller_env,
+                                        call_span: call_span.clone(),
+                                        origin: origin.clone(),
+                                        ctx: &thunk_ctx,
+                                    };
+                                    invoke_function_tco(&call_ctx).await
                                 };
-                                invoke_function_tco(&call_ctx).await
-                            };
 
-                            match invoke_result.map_err(&decorate) {
-                                Ok((body_expr, new_env)) => {
-                                    // TCO abandonment: this thunk stays InProgress and will be dropped
-                                    // when this continuation is consumed (strong_count==1 guarantees no
-                                    // other references exist). The result flows directly to the caller's
-                                    // continuation via Action::EvalCore → run loop → new thunk
-                                    // materialization.
-                                    Action::EvalCore {
-                                        expr: body_expr,
-                                        env: new_env,
-                                        ctx: thunk_ctx,
+                                match invoke_result.map_err(&decorate) {
+                                    Ok((body_expr, new_env)) => {
+                                        // TCO abandonment: this thunk stays InProgress and will be dropped
+                                        // when this continuation is consumed (strong_count==1 guarantees no
+                                        // other references exist). The result flows directly to the caller's
+                                        // continuation via Action::EvalCore → run loop → new thunk
+                                        // materialization.
+                                        Action::EvalCore {
+                                            expr: body_expr,
+                                            env: new_env,
+                                            ctx: thunk_ctx,
+                                        }
+                                    }
+                                    Err(mut e) => {
+                                        e.push_frame(
+                                            origin.as_deref().unwrap_or("call").to_string(),
+                                            call_span.clone(),
+                                        );
+                                        // eval_stack_guard pops on drop (armed)
+                                        if e.kind.is_cacheable() {
+                                            thunk.cache_failure_once(&e);
+                                        } else {
+                                            // Restore via RestoreState for consistency.
+                                            let restore = RestoreState::Call {
+                                                func: func_thunk,
+                                                args: args.take().expect("args set above"),
+                                                named: named.take().expect("named set above"),
+                                                call_span,
+                                                caller_env,
+                                                ctx: thunk_ctx,
+                                                original_call: original_call.clone(),
+                                            };
+                                            restore.restore(&thunk);
+                                        }
+                                        Action::Continue(Err(e))
                                     }
                                 }
-                                Err(mut e) => {
-                                    e.push_frame(
-                                        origin.as_deref().unwrap_or("call").to_string(),
-                                        call_span.clone(),
-                                    );
-                                    // eval_stack_guard pops on drop (armed)
-                                    if e.kind.is_cacheable() {
-                                        thunk.cache_failure_once(&e);
-                                    } else {
-                                        // Restore via RestoreState for consistency.
-                                        let restore = RestoreState::Call {
-                                            func: func_thunk,
-                                            args: args.take().expect("args set above"),
-                                            named: named.take().expect("named set above"),
-                                            call_span,
-                                            caller_env,
-                                            ctx: thunk_ctx,
-                                            original_call: original_call.clone(),
+                            } else {
+                                // Non-TCO path: create thunk and push Memoize continuation.
+                                let invoke_result = {
+                                    let call_ctx = CallContext {
+                                        params: &params,
+                                        body: &body,
+                                        closure_env: &env,
+                                        positional: args.as_deref().expect("args set above"),
+                                        named: named.as_ref().expect("named set above").as_deref(),
+                                        default_env: &caller_env, // Use caller's environment for default param evaluation
+                                        call_span: call_span.clone(),
+                                        origin: origin.clone(),
+                                        ctx: &thunk_ctx,
+                                    };
+                                    invoke_function(&call_ctx).await
+                                };
+
+                                match invoke_result.map_err(&decorate) {
+                                    Ok(result_thunk) => {
+                                        let restore = RestoreState::CoreExpr {
+                                            expr: original_call.clone(),
+                                            env: caller_env,
+                                            ctx: Arc::clone(&thunk_ctx),
                                         };
-                                        restore.restore(&thunk);
+                                        stack.push(Cont::Memoize(Box::new(MemoizeData {
+                                            thunk: Arc::clone(&thunk),
+                                            origin,
+                                            thunk_span: thunk_span.clone(),
+                                            mat_span: mat_span.clone(),
+                                            restore: Some(restore),
+                                            ctx: thunk_ctx,
+                                        })));
+                                        // Memoize continuation inherits eval_stack pop responsibility
+                                        eval_stack_guard.disarm();
+                                        Action::Materialize {
+                                            thunk: result_thunk,
+                                            mat_span,
+                                        }
                                     }
-                                    Action::Continue(Err(e))
+                                    Err(mut e) => {
+                                        e.push_frame(
+                                            origin.as_deref().unwrap_or("call").to_string(),
+                                            call_span.clone(),
+                                        );
+                                        // eval_stack_guard pops on drop (armed)
+                                        if e.kind.is_cacheable() {
+                                            thunk.cache_failure_once(&e);
+                                        } else {
+                                            // Restore via RestoreState for consistency.
+                                            let restore = RestoreState::Call {
+                                                func: func_thunk,
+                                                args: args.take().expect("args set above"),
+                                                named: named.take().expect("named set above"),
+                                                call_span,
+                                                caller_env,
+                                                ctx: thunk_ctx,
+                                                original_call: original_call.clone(),
+                                            };
+                                            restore.restore(&thunk);
+                                        }
+                                        Action::Continue(Err(e))
+                                    }
                                 }
                             }
-                        } else {
-                            // Non-TCO path: create thunk and push Memoize continuation.
-                            let invoke_result = {
-                                let call_ctx = CallContext {
-                                    params: &params,
-                                    body: &body,
-                                    closure_env: &env,
-                                    positional: args.as_deref().expect("args set above"),
-                                    named: named.as_ref().expect("named set above").as_deref(),
-                                    default_env: &caller_env, // Use caller's environment for default param evaluation
-                                    call_span: call_span.clone(),
-                                    origin: origin.clone(),
-                                    ctx: &thunk_ctx,
-                                };
-                                invoke_function(&call_ctx).await
-                            };
+                        }
+                        Value::Builtin(def) => {
+                            // Check if any strict (Seq/Spine) args need pre-materialization.
+                            // If so, convert to PendingBuiltin and re-dispatch via force_step
+                            // so the BuiltinForceArg continuation can handle them iteratively.
+                            //
+                            // This is critical for TCO: builtins like $if call materialize()
+                            // internally on their args. If called with unevaluated args, each
+                            // recursive call adds Rust frames (materialize → run). Pre-materializing
+                            // args in the CEK machine (heap-allocated continuations) prevents this.
+                            //
+                            // Note: eval_stack_guard pops BEFORE converting to PendingBuiltin so that
+                            // force_step(PendingBuiltin) can push a fresh entry — avoiding a
+                            // duplicate that would cause an extra pop on completion.
+                            use crate::value::Strictness;
+                            let args_ref = args.as_ref().expect("args set above");
+                            // Check if any force_count args need pre-materialization.
+                            // force_count specifies how many leading positional args must be
+                            // fully materialized (Seq) before the builtin is called.
+                            let has_force_count_unevaluated = def.force_count > 0
+                                && (0..def.force_count.min(args_ref.len()))
+                                    .any(|i| args_ref[i].try_get_materialized().is_none());
+                            // Check if any W1 Seq/Spine positional args need pre-materialization.
+                            let has_strict_unevaluated =
+                                def.pos_strictness.iter().enumerate().any(|(i, &s)| {
+                                    i < args_ref.len()
+                                        && (s == Strictness::Seq || s == Strictness::Spine)
+                                        && args_ref[i].try_get_materialized().is_none()
+                                });
 
-                            match invoke_result.map_err(&decorate) {
+                            if has_force_count_unevaluated || has_strict_unevaluated {
+                                // eval_stack_guard pops on drop (armed) before PendingBuiltin re-dispatch.
+                                // force_step(PendingBuiltin) will push a fresh entry for this thunk.
+                                // Transition thunk from InProgress → PendingBuiltin.
+                                // args is Box<Vec<...>> (matches ThunkState::PendingBuiltin.args).
+                                // named is Option<Box<IndexMap<...>>>; unbox to Option<IndexMap<...>>.
+                                thunk.restore_unevaluated(
+                                    crate::value::UnevaluatedState::Builtin {
+                                        def,
+                                        args: args.take().expect("args set above"),
+                                        named: named.take().expect("named set above").map(|b| *b),
+                                        call_span: call_span.clone(),
+                                        ctx: thunk_ctx,
+                                    },
+                                );
+                                return Action::Materialize { thunk, mat_span };
+                            }
+
+                            // All strict args are already materialized — call the builtin directly.
+                            // The block scopes the borrows of args/named so the borrow
+                            // checker allows args.take()/named.take() in the match arms below.
+                            let builtin_result = {
+                                let builtin_args = crate::value::BuiltinArgs {
+                                    args: args.as_deref().expect("args set above").to_vec(),
+                                    named: named
+                                        .as_ref()
+                                        .expect("named set above")
+                                        .as_deref()
+                                        .cloned(),
+                                    call_span: call_span.clone(),
+                                    ctx: Arc::clone(&thunk_ctx),
+                                };
+                                (def.func)(builtin_args).await
+                            };
+                            match builtin_result.map_err(&decorate) {
                                 Ok(result_thunk) => {
-                                    let restore = RestoreState::CoreExpr {
-                                        expr: original_call.clone(),
-                                        env: caller_env,
-                                        ctx: Arc::clone(&thunk_ctx),
-                                    };
-                                    stack.push(Cont::Memoize(Box::new(MemoizeData {
-                                        thunk: Arc::clone(&thunk),
-                                        origin,
-                                        thunk_span: thunk_span.clone(),
-                                        mat_span: mat_span.clone(),
-                                        restore: Some(restore),
-                                        ctx: thunk_ctx,
-                                    })));
-                                    // Memoize continuation inherits eval_stack pop responsibility
-                                    eval_stack_guard.disarm();
-                                    Action::Materialize {
-                                        thunk: result_thunk,
-                                        mat_span,
+                                    if let Some(value) = result_thunk.try_get_materialized() {
+                                        // Fast path: builtin result is already materialized.
+                                        // args/named are no longer needed; drop them implicitly.
+                                        // eval_stack_guard pops on drop (armed)
+                                        if tail_hint {
+                                            // TCO path: Don't set this thunk — it's being abandoned.
+                                            // Result goes directly to the caller's Memoize (or top-level return).
+                                            Action::Continue(Ok(value))
+                                        } else {
+                                            // Non-TCO path: set this thunk and return.
+                                            thunk.set_materialized(value.clone());
+                                            Action::Continue(Ok(value))
+                                        }
+                                    } else if tail_hint {
+                                        // TCO path: Skip Memoize push, return Materialize directly.
+                                        // The result_thunk will itself be TCO-eligible on next force_step
+                                        // if its strong_count == 1.
+                                        // eval_stack_guard pops on drop (armed)
+                                        Action::Materialize {
+                                            thunk: result_thunk,
+                                            mat_span,
+                                        }
+                                    } else {
+                                        // Non-TCO path: push Memoize continuation.
+                                        let restore = RestoreState::CoreExpr {
+                                            expr: original_call.clone(),
+                                            env: caller_env,
+                                            ctx: Arc::clone(&thunk_ctx),
+                                        };
+                                        stack.push(Cont::Memoize(Box::new(MemoizeData {
+                                            thunk: Arc::clone(&thunk),
+                                            origin,
+                                            thunk_span: thunk_span.clone(),
+                                            mat_span: mat_span.clone(),
+                                            restore: Some(restore),
+                                            ctx: thunk_ctx,
+                                        })));
+                                        // Memoize continuation inherits eval_stack pop responsibility
+                                        eval_stack_guard.disarm();
+                                        Action::Materialize {
+                                            thunk: result_thunk,
+                                            mat_span,
+                                        }
                                     }
                                 }
-                                Err(mut e) => {
-                                    e.push_frame(
-                                        origin.as_deref().unwrap_or("call").to_string(),
-                                        call_span.clone(),
-                                    );
+                                Err(e) => {
                                     // eval_stack_guard pops on drop (armed)
                                     if e.kind.is_cacheable() {
                                         thunk.cache_failure_once(&e);
                                     } else {
-                                        // Restore via RestoreState for consistency.
-                                        let restore = RestoreState::Call {
-                                            func: func_thunk,
-                                            args: args.take().expect("args set above"),
-                                            named: named.take().expect("named set above"),
-                                            call_span,
-                                            caller_env,
-                                            ctx: thunk_ctx,
-                                            original_call: original_call.clone(),
-                                        };
-                                        restore.restore(&thunk);
+                                        // Move args/named into PendingCall — no clone needed.
+                                        thunk.restore_unevaluated(
+                                            crate::value::UnevaluatedState::Call {
+                                                func: func_thunk,
+                                                args: args.take().expect("args set above"),
+                                                named: named.take().expect("named set above"),
+                                                call_span,
+                                                caller_env,
+                                                ctx: thunk_ctx,
+                                                original_call: original_call.clone(),
+                                            },
+                                        );
                                     }
                                     Action::Continue(Err(e))
                                 }
                             }
                         }
-                    }
-                    Value::Builtin(def) => {
-                        // Check if any strict (Seq/Spine) args need pre-materialization.
-                        // If so, convert to PendingBuiltin and re-dispatch via force_step
-                        // so the BuiltinForceArg continuation can handle them iteratively.
-                        //
-                        // This is critical for TCO: builtins like $if call materialize()
-                        // internally on their args. If called with unevaluated args, each
-                        // recursive call adds Rust frames (materialize → run). Pre-materializing
-                        // args in the CEK machine (heap-allocated continuations) prevents this.
-                        //
-                        // Note: eval_stack_guard pops BEFORE converting to PendingBuiltin so that
-                        // force_step(PendingBuiltin) can push a fresh entry — avoiding a
-                        // duplicate that would cause an extra pop on completion.
-                        use crate::value::Strictness;
-                        let args_ref = args.as_ref().expect("args set above");
-                        // Check if any force_count args need pre-materialization.
-                        // force_count specifies how many leading positional args must be
-                        // fully materialized (Seq) before the builtin is called.
-                        let has_force_count_unevaluated = def.force_count > 0
-                            && (0..def.force_count.min(args_ref.len()))
-                                .any(|i| args_ref[i].try_get_materialized().is_none());
-                        // Check if any W1 Seq/Spine positional args need pre-materialization.
-                        let has_strict_unevaluated =
-                            def.pos_strictness.iter().enumerate().any(|(i, &s)| {
-                                i < args_ref.len()
-                                    && (s == Strictness::Seq || s == Strictness::Spine)
-                                    && args_ref[i].try_get_materialized().is_none()
-                            });
-
-                        if has_force_count_unevaluated || has_strict_unevaluated {
-                            // eval_stack_guard pops on drop (armed) before PendingBuiltin re-dispatch.
-                            // force_step(PendingBuiltin) will push a fresh entry for this thunk.
-                            // Transition thunk from InProgress → PendingBuiltin.
-                            // args is Box<Vec<...>> (matches ThunkState::PendingBuiltin.args).
-                            // named is Option<Box<IndexMap<...>>>; unbox to Option<IndexMap<...>>.
-                            thunk.restore_unevaluated(crate::value::UnevaluatedState::Builtin {
-                                def,
-                                args: args.take().expect("args set above"),
-                                named: named.take().expect("named set above").map(|b| *b),
-                                call_span: call_span.clone(),
-                                ctx: thunk_ctx,
-                            });
-                            return Action::Materialize { thunk, mat_span };
-                        }
-
-                        // All strict args are already materialized — call the builtin directly.
-                        // The block scopes the borrows of args/named so the borrow
-                        // checker allows args.take()/named.take() in the match arms below.
-                        let builtin_result = {
-                            let builtin_args = crate::value::BuiltinArgs {
-                                args: args.as_deref().expect("args set above").to_vec(),
-                                named: named.as_ref().expect("named set above").as_deref().cloned(),
-                                call_span: call_span.clone(),
-                                ctx: Arc::clone(&thunk_ctx),
+                        // Unit variant used as a constructor: e.g. `[Result.Ok payload]`.
+                        // When a unit Variant (payload: None) is called with exactly one positional
+                        // arg and no named args, treat it as constructing Variant(tag, payload).
+                        // Unit constructors from `[type ...]` declarations are Value::Variant{payload:None}
+                        // at runtime; calling them with one positional arg constructs a new Variant with that payload.
+                        Value::Variant { tag, payload: None }
+                            if args.as_ref().is_some_and(|v| v.len() == 1)
+                                && named
+                                    .as_ref()
+                                    .is_none_or(|m| m.as_ref().is_none_or(|b| b.is_empty())) =>
+                        {
+                            // Allocate the single positional arg as a ThunkId for the payload.
+                            // The arg is already an Arc<Thunk> (unevaluated), so this is lazy.
+                            let payload_thunk = args.as_ref().expect("args set above")[0].clone();
+                            let payload_id = thunk_ctx.alloc_thunk(payload_thunk);
+                            let result_val = Value::Variant {
+                                tag,
+                                payload: Some(payload_id),
                             };
-                            (def.func)(builtin_args).await
-                        };
-                        match builtin_result.map_err(&decorate) {
-                            Ok(result_thunk) => {
-                                if let Some(value) = result_thunk.try_get_materialized() {
-                                    // Fast path: builtin result is already materialized.
-                                    // args/named are no longer needed; drop them implicitly.
-                                    // eval_stack_guard pops on drop (armed)
-                                    if tail_hint {
-                                        // TCO path: Don't set this thunk — it's being abandoned.
-                                        // Result goes directly to the caller's Memoize (or top-level return).
-                                        Action::Continue(Ok(value))
-                                    } else {
-                                        // Non-TCO path: set this thunk and return.
-                                        thunk.set_materialized(value.clone());
-                                        Action::Continue(Ok(value))
-                                    }
-                                } else if tail_hint {
-                                    // TCO path: Skip Memoize push, return Materialize directly.
-                                    // The result_thunk will itself be TCO-eligible on next force_step
-                                    // if its strong_count == 1.
-                                    // eval_stack_guard pops on drop (armed)
-                                    Action::Materialize {
-                                        thunk: result_thunk,
-                                        mat_span,
-                                    }
-                                } else {
-                                    // Non-TCO path: push Memoize continuation.
-                                    let restore = RestoreState::CoreExpr {
-                                        expr: original_call.clone(),
-                                        env: caller_env,
-                                        ctx: Arc::clone(&thunk_ctx),
-                                    };
-                                    stack.push(Cont::Memoize(Box::new(MemoizeData {
-                                        thunk: Arc::clone(&thunk),
-                                        origin,
-                                        thunk_span: thunk_span.clone(),
-                                        mat_span: mat_span.clone(),
-                                        restore: Some(restore),
-                                        ctx: thunk_ctx,
-                                    })));
-                                    // Memoize continuation inherits eval_stack pop responsibility
-                                    eval_stack_guard.disarm();
-                                    Action::Materialize {
-                                        thunk: result_thunk,
-                                        mat_span,
-                                    }
-                                }
+                            // Fast path: the result is immediately materialized — no need to
+                            // push a Memoize continuation. eval_stack_guard pops on drop (armed).
+                            if !tail_hint {
+                                thunk.set_materialized(result_val.clone());
                             }
-                            Err(e) => {
-                                // eval_stack_guard pops on drop (armed)
-                                if e.kind.is_cacheable() {
-                                    thunk.cache_failure_once(&e);
-                                } else {
-                                    // Move args/named into PendingCall — no clone needed.
-                                    thunk.restore_unevaluated(
-                                        crate::value::UnevaluatedState::Call {
-                                            func: func_thunk,
-                                            args: args.take().expect("args set above"),
-                                            named: named.take().expect("named set above"),
-                                            call_span,
-                                            caller_env,
-                                            ctx: thunk_ctx,
-                                            original_call: original_call.clone(),
-                                        },
-                                    );
-                                }
-                                Action::Continue(Err(e))
-                            }
+                            Action::Continue(Ok(result_val))
                         }
-                    }
-                    // Unit variant used as a constructor: e.g. `[Result.Ok payload]`.
-                    // When a unit Variant (payload: None) is called with exactly one positional
-                    // arg and no named args, treat it as constructing Variant(tag, payload).
-                    // Unit constructors from `[type ...]` declarations are Value::Variant{payload:None}
-                    // at runtime; calling them with one positional arg constructs a new Variant with that payload.
-                    Value::Variant { tag, payload: None }
-                        if args.as_ref().is_some_and(|v| v.len() == 1)
-                            && named
+                        // ADT constructor called with a single named arg: [Circle r: 5] where Circle = [variant "Circle"].
+                        // When a unit Variant is called with no positional args and exactly one named arg,
+                        // use the named arg's value as the payload. This supports single-field ADT constructors
+                        // declared via `[type Shape [Circle r: Int] ...]`.
+                        Value::Variant { tag, payload: None }
+                            if args.as_ref().is_some_and(|v| v.is_empty())
+                                && named
+                                    .as_ref()
+                                    .is_some_and(|m| m.as_ref().is_some_and(|b| b.len() == 1)) =>
+                        {
+                            let named_map = named
                                 .as_ref()
-                                .is_none_or(|m| m.as_ref().is_none_or(|b| b.is_empty())) =>
-                    {
-                        // Allocate the single positional arg as a ThunkId for the payload.
-                        // The arg is already an Arc<Thunk> (unevaluated), so this is lazy.
-                        let payload_thunk = args.as_ref().expect("args set above")[0].clone();
-                        let payload_id = thunk_ctx.alloc_thunk(payload_thunk);
-                        let result_val = Value::Variant {
-                            tag,
-                            payload: Some(payload_id),
-                        };
-                        // Fast path: the result is immediately materialized — no need to
-                        // push a Memoize continuation. eval_stack_guard pops on drop (armed).
-                        if !tail_hint {
-                            thunk.set_materialized(result_val.clone());
-                        }
-                        Action::Continue(Ok(result_val))
-                    }
-                    // ADT constructor called with a single named arg: [Circle r: 5] where Circle = [variant "Circle"].
-                    // When a unit Variant is called with no positional args and exactly one named arg,
-                    // use the named arg's value as the payload. This supports single-field ADT constructors
-                    // declared via `[type Shape [Circle r: Int] ...]`.
-                    Value::Variant { tag, payload: None }
-                        if args.as_ref().is_some_and(|v| v.is_empty())
-                            && named
+                                .expect("checked Some above")
                                 .as_ref()
-                                .is_some_and(|m| m.as_ref().is_some_and(|b| b.len() == 1)) =>
-                    {
-                        let named_map = named
-                            .as_ref()
-                            .expect("checked Some above")
-                            .as_ref()
-                            .expect("checked Some above");
-                        let payload_thunk = named_map
-                            .values()
-                            .next()
-                            .expect("1 entry checked above")
-                            .clone();
-                        let payload_id = thunk_ctx.alloc_thunk(payload_thunk);
-                        let result_val = Value::Variant {
-                            tag,
-                            payload: Some(payload_id),
-                        };
-                        if !tail_hint {
-                            thunk.set_materialized(result_val.clone());
-                        }
-                        Action::Continue(Ok(result_val))
-                    }
-                    other => {
-                        let err = EvalError::type_mismatch(
-                            "Function or Builtin",
-                            other.type_name(),
-                            call_span.clone(),
-                        );
-                        let decorated = decorate(Box::new(err));
-                        // eval_stack_guard pops on drop (armed)
-                        if decorated.kind.is_cacheable() {
-                            thunk.cache_failure_once(&decorated);
-                        } else {
-                            // Restore via RestoreState for consistency.
-                            let restore = RestoreState::Call {
-                                func: func_thunk,
-                                args: args.take().expect("args set above"),
-                                named: named.take().expect("named set above"),
-                                call_span: call_span.clone(),
-                                caller_env,
-                                ctx: thunk_ctx,
-                                original_call: original_call.clone(),
+                                .expect("checked Some above");
+                            let payload_thunk = named_map
+                                .values()
+                                .next()
+                                .expect("1 entry checked above")
+                                .clone();
+                            let payload_id = thunk_ctx.alloc_thunk(payload_thunk);
+                            let result_val = Value::Variant {
+                                tag,
+                                payload: Some(payload_id),
                             };
-                            restore.restore(&thunk);
+                            if !tail_hint {
+                                thunk.set_materialized(result_val.clone());
+                            }
+                            Action::Continue(Ok(result_val))
                         }
-                        Action::Continue(Err(decorated))
-                    }
-                },
+                        other => {
+                            let err = EvalError::type_mismatch(
+                                "Function or Builtin",
+                                other.type_name(),
+                                call_span.clone(),
+                            );
+                            let decorated = decorate(Box::new(err));
+                            // eval_stack_guard pops on drop (armed)
+                            if decorated.kind.is_cacheable() {
+                                thunk.cache_failure_once(&decorated);
+                            } else {
+                                // Restore via RestoreState for consistency.
+                                let restore = RestoreState::Call {
+                                    func: func_thunk,
+                                    args: args.take().expect("args set above"),
+                                    named: named.take().expect("named set above"),
+                                    call_span: call_span.clone(),
+                                    caller_env,
+                                    ctx: thunk_ctx,
+                                    original_call: original_call.clone(),
+                                };
+                                restore.restore(&thunk);
+                            }
+                            Action::Continue(Err(decorated))
+                        }
+                    } // end match func_value
+                } // end Ok(func_value) block
                 Err(e) => {
                     // Function materialization failed
                     // eval_stack_guard pops on drop (armed)

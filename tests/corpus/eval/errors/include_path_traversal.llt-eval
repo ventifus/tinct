@@ -5,17 +5,17 @@
 
 [include %cwd "../../etc/passwd"]
 === error
-[E080] open: failed to open file '../../etc/passwd': a path led outside of the filesystem (defined at stdlib/prelude.llt:3063:30-3063:54) (called at stdlib/prelude.llt:3063:3-3063:56)
-  --> stdlib/prelude.llt:3063:30-3063:54
+[E080] open: failed to open file '../../etc/passwd': a path led outside of the filesystem (defined at stdlib/prelude.llt:3334:30-3334:54) (called at stdlib/prelude.llt:3334:3-3334:56)
+  --> stdlib/prelude.llt:3334:30-3334:54
    |
-  3063 |   [source: [builtin-read-all [open cap path Readable]]]
+  3334 |   [source: [builtin-read-all [open cap path Readable]]]
        |                              ^^^^^^^^^^^^^^^^^^^^^^^^
-  in [open ...] at stdlib/prelude.llt:3063:30-3063:54
+  in [open ...] at stdlib/prelude.llt:3334:30-3334:54
    |
-  3063 |   [source: [builtin-read-all [open cap path Readable]]]
+  3334 |   [source: [builtin-read-all [open cap path Readable]]]
        |                              ^^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-read-all ...] at stdlib/prelude.llt:3063:12-3063:55
+  in [builtin-read-all ...] at stdlib/prelude.llt:3334:12-3334:55
    |
-  3063 |   [source: [builtin-read-all [open cap path Readable]]]
+  3334 |   [source: [builtin-read-all [open cap path Readable]]]
        |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   in [include ...] at 5:1-5:34

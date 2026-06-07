@@ -1042,10 +1042,8 @@ pub fn ground_type_of(v: &Value) -> Type {
         // Builder is a transient construction artifact — produce Top (type mismatch error)
         // rather than panicking; Builder can reach TypeAssert via e.g. [@Int [make-builder]].
         Value::Builder(..) => Type::Top,
-        // TODO(T-1121): Value::Annotated should delegate to inner value's ground type by
-        // forcing the ThunkId. Currently falls to Top because ThunkId cannot be forced in
-        // the sync ground_type_of context. Fix in T-1121 (Value::Annotated transparency).
-        Value::Annotated { .. } => Type::Top,
+        // Annotated is transparent — delegate to inner value's ground type.
+        Value::Annotated { inner, .. } => ground_type_of(inner),
         // All other runtime-only types (URI, async, crypto, etc.) → Top
         _ => Type::Top,
     }
@@ -1090,9 +1088,9 @@ fn extract_row(map: &IndexMap<Key, ThunkId>) -> Row {
 /// No fast-path bypasses for other types — the consistent subtyping relation handles everything
 /// uniformly. If primitive checks prove slow in profiling, optimize `is_consistent_subtype`
 /// itself, which benefits every call site across the codebase.
-// TODO(T-1121): Value::Annotated should unwrap to inner value before type-checking.
-// Currently ground_type_of(Value::Annotated) returns Type::Top (fails all type assertions).
-// Fix in T-1121: force ThunkId in async context or store inner ground type eagerly.
+///
+/// Value::Annotated is transparent: `ground_type_of(Value::Annotated { inner, .. })` delegates
+/// to `ground_type_of(inner)`, so the annotation wrapper is invisible to type checking.
 pub(crate) fn value_matches_type(value: &Value, expected: &Type, ctx: &EvalContext) -> bool {
     // Resolve the root TyCon name for TyCon and App types, then dispatch via TyConDef.
     let tycon_name: Option<&str> = match expected {
@@ -1996,9 +1994,10 @@ fn eval_core_expr<'a>(
                 let return_ann_clone: Option<crate::ast::Annotation> =
                     return_ann.as_ref().map(|a| a.node.clone());
 
-                // Populate extra from non-standard annotation fields (string/int/float literals).
+                // Populate extra from non-standard annotation fields (literals + expressions).
+                // T-1124: expression-valued fields are now evaluated at function-definition time.
                 // Standard keys (return, constraint, doc, bind, kinds) are handled by the type system.
-                let extra = extract_fn_annotation_extra(return_ann.as_ref());
+                let extra = extract_fn_annotation_extra(return_ann.as_ref(), env, ctx).await?;
 
                 // Always construct FnAnnotation — source_span is always available even for
                 // unannotated functions, enabling ast-of and LSP go-to-definition.
@@ -3872,6 +3871,16 @@ pub(crate) fn values_equal(
             // values that exceed MAX_SAFE_INT have already been flagged at the call site.
             (Value::Int(a), Value::Float(b)) => Ok(a as f64 == b),
             (Value::Float(a), Value::Int(b)) => Ok(a == b as f64),
+            // Annotated is transparent for equality — unwrap inner and compare.
+            // This ensures [= Red Red] where Red is Value::Annotated{inner: Variant("T.Red")}
+            // returns true, consistent with Value::PartialEq's Annotated arms.
+            // Note: annotated constructors only arise when declared with @[...] (e.g.,
+            // `Red@[as-type: fn]`); unannotated constructors are bare Value::Variant.
+            (Value::Annotated { inner: a, .. }, Value::Annotated { inner: b, .. }) => {
+                values_equal(*a, *b, span, ctx).await
+            }
+            (Value::Annotated { inner, .. }, b) => values_equal(*inner, b, span, ctx).await,
+            (a, Value::Annotated { inner, .. }) => values_equal(a, *inner, span, ctx).await,
             _ => Ok(false),
         }
     })

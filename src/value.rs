@@ -654,12 +654,12 @@ pub enum Value {
     /// All other Value operations (pattern matching, equality, display) should unwrap
     /// `inner` transparently — `annotation-of` is the only way to observe the annotation.
     ///
-    /// `inner` is a ThunkId (lazy, arena-resident) so the wrapped value is not forced at
-    /// annotation time. `annotation` is a materialized `Value::Dict` carrying the annotation
-    /// fields as key-value pairs.
+    /// `inner` is a materialized Value. The wrapped value is forced at annotation time,
+    /// eliminating async context requirements in sync operations (type_name, Debug, Display).
+    /// `annotation` is a materialized `Value::Dict` carrying the annotation fields as key-value pairs.
     Annotated {
-        /// The annotated value, wrapped as a lazy thunk.
-        inner: ThunkId,
+        /// The annotated value (materialized).
+        inner: Box<Value>,
         /// The annotation dict (Value::Dict). Materialized at annotation time.
         annotation: Box<Value>,
     },
@@ -955,11 +955,8 @@ impl Value {
             Value::OneshotReceiver(_) => "OneshotReceiver",
             Value::Context(_) => "Context",
             Value::ReactiveCell(_) => "ReactiveCell",
-            // Annotated is transparent — the type is the inner value's type.
-            // Since we cannot force inner without async context here, we return
-            // "Annotated" as a sentinel. Callers that need the true type must
-            // unwrap the annotation layer before calling type_name().
-            Value::Annotated { .. } => "Annotated",
+            // Annotated is transparent — delegate to the inner value's type.
+            Value::Annotated { inner, .. } => inner.type_name(),
         }
     }
 
@@ -1059,9 +1056,8 @@ impl fmt::Debug for Value {
             Value::BroadcastChannel(_) => write!(f, "BroadcastChannel"),
             Value::OneshotSender(_) => write!(f, "OneshotSender"),
             Value::OneshotReceiver(_) => write!(f, "OneshotReceiver"),
-            Value::Annotated { inner, .. } => {
-                write!(f, "Annotated({inner:?})")
-            }
+            // Annotated is transparent — delegate to inner value's Debug.
+            Value::Annotated { inner, .. } => write!(f, "{inner:?}"),
         }
     }
 }
@@ -1167,8 +1163,8 @@ impl fmt::Display for Value {
             Value::BroadcastChannel(_) => write!(f, "<broadcast-channel>"),
             Value::OneshotSender(_) => write!(f, "<oneshot-sender>"),
             Value::OneshotReceiver(_) => write!(f, "<oneshot-receiver>"),
-            // Display the inner thunk id; the annotation is metadata, not the value proper.
-            Value::Annotated { inner, .. } => write!(f, "<annotated:{inner:?}>"),
+            // Annotated is transparent — delegate to inner value's Display.
+            Value::Annotated { inner, .. } => write!(f, "{inner}"),
         }
     }
 }
@@ -1255,6 +1251,11 @@ impl PartialEq for Value {
             }
             (Value::Http3Session(a), Value::Http3Session(b)) => Rc::ptr_eq(a, b),
             (Value::QuicDatagramHandle(a), Value::QuicDatagramHandle(b)) => Rc::ptr_eq(a, b),
+            // Annotated is transparent — delegate to inner value equality.
+            (Value::Annotated { inner: a, .. }, Value::Annotated { inner: b, .. }) => a == b,
+            (Value::Annotated { inner, .. }, other) | (other, Value::Annotated { inner, .. }) => {
+                inner.as_ref() == other
+            }
             // Timezone is not comparable — opaque data
             // Dict, Function, Builtin, Seq, Proxy, Overlay, Handle, and WriteHandle are not structurally compared.
             // Overlay would require materializing both sides, breaking laziness.
