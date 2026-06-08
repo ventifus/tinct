@@ -14,4 +14,4 @@
 Dict({"Circle": Function(payload), "Square": Function(payload), "v": Variant(Shape.Circle, Dict({"radius": Int(5)})), "result": Int(99)})
 
 === warn
-unqualified constructor pattern tag 'Shape'
+unqualified constructor pattern tag 'Shape' — use qualified form 'Shape'

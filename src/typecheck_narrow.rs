@@ -7,7 +7,7 @@
 //! - Instance pattern type extraction and functional-dependency parameter index resolution
 //! - Pattern overlap / type unification probes (side-effect-free)
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -102,7 +102,7 @@ pub(crate) fn extract_narrowings(cond: &Arc<SurfaceNode>) -> Vec<Narrowing> {
                             return vec![Narrowing::TypeOf {
                                 var: var_name.clone(),
                                 ty: Type::Record(Row {
-                                    fields: HashMap::new(),
+                                    fields: BTreeMap::new(),
                                     tail: crate::type_def::RowTail::Empty,
                                 }),
                             }];
@@ -146,7 +146,7 @@ pub(crate) fn extract_narrowings(cond: &Arc<SurfaceNode>) -> Vec<Narrowing> {
                             return vec![Narrowing::TypeOf {
                                 var: var_name.clone(),
                                 ty: Type::Record(Row {
-                                    fields: HashMap::new(),
+                                    fields: BTreeMap::new(),
                                     tail: crate::type_def::RowTail::Empty,
                                 }),
                             }];
@@ -231,7 +231,7 @@ pub(crate) fn try_type_of(left: &Arc<SurfaceNode>, right: &Arc<SurfaceNode>) -> 
                                 "String" => Some(Type::Str),
                                 "Bool" => Some(Type::Bool),
                                 "Dict" => Some(Type::Record(Row {
-                                    fields: HashMap::new(),
+                                    fields: BTreeMap::new(),
                                     tail: crate::type_def::RowTail::Empty,
                                 })),
                                 // HKT: bare Seq type tag narrows to Seq(Unknown) — element type deferred
@@ -279,7 +279,7 @@ pub(crate) fn apply_narrowings(
                 let current_ty = env.get(var).map(|scheme| scheme.body.clone());
 
                 // Create a record type with at least the given key
-                let mut fields = HashMap::new();
+                let mut fields = BTreeMap::new();
                 let fresh_type_var = state.fresh_type_var();
                 fields.insert(key.clone(), fresh_type_var);
 
@@ -678,8 +678,7 @@ pub(crate) fn extract_pattern_types(
                 .to_string(),
             span: pattern_node.span.clone(),
             notes: vec![],
-        })
-        .into()]),
+        })]),
     }
 }
 
@@ -768,8 +767,7 @@ pub(crate) fn extract_binding_types(
                     .to_string(),
                 span: binding.span.clone(),
                 notes: vec![],
-            })
-            .into()]);
+            })]);
         }
     }
     Ok(())
@@ -905,8 +903,7 @@ pub(crate) fn extract_param_indices(
                     message: format!("functional dependency references unknown param '{}'", name),
                     span,
                     notes: vec![],
-                })
-                .into()]);
+                })]);
             }
         }
         // Multiple params as auto-indexed Dict: produced when bracket contains
@@ -922,8 +919,7 @@ pub(crate) fn extract_param_indices(
                                 .to_string(),
                             span: entry.span.clone(),
                             notes: vec![],
-                        })
-                        .into()]);
+                        })]);
                     }
                 };
 
@@ -937,8 +933,7 @@ pub(crate) fn extract_param_indices(
                         ),
                         span: entry.span.clone(),
                         notes: vec![],
-                    })
-                    .into()]);
+                    })]);
                 }
             }
         }
@@ -960,8 +955,7 @@ pub(crate) fn extract_param_indices(
                             .to_string(),
                         span: func.span.clone(),
                         notes: vec![],
-                    })
-                    .into()])
+                    })])
                 }
             };
             if let Some(idx) = params.iter().position(|p| p == head_name) {
@@ -974,8 +968,7 @@ pub(crate) fn extract_param_indices(
                     ),
                     span: func.span.clone(),
                     notes: vec![],
-                })
-                .into()]);
+                })]);
             }
             // Extract the remaining args
             for arg in args {
@@ -988,8 +981,7 @@ pub(crate) fn extract_param_indices(
                                 .to_string(),
                             span: arg.span.clone(),
                             notes: vec![],
-                        })
-                        .into()])
+                        })])
                     }
                 };
                 if let Some(idx) = params.iter().position(|p| p == arg_name) {
@@ -1002,8 +994,7 @@ pub(crate) fn extract_param_indices(
                         ),
                         span: arg.span.clone(),
                         notes: vec![],
-                    })
-                    .into()]);
+                    })]);
                 }
             }
         }
@@ -1013,8 +1004,7 @@ pub(crate) fn extract_param_indices(
                     .to_string(),
                 span,
                 notes: vec![],
-            })
-            .into()]);
+            })]);
         }
     }
 

@@ -1,6 +1,6 @@
 //! Dict type inference with multi-pass binding and generalization.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -80,7 +80,7 @@ fn inject_single_constructor(
         Type::NominalVariant {
             tag: tag.to_string(),
             fields: Row {
-                fields: std::collections::HashMap::new(),
+                fields: std::collections::BTreeMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             },
         }
@@ -624,7 +624,7 @@ pub(crate) fn infer_dict(
     // Start with empty local substitution and incrementally merge state.subst entries per SCC.
     // Eliminates O(n) upfront clone of state.subst.type_map (cycle-31 major item).
     let mut subst = Substitution::new();
-    let mut field_types: HashMap<String, Type> = HashMap::new();
+    let mut field_types: BTreeMap<String, Type> = BTreeMap::new();
     let mut errors = Vec::new();
 
     // state.subst entries are fully re-merged into local subst after each SCC iteration.

@@ -5,4 +5,4 @@
 [splice [quote ["x": 1]] [quote ["y": 2]]]
 
 === warn
-undefined variable: splice
+[UndefinedVariable] undefined variable: splice

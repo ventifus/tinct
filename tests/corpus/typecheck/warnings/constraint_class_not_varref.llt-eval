@@ -4,4 +4,4 @@
 Function(val)
 
 === warn
-constraint class list must start with 'each' keyword: use [each ClassName ...]
+[TypeError] constraint class list must start with 'each' keyword: use [each ClassName ...]

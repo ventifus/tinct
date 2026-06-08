@@ -1,0 +1,26 @@
+# T-1097: [do] with a locally defined monad dict (not prelude globals).
+# Defines a trivial "box" monad inline: values are [val: N] dicts.
+# bind unwraps the box and applies f to the inner value.
+# pure wraps a value in a box.
+#
+# Desugars:
+#   [do my-monad [x: [val: 10]] [y: [val: [+ x 5]]] [val: [* x y]]]
+# into:
+#   [my-monad.bind [val: 10] [fn [x]
+#     [my-monad.bind [val: [+ x 5]] [fn [y]
+#       [val: [* x y]]]]]]
+# = bind([val:10], fn x -> bind([val:15], fn y -> [val: 150]))
+# = (fn x -> ...)(10) = (fn y -> [val:150])(15) = [val: 150]
+[
+  my-monad: [
+    bind: [fn [let m f] [f m.val]]
+    pure: [fn [let v] [val: v]]
+  ]
+
+  r: [do my-monad
+    [x: [val: 10]]
+    [y: [val: [+ x 5]]]
+    [val: [* x y]]]
+]
+=== out
+Dict({"my-monad": Dict({"bind": Function(m, f), "pure": Function(v)}), "r": Dict({"val": Int(150)})})

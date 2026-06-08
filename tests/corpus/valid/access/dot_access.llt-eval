@@ -3,4 +3,4 @@
 ["name": user.name]
 
 === warn
-undefined variable: user
+[UndefinedVariable] undefined variable: user

@@ -6,3 +6,6 @@
 [@[Pair Int] [Pair first: 1  second: 2]]
 === out
 Variant(Pair.Pair, Dict({"first": Int(1), "second": Int(2)}))
+
+=== warn
+[TypeError] type constructor 'Pair' requires 2 argument(s), got 1

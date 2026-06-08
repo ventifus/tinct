@@ -5,4 +5,6 @@
 [call  f  x]
 
 === warn
-undefined variable: call
+[UndefinedVariable] undefined variable: call
+[UndefinedVariable] undefined variable: f
+[UndefinedVariable] undefined variable: x

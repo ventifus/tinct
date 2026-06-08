@@ -9,4 +9,4 @@
 [Union types: "values"]
 
 === warn
-undefined variable: Union
+[UndefinedVariable] undefined variable: Union

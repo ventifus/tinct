@@ -3,4 +3,4 @@
 [@["type": "Number"] 42]
 
 === warn
-cannot unify "Number" with 42
+[UnificationFailure] cannot unify "Number" with 42

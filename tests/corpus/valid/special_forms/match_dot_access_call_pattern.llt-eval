@@ -5,4 +5,4 @@
 [match r [Result.Ok v] v _ "error"]
 
 === warn
-undefined variable: r
+[UndefinedVariable] undefined variable: r

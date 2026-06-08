@@ -9,6 +9,6 @@
 String("fallthrough")
 
 === warn
-undefined variable: Ok
+[UndefinedVariable] undefined variable: Ok
 undefined constructor `Bogus` in structural test; no variable with this name is in scope — the arm will never match
 inferred type is Unknown — consider adding a type annotation

@@ -3,4 +3,4 @@
 [f x y]
 
 === warn
-undefined variable: f
+[UndefinedVariable] undefined variable: f

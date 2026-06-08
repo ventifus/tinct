@@ -6,7 +6,7 @@
 //!
 //! See doc/whatif/lib-datetime.md for the full specification.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::rc::Rc;
@@ -1676,7 +1676,7 @@ pub fn datetime_type_env(env: &mut TypeEnv) {
         Type::Function {
             params: vec![(None, Type::Timestamp)],
             ret: Box::new(Type::Record(Row {
-                fields: HashMap::from([
+                fields: BTreeMap::from([
                     ("year".to_string(), Type::Int),
                     ("month".to_string(), Type::Int),
                     ("day".to_string(), Type::Int),
@@ -1732,7 +1732,7 @@ pub fn datetime_type_env(env: &mut TypeEnv) {
         Type::Function {
             params: vec![(None, Type::Timestamp), (None, Type::Timezone)],
             ret: Box::new(Type::Record(Row {
-                fields: HashMap::from([
+                fields: BTreeMap::from([
                     ("year".to_string(), Type::Int),
                     ("month".to_string(), Type::Int),
                     ("day".to_string(), Type::Int),

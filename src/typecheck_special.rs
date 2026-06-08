@@ -14,7 +14,7 @@
 //!
 //! Callers live in `infer_surface_expr`'s name-match dispatch block in `typecheck.rs`.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -83,8 +83,7 @@ pub(crate) fn check_open(
             got: args.len(),
             span,
             notes: vec!["`open` requires at least 3 arguments (DirCap, path, flag...)".to_string()],
-        })
-        .into()]);
+        })]);
     }
 
     let mut errors = Vec::new();
@@ -120,7 +119,7 @@ pub(crate) fn check_open(
     // Inspect flag arguments (arg[2..]) by AST to extract flag names.
     // We inspect AST rather than inferred types because the prelude registers Readable etc.
     // as `[variant "Readable"]` which types as Unknown — type-level inspection provides no info.
-    let mut cap_fields: HashMap<String, Type> = HashMap::new();
+    let mut cap_fields: BTreeMap<String, Type> = BTreeMap::new();
     let mut all_flags_known = true;
 
     for flag_arg in args.iter().skip(2) {
@@ -152,7 +151,7 @@ pub(crate) fn check_open(
                 cap_fields.insert(
                     format!("__cap_flag_{}", canonical),
                     Type::Record(Row {
-                        fields: HashMap::new(),
+                        fields: BTreeMap::new(),
                         tail: crate::type_def::RowTail::Empty,
                     }),
                 );
@@ -210,8 +209,7 @@ pub(crate) fn check_connect(
             got: args.len(),
             span,
             notes: vec![],
-        })
-        .into()]);
+        })]);
     }
 
     // Infer arg types (for type checking, even if we don't use them all)
@@ -230,18 +228,18 @@ pub(crate) fn check_connect(
     match transport_name {
         Some("Tcp") | Some("UnixStream") => {
             // Stream transports → Handle[Readable, Writable]
-            let cap_fields = HashMap::from([
+            let cap_fields = BTreeMap::from([
                 (
                     "__cap_flag_readable".to_string(),
                     Type::Record(Row {
-                        fields: HashMap::new(),
+                        fields: BTreeMap::new(),
                         tail: crate::type_def::RowTail::Empty,
                     }),
                 ),
                 (
                     "__cap_flag_writable".to_string(),
                     Type::Record(Row {
-                        fields: HashMap::new(),
+                        fields: BTreeMap::new(),
                         tail: crate::type_def::RowTail::Empty,
                     }),
                 ),
@@ -257,18 +255,18 @@ pub(crate) fn check_connect(
         }
         _ => {
             // Unknown or non-VarRef transport → return union fallback
-            let cap_fields = HashMap::from([
+            let cap_fields = BTreeMap::from([
                 (
                     "__cap_flag_readable".to_string(),
                     Type::Record(Row {
-                        fields: HashMap::new(),
+                        fields: BTreeMap::new(),
                         tail: crate::type_def::RowTail::Empty,
                     }),
                 ),
                 (
                     "__cap_flag_writable".to_string(),
                     Type::Record(Row {
-                        fields: HashMap::new(),
+                        fields: BTreeMap::new(),
                         tail: crate::type_def::RowTail::Empty,
                     }),
                 ),
@@ -305,8 +303,7 @@ pub(crate) fn check_map(
             got: args.len(),
             span,
             notes: vec![],
-        })
-        .into()]);
+        })]);
     }
 
     // Infer both argument types
@@ -354,8 +351,7 @@ pub(crate) fn check_tls_layer(
             got: args.len(),
             span,
             notes: vec![],
-        })
-        .into()]);
+        })]);
     }
 
     // Infer all argument types (for type checking)
@@ -382,8 +378,7 @@ pub(crate) fn check_tls_layer(
                 message: format!("tls-layer requires a Handle argument, got {}", handle_ty),
                 span,
                 notes: vec![],
-            })
-            .into()])
+            })])
         }
     }
 }
@@ -415,8 +410,7 @@ pub(crate) fn check_get_in(
             } else {
                 vec![]
             },
-        })
-        .into()]);
+        })]);
     }
 
     // Infer the dict type
@@ -546,8 +540,7 @@ pub(crate) fn check_do_infer(
                 ),
                 span: call_span,
                 notes: vec![],
-            })
-            .into()]);
+            })]);
         }
     };
 
@@ -622,8 +615,7 @@ pub(crate) fn check_do_infer(
                 message: "cannot infer monad for [do] — add an explicit monad argument (e.g., [do result ...])".to_string(),
                 span: call_span,
                 notes: vec![],
-            })
-            .into()]);
+            })]);
         }
     };
 

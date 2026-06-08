@@ -5,4 +5,4 @@
 ["x": ---foo]
 
 === warn
-undefined variable: ---foo
+[UndefinedVariable] undefined variable: ---foo

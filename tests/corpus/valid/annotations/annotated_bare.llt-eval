@@ -3,4 +3,4 @@
 [Fn@Number  [Number Number]]
 
 === warn
-undefined variable: Number
+[UndefinedVariable] undefined variable: Number

@@ -6,4 +6,7 @@ Dict({"f": Function(x), "result": Int(42)})
 
 === warn
 argument to `+` has unconstrained type — Addable constraint will be silently dropped
+argument to `+` has unconstrained type — Addable constraint will be silently dropped
+inferred type is Unknown — consider adding a type annotation
+inferred type is Unknown — consider adding a type annotation
 inferred type is Unknown — consider adding a type annotation

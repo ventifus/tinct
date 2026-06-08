@@ -3,4 +3,4 @@
 [Fn@["type": Number  "doc": "returns a number"]  [a b]]
 
 === warn
-undefined variable: a
+[UndefinedVariable] undefined variable: a

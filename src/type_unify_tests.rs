@@ -6,7 +6,7 @@ use super::{
 use crate::ast::Span;
 use crate::type_def::{TyConDef, Variance};
 use crate::types::{Constraint, InferState, Kind, Label, Row, Substitution, Type, TypeEnv};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// Task 1a: resolve_has_field on Type::Top should return Top (not Unknown)
 #[test]
@@ -32,7 +32,7 @@ fn test_resolve_has_field_depth_overflow_errors() {
     let span = Span::origin();
 
     // Create a simple record to test depth overflow
-    let mut fields = HashMap::new();
+    let mut fields = BTreeMap::new();
     fields.insert("x".to_string(), Type::Int);
     let record_ty = Type::Record(Row {
         fields,
@@ -58,14 +58,14 @@ fn test_resolve_has_field_depth_overflow_errors() {
 /// Task 3a: Single-field records with different keys are disjoint
 #[test]
 fn test_types_are_disjoint_single_field_records() {
-    let mut fields1 = HashMap::new();
+    let mut fields1 = BTreeMap::new();
     fields1.insert("x".to_string(), Type::Int);
     let rec1 = Type::Record(Row {
         fields: fields1,
         tail: crate::type_def::RowTail::Empty,
     });
 
-    let mut fields2 = HashMap::new();
+    let mut fields2 = BTreeMap::new();
     fields2.insert("y".to_string(), Type::Str);
     let rec2 = Type::Record(Row {
         fields: fields2,
@@ -81,14 +81,14 @@ fn test_types_are_disjoint_single_field_records() {
 /// Task 3b: Single-field records with same key are NOT disjoint
 #[test]
 fn test_types_are_not_disjoint_same_key_records() {
-    let mut fields1 = HashMap::new();
+    let mut fields1 = BTreeMap::new();
     fields1.insert("x".to_string(), Type::Int);
     let rec1 = Type::Record(Row {
         fields: fields1,
         tail: crate::type_def::RowTail::Empty,
     });
 
-    let mut fields2 = HashMap::new();
+    let mut fields2 = BTreeMap::new();
     fields2.insert("x".to_string(), Type::Str);
     let rec2 = Type::Record(Row {
         fields: fields2,
@@ -104,7 +104,7 @@ fn test_types_are_not_disjoint_same_key_records() {
 /// Task 3c: Multi-field records are conservatively NOT disjoint
 #[test]
 fn test_types_are_not_disjoint_multi_field_records() {
-    let mut fields1 = HashMap::new();
+    let mut fields1 = BTreeMap::new();
     fields1.insert("x".to_string(), Type::Int);
     fields1.insert("a".to_string(), Type::Bool);
     let rec1 = Type::Record(Row {
@@ -112,7 +112,7 @@ fn test_types_are_not_disjoint_multi_field_records() {
         tail: crate::type_def::RowTail::Empty,
     });
 
-    let mut fields2 = HashMap::new();
+    let mut fields2 = BTreeMap::new();
     fields2.insert("y".to_string(), Type::Str);
     fields2.insert("b".to_string(), Type::Float);
     let rec2 = Type::Record(Row {
@@ -658,7 +658,7 @@ fn test_types_are_disjoint_function_vs_record() {
         variadic: false,
     };
 
-    let mut fields = HashMap::new();
+    let mut fields = BTreeMap::new();
     fields.insert("x".to_string(), Type::Int);
     let record_ty = Type::Record(Row {
         fields,
@@ -700,7 +700,7 @@ fn test_apply_type_recursive_does_not_bind_var_name() {
         var: "μ_var".to_string(),
         body: Box::new(Type::Record(Row {
             fields: {
-                let mut m = HashMap::new();
+                let mut m = BTreeMap::new();
                 m.insert("elem".to_string(), Type::TypeVar("_t0".to_string(), 0));
                 m.insert("self".to_string(), Type::TypeVar("μ_var".to_string(), 0));
                 m
@@ -744,7 +744,7 @@ fn test_unify_recursive_recursive_isomorphic() {
         var: "_a".to_string(),
         body: Box::new(Type::Record(Row {
             fields: {
-                let mut m = HashMap::new();
+                let mut m = BTreeMap::new();
                 m.insert("head".to_string(), Type::Int);
                 m.insert("tail".to_string(), Type::TypeVar("_a".to_string(), 0));
                 m
@@ -758,7 +758,7 @@ fn test_unify_recursive_recursive_isomorphic() {
         var: "_b".to_string(),
         body: Box::new(Type::Record(Row {
             fields: {
-                let mut m = HashMap::new();
+                let mut m = BTreeMap::new();
                 m.insert("head".to_string(), Type::Int);
                 m.insert("tail".to_string(), Type::TypeVar("_b".to_string(), 0));
                 m
@@ -788,7 +788,7 @@ fn test_unify_recursive_recursive_incompatible_fields() {
         var: "_a".to_string(),
         body: Box::new(Type::Record(Row {
             fields: {
-                let mut m = HashMap::new();
+                let mut m = BTreeMap::new();
                 m.insert("head".to_string(), Type::Int);
                 m.insert("tail".to_string(), Type::TypeVar("_a".to_string(), 0));
                 m
@@ -802,7 +802,7 @@ fn test_unify_recursive_recursive_incompatible_fields() {
         var: "_b".to_string(),
         body: Box::new(Type::Record(Row {
             fields: {
-                let mut m = HashMap::new();
+                let mut m = BTreeMap::new();
                 m.insert("head".to_string(), Type::Str);
                 m.insert("tail".to_string(), Type::TypeVar("_b".to_string(), 0));
                 m
@@ -835,7 +835,7 @@ fn test_unify_typevar_binds_to_recursive_type() {
         var: "_μ".to_string(),
         body: Box::new(Type::Record(Row {
             fields: {
-                let mut m = HashMap::new();
+                let mut m = BTreeMap::new();
                 m.insert("x".to_string(), Type::Int);
                 m.insert("self".to_string(), Type::TypeVar("_μ".to_string(), 0));
                 m
@@ -880,7 +880,7 @@ fn test_unify_recursive_left_with_typevar_right() {
         var: "_r".to_string(),
         body: Box::new(Type::Record(Row {
             fields: {
-                let mut m = HashMap::new();
+                let mut m = BTreeMap::new();
                 m.insert("x".to_string(), Type::Int);
                 m
             },
@@ -890,7 +890,7 @@ fn test_unify_recursive_left_with_typevar_right() {
 
     let record_ty = Type::Record(Row {
         fields: {
-            let mut m = HashMap::new();
+            let mut m = BTreeMap::new();
             m.insert("x".to_string(), Type::Int);
             m
         },
@@ -915,7 +915,7 @@ fn test_unify_concrete_left_with_recursive_right() {
 
     let record_ty = Type::Record(Row {
         fields: {
-            let mut m = HashMap::new();
+            let mut m = BTreeMap::new();
             m.insert("x".to_string(), Type::Int);
             m
         },
@@ -926,7 +926,7 @@ fn test_unify_concrete_left_with_recursive_right() {
         var: "_r".to_string(),
         body: Box::new(Type::Record(Row {
             fields: {
-                let mut m = HashMap::new();
+                let mut m = BTreeMap::new();
                 m.insert("x".to_string(), Type::Int);
                 m
             },
@@ -1072,7 +1072,7 @@ fn test_reverse_fd_back_propagates_determining_type() {
 
     // Register instance: MySeq Int Str
     // MPTC instances are encoded as Record with numbered fields.
-    let mut instance_fields = HashMap::new();
+    let mut instance_fields = BTreeMap::new();
     instance_fields.insert("0".to_string(), Type::Int); // pos 0 = Int (determining)
     instance_fields.insert("1".to_string(), Type::Str); // pos 1 = Str (determined)
     let instance_type = Type::Record(Row {
@@ -1151,7 +1151,7 @@ fn test_reverse_fd_does_not_fire_when_not_injective() {
     });
 
     // Register instance: MyNonInj Int Str
-    let mut instance_fields = HashMap::new();
+    let mut instance_fields = BTreeMap::new();
     instance_fields.insert("0".to_string(), Type::Int);
     instance_fields.insert("1".to_string(), Type::Str);
     let instance_type = Type::Record(Row {
@@ -1408,7 +1408,7 @@ fn test_fd_in_progress_terminates_mutual_recursion() {
     });
 
     // Register instance: BiDir Int Str
-    let mut instance_fields = HashMap::new();
+    let mut instance_fields = BTreeMap::new();
     instance_fields.insert("0".to_string(), Type::Int);
     instance_fields.insert("1".to_string(), Type::Str);
     let instance_type = Type::Record(Row {
@@ -1643,7 +1643,7 @@ fn test_unify_uniform_same_value_type_records_ok() {
 
     // Consistent: named field type matches Uniform value type.
     // {x: Int, _ : Int} ~ {x: Int, _ : Int} — should unify successfully.
-    let mut fields = HashMap::new();
+    let mut fields = BTreeMap::new();
     fields.insert("x".to_string(), Type::Int);
     let row = crate::type_def::Row {
         fields: fields.clone(),
@@ -1676,7 +1676,7 @@ fn test_unify_uniform_inconsistent_named_field_type_errors() {
     // {x: Int, _: Str} ~ {} — should fail because x:Int does not conform to Uniform(Str).
     // Two non-identical records force unify_rows to run the UNIFY-UNIFORM check.
     // Identical records would short-circuit via `a == b` in unify(), bypassing the check.
-    let mut fields = HashMap::new();
+    let mut fields = BTreeMap::new();
     fields.insert("x".to_string(), Type::Int);
     let row1 = crate::type_def::Row {
         fields,
@@ -1686,7 +1686,7 @@ fn test_unify_uniform_inconsistent_named_field_type_errors() {
         },
     };
     let row2 = crate::type_def::Row {
-        fields: HashMap::new(),
+        fields: BTreeMap::new(),
         tail: crate::type_def::RowTail::Empty,
     };
     let rec1 = Type::Record(row1);
@@ -1715,7 +1715,7 @@ fn test_unify_empty_uniform_typevar_join() {
     let span = Span::origin();
 
     // LHS: {x: Int} with Empty tail
-    let mut fields_lhs = HashMap::new();
+    let mut fields_lhs = BTreeMap::new();
     fields_lhs.insert("x".to_string(), Type::Int);
     let row_lhs = crate::type_def::Row {
         fields: fields_lhs,
@@ -1726,7 +1726,7 @@ fn test_unify_empty_uniform_typevar_join() {
     let alpha = "_t_eu_test1".to_string();
     state.levels.insert(alpha.clone(), 0);
     let row_rhs = crate::type_def::Row {
-        fields: HashMap::new(),
+        fields: BTreeMap::new(),
         tail: crate::type_def::RowTail::Uniform {
             key: None,
             value: Box::new(Type::TypeVar(alpha.clone(), 0)),
@@ -1762,7 +1762,7 @@ fn test_unify_empty_uniform_concrete_subtype_fail() {
     let span = Span::origin();
 
     // LHS: {x: Int} with Empty tail
-    let mut fields_lhs = HashMap::new();
+    let mut fields_lhs = BTreeMap::new();
     fields_lhs.insert("x".to_string(), Type::Int);
     let row_lhs = crate::type_def::Row {
         fields: fields_lhs,
@@ -1771,7 +1771,7 @@ fn test_unify_empty_uniform_concrete_subtype_fail() {
 
     // RHS: {_ : Str} with Uniform concrete tail
     let row_rhs = crate::type_def::Row {
-        fields: HashMap::new(),
+        fields: BTreeMap::new(),
         tail: crate::type_def::RowTail::Uniform {
             key: None,
             value: Box::new(Type::Str),
@@ -1868,7 +1868,7 @@ fn test_infer_variance_uniform_tail_covariant() {
 
     // Type alias body: {x: a, _: a} — both named field and Uniform tail use param "a"
     // in positive position, so inferred variance should be Covariant.
-    let mut fields = HashMap::new();
+    let mut fields = BTreeMap::new();
     fields.insert("x".to_string(), Type::TypeVar("_t0".to_string(), 0));
     let body = Type::Record(crate::type_def::Row {
         fields,

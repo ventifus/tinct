@@ -9,7 +9,7 @@
 //! of the cached environment.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::{Arc, RwLock};
@@ -342,7 +342,7 @@ fn build_prelude_env_inner() -> Rc<TypeEnv> {
     env.insert("%libdir".to_string(), crate::types::Type::DirCap);
     // %stdin is Handle[Readable Text]
     {
-        let mut caps = HashMap::new();
+        let mut caps = BTreeMap::new();
         caps.insert("Readable".to_string(), Type::Bool);
         caps.insert("Text".to_string(), Type::Bool);
         env.insert(
@@ -357,18 +357,18 @@ fn build_prelude_env_inner() -> Rc<TypeEnv> {
     // write-handle expects Handle[[__cap_flag_writable: []]] (from cap_flag("writable") in builtins_core.rs).
     // Under BAS width subtyping, Handle[[__cap_flag_writable: [], __cap_flag_text: []]] satisfies it.
     {
-        let mut caps = HashMap::new();
+        let mut caps = BTreeMap::new();
         caps.insert(
             "__cap_flag_writable".to_string(),
             Type::Record(Row {
-                fields: HashMap::new(),
+                fields: BTreeMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             }),
         );
         caps.insert(
             "__cap_flag_text".to_string(),
             Type::Record(Row {
-                fields: HashMap::new(),
+                fields: BTreeMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             }),
         );
@@ -392,7 +392,7 @@ fn build_prelude_env_inner() -> Rc<TypeEnv> {
     builtins_env.insert("%libdir".to_string(), crate::types::Type::DirCap);
     // %stdin is Handle[Readable Text]
     {
-        let mut caps = std::collections::HashMap::new();
+        let mut caps = std::collections::BTreeMap::new();
         caps.insert("Readable".to_string(), Type::Bool);
         caps.insert("Text".to_string(), Type::Bool);
         builtins_env.insert(
@@ -405,18 +405,18 @@ fn build_prelude_env_inner() -> Rc<TypeEnv> {
     }
     // %stdout — use __cap_flag_* format consistent with write-handle's type expectation.
     {
-        let mut caps = std::collections::HashMap::new();
+        let mut caps = std::collections::BTreeMap::new();
         caps.insert(
             "__cap_flag_writable".to_string(),
             crate::types::Type::Record(crate::types::Row {
-                fields: std::collections::HashMap::new(),
+                fields: std::collections::BTreeMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             }),
         );
         caps.insert(
             "__cap_flag_text".to_string(),
             crate::types::Type::Record(crate::types::Row {
-                fields: std::collections::HashMap::new(),
+                fields: std::collections::BTreeMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             }),
         );
@@ -1208,7 +1208,7 @@ fn apply_include_type_to_node(
                             let path_span = args[1].span.clone();
                             if let Some(bindings) = include_bindings.get(&path_span) {
                                 // Build a closed Record type from the contributed bindings
-                                let fields: HashMap<String, Type> = bindings
+                                let fields: BTreeMap<String, Type> = bindings
                                     .iter()
                                     .map(|(name, ty)| (name.clone(), ty.clone()))
                                     .collect();
@@ -1343,7 +1343,7 @@ pub fn build_type_env_with_cap(
     env.insert("%libdir".to_string(), crate::types::Type::DirCap);
     // %stdin is Handle[Readable Text]
     {
-        let mut caps = HashMap::new();
+        let mut caps = BTreeMap::new();
         caps.insert("Readable".to_string(), Type::Bool);
         caps.insert("Text".to_string(), Type::Bool);
         env.insert(
@@ -1358,18 +1358,18 @@ pub fn build_type_env_with_cap(
     // write-handle expects Handle[[__cap_flag_writable: []]] (from cap_flag("writable") in builtins_core.rs).
     // Under BAS width subtyping, Handle[[__cap_flag_writable: [], __cap_flag_text: []]] satisfies it.
     {
-        let mut caps = HashMap::new();
+        let mut caps = BTreeMap::new();
         caps.insert(
             "__cap_flag_writable".to_string(),
             Type::Record(Row {
-                fields: HashMap::new(),
+                fields: BTreeMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             }),
         );
         caps.insert(
             "__cap_flag_text".to_string(),
             Type::Record(Row {
-                fields: HashMap::new(),
+                fields: BTreeMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             }),
         );

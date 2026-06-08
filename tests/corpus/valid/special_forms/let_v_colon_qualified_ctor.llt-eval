@@ -4,5 +4,7 @@
 # Verifies no parse error occurs (pending_rhs handles DotAccess correctly).
 [let v: Result.Ok]
 
+
+
 === warn
-binding declaration [let ...] is not valid in expression position
+[TypeError] binding declaration [let ...] is not valid in expression position

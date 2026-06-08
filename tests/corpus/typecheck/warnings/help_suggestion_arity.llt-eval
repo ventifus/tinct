@@ -5,4 +5,4 @@
 Function(x)
 
 === warn
-arity mismatch: expected 2 arguments, got 1
+[TypeError] arity mismatch: expected 2 arguments, got 1

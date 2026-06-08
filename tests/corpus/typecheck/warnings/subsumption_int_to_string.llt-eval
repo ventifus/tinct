@@ -5,4 +5,4 @@
 Dict({"f": Function(x), "result": Int(42)})
 
 === warn
-cannot unify String with 42
+[UnificationFailure] cannot unify String with 42

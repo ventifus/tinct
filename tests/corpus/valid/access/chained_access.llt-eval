@@ -3,4 +3,4 @@
 ["val": [get 0 config.users].name]
 
 === warn
-undefined variable: config
+[UndefinedVariable] undefined variable: config

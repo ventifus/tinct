@@ -2,7 +2,7 @@
 //! with Boolean-Algebraic Subtyping (BAS) and structural record types.
 
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::ast::Span;
@@ -375,8 +375,7 @@ fn check_constraints_on_var(
                         ),
                         span: span.clone(),
                         notes: vec![],
-                    })
-                    .into());
+                    }));
                 }
                 state.instance_resolution_depth += 1;
                 let inst_env = state.instance_env.clone();
@@ -397,8 +396,7 @@ fn check_constraints_on_var(
                             ),
                             span: span.clone(),
                             notes: vec![],
-                        })
-                        .into());
+                        }));
                     }
                     Err(ambig_msg) => {
                         // Ambiguous instances — equally specific matches, coherence violation
@@ -406,8 +404,7 @@ fn check_constraints_on_var(
                             message: ambig_msg,
                             span: span.clone(),
                             notes: vec![],
-                        })
-                        .into());
+                        }));
                     }
                 }
             }
@@ -483,8 +480,7 @@ fn improve_functional_dependency(
             ),
             span,
             notes: vec![],
-        })
-        .into());
+        }));
     }
     state.fd_depth += 1;
     let result = improve_functional_dependency_inner(
@@ -784,7 +780,7 @@ fn improve_functional_dependency_inner(
                                         .get(&pos.to_string())
                                         .cloned()
                                         .ok_or_else(|| {
-                                            TypeError::from(TypeErrorTyped::Generic(
+                                            TypeErrorTyped::Generic(
                                                 GenericTypeError {
                                                     message: format!(
                                                         "no instance for {} (determined field {} missing)",
@@ -793,7 +789,7 @@ fn improve_functional_dependency_inner(
                                                     span: span.clone(),
                                                     notes: vec![],
                                                 },
-                                            ))
+                                            )
                                         })?,
                                     None => {
                                         return Err(TypeErrorTyped::Generic(GenericTypeError {
@@ -803,8 +799,7 @@ fn improve_functional_dependency_inner(
                                             ),
                                             span: span.clone(),
                                             notes: vec![],
-                                        })
-                                        .into());
+                                        }));
                                     }
                                 }
                             }
@@ -816,8 +811,7 @@ fn improve_functional_dependency_inner(
                                     ),
                                     span: span.clone(),
                                     notes: vec![],
-                                })
-                                .into());
+                                }));
                             }
                         }
                     }
@@ -844,8 +838,7 @@ fn improve_functional_dependency_inner(
                             message: format!("no instance for {}", class),
                             span: span.clone(),
                             notes: vec![],
-                        })
-                        .into());
+                        }));
                     }
                 }
             }
@@ -855,8 +848,7 @@ fn improve_functional_dependency_inner(
                 message: format!("unknown class {}", class),
                 span: span.clone(),
                 notes: vec![],
-            })
-            .into());
+            }));
         };
 
         // Unify each determined position with the result type
@@ -940,8 +932,7 @@ fn lookup_arithmetic_instance(
             ),
             span,
             notes: vec![],
-        })
-        .into());
+        }));
     }
 
     let a = &det_types[0];
@@ -968,8 +959,7 @@ fn lookup_arithmetic_instance(
                 message: format!("no instance for {} {} {}", class, a, b),
                 span,
                 notes: vec![],
-            })
-            .into()),
+            })),
         },
         "Divisible" => match key {
             ("Int", "Int") | ("Float", "Float") | ("Int", "Float") | ("Float", "Int") => {
@@ -987,8 +977,7 @@ fn lookup_arithmetic_instance(
                 message: format!("no instance for Divisible {} {}", a, b),
                 span,
                 notes: vec![],
-            })
-            .into()),
+            })),
         },
         _ => {
             // GENERAL PATH: query InstanceEnv for user-defined MPTC classes.
@@ -1017,14 +1006,14 @@ fn lookup_arithmetic_instance(
                                     .get(&pos.to_string())
                                     .cloned()
                                     .ok_or_else(|| {
-                                        TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
+                                        TypeErrorTyped::Generic(GenericTypeError {
                                             message: format!(
                                                 "no instance for {} {} {} (determined field {} missing)",
                                                 class, a, b, pos
                                             ),
                                             span: span.clone(),
                                             notes: vec![],
-                                        }))
+                                        })
                                     }),
                                 None => Err(TypeErrorTyped::Generic(GenericTypeError {
                                     message: format!(
@@ -1033,8 +1022,7 @@ fn lookup_arithmetic_instance(
                                     ),
                                     span,
                                     notes: vec![],
-                                })
-                                .into()),
+                                })),
                             }
                         }
                         _ => Err(TypeErrorTyped::Generic(GenericTypeError {
@@ -1044,16 +1032,14 @@ fn lookup_arithmetic_instance(
                             ),
                             span,
                             notes: vec![],
-                        })
-                        .into()),
+                        })),
                     }
                 }
                 None => Err(TypeErrorTyped::Generic(GenericTypeError {
                     message: format!("no instance for {} {} {}", class, a, b),
                     span,
                     notes: vec![],
-                })
-                .into()),
+                })),
             }
         }
     }
@@ -1184,8 +1170,7 @@ pub fn resolve_has_field(
             message: "HasField recursion depth exceeded".to_string(),
             span,
             notes: vec![],
-        })
-        .into());
+        }));
     }
 
     // Resolve label to concrete string
@@ -1203,8 +1188,7 @@ pub fn resolve_has_field(
                         ),
                         span,
                         notes: vec![],
-                    })
-                    .into())
+                    }))
                 }
             }
         }
@@ -1223,8 +1207,7 @@ pub fn resolve_has_field(
                     message: format!("record has no field '{}'", label_str),
                     span,
                     notes: vec![],
-                })
-                .into())
+                }))
             }
         }
 
@@ -1262,16 +1245,14 @@ pub fn resolve_has_field(
             message: "cannot resolve HasField constraint on unbound type variable (expected caller to defer)".to_string(),
             span,
             notes: vec![],
-        })
-        .into()),
+        })),
 
         // All other types don't support field access
         _ => Err(TypeErrorTyped::Generic(GenericTypeError {
             message: format!("type {} does not support field access", dict_type),
             span,
             notes: vec![],
-        })
-        .into()),
+        })),
     }
 }
 
@@ -1421,8 +1402,7 @@ impl Substitution {
                 ),
                 span,
                 notes: vec![],
-            })
-            .into())
+            }))
         } else {
             Ok(())
         }
@@ -1677,7 +1657,7 @@ impl Substitution {
         }
 
         // Apply substitution to field types and to RowTail::Uniform key/value types.
-        let new_fields: HashMap<String, Type> = row
+        let new_fields: BTreeMap<String, Type> = row
             .fields
             .iter()
             .map(|(k, v)| {
@@ -1858,8 +1838,7 @@ fn unify_rows(
                     got: Type::Record(row2.clone()),
                     span,
                     notes: vec![],
-                })
-                .into());
+                }));
             }
         }
     }
@@ -1923,8 +1902,7 @@ fn unify_rows(
                                 ),
                                 span: span.clone(),
                                 notes: vec![],
-                            })
-                            .into());
+                            }));
                         }
                     }
                 }
@@ -1986,8 +1964,7 @@ fn unify_rows(
                             ),
                             span: span.clone(),
                             notes: vec![],
-                        })
-                        .into());
+                        }));
                     }
                 }
             }
@@ -2248,8 +2225,7 @@ fn bind_single_type_var_from_compound(
             got: representative,
             span,
             notes: vec![],
-        })
-        .into());
+        }));
     }
 
     // Check whether the concrete side is already handled by the non-var members.
@@ -2280,8 +2256,7 @@ fn bind_single_type_var_from_compound(
             message: format!("infinite type: {var_name} occurs in {concrete}"),
             span,
             notes: vec![],
-        })
-        .into());
+        }));
     }
 
     let concrete_promoted = promote_literal_for_constrained_var(var_name, concrete.clone(), state);
@@ -2425,8 +2400,7 @@ pub fn unify(
                     message: format!("infinite type: {name} occurs in {b}"),
                     span,
                     notes: vec![],
-                })
-                .into());
+                }));
             }
             // Promote literal types when binding a constrained type variable.
             // Without this, `[+ 1 2]` would bind _t0 to IntLiteral(1) and then fail
@@ -2463,8 +2437,7 @@ pub fn unify(
                     message: format!("infinite type: {name} occurs in {a}"),
                     span,
                     notes: vec![],
-                })
-                .into());
+                }));
             }
             // Promote literal types when binding a constrained type variable.
             let a = promote_literal_for_constrained_var(name, a, state);
@@ -2615,8 +2588,7 @@ pub fn unify(
                     ),
                     span,
                     notes: vec![],
-                })
-                .into());
+                }));
             }
             if v1 != v2 {
                 return Err(TypeErrorTyped::Generic(GenericTypeError {
@@ -2627,8 +2599,7 @@ pub fn unify(
                     ),
                     span,
                     notes: vec![],
-                })
-                .into());
+                }));
             }
             // Robinson invariant: sub-terms are passed without explicit apply() because
             // every recursive unify() call re-applies the accumulated substitution at its
@@ -2678,8 +2649,7 @@ pub fn unify(
                     ),
                     span,
                     notes: vec![],
-                })
-                .into())
+                }))
             } else {
                 Ok(()) // conservative: may still be empty but can't prove it statically
             }
@@ -2695,8 +2665,7 @@ pub fn unify(
                     ),
                     span,
                     notes: vec![],
-                })
-                .into())
+                }))
             } else {
                 Ok(()) // conservative: may still be empty but can't prove it statically
             }
@@ -2732,8 +2701,7 @@ pub fn unify(
                     got: b.clone(),
                     span,
                     notes: vec![],
-                })
-                .into());
+                }));
             }
             // Names are equal. Verify Arc identity. NOTE: In the current architecture,
             // Type::TyCon carries a name string, so both lookups (n1 == n2) access the same
@@ -2755,8 +2723,7 @@ pub fn unify(
                         ),
                         span,
                         notes: vec![],
-                    })
-                    .into())
+                    }))
                 }
                 _ => {
                     // Both None (unknown TyCon), or same Arc (same definition) — unify.
@@ -2797,8 +2764,7 @@ pub fn unify(
                     message: format!("infinite type: operator variable {} occurs in {}", m, b),
                     span,
                     notes: vec![],
-                })
-                .into());
+                }));
             }
             // CONSTRAINT TRANSFER: when binding m to TypeVar, transfer constraints
             // instead of checking. When binding to a concrete type, check constraints normally.
@@ -2823,8 +2789,7 @@ pub fn unify(
                     message: format!("infinite type: operator variable {} occurs in {}", m, a),
                     span,
                     notes: vec![],
-                })
-                .into());
+                }));
             }
             // CONSTRAINT TRANSFER: when binding m to TypeVar, transfer constraints
             // instead of checking. When binding to a concrete type, check constraints normally.
@@ -2865,8 +2830,7 @@ pub fn unify(
                         ),
                         span,
                         notes: vec![],
-                    })
-                    .into());
+                    }));
                 }
                 _ if k1_resolved != k2_resolved => {
                     return Err(TypeErrorTyped::Generic(GenericTypeError {
@@ -2876,8 +2840,7 @@ pub fn unify(
                         ),
                         span,
                         notes: vec![],
-                    })
-                    .into());
+                    }));
                 }
                 _ => {}
             }
@@ -2919,8 +2882,7 @@ pub fn unify(
                     ),
                     span,
                     notes: vec![],
-                })
-                .into());
+                }));
             }
             // Tags match — unify fields structurally
             unify_rows(fields1, fields2, subst, state, span)
@@ -2935,8 +2897,7 @@ pub fn unify(
                 ),
                 span,
                 notes: vec![],
-            })
-            .into())
+            }))
         }
         (Type::Record(_), Type::NominalVariant { tag, .. }) => {
             Err(TypeErrorTyped::Generic(GenericTypeError {
@@ -2946,8 +2907,7 @@ pub fn unify(
                 ),
                 span,
                 notes: vec![],
-            })
-            .into())
+            }))
         }
 
         // Record ↔ Intersection-of-Records unification.
@@ -3057,8 +3017,7 @@ pub fn unify(
                     ),
                     span,
                     notes: vec![],
-                })
-                .into());
+                }));
             }
             for (arg1, arg2) in a1.iter().zip(a2.iter()) {
                 unify(arg1, arg2, subst, state, span.clone())?;
@@ -3074,8 +3033,7 @@ pub fn unify(
                 ),
                 span,
                 notes: vec![],
-            })
-            .into())
+            }))
         }
         // Case 3: TypeStageApp vs concrete (non-TypeVar, non-Unknown, non-Top)
         // Defer to process_deferred_equalities (no resolvers available yet in chr-normalization)
@@ -3103,8 +3061,7 @@ pub fn unify(
                     got: b.clone(),
                     span,
                     notes: vec![],
-                })
-                .into())
+                }))
             }
         }
 
@@ -3113,8 +3070,7 @@ pub fn unify(
             got: b.clone(),
             span,
             notes: vec![],
-        })
-        .into()),
+        })),
     }
 }
 

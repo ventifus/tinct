@@ -491,8 +491,7 @@ pub(crate) fn typecheck_case_arm(
                             message: "unsupported binding pattern in case arm".to_string(),
                             span: binding.span.clone(),
                             notes: vec![],
-                        })
-                        .into()]);
+                        })]);
                     }
                 }
             }
@@ -655,8 +654,7 @@ pub(crate) fn infer_fn(
                                 message: "fn annotation must use either named keys (return:, constraint:, doc:, bind:, kinds:) or positional entries (union return type), not both".to_string(),
                                 span: ann.span.clone(),
                                 notes: vec![],
-                            })
-                            .into()]);
+                            })]);
                         }
                         // Function metadata dict: extract return type from return: key.
                         let (ret, _doc) = resolve_fn_metadata(

@@ -101,7 +101,7 @@ use crate::value::{BuiltinDef, Strictness};
 
 // Imports for core_type_env() — T-714.
 use crate::types::{ClassDecl, Constraint, Kind, Row, Type, TypeAlias, TypeEnv, TypeScheme};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 /// Returns all "core" module Rust builtins aggregated from the split implementation files.
@@ -1220,7 +1220,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(
                 None,
                 Type::Record(Row {
-                    fields: HashMap::new(),
+                    fields: BTreeMap::new(),
                     tail: crate::type_def::RowTail::Empty,
                 }),
             )],
@@ -1237,7 +1237,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 None,
                 Type::Union(vec![
                     Type::Record(Row {
-                        fields: HashMap::new(),
+                        fields: BTreeMap::new(),
                         tail: crate::type_def::RowTail::Empty,
                     }),
                     Type::Str,
@@ -1257,20 +1257,20 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 (
                     Some("dict1".to_string()),
                     Type::Record(Row {
-                        fields: HashMap::new(),
+                        fields: BTreeMap::new(),
                         tail: crate::type_def::RowTail::Empty,
                     }),
                 ),
                 (
                     Some("dict2".to_string()),
                     Type::Record(Row {
-                        fields: HashMap::new(),
+                        fields: BTreeMap::new(),
                         tail: crate::type_def::RowTail::Empty,
                     }),
                 ),
             ],
             ret: Box::new(Type::Record(Row {
-                fields: HashMap::new(),
+                fields: BTreeMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
@@ -1284,13 +1284,13 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 (
                     Some("dict".to_string()),
                     Type::Record(Row {
-                        fields: HashMap::new(),
+                        fields: BTreeMap::new(),
                         tail: crate::type_def::RowTail::Empty,
                     }),
                 ),
             ],
             ret: Box::new(Type::Record(Row {
-                fields: HashMap::new(),
+                fields: BTreeMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
@@ -1418,7 +1418,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
         Type::Function {
             params: vec![(None, Type::Top), (None, Type::Top)], // val, cell
             ret: Box::new(Type::Record(Row {
-                fields: HashMap::new(),
+                fields: BTreeMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             })), // Null = empty record
             variadic: false,
@@ -1784,7 +1784,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 (
                     None,
                     Type::Record(Row {
-                        fields: HashMap::new(),
+                        fields: BTreeMap::new(),
                         tail: crate::type_def::RowTail::Empty,
                     }),
                 ),
@@ -1841,7 +1841,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 (
                     None,
                     Type::Record(Row {
-                        fields: HashMap::new(),
+                        fields: BTreeMap::new(),
                         tail: crate::type_def::RowTail::Empty,
                     }),
                 ),
@@ -1862,7 +1862,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 (
                     None,
                     Type::Record(Row {
-                        fields: HashMap::new(),
+                        fields: BTreeMap::new(),
                         tail: crate::type_def::RowTail::Empty,
                     }),
                 ),
@@ -2083,11 +2083,11 @@ pub fn core_type_env(env: &mut TypeEnv) {
     // ── I/O ───────────────────────────────────────────────────────────────────
     // Helper: create Handle capability flag type (Readable, Writable, etc.)
     fn cap_flag(flag_name: &str) -> Type {
-        let mut fields = HashMap::new();
+        let mut fields = BTreeMap::new();
         fields.insert(
             format!("__cap_flag_{}", flag_name.to_lowercase()),
             Type::Record(Row {
-                fields: HashMap::new(),
+                fields: BTreeMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             }),
         );
@@ -2103,7 +2103,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Str)],
             // Null — Type::Record(Row::Empty), see doc/whatif/null-semantics.md
             ret: Box::new(Type::Record(Row {
-                fields: HashMap::new(),
+                fields: BTreeMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
@@ -2117,7 +2117,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             ret: Box::new(Type::normalize_union(vec![
                 Type::Str,
                 Type::Record(Row {
-                    fields: HashMap::new(),
+                    fields: BTreeMap::new(),
                     tail: crate::type_def::RowTail::Empty,
                 }),
             ])),
@@ -2154,7 +2154,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             ret: Box::new(Type::Union(vec![
                 Type::Str,
                 Type::Record(Row {
-                    fields: HashMap::new(),
+                    fields: BTreeMap::new(),
                     tail: crate::type_def::RowTail::Empty,
                 }),
             ])),
@@ -2172,7 +2172,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             ret: Box::new(Type::Union(vec![
                 Type::Bytes,
                 Type::Record(Row {
-                    fields: HashMap::new(),
+                    fields: BTreeMap::new(),
                     tail: crate::type_def::RowTail::Empty,
                 }),
             ])),
@@ -2202,7 +2202,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Str)],
             // Null — Type::Record(Row::Empty)
             ret: Box::new(Type::Record(Row {
-                fields: HashMap::new(),
+                fields: BTreeMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
@@ -2214,7 +2214,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Str)],
             // Null — Type::Record(Row::Empty)
             ret: Box::new(Type::Record(Row {
-                fields: HashMap::new(),
+                fields: BTreeMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
@@ -2225,14 +2225,14 @@ pub fn core_type_env(env: &mut TypeEnv) {
         Type::Function {
             params: vec![(None, Type::DirCap)],
             ret: Box::new(Type::Record(Row {
-                fields: HashMap::from([
+                fields: BTreeMap::from([
                     ("cap".to_string(), Type::DirCap),
                     (
                         "revoke".to_string(),
                         Type::Function {
                             params: vec![],
                             ret: Box::new(Type::Record(Row {
-                                fields: HashMap::new(),
+                                fields: BTreeMap::new(),
                                 tail: crate::type_def::RowTail::Empty,
                             })), // Null
                             variadic: false,
@@ -2250,7 +2250,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::DirCap)],
             // Null — Type::Record(Row::Empty)
             ret: Box::new(Type::Record(Row {
-                fields: HashMap::new(),
+                fields: BTreeMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
@@ -2299,7 +2299,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::handle(Type::Unknown))],
             // Null — Type::Record(Row::Empty)
             ret: Box::new(Type::Record(Row {
-                fields: HashMap::new(),
+                fields: BTreeMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
@@ -2348,7 +2348,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
         Type::Function {
             params: vec![(None, Type::DirCap), (None, Type::Str)],
             ret: Box::new(Type::seq(Type::Record(Row {
-                fields: HashMap::from([
+                fields: BTreeMap::from([
                     ("name".to_string(), Type::Str),
                     ("kind".to_string(), Type::Str),
                     ("size".to_string(), Type::Int),
@@ -2363,7 +2363,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
         Type::Function {
             params: vec![(None, Type::DirCap), (None, Type::Str)],
             ret: Box::new(Type::Record(Row {
-                fields: HashMap::from([
+                fields: BTreeMap::from([
                     ("name".to_string(), Type::Str),
                     ("kind".to_string(), Type::Str),
                     ("size".to_string(), Type::Int),
@@ -2389,7 +2389,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
         Type::Function {
             params: vec![(None, Type::DirCap), (None, Type::Str)],
             ret: Box::new(Type::Record(Row {
-                fields: HashMap::from([
+                fields: BTreeMap::from([
                     ("name".to_string(), Type::Str),
                     ("kind".to_string(), Type::Str),
                     ("size".to_string(), Type::Int),
@@ -2412,7 +2412,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             ],
             // Null — Type::Record(Row::Empty)
             ret: Box::new(Type::Record(Row {
-                fields: HashMap::new(),
+                fields: BTreeMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
@@ -2426,7 +2426,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Str)],
             // Null — Type::Record(Row::Empty)
             ret: Box::new(Type::Record(Row {
-                fields: HashMap::new(),
+                fields: BTreeMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
@@ -2440,7 +2440,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Int)],
             // Null — Type::Record(Row::Empty)
             ret: Box::new(Type::Record(Row {
-                fields: HashMap::new(),
+                fields: BTreeMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
@@ -2469,7 +2469,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             ],
             // Null — Type::Record(Row::Empty)
             ret: Box::new(Type::Record(Row {
-                fields: HashMap::new(),
+                fields: BTreeMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
@@ -2483,7 +2483,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Str)],
             // Null — Type::Record(Row::Empty)
             ret: Box::new(Type::Record(Row {
-                fields: HashMap::new(),
+                fields: BTreeMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
@@ -2505,7 +2505,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::DirCap), (None, Type::Str)],
             // Null — Type::Record(Row::Empty)
             ret: Box::new(Type::Record(Row {
-                fields: HashMap::new(),
+                fields: BTreeMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
@@ -2517,7 +2517,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::DirCap), (None, Type::Str)],
             // Null — Type::Record(Row::Empty)
             ret: Box::new(Type::Record(Row {
-                fields: HashMap::new(),
+                fields: BTreeMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
@@ -2529,7 +2529,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Str)],
             // Null — Type::Record(Row::Empty)
             ret: Box::new(Type::Record(Row {
-                fields: HashMap::new(),
+                fields: BTreeMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
@@ -2541,7 +2541,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Str)],
             // Null — Type::Record(Row::Empty)
             ret: Box::new(Type::Record(Row {
-                fields: HashMap::new(),
+                fields: BTreeMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
@@ -2649,7 +2649,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
         Type::Function {
             params: vec![(None, Type::Top)],
             ret: Box::new(Type::Record(Row {
-                fields: HashMap::new(),
+                fields: BTreeMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
@@ -2978,7 +2978,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                     Type::Union(vec![
                         Type::seq(Type::TypeVar("T".to_string(), 0)),
                         Type::Record(Row {
-                            fields: HashMap::new(),
+                            fields: BTreeMap::new(),
                             tail: crate::type_def::RowTail::Empty,
                         }),
                     ]),
@@ -2986,7 +2986,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 ret: Box::new(Type::Union(vec![
                     Type::seq(Type::TypeVar("T".to_string(), 0)),
                     Type::Record(Row {
-                        fields: HashMap::new(),
+                        fields: BTreeMap::new(),
                         tail: crate::type_def::RowTail::Empty,
                     }),
                 ])),
@@ -3025,12 +3025,12 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(
                 None,
                 Type::Record(Row {
-                    fields: HashMap::new(),
+                    fields: BTreeMap::new(),
                     tail: crate::type_def::RowTail::Empty,
                 }),
             )],
             ret: Box::new(Type::Record(Row {
-                fields: HashMap::new(),
+                fields: BTreeMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
@@ -3121,7 +3121,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 ret: Box::new(Type::normalize_union(vec![
                     Type::TypeVar("v".to_string(), 0),
                     Type::Record(Row {
-                        fields: HashMap::new(),
+                        fields: BTreeMap::new(),
                         tail: crate::type_def::RowTail::Empty,
                     }),
                 ])),
@@ -3145,7 +3145,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 params: vec![(
                     Some("xs".to_string()),
                     Type::Record(Row {
-                        fields: HashMap::new(),
+                        fields: BTreeMap::new(),
                         tail: crate::type_def::RowTail::Empty,
                     }),
                 )],
@@ -3168,7 +3168,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 params: vec![(
                     Some("xs".to_string()),
                     Type::Record(Row {
-                        fields: HashMap::new(),
+                        fields: BTreeMap::new(),
                         tail: crate::type_def::RowTail::Empty,
                     }),
                 )],
@@ -3191,12 +3191,12 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 params: vec![(
                     Some("xs".to_string()),
                     Type::Record(Row {
-                        fields: HashMap::new(),
+                        fields: BTreeMap::new(),
                         tail: crate::type_def::RowTail::Empty,
                     }),
                 )],
                 ret: Box::new(Type::seq({
-                    let mut kv_fields = HashMap::new();
+                    let mut kv_fields = BTreeMap::new();
                     kv_fields.insert(
                         "key".to_string(),
                         Type::normalize_union(vec![Type::Int, Type::Str]),
@@ -3623,11 +3623,11 @@ pub fn core_type_env(env: &mut TypeEnv) {
         "Deletable",
         "Renameable",
     ] {
-        let mut fields = HashMap::new();
+        let mut fields = BTreeMap::new();
         fields.insert(
             format!("__cap_flag_{}", flag_name.to_lowercase()),
             Type::Record(Row {
-                fields: HashMap::new(),
+                fields: BTreeMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             }),
         );
@@ -3655,11 +3655,11 @@ pub fn core_type_env(env: &mut TypeEnv) {
         "Sync",
         "NoFollow",
     ] {
-        let mut fields = HashMap::new();
+        let mut fields = BTreeMap::new();
         fields.insert(
             format!("__cap_flag_{}", flag_name.to_lowercase()),
             Type::Record(Row {
-                fields: HashMap::new(),
+                fields: BTreeMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             }),
         );

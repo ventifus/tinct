@@ -6,4 +6,4 @@
 Int(42)
 
 === warn
-Pipeline input type 42 does not satisfy expects contract String
+[TypeError] Pipeline input type 42 does not satisfy expects contract String

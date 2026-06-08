@@ -22,6 +22,10 @@
 // constraint is intentional and correct; Rc-based sharing is cheaper and simpler than
 // Arc<Mutex<...>> for data that never leaves the local thread.
 #![allow(clippy::arc_with_non_send_sync)]
+// TypeErrorTyped is a large enum (~208 bytes) used pervasively as the Err type
+// across the type checker. Boxing it at every return site would be invasive and
+// would hurt readability for marginal runtime benefit (errors are cold paths).
+#![allow(clippy::result_large_err)]
 
 pub(crate) mod arena;
 // Shared async runtime for QUIC/HTTP3 builtins (block_on helper).

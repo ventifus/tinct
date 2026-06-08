@@ -5,4 +5,4 @@
 [f 42]
 
 === warn
-undefined variable: f
+[UndefinedVariable] undefined variable: f

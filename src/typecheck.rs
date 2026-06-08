@@ -2,7 +2,7 @@
 //! validates type assertions, and performs Hindley-Milner-style type variable
 //! unification for polymorphic function calls.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -235,7 +235,7 @@ pub fn typecheck_surface_program_annotation_table(
 
     let mut named_types: HashMap<String, Type> = HashMap::new();
     let mut pipeline_type = Type::Record(Row {
-        fields: HashMap::new(),
+        fields: BTreeMap::new(),
         tail: crate::type_def::RowTail::Empty,
     });
 
@@ -373,7 +373,7 @@ pub fn typecheck_surface_program_with_env(
     let mut type_map_inner = TypeMap::new();
     let mut named_types: HashMap<String, Type> = HashMap::new();
     let mut pipeline_type = Type::Record(Row {
-        fields: HashMap::new(),
+        fields: BTreeMap::new(),
         tail: crate::type_def::RowTail::Empty,
     });
 
@@ -531,17 +531,14 @@ fn typecheck_surface_document(
                     || contains_unknown_or_top(&expected_type_resolved))
                     && Type::is_consistent(&pipeline_type_resolved, &expected_type_resolved));
                 if !passes {
-                    advisory_errors.push(
-                        TypeErrorTyped::Generic(GenericTypeError {
-                            message: format!(
-                                "Pipeline input type {} does not satisfy expects contract {}",
-                                pipeline_type_resolved, expected_type_resolved
-                            ),
-                            span: expects_ann.span.clone(),
-                            notes: vec![],
-                        })
-                        .into(),
-                    );
+                    advisory_errors.push(TypeErrorTyped::Generic(GenericTypeError {
+                        message: format!(
+                            "Pipeline input type {} does not satisfy expects contract {}",
+                            pipeline_type_resolved, expected_type_resolved
+                        ),
+                        span: expects_ann.span.clone(),
+                        notes: vec![],
+                    }));
                 }
             }
             Err(e) => advisory_errors.push(e),
@@ -587,14 +584,11 @@ fn typecheck_surface_document(
                     // Emit a diagnostic for unknown native modules.
                     // The runtime will also catch this when it attempts to call
                     // builtin_module(), but we flag it statically here too.
-                    errors.push(
-                        TypeErrorTyped::Generic(GenericTypeError {
-                            message: format!("unknown native module: {}", module_name.node),
-                            span: module_name.span.clone(),
-                            notes: vec![],
-                        })
-                        .into(),
-                    );
+                    errors.push(TypeErrorTyped::Generic(GenericTypeError {
+                        message: format!("unknown native module: {}", module_name.node),
+                        span: module_name.span.clone(),
+                        notes: vec![],
+                    }));
                 }
             }
         }
@@ -602,7 +596,7 @@ fn typecheck_surface_document(
     }
 
     let mut result_type = Type::Record(Row {
-        fields: HashMap::new(),
+        fields: BTreeMap::new(),
         tail: crate::type_def::RowTail::Empty,
     });
 
@@ -718,17 +712,14 @@ fn typecheck_surface_document(
                         || contains_unknown_or_top(&expected_output_resolved))
                         && Type::is_consistent(&result_type_resolved, &expected_output_resolved));
                     if !passes {
-                        advisory_errors.push(
-                            TypeErrorTyped::Generic(GenericTypeError {
-                                message: format!(
-                                    "Document output type {} does not match annotation {}",
-                                    result_type_resolved, expected_output_resolved
-                                ),
-                                span: output_ann.span.clone(),
-                                notes: vec![],
-                            })
-                            .into(),
-                        );
+                        advisory_errors.push(TypeErrorTyped::Generic(GenericTypeError {
+                            message: format!(
+                                "Document output type {} does not match annotation {}",
+                                result_type_resolved, expected_output_resolved
+                            ),
+                            span: output_ann.span.clone(),
+                            notes: vec![],
+                        }));
                     }
                 }
                 Err(e) => advisory_errors.push(e),
@@ -815,14 +806,11 @@ fn typecheck_surface_document(
                                 env = Rc::new(new_env);
                             }
                             Type::Unknown => {} // Gradual: dict type inference failed, skip type alias registration
-                            _ => errors.push(
-                                TypeErrorTyped::NotARecord(NotARecord {
-                                    actual: ty.clone(),
-                                    span: surface_node.span.clone(),
-                                    notes: vec![],
-                                })
-                                .into(),
-                            ),
+                            _ => errors.push(TypeErrorTyped::NotARecord(NotARecord {
+                                actual: ty.clone(),
+                                span: surface_node.span.clone(),
+                                notes: vec![],
+                            })),
                         }
                     }
                 }
@@ -863,17 +851,14 @@ fn typecheck_surface_document(
                     || contains_unknown_or_top(&expected_output_resolved))
                     && Type::is_consistent(&result_type_resolved, &expected_output_resolved));
                 if !passes {
-                    advisory_errors.push(
-                        TypeErrorTyped::Generic(GenericTypeError {
-                            message: format!(
-                                "Document output type {} does not match annotation {}",
-                                result_type_resolved, expected_output_resolved
-                            ),
-                            span: output_ann.span.clone(),
-                            notes: vec![],
-                        })
-                        .into(),
-                    );
+                    advisory_errors.push(TypeErrorTyped::Generic(GenericTypeError {
+                        message: format!(
+                            "Document output type {} does not match annotation {}",
+                            result_type_resolved, expected_output_resolved
+                        ),
+                        span: output_ann.span.clone(),
+                        notes: vec![],
+                    }));
                 }
             }
             Err(e) => advisory_errors.push(e),
@@ -1663,7 +1648,7 @@ pub(crate) fn infer_surface_expr(
                         cause_span.start.line, cause_span.start.column
                     ));
                 }
-                Err(vec![err.into()])
+                Err(vec![err])
             }
         }
 
@@ -1700,7 +1685,7 @@ pub(crate) fn infer_surface_expr(
             // later steps can instantiate it at different types (Damas & Milner, 1982).
             if exprs.is_empty() {
                 return Ok(Type::Record(Row {
-                    fields: HashMap::new(),
+                    fields: BTreeMap::new(),
                     tail: crate::type_def::RowTail::Empty,
                 }));
             }
@@ -1750,8 +1735,7 @@ pub(crate) fn infer_surface_expr(
                             ),
                             span: seq_expr.span.clone(),
                             notes: vec![],
-                        })
-                        .into()]);
+                        })]);
                     }
                 } else {
                     let enclosing_level = state.level;
@@ -1899,8 +1883,7 @@ pub(crate) fn infer_surface_expr(
                                     ),
                                     span: node.span.clone(),
                                     notes: vec![],
-                                })
-                                .into()]);
+                                })]);
                             }
 
                             for (arg, (_param_name, param_ty)) in args.iter().zip(params.iter()) {
@@ -1993,7 +1976,7 @@ pub(crate) fn infer_surface_expr(
                                     cause_span.start.line, cause_span.start.column
                                 ));
                             }
-                            Err(vec![err.into()])
+                            Err(vec![err])
                         }
                     }
                 }
@@ -2082,7 +2065,7 @@ pub(crate) fn infer_surface_expr(
         SurfaceExpression::Quote(_inner) => {
             // [quote expr] produces a dict representing the AST.
             Ok(Type::Record(Row {
-                fields: HashMap::new(),
+                fields: BTreeMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             }))
         }
@@ -2097,7 +2080,7 @@ pub(crate) fn infer_surface_expr(
             let inner_ty = infer_surface_expr(inner, env, state, type_map)?;
 
             let expected_list_ty = Type::Record(Row {
-                fields: HashMap::new(),
+                fields: BTreeMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             });
 
@@ -2115,8 +2098,7 @@ pub(crate) fn infer_surface_expr(
                     message: format!("unquote-splice expects a list (Dict), got {}", inner_ty),
                     span: inner.span.clone(),
                     notes: vec![],
-                })
-                .into()]
+                })]
             })?;
 
             Ok(expected_list_ty)
@@ -2148,7 +2130,7 @@ pub(crate) fn infer_surface_expr(
                             let tag_ty = Type::NominalVariant {
                                 tag: tag.clone(),
                                 fields: crate::type_def::Row {
-                                    fields: std::collections::HashMap::new(),
+                                    fields: std::collections::BTreeMap::new(),
                                     tail: crate::type_def::RowTail::Empty,
                                 },
                             };
@@ -2224,7 +2206,7 @@ pub(crate) fn infer_surface_expr(
                             let neg_tag = Type::Negation(Box::new(Type::NominalVariant {
                                 tag: tag.clone(),
                                 fields: crate::type_def::Row {
-                                    fields: std::collections::HashMap::new(),
+                                    fields: std::collections::BTreeMap::new(),
                                     tail: crate::type_def::RowTail::Empty,
                                 },
                             }));
@@ -2311,33 +2293,32 @@ pub(crate) fn infer_surface_expr(
 
                 if !result.exhaustive {
                     let witnesses = coverage::format_witnesses(&result.uncovered);
-                    match_errors.push(
-                        TypeErrorTyped::Generic(GenericTypeError {
-                            message: format!(
-                                "non-exhaustive match: missing coverage for {}",
-                                witnesses
-                            ),
-                            span: node.span.clone(),
-                            notes: vec![],
-                        })
-                        .into(),
-                    );
+                    match_errors.push(TypeErrorTyped::Generic(GenericTypeError {
+                        message: format!(
+                            "non-exhaustive match: missing coverage for {}",
+                            witnesses
+                        ),
+                        span: node.span.clone(),
+                        notes: vec![],
+                    }));
                 }
                 for &idx in &result.redundant {
                     match_errors.push(TypeErrorTyped::Generic(GenericTypeError {
-                        message: "unreachable match arm: this pattern is already covered by prior arms".to_string(),
+                        message:
+                            "unreachable match arm: this pattern is already covered by prior arms"
+                                .to_string(),
                         span: arms[idx].pattern.span.clone(),
                         notes: vec![],
-                    })
-                    .into());
+                    }));
                 }
                 for &idx in &result.inaccessible {
                     match_errors.push(TypeErrorTyped::Generic(GenericTypeError {
-                        message: "inaccessible match arm: reachable only via diverging (bottom) values".to_string(),
+                        message:
+                            "inaccessible match arm: reachable only via diverging (bottom) values"
+                                .to_string(),
                         span: arms[idx].pattern.span.clone(),
                         notes: vec![],
-                    })
-                    .into());
+                    }));
                 }
                 if !match_errors.is_empty() {
                     return Err(match_errors);
@@ -2401,20 +2382,17 @@ pub(crate) fn infer_surface_expr(
                     message: "MacroDecl should be removed by expansion pass before typechecking (internal error)".to_string(),
                     span: node.span.clone(),
                     notes: vec![],
-                })
-                .into()]),
+                })]),
                 SurfaceDeclaration::Splice(..) => Err(vec![TypeErrorTyped::Generic(GenericTypeError {
                     message: "Splice should be removed by expansion pass before typechecking (internal error)".to_string(),
                     span: node.span.clone(),
                     notes: vec![],
-                })
-                .into()]),
+                })]),
                 SurfaceDeclaration::SyntaxClass { .. } => Err(vec![TypeErrorTyped::Generic(GenericTypeError {
                     message: "SyntaxClass should be removed by expansion pass before typechecking (internal error)".to_string(),
                     span: node.span.clone(),
                     notes: vec![],
-                })
-                .into()]),
+                })]),
             }
         }
 
@@ -2429,8 +2407,7 @@ pub(crate) fn infer_surface_expr(
                 message: msg,
                 span: node.span.clone(),
                 notes: vec![],
-            })
-            .into()])
+            })])
         }
 
         SurfaceExpression::CaseArm { pattern, body } => {
@@ -2446,8 +2423,7 @@ pub(crate) fn infer_surface_expr(
             message: "rest marker (...) is only valid inside type expressions".to_string(),
             span: node.span.clone(),
             notes: vec![],
-        })
-        .into()]),
+        })]),
 
         SurfaceExpression::PatternDecl { .. } => {
             // PatternDecl should never appear in value positions (only in instance arms)
@@ -2455,8 +2431,7 @@ pub(crate) fn infer_surface_expr(
                 message: "pattern declaration is only valid in instance match arms".to_string(),
                 span: node.span.clone(),
                 notes: vec![],
-            })
-            .into()])
+            })])
         }
 
         SurfaceExpression::Error(span) => Err(vec![TypeErrorTyped::Generic(GenericTypeError {
@@ -2466,8 +2441,7 @@ pub(crate) fn infer_surface_expr(
             ),
             span: node.span.clone(),
             notes: vec![],
-        })
-        .into()]),
+        })]),
     };
 
     // Record the inferred type in the type map (if collecting).
@@ -2516,8 +2490,7 @@ fn infer_class_decl_from_surface(
                 .to_string(),
             span,
             notes: vec![],
-        })
-        .into()]);
+        })]);
     }
 
     for method in methods {
@@ -2530,8 +2503,7 @@ fn infer_class_decl_from_surface(
                         message: "class method name must be a string or identifier".to_string(),
                         span: key_node.span.clone(),
                         notes: vec![],
-                    })
-                    .into()]);
+                    })]);
                 }
             },
             None => {
@@ -2539,8 +2511,7 @@ fn infer_class_decl_from_surface(
                     message: "class method must have a name".to_string(),
                     span: method.span.clone(),
                     notes: vec![],
-                })
-                .into()]);
+                })]);
             }
         };
         // Method values in class declarations are type signatures ([fn params body] form).
@@ -2574,8 +2545,7 @@ fn infer_class_decl_from_surface(
                     message: "functional dependency must be a 2-element list [[determining-vars] determined-var(s)]".to_string(),
                     span: fd_node.span.clone(),
                     notes: vec![],
-                })
-                .into()]);
+                })]);
             }
         }
     }
@@ -2589,8 +2559,7 @@ fn infer_class_decl_from_surface(
                     message: "resolver must be an identifier or string".to_string(),
                     span: resolver_node.span.clone(),
                     notes: vec![],
-                })
-                .into()]);
+                })]);
             }
         }
     } else {
@@ -2623,7 +2592,7 @@ fn infer_class_decl_from_surface(
     }
 
     Ok(Type::Record(Row {
-        fields: HashMap::new(),
+        fields: BTreeMap::new(),
         tail: crate::type_def::RowTail::Empty,
     }))
 }
@@ -2645,18 +2614,18 @@ fn infer_instance_decl_from_surface(
 
     if arms.is_empty() {
         return Ok(Type::Record(Row {
-            fields: HashMap::new(),
+            fields: BTreeMap::new(),
             tail: crate::type_def::RowTail::Empty,
         }));
     }
 
     let (param_count, has_fds, fd_list, param_names) = {
         let class_decl = state.class_env.get(class_name).ok_or_else(|| {
-            vec![TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
+            vec![TypeErrorTyped::Generic(GenericTypeError {
                 message: format!("unknown class '{}'", class_name),
                 span: span.clone(),
                 notes: vec![],
-            }))]
+            })]
         })?;
         (
             class_decl.params.len(),
@@ -2685,8 +2654,7 @@ fn infer_instance_decl_from_surface(
                 ),
                 span: pattern_node.span.clone(),
                 notes: vec![],
-            })
-            .into()]);
+            })]);
         }
 
         if pattern_types.iter().any(|ty| matches!(ty, Type::Unknown)) {
@@ -2695,8 +2663,7 @@ fn infer_instance_decl_from_surface(
                     span: pattern_node.span.clone(),
                     notes: vec![],
                 },
-            )
-            .into()]);
+            )]);
         }
 
         arm_data.push((pattern_types, pattern_node.span.clone(), methods));
@@ -2717,7 +2684,7 @@ fn infer_instance_decl_from_surface(
                         span_j.start.line
                     )],
                 });
-                return Err(vec![error.into()]);
+                return Err(vec![error]);
             }
         }
     }
@@ -2743,8 +2710,7 @@ fn infer_instance_decl_from_surface(
                                         "coverage violation for class '{}': determined parameter '{}' (variable '{}') does not appear in any determining position",
                                         class_name, param_name, det_name
                                     )],
-                                })
-                                .into()]);
+                                })]);
                             }
                         }
                     }
@@ -2785,7 +2751,7 @@ fn infer_instance_decl_from_surface(
                                     span_j.start.line
                                 )],
                             });
-                            return Err(vec![error.into()]);
+                            return Err(vec![error]);
                         }
                     }
                 }
@@ -2821,8 +2787,7 @@ fn infer_instance_decl_from_surface(
                                     .to_string(),
                                 span: key_node.span.clone(),
                                 notes: vec![],
-                            })
-                            .into()]);
+                            })]);
                         }
                     },
                     None => {
@@ -2830,8 +2795,7 @@ fn infer_instance_decl_from_surface(
                             message: "instance method must have a name".to_string(),
                             span: method.span.clone(),
                             notes: vec![],
-                        })
-                        .into()]);
+                        })]);
                     }
                 };
 
@@ -2893,13 +2857,12 @@ fn infer_instance_decl_from_surface(
                 message: msg,
                 span: span.clone(),
                 notes: vec![],
-            })
-            .into()]);
+            })]);
         }
     }
 
     Ok(Type::Record(Row {
-        fields: HashMap::new(),
+        fields: BTreeMap::new(),
         tail: crate::type_def::RowTail::Empty,
     }))
 }
@@ -3017,8 +2980,7 @@ pub(super) fn check_surface_expr(
                             ),
                             span: node.span.clone(),
                             notes: vec![],
-                        })
-                        .into()]);
+                        })]);
                     }
 
                     // Build parameter types: use expected types for unannotated params.
@@ -3048,11 +3010,11 @@ pub(super) fn check_surface_expr(
                                         unify(expected_ty, &resolved, &mut subst, state, ann.span.clone());
                                     state.subst = subst;
                                     result.map_err(|_e| {
-                                        TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
+                                        TypeErrorTyped::Generic(GenericTypeError {
                                             message: format!("parameter annotation {resolved} is more restrictive than required type {expected_ty}"),
                                             span: ann.span.clone(),
                                             notes: vec![],
-                                        }))
+                                        })
                                     })?;
                                 } else {
                                     // Apply substitution before consistency check
@@ -3066,11 +3028,11 @@ pub(super) fn check_surface_expr(
                                             || contains_unknown_or_top(&resolved_ty))
                                             && Type::is_consistent(&expected_ty_resolved, &resolved_ty));
                                     if !sub_passes {
-                                        return Err(TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
+                                        return Err(TypeErrorTyped::Generic(GenericTypeError {
                                             message: format!("parameter annotation {resolved_ty} is more restrictive than required type {expected_ty_resolved}"),
                                             span: ann.span.clone(),
                                             notes: vec![],
-                                        })));
+                                        }));
                                     }
                                 }
                                 Ok(resolved)
@@ -3126,8 +3088,7 @@ pub(super) fn check_surface_expr(
                                         got: declared.clone(),
                                         span: node.span.clone(),
                                         notes: vec![],
-                                    })
-                                    .into()]
+                                    })]
                                 })?;
                             } else {
                                 // Apply substitution before consistency check
@@ -3159,8 +3120,7 @@ pub(super) fn check_surface_expr(
                                             span: node.span.clone(),
                                             notes: vec![],
                                         },
-                                    )
-                                    .into()]);
+                                    )]);
                                 }
                             }
                             // Check body against declared return type
@@ -3269,8 +3229,7 @@ pub(super) fn check_surface_expr(
                     span: node.span.clone(),
                     notes: vec![],
                 },
-            )
-            .into()])
+            )])
         } else {
             Ok(())
         }

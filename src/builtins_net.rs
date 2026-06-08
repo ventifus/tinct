@@ -28,7 +28,7 @@
 //! Extracted from `builtins_io.rs` in T-915.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::pin::Pin;
 use std::rc::Rc;
@@ -3948,11 +3948,11 @@ pub fn net_type_env() -> TypeEnv {
 pub fn populate_net_type_env(env: &mut TypeEnv) {
     // Helper: create Handle capability flag type (Readable, Writable, etc.)
     fn cap_flag(flag_name: &str) -> Type {
-        let mut fields = HashMap::new();
+        let mut fields = BTreeMap::new();
         fields.insert(
             format!("__cap_flag_{}", flag_name.to_lowercase()),
             Type::Record(Row {
-                fields: HashMap::new(),
+                fields: BTreeMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             }),
         );
@@ -4014,7 +4014,7 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
                 (
                     None,
                     Type::Record(Row {
-                        fields: HashMap::new(),
+                        fields: BTreeMap::new(),
                         tail: crate::type_def::RowTail::Empty,
                     }),
                 ), // opts dict: no required fields (BAS width subtyping)
@@ -4032,7 +4032,7 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
         Type::Function {
             params: vec![(None, Type::handle(cap_flag("readable")))],
             ret: Box::new(Type::Record(Row {
-                fields: HashMap::from([
+                fields: BTreeMap::from([
                     ("subject".to_string(), Type::Str),
                     ("issuer".to_string(), Type::Str),
                     ("sans".to_string(), Type::seq(Type::Str)),
@@ -4058,7 +4058,7 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
                 ),
             ],
             ret: Box::new(Type::Record(Row {
-                fields: HashMap::new(),
+                fields: BTreeMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
@@ -4074,7 +4074,7 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
                 Type::normalize_union(vec![Type::DatagramHandle, Type::QuicDatagramHandle]),
             )],
             ret: Box::new(Type::Record(Row {
-                fields: HashMap::from([
+                fields: BTreeMap::from([
                     ("data".to_string(), Type::Bytes),
                     ("addr".to_string(), Type::Str),
                     ("port".to_string(), Type::Int),
@@ -4096,7 +4096,7 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
                 (
                     None,
                     Type::Record(Row {
-                        fields: HashMap::new(),
+                        fields: BTreeMap::new(),
                         tail: crate::type_def::RowTail::Empty,
                     }),
                 ), // opts dict (TLS options; no required fields)
@@ -4136,7 +4136,7 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
                 (
                     None,
                     Type::Record(Row {
-                        fields: HashMap::new(),
+                        fields: BTreeMap::new(),
                         tail: crate::type_def::RowTail::Empty,
                     }),
                 ), // opts dict (reserved; no required fields)
@@ -4172,7 +4172,7 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
                 (
                     None,
                     Type::Record(Row {
-                        fields: HashMap::new(),
+                        fields: BTreeMap::new(),
                         tail: crate::type_def::RowTail::Empty,
                     }),
                 ), // headers dict (any dict; BAS width subtyping)
@@ -4196,17 +4196,17 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
             ],
             ret: Box::new(Type::normalize_union(vec![
                 Type::Record(Row {
-                    fields: HashMap::from([(
+                    fields: BTreeMap::from([(
                         "ok".to_string(),
                         Type::Record(Row {
-                            fields: HashMap::from([("latency-ms".to_string(), Type::Int)]),
+                            fields: BTreeMap::from([("latency-ms".to_string(), Type::Int)]),
                             tail: crate::type_def::RowTail::Empty,
                         }),
                     )]),
                     tail: crate::type_def::RowTail::Empty,
                 }),
                 Type::Record(Row {
-                    fields: HashMap::from([("err".to_string(), Type::Str)]),
+                    fields: BTreeMap::from([("err".to_string(), Type::Str)]),
                     tail: crate::type_def::RowTail::Empty,
                 }),
             ])),

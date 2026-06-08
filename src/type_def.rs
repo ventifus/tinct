@@ -8,7 +8,7 @@
 //! Type class declarations (`ClassDecl`, `Constraint`) live in `type_class.rs`.
 //! Normalization and Display impls live in `type_normalize.rs`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
 
@@ -37,17 +37,19 @@ pub enum RowTail {
 
 /// Row representation for record types.
 ///
-/// `fields` uses `HashMap` because row field order is semantically irrelevant at the type level —
-/// structural subtyping makes rows unordered. `Display` sorts field names for
-/// deterministic output. Runtime `Value::Dict` keeps `IndexMap` for ordered user-visible
-/// semantics; this HashMap is only at the type-inference layer.
+/// `fields` uses `BTreeMap` for deterministic iteration order (lexicographic by key).
+/// Although row field order is semantically irrelevant at the type level (structural
+/// subtyping makes rows unordered), deterministic iteration is required for stable
+/// type checker output in corpus tests. BTreeMap provides this guarantee.
+/// Runtime `Value::Dict` keeps `IndexMap` for ordered user-visible semantics;
+/// this BTreeMap is only at the type-inference layer.
 ///
 /// `tail` constrains the non-named portion of the row. `RowTail::Empty` is the default for
 /// all current closed-record constructions. `RowTail::Uniform` is produced when parsing
 /// `{_ : V}` or `{_@K : V}` annotation syntax (column constraints).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Row {
-    pub fields: HashMap<String, Type>, // known fields {l₁: τ₁, l₂: τ₂, ...}
+    pub fields: BTreeMap<String, Type>, // known fields {l₁: τ₁, l₂: τ₂, ...}
     pub tail: RowTail,
 }
 
@@ -2701,8 +2703,7 @@ pub fn check_kind_wellformed(
                     ),
                     span,
                     notes: vec![],
-                })
-                .into());
+                }));
             }
             Ok(())
         }
@@ -2744,8 +2745,7 @@ pub fn check_kind_wellformed(
                     message: format!("kind mismatch: operator `{name}` has kind (* → *) but expected kind *; did you forget to apply it?"),
                     span,
                     notes: vec![],
-                })
-                .into());
+                }));
             }
             // Bare Kind::Arrow in a type position is also kind-incorrect.
             // Arrow kinds are for higher-order type constructors that must be fully applied.
@@ -2754,8 +2754,7 @@ pub fn check_kind_wellformed(
                     message: format!("kind mismatch: `{name}` is a higher-kinded type constructor but was used in a type position"),
                     span,
                     notes: vec![],
-                })
-                .into());
+                }));
             }
             // If the name is not in kind_env, let it pass (freshly introduced Operator
             // that hasn't been kind-registered yet, or will be registered later)

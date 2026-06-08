@@ -3,4 +3,4 @@
 ["tail": [drop 2 data]]
 
 === warn
-undefined variable: data
+[UndefinedVariable] undefined variable: data

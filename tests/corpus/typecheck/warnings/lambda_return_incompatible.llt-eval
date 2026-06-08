@@ -4,4 +4,4 @@
 Function(x)
 
 === warn
-cannot unify String with 42
+[UnificationFailure] cannot unify String with 42

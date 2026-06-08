@@ -6,4 +6,4 @@
 ["x": config.host]
 
 === warn
-undefined variable: config
+[UndefinedVariable] undefined variable: config

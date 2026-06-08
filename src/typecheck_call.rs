@@ -7,7 +7,7 @@
 //! - `check_call_with_scheme` — polymorphic call with single-shot scheme instantiation
 //! - `check_call` — general function call type checking (CALL-MONO and CALL-POLY)
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -77,7 +77,7 @@ pub(crate) fn check_dot_access(
             let beta = state.fresh_type_var();
 
             // Build the record type to unify α with (BAS: no RowVar tail)
-            let mut fields = HashMap::new();
+            let mut fields = BTreeMap::new();
             fields.insert(field_str.to_string(), beta.clone());
             let record_ty = Type::Record(Row {
                 fields,
@@ -158,8 +158,7 @@ pub(crate) fn check_dot_access(
             actual: target_ty,
             span,
             notes: vec![],
-        })
-        .into()]),
+        })]),
     }
 }
 
@@ -189,7 +188,7 @@ pub(crate) fn check_dot_access_int(
         Type::TypeVar(ref alpha, alpha_level) => {
             let beta = state.fresh_type_var();
 
-            let mut fields = HashMap::new();
+            let mut fields = BTreeMap::new();
             fields.insert(field_name, beta.clone());
             let record_ty = Type::Record(Row {
                 fields,
@@ -225,8 +224,7 @@ pub(crate) fn check_dot_access_int(
             actual: target_ty.clone(),
             span,
             notes: vec![],
-        })
-        .into()]),
+        })]),
     }
 }
 
@@ -344,8 +342,7 @@ pub(crate) fn check_call_with_scheme(
                     } else {
                         vec![]
                     },
-                })
-                .into()]);
+                })]);
             }
 
             // CALL-POLY: After instantiation, the function type always has type variables.
@@ -528,14 +525,13 @@ pub(crate) fn check_call_with_scheme(
                 let mut seen_names: HashSet<&str> = HashSet::new();
                 for na in named_args {
                     if !seen_names.insert(&na.node.name) {
-                        arg_errors.get_or_insert_with(Vec::new).push(
-                            TypeErrorTyped::Generic(GenericTypeError {
+                        arg_errors
+                            .get_or_insert_with(Vec::new)
+                            .push(TypeErrorTyped::Generic(GenericTypeError {
                                 message: format!("duplicate named argument: '{}'", na.node.name),
                                 span: na.span.clone(),
                                 notes: vec![],
-                            })
-                            .into(),
-                        );
+                            }));
                     }
                 }
                 // Unify named args by matching them to params by name.
@@ -565,8 +561,7 @@ pub(crate) fn check_call_with_scheme(
                                         ),
                                         span: na.span.clone(),
                                         notes: vec![],
-                                    })
-                                    .into(),
+                                    }),
                                 );
                                 continue;
                             }
@@ -592,8 +587,7 @@ pub(crate) fn check_call_with_scheme(
                                                 ),
                                                 span: na.span.clone(),
                                                 notes: vec![],
-                                            })
-                                            .into(),
+                                            }),
                                         );
                                     }
                                 }
@@ -617,8 +611,7 @@ pub(crate) fn check_call_with_scheme(
                                         ),
                                         span: na.span.clone(),
                                         notes: vec![],
-                                    })
-                                    .into(),
+                                    }),
                                 );
                             } else {
                                 // Variadic function: infer the named arg value for type map and error propagation.
@@ -708,16 +701,14 @@ pub(crate) fn check_call_with_scheme(
                     got: args.len(),
                     span,
                     notes: vec!["unit variant constructor takes exactly 1 argument".to_string()],
-                })
-                .into()]);
+                })]);
             }
             if !named_args.is_empty() {
                 return Err(vec![TypeErrorTyped::Generic(GenericTypeError {
                     message: "unit variant constructor does not accept named arguments".to_string(),
                     span,
                     notes: vec![],
-                })
-                .into()]);
+                })]);
             }
 
             // Infer the argument type
@@ -726,7 +717,7 @@ pub(crate) fn check_call_with_scheme(
             // Result type: NominalVariant with the arg type as payload.
             // Runtime stores payload as Some(payload_id), so we model it as a single-field
             // record with numeric field "0" (consistent with single-positional payload convention).
-            let mut payload_fields = HashMap::new();
+            let mut payload_fields = BTreeMap::new();
             payload_fields.insert("0".to_string(), arg_ty);
             Ok(Type::NominalVariant {
                 tag: tag.clone(),
@@ -742,14 +733,12 @@ pub(crate) fn check_call_with_scheme(
             actual: func_ty.clone(),
             span: func_span,
             notes: vec![],
-        })
-        .into()]),
+        })]),
         _ => Err(vec![TypeErrorTyped::NotAFunction(NotAFunction {
             actual: func_ty.clone(),
             span: func_span,
             notes: vec![],
-        })
-        .into()]),
+        })]),
     }
 }
 
@@ -841,8 +830,7 @@ pub(crate) fn check_call(
                     } else {
                         vec![]
                     },
-                })
-                .into()]);
+                })]);
             }
 
             // CALL-MONO: function type is fully concrete (no type variables)
@@ -934,17 +922,14 @@ pub(crate) fn check_call(
                                                 &param_ty_resolved,
                                             ));
                                     if !sub_passes {
-                                        errors.push(
-                                            TypeErrorTyped::UnificationFailure(
-                                                UnificationFailure {
-                                                    expected: param_ty_resolved,
-                                                    got: arg_ty_resolved,
-                                                    span: arg.span.clone(),
-                                                    notes: vec![],
-                                                },
-                                            )
-                                            .into(),
-                                        );
+                                        errors.push(TypeErrorTyped::UnificationFailure(
+                                            UnificationFailure {
+                                                expected: param_ty_resolved,
+                                                got: arg_ty_resolved,
+                                                span: arg.span.clone(),
+                                                notes: vec![],
+                                            },
+                                        ));
                                     }
                                 }
                                 Err(mut errs) => {
@@ -994,14 +979,11 @@ pub(crate) fn check_call(
                 let mut seen_names: HashSet<&str> = HashSet::new();
                 for na in named_args {
                     if !seen_names.insert(&na.node.name) {
-                        errors.push(
-                            TypeErrorTyped::Generic(GenericTypeError {
-                                message: format!("duplicate named argument: '{}'", na.node.name),
-                                span: na.span.clone(),
-                                notes: vec![],
-                            })
-                            .into(),
-                        );
+                        errors.push(TypeErrorTyped::Generic(GenericTypeError {
+                            message: format!("duplicate named argument: '{}'", na.node.name),
+                            span: na.span.clone(),
+                            notes: vec![],
+                        }));
                     }
                 }
                 // Check named args by matching them to params by name
@@ -1029,8 +1011,7 @@ pub(crate) fn check_call(
                                         ),
                                         span: na.span.clone(),
                                         notes: vec![],
-                                    })
-                                    .into(),
+                                    }),
                                 );
                                 continue;
                             }
@@ -1068,18 +1049,15 @@ pub(crate) fn check_call(
                                     );
                                     state.subst = subst;
                                     if let Err(e) = result {
-                                        errors.push(
-                                            TypeErrorTyped::Generic(GenericTypeError {
-                                                message: format!(
-                                                    "named argument '{}' type mismatch: {}",
-                                                    arg_name,
-                                                    e.message()
-                                                ),
-                                                span: na.span.clone(),
-                                                notes: vec![],
-                                            })
-                                            .into(),
-                                        );
+                                        errors.push(TypeErrorTyped::Generic(GenericTypeError {
+                                            message: format!(
+                                                "named argument '{}' type mismatch: {}",
+                                                arg_name,
+                                                e.message()
+                                            ),
+                                            span: na.span.clone(),
+                                            notes: vec![],
+                                        }));
                                     }
                                 }
                                 Err(mut errs) => {
@@ -1102,8 +1080,7 @@ pub(crate) fn check_call(
                                         ),
                                         span: na.span.clone(),
                                         notes: vec![],
-                                    })
-                                    .into(),
+                                    }),
                                 );
                             } else {
                                 // Variadic function: infer the named arg value for type map and error propagation.
@@ -1211,14 +1188,13 @@ pub(crate) fn check_call(
                 let mut seen_names: HashSet<&str> = HashSet::new();
                 for na in named_args {
                     if !seen_names.insert(&na.node.name) {
-                        arg_errors.get_or_insert_with(Vec::new).push(
-                            TypeErrorTyped::Generic(GenericTypeError {
+                        arg_errors
+                            .get_or_insert_with(Vec::new)
+                            .push(TypeErrorTyped::Generic(GenericTypeError {
                                 message: format!("duplicate named argument: '{}'", na.node.name),
                                 span: na.span.clone(),
                                 notes: vec![],
-                            })
-                            .into(),
-                        );
+                            }));
                     }
                 }
                 // Check named args by matching them to params by name
@@ -1250,8 +1226,7 @@ pub(crate) fn check_call(
                                         ),
                                         span: na.span.clone(),
                                         notes: vec![],
-                                    })
-                                    .into(),
+                                    }),
                                 );
                                 continue;
                             }
@@ -1300,8 +1275,7 @@ pub(crate) fn check_call(
                                                 ),
                                                 span: na.span.clone(),
                                                 notes: vec![],
-                                            })
-                                            .into(),
+                                            }),
                                         );
                                     }
                                 }
@@ -1325,8 +1299,7 @@ pub(crate) fn check_call(
                                         ),
                                         span: na.span.clone(),
                                         notes: vec![],
-                                    })
-                                    .into(),
+                                    }),
                                 );
                             } else {
                                 // Variadic function: infer the named arg value for type map and error propagation.
@@ -1427,16 +1400,14 @@ pub(crate) fn check_call(
                     got: args.len(),
                     span,
                     notes: vec!["unit variant constructor takes exactly 1 argument".to_string()],
-                })
-                .into()]);
+                })]);
             }
             if !named_args.is_empty() {
                 return Err(vec![TypeErrorTyped::Generic(GenericTypeError {
                     message: "unit variant constructor does not accept named arguments".to_string(),
                     span,
                     notes: vec![],
-                })
-                .into()]);
+                })]);
             }
 
             // Infer the argument type
@@ -1445,7 +1416,7 @@ pub(crate) fn check_call(
             // Result type: NominalVariant with the arg type as payload.
             // Runtime stores payload as Some(payload_id), so we model it as a single-field
             // record with numeric field "0" (consistent with single-positional payload convention).
-            let mut payload_fields = HashMap::new();
+            let mut payload_fields = BTreeMap::new();
             payload_fields.insert("0".to_string(), arg_ty);
             Ok(Type::NominalVariant {
                 tag: tag.clone(),
@@ -1462,8 +1433,7 @@ pub(crate) fn check_call(
             actual: func_ty.clone(),
             span: func.span.clone(),
             notes: vec![],
-        })
-        .into()]),
+        })]),
         _ => {
             // T003: func_ty is a concrete non-callable type (e.g., Str, Int, Bool).
             //
@@ -1493,8 +1463,7 @@ pub(crate) fn check_call(
                 actual: func_ty.clone(),
                 span: func.span.clone(),
                 notes: vec![],
-            })
-            .into()])
+            })])
         }
     }
 }

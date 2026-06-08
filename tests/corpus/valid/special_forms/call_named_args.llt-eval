@@ -3,4 +3,4 @@
 [fetch "https://example.com" timeout: 60 retries: 3]
 
 === warn
-undefined variable: fetch
+[UndefinedVariable] undefined variable: fetch

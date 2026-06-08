@@ -4,4 +4,4 @@
 Function()
 
 === warn
-constraint value must be a class name or list of class names
+[TypeError] constraint value must be a class name or list of class names

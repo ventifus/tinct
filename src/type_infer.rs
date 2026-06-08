@@ -3,7 +3,7 @@
 //! This module contains the core type inference infrastructure including
 //! substitution and levels-based let-generalization (Kiselyov 2013).
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use crate::ast::Span;
@@ -380,7 +380,7 @@ impl InferState {
             class_name: "Indexable".to_string(),
             instance_type: Type::Record(Row {
                 fields: {
-                    let mut fields = HashMap::new();
+                    let mut fields = BTreeMap::new();
                     fields.insert(
                         "0".to_string(),
                         Type::map(map_k_var.clone(), map_v_var.clone()),
@@ -403,7 +403,7 @@ impl InferState {
             class_name: "Indexable".to_string(),
             instance_type: Type::Record(Row {
                 fields: {
-                    let mut fields = HashMap::new();
+                    let mut fields = BTreeMap::new();
                     fields.insert("0".to_string(), Type::seq(seq_t_var.clone()));
                     fields.insert("1".to_string(), Type::Int);
                     fields.insert("2".to_string(), seq_t_var.clone());
@@ -428,7 +428,7 @@ impl InferState {
             class_name: "Concatable".to_string(),
             instance_type: Type::Record(Row {
                 fields: {
-                    let mut fields = HashMap::new();
+                    let mut fields = BTreeMap::new();
                     fields.insert("0".to_string(), Type::seq(concat_t_var.clone()));
                     fields.insert("1".to_string(), Type::seq(concat_t_var.clone()));
                     fields.insert("2".to_string(), Type::seq(concat_t_var.clone()));
@@ -447,25 +447,25 @@ impl InferState {
             class_name: "Concatable".to_string(),
             instance_type: Type::Record(Row {
                 fields: {
-                    let mut fields = HashMap::new();
+                    let mut fields = BTreeMap::new();
                     fields.insert(
                         "0".to_string(),
                         Type::Record(Row {
-                            fields: HashMap::new(),
+                            fields: BTreeMap::new(),
                             tail: crate::type_def::RowTail::Empty,
                         }),
                     );
                     fields.insert(
                         "1".to_string(),
                         Type::Record(Row {
-                            fields: HashMap::new(),
+                            fields: BTreeMap::new(),
                             tail: crate::type_def::RowTail::Empty,
                         }),
                     );
                     fields.insert(
                         "2".to_string(),
                         Type::Record(Row {
-                            fields: HashMap::new(),
+                            fields: BTreeMap::new(),
                             tail: crate::type_def::RowTail::Empty,
                         }),
                     );
@@ -484,7 +484,7 @@ impl InferState {
             class_name: "Concatable".to_string(),
             instance_type: Type::Record(Row {
                 fields: {
-                    let mut fields = HashMap::new();
+                    let mut fields = BTreeMap::new();
                     fields.insert("0".to_string(), Type::Str);
                     fields.insert("1".to_string(), Type::Str);
                     fields.insert("2".to_string(), Type::Str);
@@ -503,7 +503,7 @@ impl InferState {
             class_name: "Concatable".to_string(),
             instance_type: Type::Record(Row {
                 fields: {
-                    let mut fields = HashMap::new();
+                    let mut fields = BTreeMap::new();
                     fields.insert("0".to_string(), Type::Bytes);
                     fields.insert("1".to_string(), Type::Bytes);
                     fields.insert("2".to_string(), Type::Bytes);
@@ -566,7 +566,7 @@ impl InferState {
             seed_instance(
                 "Showable",
                 Type::Record(Row {
-                    fields: HashMap::new(),
+                    fields: BTreeMap::new(),
                     tail: crate::type_def::RowTail::Empty,
                 }),
             );
@@ -674,7 +674,7 @@ impl InferState {
             Arc::new(crate::type_def::TyConDef {
                 params: vec![],
                 body: crate::type_def::Type::Record(crate::type_def::Row {
-                    fields: HashMap::new(),
+                    fields: BTreeMap::new(),
                     tail: crate::type_def::RowTail::Empty,
                 }),
                 constraints: vec![],

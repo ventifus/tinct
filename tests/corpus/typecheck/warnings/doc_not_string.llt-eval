@@ -4,4 +4,4 @@
 Function()
 
 === warn
-doc: value must be a string literal
+[TypeError] doc: value must be a string literal

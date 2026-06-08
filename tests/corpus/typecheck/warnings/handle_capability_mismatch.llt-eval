@@ -9,4 +9,4 @@
 Dict({"f": Function(h)})
 
 === warn
-cannot unify [__cap_flag_readable: []] with [__cap_flag_writable: []]
+[UnificationFailure] cannot unify [__cap_flag_readable: []] with [__cap_flag_writable: []]

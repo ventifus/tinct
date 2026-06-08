@@ -3,4 +3,4 @@
 ["head": [take 3 data]]
 
 === warn
-undefined variable: data
+[UndefinedVariable] undefined variable: data

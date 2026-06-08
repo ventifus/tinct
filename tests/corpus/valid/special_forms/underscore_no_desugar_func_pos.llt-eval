@@ -7,4 +7,4 @@
 [_ x]
 
 === warn
-undefined variable: _
+[UndefinedVariable] undefined variable: _

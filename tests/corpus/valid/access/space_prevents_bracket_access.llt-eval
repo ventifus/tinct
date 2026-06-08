@@ -5,4 +5,4 @@
 [user "field"]
 
 === warn
-undefined variable: user
+[UndefinedVariable] undefined variable: user

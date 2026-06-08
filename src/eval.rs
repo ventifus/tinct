@@ -16,7 +16,7 @@ mod eval_dict_mod;
 pub(crate) use eval_dict_mod::*;
 
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -1008,7 +1008,7 @@ pub fn ground_type_of(v: &Value) -> Type {
         // Return a closed empty record — required-field checks correctly fail,
         // consistent with Overlay field validation being static-only.
         Value::Overlay(..) => Type::Record(Row {
-            fields: HashMap::new(),
+            fields: BTreeMap::new(),
             tail: crate::type_def::RowTail::Empty,
         }),
         // Seq is now a Variant — return Variant type
@@ -1032,7 +1032,7 @@ pub fn ground_type_of(v: &Value) -> Type {
         Value::Variant { tag, .. } => Type::NominalVariant {
             tag: tag.clone(),
             fields: Row {
-                fields: HashMap::new(),
+                fields: BTreeMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             },
         },
@@ -1067,7 +1067,7 @@ fn extract_row(map: &IndexMap<Key, ThunkId>) -> Row {
             // Integer-keyed entries are explicit [0: x 1: y] dict constructs, not record fields.
             Key::Int(_) => None,
         })
-        .collect::<HashMap<String, Type>>();
+        .collect::<BTreeMap<String, Type>>();
     Row {
         fields,
         tail: crate::type_def::RowTail::Empty,
@@ -1168,7 +1168,7 @@ pub(crate) fn as_record_row_merged(expected: &Type) -> Option<Cow<'_, Row>> {
     match expected {
         Type::Record(row) => Some(Cow::Borrowed(row)),
         Type::Intersection(members) if members.iter().all(|m| matches!(m, Type::Record(_))) => {
-            let mut merged_fields: HashMap<String, Type> = HashMap::new();
+            let mut merged_fields: BTreeMap<String, Type> = BTreeMap::new();
             for m in members {
                 if let Type::Record(row) = m {
                     for (k, v) in &row.fields {
@@ -7233,7 +7233,7 @@ mod tests {
         // Structural path: resolved_type = Some(Type::Record(..., Open))
         // Dict has required field "name" -> pass.
         // The record type check is immediate (shape check), field guard wrapping deferred.
-        let mut fields = HashMap::new();
+        let mut fields = BTreeMap::new();
         fields.insert("name".to_string(), Type::Str);
         let record_type = Type::Record(Row {
             fields,
@@ -7300,7 +7300,7 @@ mod tests {
     #[ignore = "pre-existing: TypeAssert type errors require materialize() in lazy CEK model"]
     fn test_typeassert_structural_record_missing_field() {
         // Structural path: record type requires field "id", dict doesn't have it -> error
-        let mut fields = HashMap::new();
+        let mut fields = BTreeMap::new();
         fields.insert("id".to_string(), Type::Int);
         let record_type = Type::Record(Row {
             fields,
@@ -7346,7 +7346,7 @@ mod tests {
         // BAS width subtyping: under BAS, extra fields are ALWAYS accepted.
         // A dict with {x: 1, extra: 2} satisfies the annotation @[x: Int]
         // because the annotation only constrains what it declares.
-        let mut fields = HashMap::new();
+        let mut fields = BTreeMap::new();
         fields.insert("x".to_string(), Type::Int);
         let record_type = Type::Record(Row {
             fields,
@@ -7406,7 +7406,7 @@ mod tests {
     #[test]
     fn test_typeassert_structural_closed_record_exact_fields_pass() {
         // Structural path: closed record, dict has exactly the required fields -> pass
-        let mut fields = HashMap::new();
+        let mut fields = BTreeMap::new();
         fields.insert("x".to_string(), Type::Int);
         let record_type = Type::Record(Row {
             fields,
@@ -7451,7 +7451,7 @@ mod tests {
     #[ignore = "pre-existing: TypeAssert type errors require materialize() in lazy CEK model"]
     fn test_typeassert_structural_record_non_dict_fails() {
         // Structural path: resolved_type = Some(Type::Record(...)), value is Int -> error
-        let mut fields = HashMap::new();
+        let mut fields = BTreeMap::new();
         fields.insert("x".to_string(), Type::Int);
         let record_type = Type::Record(Row {
             fields,
@@ -7656,7 +7656,7 @@ mod tests {
         // Use eval_core_for_test with resolved_type: Type::Record({name: Str}) so the
         // as_record_row_merged path fires. With resolved_type=Unknown (from eval_str),
         // is_consistent_subtype(Int, Unknown)=true and the TypeAssert passes trivially.
-        let mut fields = HashMap::new();
+        let mut fields = BTreeMap::new();
         fields.insert("name".to_string(), Type::Str);
         let record_type = Type::Record(Row {
             fields,
@@ -7872,7 +7872,7 @@ mod tests {
         // Record validation for TypeAssert happens via as_record_row_merged + validate_and_wrap_record
         // in the TypeAssertCheck continuation, NOT via value_matches_type. value_matches_type
         // is only called for non-record types.
-        let mut fields = HashMap::new();
+        let mut fields = BTreeMap::new();
         fields.insert("x".to_string(), Type::Int);
         let record_type = Type::Record(Row {
             fields,
@@ -8070,7 +8070,7 @@ mod tests {
         // segment separately quoted per doc/07-type-extensions.md:162.
 
         // Create a row type requiring field "y"
-        let mut fields = HashMap::new();
+        let mut fields = BTreeMap::new();
         fields.insert("y".to_string(), Type::Int);
         let row = Row {
             fields,
@@ -8132,7 +8132,7 @@ mod tests {
         // Under BAS, a value with more fields satisfies an annotation with fewer fields.
 
         // Create a row type requiring only field "x"
-        let mut fields = HashMap::new();
+        let mut fields = BTreeMap::new();
         fields.insert("x".to_string(), Type::Int);
         let row = Row {
             fields,
@@ -8184,7 +8184,7 @@ mod tests {
         // This is the common case for top-level TypeAssert validation.
 
         // Create a row type requiring field "name"
-        let mut fields = HashMap::new();
+        let mut fields = BTreeMap::new();
         fields.insert("name".to_string(), Type::Str);
         let row = Row {
             fields,
@@ -8244,7 +8244,7 @@ mod tests {
         // BAS width subtyping: integer-keyed entries are extra fields and are ACCEPTED.
         // Under BAS, a value with more fields (including int-keyed) satisfies the annotation.
 
-        let mut fields = HashMap::new();
+        let mut fields = BTreeMap::new();
         fields.insert("name".to_string(), Type::Str);
         let row = Row {
             fields,
@@ -8298,7 +8298,7 @@ mod tests {
         // BAS: Integer-keyed entries are extra fields and are accepted by width subtyping.
         // All records are closed (RowTail::Empty) but BAS allows extra fields.
 
-        let mut fields = HashMap::new();
+        let mut fields = BTreeMap::new();
         fields.insert("name".to_string(), Type::Str);
         let row = Row {
             fields,

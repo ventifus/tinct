@@ -3,4 +3,4 @@
 ["item": [get 0 data]]
 
 === warn
-undefined variable: data
+[UndefinedVariable] undefined variable: data
