@@ -6,7 +6,8 @@
   [match cfg [host h  port p]: [str h ":" [str p]]]
 ]
 === error
-[E099] syntax error at 5:30 (cannot evaluate error node) (defined at 5:30-5:31)
+[E002] undefined variable: host (did you mean the string "host"? Use quotes.) (defined at 5:15-5:19)
 
 === warn
-syntax error at 5:30 (cannot typecheck error node) at 5:30-5:31
+undefined variable: h at 5:37-5:38
+undefined variable: p at 5:48-5:49

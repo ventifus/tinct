@@ -1,7 +1,4 @@
 # Key $x evaluates in parent scope where x is not defined
 [x: 1  $x: 2]
 === error
-[E099] syntax error at 1:12 (cannot evaluate error node) (defined at 1:12-1:13)
-
-=== warn
-syntax error at 1:12 (cannot typecheck error node) at 1:12-1:13
+[E002] undefined variable: x (did you mean the string "x"? Use quotes.) (defined at 1:8-1:10)

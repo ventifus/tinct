@@ -19,6 +19,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::ast::{Span, Spanned, SurfaceExpression, SurfaceNamedArg, SurfaceNode};
+use crate::type_errors::{ArityMismatch, GenericTypeError, TypeErrorTyped};
 use crate::types::{resolve_has_field, InferState, Label, Row, Type, TypeEnv, TypeError};
 
 use super::check_surface_expr;
@@ -77,13 +78,13 @@ pub(crate) fn check_open(
     // Arity check: require at least 3 args (DirCap, path, at least one flag).
     // Matches builtin_open's runtime check: `if args.len() < 3`.
     if args.len() < 3 {
-        return Err(vec![TypeError::new(
-            format!(
-                "arity mismatch: `open` requires at least 3 arguments (DirCap, path, flag...), got {}",
-                args.len()
-            ),
+        return Err(vec![TypeErrorTyped::ArityMismatch(ArityMismatch {
+            expected: 3,
+            got: args.len(),
             span,
-        )]);
+            notes: vec!["`open` requires at least 3 arguments (DirCap, path, flag...)".to_string()],
+        })
+        .into()]);
     }
 
     let mut errors = Vec::new();
@@ -204,13 +205,13 @@ pub(crate) fn check_connect(
 ) -> Result<Type, Vec<TypeError>> {
     // Arity check: require exactly 4 args (cap, transport, host, port)
     if args.len() != 4 {
-        return Err(vec![TypeError::new(
-            format!(
-                "arity mismatch: `connect` requires exactly 4 arguments, got {}",
-                args.len()
-            ),
+        return Err(vec![TypeErrorTyped::ArityMismatch(ArityMismatch {
+            expected: 4,
+            got: args.len(),
             span,
-        )]);
+            notes: vec![],
+        })
+        .into()]);
     }
 
     // Infer arg types (for type checking, even if we don't use them all)
@@ -299,13 +300,13 @@ pub(crate) fn check_map(
 ) -> Result<Type, Vec<TypeError>> {
     // Arity check: require exactly 2 args (callback, collection)
     if args.len() != 2 {
-        return Err(vec![TypeError::new(
-            format!(
-                "arity mismatch: `map` requires exactly 2 arguments, got {}",
-                args.len()
-            ),
+        return Err(vec![TypeErrorTyped::ArityMismatch(ArityMismatch {
+            expected: 2,
+            got: args.len(),
             span,
-        )]);
+            notes: vec![],
+        })
+        .into()]);
     }
 
     // Infer both argument types
@@ -348,13 +349,13 @@ pub(crate) fn check_tls_layer(
 ) -> Result<Type, Vec<TypeError>> {
     // Arity check: require exactly 3 args (handle, hostname, opts)
     if args.len() != 3 {
-        return Err(vec![TypeError::new(
-            format!(
-                "arity mismatch: `tls-layer` requires exactly 3 arguments, got {}",
-                args.len()
-            ),
+        return Err(vec![TypeErrorTyped::ArityMismatch(ArityMismatch {
+            expected: 3,
+            got: args.len(),
             span,
-        )]);
+            notes: vec![],
+        })
+        .into()]);
     }
 
     // Infer all argument types (for type checking)
@@ -377,10 +378,12 @@ pub(crate) fn check_tls_layer(
         }
         None => {
             // Non-handle argument is a type error
-            Err(vec![TypeError::new(
-                format!("tls-layer requires a Handle argument, got {}", handle_ty),
+            Err(vec![TypeErrorTyped::Generic(GenericTypeError {
+                message: format!("tls-layer requires a Handle argument, got {}", handle_ty),
                 span,
-            )])
+                notes: vec![],
+            })
+            .into()])
         }
     }
 }
@@ -400,14 +403,20 @@ pub(crate) fn check_get_in(
 
     // Validate arity: exactly 2 positional args, no named args
     if !named_args.is_empty() || args.len() != 2 {
-        return Err(vec![TypeError::new(
-            format!(
-                "arity mismatch: get-in expects exactly 2 arguments, got {} ({} named)",
-                args.len(),
-                named_args.len()
-            ),
+        return Err(vec![TypeErrorTyped::ArityMismatch(ArityMismatch {
+            expected: 2,
+            got: args.len() + named_args.len(),
             span,
-        )]);
+            notes: if !named_args.is_empty() {
+                vec![format!(
+                    "get-in does not accept named arguments ({} given)",
+                    named_args.len()
+                )]
+            } else {
+                vec![]
+            },
+        })
+        .into()]);
     }
 
     // Infer the dict type
@@ -531,10 +540,14 @@ pub(crate) fn check_do_infer(
     let method_str = match method {
         crate::ast::DotKey::Ident(s) => s.as_str(),
         crate::ast::DotKey::Int(n) => {
-            return Err(vec![TypeError::new(
-                format!("inferred [do]: unexpected integer method index {n} on {sentinel_name}"),
-                call_span,
-            )]);
+            return Err(vec![TypeErrorTyped::Generic(GenericTypeError {
+                message: format!(
+                    "inferred [do]: unexpected integer method index {n} on {sentinel_name}"
+                ),
+                span: call_span,
+                notes: vec![],
+            })
+            .into()]);
         }
     };
 
@@ -605,11 +618,12 @@ pub(crate) fn check_do_infer(
             for na in named_args {
                 let _ = infer_surface_expr(&na.node.value, env, state, type_map);
             }
-            return Err(vec![TypeError::new(
-                "cannot infer monad for [do] — add an explicit monad argument (e.g., [do result ...])",
-                call_span,
-            )
-            .with_code("T_DO_INFER")]);
+            return Err(vec![TypeErrorTyped::Generic(GenericTypeError {
+                message: "cannot infer monad for [do] — add an explicit monad argument (e.g., [do result ...])".to_string(),
+                span: call_span,
+                notes: vec![],
+            })
+            .into()]);
         }
     };
 

@@ -9,4 +9,4 @@
   in [f ...] at 3:11-3:21
 
 === warn
-arity mismatch: expected 4 argument(s), got 2 (1 positional, 1 named) at 3:11-3:21
+expected 4 arguments, got 2 at 3:11-3:21

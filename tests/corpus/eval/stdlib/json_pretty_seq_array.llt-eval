@@ -11,5 +11,5 @@
   in [seq ...] at 5:8-5:37
 
 === warn
-arity mismatch: expected 2 argument(s), got 3 (3 positional, 0 named) at 5:8-5:37
+expected 2 arguments, got 3 at 5:8-5:37
 undefined variable: to-json-pretty at 6:2-6:16

@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use super::{check_surface_expr, infer_surface_expr, TypeMap};
 use crate::ast::{Annotation, Param, Pattern, Span, Spanned, SurfaceExpression, SurfaceNode};
+use crate::type_errors::{GenericTypeError, TypeErrorTyped};
 use crate::types::{instantiate_scheme, unify, InferState, Type, TypeEnv, TypeError};
 
 // resolve_annotation and resolve_fn_metadata come from typecheck_annot via the
@@ -486,10 +487,12 @@ pub(crate) fn typecheck_case_arm(
 
                     _ => {
                         // Other binding forms not yet supported
-                        return Err(vec![TypeError::new(
-                            "unsupported binding pattern in case arm",
-                            binding.span.clone(),
-                        )]);
+                        return Err(vec![TypeErrorTyped::Generic(GenericTypeError {
+                            message: "unsupported binding pattern in case arm".to_string(),
+                            span: binding.span.clone(),
+                            notes: vec![],
+                        })
+                        .into()]);
                     }
                 }
             }
@@ -648,10 +651,12 @@ pub(crate) fn infer_fn(
                     if has_fn_key || all_keyed {
                         // B-355: all-keyed dicts (including custom-only keys) are fn metadata.
                         if !all_keyed {
-                            return Err(vec![TypeError::new(
-                                "fn annotation must use either named keys (return:, constraint:, doc:, bind:, kinds:) or positional entries (union return type), not both",
-                                ann.span.clone(),
-                            )]);
+                            return Err(vec![TypeErrorTyped::Generic(GenericTypeError {
+                                message: "fn annotation must use either named keys (return:, constraint:, doc:, bind:, kinds:) or positional entries (union return type), not both".to_string(),
+                                span: ann.span.clone(),
+                                notes: vec![],
+                            })
+                            .into()]);
                         }
                         // Function metadata dict: extract return type from return: key.
                         let (ret, _doc) = resolve_fn_metadata(

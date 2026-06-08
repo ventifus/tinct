@@ -1737,6 +1737,15 @@ impl fmt::Display for TypeError {
 
 impl std::error::Error for TypeError {}
 
+// T-1107 migration bridge: TypeErrorTyped → legacy TypeError.
+// Both types are defined in this crate (no orphan rule violation).
+// Deleted in T-1108 when all callers migrate to TypeErrorTyped.
+impl From<crate::type_errors::TypeErrorTyped> for TypeError {
+    fn from(typed: crate::type_errors::TypeErrorTyped) -> Self {
+        TypeError::new(typed.message(), typed.span().clone())
+    }
+}
+
 /// Format a `TypeError` into the Rust-style diagnostic format with source context.
 ///
 /// Produces output like:

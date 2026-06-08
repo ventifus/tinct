@@ -13,6 +13,9 @@ use std::sync::Arc;
 
 use super::{check_surface_expr, contains_unknown_or_top, infer_surface_expr, TypeMap};
 use crate::ast::{DotKey, Span, Spanned, SurfaceExpression, SurfaceNamedArg, SurfaceNode};
+use crate::type_errors::{
+    ArityMismatch, GenericTypeError, NotAFunction, NotARecord, TypeErrorTyped, UnificationFailure,
+};
 use crate::types::{
     instantiate_at_level, instantiate_scheme, unify, InferState, Row, Substitution, Type, TypeEnv,
     TypeError, TypeScheme,
@@ -151,7 +154,12 @@ pub(crate) fn check_dot_access(
                 Ok(Type::normalize_union(field_types))
             }
         }
-        _ => Err(vec![TypeError::not_a_record(&target_ty, span)]),
+        _ => Err(vec![TypeErrorTyped::NotARecord(NotARecord {
+            actual: target_ty,
+            span,
+            notes: vec![],
+        })
+        .into()]),
     }
 }
 
@@ -213,7 +221,12 @@ pub(crate) fn check_dot_access_int(
         }
         // Gradual: Negation type — fall back to Unknown for integer field access
         Type::Negation(_) => Ok(Type::Unknown),
-        _ => Err(vec![TypeError::not_a_record(&target_ty, span)]),
+        _ => Err(vec![TypeErrorTyped::NotARecord(NotARecord {
+            actual: target_ty.clone(),
+            span,
+            notes: vec![],
+        })
+        .into()]),
     }
 }
 
@@ -318,17 +331,21 @@ pub(crate) fn check_call_with_scheme(
                 params.len()
             };
             if total_supplied < min_required || (!*variadic && total_supplied != params.len()) {
-                return Err(vec![TypeError::new(
-                    format!(
-                        "arity mismatch: expected {}{} argument(s), got {} ({} positional, {} named)",
-                        if *variadic { "at least " } else { "" },
-                        min_required,
-                        total_supplied,
-                        args.len(),
-                        named_args.len(),
-                    ),
+                return Err(vec![TypeErrorTyped::ArityMismatch(ArityMismatch {
+                    expected: min_required,
+                    got: total_supplied,
                     span,
-                )]);
+                    notes: if *variadic || !named_args.is_empty() {
+                        vec![format!(
+                            "{} positional, {} named",
+                            args.len(),
+                            named_args.len()
+                        )]
+                    } else {
+                        vec![]
+                    },
+                })
+                .into()]);
             }
 
             // CALL-POLY: After instantiation, the function type always has type variables.
@@ -511,10 +528,14 @@ pub(crate) fn check_call_with_scheme(
                 let mut seen_names: HashSet<&str> = HashSet::new();
                 for na in named_args {
                     if !seen_names.insert(&na.node.name) {
-                        arg_errors.get_or_insert_with(Vec::new).push(TypeError::new(
-                            format!("duplicate named argument: '{}'", na.node.name),
-                            na.span.clone(),
-                        ));
+                        arg_errors.get_or_insert_with(Vec::new).push(
+                            TypeErrorTyped::Generic(GenericTypeError {
+                                message: format!("duplicate named argument: '{}'", na.node.name),
+                                span: na.span.clone(),
+                                notes: vec![],
+                            })
+                            .into(),
+                        );
                     }
                 }
                 // Unify named args by matching them to params by name.
@@ -536,13 +557,17 @@ pub(crate) fn check_call_with_scheme(
                             // C-NO-OVERLAP check: if this param was already consumed by a positional arg,
                             // emit a type error and skip unification (the positional check already ran).
                             if consumed_params.contains(&param_idx) {
-                                arg_errors.get_or_insert_with(Vec::new).push(TypeError::new(
-                                    format!(
-                                        "named argument '{}' conflicts with positional argument at position {}",
-                                        arg_name, param_idx
-                                    ),
-                                    na.span.clone(),
-                                ));
+                                arg_errors.get_or_insert_with(Vec::new).push(
+                                    TypeErrorTyped::Generic(GenericTypeError {
+                                        message: format!(
+                                            "named argument '{}' conflicts with positional argument at position {}",
+                                            arg_name, param_idx
+                                        ),
+                                        span: na.span.clone(),
+                                        notes: vec![],
+                                    })
+                                    .into(),
+                                );
                                 continue;
                             }
                             // Mark param as consumed (Task 1: Robinson idempotency)
@@ -559,13 +584,15 @@ pub(crate) fn check_call_with_scheme(
                                         unify(&arg_ty, param_ty, &mut subst, state, na.span.clone())
                                     {
                                         arg_errors.get_or_insert_with(Vec::new).push(
-                                            TypeError::new(
-                                                format!(
+                                            TypeErrorTyped::Generic(GenericTypeError {
+                                                message: format!(
                                                     "named argument '{}' type mismatch: {}",
                                                     arg_name, e.message
                                                 ),
-                                                na.span.clone(),
-                                            ),
+                                                span: na.span.clone(),
+                                                notes: vec![],
+                                            })
+                                            .into(),
                                         );
                                     }
                                 }
@@ -581,13 +608,17 @@ pub(crate) fn check_call_with_scheme(
                             // When variadic=true, infer the named arg value for type map population
                             // and error propagation, but DO NOT emit "unknown named argument".
                             if !*variadic {
-                                arg_errors.get_or_insert_with(Vec::new).push(TypeError::new(
-                                    format!(
-                                        "unknown named argument: function has no parameter named '{}'",
-                                        arg_name
-                                    ),
-                                    na.span.clone(),
-                                ));
+                                arg_errors.get_or_insert_with(Vec::new).push(
+                                    TypeErrorTyped::Generic(GenericTypeError {
+                                        message: format!(
+                                            "unknown named argument: function has no parameter named '{}'",
+                                            arg_name
+                                        ),
+                                        span: na.span.clone(),
+                                        notes: vec![],
+                                    })
+                                    .into(),
+                                );
                             } else {
                                 // Variadic function: infer the named arg value for type map and error propagation.
                                 // The value will be collected into the variadic dict at runtime; we don't know
@@ -671,19 +702,21 @@ pub(crate) fn check_call_with_scheme(
         Type::NominalVariant { tag, fields } if fields.fields.is_empty() => {
             // Only allow exactly 1 positional arg, no named args (matches runtime validation)
             if args.len() != 1 {
-                return Err(vec![TypeError::new(
-                    format!(
-                        "unit variant constructor takes exactly 1 argument, got {}",
-                        args.len()
-                    ),
+                return Err(vec![TypeErrorTyped::ArityMismatch(ArityMismatch {
+                    expected: 1,
+                    got: args.len(),
                     span,
-                )]);
+                    notes: vec!["unit variant constructor takes exactly 1 argument".to_string()],
+                })
+                .into()]);
             }
             if !named_args.is_empty() {
-                return Err(vec![TypeError::new(
-                    "unit variant constructor does not accept named arguments".to_string(),
+                return Err(vec![TypeErrorTyped::Generic(GenericTypeError {
+                    message: "unit variant constructor does not accept named arguments".to_string(),
                     span,
-                )]);
+                    notes: vec![],
+                })
+                .into()]);
             }
 
             // Infer the argument type
@@ -704,8 +737,18 @@ pub(crate) fn check_call_with_scheme(
         }
         // Non-unit variant constructor: already has payload, cannot be called.
         // Example: [Ok 42] where Ok already constructed → type error.
-        Type::NominalVariant { .. } => Err(vec![TypeError::not_a_function(&func_ty, func_span)]),
-        _ => Err(vec![TypeError::not_a_function(&func_ty, func_span)]),
+        Type::NominalVariant { .. } => Err(vec![TypeErrorTyped::NotAFunction(NotAFunction {
+            actual: func_ty.clone(),
+            span: func_span,
+            notes: vec![],
+        })
+        .into()]),
+        _ => Err(vec![TypeErrorTyped::NotAFunction(NotAFunction {
+            actual: func_ty.clone(),
+            span: func_span,
+            notes: vec![],
+        })
+        .into()]),
     }
 }
 
@@ -784,17 +827,21 @@ pub(crate) fn check_call(
                 params.len()
             };
             if total_supplied < min_required || (!*variadic && total_supplied != params.len()) {
-                return Err(vec![TypeError::new(
-                    format!(
-                        "arity mismatch: expected {}{} argument(s), got {} ({} positional, {} named)",
-                        if *variadic { "at least " } else { "" },
-                        min_required,
-                        total_supplied,
-                        args.len(),
-                        named_args.len(),
-                    ),
+                return Err(vec![TypeErrorTyped::ArityMismatch(ArityMismatch {
+                    expected: min_required,
+                    got: total_supplied,
                     span,
-                )]);
+                    notes: if *variadic || !named_args.is_empty() {
+                        vec![format!(
+                            "{} positional, {} named",
+                            args.len(),
+                            named_args.len()
+                        )]
+                    } else {
+                        vec![]
+                    },
+                })
+                .into()]);
             }
 
             // CALL-MONO: function type is fully concrete (no type variables)
@@ -886,11 +933,17 @@ pub(crate) fn check_call(
                                                 &param_ty_resolved,
                                             ));
                                     if !sub_passes {
-                                        errors.push(TypeError::type_mismatch(
-                                            &param_ty_resolved,
-                                            &arg_ty_resolved,
-                                            arg.span.clone(),
-                                        ));
+                                        errors.push(
+                                            TypeErrorTyped::UnificationFailure(
+                                                UnificationFailure {
+                                                    expected: param_ty_resolved,
+                                                    got: arg_ty_resolved,
+                                                    span: arg.span.clone(),
+                                                    notes: vec![],
+                                                },
+                                            )
+                                            .into(),
+                                        );
                                     }
                                 }
                                 Err(mut errs) => {
@@ -940,10 +993,14 @@ pub(crate) fn check_call(
                 let mut seen_names: HashSet<&str> = HashSet::new();
                 for na in named_args {
                     if !seen_names.insert(&na.node.name) {
-                        errors.push(TypeError::new(
-                            format!("duplicate named argument: '{}'", na.node.name),
-                            na.span.clone(),
-                        ));
+                        errors.push(
+                            TypeErrorTyped::Generic(GenericTypeError {
+                                message: format!("duplicate named argument: '{}'", na.node.name),
+                                span: na.span.clone(),
+                                notes: vec![],
+                            })
+                            .into(),
+                        );
                     }
                 }
                 // Check named args by matching them to params by name
@@ -963,13 +1020,17 @@ pub(crate) fn check_call(
                             // C-NO-OVERLAP check: if this param was already consumed by a positional arg,
                             // emit a type warning and skip type checking (the positional check already ran).
                             if consumed_params.contains(&param_idx) {
-                                errors.push(TypeError::new(
-                                    format!(
-                                        "named argument '{}' conflicts with positional argument at position {}",
-                                        arg_name, param_idx
-                                    ),
-                                    na.span.clone(),
-                                ));
+                                errors.push(
+                                    TypeErrorTyped::Generic(GenericTypeError {
+                                        message: format!(
+                                            "named argument '{}' conflicts with positional argument at position {}",
+                                            arg_name, param_idx
+                                        ),
+                                        span: na.span.clone(),
+                                        notes: vec![],
+                                    })
+                                    .into(),
+                                );
                                 continue;
                             }
                             // Mark param as consumed (Task 1: Robinson idempotency)
@@ -1006,13 +1067,17 @@ pub(crate) fn check_call(
                                     );
                                     state.subst = subst;
                                     if let Err(e) = result {
-                                        errors.push(TypeError::new(
-                                            format!(
-                                                "named argument '{}' type mismatch: {}",
-                                                arg_name, e.message
-                                            ),
-                                            na.span.clone(),
-                                        ));
+                                        errors.push(
+                                            TypeErrorTyped::Generic(GenericTypeError {
+                                                message: format!(
+                                                    "named argument '{}' type mismatch: {}",
+                                                    arg_name, e.message
+                                                ),
+                                                span: na.span.clone(),
+                                                notes: vec![],
+                                            })
+                                            .into(),
+                                        );
                                     }
                                 }
                                 Err(mut errs) => {
@@ -1027,13 +1092,17 @@ pub(crate) fn check_call(
                             // When variadic=true, infer the named arg value for type map population
                             // and error propagation, but DO NOT emit "unknown named argument".
                             if !*variadic {
-                                errors.push(TypeError::new(
-                                    format!(
-                                        "unknown named argument: function has no parameter named '{}'",
-                                        arg_name
-                                    ),
-                                    na.span.clone(),
-                                ));
+                                errors.push(
+                                    TypeErrorTyped::Generic(GenericTypeError {
+                                        message: format!(
+                                            "unknown named argument: function has no parameter named '{}'",
+                                            arg_name
+                                        ),
+                                        span: na.span.clone(),
+                                        notes: vec![],
+                                    })
+                                    .into(),
+                                );
                             } else {
                                 // Variadic function: infer the named arg value for type map and error propagation.
                                 // The value will be collected into the variadic dict at runtime; we don't know
@@ -1140,10 +1209,14 @@ pub(crate) fn check_call(
                 let mut seen_names: HashSet<&str> = HashSet::new();
                 for na in named_args {
                     if !seen_names.insert(&na.node.name) {
-                        arg_errors.get_or_insert_with(Vec::new).push(TypeError::new(
-                            format!("duplicate named argument: '{}'", na.node.name),
-                            na.span.clone(),
-                        ));
+                        arg_errors.get_or_insert_with(Vec::new).push(
+                            TypeErrorTyped::Generic(GenericTypeError {
+                                message: format!("duplicate named argument: '{}'", na.node.name),
+                                span: na.span.clone(),
+                                notes: vec![],
+                            })
+                            .into(),
+                        );
                     }
                 }
                 // Check named args by matching them to params by name
@@ -1167,13 +1240,17 @@ pub(crate) fn check_call(
                             // C-NO-OVERLAP check: if this param was already consumed by a positional arg,
                             // emit a type error and skip checking (the positional check already ran).
                             if consumed_params.contains(&param_idx) {
-                                arg_errors.get_or_insert_with(Vec::new).push(TypeError::new(
-                                    format!(
-                                        "named argument '{}' conflicts with positional argument at position {}",
-                                        arg_name, param_idx
-                                    ),
-                                    na.span.clone(),
-                                ));
+                                arg_errors.get_or_insert_with(Vec::new).push(
+                                    TypeErrorTyped::Generic(GenericTypeError {
+                                        message: format!(
+                                            "named argument '{}' conflicts with positional argument at position {}",
+                                            arg_name, param_idx
+                                        ),
+                                        span: na.span.clone(),
+                                        notes: vec![],
+                                    })
+                                    .into(),
+                                );
                                 continue;
                             }
                             // Mark param as consumed
@@ -1213,13 +1290,15 @@ pub(crate) fn check_call(
                                     state.subst = subst;
                                     if let Err(errs) = result {
                                         arg_errors.get_or_insert_with(Vec::new).push(
-                                            TypeError::new(
-                                                format!(
+                                            TypeErrorTyped::Generic(GenericTypeError {
+                                                message: format!(
                                                     "named argument '{}' type mismatch: {}",
                                                     arg_name, errs.message
                                                 ),
-                                                na.span.clone(),
-                                            ),
+                                                span: na.span.clone(),
+                                                notes: vec![],
+                                            })
+                                            .into(),
                                         );
                                     }
                                 }
@@ -1235,13 +1314,17 @@ pub(crate) fn check_call(
                             // When variadic=true, infer the named arg value for type map population
                             // and error propagation, but DO NOT emit "unknown named argument".
                             if !*variadic {
-                                arg_errors.get_or_insert_with(Vec::new).push(TypeError::new(
-                                    format!(
-                                        "unknown named argument: function has no parameter named '{}'",
-                                        arg_name
-                                    ),
-                                    na.span.clone(),
-                                ));
+                                arg_errors.get_or_insert_with(Vec::new).push(
+                                    TypeErrorTyped::Generic(GenericTypeError {
+                                        message: format!(
+                                            "unknown named argument: function has no parameter named '{}'",
+                                            arg_name
+                                        ),
+                                        span: na.span.clone(),
+                                        notes: vec![],
+                                    })
+                                    .into(),
+                                );
                             } else {
                                 // Variadic function: infer the named arg value for type map and error propagation.
                                 // The value will be collected into the variadic dict at runtime; we don't know
@@ -1336,19 +1419,21 @@ pub(crate) fn check_call(
         Type::NominalVariant { tag, fields } if fields.fields.is_empty() => {
             // Only allow exactly 1 positional arg, no named args (matches runtime validation)
             if args.len() != 1 {
-                return Err(vec![TypeError::new(
-                    format!(
-                        "unit variant constructor takes exactly 1 argument, got {}",
-                        args.len()
-                    ),
+                return Err(vec![TypeErrorTyped::ArityMismatch(ArityMismatch {
+                    expected: 1,
+                    got: args.len(),
                     span,
-                )]);
+                    notes: vec!["unit variant constructor takes exactly 1 argument".to_string()],
+                })
+                .into()]);
             }
             if !named_args.is_empty() {
-                return Err(vec![TypeError::new(
-                    "unit variant constructor does not accept named arguments".to_string(),
+                return Err(vec![TypeErrorTyped::Generic(GenericTypeError {
+                    message: "unit variant constructor does not accept named arguments".to_string(),
                     span,
-                )]);
+                    notes: vec![],
+                })
+                .into()]);
             }
 
             // Infer the argument type
@@ -1370,9 +1455,12 @@ pub(crate) fn check_call(
         // Non-unit variant constructor: already has payload, cannot be called.
         // Example: [Ok 42] where Ok already constructed → type error.
         // Use func.span (points to the callee) rather than the whole-call span for a more informative error.
-        Type::NominalVariant { .. } => {
-            Err(vec![TypeError::not_a_function(&func_ty, func.span.clone())])
-        }
+        Type::NominalVariant { .. } => Err(vec![TypeErrorTyped::NotAFunction(NotAFunction {
+            actual: func_ty.clone(),
+            span: func.span.clone(),
+            notes: vec![],
+        })
+        .into()]),
         _ => {
             // T003: func_ty is a concrete non-callable type (e.g., Str, Int, Bool).
             //
@@ -1398,7 +1486,12 @@ pub(crate) fn check_call(
             // found AND the current binding came from a same-dict level (detectable via
             // TypeScheme level metadata or a "letrec_placeholder" flag), use the parent
             // binding instead. See typecheck_tests.rs::test_b275_letrec_typevar_does_not_shadow_prelude_function.
-            Err(vec![TypeError::not_a_function(&func_ty, func.span.clone())])
+            Err(vec![TypeErrorTyped::NotAFunction(NotAFunction {
+                actual: func_ty.clone(),
+                span: func.span.clone(),
+                notes: vec![],
+            })
+            .into()])
         }
     }
 }

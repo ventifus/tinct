@@ -7,6 +7,7 @@ use std::sync::Arc;
 use super::{check_surface_expr, contains_unknown_or_top, infer_surface_expr, TypeMap};
 use crate::ast::{Annotation, Span, Spanned, SurfaceEntry, SurfaceExpression, SurfaceNode};
 use crate::type_def::Variance;
+use crate::type_errors::{GenericTypeError, TypeErrorTyped, UndefinedType};
 use crate::types::{Constraint, InferState, Kind, Row, Type, TypeAlias, TypeEnv, TypeError};
 use crate::value::{Key, Thunk, Value};
 
@@ -297,13 +298,15 @@ pub(crate) fn resolve_type_assert(
                             || contains_unknown_or_top(&expected_resolved))
                             && Type::is_consistent(&default_ty, &expected_resolved));
                 if !passes {
-                    return Err(vec![TypeError::new(
-                        format!(
+                    return Err(vec![TypeErrorTyped::Generic(GenericTypeError {
+                        message: format!(
                             "default value type mismatch: default has type {default_ty}, \
                              but assertion expects {expected_resolved}"
                         ),
-                        default_node.span.clone(),
-                    )]);
+                        span: default_node.span.clone(),
+                        notes: vec![],
+                    })
+                    .into()]);
                 }
             }
             Err(errs) => {
@@ -320,24 +323,28 @@ pub(crate) fn resolve_type_assert(
         if let SurfaceExpression::Str(ref repr_val) = repr_node.expr {
             const VALID_REPRS: &[&str] = &["u8", "i8", "u16", "i16", "u32", "i32", "u64", "i64"];
             if !VALID_REPRS.contains(&repr_val.as_str()) {
-                return Err(vec![TypeError::new(
-                    format!(
+                return Err(vec![TypeErrorTyped::Generic(GenericTypeError {
+                    message: format!(
                         "invalid repr: \"{repr_val}\" — must be one of: {}",
                         VALID_REPRS.join(", ")
                     ),
-                    repr_node.span.clone(),
-                )]);
+                    span: repr_node.span.clone(),
+                    notes: vec![],
+                })
+                .into()]);
             }
             // Check consistency: repr requires a numeric type (Int or Number)
             let is_numeric = matches!(&expected, Type::Int | Type::Number | Type::Float);
             if !is_numeric {
-                return Err(vec![TypeError::new(
-                    format!(
+                return Err(vec![TypeErrorTyped::Generic(GenericTypeError {
+                    message: format!(
                         "repr: \"{repr_val}\" requires a numeric type, but annotation declares {}",
                         expected
                     ),
-                    repr_node.span.clone(),
-                )]);
+                    span: repr_node.span.clone(),
+                    notes: vec![],
+                })
+                .into()]);
             }
         }
     }
@@ -478,22 +485,26 @@ pub(crate) fn resolve_fn_metadata(
                         SurfaceExpression::Dict(bind_entries) => {
                             for bind_entry in bind_entries {
                                 if bind_entry.node.key.is_some() {
-                                    return Err(TypeError::new(
-                                        "bind: list must contain only positional entries (bare names)",
-                                        bind_entry.span.clone(),
-                                    ));
+                                    return Err(TypeErrorTyped::Generic(GenericTypeError {
+                                        message: "bind: list must contain only positional entries (bare names)".to_string(),
+                                        span: bind_entry.span.clone(),
+                                        notes: vec![],
+                                    })
+                                    .into());
                                 }
                                 match &bind_entry.node.value.expr {
                                     SurfaceExpression::VarRef { name, .. } => {
                                         // Check lowercase convention for TypeVar names
                                         if !name.starts_with(|c: char| c.is_lowercase()) {
-                                            return Err(TypeError::new(
-                                                format!(
+                                            return Err(TypeErrorTyped::Generic(GenericTypeError {
+                                                message: format!(
                                                     "bind: TypeVar name '{}' must start with lowercase letter",
                                                     name
                                                 ),
-                                                bind_entry.node.value.span.clone(),
-                                            ));
+                                                span: bind_entry.node.value.span.clone(),
+                                                notes: vec![],
+                                            })
+                                            .into());
                                         }
                                         // Create fresh TypeVar and register in ann_mapping
                                         let n = state.subst.name_counter.get();
@@ -507,17 +518,23 @@ pub(crate) fn resolve_fn_metadata(
                                         if let Some(ref mut mapping) = ann_mapping {
                                             mapping.insert(name.clone(), fresh);
                                         } else {
-                                            return Err(TypeError::new(
-                                                "bind: requires an annotation mapping context",
+                                            return Err(TypeErrorTyped::Generic(GenericTypeError {
+                                                message: "bind: requires an annotation mapping context".to_string(),
                                                 span,
-                                            ));
+                                                notes: vec![],
+                                            })
+                                            .into());
                                         }
                                     }
                                     _ => {
-                                        return Err(TypeError::new(
-                                            "bind: entries must be bare names (TypeVar names)",
-                                            bind_entry.node.value.span.clone(),
-                                        ));
+                                        return Err(TypeErrorTyped::Generic(GenericTypeError {
+                                            message:
+                                                "bind: entries must be bare names (TypeVar names)"
+                                                    .to_string(),
+                                            span: bind_entry.node.value.span.clone(),
+                                            notes: vec![],
+                                        })
+                                        .into());
                                     }
                                 }
                             }
@@ -533,48 +550,57 @@ pub(crate) fn resolve_fn_metadata(
                             ..
                         } => {
                             if !named_args.is_empty() {
-                                return Err(TypeError::new(
-                                    "bind: list must contain only bare names, not named arguments",
-                                    entry.node.value.span.clone(),
-                                ));
+                                return Err(TypeErrorTyped::Generic(GenericTypeError {
+                                    message: "bind: list must contain only bare names, not named arguments".to_string(),
+                                    span: entry.node.value.span.clone(),
+                                    notes: vec![],
+                                })
+                                .into());
                             }
                             // Collect all names: func first, then each positional arg
-                            let all_names: Vec<(&str, Span)> =
-                                {
-                                    let mut v: Vec<(&str, Span)> = Vec::new();
-                                    match &func.expr {
-                                        SurfaceExpression::VarRef { name, .. } => {
-                                            v.push((name.as_str(), func.span.clone()))
-                                        }
-                                        _ => {
-                                            return Err(TypeError::new(
-                                                "bind: entries must be bare names (TypeVar names)",
-                                                func.span.clone(),
-                                            ))
-                                        }
+                            let all_names: Vec<(&str, Span)> = {
+                                let mut v: Vec<(&str, Span)> = Vec::new();
+                                match &func.expr {
+                                    SurfaceExpression::VarRef { name, .. } => {
+                                        v.push((name.as_str(), func.span.clone()))
                                     }
-                                    for arg in args.iter() {
-                                        match &arg.expr {
+                                    _ => {
+                                        return Err(TypeErrorTyped::Generic(GenericTypeError {
+                                            message:
+                                                "bind: entries must be bare names (TypeVar names)"
+                                                    .to_string(),
+                                            span: func.span.clone(),
+                                            notes: vec![],
+                                        })
+                                        .into())
+                                    }
+                                }
+                                for arg in args.iter() {
+                                    match &arg.expr {
                                             SurfaceExpression::VarRef { name, .. } => {
                                                 v.push((name.as_str(), arg.span.clone()))
                                             }
-                                            _ => return Err(TypeError::new(
-                                                "bind: entries must be bare names (TypeVar names)",
-                                                arg.span.clone(),
-                                            )),
+                                            _ => return Err(TypeErrorTyped::Generic(GenericTypeError {
+                                                message: "bind: entries must be bare names (TypeVar names)".to_string(),
+                                                span: arg.span.clone(),
+                                                notes: vec![],
+                                            })
+                                            .into()),
                                         }
-                                    }
-                                    v
-                                };
+                                }
+                                v
+                            };
                             for (name, name_span) in all_names {
                                 if !name.starts_with(|c: char| c.is_lowercase()) {
-                                    return Err(TypeError::new(
-                                        format!(
+                                    return Err(TypeErrorTyped::Generic(GenericTypeError {
+                                        message: format!(
                                             "bind: TypeVar name '{}' must start with lowercase letter",
                                             name
                                         ),
-                                        name_span,
-                                    ));
+                                        span: name_span,
+                                        notes: vec![],
+                                    })
+                                    .into());
                                 }
                                 let n = state.subst.name_counter.get();
                                 let fresh = format!("_t{}", n);
@@ -587,18 +613,23 @@ pub(crate) fn resolve_fn_metadata(
                                 if let Some(ref mut mapping) = ann_mapping {
                                     mapping.insert(name.to_string(), fresh);
                                 } else {
-                                    return Err(TypeError::new(
-                                        "bind: requires an annotation mapping context",
+                                    return Err(TypeErrorTyped::Generic(GenericTypeError {
+                                        message: "bind: requires an annotation mapping context"
+                                            .to_string(),
                                         span,
-                                    ));
+                                        notes: vec![],
+                                    })
+                                    .into());
                                 }
                             }
                         }
                         _ => {
-                            return Err(TypeError::new(
-                                "bind: value must be a list [a b c]",
-                                entry.node.value.span.clone(),
-                            ))
+                            return Err(TypeErrorTyped::Generic(GenericTypeError {
+                                message: "bind: value must be a list [a b c]".to_string(),
+                                span: entry.node.value.span.clone(),
+                                notes: vec![],
+                            })
+                            .into())
                         }
                     }
                 }
@@ -615,42 +646,55 @@ pub(crate) fn resolve_fn_metadata(
                     match &entry.node.value.expr {
                         SurfaceExpression::Dict(kinds_entries) => {
                             for kind_entry in kinds_entries {
-                                let typevar_name =
-                                    match &kind_entry.node.key {
-                                        Some(k) => match &k.expr {
-                                            SurfaceExpression::Str(s) => s.clone(),
-                                            _ => return Err(TypeError::new(
-                                                "kinds: keys must be bare words (TypeVar names)",
-                                                kind_entry.span.clone(),
-                                            )),
-                                        },
-                                        None => {
-                                            return Err(TypeError::new(
-                                                "kinds: entries must be keyed [name: kind]",
-                                                kind_entry.span.clone(),
-                                            ))
+                                let typevar_name = match &kind_entry.node.key {
+                                    Some(k) => match &k.expr {
+                                        SurfaceExpression::Str(s) => s.clone(),
+                                        _ => {
+                                            return Err(TypeErrorTyped::Generic(GenericTypeError {
+                                                message:
+                                                    "kinds: keys must be bare words (TypeVar names)"
+                                                        .to_string(),
+                                                span: kind_entry.span.clone(),
+                                                notes: vec![],
+                                            })
+                                            .into())
                                         }
-                                    };
+                                    },
+                                    None => {
+                                        return Err(TypeErrorTyped::Generic(GenericTypeError {
+                                            message: "kinds: entries must be keyed [name: kind]"
+                                                .to_string(),
+                                            span: kind_entry.span.clone(),
+                                            notes: vec![],
+                                        })
+                                        .into())
+                                    }
+                                };
 
                                 // Validate that this name was declared in bind:
                                 let type_var = if let Some(ref mapping) = ann_mapping {
                                     match mapping.get(&typevar_name) {
                                         Some(var) => var.clone(),
                                         None => {
-                                            return Err(TypeError::new(
-                                                format!(
+                                            return Err(TypeErrorTyped::Generic(GenericTypeError {
+                                                message: format!(
                                                     "kinds: TypeVar '{}' not found in bind: list",
                                                     typevar_name
                                                 ),
-                                                kind_entry.span.clone(),
-                                            ))
+                                                span: kind_entry.span.clone(),
+                                                notes: vec![],
+                                            })
+                                            .into())
                                         }
                                     }
                                 } else {
-                                    return Err(TypeError::new(
-                                        "kinds: requires an annotation mapping context",
+                                    return Err(TypeErrorTyped::Generic(GenericTypeError {
+                                        message: "kinds: requires an annotation mapping context"
+                                            .to_string(),
                                         span,
-                                    ));
+                                        notes: vec![],
+                                    })
+                                    .into());
                                 };
 
                                 // Parse the kind name
@@ -662,31 +706,37 @@ pub(crate) fn resolve_fn_metadata(
                                             "Operator" => Kind::Operator,
                                             "Label" => Kind::Label,
                                             _ => {
-                                                return Err(TypeError::new(
-                                                    format!(
-                                                    "unknown kind '{}' (valid: Operator, Label)",
-                                                    kind_name
-                                                ),
-                                                    kind_entry.node.value.span.clone(),
-                                                ))
+                                                return Err(TypeErrorTyped::Generic(GenericTypeError {
+                                                    message: format!(
+                                                        "unknown kind '{}' (valid: Operator, Label)",
+                                                        kind_name
+                                                    ),
+                                                    span: kind_entry.node.value.span.clone(),
+                                                    notes: vec![],
+                                                })
+                                                .into())
                                             }
                                         };
                                         state.kind_env.insert(type_var, kind);
                                     }
                                     _ => {
-                                        return Err(TypeError::new(
-                                            "kinds: value must be a kind name (Operator or Label)",
-                                            kind_entry.node.value.span.clone(),
-                                        ));
+                                        return Err(TypeErrorTyped::Generic(GenericTypeError {
+                                            message: "kinds: value must be a kind name (Operator or Label)".to_string(),
+                                            span: kind_entry.node.value.span.clone(),
+                                            notes: vec![],
+                                        })
+                                        .into());
                                     }
                                 }
                             }
                         }
                         _ => {
-                            return Err(TypeError::new(
-                                "kinds: value must be a dict [name: kind ...]",
-                                entry.node.value.span.clone(),
-                            ))
+                            return Err(TypeErrorTyped::Generic(GenericTypeError {
+                                message: "kinds: value must be a dict [name: kind ...]".to_string(),
+                                span: entry.node.value.span.clone(),
+                                notes: vec![],
+                            })
+                            .into())
                         }
                     }
                 }
@@ -713,10 +763,12 @@ pub(crate) fn resolve_fn_metadata(
                                         SurfaceExpression::Str(s) => s.clone(),
                                         SurfaceExpression::VarRef { name, .. } => name.clone(),
                                         _ => {
-                                            return Err(TypeError::new(
-                                                "constraint key must be a bare word (TypeVar name)",
-                                                c_entry.span.clone(),
-                                            ));
+                                            return Err(TypeErrorTyped::Generic(GenericTypeError {
+                                                message: "constraint key must be a bare word (TypeVar name)".to_string(),
+                                                span: c_entry.span.clone(),
+                                                notes: vec![],
+                                            })
+                                            .into());
                                         }
                                     },
                                     None => unreachable!(), // already checked above
@@ -739,10 +791,12 @@ pub(crate) fn resolve_fn_metadata(
                                         fresh
                                     }
                                 } else {
-                                    return Err(TypeError::new(
-                                        "constraint annotations require an annotation mapping context",
+                                    return Err(TypeErrorTyped::Generic(GenericTypeError {
+                                        message: "constraint annotations require an annotation mapping context".to_string(),
                                         span,
-                                    ));
+                                        notes: vec![],
+                                    })
+                                    .into());
                                 };
 
                                 // Parse the class name(s) — can be a single name, [each ...], or [...]
@@ -756,10 +810,17 @@ pub(crate) fn resolve_fn_metadata(
                                         if !VALID_CLASSES.contains(&name.as_str())
                                             && state.class_env.get(name).is_none()
                                         {
-                                            return Err(TypeError::new(
-                                                format!("unknown constraint class '{}'", name),
-                                                c_entry.node.value.span.clone(),
-                                            ));
+                                            return Err(TypeErrorTyped::Generic(
+                                                GenericTypeError {
+                                                    message: format!(
+                                                        "unknown constraint class '{}'",
+                                                        name
+                                                    ),
+                                                    span: c_entry.node.value.span.clone(),
+                                                    notes: vec![],
+                                                },
+                                            )
+                                            .into());
                                         }
                                         state.add_constraint(name.clone(), type_var.clone());
                                     }
@@ -776,44 +837,64 @@ pub(crate) fn resolve_fn_metadata(
                                                     &class_list[1..]
                                                 } else {
                                                     // [a: [Comparable Showable]] — no 'each', error
-                                                    return Err(TypeError::new(
-                                                        "constraint class list must start with 'each' keyword: use [each ClassName ...]",
-                                                        class_list[0].span.clone(),
-                                                    ));
+                                                    return Err(TypeErrorTyped::Generic(GenericTypeError {
+                                                        message: "constraint class list must start with 'each' keyword: use [each ClassName ...]".to_string(),
+                                                        span: class_list[0].span.clone(),
+                                                        notes: vec![],
+                                                    })
+                                                    .into());
                                                 }
                                             } else {
-                                                return Err(TypeError::new(
-                                                    "constraint class list must start with 'each' keyword: use [each ClassName ...]",
-                                                    class_list[0].span.clone(),
-                                                ));
+                                                return Err(TypeErrorTyped::Generic(GenericTypeError {
+                                                    message: "constraint class list must start with 'each' keyword: use [each ClassName ...]".to_string(),
+                                                    span: class_list[0].span.clone(),
+                                                    notes: vec![],
+                                                })
+                                                .into());
                                             }
                                         } else {
-                                            return Err(TypeError::new(
-                                                "constraint class list cannot be empty",
-                                                c_entry.node.value.span.clone(),
-                                            ));
+                                            return Err(TypeErrorTyped::Generic(
+                                                GenericTypeError {
+                                                    message:
+                                                        "constraint class list cannot be empty"
+                                                            .to_string(),
+                                                    span: c_entry.node.value.span.clone(),
+                                                    notes: vec![],
+                                                },
+                                            )
+                                            .into());
                                         };
 
                                         // Multiple classes: iterate and add each
                                         for class_entry in class_entries {
                                             if class_entry.node.key.is_some() {
-                                                return Err(TypeError::new(
-                                                    "constraint class list must contain only positional entries",
-                                                    class_entry.span.clone(),
-                                                ));
+                                                return Err(TypeErrorTyped::Generic(GenericTypeError {
+                                                    message: "constraint class list must contain only positional entries".to_string(),
+                                                    span: class_entry.span.clone(),
+                                                    notes: vec![],
+                                                })
+                                                .into());
                                             }
                                             match &class_entry.node.value.expr {
                                                 SurfaceExpression::VarRef { name, .. } => {
                                                     if !VALID_CLASSES.contains(&name.as_str())
                                                         && state.class_env.get(name).is_none()
                                                     {
-                                                        return Err(TypeError::new(
-                                                            format!(
-                                                                "unknown constraint class '{}'",
-                                                                name
-                                                            ),
-                                                            class_entry.node.value.span.clone(),
-                                                        ));
+                                                        return Err(TypeErrorTyped::Generic(
+                                                            GenericTypeError {
+                                                                message: format!(
+                                                                    "unknown constraint class '{}'",
+                                                                    name
+                                                                ),
+                                                                span: class_entry
+                                                                    .node
+                                                                    .value
+                                                                    .span
+                                                                    .clone(),
+                                                                notes: vec![],
+                                                            },
+                                                        )
+                                                        .into());
                                                     }
                                                     state.add_constraint(
                                                         name.clone(),
@@ -821,10 +902,12 @@ pub(crate) fn resolve_fn_metadata(
                                                     );
                                                 }
                                                 _ => {
-                                                    return Err(TypeError::new(
-                                                        "constraint class must be a class name (e.g., Comparable)",
-                                                        class_entry.node.value.span.clone(),
-                                                    ));
+                                                    return Err(TypeErrorTyped::Generic(GenericTypeError {
+                                                        message: "constraint class must be a class name (e.g., Comparable)".to_string(),
+                                                        span: class_entry.node.value.span.clone(),
+                                                        notes: vec![],
+                                                    })
+                                                    .into());
                                                 }
                                             }
                                         }
@@ -841,10 +924,12 @@ pub(crate) fn resolve_fn_metadata(
                                         ..
                                     } => {
                                         if !named_args.is_empty() {
-                                            return Err(TypeError::new(
-                                                "constraint class list must not contain named arguments",
-                                                c_entry.node.value.span.clone(),
-                                            ));
+                                            return Err(TypeErrorTyped::Generic(GenericTypeError {
+                                                message: "constraint class list must not contain named arguments".to_string(),
+                                                span: c_entry.node.value.span.clone(),
+                                                notes: vec![],
+                                            })
+                                            .into());
                                         }
                                         // Determine class names to add
                                         let class_names: Vec<(&str, Span)> =
@@ -860,10 +945,12 @@ pub(crate) fn resolve_fn_metadata(
                                                                 names.push((name.as_str(), arg.span.clone()))
                                                             }
                                                             _ => {
-                                                                return Err(TypeError::new(
-                                                                    "constraint class must be a class name (e.g., Comparable)",
-                                                                    arg.span.clone(),
-                                                                ))
+                                                                return Err(TypeErrorTyped::Generic(GenericTypeError {
+                                                                    message: "constraint class must be a class name (e.g., Comparable)".to_string(),
+                                                                    span: arg.span.clone(),
+                                                                    notes: vec![],
+                                                                })
+                                                                .into())
                                                             }
                                                         }
                                                     }
@@ -876,39 +963,53 @@ pub(crate) fn resolve_fn_metadata(
                                                     vec![(name.as_str(), func.span.clone())]
                                                 }
                                                 _ => {
-                                                    return Err(TypeError::new(
-                                                        "constraint value must be a class name or [each Class1 Class2 ...]",
-                                                        c_entry.node.value.span.clone(),
-                                                    ))
+                                                    return Err(TypeErrorTyped::Generic(GenericTypeError {
+                                                        message: "constraint value must be a class name or [each Class1 Class2 ...]".to_string(),
+                                                        span: c_entry.node.value.span.clone(),
+                                                        notes: vec![],
+                                                    })
+                                                    .into())
                                                 }
                                             };
                                         for (name, name_span) in class_names {
                                             if !VALID_CLASSES.contains(&name)
                                                 && state.class_env.get(name).is_none()
                                             {
-                                                return Err(TypeError::new(
-                                                    format!("unknown constraint class '{}'", name),
-                                                    name_span,
-                                                ));
+                                                return Err(TypeErrorTyped::Generic(
+                                                    GenericTypeError {
+                                                        message: format!(
+                                                            "unknown constraint class '{}'",
+                                                            name
+                                                        ),
+                                                        span: name_span,
+                                                        notes: vec![],
+                                                    },
+                                                )
+                                                .into());
                                             }
                                             state
                                                 .add_constraint(name.to_string(), type_var.clone());
                                         }
                                     }
                                     _ => {
-                                        return Err(TypeError::new(
-                                            "constraint value must be a class name or list of class names",
-                                            c_entry.node.value.span.clone(),
-                                        ));
+                                        return Err(TypeErrorTyped::Generic(GenericTypeError {
+                                            message: "constraint value must be a class name or list of class names".to_string(),
+                                            span: c_entry.node.value.span.clone(),
+                                            notes: vec![],
+                                        })
+                                        .into());
                                     }
                                 }
                             }
                         }
                         _ => {
-                            return Err(TypeError::new(
-                                "constraint: value must be a dict [a: Comparable]",
-                                entry.node.value.span.clone(),
-                            ));
+                            return Err(TypeErrorTyped::Generic(GenericTypeError {
+                                message: "constraint: value must be a dict [a: Comparable]"
+                                    .to_string(),
+                                span: entry.node.value.span.clone(),
+                                notes: vec![],
+                            })
+                            .into());
                         }
                     }
                 }
@@ -942,13 +1043,16 @@ pub(crate) fn resolve_fn_metadata(
                                         // Validate the class exists in ClassEnv and get the ClassDecl
                                         let class_decl =
                                             state.class_env.get(class_name).ok_or_else(|| {
-                                                TypeError::new(
-                                                    format!(
-                                                        "unknown class '{}' in MPTC constraint",
-                                                        class_name
-                                                    ),
-                                                    c_entry.node.value.span.clone(),
-                                                )
+                                                TypeError::from(TypeErrorTyped::Generic(
+                                                    GenericTypeError {
+                                                        message: format!(
+                                                            "unknown class '{}' in MPTC constraint",
+                                                            class_name
+                                                        ),
+                                                        span: c_entry.node.value.span.clone(),
+                                                        notes: vec![],
+                                                    },
+                                                ))
                                             })?;
 
                                         // Collect TypeVar names from subsequent positional entries
@@ -969,23 +1073,27 @@ pub(crate) fn resolve_fn_metadata(
                                                     // Validate that this TypeVar is declared in bind:
                                                     if let Some(ref mapping) = ann_mapping {
                                                         if !mapping.contains_key(var_name) {
-                                                            return Err(TypeError::new(
-                                                                format!(
+                                                            return Err(TypeErrorTyped::Generic(GenericTypeError {
+                                                                message: format!(
                                                                     "TypeVar '{}' not declared in bind: — add bind: [{}] before constraint:",
                                                                     var_name, var_name
                                                                 ),
-                                                                subsequent.node.value.span.clone(),
-                                                            ));
+                                                                span: subsequent.node.value.span.clone(),
+                                                                notes: vec![],
+                                                            })
+                                                            .into());
                                                         }
                                                         // Map to the actual TypeVar name (e.g., _t0)
                                                         let actual_var =
                                                             mapping.get(var_name).unwrap().clone();
                                                         typevar_names.push(actual_var);
                                                     } else {
-                                                        return Err(TypeError::new(
-                                                            "constraint annotations require an annotation mapping context",
+                                                        return Err(TypeErrorTyped::Generic(GenericTypeError {
+                                                            message: "constraint annotations require an annotation mapping context".to_string(),
                                                             span,
-                                                        ));
+                                                            notes: vec![],
+                                                        })
+                                                        .into());
                                                     }
                                                 }
                                                 SurfaceExpression::VarRef {
@@ -995,10 +1103,12 @@ pub(crate) fn resolve_fn_metadata(
                                                     break;
                                                 }
                                                 _ => {
-                                                    return Err(TypeError::new(
-                                                        "MPTC constraint entries after class name must be TypeVar names",
-                                                        subsequent.node.value.span.clone(),
-                                                    ));
+                                                    return Err(TypeErrorTyped::Generic(GenericTypeError {
+                                                        message: "MPTC constraint entries after class name must be TypeVar names".to_string(),
+                                                        span: subsequent.node.value.span.clone(),
+                                                        notes: vec![],
+                                                    })
+                                                    .into());
                                                 }
                                             }
                                             j += 1;
@@ -1019,10 +1129,12 @@ pub(crate) fn resolve_fn_metadata(
                                         // Non-escaped positional entry that's not part of an MPTC
                                         // This is probably an error — bare positional TypeVar names
                                         // without a class
-                                        return Err(TypeError::new(
-                                            "positional constraint entries must start with escaped class name (e.g., $Add)",
-                                            c_entry.node.value.span.clone(),
-                                        ));
+                                        return Err(TypeErrorTyped::Generic(GenericTypeError {
+                                            message: "positional constraint entries must start with escaped class name (e.g., $Add)".to_string(),
+                                            span: c_entry.node.value.span.clone(),
+                                            notes: vec![],
+                                        })
+                                        .into());
                                     }
                                 }
                             }
@@ -1084,10 +1196,12 @@ pub(crate) fn resolve_fn_metadata(
                     match extracted {
                         Some(s) => doc_string = Some(s),
                         None => {
-                            return Err(TypeError::new(
-                                "doc: value must be a string literal",
-                                entry.node.value.span.clone(),
-                            ));
+                            return Err(TypeErrorTyped::Generic(GenericTypeError {
+                                message: "doc: value must be a string literal".to_string(),
+                                span: entry.node.value.span.clone(),
+                                notes: vec![],
+                            })
+                            .into());
                         }
                     }
                 }
@@ -1140,10 +1254,12 @@ fn resolve_fn_type(
                 // B-355: fn@[only-custom-keys: val] was previously misinterpreted as a
                 // return type because has_fn_key was false; now all_keyed triggers this path.
                 if !all_keyed {
-                    return Err(TypeError::new(
-                        "fn annotation must use either named keys (return:, constraint:, doc:, bind:, kinds:) or positional entries (union return type), not both",
+                    return Err(TypeErrorTyped::Generic(GenericTypeError {
+                        message: "fn annotation must use either named keys (return:, constraint:, doc:, bind:, kinds:) or positional entries (union return type), not both".to_string(),
                         span,
-                    ));
+                        notes: vec![],
+                    })
+                    .into());
                 }
                 let (ret, _doc) = resolve_fn_metadata(
                     surface_entries,
@@ -1360,10 +1476,14 @@ pub(crate) fn resolve_annotation(
                                 row_ann_mapping,
                             )
                         }
-                        _ => Err(TypeError::new(
-                            "Record parameterization requires a dict: @Record@[field: Type ...]",
+                        _ => Err(TypeErrorTyped::Generic(GenericTypeError {
+                            message:
+                                "Record parameterization requires a dict: @Record@[field: Type ...]"
+                                    .to_string(),
                             span,
-                        )),
+                            notes: vec![],
+                        })
+                        .into()),
                     }
                 }
                 "Handle" => {
@@ -1404,10 +1524,12 @@ pub(crate) fn resolve_annotation(
                         }
                     }
                     // Unknown parameterized type — no TyConDef found
-                    Err(TypeError::new(
-                        format!("unknown parameterized type: {}", name),
+                    Err(TypeErrorTyped::Generic(GenericTypeError {
+                        message: format!("unknown parameterized type: {}", name),
                         span,
-                    ))
+                        notes: vec![],
+                    })
+                    .into())
                 }
             }
         }
@@ -1478,19 +1600,23 @@ pub(crate) fn resolve_annotation(
                 // 2. The identifier must start with a lowercase letter (label TypeVars are
                 //    lowercase by convention, mirroring type-kind TypeVars).
                 match &label_value_node.expr {
-                    SurfaceExpression::Str(_) => Err(TypeError::new(
-                        "label: value must be a bare name (e.g. `label: l`), not a string literal",
+                    SurfaceExpression::Str(_) => Err(TypeErrorTyped::Generic(GenericTypeError {
+                        message: "label: value must be a bare name (e.g. `label: l`), not a string literal".to_string(),
                         span,
-                    )),
+                        notes: vec![],
+                    })
+                    .into()),
                     SurfaceExpression::VarRef { name, .. } => {
                         if name.starts_with(|c: char| c.is_uppercase()) {
-                            Err(TypeError::new(
-                                format!(
+                            Err(TypeErrorTyped::Generic(GenericTypeError {
+                                message: format!(
                                     "label: value must be a lowercase type variable name (e.g. `label: l`), got '{}'",
                                     name
                                 ),
                                 span,
-                            ))
+                                notes: vec![],
+                            })
+                            .into())
                         } else {
                             // Valid lowercase label name: create a Label-kinded TypeVar.
                             // If we're inside a function scope (ann_mapping is Some), reuse the
@@ -1524,10 +1650,12 @@ pub(crate) fn resolve_annotation(
                             Ok(Type::TypeVar(fresh, current_level))
                         }
                     }
-                    _ => Err(TypeError::new(
-                        "label: value must be a bare name (e.g. `label: l`)",
+                    _ => Err(TypeErrorTyped::Generic(GenericTypeError {
+                        message: "label: value must be a bare name (e.g. `label: l`)".to_string(),
                         span,
-                    )),
+                        notes: vec![],
+                    })
+                    .into()),
                 }
             } else {
                 // No "type:" key (or has non-metadata keys) — treat as structural type or metadata.
@@ -1820,14 +1948,16 @@ pub(crate) fn resolve_type_name_with_guard(
 
         // Check arity
         if !alias.params.is_empty() {
-            return Err(TypeError::new(
-                format!(
+            return Err(TypeErrorTyped::Generic(GenericTypeError {
+                message: format!(
                     "type alias '{}' expects {} type parameter(s), got 0",
                     name,
                     alias.params.len()
                 ),
                 span,
-            ));
+                notes: vec![],
+            })
+            .into());
         }
 
         // Add to recursion guard
@@ -1851,7 +1981,12 @@ pub(crate) fn resolve_type_name_with_guard(
 
         result
     } else {
-        Err(TypeError::undefined_type(name, span))
+        Err(TypeErrorTyped::UndefinedType(UndefinedType {
+            name: name.to_string(),
+            span,
+            notes: vec![],
+        })
+        .into())
     }
 }
 
@@ -1917,10 +2052,12 @@ pub(crate) fn resolve_type_name(
         "Never" => Ok(Type::Never),
         "Top" => Ok(Type::Top),
         "Unknown" => Ok(Type::Unknown),
-        "Operator" => Err(TypeError::new(
-            "Operator is a kind, not a type — annotate a class type parameter as `f@Operator`, not a value expression",
+        "Operator" => Err(TypeErrorTyped::Generic(GenericTypeError {
+            message: "Operator is a kind, not a type — annotate a class type parameter as `f@Operator`, not a value expression".to_string(),
             span,
-        )),
+            notes: vec![],
+        })
+        .into()),
         "Label" => {
             // Anonymous Label-kinded TypeVar (parallel to `@Operator` error above).
             // Create a fresh system-generated name like `_label_0`.
@@ -2000,14 +2137,16 @@ pub(crate) fn resolve_type_name(
                     if !in_params && !params.contains(name) {
                         // Name not declared as a type parameter — check if it's a scope reference.
                         if env.get_type_alias(name).is_none() && env.lookup_tycon_def(name).is_none() {
-                            return Err(TypeError::new(
-                                format!(
+                            return Err(TypeErrorTyped::Generic(GenericTypeError {
+                                message: format!(
                                     "undefined name '{name}' in type alias body — \
                                      lowercase names must be declared as type parameters \
                                      with [let ...] or must refer to a type in scope"
                                 ),
                                 span,
-                            ));
+                                notes: vec![],
+                            })
+                            .into());
                         }
                         // It's a scope reference — fall through to normal resolution.
                     }
@@ -2026,13 +2165,15 @@ pub(crate) fn resolve_type_name(
                     .is_some_and(|m| m.contains_key(name));
                 let in_ann = ann_mapping.as_ref().is_some_and(|m| m.contains_key(name));
                 if in_row && !in_ann {
-                    return Err(TypeError::new(
-                        format!(
+                    return Err(TypeErrorTyped::Generic(GenericTypeError {
+                        message: format!(
                             "annotation name '{name}' is already used as a row variable in this function; \
                              it cannot also be used as a type variable"
                         ),
                         span,
-                    ));
+                        notes: vec![],
+                    })
+                    .into());
                 }
 
                 // If we have an annotation mapping (within a function), check if this
@@ -2076,21 +2217,28 @@ pub(crate) fn resolve_type_name(
                 if let Some(alias) = env.get_type_alias(name) {
                     // Check arity — bare alias name must have zero parameters
                     if !alias.params.is_empty() {
-                        return Err(TypeError::new(
-                            format!(
+                        return Err(TypeErrorTyped::Generic(GenericTypeError {
+                            message: format!(
                                 "type alias '{}' expects {} type parameter(s), got 0",
                                 name,
                                 alias.params.len()
                             ),
                             span,
-                        ));
+                            notes: vec![],
+                        })
+                        .into());
                     }
 
                     // Zero-parameter alias: return the body directly
                     // Recursive expansion happens during alias registration via resolve_type_name_with_guard
                     Ok(alias.body.clone())
                 } else {
-                    Err(TypeError::undefined_type(name, span))
+                    Err(TypeErrorTyped::UndefinedType(UndefinedType {
+                        name: name.to_string(),
+                        span,
+                        notes: vec![],
+                    })
+                    .into())
                 }
             }
         }
@@ -2116,13 +2264,15 @@ fn expand_alias_body_guarded(
     // Depth guard (Amadio & Cardelli 1993)
     const MAX_ALIAS_DEPTH: usize = 256;
     if depth >= MAX_ALIAS_DEPTH {
-        return Err(TypeError::new(
-            format!(
+        return Err(TypeErrorTyped::Generic(GenericTypeError {
+            message: format!(
                 "recursive type alias '{}' exceeds maximum unfolding depth ({})",
                 current_alias, MAX_ALIAS_DEPTH
             ),
             span,
-        ));
+            notes: vec![],
+        })
+        .into());
     }
 
     // Add current alias to guard
@@ -2161,7 +2311,7 @@ fn expand_alias_body_guarded(
             let new_params = params
                 .iter()
                 .map(|(name, p_ty)| {
-                    Ok((
+                    Ok::<_, TypeError>((
                         name.clone(),
                         expand_alias_body_guarded(
                             p_ty,
@@ -2282,13 +2432,15 @@ pub(crate) fn resolve_type_expr_with_guard(
 ) -> Result<Type, TypeError> {
     const MAX_ALIAS_DEPTH: usize = 256;
     if depth >= MAX_ALIAS_DEPTH {
-        return Err(TypeError::new(
-            format!(
+        return Err(TypeErrorTyped::Generic(GenericTypeError {
+            message: format!(
                 "recursive type alias '{}' exceeds maximum unfolding depth ({})",
                 current_alias, MAX_ALIAS_DEPTH
             ),
-            node.span.clone(),
-        ));
+            span: node.span.clone(),
+            notes: vec![],
+        })
+        .into());
     }
 
     match &node.expr {
@@ -2348,10 +2500,12 @@ fn resolve_type_dict_with_guard(
             if kw == "or" {
                 // [or T1 T2 ...] → Union([T1, T2, ...])
                 if entries.len() < 2 {
-                    return Err(TypeError::new(
-                        "[or ...] requires at least one type argument",
+                    return Err(TypeErrorTyped::Generic(GenericTypeError {
+                        message: "[or ...] requires at least one type argument".to_string(),
                         span,
-                    ));
+                        notes: vec![],
+                    })
+                    .into());
                 }
                 let mut members = Vec::new();
                 for entry in &entries[1..] {
@@ -2371,10 +2525,12 @@ fn resolve_type_dict_with_guard(
             } else if kw == "all" {
                 // [all T1 T2 ...] → Intersection([T1, T2, ...])
                 if entries.len() < 2 {
-                    return Err(TypeError::new(
-                        "[all ...] requires at least one type argument",
+                    return Err(TypeErrorTyped::Generic(GenericTypeError {
+                        message: "[all ...] requires at least one type argument".to_string(),
                         span,
-                    ));
+                        notes: vec![],
+                    })
+                    .into());
                 }
                 let mut members = Vec::new();
                 for entry in &entries[1..] {
@@ -2394,10 +2550,12 @@ fn resolve_type_dict_with_guard(
             } else if kw == "without" {
                 // [without A] → Negation(A)
                 if entries.len() != 2 {
-                    return Err(TypeError::new(
-                        "[without A] requires exactly one type argument",
+                    return Err(TypeErrorTyped::Generic(GenericTypeError {
+                        message: "[without A] requires exactly one type argument".to_string(),
                         span,
-                    ));
+                        notes: vec![],
+                    })
+                    .into());
                 }
                 let inner = resolve_type_expr_with_guard(
                     &entries[1].node.value,
@@ -2441,10 +2599,12 @@ fn resolve_type_dict_with_guard(
                     // type resolution uses only the field name.
                     SurfaceExpression::Annotated { name, .. } => name.clone(),
                     _ => {
-                        return Err(TypeError::new(
-                            "type record keys must be bare words",
-                            k.span.clone(),
-                        ))
+                        return Err(TypeErrorTyped::Generic(GenericTypeError {
+                            message: "type record keys must be bare words".to_string(),
+                            span: k.span.clone(),
+                            notes: vec![],
+                        })
+                        .into())
                     }
                 },
                 None => {
@@ -2701,13 +2861,15 @@ pub(crate) fn resolve_type_expr(
                         }
                     }
                     if args.len() > 1 {
-                        return Err(TypeError::new(
-                            format!(
+                        return Err(TypeErrorTyped::Generic(GenericTypeError {
+                            message: format!(
                                 "function type [Fn@Return [Params]] requires exactly 2 entries, got {}",
                                 1 + args.len()
                             ),
-                            node.span.clone(),
-                        ));
+                            span: node.span.clone(),
+                            notes: vec![],
+                        })
+                        .into());
                     }
                     return Ok(Type::Function {
                         params,
@@ -2729,10 +2891,12 @@ pub(crate) fn resolve_type_expr(
                 if kw == "or" {
                     // args contains the type arguments; func ("or") is the head, not a type.
                     if args.is_empty() {
-                        return Err(TypeError::new(
-                            "[or ...] requires at least one type argument",
-                            node.span.clone(),
-                        ));
+                        return Err(TypeErrorTyped::Generic(GenericTypeError {
+                            message: "[or ...] requires at least one type argument".to_string(),
+                            span: node.span.clone(),
+                            notes: vec![],
+                        })
+                        .into());
                     }
                     let mut members = Vec::new();
                     for arg in args.iter() {
@@ -2743,10 +2907,12 @@ pub(crate) fn resolve_type_expr(
                 } else if kw == "all" {
                     // args contains the type arguments; func ("all") is the head, not a type.
                     if args.is_empty() {
-                        return Err(TypeError::new(
-                            "[all ...] requires at least one type argument",
-                            node.span.clone(),
-                        ));
+                        return Err(TypeErrorTyped::Generic(GenericTypeError {
+                            message: "[all ...] requires at least one type argument".to_string(),
+                            span: node.span.clone(),
+                            notes: vec![],
+                        })
+                        .into());
                     }
                     let mut members = Vec::new();
                     for arg in args.iter() {
@@ -2756,10 +2922,12 @@ pub(crate) fn resolve_type_expr(
                     return Ok(Type::normalize_intersection(members));
                 } else if kw == "without" {
                     if args.len() != 1 {
-                        return Err(TypeError::new(
-                            "[without A] requires exactly one type argument",
-                            node.span.clone(),
-                        ));
+                        return Err(TypeErrorTyped::Generic(GenericTypeError {
+                            message: "[without A] requires exactly one type argument".to_string(),
+                            span: node.span.clone(),
+                            notes: vec![],
+                        })
+                        .into());
                     }
                     let inner =
                         resolve_type_expr(&args[0], env, state, ann_mapping, row_ann_mapping)?;
@@ -2809,15 +2977,17 @@ pub(crate) fn resolve_type_expr(
 
                     // Check arity
                     if type_args.len() != alias.params.len() {
-                        return Err(TypeError::new(
-                            format!(
+                        return Err(TypeErrorTyped::Generic(GenericTypeError {
+                            message: format!(
                                 "type alias '{}' expects {} type parameter(s), got {}",
                                 name,
                                 alias.params.len(),
                                 type_args.len()
                             ),
-                            node.span.clone(),
-                        ));
+                            span: node.span.clone(),
+                            notes: vec![],
+                        })
+                        .into());
                     }
 
                     // Build substitution and apply to body
@@ -2876,13 +3046,15 @@ pub(crate) fn resolve_type_expr(
                             },
                         });
                     } else {
-                        return Err(TypeError::new(
-                            format!(
+                        return Err(TypeErrorTyped::Generic(GenericTypeError {
+                            message: format!(
                                 "nominal constructor {} requires either 0 args, 1 arg, or named args",
                                 name
                             ),
-                            node.span.clone(),
-                        ));
+                            span: node.span.clone(),
+                            notes: vec![],
+                        })
+                        .into());
                     }
                 }
             }
@@ -2926,15 +3098,19 @@ pub(crate) fn resolve_type_expr(
                 }
             }
 
-            Err(TypeError::new(
-                format!("invalid type expression in annotation: {:?}", node.expr),
-                node.span.clone(),
-            ))
+            Err(TypeErrorTyped::Generic(GenericTypeError {
+                message: format!("invalid type expression in annotation: {:?}", node.expr),
+                span: node.span.clone(),
+                notes: vec![],
+            })
+            .into())
         }
-        _ => Err(TypeError::new(
-            format!("invalid type expression in annotation: {:?}", node.expr),
-            node.span.clone(),
-        )),
+        _ => Err(TypeErrorTyped::Generic(GenericTypeError {
+            message: format!("invalid type expression in annotation: {:?}", node.expr),
+            span: node.span.clone(),
+            notes: vec![],
+        })
+        .into()),
     }
 }
 
@@ -2976,15 +3152,17 @@ pub(crate) fn resolve_type_dict(
                         } else if arity > 0 {
                             // Collect `arity` argument types from subsequent positional entries.
                             if entries.len() < 1 + arity {
-                                return Err(TypeError::new(
-                                    format!(
+                                return Err(TypeErrorTyped::Generic(GenericTypeError {
+                                    message: format!(
                                         "type constructor '{}' requires {} argument(s), got {}",
                                         name,
                                         arity,
                                         entries.len() - 1
                                     ),
                                     span,
-                                ));
+                                    notes: vec![],
+                                })
+                                .into());
                             }
                             let mut result = Type::TyCon(name.clone());
                             for entry in entries.iter().take(arity + 1).skip(1) {
@@ -3038,24 +3216,28 @@ pub(crate) fn resolve_type_dict(
                             // Note: Seq/Map/Handle are caught by the TyConDef path above and
                             // never reach here (T-1021/T-1018).
                             if args.len() != 1 {
-                                return Err(TypeError::new(
-                                    format!(
+                                return Err(TypeErrorTyped::Generic(GenericTypeError {
+                                    message: format!(
                                         "type constructor `{name}` requires 1 type argument, got {}",
                                         args.len()
                                     ),
                                     span,
-                                ));
+                                    notes: vec![],
+                                })
+                                .into());
                             }
                             let a_type = args.into_iter().next().unwrap();
                             if let Type::Operator(op_name) = &a_type {
-                                return Err(TypeError::new(
-                                    format!(
+                                return Err(TypeErrorTyped::Generic(GenericTypeError {
+                                    message: format!(
                                         "kind mismatch: type constructor `{name}` cannot be \
                                          applied to another type constructor `{op_name}`; \
                                          use a concrete type instead"
                                     ),
                                     span,
-                                ));
+                                    notes: vec![],
+                                })
+                                .into());
                             }
                             return Ok(Type::App(
                                 Box::new(Type::Operator(name.clone())),
@@ -3082,13 +3264,15 @@ pub(crate) fn resolve_type_dict(
                             let mut type_args = Vec::new();
                             for entry in &entries[1..] {
                                 if entry.node.key.is_some() {
-                                    return Err(TypeError::new(
-                                        format!(
+                                    return Err(TypeErrorTyped::Generic(GenericTypeError {
+                                        message: format!(
                                             "unexpected keyed entry in type alias application '{}'",
                                             name
                                         ),
-                                        entry.span.clone(),
-                                    ));
+                                        span: entry.span.clone(),
+                                        notes: vec![],
+                                    })
+                                    .into());
                                 }
                                 type_args.push(resolve_type_expr(
                                     &entry.node.value,
@@ -3099,15 +3283,17 @@ pub(crate) fn resolve_type_dict(
                                 )?);
                             }
                             if type_args.len() != alias.params.len() {
-                                return Err(TypeError::new(
-                                    format!(
+                                return Err(TypeErrorTyped::Generic(GenericTypeError {
+                                    message: format!(
                                         "type alias '{}' expects {} type parameter(s), got {}",
                                         name,
                                         alias.params.len(),
                                         type_args.len()
                                     ),
                                     span,
-                                ));
+                                    notes: vec![],
+                                })
+                                .into());
                             }
                             return instantiate_type_alias(&alias, &type_args, state);
                         }
@@ -3135,10 +3321,12 @@ pub(crate) fn resolve_type_dict(
             if kw == "or" {
                 // [or T1 T2 ...] → Union([T1, T2, ...])
                 if entries.len() < 2 {
-                    return Err(TypeError::new(
-                        "[or ...] requires at least one type argument",
+                    return Err(TypeErrorTyped::Generic(GenericTypeError {
+                        message: "[or ...] requires at least one type argument".to_string(),
                         span,
-                    ));
+                        notes: vec![],
+                    })
+                    .into());
                 }
                 let mut members = Vec::new();
                 for entry in &entries[1..] {
@@ -3155,10 +3343,12 @@ pub(crate) fn resolve_type_dict(
             } else if kw == "all" {
                 // [all T1 T2 ...] → Intersection([T1, T2, ...])
                 if entries.len() < 2 {
-                    return Err(TypeError::new(
-                        "[all ...] requires at least one type argument",
+                    return Err(TypeErrorTyped::Generic(GenericTypeError {
+                        message: "[all ...] requires at least one type argument".to_string(),
                         span,
-                    ));
+                        notes: vec![],
+                    })
+                    .into());
                 }
                 let mut members = Vec::new();
                 for entry in &entries[1..] {
@@ -3175,10 +3365,12 @@ pub(crate) fn resolve_type_dict(
             } else if kw == "without" {
                 // [without A] → Negation(A)
                 if entries.len() != 2 {
-                    return Err(TypeError::new(
-                        "[without A] requires exactly one type argument",
+                    return Err(TypeErrorTyped::Generic(GenericTypeError {
+                        message: "[without A] requires exactly one type argument".to_string(),
                         span,
-                    ));
+                        notes: vec![],
+                    })
+                    .into());
                 }
                 let inner = resolve_type_expr(
                     &entries[1].node.value,
@@ -3289,10 +3481,12 @@ pub(crate) fn resolve_type_dict(
                                             SurfaceExpression::Annotated { name, .. } => {
                                                 name.clone()
                                             }
-                                            _ => return Err(TypeError::new(
-                                                "nominal variant field names must be bare words",
-                                                k.span.clone(),
-                                            )),
+                                            _ => return Err(TypeErrorTyped::Generic(GenericTypeError {
+                                                message: "nominal variant field names must be bare words".to_string(),
+                                                span: k.span.clone(),
+                                                notes: vec![],
+                                            })
+                                            .into()),
                                         };
                                         let field_ty = resolve_type_expr(
                                             &field_entry.node.value,
@@ -3304,10 +3498,12 @@ pub(crate) fn resolve_type_dict(
                                         variant_fields.insert(field_name, field_ty);
                                     }
                                     None => {
-                                        return Err(TypeError::new(
-                                            "nominal variant constructor with named fields requires all fields after the constructor tag to be keyed (field: Type)",
-                                            field_entry.span.clone(),
-                                        ));
+                                        return Err(TypeErrorTyped::Generic(GenericTypeError {
+                                            message: "nominal variant constructor with named fields requires all fields after the constructor tag to be keyed (field: Type)".to_string(),
+                                            span: field_entry.span.clone(),
+                                            notes: vec![],
+                                        })
+                                        .into());
                                     }
                                 }
                             }
@@ -3433,10 +3629,12 @@ pub(crate) fn resolve_type_dict(
 
         if is_wildcard_key {
             if uniform_tail.is_some() {
-                return Err(TypeError::new(
-                    "duplicate uniform-field sentinel `_` in row type annotation — at most one `_` allowed per row",
-                    entry.span.clone(),
-                ));
+                return Err(TypeErrorTyped::Generic(GenericTypeError {
+                    message: "duplicate uniform-field sentinel `_` in row type annotation — at most one `_` allowed per row".to_string(),
+                    span: entry.span.clone(),
+                    notes: vec![],
+                })
+                .into());
             }
             let value_ty =
                 resolve_type_expr(&entry.node.value, env, state, ann_mapping, row_ann_mapping)?;
@@ -3470,17 +3668,21 @@ pub(crate) fn resolve_type_dict(
                 // The annotation is metadata for T-1053; type resolution uses only the name.
                 SurfaceExpression::Annotated { name, .. } => name.clone(),
                 _ => {
-                    return Err(TypeError::new(
-                        "type record keys must be bare words",
-                        k.span.clone(),
-                    ))
+                    return Err(TypeErrorTyped::Generic(GenericTypeError {
+                        message: "type record keys must be bare words".to_string(),
+                        span: k.span.clone(),
+                        notes: vec![],
+                    })
+                    .into())
                 }
             },
             None => {
-                return Err(TypeError::new(
-                    "auto-indexed entries not supported in type expressions",
-                    entry.span.clone(),
-                ))
+                return Err(TypeErrorTyped::Generic(GenericTypeError {
+                    message: "auto-indexed entries not supported in type expressions".to_string(),
+                    span: entry.span.clone(),
+                    notes: vec![],
+                })
+                .into())
             }
         };
         let ty = resolve_type_expr(&entry.node.value, env, state, ann_mapping, row_ann_mapping)?;
@@ -4015,10 +4217,12 @@ pub(crate) fn eval_type_stage_value(
 
     // Obtain the type-stage environment for building the EvalContext.
     let type_stage_env = crate::imports::build_type_stage_env().ok_or_else(|| {
-        TypeError::new(
-            "type-stage environment unavailable (bootstrap recursion guard fired)",
-            origin_span.clone(),
-        )
+        TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
+            message: "type-stage environment unavailable (bootstrap recursion guard fired)"
+                .to_string(),
+            span: origin_span.clone(),
+            notes: vec![],
+        }))
     })?;
 
     // Build a minimal EvalContext backed by the type-stage environment.
@@ -4026,10 +4230,11 @@ pub(crate) fn eval_type_stage_value(
     #[allow(clippy::disallowed_methods)]
     let base_dir =
         cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority()).map_err(|e| {
-            TypeError::new(
-                format!("type-stage eval: cannot open ambient dir: {e}"),
-                origin_span.clone(),
-            )
+            TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
+                message: format!("type-stage eval: cannot open ambient dir: {e}"),
+                span: origin_span.clone(),
+                notes: vec![],
+            }))
         })?;
     let ctx = crate::eval::EvalContext::new_empty(base_dir, type_stage_env, false);
 
@@ -4067,38 +4272,43 @@ pub(crate) fn eval_type_stage_value(
                 ctx: &ctx,
             };
             crate::eval_call::invoke_function_sync(&call_ctx).map_err(|e| {
-                TypeError::new(
-                    format!("type-stage function call failed: {e}"),
-                    origin_span.clone(),
-                )
+                TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
+                    message: format!("type-stage function call failed: {e}"),
+                    span: origin_span.clone(),
+                    notes: vec![],
+                }))
             })?
         }
         // Not a function — as-type dispatch requires a callable value.
         _ => {
-            return Err(TypeError::new(
-                "eval_type_stage_value: argument is not a function value",
-                origin_span,
-            ))
+            return Err(TypeErrorTyped::Generic(GenericTypeError {
+                message: "eval_type_stage_value: argument is not a function value".to_string(),
+                span: origin_span,
+                notes: vec![],
+            })
+            .into())
         }
     };
 
     // Materialize the result synchronously.
     let result_val = crate::eval::materialize_sync(&result_thunk, None, &ctx).map_err(|e| {
-        TypeError::new(
-            format!("type-stage materialization failed: {e}"),
-            origin_span.clone(),
-        )
+        TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
+            message: format!("type-stage materialization failed: {e}"),
+            span: origin_span.clone(),
+            notes: vec![],
+        }))
     })?;
 
     // Convert TypeNode Value → Type.
     typenode_value_to_type(&result_val, &ctx).ok_or_else(|| {
-        TypeError::new(
-            format!(
+        TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
+            message: format!(
                 "type-stage result cannot be converted to Type: {result_val} \
                  (TypeNode.Recursive/RecursiveRef require equirecursive CheckerType migration)"
             ),
-            origin_span,
-        )
+            span: origin_span,
+            notes: vec![],
+        }))
     })
 }
 
@@ -4155,10 +4365,12 @@ pub(crate) fn eval_type_stage_expr(
 
     // Obtain the type-stage environment.
     let type_stage_env = crate::imports::build_type_stage_env().ok_or_else(|| {
-        TypeError::new(
-            "type-stage environment unavailable (bootstrap recursion guard fired)",
-            node_span.clone(),
-        )
+        TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
+            message: "type-stage environment unavailable (bootstrap recursion guard fired)"
+                .to_string(),
+            span: node_span.clone(),
+            notes: vec![],
+        }))
     })?;
 
     // Build a minimal EvalContext backed by the type-stage environment.
@@ -4166,10 +4378,11 @@ pub(crate) fn eval_type_stage_expr(
     #[allow(clippy::disallowed_methods)]
     let base_dir =
         cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority()).map_err(|e| {
-            TypeError::new(
-                format!("type-stage eval: cannot open ambient dir: {e}"),
-                node_span.clone(),
-            )
+            TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
+                message: format!("type-stage eval: cannot open ambient dir: {e}"),
+                span: node_span.clone(),
+                notes: vec![],
+            }))
         })?;
     let ctx = crate::eval::EvalContext::new_empty(base_dir, Arc::clone(&type_stage_env), false);
 
@@ -4191,10 +4404,11 @@ pub(crate) fn eval_type_stage_expr(
     // Materialize synchronously — type-stage evaluation is pure compute, no I/O.
     let typenode_val = crate::eval::materialize_sync(&surface_thunk, Some(&node_span), &ctx)
         .map_err(|e| {
-            TypeError::new(
-                format!("type-stage expression evaluation failed: {e}"),
-                node_span.clone(),
-            )
+            TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
+                message: format!("type-stage expression evaluation failed: {e}"),
+                span: node_span.clone(),
+                notes: vec![],
+            }))
         })?;
 
     // Attempt TypeNode.as-type dispatch (T-1059 hook).
@@ -4239,13 +4453,14 @@ pub(crate) fn eval_type_stage_expr(
     // Fall through to direct conversion: raw typenode_val → Type (no as-type normalization).
     // Handles TypeNode primitive variants and old-style kind-keyed dicts.
     typenode_value_to_type(&typenode_val, &ctx).ok_or_else(|| {
-        TypeError::new(
-            format!(
+        TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
+            message: format!(
                 "type-stage expression produced an unrecognized value: {typenode_val} \
                  (TypeNode.Recursive/RecursiveRef require equirecursive CheckerType migration)"
             ),
-            node_span,
-        )
+            span: node_span,
+            notes: vec![],
+        }))
     })
 }
 
@@ -4796,21 +5011,25 @@ fn try_resolve_fn_type_expr(
     };
 
     if entries.len() != 2 {
-        return Err(TypeError::new(
-            format!(
+        return Err(TypeErrorTyped::Generic(GenericTypeError {
+            message: format!(
                 "function type [Fn@Return [Params]] requires exactly 2 entries, got {}",
                 entries.len()
             ),
             span,
-        ));
+            notes: vec![],
+        })
+        .into());
     }
 
     let second = &entries[1];
     if second.node.key.is_some() {
-        return Err(TypeError::new(
-            "function type parameter list must be auto-indexed",
-            second.span.clone(),
-        ));
+        return Err(TypeErrorTyped::Generic(GenericTypeError {
+            message: "function type parameter list must be auto-indexed".to_string(),
+            span: second.span.clone(),
+            notes: vec![],
+        })
+        .into());
     }
 
     let ret =
@@ -4856,10 +5075,12 @@ fn try_resolve_fn_type_expr(
             }
         }
         _ => {
-            return Err(TypeError::new(
-                "function type parameter list must be a bracket expression",
-                second.node.value.span.clone(),
-            ))
+            return Err(TypeErrorTyped::Generic(GenericTypeError {
+                message: "function type parameter list must be a bracket expression".to_string(),
+                span: second.node.value.span.clone(),
+                notes: vec![],
+            })
+            .into())
         }
     }
 

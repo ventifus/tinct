@@ -15,9 +15,7 @@ use std::sync::Arc;
 use indexmap::IndexMap;
 
 use crate::ast::Span;
-
-// TypeError is defined in type_env.rs (will be moved to type_class.rs or kept in type_env.rs)
-// We need to import it for check_kind_wellformed
+use crate::type_errors::{GenericTypeError, TypeErrorTyped};
 use crate::types::TypeError;
 
 /// Tail of a row type — either closed (no additional fields) or uniform (additional fields
@@ -2697,10 +2695,14 @@ pub fn check_kind_wellformed(
     match ty {
         Type::TypeVar(name, _) => {
             if let Some(Kind::Label) = kind_env.get(name.as_str()) {
-                return Err(TypeError::new(
-                    format!("label variable {} has kind Label, expected kind *", name),
+                return Err(TypeErrorTyped::Generic(GenericTypeError {
+                    message: format!(
+                        "kind mismatch: type variable `{name}` has kind Label but expected kind *"
+                    ),
                     span,
-                ));
+                    notes: vec![],
+                })
+                .into());
             }
             Ok(())
         }
@@ -2738,24 +2740,22 @@ pub fn check_kind_wellformed(
             // Bare Operator in a type position (kind *) is kind-incorrect.
             // Operator variables have kind (* → *) and must be applied via Type::App.
             if let Some(Kind::Operator) = kind_env.get(name.as_str()) {
-                return Err(TypeError::new(
-                    format!(
-                        "kind mismatch: {} has kind * → * but appears in a type (kind *) position",
-                        name
-                    ),
+                return Err(TypeErrorTyped::Generic(GenericTypeError {
+                    message: format!("kind mismatch: operator `{name}` has kind (* → *) but expected kind *; did you forget to apply it?"),
                     span,
-                ));
+                    notes: vec![],
+                })
+                .into());
             }
             // Bare Kind::Arrow in a type position is also kind-incorrect.
             // Arrow kinds are for higher-order type constructors that must be fully applied.
             if matches!(kind_env.get(name.as_str()), Some(Kind::Arrow(_, _))) {
-                return Err(TypeError::new(
-                    format!(
-                        "kind mismatch: {} has a higher-order kind but appears in a type (kind *) position",
-                        name
-                    ),
+                return Err(TypeErrorTyped::Generic(GenericTypeError {
+                    message: format!("kind mismatch: `{name}` is a higher-kinded type constructor but was used in a type position"),
                     span,
-                ));
+                    notes: vec![],
+                })
+                .into());
             }
             // If the name is not in kind_env, let it pass (freshly introduced Operator
             // that hasn't been kind-registered yet, or will be registered later)

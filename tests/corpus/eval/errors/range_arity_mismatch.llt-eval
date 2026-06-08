@@ -6,4 +6,4 @@
   in [range ...] at 1:1-1:8
 
 === warn
-arity mismatch: expected at least 1 argument(s), got 0 (0 positional, 0 named) at 1:1-1:8
+expected 1 arguments, got 0 at 1:1-1:8

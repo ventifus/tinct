@@ -13,4 +13,4 @@
   in [broadcast-channel ...] at 9:1-9:20
 
 === warn
-arity mismatch: expected 1 argument(s), got 0 (0 positional, 0 named) at 9:1-9:20
+expected 1 arguments, got 0 at 9:1-9:20

@@ -4,4 +4,4 @@
 String("Context")
 
 === warn
-arity mismatch: expected 1 argument(s), got 0 (0 positional, 0 named) at 1:10-1:27
+expected 1 arguments, got 0 at 1:10-1:27

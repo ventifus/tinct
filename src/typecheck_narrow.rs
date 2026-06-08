@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 use super::typecheck_annot::resolve_annotation;
 use crate::ast::{Annotation, Pattern, Span, SurfaceExpression, SurfaceNode};
+use crate::type_errors::{GenericTypeError, TypeErrorTyped};
 use crate::types::{unify, InferState, Row, Type, TypeEnv, TypeError};
 
 /// Narrowing constraints extracted from conditional expressions.
@@ -672,10 +673,13 @@ pub(crate) fn extract_pattern_types(
             }
             Ok(types)
         }
-        _ => Err(vec![TypeError::new(
-            "instance arm pattern must be a [pattern [...]] or [let ...] declaration",
-            pattern_node.span.clone(),
-        )]),
+        _ => Err(vec![TypeErrorTyped::Generic(GenericTypeError {
+            message: "instance arm pattern must be a [pattern [...]] or [let ...] declaration"
+                .to_string(),
+            span: pattern_node.span.clone(),
+            notes: vec![],
+        })
+        .into()]),
     }
 }
 
@@ -759,10 +763,13 @@ pub(crate) fn extract_binding_types(
             types.push(Type::Unknown);
         }
         _ => {
-            return Err(vec![TypeError::new(
-                "pattern binding must be in form 'a@Type', bare identifier, or [let ...]",
-                binding.span.clone(),
-            )]);
+            return Err(vec![TypeErrorTyped::Generic(GenericTypeError {
+                message: "pattern binding must be in form 'a@Type', bare identifier, or [let ...]"
+                    .to_string(),
+                span: binding.span.clone(),
+                notes: vec![],
+            })
+            .into()]);
         }
     }
     Ok(())
@@ -894,10 +901,12 @@ pub(crate) fn extract_param_indices(
             if let Some(idx) = params.iter().position(|p| p == name) {
                 indices.push(idx);
             } else {
-                return Err(vec![TypeError::new(
-                    format!("functional dependency references unknown param '{}'", name),
+                return Err(vec![TypeErrorTyped::Generic(GenericTypeError {
+                    message: format!("functional dependency references unknown param '{}'", name),
                     span,
-                )]);
+                    notes: vec![],
+                })
+                .into()]);
             }
         }
         // Multiple params as auto-indexed Dict: produced when bracket contains
@@ -908,23 +917,28 @@ pub(crate) fn extract_param_indices(
                     SurfaceExpression::VarRef { name, .. } => name,
                     SurfaceExpression::Str(s) => s,
                     _ => {
-                        return Err(vec![TypeError::new(
-                            "functional dependency param must be an identifier or string",
-                            entry.span.clone(),
-                        )]);
+                        return Err(vec![TypeErrorTyped::Generic(GenericTypeError {
+                            message: "functional dependency param must be an identifier or string"
+                                .to_string(),
+                            span: entry.span.clone(),
+                            notes: vec![],
+                        })
+                        .into()]);
                     }
                 };
 
                 if let Some(idx) = params.iter().position(|p| p == param_name) {
                     indices.push(idx);
                 } else {
-                    return Err(vec![TypeError::new(
-                        format!(
+                    return Err(vec![TypeErrorTyped::Generic(GenericTypeError {
+                        message: format!(
                             "functional dependency references unknown param '{}'",
                             param_name
                         ),
-                        entry.span.clone(),
-                    )]);
+                        span: entry.span.clone(),
+                        notes: vec![],
+                    })
+                    .into()]);
                 }
             }
         }
@@ -941,22 +955,27 @@ pub(crate) fn extract_param_indices(
                 SurfaceExpression::VarRef { name, .. } => name,
                 SurfaceExpression::Str(s) => s,
                 _ => {
-                    return Err(vec![TypeError::new(
-                        "functional dependency param must be an identifier or string",
-                        func.span.clone(),
-                    )])
+                    return Err(vec![TypeErrorTyped::Generic(GenericTypeError {
+                        message: "functional dependency param must be an identifier or string"
+                            .to_string(),
+                        span: func.span.clone(),
+                        notes: vec![],
+                    })
+                    .into()])
                 }
             };
             if let Some(idx) = params.iter().position(|p| p == head_name) {
                 indices.push(idx);
             } else {
-                return Err(vec![TypeError::new(
-                    format!(
+                return Err(vec![TypeErrorTyped::Generic(GenericTypeError {
+                    message: format!(
                         "functional dependency references unknown param '{}'",
                         head_name
                     ),
-                    func.span.clone(),
-                )]);
+                    span: func.span.clone(),
+                    notes: vec![],
+                })
+                .into()]);
             }
             // Extract the remaining args
             for arg in args {
@@ -964,30 +983,38 @@ pub(crate) fn extract_param_indices(
                     SurfaceExpression::VarRef { name, .. } => name,
                     SurfaceExpression::Str(s) => s,
                     _ => {
-                        return Err(vec![TypeError::new(
-                            "functional dependency param must be an identifier or string",
-                            arg.span.clone(),
-                        )])
+                        return Err(vec![TypeErrorTyped::Generic(GenericTypeError {
+                            message: "functional dependency param must be an identifier or string"
+                                .to_string(),
+                            span: arg.span.clone(),
+                            notes: vec![],
+                        })
+                        .into()])
                     }
                 };
                 if let Some(idx) = params.iter().position(|p| p == arg_name) {
                     indices.push(idx);
                 } else {
-                    return Err(vec![TypeError::new(
-                        format!(
+                    return Err(vec![TypeErrorTyped::Generic(GenericTypeError {
+                        message: format!(
                             "functional dependency references unknown param '{}'",
                             arg_name
                         ),
-                        arg.span.clone(),
-                    )]);
+                        span: arg.span.clone(),
+                        notes: vec![],
+                    })
+                    .into()]);
                 }
             }
         }
         _ => {
-            return Err(vec![TypeError::new(
-                "functional dependency variables must be an identifier or list",
+            return Err(vec![TypeErrorTyped::Generic(GenericTypeError {
+                message: "functional dependency variables must be an identifier or list"
+                    .to_string(),
                 span,
-            )]);
+                notes: vec![],
+            })
+            .into()]);
         }
     }
 
