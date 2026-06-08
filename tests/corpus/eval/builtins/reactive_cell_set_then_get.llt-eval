@@ -9,6 +9,6 @@
 Int(99)
 
 === warn
-undefined variable: builtin-reactive-cell at 3:10-3:31
-undefined variable: builtin-cell-set at 4:10-4:26
-undefined variable: builtin-cell-get at 6:2-6:18
+[UndefinedVariable] undefined variable: builtin-reactive-cell
+[UndefinedVariable] undefined variable: builtin-cell-set
+[UndefinedVariable] undefined variable: builtin-cell-get

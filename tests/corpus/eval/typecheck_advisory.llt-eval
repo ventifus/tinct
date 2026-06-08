@@ -8,4 +8,4 @@
 Dict({"f": Function(x), "result": String("hello")})
 
 === warn
-cannot unify Int with "hello" at 5:13-5:20
+[UnificationFailure] cannot unify Int with "hello"

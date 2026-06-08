@@ -29,5 +29,5 @@
   in [get ...] at 20:1-20:18
 
 === warn
-coverage violation at 15:5-15:26
-undefined variable: n at 20:16-20:17
+[CoverageViolation] coverage violation
+[UndefinedVariable] undefined variable: n

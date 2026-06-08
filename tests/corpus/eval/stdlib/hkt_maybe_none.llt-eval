@@ -5,4 +5,4 @@ None
 Variant(Maybe.None, Null)
 
 === warn
-undefined variable: None at 1:1-1:5
+[UndefinedVariable] undefined variable: None

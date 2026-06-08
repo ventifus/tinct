@@ -23,4 +23,4 @@
   in [validate ...] at 15:11-15:59
 
 === warn
-undefined variable: validate at 15:12-15:20
+[UndefinedVariable] undefined variable: validate

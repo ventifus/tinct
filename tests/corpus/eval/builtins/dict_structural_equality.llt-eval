@@ -7,4 +7,4 @@
 Dict({"r1": Bool(true), "r2": Bool(true), "r3": Bool(true), "r4": Bool(false), "r5": Bool(false)})
 
 === warn
-cannot unify 1 with 2 at 4:6-4:23
+[UnificationFailure] cannot unify 1 with 2

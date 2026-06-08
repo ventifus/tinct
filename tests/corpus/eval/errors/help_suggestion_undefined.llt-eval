@@ -6,4 +6,4 @@
 [E002] undefined variable: x (did you mean the string "x"? Use quotes.) (defined at 3:10-3:12)
 
 === warn
-undefined variable: x at 3:10-3:12
+[UndefinedVariable] undefined variable: x

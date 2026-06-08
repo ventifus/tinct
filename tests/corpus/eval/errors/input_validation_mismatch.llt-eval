@@ -12,5 +12,5 @@
   in accessing .foo at 7:1-7:6
 
 === warn
-Pipeline input type 42 does not satisfy expects contract [] at 4:7-4:11
-expected record type, got 42 at 7:1-7:6
+[TypeError] Pipeline input type 42 does not satisfy expects contract []
+[NotARecord] expected record type, got 42

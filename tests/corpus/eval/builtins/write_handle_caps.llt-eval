@@ -23,4 +23,4 @@
   in [has-cap? ...] at 7:1-7:89
 
 === warn
-undefined variable: has-cap? at 7:2-7:10
+[UndefinedVariable] undefined variable: has-cap?

@@ -5,4 +5,4 @@
 String("positive")
 
 === warn
-cannot unify 5 with 0 at 2:12-2:19
+[UnificationFailure] cannot unify 5 with 0

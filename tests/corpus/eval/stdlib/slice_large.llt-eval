@@ -5,5 +5,5 @@
 Int(0)
 
 === warn
-multi-element [let ...] pattern not yet supported — use single binding at 1:1-1:33
-undefined variable: d at 2:24-2:25
+[TypeError] multi-element [let ...] pattern not yet supported — use single binding
+[UndefinedVariable] undefined variable: d

@@ -17,6 +17,6 @@ both
 Bool(true)
 
 === warn
-undefined variable: builtin-variant at 9:15-9:30
-undefined variable: builtin-is-contractive at 10:15-10:37
-undefined variable: builtin-is-contractive at 11:20-11:42
+[UndefinedVariable] undefined variable: builtin-variant
+[UndefinedVariable] undefined variable: builtin-is-contractive
+[UndefinedVariable] undefined variable: builtin-is-contractive

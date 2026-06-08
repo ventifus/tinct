@@ -5,4 +5,4 @@
   in [floor ...] at 1:1-1:15
 
 === warn
-unknown named argument: function has no parameter named 'n' at 1:11-1:14
+[TypeError] unknown named argument: function has no parameter named 'n'

@@ -4,4 +4,4 @@
 [E002] undefined variable: duration->nanos (defined at 1:2-1:17)
 
 === warn
-undefined variable: duration->nanos at 1:2-1:17
+[UndefinedVariable] undefined variable: duration->nanos

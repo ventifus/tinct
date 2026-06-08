@@ -7,4 +7,4 @@
 Int(0)
 
 === warn
-undefined variable: Ok at 1:11-1:13
+[UndefinedVariable] undefined variable: Ok

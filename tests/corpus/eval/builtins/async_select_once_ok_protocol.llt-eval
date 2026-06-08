@@ -22,5 +22,5 @@
   in [if ...] at 12:11-12:91
 
 === warn
-undefined variable: } at 11:50-11:51
-cannot unify Top with <error> at 12:50-12:57
+[UndefinedVariable] undefined variable: }
+[UnificationFailure] cannot unify Top with <error>

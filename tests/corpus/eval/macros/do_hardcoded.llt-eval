@@ -5,4 +5,4 @@
 Variant(Result.Ok, Int(99))
 
 === warn
-undefined variable: Ok at 2:13-2:15
+[UndefinedVariable] undefined variable: Ok

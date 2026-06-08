@@ -12,5 +12,5 @@
 Dict({"result": Bool(true)})
 
 === warn
-unknown parameterized type: Red at 7:16-7:41
-undefined variable: Red at 8:22-8:25
+[TypeError] unknown parameterized type: Red
+[UndefinedVariable] undefined variable: Red

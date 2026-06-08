@@ -11,4 +11,4 @@
   in [connect ...] at 2:1-2:31
 
 === warn
-expected 4 arguments, got 3 at 2:1-2:31
+[ArityMismatch] expected 4 arguments, got 3

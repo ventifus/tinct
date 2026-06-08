@@ -15,4 +15,4 @@
   in [variant? ...] at 1:1-1:29
 
 === warn
-expected 1 arguments, got 2 at 1:11-1:28
+[ArityMismatch] expected 1 arguments, got 2

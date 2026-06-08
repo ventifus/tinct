@@ -5,4 +5,4 @@
 String("h")
 
 === warn
-undefined variable: str-at at 2:2-2:8
+[UndefinedVariable] undefined variable: str-at

@@ -11,4 +11,4 @@
   in accessing .y at 5:1-5:4
 
 === warn
-expected 3 arguments, got 4 at 3:1-3:65
+[ArityMismatch] expected 3 arguments, got 4

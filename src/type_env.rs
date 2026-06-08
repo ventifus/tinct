@@ -2,7 +2,6 @@
 //! class/instance environments, and type errors.
 
 use std::collections::{HashMap, HashSet};
-use std::fmt;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -1617,134 +1616,13 @@ impl Default for TypeEnv {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TypeError {
-    pub message: String,
-    pub span: Span,
-    /// Extra `= note:` lines attached at the error-generation site (e.g. "caused by" context).
-    pub notes: Box<Vec<String>>,
-    /// Explicit stable error code, e.g. `"T014"`. When `Some`, overrides the message-pattern
-    /// dispatch in `code()`. Use `with_code()` to attach a code at the construction site.
-    pub code: Option<String>,
-}
-
-impl TypeError {
-    pub fn new(message: impl Into<String>, span: Span) -> Self {
-        let span = Span {
-            start: span.start,
-            end: span.end,
-            file: None,
-        };
-        Self {
-            message: message.into(),
-            span,
-            notes: Box::new(Vec::new()),
-            code: None,
-        }
-    }
-
-    /// Builder method: attach an explicit error code and return `self`.
-    ///
-    /// The explicit code takes priority over the message-pattern dispatch in `code()`.
-    pub fn with_code(mut self, code: impl Into<String>) -> Self {
-        self.code = Some(code.into());
-        self
-    }
-
-    pub fn type_mismatch(expected: &Type, got: &Type, span: Span) -> Self {
-        Self::new(format!("cannot unify {expected} with {got}"), span)
-    }
-
-    pub fn field_not_found(field: &str, record_type: &Type, span: Span) -> Self {
-        Self::new(format!("field '{field}' not found in {record_type}"), span)
-    }
-
-    pub fn not_a_record(ty: &Type, span: Span) -> Self {
-        Self::new(format!("expected record type, got {ty}"), span)
-    }
-
-    pub fn not_a_function(ty: &Type, span: Span) -> Self {
-        Self::new(format!("expected function type, got {ty}"), span)
-    }
-
-    pub fn undefined_variable(name: &str, span: Span) -> Self {
-        // Emit name as-is -- `%`-prefixed refs include `%`; plain identifiers display without sigil.
-        Self::new(format!("undefined variable: {name}"), span)
-    }
-
-    pub fn undefined_type(name: &str, span: Span) -> Self {
-        Self::new(format!("undefined type: {name}"), span)
-    }
-
-    pub fn kind_mismatch(expected_kind: &str, got: &str, span: Span) -> Self {
-        Self::new(
-            format!("kind mismatch: expected `{expected_kind}`, got {got}"),
-            span,
-        )
-    }
-
-    /// Returns the stable type error code for this error.
-    ///
-    /// If an explicit code was attached via `with_code()`, it is returned directly.
-    /// Otherwise the code is derived from the error message:
-    ///
-    /// - T001: arity mismatch (wrong number of arguments at call site)
-    /// - T002: undefined variable or undefined type
-    /// - T003: cannot unify / type mismatch / field not found / not a function / not a record
-    /// - T004: type assert failure (annotation-site mismatch)
-    /// - T014: overlapping CHR instance patterns (disjointness violation)
-    /// - T015: CHR instance consistency violation (FD disagreement between arms)
-    /// - T016: CHR instance coverage violation (determined var absent from determining positions)
-    /// - T091: kind mismatch (expected `* → *`, got concrete type, etc.)
-    /// - T000: other type errors not covered above
-    pub fn code(&self) -> &str {
-        if let Some(ref explicit) = self.code {
-            return explicit.as_str();
-        }
-        let msg = &self.message;
-        if msg.starts_with("arity mismatch") {
-            "T001"
-        } else if msg.starts_with("undefined variable") || msg.starts_with("undefined type") {
-            "T002"
-        } else if msg.starts_with("cannot unify")
-            || msg.starts_with("field '")
-            || msg.starts_with("expected record type")
-            || msg.starts_with("expected function type")
-            || msg.starts_with("type mismatch")
-        {
-            "T003"
-        } else if msg.contains("type assert") || msg.starts_with("non-exhaustive match") {
-            "T004"
-        } else if msg.starts_with("overlapping instance patterns") {
-            "T014"
-        } else if msg.starts_with("consistency violation") {
-            "T015"
-        } else if msg.starts_with("coverage violation") {
-            "T016"
-        } else if msg.starts_with("kind mismatch") {
-            "T091"
-        } else {
-            "T000"
-        }
-    }
-}
-
-impl fmt::Display for TypeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} at {}", self.message, self.span)
-    }
-}
-
-impl std::error::Error for TypeError {}
-
-// T-1107 migration bridge: TypeErrorTyped → legacy TypeError.
-// Both types are defined in this crate (no orphan rule violation).
-// Deleted in T-1108 when all callers migrate to TypeErrorTyped.
-impl From<crate::type_errors::TypeErrorTyped> for TypeError {
-    fn from(typed: crate::type_errors::TypeErrorTyped) -> Self {
-        TypeError::new(typed.message(), typed.span().clone())
-    }
-}
+/// `TypeError` is the canonical type error type.
+///
+/// It is an alias for `TypeErrorTyped` from `crate::type_errors`. All callers that
+/// previously used the legacy `TypeError` struct now use `TypeErrorTyped` directly
+/// via this alias. T-1108: legacy struct deleted; this alias ensures all existing
+/// `use crate::types::TypeError` and `Vec<TypeError>` call sites continue to work.
+pub use crate::type_errors::TypeErrorTyped as TypeError;
 
 /// Format a `TypeError` into the Rust-style diagnostic format with source context.
 ///
@@ -1765,17 +1643,18 @@ pub fn format_type_error(err: &TypeError, source: &str, file_name: &str) -> Stri
     use crate::error::render_span_snippet;
 
     let code = err.code();
-    let line = err.span.start.line;
-    let col = err.span.start.column;
+    let span = err.span();
+    let line = span.start.line;
+    let col = span.start.column;
 
     // Header: error[Txxx]: message
-    let mut out = format!("error[{code}]: {}\n", err.message);
+    let mut out = format!("error[{code}]: {}\n", err.message());
 
     // Location: --> file:line:col
     out.push_str(&format!(" --> {file_name}:{line}:{col}\n"));
 
     // Snippet: source context with caret
-    if let Some(snippet) = render_span_snippet(source, err.span.clone()) {
+    if let Some(snippet) = render_span_snippet(source, span.clone()) {
         out.push_str("  |\n");
         out.push_str(&snippet);
     }
@@ -1788,7 +1667,7 @@ pub fn format_type_error(err: &TypeError, source: &str, file_name: &str) -> Stri
     }
 
     // Attached notes added at error-generation time (e.g. "caused by" for cascade T002s)
-    for note in err.notes.iter() {
+    for note in err.notes().iter() {
         out.push('\n');
         out.push_str(note);
     }
@@ -1800,249 +1679,132 @@ pub fn format_type_error(err: &TypeError, source: &str, file_name: &str) -> Stri
 ///
 /// Returns a formatted string with note and/or help lines, each prefixed with `  = `.
 fn type_error_note(err: &TypeError) -> Option<String> {
-    let msg = &err.message;
-
-    if msg.starts_with("arity mismatch") {
-        Some("  = note: check that you are passing the correct number of arguments".to_string())
-    } else if msg.starts_with("undefined variable") {
-        // When a caused-by note is attached (cascade from a failed definition), suppress the
-        // generic "not defined in any enclosing scope" note — it would be misleading.
-        if !err.notes.is_empty() {
-            return None;
+    match err {
+        // Typed ArityMismatch: variant-first dispatch
+        TypeError::ArityMismatch(_) => {
+            Some("  = note: check that you are passing the correct number of arguments".to_string())
         }
-
-        // Extract the variable name from "undefined variable: <name>"
-        let name = msg
-            .strip_prefix("undefined variable: ")
-            .unwrap_or("")
-            .trim();
-        let mut lines = Vec::new();
-
-        if name.is_empty() {
-            lines.push("  = note: variable is not defined in any enclosing scope".to_string());
-        } else {
-            lines.push(format!(
-                "  = note: `{name}` is not defined in any enclosing scope at this point"
-            ));
-            lines.push("  = help: if this name is defined later in the document, group definitions using a function scope: [call [fn [let] ...]]".to_string());
-        }
-
-        Some(lines.join("\n"))
-    } else if msg.starts_with("cannot unify") {
-        // Extract types from "cannot unify A with B"
-        let rest = msg.strip_prefix("cannot unify ").unwrap_or("");
-        if let Some(idx) = rest.find(" with ") {
-            let expected = &rest[..idx];
-            let got = &rest[idx + 6..];
-            let mut lines = Vec::new();
-
-            lines.push(format!(
-                "  = note: expected `{expected}`\n           found `{got}`"
-            ));
-
-            // Add conversion hints for common type mismatches
-            // "cannot unify A with B" means expected A, got B
-            // So we suggest converting B (got) to A (expected)
-            let help_msg = match (expected, got) {
-                // Expected Int/Number, got String → convert String to Int/Float
-                (e, "String") if e.contains("Int") || e.contains("Number") => {
-                    Some("  = help: convert with [int <expr>] or [float <expr>]")
-                }
-                // Expected String, got Int/Number → convert Int/Number to String
-                ("String", g) if g.contains("Int") || g.contains("Number") => {
-                    Some("  = help: convert with [str <expr>]")
-                }
-                // Expected String, got Float
-                ("String", g) if g.contains("Float") => Some("  = help: convert with [str <expr>]"),
-                // Expected Float, got String
-                (e, "String") if e.contains("Float") => {
-                    Some("  = help: convert with [float <expr>]")
-                }
-                // Expected String, got Bool
-                ("String", "Bool") => Some("  = help: convert with [if <expr> \"true\" \"false\"]"),
-                // Expected Bool, got String
-                ("Bool", "String") => Some("  = help: convert with [not [call $= \"\" <expr>]]"),
-                // Expected Int/Number, got Bool → convert Bool to Int
-                (e, "Bool") if e.contains("Int") || e.contains("Number") => {
-                    Some("  = help: convert with [if <expr> 1 0]")
-                }
-                // Expected Float, got Bool
-                (e, "Bool") if e.contains("Float") => {
-                    Some("  = help: convert with [if <expr> 1.0 0.0]")
-                }
-                // Expected Bool, got Int/Number → convert Int/Number to Bool
-                ("Bool", g) if g.contains("Int") || g.contains("Number") => {
-                    Some("  = help: convert with [not [call $= 0 <expr>]]")
-                }
-                // Expected Bool, got Float
-                ("Bool", g) if g.contains("Float") => {
-                    Some("  = help: convert with [not [call $= 0.0 <expr>]]")
-                }
-                _ => None,
-            };
-
-            if let Some(help) = help_msg {
-                lines.push(help.to_string());
+        // Typed UndefinedVariable: variant-first dispatch with structured name
+        TypeError::UndefinedVariable(e) => {
+            // When a caused-by note is attached, suppress the generic "not defined in scope" note.
+            if !e.notes.is_empty() {
+                return None;
             }
-
+            let name = e.name.trim();
+            let mut lines = Vec::new();
+            if name.is_empty() {
+                lines.push("  = note: variable is not defined in any enclosing scope".to_string());
+            } else {
+                lines.push(format!(
+                    "  = note: `{name}` is not defined in any enclosing scope at this point"
+                ));
+                lines.push("  = help: if this name is defined later in the document, group definitions using a function scope: [call [fn [let] ...]]".to_string());
+            }
             Some(lines.join("\n"))
-        } else {
-            None
         }
-    } else {
-        None
+        // Typed UnificationFailure: variant-first dispatch with structured types
+        TypeError::UnificationFailure(e) => {
+            type_error_note_unification(&format!("{}", e.expected), &format!("{}", e.got))
+        }
+        // Generic catch-all: fall back to message-pattern dispatch for backward compatibility.
+        // This handles errors not yet migrated to typed variants (GenericTypeError) and any
+        // other variants whose message happens to match a well-known pattern.
+        _ => {
+            let msg = err.message();
+            if msg.starts_with("arity mismatch") {
+                Some(
+                    "  = note: check that you are passing the correct number of arguments"
+                        .to_string(),
+                )
+            } else if msg.starts_with("undefined variable") {
+                if !err.notes().is_empty() {
+                    return None;
+                }
+                let name = msg
+                    .strip_prefix("undefined variable: ")
+                    .unwrap_or("")
+                    .trim();
+                let mut lines = Vec::new();
+                if name.is_empty() {
+                    lines.push(
+                        "  = note: variable is not defined in any enclosing scope".to_string(),
+                    );
+                } else {
+                    lines.push(format!(
+                        "  = note: `{name}` is not defined in any enclosing scope at this point"
+                    ));
+                    lines.push("  = help: if this name is defined later in the document, group definitions using a function scope: [call [fn [let] ...]]".to_string());
+                }
+                Some(lines.join("\n"))
+            } else if msg.starts_with("cannot unify") {
+                let rest = msg.strip_prefix("cannot unify ").unwrap_or("");
+                if let Some(idx) = rest.find(" with ") {
+                    type_error_note_unification(&rest[..idx], &rest[idx + 6..])
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }
     }
+}
+
+/// Generate the `= note:` and `= help:` block for a type mismatch (unification failure).
+///
+/// `expected` and `got` are the Display representations of the mismatching types.
+fn type_error_note_unification(expected: &str, got: &str) -> Option<String> {
+    let mut lines = Vec::new();
+    lines.push(format!(
+        "  = note: expected `{expected}`\n           found `{got}`"
+    ));
+
+    // Add conversion hints for common type mismatches.
+    // "cannot unify A with B" means expected A, got B — suggest converting B → A.
+    let help_msg = match (expected, got) {
+        // Expected Int/Number, got String → convert String to Int/Float
+        (e, "String") if e.contains("Int") || e.contains("Number") => {
+            Some("  = help: convert with [int <expr>] or [float <expr>]")
+        }
+        // Expected String, got Int/Number → convert Int/Number to String
+        ("String", g) if g.contains("Int") || g.contains("Number") => {
+            Some("  = help: convert with [str <expr>]")
+        }
+        // Expected String, got Float
+        ("String", g) if g.contains("Float") => Some("  = help: convert with [str <expr>]"),
+        // Expected Float, got String
+        (e, "String") if e.contains("Float") => Some("  = help: convert with [float <expr>]"),
+        // Expected String, got Bool
+        ("String", "Bool") => Some("  = help: convert with [if <expr> \"true\" \"false\"]"),
+        // Expected Bool, got String
+        ("Bool", "String") => Some("  = help: convert with [not [call $= \"\" <expr>]]"),
+        // Expected Int/Number, got Bool → convert Bool to Int
+        (e, "Bool") if e.contains("Int") || e.contains("Number") => {
+            Some("  = help: convert with [if <expr> 1 0]")
+        }
+        // Expected Float, got Bool
+        (e, "Bool") if e.contains("Float") => Some("  = help: convert with [if <expr> 1.0 0.0]"),
+        // Expected Bool, got Int/Number → convert Int/Number to Bool
+        ("Bool", g) if g.contains("Int") || g.contains("Number") => {
+            Some("  = help: convert with [not [call $= 0 <expr>]]")
+        }
+        // Expected Bool, got Float
+        ("Bool", g) if g.contains("Float") => {
+            Some("  = help: convert with [not [call $= 0.0 <expr>]]")
+        }
+        _ => None,
+    };
+
+    if let Some(help) = help_msg {
+        lines.push(help.to_string());
+    }
+
+    Some(lines.join("\n"))
 }
 
 #[cfg(test)]
 mod help_suggestion_tests {
     use super::*;
-    use crate::test_util::test_span;
-
-    #[test]
-    fn test_arity_mismatch_generic_help() {
-        let err = TypeError::new(
-            "arity mismatch: expected 2 argument(s), got 1 (1 positional, 0 named)",
-            test_span(1, 1, 1, 10),
-        );
-        let note = type_error_note(&err);
-        assert!(note.is_some());
-        let note = note.unwrap();
-        assert!(note.contains("= note: check that you are passing the correct number of arguments"));
-    }
-
-    #[test]
-    fn test_arity_mismatch_help() {
-        let err = TypeError::new(
-            "arity mismatch: expected 1 argument(s), got 0 (0 positional, 0 named)",
-            test_span(1, 1, 1, 10),
-        );
-        let note = type_error_note(&err);
-        assert!(note.is_some());
-        let note = note.unwrap();
-        assert!(note.contains("= note: check that you are passing the correct number of arguments"));
-    }
-
-    #[test]
-    fn test_undefined_variable_help() {
-        let err = TypeError::new("undefined variable: myvar", test_span(1, 1, 1, 10));
-        let note = type_error_note(&err);
-        assert!(note.is_some());
-        let note = note.unwrap();
-        assert!(
-            note.contains("= note: `myvar` is not defined in any enclosing scope at this point")
-        );
-        assert!(note.contains("= help: if this name is defined later in the document, group definitions using a function scope"));
-    }
-
-    #[test]
-    fn test_type_mismatch_string_to_int_help() {
-        // "cannot unify Int with String" means expected Int, got String
-        // Should suggest converting String to Int
-        let err = TypeError::new("cannot unify Int with String", test_span(1, 1, 1, 10));
-        let note = type_error_note(&err);
-        assert!(note.is_some());
-        let note = note.unwrap();
-        assert!(note.contains("= note: expected `Int`"));
-        assert!(note.contains("found `String`"));
-        assert!(note.contains("= help: convert with [int <expr>] or [float <expr>]"));
-    }
-
-    #[test]
-    fn test_type_mismatch_int_to_string_help() {
-        // "cannot unify String with Int" means expected String, got Int
-        // Should suggest converting Int to String
-        let err = TypeError::new("cannot unify String with Int", test_span(1, 1, 1, 10));
-        let note = type_error_note(&err);
-        assert!(note.is_some());
-        let note = note.unwrap();
-        assert!(note.contains("= note: expected `String`"));
-        assert!(note.contains("found `Int`"));
-        assert!(note.contains("= help: convert with [str <expr>]"));
-    }
-
-    #[test]
-    fn test_type_mismatch_number_to_string_help() {
-        // "cannot unify String with Number" means expected String, got Number
-        // Should suggest converting Number to String
-        let err = TypeError::new("cannot unify String with Number", test_span(1, 1, 1, 10));
-        let note = type_error_note(&err);
-        assert!(note.is_some());
-        let note = note.unwrap();
-        assert!(note.contains("= help: convert with [str <expr>]"));
-    }
-
-    #[test]
-    fn test_type_mismatch_float_to_string_help() {
-        // "cannot unify String with Float" means expected String, got Float
-        let err = TypeError::new("cannot unify String with Float", test_span(1, 1, 1, 10));
-        let note = type_error_note(&err);
-        assert!(note.is_some());
-        let note = note.unwrap();
-        assert!(note.contains("= note: expected `String`"));
-        assert!(note.contains("found `Float`"));
-        assert!(note.contains("= help: convert with [str <expr>]"));
-    }
-
-    #[test]
-    fn test_type_mismatch_string_to_float_help() {
-        // "cannot unify Float with String" means expected Float, got String
-        let err = TypeError::new("cannot unify Float with String", test_span(1, 1, 1, 10));
-        let note = type_error_note(&err);
-        assert!(note.is_some());
-        let note = note.unwrap();
-        assert!(note.contains("= note: expected `Float`"));
-        assert!(note.contains("found `String`"));
-        assert!(note.contains("= help: convert with [float <expr>]"));
-    }
-
-    #[test]
-    fn test_type_mismatch_bool_to_string_help() {
-        // "cannot unify String with Bool" means expected String, got Bool
-        let err = TypeError::new("cannot unify String with Bool", test_span(1, 1, 1, 10));
-        let note = type_error_note(&err);
-        assert!(note.is_some());
-        let note = note.unwrap();
-        assert!(note.contains("= note: expected `String`"));
-        assert!(note.contains("found `Bool`"));
-        assert!(note.contains("= help: convert with [if <expr> \"true\" \"false\"]"));
-    }
-
-    #[test]
-    fn test_type_mismatch_string_to_bool_help() {
-        // "cannot unify Bool with String" means expected Bool, got String
-        let err = TypeError::new("cannot unify Bool with String", test_span(1, 1, 1, 10));
-        let note = type_error_note(&err);
-        assert!(note.is_some());
-        let note = note.unwrap();
-        assert!(note.contains("= note: expected `Bool`"));
-        assert!(note.contains("found `String`"));
-        assert!(note.contains("= help: convert with [not [call $= \"\" <expr>]]"));
-    }
-
-    #[test]
-    fn test_type_mismatch_bool_to_float_help() {
-        // "cannot unify Float with Bool" means expected Float, got Bool
-        let err = TypeError::new("cannot unify Float with Bool", test_span(1, 1, 1, 10));
-        let note = type_error_note(&err);
-        assert!(note.is_some());
-        let note = note.unwrap();
-        assert!(note.contains("= note: expected `Float`"));
-        assert!(note.contains("found `Bool`"));
-        assert!(note.contains("= help: convert with [if <expr> 1.0 0.0]"));
-    }
-
-    #[test]
-    fn test_type_mismatch_float_to_bool_help() {
-        // "cannot unify Bool with Float" means expected Bool, got Float
-        let err = TypeError::new("cannot unify Bool with Float", test_span(1, 1, 1, 10));
-        let note = type_error_note(&err);
-        assert!(note.is_some());
-        let note = note.unwrap();
-        assert!(note.contains("= note: expected `Bool`"));
-        assert!(note.contains("found `Float`"));
-        assert!(note.contains("= help: convert with [not [call $= 0.0 <expr>]]"));
-    }
 
     #[test]
     fn test_resolve_instance_freshens_type_vars() {

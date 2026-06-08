@@ -51,7 +51,7 @@ fn test_resolve_has_field_depth_overflow_errors() {
     assert!(result.is_err());
     assert!(result
         .unwrap_err()
-        .message
+        .message()
         .contains("HasField recursion depth exceeded"));
 }
 
@@ -319,9 +319,9 @@ fn test_unify_type_var_occurs_in_type_stage_app() {
     );
     let err = result.unwrap_err();
     assert!(
-        err.message.contains("infinite type"),
+        err.message().contains("infinite type"),
         "Expected 'infinite type' in error message, got: {}",
-        err.message
+        err.message()
     );
 }
 
@@ -1698,7 +1698,7 @@ fn test_unify_uniform_inconsistent_named_field_type_errors() {
         result.is_err(),
         "Uniform-tailed record with non-conforming named field should fail unification"
     );
-    let err_msg = result.unwrap_err().message;
+    let err_msg = result.unwrap_err().message();
     assert!(
         err_msg.contains("does not conform to Uniform constraint"),
         "Expected Uniform constraint violation, got: {err_msg}"

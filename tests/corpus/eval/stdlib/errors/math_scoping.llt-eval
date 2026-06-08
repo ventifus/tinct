@@ -6,4 +6,4 @@
 Variant(Result.Error, String("undefined variable: pi (did you mean the string \"pi\"? Use quotes.)"))
 
 === warn
-undefined variable: pi at 3:13-3:15
+[UndefinedVariable] undefined variable: pi

@@ -13,4 +13,4 @@
 Dict({"Shape": Variant(Shape, Null), "Circle": Function(payload), "Square": Variant(Square, Null), "unit-shape": Variant(Square, Null), "result": String("unit-match")})
 
 === warn
-non-exhaustive match: missing coverage for Shape.Square at 7:11-9:30
+[TypeError] non-exhaustive match: missing coverage for Shape.Square

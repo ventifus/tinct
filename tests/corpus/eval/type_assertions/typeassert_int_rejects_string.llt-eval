@@ -4,4 +4,4 @@
 String("hello")
 
 === warn
-cannot unify Int with "hello" at 1:7-1:14
+[UnificationFailure] cannot unify Int with "hello"

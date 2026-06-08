@@ -4,4 +4,4 @@
 Dict({})
 
 === warn
-undefined variable: builtin-variant at 1:15-1:30
+[UndefinedVariable] undefined variable: builtin-variant

@@ -5,4 +5,4 @@
 [E024] missing argument for required parameter 'a' (defined at 2:1-2:26)
 
 === warn
-expected 3 arguments, got 0 at 2:1-2:26
+[ArityMismatch] expected 3 arguments, got 0

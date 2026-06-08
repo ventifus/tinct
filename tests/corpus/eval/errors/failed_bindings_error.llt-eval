@@ -13,4 +13,4 @@ y
   in [+ ...] at 7:5-7:19
 
 === warn
-no instance for Addable Int String at 7:5-7:19
+[TypeError] no instance for Addable Int String

@@ -6,4 +6,4 @@
   in [update ...] at 1:1-1:38
 
 === warn
-expected 3 arguments, got 4 at 1:1-1:38
+[ArityMismatch] expected 3 arguments, got 4

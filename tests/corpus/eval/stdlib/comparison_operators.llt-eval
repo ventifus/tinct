@@ -14,9 +14,9 @@
 Dict({"gt_true": Bool(true), "gt_false": Bool(false), "gte_greater": Bool(true), "gte_equal": Bool(true), "gte_less": Bool(false), "lte_less": Bool(true), "lte_equal": Bool(true), "lte_greater": Bool(false)})
 
 === warn
-cannot unify 5 with 3 at 2:12-2:19
-cannot unify 3 with 5 at 3:13-3:20
-cannot unify 5 with 3 at 5:16-5:24
-cannot unify 3 with 5 at 7:13-7:21
-cannot unify 3 with 5 at 9:13-9:21
-cannot unify 5 with 3 at 11:16-11:24
+[UnificationFailure] cannot unify 5 with 3
+[UnificationFailure] cannot unify 3 with 5
+[UnificationFailure] cannot unify 5 with 3
+[UnificationFailure] cannot unify 3 with 5
+[UnificationFailure] cannot unify 3 with 5
+[UnificationFailure] cannot unify 5 with 3

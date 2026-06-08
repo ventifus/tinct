@@ -8,4 +8,4 @@
 [E002] undefined variable: to-json (did you mean the string "to-json"? Use quotes.) (defined at 5:2-5:9)
 
 === warn
-undefined variable: to-json at 5:2-5:9
+[UndefinedVariable] undefined variable: to-json

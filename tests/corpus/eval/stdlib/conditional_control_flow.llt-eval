@@ -9,5 +9,5 @@
 Dict({"when_true": Int(42), "when_false": Dict({}), "unless_true": Dict({}), "unless_false": Int(42)})
 
 === warn
-cannot unify Bool with 42 at 5:29-5:31
-cannot unify Bool with 42 at 6:31-6:33
+[UnificationFailure] cannot unify Bool with 42
+[UnificationFailure] cannot unify Bool with 42

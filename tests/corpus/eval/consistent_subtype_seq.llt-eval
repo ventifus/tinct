@@ -3,4 +3,4 @@
 [E002] undefined variable: Int (defined at 1:7-1:10)
 
 === warn
-undefined variable: Int at 1:7-1:10
+[UndefinedVariable] undefined variable: Int

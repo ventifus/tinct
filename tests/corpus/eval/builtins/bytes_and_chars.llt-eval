@@ -30,13 +30,13 @@
 Dict({"bytes_basic": Bytes(5 bytes), "bytes_dict": Bytes(2 bytes), "bytes_empty": Bytes(0 bytes), "bytes_eq_true": Bool(true), "bytes_eq_false": Bool(false), "bytes_eq_length": Bool(false), "bytes_find_start": Int(0), "bytes_find_middle": Int(2), "bytes_find_not_found": Int(-1), "bytes_find_empty": Int(0), "str_bytes_roundtrip": String("hello"), "str_bytes_utf8": String("café"), "chr_basic": String("A"), "char_code_basic": Int(65)})
 
 === warn
-undefined variable: bytes-of at 5:17-5:25
-undefined variable: bytes-of at 6:16-6:24
-undefined variable: bytes-of at 7:17-7:25
-undefined variable: bytes-equal? at 10:19-10:31
-undefined variable: bytes-equal? at 11:20-11:32
-undefined variable: bytes-equal? at 12:21-12:33
-undefined variable: bytes-find at 15:22-15:32
-undefined variable: bytes-find at 16:23-16:33
-undefined variable: bytes-find at 17:26-17:36
-undefined variable: bytes-find at 18:22-18:32
+[UndefinedVariable] undefined variable: bytes-of
+[UndefinedVariable] undefined variable: bytes-of
+[UndefinedVariable] undefined variable: bytes-of
+[UndefinedVariable] undefined variable: bytes-equal?
+[UndefinedVariable] undefined variable: bytes-equal?
+[UndefinedVariable] undefined variable: bytes-equal?
+[UndefinedVariable] undefined variable: bytes-find
+[UndefinedVariable] undefined variable: bytes-find
+[UndefinedVariable] undefined variable: bytes-find
+[UndefinedVariable] undefined variable: bytes-find

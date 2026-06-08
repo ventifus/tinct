@@ -6,4 +6,4 @@
 [E002] undefined variable: http-request (did you mean the string "http-request"? Use quotes.) (defined at 2:2-2:14)
 
 === warn
-undefined variable: http-request at 2:2-2:14
+[UndefinedVariable] undefined variable: http-request

@@ -5,4 +5,4 @@
   in [builtin-read-chunk ...] at 1:1-1:38
 
 === warn
-undefined variable: builtin-read-chunk at 1:2-1:20
+[UndefinedVariable] undefined variable: builtin-read-chunk

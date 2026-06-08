@@ -40,4 +40,4 @@
 [E071] non-exhaustive match: no pattern matched the Variant value (defined at 29:5-32:6)
 
 === warn
-undefined type: Result at 28:22-28:28
+[UndefinedType] undefined type: Result

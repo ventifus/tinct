@@ -11,5 +11,5 @@
   in [send-datagram ...] at 2:1-2:27
 
 === warn
-cannot unify String | Bytes with 42 at 2:16-2:18
-cannot unify QuicDatagramHandle | DatagramHandle with "hello" at 2:19-2:26
+[UnificationFailure] cannot unify String | Bytes with 42
+[UnificationFailure] cannot unify QuicDatagramHandle | DatagramHandle with "hello"

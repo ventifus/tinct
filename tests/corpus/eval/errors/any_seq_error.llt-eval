@@ -19,4 +19,4 @@
   in [any? ...] at 1:1-1:37
 
 === warn
-cannot unify [] with Seq[_] at 1:25-1:36
+[UnificationFailure] cannot unify [] with Seq[_]

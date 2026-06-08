@@ -7,4 +7,4 @@
 Variant(Result.Error, String("undefined variable: basename (did you mean the string \"basename\"? Use quotes.)"))
 
 === warn
-undefined variable: basename at 3:14-3:22
+[UndefinedVariable] undefined variable: basename

@@ -6,4 +6,4 @@
   in [proxy ...] at 1:1-1:54
 
 === warn
-expected 1 arguments, got 2 at 1:1-1:54
+[ArityMismatch] expected 1 arguments, got 2

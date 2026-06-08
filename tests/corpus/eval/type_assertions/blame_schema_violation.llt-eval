@@ -7,4 +7,4 @@
 Dict({"x": Int(1)})
 
 === warn
-cannot unify Int with [x: 1] at 4:7-4:8
+[UnificationFailure] cannot unify Int with [x: 1]

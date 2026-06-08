@@ -8,4 +8,4 @@
 String("other")
 
 === warn
-undefined variable: Error at 1:11-1:16
+[UndefinedVariable] undefined variable: Error

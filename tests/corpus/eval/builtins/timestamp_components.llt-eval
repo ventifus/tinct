@@ -4,4 +4,4 @@
 [E002] undefined variable: timestamp-year (did you mean the string "timestamp-year"? Use quotes.) (defined at 1:2-1:16)
 
 === warn
-undefined variable: timestamp-year at 1:2-1:16
+[UndefinedVariable] undefined variable: timestamp-year

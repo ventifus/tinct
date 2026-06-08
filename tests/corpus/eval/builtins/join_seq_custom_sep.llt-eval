@@ -15,4 +15,4 @@
   in [join ...] at 1:1-1:55
 
 === warn
-expected 2 arguments, got 3 at 1:21-1:53
+[ArityMismatch] expected 2 arguments, got 3

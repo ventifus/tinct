@@ -6,4 +6,4 @@
   in [builtin-with-deadline ...] at 2:1-2:47
 
 === warn
-undefined variable: builtin-with-deadline at 2:2-2:23
+[UndefinedVariable] undefined variable: builtin-with-deadline

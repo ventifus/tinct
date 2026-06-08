@@ -15,5 +15,5 @@
 [E035] cannot serialize Expression to JSON (defined at 4:9-4:47)
 
 === warn
-undefined variable: builtin-variant at 4:10-4:25
-cannot unify Top with <error> at 7:23-7:27
+[UndefinedVariable] undefined variable: builtin-variant
+[UnificationFailure] cannot unify Top with <error>

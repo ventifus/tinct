@@ -4,5 +4,5 @@
 Bool(true)
 
 === warn
-type Bool does not satisfy constraint Comparable at 1:1-1:15
-type Bool does not satisfy constraint Comparable at 1:1-1:15
+[TypeError] type Bool does not satisfy constraint Comparable
+[TypeError] type Bool does not satisfy constraint Comparable

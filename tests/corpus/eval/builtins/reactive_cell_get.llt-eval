@@ -5,4 +5,4 @@
 Int(42)
 
 === warn
-undefined variable: builtin-cell-get at 2:2-2:18
+[UndefinedVariable] undefined variable: builtin-cell-get

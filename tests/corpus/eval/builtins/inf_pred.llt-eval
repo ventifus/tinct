@@ -4,4 +4,4 @@
 Bool(true)
 
 === warn
-undefined variable: builtin-inf? at 1:2-1:14
+[UndefinedVariable] undefined variable: builtin-inf?

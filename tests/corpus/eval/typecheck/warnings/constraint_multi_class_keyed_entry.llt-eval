@@ -4,4 +4,4 @@
 Function(val)
 
 === warn
-constraint class list cannot be empty at 1:18-1:33
+[TypeError] constraint class list cannot be empty

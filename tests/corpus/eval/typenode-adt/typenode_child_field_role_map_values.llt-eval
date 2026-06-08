@@ -20,6 +20,6 @@
 Dict({"result": Bool(true)})
 
 === warn
-auto-indexed entries not supported in type expressions at 9:19-9:67
-undefined variable: Record at 12:22-12:28
-cannot unify [] with <error> at 13:44-13:47
+[TypeError] auto-indexed entries not supported in type expressions
+[UndefinedVariable] undefined variable: Record
+[UnificationFailure] cannot unify [] with <error>

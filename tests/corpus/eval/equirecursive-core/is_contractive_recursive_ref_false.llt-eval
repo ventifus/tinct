@@ -9,5 +9,5 @@
 Dict({"result": Bool(false)})
 
 === warn
-undefined variable: builtin-variant at 5:13-5:28
-undefined variable: builtin-is-contractive at 6:11-6:33
+[UndefinedVariable] undefined variable: builtin-variant
+[UndefinedVariable] undefined variable: builtin-is-contractive

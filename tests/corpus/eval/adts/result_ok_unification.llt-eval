@@ -11,5 +11,5 @@
 Dict({"Ok": Variant(Result.Ok, Null), "Error": Variant(Result.Error, Null), "ok1": Variant(Result.Ok, Int(42)), "ok2": Variant(Result.Ok, String("hello")), "result": Variant(Result.Ok, Int(42))})
 
 === warn
-undefined variable: Ok at 5:9-5:11
-undefined variable: Ok at 6:9-6:11
+[UndefinedVariable] undefined variable: Ok
+[UndefinedVariable] undefined variable: Ok

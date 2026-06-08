@@ -4,4 +4,4 @@
 String("[0: 1]")
 
 === warn
-cannot unify Top with <error> at 1:11-1:22
+[UnificationFailure] cannot unify Top with <error>

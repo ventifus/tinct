@@ -26,6 +26,6 @@
 Dict({"decimal_parse": Decimal(9.99), "decimal_from_int": Decimal(42), "decimal_type": String("Decimal"), "bigint_from_string": BigInt(99999999999999999999), "bigint_from_int": BigInt(42), "bigint_type": String("BigInt"), "to_int_from_string": Int(42), "to_float_from_string": Float(3.14), "floor_converts_float": Int(3), "nan_pred": Bool(true), "inf_pred": Bool(true), "finite_pred": Bool(true)})
 
 === warn
-undefined variable: builtin-nan? at 20:14-20:26
-undefined variable: builtin-inf? at 21:14-21:26
-undefined variable: builtin-finite? at 22:17-22:32
+[UndefinedVariable] undefined variable: builtin-nan?
+[UndefinedVariable] undefined variable: builtin-inf?
+[UndefinedVariable] undefined variable: builtin-finite?

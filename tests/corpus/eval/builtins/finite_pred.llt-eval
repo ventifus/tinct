@@ -4,4 +4,4 @@
 Bool(true)
 
 === warn
-undefined variable: builtin-finite? at 1:2-1:17
+[UndefinedVariable] undefined variable: builtin-finite?

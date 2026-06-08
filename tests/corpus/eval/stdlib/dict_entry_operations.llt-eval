@@ -10,4 +10,4 @@
 Dict({"from_entries_basic": Dict({0: Dict({"key": String("a"), "value": Int(1)}), 1: Dict({"key": String("b"), "value": Int(2)})}), "from_entries_empty": Dict({}), "from_entries_seq": Dict({0: Int(0), 1: Int(1), 2: Int(4)}), "with_entries_basic": Dict({0: Dict({"key": String("a"), "value": Int(10)}), 1: Dict({"key": String("b"), "value": Int(20)}), 2: Dict({"key": String("c"), "value": Int(30)})}), "with_entries_empty": Dict({})})
 
 === warn
-undefined variable: builtin-mul at 4:68-4:79
+[UndefinedVariable] undefined variable: builtin-mul

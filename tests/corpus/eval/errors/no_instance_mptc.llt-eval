@@ -4,4 +4,4 @@
   in [+ ...] at 1:1-1:20
 
 === warn
-no instance for Addable String String at 1:1-1:20
+[TypeError] no instance for Addable String String

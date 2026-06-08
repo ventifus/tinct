@@ -4,4 +4,4 @@
 String("example.com")
 
 === warn
-undefined variable: validate at 1:2-1:10
+[UndefinedVariable] undefined variable: validate

@@ -10,5 +10,5 @@
 [E071] non-exhaustive match: no pattern matched the Variant value (defined at 6:13-6:50)
 
 === warn
-undefined variable: Ok at 4:11-4:13
-undefined variable: Error at 5:14-5:19
+[UndefinedVariable] undefined variable: Ok
+[UndefinedVariable] undefined variable: Error

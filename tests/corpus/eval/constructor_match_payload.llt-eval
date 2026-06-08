@@ -12,4 +12,4 @@
 Dict({"Ok": Function(payload), "Error": Function(payload), "matched": Int(42)})
 
 === warn
-undefined variable: Ok at 6:20-6:22
+[UndefinedVariable] undefined variable: Ok

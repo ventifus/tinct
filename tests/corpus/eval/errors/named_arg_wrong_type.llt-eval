@@ -6,4 +6,4 @@
   in [+ ...] at 1:27-1:42
 
 === warn
-named argument 'y' type mismatch: cannot unify "not an int" with Int at 2:25-2:37
+[TypeError] named argument 'y' type mismatch: cannot unify "not an int" with Int

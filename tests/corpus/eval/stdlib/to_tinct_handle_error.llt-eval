@@ -6,4 +6,4 @@
   in [to-tinct ...] at 2:1-2:21
 
 === warn
-undefined variable: builtin-task at 4026:13-4026:25
+[UndefinedVariable] undefined variable: builtin-task

@@ -7,4 +7,4 @@
 Dict({0: String("fn")})
 
 === warn
-expected record type, got Top at 4:2-4:21
+[NotARecord] expected record type, got Top

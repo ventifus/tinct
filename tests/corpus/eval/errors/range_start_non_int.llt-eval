@@ -19,4 +19,4 @@
   in [range ...] at 1:1-1:26
 
 === warn
-cannot unify Int with "not a number" at 1:8-1:22
+[UnificationFailure] cannot unify Int with "not a number"

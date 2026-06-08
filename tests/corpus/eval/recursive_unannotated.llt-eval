@@ -6,4 +6,4 @@
 Dict({"f": Function(x)})
 
 === warn
-infinite type: _t0 occurs in Fn@[0: _t0 1: _] [x: _] at 3:5-3:25
+[TypeError] infinite type: _t0 occurs in Fn@[0: _t0 1: _] [x: _]

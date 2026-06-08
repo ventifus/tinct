@@ -21,5 +21,5 @@
 Dict({"Option": Variant(Option, Null), "Some": Function(payload), "None": Variant(None, Null), "x": Variant(Some, Seq(Int(10), ...)), "y": Variant(None, Null), "result1": Seq(Int(10), ...), "result2": Int(0), "both": Seq(Seq(Int(10), ...), ...)})
 
 === warn
-non-exhaustive match: missing coverage for [Option.Some _] at 9:12-11:18
-non-exhaustive match: missing coverage for Option.None at 13:12-15:18
+[TypeError] non-exhaustive match: missing coverage for [Option.Some _]
+[TypeError] non-exhaustive match: missing coverage for Option.None

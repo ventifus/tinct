@@ -9,4 +9,4 @@
   in [+ ...] at 3:12-3:32
 
 === warn
-no instance for Addable Int String at 3:12-3:32
+[TypeError] no instance for Addable Int String

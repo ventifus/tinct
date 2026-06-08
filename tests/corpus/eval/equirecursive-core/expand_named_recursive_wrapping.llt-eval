@@ -26,4 +26,4 @@ result
 Int(1)
 
 === warn
-named argument 'tail' type mismatch: cannot unify nominal variants with different tags: Nil and List at 18:29-18:32
+[TypeError] named argument 'tail' type mismatch: cannot unify nominal variants with different tags: Nil and List

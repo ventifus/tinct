@@ -6,4 +6,4 @@
 [E002] undefined variable: cap-data (did you mean the string "cap-data"? Use quotes.) (defined at 2:2-2:10)
 
 === warn
-undefined variable: cap-data at 2:2-2:10
+[UndefinedVariable] undefined variable: cap-data

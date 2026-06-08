@@ -8,4 +8,4 @@
 Variant(Result.Ok, Int(2))
 
 === warn
-expected record type, got <error> at 1:1-1:1
+[NotARecord] expected record type, got <error>

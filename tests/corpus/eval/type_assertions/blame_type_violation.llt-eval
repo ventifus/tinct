@@ -7,4 +7,4 @@
 String("not-a-number")
 
 === warn
-cannot unify Int with "not-a-number" at 4:7-4:8
+[UnificationFailure] cannot unify Int with "not-a-number"

@@ -14,7 +14,7 @@ use crate::type_def::{Kind, Type};
 // Per-error structs
 // ────────────────────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ArityMismatch {
     pub expected: usize,
     pub got: usize,
@@ -22,21 +22,21 @@ pub struct ArityMismatch {
     pub notes: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct UndefinedVariable {
     pub name: String,
     pub span: Span,
     pub notes: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct UndefinedType {
     pub name: String,
     pub span: Span,
     pub notes: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct UnificationFailure {
     pub expected: Type,
     pub got: Type,
@@ -44,7 +44,7 @@ pub struct UnificationFailure {
     pub notes: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct FieldNotFound {
     pub field: String,
     pub record_type: Type,
@@ -52,21 +52,21 @@ pub struct FieldNotFound {
     pub notes: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct NotARecord {
     pub actual: Type,
     pub span: Span,
     pub notes: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct NotAFunction {
     pub actual: Type,
     pub span: Span,
     pub notes: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TypeAssertFailed {
     pub asserted: Type,
     pub actual: Type,
@@ -74,7 +74,7 @@ pub struct TypeAssertFailed {
     pub notes: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct NonExhaustiveMatch {
     /// Missing constructor/pattern names.
     pub missing: Vec<String>,
@@ -82,31 +82,31 @@ pub struct NonExhaustiveMatch {
     pub notes: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct OverlappingInstancePatterns {
     pub span: Span,
     pub notes: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ConsistencyViolation {
     pub span: Span,
     pub notes: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CoverageViolation {
     pub span: Span,
     pub notes: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct InstanceContainsUnknown {
     pub span: Span,
     pub notes: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct KindMismatch {
     pub expected: Kind,
     pub actual: Type,
@@ -117,7 +117,7 @@ pub struct KindMismatch {
 /// Catch-all for errors not yet migrated to typed variants.
 /// New construction sites MUST NOT use this — use a typed variant.
 /// Existing GenericTypeError instances should be migrated to typed variants over time.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct GenericTypeError {
     pub message: String,
     pub span: Span,
@@ -128,7 +128,7 @@ pub struct GenericTypeError {
 // TypeError enum
 // ────────────────────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum TypeErrorTyped {
     ArityMismatch(ArityMismatch),
     UndefinedVariable(UndefinedVariable),

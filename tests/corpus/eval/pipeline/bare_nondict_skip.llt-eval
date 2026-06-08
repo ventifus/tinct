@@ -5,4 +5,4 @@
 Int(42)
 
 === warn
-expected record type, got "hello" at 1:1-1:8
+[NotARecord] expected record type, got "hello"

@@ -11,4 +11,4 @@
   in [recv-datagram ...] at 2:1-2:31
 
 === warn
-cannot unify QuicDatagramHandle | DatagramHandle with "not-a-socket" at 2:16-2:30
+[UnificationFailure] cannot unify QuicDatagramHandle | DatagramHandle with "not-a-socket"

@@ -4,4 +4,4 @@
 Int(10)
 
 === warn
-undefined variable: until at 1:2-1:7
+[UndefinedVariable] undefined variable: until

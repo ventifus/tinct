@@ -11,6 +11,6 @@
 [E099] syntax error at 4:36 (cannot evaluate error node) (defined at 4:36-4:37)
 
 === warn
-instance arm pattern must be a [pattern [...]] or [let ...] declaration at 4:17-4:37
-expected record type, got <error> at 6:12-6:27
-expected record type, got <error> at 7:9-7:19
+[TypeError] instance arm pattern must be a [pattern [...]] or [let ...] declaration
+[NotARecord] expected record type, got <error>
+[NotARecord] expected record type, got <error>

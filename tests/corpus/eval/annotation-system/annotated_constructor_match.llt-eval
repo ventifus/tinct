@@ -15,4 +15,4 @@
 Dict({"Red": Variant(MyType.Red, Null), "matched": String("matched"), "result": Bool(true)})
 
 === warn
-undefined variable: Red at 8:19-8:22
+[UndefinedVariable] undefined variable: Red

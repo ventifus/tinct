@@ -27,4 +27,4 @@
   in [* ...] at 19:17-19:30
 
 === warn
-non-exhaustive match: missing coverage for [Shape.Circle _] at 18:9-21:4
+[TypeError] non-exhaustive match: missing coverage for [Shape.Circle _]

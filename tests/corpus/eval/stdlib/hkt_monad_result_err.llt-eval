@@ -5,4 +5,4 @@
 Variant(Result.Error, String("fail"))
 
 === warn
-expected record type, got <error> at 1:2-1:18
+[NotARecord] expected record type, got <error>

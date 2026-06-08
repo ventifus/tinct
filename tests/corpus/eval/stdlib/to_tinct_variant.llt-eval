@@ -4,4 +4,4 @@
 String("[Result.Ok 42]")
 
 === warn
-undefined variable: Ok at 1:12-1:14
+[UndefinedVariable] undefined variable: Ok

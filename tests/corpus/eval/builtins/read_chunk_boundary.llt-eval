@@ -9,7 +9,7 @@
 String("abcd/true")
 
 === warn
-undefined variable: builtin-read-chunk at 4:10-4:28
-undefined variable: builtin-read-chunk at 5:8-5:26
-cannot unify Bytes with <error> at 6:17-6:22
-cannot unify String with Bool at 6:1-6:39
+[UndefinedVariable] undefined variable: builtin-read-chunk
+[UndefinedVariable] undefined variable: builtin-read-chunk
+[UnificationFailure] cannot unify Bytes with <error>
+[UnificationFailure] cannot unify String with Bool

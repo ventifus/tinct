@@ -5,4 +5,4 @@
 String("café")
 
 === warn
-undefined variable: lower at 2:2-2:7
+[UndefinedVariable] undefined variable: lower

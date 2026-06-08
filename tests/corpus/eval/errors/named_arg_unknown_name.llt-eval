@@ -7,4 +7,4 @@
   in [f ...] at 2:10-2:29
 
 === warn
-unknown named argument: function has no parameter named 'z' at 2:25-2:28
+[TypeError] unknown named argument: function has no parameter named 'z'

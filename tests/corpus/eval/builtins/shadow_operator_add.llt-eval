@@ -8,4 +8,4 @@
 Dict({"+": Function(a, b), "result": Int(12)})
 
 === warn
-undefined variable: builtin-mul at 3:21-3:32
+[UndefinedVariable] undefined variable: builtin-mul

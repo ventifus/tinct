@@ -20,4 +20,4 @@
 Float(1024)
 
 === warn
-undefined variable: builtin-pow at 16:2-16:13
+[UndefinedVariable] undefined variable: builtin-pow

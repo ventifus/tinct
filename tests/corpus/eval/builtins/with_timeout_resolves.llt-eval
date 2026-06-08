@@ -6,4 +6,4 @@
 String("Function")
 
 === warn
-cannot unify Top with <error> at 3:10-3:22
+[UnificationFailure] cannot unify Top with <error>

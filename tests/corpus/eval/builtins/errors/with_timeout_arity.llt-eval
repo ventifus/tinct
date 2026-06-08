@@ -6,4 +6,4 @@
   in [builtin-with-timeout ...] at 2:1-2:46
 
 === warn
-undefined variable: builtin-with-timeout at 2:2-2:22
+[UndefinedVariable] undefined variable: builtin-with-timeout

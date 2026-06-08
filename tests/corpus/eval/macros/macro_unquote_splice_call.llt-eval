@@ -10,4 +10,4 @@
   in [+ ...] at 4:10-4:37
 
 === warn
-expected 2 arguments, got 1 at 4:10-4:37
+[ArityMismatch] expected 2 arguments, got 1

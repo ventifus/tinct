@@ -4,4 +4,4 @@
 Int(42)
 
 === warn
-undefined variable: Ok at 1:16-1:18
+[UndefinedVariable] undefined variable: Ok

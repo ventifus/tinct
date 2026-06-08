@@ -4,4 +4,4 @@
 String("Proxy")
 
 === warn
-syntax error at 1:29 (cannot typecheck error node) at 1:29-1:31
+[TypeError] syntax error at 1:29 (cannot typecheck error node)

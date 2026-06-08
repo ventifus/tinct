@@ -9,5 +9,5 @@
 [E002] undefined variable: host (did you mean the string "host"? Use quotes.) (defined at 5:15-5:19)
 
 === warn
-undefined variable: h at 5:37-5:38
-undefined variable: p at 5:48-5:49
+[UndefinedVariable] undefined variable: h
+[UndefinedVariable] undefined variable: p

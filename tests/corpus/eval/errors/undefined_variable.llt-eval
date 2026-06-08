@@ -3,4 +3,4 @@ nonexistent
 [E002] undefined variable: nonexistent (did you mean the string "nonexistent"? Use quotes.) (defined at 1:1-1:12)
 
 === warn
-undefined variable: nonexistent at 1:1-1:12
+[UndefinedVariable] undefined variable: nonexistent

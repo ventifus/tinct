@@ -5,4 +5,4 @@
 Dict({})
 
 === warn
-expected record type, got <error> at 1:2-1:23
+[NotARecord] expected record type, got <error>

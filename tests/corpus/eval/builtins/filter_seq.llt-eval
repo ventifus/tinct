@@ -11,4 +11,4 @@
   in [head ...] at 1:1-1:46
 
 === warn
-expected 2 arguments, got 3 at 1:7-1:45
+[ArityMismatch] expected 2 arguments, got 3

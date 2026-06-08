@@ -8,4 +8,4 @@
 Dict({"f": Function(a, b, c), "args": Dict({0: String("x"), "c": String("z")}), "result": String("x99z")})
 
 === warn
-cannot unify Fn@Top [Top] with Fn@String [a: _ b: _ c: _] at 4:18-4:19
+[UnificationFailure] cannot unify Fn@Top [Top] with Fn@String [a: _ b: _ c: _]

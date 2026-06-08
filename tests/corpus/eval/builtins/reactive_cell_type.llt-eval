@@ -5,4 +5,4 @@
 String("ReactiveCell")
 
 === warn
-undefined variable: builtin-reactive-cell at 2:11-2:32
+[UndefinedVariable] undefined variable: builtin-reactive-cell

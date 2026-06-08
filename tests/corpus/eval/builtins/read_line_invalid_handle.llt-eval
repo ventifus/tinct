@@ -5,4 +5,4 @@
   in [builtin-read-line ...] at 1:1-1:23
 
 === warn
-undefined variable: builtin-read-line at 1:2-1:19
+[UndefinedVariable] undefined variable: builtin-read-line

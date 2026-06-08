@@ -6,4 +6,4 @@
 Dict({"f": Function(x)})
 
 === warn
-no instance for Addable String Int at 3:24-3:31
+[TypeError] no instance for Addable String Int

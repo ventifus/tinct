@@ -8,5 +8,5 @@ u.nid
 [E002] undefined variable: urn (did you mean the string "urn"? Use quotes.) (defined at 2:6-2:9) (materialized at 2:1-2:33)
 
 === warn
-undefined variable: urn at 2:6-2:9
-expected record type, got <error> at 4:1-4:6
+[UndefinedVariable] undefined variable: urn
+[NotARecord] expected record type, got <error>

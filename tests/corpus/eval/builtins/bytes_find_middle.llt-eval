@@ -4,4 +4,4 @@
 Int(2)
 
 === warn
-undefined variable: bytes-find at 1:2-1:12
+[UndefinedVariable] undefined variable: bytes-find

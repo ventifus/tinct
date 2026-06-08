@@ -9,4 +9,4 @@
   in [f ...] at 4:10-4:22
 
 === warn
-named argument 'x' conflicts with positional argument at position 0 at 4:19-4:21
+[TypeError] named argument 'x' conflicts with positional argument at position 0

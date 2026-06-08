@@ -587,7 +587,7 @@ pub(crate) fn check_call_with_scheme(
                                             TypeErrorTyped::Generic(GenericTypeError {
                                                 message: format!(
                                                     "named argument '{}' type mismatch: {}",
-                                                    arg_name, e.message
+                                                    arg_name, e.message()
                                                 ),
                                                 span: na.span.clone(),
                                                 notes: vec![],
@@ -1071,7 +1071,7 @@ pub(crate) fn check_call(
                                             TypeErrorTyped::Generic(GenericTypeError {
                                                 message: format!(
                                                     "named argument '{}' type mismatch: {}",
-                                                    arg_name, e.message
+                                                    arg_name, e.message()
                                                 ),
                                                 span: na.span.clone(),
                                                 notes: vec![],
@@ -1293,7 +1293,7 @@ pub(crate) fn check_call(
                                             TypeErrorTyped::Generic(GenericTypeError {
                                                 message: format!(
                                                     "named argument '{}' type mismatch: {}",
-                                                    arg_name, errs.message
+                                                    arg_name, errs.message()
                                                 ),
                                                 span: na.span.clone(),
                                                 notes: vec![],

@@ -4,4 +4,4 @@
 String("Context")
 
 === warn
-expected 1 arguments, got 0 at 1:10-1:27
+[ArityMismatch] expected 1 arguments, got 0

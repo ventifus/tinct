@@ -4,4 +4,4 @@
 [E002] undefined variable: format-timestamp (did you mean the string "format-timestamp"? Use quotes.) (defined at 1:2-1:18)
 
 === warn
-undefined variable: format-timestamp at 1:2-1:18
+[UndefinedVariable] undefined variable: format-timestamp

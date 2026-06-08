@@ -22,4 +22,4 @@
   in [reduce ...] at 1:1-1:36
 
 === warn
-cannot unify Fn@Top [ ...] with "not-a-function" at 1:9-1:25
+[UnificationFailure] cannot unify Fn@Top [ ...] with "not-a-function"

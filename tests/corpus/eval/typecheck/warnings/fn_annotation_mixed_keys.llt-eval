@@ -4,4 +4,4 @@
 Function()
 
 === warn
-fn annotation must use either named keys (return:, constraint:, doc:, bind:, kinds:) or positional entries (union return type), not both at 1:5-1:22
+[TypeError] fn annotation must use either named keys (return:, constraint:, doc:, bind:, kinds:) or positional entries (union return type), not both

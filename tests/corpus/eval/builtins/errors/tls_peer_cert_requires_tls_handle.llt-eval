@@ -14,4 +14,4 @@
   in [tls-peer-cert ...] at 5:1-5:18
 
 === warn
-cannot unify Handle[[__cap_flag_readable: []]] with [] at 5:16-5:17
+[UnificationFailure] cannot unify Handle[[__cap_flag_readable: []]] with []

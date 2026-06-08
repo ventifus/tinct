@@ -6,4 +6,4 @@
 Bool(true)
 
 === warn
-undefined variable: builtin-read-line at 2:11-2:28
+[UndefinedVariable] undefined variable: builtin-read-line

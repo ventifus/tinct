@@ -5,4 +5,4 @@ _
 [E002] undefined variable: _ (defined at 2:1-2:2)
 
 === warn
-undefined variable: _ at 2:1-2:2
+[UndefinedVariable] undefined variable: _

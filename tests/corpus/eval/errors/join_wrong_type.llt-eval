@@ -13,4 +13,4 @@
   in [join ...] at 1:1-1:18
 
 === warn
-cannot unify String with 42 at 1:7-1:9
+[UnificationFailure] cannot unify String with 42

@@ -13,4 +13,4 @@
   in [drop ...] at 1:1-1:35
 
 === warn
-cannot unify Int with "not-a-number" at 1:7-1:21
+[UnificationFailure] cannot unify Int with "not-a-number"

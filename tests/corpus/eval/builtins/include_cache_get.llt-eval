@@ -4,4 +4,4 @@
 [E002] undefined variable: include-cache-get (did you mean the string "include-cache-get"? Use quotes.) (defined at 1:2-1:19)
 
 === warn
-undefined variable: include-cache-get at 1:2-1:19
+[UndefinedVariable] undefined variable: include-cache-get

@@ -12,4 +12,4 @@
   in accessing .x at 6:1-6:4
 
 === warn
-expected 2 arguments, got 3 at 4:1-4:43
+[ArityMismatch] expected 2 arguments, got 3

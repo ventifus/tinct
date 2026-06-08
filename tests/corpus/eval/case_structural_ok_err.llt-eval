@@ -9,4 +9,4 @@
 String("other")
 
 === warn
-undefined variable: Ok at 2:11-2:13
+[UndefinedVariable] undefined variable: Ok

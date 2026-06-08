@@ -6,4 +6,4 @@
   in accessing .x at 2:1-2:9
 
 === warn
-undefined variable: %later at 2:1-2:7
+[UndefinedVariable] undefined variable: %later

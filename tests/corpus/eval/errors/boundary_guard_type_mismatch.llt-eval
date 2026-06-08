@@ -7,4 +7,4 @@
 [E002] undefined variable: from-json (defined at 4:27-4:36)
 
 === warn
-undefined variable: from-json at 4:27-4:36
+[UndefinedVariable] undefined variable: from-json

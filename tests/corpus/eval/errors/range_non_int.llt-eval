@@ -19,4 +19,4 @@
   in [range ...] at 1:1-1:16
 
 === warn
-cannot unify Int with "hello" at 1:8-1:15
+[UnificationFailure] cannot unify Int with "hello"

@@ -4,4 +4,4 @@
 Bool(true)
 
 === warn
-undefined variable: Error at 1:10-1:15
+[UndefinedVariable] undefined variable: Error

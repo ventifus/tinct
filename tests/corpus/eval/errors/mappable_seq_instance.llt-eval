@@ -9,4 +9,4 @@
 [E099] syntax error at 4:41 (cannot evaluate error node) (defined at 4:41-4:42)
 
 === warn
-syntax error at 4:41 (cannot typecheck error node) at 4:41-4:42
+[TypeError] syntax error at 4:41 (cannot typecheck error node)

@@ -4,4 +4,4 @@
 Int(10)
 
 === warn
-no instance for Multipliable ~[] Int at 1:48-1:55
+[TypeError] no instance for Multipliable ~[] Int

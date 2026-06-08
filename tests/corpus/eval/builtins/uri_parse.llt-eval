@@ -9,5 +9,5 @@ u.scheme
 [E002] undefined variable: uri (did you mean the string "uri"? Use quotes.) (defined at 3:6-3:9) (materialized at 3:1-3:62)
 
 === warn
-undefined variable: uri at 3:6-3:9
-expected record type, got <error> at 5:1-5:9
+[UndefinedVariable] undefined variable: uri
+[NotARecord] expected record type, got <error>

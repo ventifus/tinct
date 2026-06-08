@@ -14,4 +14,4 @@
 [E002] undefined variable: to-json-pretty (did you mean the string "to-json-pretty"? Use quotes.) (defined at 5:2-5:16)
 
 === warn
-undefined variable: to-json-pretty at 5:2-5:16
+[UndefinedVariable] undefined variable: to-json-pretty

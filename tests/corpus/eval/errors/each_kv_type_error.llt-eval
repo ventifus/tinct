@@ -5,4 +5,4 @@
   in [each-kv ...] at 1:1-1:15
 
 === warn
-cannot unify [] with Bool at 1:10-1:14
+[UnificationFailure] cannot unify [] with Bool

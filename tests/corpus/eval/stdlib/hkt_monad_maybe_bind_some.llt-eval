@@ -5,4 +5,4 @@
 Variant(Maybe.Some, Int(43))
 
 === warn
-expected record type, got <error> at 1:2-1:17
+[NotARecord] expected record type, got <error>

@@ -4,4 +4,4 @@
 [E002] undefined variable: my-key (did you mean the string "my-key"? Use quotes.) (defined at 1:10-1:16)
 
 === warn
-undefined variable: my-key at 1:10-1:16
+[UndefinedVariable] undefined variable: my-key

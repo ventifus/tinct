@@ -5,4 +5,4 @@
   in [until ...] at 1:1-1:64
 
 === warn
-undefined variable: until at 1:2-1:7
+[UndefinedVariable] undefined variable: until

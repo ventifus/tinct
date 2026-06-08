@@ -8,6 +8,6 @@
 Dict({"eq": Bool(true)})
 
 === warn
-auto-indexed entries not supported in type expressions at 4:16-4:29
-undefined variable: Ok at 5:10-5:12
-undefined variable: Ok at 5:24-5:26
+[TypeError] auto-indexed entries not supported in type expressions
+[UndefinedVariable] undefined variable: Ok
+[UndefinedVariable] undefined variable: Ok

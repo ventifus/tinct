@@ -4,4 +4,4 @@
 [E002] undefined variable: duration->seconds (defined at 1:2-1:19)
 
 === warn
-undefined variable: duration->seconds at 1:2-1:19
+[UndefinedVariable] undefined variable: duration->seconds

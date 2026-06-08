@@ -11,5 +11,5 @@
 Dict({"result-doc": Bool(true), "result-ver": Bool(true)})
 
 === warn
-expected record type, got Top at 7:17-7:24
-expected record type, got Top at 8:17-8:28
+[NotARecord] expected record type, got Top
+[NotARecord] expected record type, got Top

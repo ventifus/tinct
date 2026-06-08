@@ -6,4 +6,4 @@
 Dict({"x": String("hello")})
 
 === warn
-Pipeline input type [] does not satisfy expects contract [x: Int] at 2:15-2:23
+[TypeError] Pipeline input type [] does not satisfy expects contract [x: Int]

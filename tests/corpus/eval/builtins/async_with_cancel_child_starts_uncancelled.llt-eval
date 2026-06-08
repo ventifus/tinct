@@ -5,4 +5,4 @@
 Bool(false)
 
 === warn
-expected record type, got Top at 2:13-2:46
+[NotARecord] expected record type, got Top

@@ -235,7 +235,7 @@ fn test_varref_in_scope_chain() {
 fn test_varref_undefined() {
     let errors = check_err("$x");
     assert_eq!(errors.len(), 1);
-    assert!(errors[0].message.contains("undefined variable: x"));
+    assert!(errors[0].message().contains("undefined variable: x"));
 }
 
 // -- Record construction --
@@ -312,14 +312,14 @@ fn test_dict_multiple_errors() {
     let errors = check_err("[a: $undefined1  b: 42  c: $undefined2]");
     assert_eq!(errors.len(), 2, "should return all errors, got: {errors:?}");
     assert!(
-        errors[0].message.contains("undefined1"),
+        errors[0].message().contains("undefined1"),
         "first error should be about undefined1, got: {}",
-        errors[0].message
+        errors[0].message()
     );
     assert!(
-        errors[1].message.contains("undefined2"),
+        errors[1].message().contains("undefined2"),
         "second error should be about undefined2, got: {}",
-        errors[1].message
+        errors[1].message()
     );
 
     // Also verify via direct infer_expr call
@@ -335,8 +335,8 @@ fn test_dict_multiple_errors() {
     };
     let errs = infer_surface_expr(node, &env, &mut state, &mut None).unwrap_err();
     assert_eq!(errs.len(), 2, "infer_expr should return all dict errors");
-    assert!(errs[0].message.contains("undefined1"));
-    assert!(errs[1].message.contains("undefined2"));
+    assert!(errs[0].message().contains("undefined1"));
+    assert!(errs[1].message().contains("undefined2"));
 }
 
 // -- Dot access --
@@ -375,7 +375,7 @@ fn test_dot_access_non_record() {
     let errors = check_err("[x: 42]\n[result: $x.field]");
     assert!(errors
         .iter()
-        .any(|e| e.message.contains("expected record type")));
+        .any(|e| e.message().contains("expected record type")));
 }
 
 // -- Dot access on Intersection and Negation types --
@@ -689,7 +689,7 @@ fn test_typeassert_default_inference_error_propagation() {
 
     // The error should mention the undefined variable
     assert!(
-        errors.iter().any(|e| e.message.contains("undefined")),
+        errors.iter().any(|e| e.message().contains("undefined")),
         "Error should mention undefined variable, got: {:?}",
         errors
     );
@@ -708,14 +708,14 @@ fn test_type_assert_fail() {
     // In new syntax, bare words are references. Use a quoted string to test type mismatch.
     let errors = check_err("[@Number \"hello\"]");
     assert_eq!(errors.len(), 1);
-    assert!(errors[0].message.contains("cannot unify"));
+    assert!(errors[0].message().contains("cannot unify"));
 }
 
 #[test]
 fn test_type_assert_int_not_string() {
     let errors = check_err("[@String 42]");
     assert_eq!(errors.len(), 1);
-    assert!(errors[0].message.contains("cannot unify"));
+    assert!(errors[0].message().contains("cannot unify"));
 }
 
 #[test]
@@ -733,7 +733,7 @@ fn test_type_assert_no_default_still_errors() {
     // In new syntax, string literals require quotes. "hello" infers as Str, not Number.
     let errors = check_err("[@[type: Number] \"hello\"]");
     assert!(
-        errors.iter().any(|e| e.message.contains("cannot unify")),
+        errors.iter().any(|e| e.message().contains("cannot unify")),
         "TypeAssert without default: should still report type error, got: {:?}",
         errors
     );
@@ -748,7 +748,7 @@ fn test_typeassert_default_wrong_type_emits_error() {
     assert!(
         errors
             .iter()
-            .any(|e| e.message.contains("default value type mismatch")),
+            .any(|e| e.message().contains("default value type mismatch")),
         "TypeAssert with wrong default type should emit error, got: {:?}",
         errors
     );
@@ -775,7 +775,7 @@ fn test_typeassert_default_wrong_type_main_check_fails() {
     assert!(
             errors
                 .iter()
-                .any(|e| e.message.contains("default value type mismatch")),
+                .any(|e| e.message().contains("default value type mismatch")),
             "TypeAssert with wrong default and wrong expr should emit default mismatch error, got: {:?}",
             errors
         );
@@ -1029,7 +1029,7 @@ fn test_fn_return_annotation_match() {
 fn test_fn_return_annotation_mismatch() {
     let errors = check_err("[fn@String [let x@Number] $x]");
     assert_eq!(errors.len(), 1);
-    assert!(errors[0].message.contains("cannot unify"));
+    assert!(errors[0].message().contains("cannot unify"));
 }
 
 #[test]
@@ -1085,7 +1085,7 @@ fn test_call_non_function() {
     let errors = check_err("[x: 42]\n[result: [call $x]]");
     assert!(errors
         .iter()
-        .any(|e| e.message.contains("expected function type")));
+        .any(|e| e.message().contains("expected function type")));
 }
 
 #[test]
@@ -1139,7 +1139,7 @@ fn test_check_call_with_scheme_non_function_scheme() {
     assert!(
         errors
             .iter()
-            .any(|e| e.message.contains("expected function type")),
+            .any(|e| e.message().contains("expected function type")),
         "error should mention 'expected function type', got: {errors:?}"
     );
 }
@@ -1446,7 +1446,7 @@ fn test_scope_chain() {
 fn test_intermediate_non_dict_error() {
     let errors = check_err("42\n[x: 1]");
     assert!(!errors.is_empty());
-    assert!(errors[0].message.contains("expected record type"));
+    assert!(errors[0].message().contains("expected record type"));
 }
 
 // -- % pipeline --
@@ -1636,14 +1636,14 @@ fn test_fix1_outer_scope_annotations_are_independent() {
     let errors = check_err("[x: [@a 42]  y: [@a hello]]");
     // Neither error should mention Int/String cross-contamination
     let has_cross_contamination = errors.iter().any(|e| {
-        (e.message.contains("Int") || e.message.contains("Number"))
-            && (e.message.contains("String") || e.message.contains("hello"))
+        (e.message().contains("Int") || e.message().contains("Number"))
+            && (e.message().contains("String") || e.message().contains("hello"))
     });
     assert!(
         !has_cross_contamination,
         "errors must not be caused by cross-contamination between sibling @a annotations; \
              got: {:?}",
-        errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+        errors.iter().map(|e| e.message()).collect::<Vec<_>>()
     );
 }
 
@@ -1690,9 +1690,9 @@ fn test_fix3_default_wrong_type_emits_error() {
     assert!(
         errors
             .iter()
-            .any(|e| e.message.contains("default value type mismatch")),
+            .any(|e| e.message().contains("default value type mismatch")),
         "default with wrong type must emit 'default value type mismatch' error; got: {:?}",
-        errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+        errors.iter().map(|e| e.message()).collect::<Vec<_>>()
     );
 }
 
@@ -1719,9 +1719,9 @@ fn test_fix3_default_wrong_type_main_also_wrong_emits_error() {
     assert!(
         errors
             .iter()
-            .any(|e| e.message.contains("default value type mismatch")),
+            .any(|e| e.message().contains("default value type mismatch")),
         "default with wrong type must emit error even when main also fails; got: {:?}",
-        errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+        errors.iter().map(|e| e.message()).collect::<Vec<_>>()
     );
 }
 
@@ -1895,7 +1895,7 @@ fn test_property_dict_fn_type_error_propagates() {
         &mut None,
     );
     assert!(result.is_err());
-    assert!(result.unwrap_err().message.contains("function type"));
+    assert!(result.unwrap_err().message().contains("function type"));
 }
 
 // -- Type alias in scope --
@@ -1941,7 +1941,7 @@ fn test_type_expr_non_bare_word_key() {
     let errors = check_err("[type [$var: Int]]");
     assert!(errors
         .iter()
-        .any(|e| e.message.contains("type record keys must be bare words")));
+        .any(|e| e.message().contains("type record keys must be bare words")));
 }
 
 #[test]
@@ -1963,7 +1963,7 @@ fn test_annotation_type_value_invalid_expr() {
     let errors = check_err("[fn [let x@[type: 42]] $x]");
     assert!(errors
         .iter()
-        .any(|e| e.message.contains("invalid type expression")));
+        .any(|e| e.message().contains("invalid type expression")));
 }
 
 #[test]
@@ -2324,7 +2324,7 @@ fn test_fn_type_missing_param_list() {
     let errors = check_err("[type [Fn@b]]");
     assert!(errors
         .iter()
-        .any(|e| e.message.contains("requires exactly 2 entries")));
+        .any(|e| e.message().contains("requires exactly 2 entries")));
 }
 
 #[test]
@@ -2333,7 +2333,7 @@ fn test_fn_type_extra_entries() {
     let errors = check_err("[type [Fn@b [a] extra]]");
     assert!(errors
         .iter()
-        .any(|e| e.message.contains("requires exactly 2 entries")));
+        .any(|e| e.message().contains("requires exactly 2 entries")));
 }
 
 #[test]
@@ -2341,7 +2341,7 @@ fn test_fn_type_extra_entries() {
 fn test_fn_type_param_list_not_bracket() {
     let errors = check_err("[type [Fn@b a]]");
     assert!(errors.iter().any(|e| e
-        .message
+        .message()
         .contains("parameter list must be a bracket expression")));
 }
 
@@ -2515,7 +2515,9 @@ fn test_call_monomorphic_no_unification() {
 fn test_call_polymorphic_arity_mismatch_error() {
     let errors = check_err("[f: [fn [let x@a y@b] $x]]\n[result: [call $f 42]]");
     assert!(
-        errors.iter().any(|e| e.message.contains("arity mismatch")),
+        errors
+            .iter()
+            .any(|e| e.message().contains("arity mismatch")),
         "expected arity mismatch error, got: {:?}",
         errors
     );
@@ -2525,7 +2527,9 @@ fn test_call_polymorphic_arity_mismatch_error() {
 fn test_call_monomorphic_arity_mismatch() {
     let errors = check_err("[f: [fn@Number [let x@Number y@Number] $x]]\n[result: [call $f 42]]");
     assert!(
-        errors.iter().any(|e| e.message.contains("arity mismatch")),
+        errors
+            .iter()
+            .any(|e| e.message().contains("arity mismatch")),
         "expected arity mismatch for monomorphic function, got: {:?}",
         errors
     );
@@ -2536,7 +2540,7 @@ fn test_call_unification_error() {
     // In new syntax, string literals require quotes. Both args must unify to same type.
     let errors = check_err("[f: [fn [let x@a y@a] $x]]\n[result: [call $f 42 \"hello\"]]");
     assert!(
-        errors.iter().any(|e| e.message.contains("cannot unify")),
+        errors.iter().any(|e| e.message().contains("cannot unify")),
         "expected unification error, got: {:?}",
         errors
     );
@@ -2569,7 +2573,7 @@ fn test_call_polymorphic_with_named_arg() {
     assert!(
         errors
             .iter()
-            .any(|e| e.message.contains("named argument") && e.message.contains("mismatch")),
+            .any(|e| e.message().contains("named argument") && e.message().contains("mismatch")),
         "expected named-arg type mismatch error, got: {:?}",
         errors
     );
@@ -2583,7 +2587,7 @@ fn test_call_polymorphic_with_named_arg() {
     assert!(
         errors
             .iter()
-            .any(|e| e.message.contains("unknown named argument")),
+            .any(|e| e.message().contains("unknown named argument")),
         "expected unknown named argument error, got: {:?}",
         errors
     );
@@ -2600,7 +2604,9 @@ fn test_call_polymorphic_positional_plus_named_arity_error() {
              [result: [call $f 42 hello y: 77]]",
     );
     assert!(
-        errors.iter().any(|e| e.message.contains("arity mismatch")),
+        errors
+            .iter()
+            .any(|e| e.message().contains("arity mismatch")),
         "expected arity mismatch for 2 positional + 1 named against 2 params, got: {:?}",
         errors
     );
@@ -2620,7 +2626,7 @@ fn test_call_polymorphic_named_arg_bad_value_errors() {
     assert!(
         errors
             .iter()
-            .any(|e| e.message.contains("undefined variable")),
+            .any(|e| e.message().contains("undefined variable")),
         "expected undefined variable error from named arg, got: {:?}",
         errors
     );
@@ -2964,7 +2970,7 @@ fn test_type_assert_single_field_annotation_accepts_extra_fields() {
 fn test_type_assert_open_record_requires_fields() {
     let errors = check_err("[@[name: String ...] [age: 30]]");
     assert!(!errors.is_empty());
-    assert!(errors[0].message.contains("cannot unify"));
+    assert!(errors[0].message().contains("cannot unify"));
 }
 
 #[test]
@@ -3279,7 +3285,7 @@ fn test_call_mono_argument_checking() {
     // This should fail: String is not subtype of Int (use quoted string in new syntax)
     let errors = check_err("[f: [fn [let x@Int] $x]]\n[result: [call $f \"hello\"]]");
     assert!(
-        errors.iter().any(|e| e.message.contains("cannot unify")),
+        errors.iter().any(|e| e.message().contains("cannot unify")),
         "CALL-MONO should reject String arg for Int param, got: {:?}",
         errors
     );
@@ -3319,7 +3325,7 @@ fn test_call_mono_lambda_arg_uses_check_expr() {
     assert!(
         errors
             .iter()
-            .any(|e| e.message.contains("cannot unify") || e.message.contains("mismatch")),
+            .any(|e| e.message().contains("cannot unify") || e.message().contains("mismatch")),
         "CALL-MONO lambda arg: lambda returning String should fail for Int return param, got: {:?}",
         errors
     );
@@ -3441,7 +3447,7 @@ fn test_function_return_annotation_checking() {
     // Type mismatch should fail (use quoted string in new syntax)
     let errors = check_err("[f: [fn@Int [] \"hello\"]]");
     assert!(
-        errors.iter().any(|e| e.message.contains("cannot unify")),
+        errors.iter().any(|e| e.message().contains("cannot unify")),
         "Function body type mismatch should error, got: {:?}",
         errors
     );
@@ -3505,7 +3511,7 @@ fn test_function_return_annotation_with_type_var_error_path() {
     assert!(
         errors
             .iter()
-            .any(|e| e.message.contains("expected function type")),
+            .any(|e| e.message().contains("expected function type")),
         "Expected 'expected function type' error, got: {:?}",
         errors
     );
@@ -3522,8 +3528,8 @@ fn test_lambda_checking_mode_annotated_param_incompatible() {
     assert!(
         errors
             .iter()
-            .any(|e| e.message.contains("parameter annotation")
-                && e.message.contains("more restrictive")),
+            .any(|e| e.message().contains("parameter annotation")
+                && e.message().contains("more restrictive")),
         "Incompatible param annotation should produce contravariant error, got: {:?}",
         errors
     );
@@ -3564,7 +3570,7 @@ fn test_lambda_checking_mode_return_annotation_and_expected_type() {
     // is_subtype(&Number, &Int) = false → should error.
     let errors = check_err("[f: [@[Fn@Int [Int]] [fn@Number [let x] 42]]]");
     assert!(
-        errors.iter().any(|e| e.message.contains("cannot unify")),
+        errors.iter().any(|e| e.message().contains("cannot unify")),
         "Declared return Number is not subtype of expected Int — should error, got: {:?}",
         errors
     );
@@ -3639,7 +3645,7 @@ fn test_lambda_checking_mode_param_annotation_error_message() {
     // The error should say "cannot unify Int with String" (not "cannot unify String with Int").
     let errors = check_err("[f: [@[Fn@Number [Int]] [fn [let x@String] $x]]]");
     assert_eq!(errors.len(), 1, "should have exactly one error");
-    let msg = &errors[0].message;
+    let msg = errors[0].message();
     assert!(
         msg.contains("parameter annotation") && msg.contains("more restrictive"),
         "Error message should say 'parameter annotation ... more restrictive ...' but got: {msg}"
@@ -3836,7 +3842,7 @@ fn test_call_mono_argument_type_checking_verification() {
     // StringLiteral for Int param fails
     let errors = check_err("[f: [fn [let x@Int] $x]]\n[result: [call $f \"hello\"]]");
     assert!(
-        errors.iter().any(|e| e.message.contains("cannot unify")),
+        errors.iter().any(|e| e.message().contains("cannot unify")),
         "StringLiteral arg for Int param should error: {:?}",
         errors
     );
@@ -3871,7 +3877,7 @@ fn test_subsumption_direction_matters() {
     assert!(check("[result: [@Number 42]]").is_ok());
     let errors = check_err("[f: [fn [let x@Int] $x]]\n[result: [@Int [call $f 3.14]]]");
     assert!(
-        errors.iter().any(|e| e.message.contains("cannot unify")),
+        errors.iter().any(|e| e.message().contains("cannot unify")),
         "Float should not be subtype of Int: {:?}",
         errors
     );
@@ -3914,8 +3920,8 @@ fn test_lambda_param_inference_rejects_incompatible_annotation() {
     assert!(
         errors
             .iter()
-            .any(|e| e.message.contains("parameter annotation")
-                && e.message.contains("more restrictive")),
+            .any(|e| e.message().contains("parameter annotation")
+                && e.message().contains("more restrictive")),
         "String annotation should be incompatible with Int expected param: {:?}",
         errors
     );
@@ -4737,7 +4743,7 @@ fn test_level_restored_after_non_dict_record_error() {
     );
     assert!(!errors.is_empty(), "second document should fail");
     assert!(
-        errors[0].message.contains("undefined variable"),
+        errors[0].message().contains("undefined variable"),
         "error should be about undefined variable"
     );
 
@@ -4779,12 +4785,12 @@ fn test_annotation_malformed_function_missing_params() {
     // [Fn@Int] has only 1 entry, but function types require exactly 2.
     let errors = check_err("[fn [let f@[type: [Fn@Int]]] $f]");
     assert!(
-            errors
-                .iter()
-                .any(|e| e.message.contains("function type")
-                    && e.message.contains("exactly 2 entries")),
-            "expected error about function type requiring 2 entries, got: {errors:?}"
-        );
+        errors
+            .iter()
+            .any(|e| e.message().contains("function type")
+                && e.message().contains("exactly 2 entries")),
+        "expected error about function type requiring 2 entries, got: {errors:?}"
+    );
 }
 
 #[test]
@@ -4794,7 +4800,7 @@ fn test_annotation_malformed_function_non_dict_params() {
     let errors = check_err("[fn [let f@[type: [Fn@Int 42]]] $f]");
     assert!(
         errors.iter().any(|e| e
-            .message
+            .message()
             .contains("parameter list must be a bracket expression")),
         "expected error about parameter list, got: {errors:?}"
     );
@@ -4806,9 +4812,9 @@ fn test_annotation_malformed_nested_record_int_literal() {
     // IntLiteral (42) is not a valid type expression.
     let errors = check_err("[fn [let p@[type: [outer: [inner: 42]]]] $p]");
     assert!(
-        errors
-            .iter()
-            .any(|e| e.message.contains("invalid type expression in annotation")),
+        errors.iter().any(|e| e
+            .message()
+            .contains("invalid type expression in annotation")),
         "expected error about invalid type expression in annotation, got: {errors:?}"
     );
 }
@@ -4851,13 +4857,15 @@ fn test_arity_mismatch_shows_counts() {
              [result: [call $f]]",
     );
     assert!(
-        errors.iter().any(|e| e.message.contains("arity mismatch")),
+        errors
+            .iter()
+            .any(|e| e.message().contains("arity mismatch")),
         "expected arity mismatch error, got: {errors:?}"
     );
     assert!(
         errors
             .iter()
-            .any(|e| e.message.contains("(0 positional, 0 named)")),
+            .any(|e| e.message().contains("(0 positional, 0 named)")),
         "expected positional/named counts in arity mismatch error, got: {errors:?}"
     );
 }
@@ -4889,7 +4897,7 @@ fn test_arity_mismatch_named_args_counted() {
     assert!(
         errors
             .iter()
-            .any(|e| e.message.contains("named argument") && e.message.contains("mismatch")),
+            .any(|e| e.message().contains("named argument") && e.message().contains("mismatch")),
         "expected named-arg type mismatch error for annotated param, got: {:?}",
         errors
     );
@@ -5012,7 +5020,8 @@ fn test_parameterized_type_alias_arity_mismatch() {
     assert!(
         errors
             .iter()
-            .any(|e| e.message.contains("expects 2 type parameter") && e.message.contains("got 1")),
+            .any(|e| e.message().contains("expects 2 type parameter")
+                && e.message().contains("got 1")),
         "expected arity mismatch error, got: {errors:?}"
     );
 }
@@ -5439,7 +5448,9 @@ fn test_check_expr_lambda_arity_mismatch() {
     );
     let errors = result.unwrap_err();
     assert!(
-        errors.iter().any(|e| e.message.contains("arity mismatch")),
+        errors
+            .iter()
+            .any(|e| e.message().contains("arity mismatch")),
         "Expected arity mismatch error, got: {:?}",
         errors
     );
@@ -5464,7 +5475,7 @@ fn test_double_typecheck_no_panic() {
     let (errors1, type_map1, _doc_map1, _scheme_map1, _diagnostics1) =
         typecheck_surface_program(&program, crate::imports::build_prelude_env());
     assert!(
-        errors1.is_empty() || errors1.iter().all(|e| !e.message.contains("panic")),
+        errors1.is_empty() || errors1.iter().all(|e| !e.message().contains("panic")),
         "First typecheck should not panic"
     );
     assert!(
@@ -5476,7 +5487,7 @@ fn test_double_typecheck_no_panic() {
     let (errors2, type_map2, _doc_map2, _scheme_map2, _diagnostics2) =
         typecheck_surface_program(&program, crate::imports::build_prelude_env());
     assert!(
-        errors2.is_empty() || errors2.iter().all(|e| !e.message.contains("panic")),
+        errors2.is_empty() || errors2.iter().all(|e| !e.message().contains("panic")),
         "Second typecheck should not panic"
     );
     assert!(
@@ -5488,7 +5499,7 @@ fn test_double_typecheck_no_panic() {
     let (errors3, _type_map3, _doc_map3, _scheme_map3, _diagnostics3) =
         typecheck_surface_program(&program, crate::imports::build_prelude_env());
     assert!(
-        errors3.is_empty() || errors3.iter().all(|e| !e.message.contains("panic")),
+        errors3.is_empty() || errors3.iter().all(|e| !e.message().contains("panic")),
         "Third typecheck should not panic"
     );
 }
@@ -5537,7 +5548,7 @@ fn test_cascade_prevention_error_does_not_multiply_errors() {
     // The error should be about the undefined variable
     let has_undefined_err = errors
         .iter()
-        .any(|e| e.message.contains("undefined variable"));
+        .any(|e| e.message().contains("undefined variable"));
     assert!(
         has_undefined_err,
         "expected undefined variable error, got: {:?}",
@@ -5548,7 +5559,7 @@ fn test_cascade_prevention_error_does_not_multiply_errors() {
     // The Error sentinel absorbs the param type without generating a new mismatch.
     let has_cascade_err = errors
         .iter()
-        .any(|e| e.message.contains("cannot unify") && e.message.contains("Int"));
+        .any(|e| e.message().contains("cannot unify") && e.message().contains("Int"));
     assert!(
         !has_cascade_err,
         "cascade error about Int unification should be suppressed by Error absorption, got: {:?}",
@@ -5608,7 +5619,7 @@ fn test_calling_error_function_does_not_produce_t003() {
     // Should have an error about undefined variable inside `broken`
     let has_undefined = errors
         .iter()
-        .any(|e| e.message.contains("undefined variable"));
+        .any(|e| e.message().contains("undefined variable"));
     assert!(
         has_undefined,
         "expected undefined variable error inside broken function, got: {:?}",
@@ -5618,7 +5629,7 @@ fn test_calling_error_function_does_not_produce_t003() {
     // Should NOT have a T003 "expected function type, got <error>" when calling broken
     let has_t003 = errors
         .iter()
-        .any(|e| e.message.contains("expected function type"));
+        .any(|e| e.message().contains("expected function type"));
     assert!(
         !has_t003,
         "calling a Type::Error function should suppress T003, got: {:?}",
@@ -5634,7 +5645,9 @@ fn test_check_call_with_scheme_arity_mismatch() {
     // The scheme has 2 params but we provide 1 positional arg → arity mismatch error.
     let errors = check_err("[f: [fn [let x@a y@b] $x]]\n[result: [call $f 42]]");
     assert!(
-        errors.iter().any(|e| e.message.contains("arity mismatch")),
+        errors
+            .iter()
+            .any(|e| e.message().contains("arity mismatch")),
         "expected arity mismatch error when calling polymorphic scheme, got: {:?}",
         errors
     );
@@ -5648,7 +5661,7 @@ fn test_check_call_with_scheme_non_function_error() {
     assert!(
         errors
             .iter()
-            .any(|e| e.message.contains("expected function type")),
+            .any(|e| e.message().contains("expected function type")),
         "expected 'expected function type' error when calling Int scheme, got: {:?}",
         errors
     );
@@ -6939,7 +6952,7 @@ fn test_non_exhaustive_match_missing_variant() {
     );
     let errs = result.unwrap_err();
     assert!(
-        errs.iter().any(|e| e.message.contains("non-exhaustive")),
+        errs.iter().any(|e| e.message().contains("non-exhaustive")),
         "should report non-exhaustive match, got: {:?}",
         errs
     );
@@ -6956,7 +6969,7 @@ fn test_redundant_arm_detected() {
     );
     let errs = result.unwrap_err();
     assert!(
-        errs.iter().any(|e| e.message.contains("unreachable")),
+        errs.iter().any(|e| e.message().contains("unreachable")),
         "should report unreachable arm, got: {:?}",
         errs
     );
@@ -6972,7 +6985,7 @@ fn test_inaccessible_arm_after_complete_coverage() {
     );
     let errs = result.unwrap_err();
     assert!(
-        errs.iter().any(|e| e.message.contains("inaccessible")),
+        errs.iter().any(|e| e.message().contains("inaccessible")),
         "should report inaccessible arm, got: {:?}",
         errs
     );
@@ -7009,7 +7022,7 @@ fn test_non_exhaustive_match_dict_missing_variant() {
     );
     let errs = result.unwrap_err();
     assert!(
-        errs.iter().any(|e| e.message.contains("non-exhaustive")),
+        errs.iter().any(|e| e.message().contains("non-exhaustive")),
         "should report non-exhaustive match for dict variants, got: {:?}",
         errs
     );
@@ -7045,7 +7058,7 @@ fn test_non_exhaustive_string_literal_missing() {
     );
     let errs = result.unwrap_err();
     assert!(
-        errs.iter().any(|e| e.message.contains("non-exhaustive")),
+        errs.iter().any(|e| e.message().contains("non-exhaustive")),
         "should report non-exhaustive match for string literal variants, got: {:?}",
         errs
     );
@@ -7302,8 +7315,8 @@ fn test_recursive_function_without_annotation_errors() {
     // (infinite type occurs when the check doesn't catch it in time)
     assert!(
         errs.iter()
-            .any(|e| e.message.contains("recursive function requires")
-                || e.message.contains("infinite type")),
+            .any(|e| e.message().contains("recursive function requires")
+                || e.message().contains("infinite type")),
         "should report either polymorphic recursion or infinite type error, got: {:?}",
         errs
     );
@@ -8539,7 +8552,7 @@ fn test_label_annotation_named_form_requires_lowercase() {
     let errs = result.unwrap_err();
     assert!(
         errs.iter()
-            .any(|e| e.message.contains("lowercase type variable")),
+            .any(|e| e.message().contains("lowercase type variable")),
         "should report that label: value must be lowercase, got: {:?}",
         errs
     );
@@ -8555,7 +8568,7 @@ fn test_label_annotation_named_form_requires_bare_name() {
     );
     let errs = result.unwrap_err();
     assert!(
-        errs.iter().any(|e| e.message.contains("bare name")),
+        errs.iter().any(|e| e.message().contains("bare name")),
         "should report that label: value must be a bare name, got: {:?}",
         errs
     );
@@ -8809,14 +8822,14 @@ fn test_let_decl_in_expression_position_is_error() {
         "LetDecl in expression position should produce a type error"
     );
     let has_binding_error = errors.iter().any(|e| {
-        e.message.contains("binding declaration")
-            || e.message.contains("[let")
-            || e.message.contains("not valid in expression position")
+        e.message().contains("binding declaration")
+            || e.message().contains("[let")
+            || e.message().contains("not valid in expression position")
     });
     assert!(
         has_binding_error,
         "Error should mention binding declaration / expression position; got: {:?}",
-        errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+        errors.iter().map(|e| e.message()).collect::<Vec<_>>()
     );
 }
 

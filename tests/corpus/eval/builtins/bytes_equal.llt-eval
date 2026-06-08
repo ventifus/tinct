@@ -4,4 +4,4 @@
 Bool(true)
 
 === warn
-undefined variable: bytes-equal? at 1:2-1:14
+[UndefinedVariable] undefined variable: bytes-equal?

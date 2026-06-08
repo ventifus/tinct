@@ -4,4 +4,4 @@
 Bytes(3 bytes)
 
 === warn
-undefined variable: bytes-of at 1:2-1:10
+[UndefinedVariable] undefined variable: bytes-of

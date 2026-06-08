@@ -7,4 +7,4 @@
 Dict({"f": Function(a, b, c), "result": Int(14)})
 
 === warn
-expected 3 arguments, got 1 at 3:11-3:20
+[ArityMismatch] expected 3 arguments, got 1

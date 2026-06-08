@@ -8,4 +8,4 @@
 Variant(Result.Error, String("undefined variable: re-match (did you mean the string \"re-match\"? Use quotes.)"))
 
 === warn
-undefined variable: re-match at 4:14-4:22
+[UndefinedVariable] undefined variable: re-match

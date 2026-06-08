@@ -9,4 +9,4 @@
 String("no-match")
 
 === warn
-undefined variable: Ok at 2:10-2:12
+[UndefinedVariable] undefined variable: Ok

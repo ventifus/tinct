@@ -30,4 +30,4 @@
   in [concat ...] at 1:1-1:20
 
 === warn
-cannot unify Int with [0: 1 1: 2 2: 3] at 1:1-1:20
+[UnificationFailure] cannot unify Int with [0: 1 1: 2 2: 3]

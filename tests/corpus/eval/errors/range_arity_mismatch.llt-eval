@@ -6,4 +6,4 @@
   in [range ...] at 1:1-1:8
 
 === warn
-expected 1 arguments, got 0 at 1:1-1:8
+[ArityMismatch] expected 1 arguments, got 0

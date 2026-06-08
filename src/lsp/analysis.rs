@@ -1445,7 +1445,7 @@ pub fn diagnostics_for(
                         let md_span = crate::literate::block_span_to_md(
                             &doc.literate_blocks,
                             block_idx,
-                            err.span,
+                            err.span().clone(),
                             source,
                         );
                         diag.range = llt_span_to_lsp_range(&md_span, source);
@@ -1537,7 +1537,7 @@ fn parse_error_to_diagnostic(err: &ParseError, source: &str) -> Diagnostic {
 }
 
 fn type_error_to_diagnostic(err: &TypeError, source: &str) -> Diagnostic {
-    let range = llt_span_to_lsp_range(&err.span, source);
+    let range = llt_span_to_lsp_range(err.span(), source);
 
     // TypeError carries one span (the annotation site), so related_information
     // is always None — the type checker does not yet track separate definition/use sites.
@@ -1547,7 +1547,7 @@ fn type_error_to_diagnostic(err: &TypeError, source: &str) -> Diagnostic {
         code: None,
         code_description: None,
         source: Some("tinct-typecheck".to_string()),
-        message: err.message.clone(),
+        message: err.message(),
         related_information: None,
         tags: None,
         data: None,

@@ -4,4 +4,4 @@
 Float(2)
 
 === warn
-undefined variable: builtin-sqrt at 1:2-1:14
+[UndefinedVariable] undefined variable: builtin-sqrt

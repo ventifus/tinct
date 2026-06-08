@@ -7,4 +7,4 @@
 Variant(Result.Error, String("undefined variable: parse-toml-lite (did you mean the string \"parse-toml-lite\"? Use quotes.)"))
 
 === warn
-undefined variable: parse-toml-lite at 3:14-3:29
+[UndefinedVariable] undefined variable: parse-toml-lite

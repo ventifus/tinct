@@ -4,4 +4,4 @@
 Bool(true)
 
 === warn
-undefined variable: builtin-nan? at 1:2-1:14
+[UndefinedVariable] undefined variable: builtin-nan?

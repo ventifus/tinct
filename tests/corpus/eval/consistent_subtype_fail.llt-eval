@@ -3,4 +3,4 @@
 Int(42)
 
 === warn
-cannot unify String with 42 at 1:10-1:12
+[UnificationFailure] cannot unify String with 42
