@@ -1,11 +1,11 @@
-# Nested match expressions
-# Tests that match can be nested and inner matches have access to outer bindings
+# Nested match expressions — 3-arg [case [let] literal body] for literal arms,
+# [case [let _] _ body] for wildcard fallback. Outer 1 → inner 2 → "inner-matched".
 [outer: 1
  result: [match $outer
-   [case 1
+   [case [let] 1
      [match 2
-       [case 2 "inner-matched"]
-       [case [let _] "inner-fallback"]]]
-   [case [let _] "outer-fallback"]]]
+       [case [let] 2 "inner-matched"]
+       [case [let _] _ "inner-fallback"]]]
+   [case [let _] _ "outer-fallback"]]]
 === out
 Dict({"outer": Int(1), "result": String("inner-matched")})

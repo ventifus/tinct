@@ -24,4 +24,4 @@
 Dict({"MyOk": Function(payload), "MyErr": Function(payload), "unwrap-ok": Function(r), "result": Int(42)})
 
 === warn
-[TypeError] non-exhaustive match: missing coverage for [Result2.MyErr _], [Result2.MyOk _]
+[UndefinedVariable] undefined variable: p

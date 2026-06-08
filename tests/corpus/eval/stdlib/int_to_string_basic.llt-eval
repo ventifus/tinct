@@ -1,0 +1,4 @@
+# int->string: convert a positive integer to its decimal string representation
+[int->string 42]
+=== out
+String("42")

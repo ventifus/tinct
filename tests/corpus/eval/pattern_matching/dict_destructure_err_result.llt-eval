@@ -1,6 +1,6 @@
 [match [err: "failure"]
-    [ok: v]:     v
-    [err: msg]:  msg
-    _:           "unknown"]
+  [case [let v]   [ok: v]   v]
+  [case [let msg] [err: msg] msg]
+  _:              "unknown"]
 === out
 String("failure")

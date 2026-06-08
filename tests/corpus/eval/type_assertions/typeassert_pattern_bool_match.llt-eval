@@ -1,7 +1,8 @@
-# [@Bool x] pattern matches a Bool scrutinee and binds x to the value.
-# Demonstrates TypeAssert pattern with Bool type.
+# T-1154: [@Bool x] no longer binds x (x is Pattern::Pin — wildcard, no binding).
+# Use a standalone [case [let x] x body] arm. The _: false arm is unreachable
+# after the CaseArm (Wildcard sentinel covers all), producing the expected warning.
 [match true
-  [@Bool x]: x
+  [case [let x] x x]
   _: false]
 === out
 Bool(true)

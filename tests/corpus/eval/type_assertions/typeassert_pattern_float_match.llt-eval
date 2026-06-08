@@ -1,7 +1,6 @@
-# [@Float x] pattern matches a Float scrutinee and binds x to the value.
-# Demonstrates TypeAssert pattern with Float type.
+# T-1154: [@Float x] no longer binds x (x is Pattern::Pin — wildcard, no binding).
+# Use a standalone [case [let x] x body] arm; x is bound to the scrutinee.
 [match 3.14
-  [@Float x]: x
-  _: -1.0]
+  [case [let x] x x]]
 === out
 Float(3.14)

@@ -1,7 +1,6 @@
-# Wildcard in case arm: [case [let _] body].
-# _ is bound as a variable name but unused. Acts as a catch-all arm.
-# Any scrutinee value matches and the body "matched" is returned.
+# Wildcard in case arm: [case [let _] _ body] — 3-arg form; _ in pattern is wildcard.
+# [let _] declares no bindings; _ as pattern always matches without binding anything.
 [match "hello"
-  [case [let _] "matched"]]
+  [case [let _] _ "matched"]]
 === out
 String("matched")

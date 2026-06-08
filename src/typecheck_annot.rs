@@ -3932,8 +3932,8 @@ fn collect_typenode_seq(seq_val: Value, ctx: &Arc<crate::eval::EvalContext>) -> 
 ///
 /// Returns `None` if the value cannot be recognized as a Type.
 ///
-/// **Coverage:** All structural TypeNode variants are handled: Union, Intersect, Record,
-/// Arrow, TypeConstructor, TypeApplication, TypeVar. TypeNode.Recursive and
+/// **Coverage:** All structural TypeNode variants are handled: Union, Intersect, Negation,
+/// Record, Arrow, TypeConstructor, TypeApplication, TypeVar. TypeNode.Recursive and
 /// TypeNode.RecursiveRef return `None` — they require the equirecursive CheckerType migration
 /// and are deferred to a future sprint.
 ///
@@ -3992,6 +3992,15 @@ fn typenode_value_to_type(val: &Value, ctx: &Arc<crate::eval::EvalContext>) -> O
                         return None; // Empty intersection is ill-formed — fall back to Unknown.
                     }
                     Some(Type::normalize_intersection(members))
+                }
+
+                // ── Negation ─────────────────────────────────────────────────────────
+                // TypeNode.Negation { inner: TypeNode } → Type::Negation(Box<Type>)
+                "TypeNode.Negation" => {
+                    let fields = variant_payload_dict(val, ctx)?;
+                    let inner_val = fields.get("inner")?.clone();
+                    let inner_type = typenode_value_to_type(&inner_val, ctx)?;
+                    Some(Type::Negation(Box::new(inner_type)))
                 }
 
                 // ── Record ───────────────────────────────────────────────────────────
@@ -4168,25 +4177,29 @@ fn typenode_value_to_type(val: &Value, ctx: &Arc<crate::eval::EvalContext>) -> O
 /// evaluating an annotation expression. Also callable directly when the function value is
 /// already in hand (e.g., an `as-type:` fn extracted from a constructor annotation).
 ///
-/// `state` is accepted for API consistency with future callers that will use it for level
-/// tracking once the equirecursive CheckerType migration is complete. Not used by the
-/// current implementation.
+/// `state` contains the user file's extended type-stage env (T-1175) when available. Used
+/// to provide the correct evaluation environment for type-stage function calls.
 pub(crate) fn eval_type_stage_value(
     fn_val: &Value,
     args: &[Value],
-    _state: &mut InferState,
+    state: &mut InferState,
 ) -> Result<Type, TypeError> {
     let origin_span = crate::ast::Span::origin();
 
     // Obtain the type-stage environment for building the EvalContext.
-    let type_stage_env = crate::imports::build_type_stage_env().ok_or_else(|| {
-        TypeErrorTyped::Generic(GenericTypeError {
-            message: "type-stage environment unavailable (bootstrap recursion guard fired)"
-                .to_string(),
-            span: origin_span.clone(),
-            notes: vec![],
-        })
-    })?;
+    // T-1175: Prefer the user file's extended type-stage env when available.
+    let type_stage_env = state
+        .type_stage_env
+        .clone()
+        .or_else(crate::imports::build_type_stage_env)
+        .ok_or_else(|| {
+            TypeErrorTyped::Generic(GenericTypeError {
+                message: "type-stage environment unavailable (bootstrap recursion guard fired)"
+                    .to_string(),
+                span: origin_span.clone(),
+                notes: vec![],
+            })
+        })?;
 
     // Build a minimal EvalContext backed by the type-stage environment.
     // AMBIENT-OK: type-stage evaluation performs no file I/O.
@@ -4326,14 +4339,22 @@ pub(crate) fn eval_type_stage_expr(
     let node_span = node.span.clone();
 
     // Obtain the type-stage environment.
-    let type_stage_env = crate::imports::build_type_stage_env().ok_or_else(|| {
-        TypeErrorTyped::Generic(GenericTypeError {
-            message: "type-stage environment unavailable (bootstrap recursion guard fired)"
-                .to_string(),
-            span: node_span.clone(),
-            notes: vec![],
-        })
-    })?;
+    // T-1175: Prefer the user file's extended type-stage env (from state.type_stage_env) when
+    // available, falling back to the prelude-only env from build_type_stage_env(). This allows
+    // user files to define type-stage functions in --- stage: type sections and use them in
+    // annotations in runtime sections.
+    let type_stage_env = state
+        .type_stage_env
+        .clone()
+        .or_else(crate::imports::build_type_stage_env)
+        .ok_or_else(|| {
+            TypeErrorTyped::Generic(GenericTypeError {
+                message: "type-stage environment unavailable (bootstrap recursion guard fired)"
+                    .to_string(),
+                span: node_span.clone(),
+                notes: vec![],
+            })
+        })?;
 
     // Build a minimal EvalContext backed by the type-stage environment.
     // AMBIENT-OK: type-stage evaluation performs no file I/O.
@@ -5167,7 +5188,7 @@ impl CheckerType {
             // ── Everything else — Unknown fallback ────────────────────────────
             // Covers: Number, Bytes, Top, Error, DirCap, NetCap, Uri, Timestamp,
             // Duration, ClockCap, Timezone, QuicSession, Http2Session, Http3Session,
-            // QuicDatagramHandle, DatagramHandle, Intersection, Negation, App, TyCon,
+            // QuicDatagramHandle, DatagramHandle, Intersection, App, TyCon,
             // Operator, TypeStageApp, NominalVariant, Proxy.
             // TODO(S-862): map remaining variants to their TypeNode equivalents.
             _ => Self::unit_variant("TypeNode.Unknown"),

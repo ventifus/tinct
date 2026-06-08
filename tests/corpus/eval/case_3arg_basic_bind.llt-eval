@@ -1,0 +1,8 @@
+# 3-arg [case [let bindings] pattern body] — simple name binding.
+# Pattern is `n` (a name in the binding set): binds the scrutinee to n.
+# Equivalent to the old [case [let n] ...] where n bound the full scrutinee.
+[match 42
+  [case [let n] n [+ n 1]]
+  [case [let _] _ 0]]
+=== out
+Int(43)

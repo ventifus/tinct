@@ -24,3 +24,4 @@
 === warn
 [UndefinedVariable] undefined variable: }
 [UnificationFailure] cannot unify Top with <error>
+[UndefinedVariable] undefined variable: v

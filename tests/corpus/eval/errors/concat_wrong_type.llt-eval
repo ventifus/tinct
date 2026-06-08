@@ -1,31 +1,31 @@
 # concat: error when first argument is not a sequence
 [concat 42 [1 2 3]]
 === error
-[E010] concat: expected Dict or Seq, got Int (defined at stdlib/prelude.llt:2456:98-2456:102) (called at stdlib/prelude.llt:2456:80-2456:106)
-  --> stdlib/prelude.llt:2456:98-2456:102
+[E010] concat: expected Dict or Seq, got Int (defined at stdlib/prelude.llt:2489:98-2489:102) (called at stdlib/prelude.llt:2489:80-2489:106)
+  --> stdlib/prelude.llt:2489:98-2489:102
    |
-  2456 | reduce@[doc: "Reduce collection with binary function"]: [fn [let f@Fn init xs] [builtin-reduce f init xs]]
+  2489 | reduce@[doc: "Reduce collection with binary function"]: [fn [let f@Fn init xs] [builtin-reduce f init xs]]
        |                                                                                                  ^^^^
   in reduce at 1:12-1:19
-  in in reduce at stdlib/prelude.llt:2456:80-2456:106
+  in in reduce at stdlib/prelude.llt:2489:80-2489:106
    |
-  2456 | reduce@[doc: "Reduce collection with binary function"]: [fn [let f@Fn init xs] [builtin-reduce f init xs]]
+  2489 | reduce@[doc: "Reduce collection with binary function"]: [fn [let f@Fn init xs] [builtin-reduce f init xs]]
        |                                                                                ^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in reduce at stdlib/prelude.llt:2456:80-2456:106
+  in reduce at stdlib/prelude.llt:2489:80-2489:106
    |
-  2456 | reduce@[doc: "Reduce collection with binary function"]: [fn [let f@Fn init xs] [builtin-reduce f init xs]]
+  2489 | reduce@[doc: "Reduce collection with binary function"]: [fn [let f@Fn init xs] [builtin-reduce f init xs]]
        |                                                                                ^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-reduce ...] at stdlib/prelude.llt:2456:80-2456:106
+  in [builtin-reduce ...] at stdlib/prelude.llt:2489:80-2489:106
    |
-  2456 | reduce@[doc: "Reduce collection with binary function"]: [fn [let f@Fn init xs] [builtin-reduce f init xs]]
+  2489 | reduce@[doc: "Reduce collection with binary function"]: [fn [let f@Fn init xs] [builtin-reduce f init xs]]
        |                                                                                ^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in materialized at stdlib/prelude.llt:2437:71-2437:89
+  in materialized at stdlib/prelude.llt:2470:71-2470:89
    |
-  2437 | if@[doc: "Conditional (select branch by condition)"]: [fn [let c t e] [builtin-if c t e]]
+  2470 | if@[doc: "Conditional (select branch by condition)"]: [fn [let c t e] [builtin-if c t e]]
        |                                                                       ^^^^^^^^^^^^^^^^^^
-  in [builtin-if ...] at stdlib/prelude.llt:2437:71-2437:89
+  in [builtin-if ...] at stdlib/prelude.llt:2470:71-2470:89
    |
-  2437 | if@[doc: "Conditional (select branch by condition)"]: [fn [let c t e] [builtin-if c t e]]
+  2470 | if@[doc: "Conditional (select branch by condition)"]: [fn [let c t e] [builtin-if c t e]]
        |                                                                       ^^^^^^^^^^^^^^^^^^
   in [concat ...] at 1:1-1:20
 

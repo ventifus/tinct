@@ -6,11 +6,11 @@
 
   circle-only: [fn [let s@Shape]
     [match s
-      [Circle c]: c
+      [case [let p] [Circle p] p.radius]
     ]
   ]
 
   result: 42
 ]
 === out
-non-exhaustive match: missing coverage for [Shape.Circle _], [Shape.Square _]
+inferred type is Unknown

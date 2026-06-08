@@ -7,3 +7,6 @@
     _:             "other"]
 === out
 String("other")
+
+=== warn
+[UndefinedVariable] undefined variable: v

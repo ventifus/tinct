@@ -4,7 +4,7 @@
 //! substitution and levels-based let-generalization (Kiselyov 2013).
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use crate::ast::Span;
 use crate::type_def::TyConDef;
@@ -197,6 +197,15 @@ pub struct InferState {
     /// TODO(T-1022): Refactor to explicit parameter threaded through resolve_annotation,
     /// resolve_type_expr, and resolve_type_dict instead of mutable state.
     pub type_params_scope: Option<std::collections::HashSet<String>>,
+    /// Type-stage evaluation environment extending the prelude type-stage env with user file's
+    /// type-stage sections. When `Some(env)`, `eval_type_stage_expr` uses this env instead of
+    /// calling `build_type_stage_env()` (which only returns prelude bindings). This allows user
+    /// files to define type-stage functions in `--- stage: type` sections and use them in
+    /// annotations in runtime sections (T-1175).
+    ///
+    /// Set by `typecheck_surface_program_with_env` after evaluating the file's type-stage
+    /// documents. `None` when type-stage env building fails or when no type-stage sections exist.
+    pub type_stage_env: Option<Arc<RwLock<crate::value::Environment>>>,
 }
 
 impl InferState {
@@ -713,6 +722,7 @@ impl InferState {
             type_annotation_table: crate::ast::TypeAnnotationTable::new(),
             expects_resolved: HashMap::new(),
             type_params_scope: None,
+            type_stage_env: None,
         }
     }
 

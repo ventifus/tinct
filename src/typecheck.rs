@@ -299,7 +299,7 @@ pub fn typecheck_surface_program(
     Vec<crate::error::TypeDiagnostic>,
 ) {
     let (errors, type_map, doc_map, scheme_map, diagnostics, _state, _env, _annotation_table) =
-        typecheck_surface_program_with_env(program, parent_env, true, false);
+        typecheck_surface_program_with_env(program, parent_env, true, false, None);
     // type_map is now populated during inference (enable_scheme_map=true path).
     (errors, type_map, doc_map, scheme_map, diagnostics)
 }
@@ -332,6 +332,7 @@ pub fn typecheck_surface_program_with_env(
     parent_env: Rc<TypeEnv>,
     enable_scheme_map: bool,
     in_prelude_load: bool,
+    resolution_table: Option<&std::sync::Arc<crate::ast::ResolutionTable>>,
 ) -> (
     Vec<TypeError>,
     TypeMap,
@@ -348,6 +349,13 @@ pub fn typecheck_surface_program_with_env(
     let mut state = InferState::new();
     // Seed with prelude instances so constraint checking works for dynamically registered classes.
     crate::imports::seed_infer_state_from_prelude_cache(&mut state);
+
+    // T-1175: Build user type-stage env by evaluating --- stage: type documents.
+    // This extends the prelude type-stage env with user-defined type-stage functions,
+    // allowing annotations in runtime documents to reference them.
+    if let Some(res_table) = resolution_table {
+        state.type_stage_env = crate::imports::build_user_type_stage_env(program, res_table);
+    }
 
     // B-345: Seed state.tycon_env from the parent TypeEnv so that [type ...] declarations
     // registered in previous type-check passes (e.g., earlier REPL turns) are visible
@@ -2148,7 +2156,7 @@ pub(crate) fn infer_surface_expr(
                         // Full type-dispatch narrowing is a future enhancement.
                         remaining_scrutinee.clone()
                     }
-                    Pattern::Wildcard | Pattern::Variable(_) => remaining_scrutinee.clone(),
+                    Pattern::Wildcard | Pattern::Pin(_) => remaining_scrutinee.clone(),
                     // T-1140: Predicate patterns — no static scrutinee narrowing.
                     // The predicate is opaque; we cannot determine what types it accepts.
                     Pattern::Predicate(_) => remaining_scrutinee.clone(),
@@ -2215,7 +2223,7 @@ pub(crate) fn infer_surface_expr(
                                 neg_tag,
                             ]);
                         }
-                        Pattern::Wildcard | Pattern::Variable(_) => {
+                        Pattern::Wildcard | Pattern::Pin(_) => {
                             remaining_scrutinee = Type::Never;
                         }
                         _ => {}
@@ -2410,8 +2418,17 @@ pub(crate) fn infer_surface_expr(
             })])
         }
 
-        SurfaceExpression::CaseArm { pattern, body } => {
-            typecheck_case_arm(pattern, body, &Type::Unknown, env, state, type_map)
+        SurfaceExpression::CaseArm {
+            let_bindings,
+            pattern,
+            body,
+        } => {
+            // For the 3-arg form, let_bindings is the [let ...] binding node and pattern
+            // is the structural pattern. typecheck_case_arm expects the binding list as its
+            // first argument. Pass let_bindings if present, otherwise fall back to pattern
+            // (legacy 2-arg form where pattern held the [let ...] node).
+            let binding_node = let_bindings.as_ref().unwrap_or(pattern);
+            typecheck_case_arm(binding_node, body, &Type::Unknown, env, state, type_map)
         }
 
         SurfaceExpression::Placeholder => {

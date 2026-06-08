@@ -1,6 +1,6 @@
-# Case arm body-phase dot access: the body expression (not the pattern) uses dot access.
-# The pattern is [let d: Dict] and the body is d.x — a dot access on the bound variable.
+# Case arm dot access: 3-arg form binds d to the scrutinee dict, accesses d.x in body.
+# binding_set = {"d"}; pattern `d` (in set) binds the whole scrutinee dict to d.
 [match [x: 1]
-  [case [let d: Dict] d.x]]
-=== error
-[E071] non-exhaustive match: no pattern matched the Dict value (defined at 2:1-3:28)
+  [case [let d] d d.x]]
+=== out
+Int(1)

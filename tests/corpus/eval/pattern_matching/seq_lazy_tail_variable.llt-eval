@@ -1,8 +1,9 @@
-# PM11: Seq tail bound to Variable should not be forced.
+# PM11: Seq tail must not be forced when the body only accesses the head.
 # The tail contains a raise — if the tail were forced eagerly, this would error.
-# Instead, the tail stays as a lazy thunk and the match body never touches it.
+# T-1154: [Seq h t] no longer binds h/t; use [Seq.Cons p] to bind the payload dict.
+# p.tail is never accessed in the body — the raise must not fire.
 [match [seq 1 [raise "tail must not be forced"]]
-    [Seq h t]:  h
-    _:          0]
+  [case [let p] [Seq.Cons p] p.head]
+  _:                         0]
 === out
 Int(1)

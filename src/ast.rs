@@ -162,8 +162,6 @@ impl std::fmt::Display for Param {
 pub enum Pattern {
     /// Wildcard pattern `_` — always matches
     Wildcard,
-    /// Variable binding pattern — lowercase bare word like `x` or `result`
-    Variable(String),
     /// Literal pattern — int, float, bool, or string literal
     Literal(LiteralPattern),
     /// Type tag pattern — uppercase bare word like `Int`, `Str`, `Dict`, `Seq`.
@@ -177,7 +175,14 @@ pub enum Pattern {
     ///
     /// Examples: `[match x Int: 1  Str: 2  _: 3]`
     TypeTag(String),
-    /// Pin pattern — `$name` matches against existing variable value
+    /// Pin pattern — bare lowercase name or `$name` in pattern position.
+    ///
+    /// T-1154: Previously, `$name` (escaped) was Pin and bare `name` was `Variable`.
+    /// Now both produce `Pin`. Semantics:
+    /// - If `name` is in scope: compare scrutinee against the scope value (equality check).
+    /// - If `name` is not in scope: act as wildcard (always match, no binding introduced).
+    ///
+    /// To bind a name in a match arm, use `[case [let name] pattern body]`.
     Pin(String),
     /// Dict pattern — matches dicts by key, binds matched values to pattern variables
     /// `rest: true` means open matching (extra keys allowed)
@@ -186,8 +191,8 @@ pub enum Pattern {
         fields: Vec<(String, Spanned<Pattern>)>,
         rest: bool,
     },
-    /// Seq pattern — matches Seq values, binds head and tail
-    /// `[seq h t]` desugars to `Seq { head: Pattern::Variable("h"), tail: Pattern::Variable("t") }`
+    /// Seq pattern — matches Seq values, pins or wildcards head and tail
+    /// `[seq h t]` desugars to `Seq { head: Pattern::Pin("h"), tail: Pattern::Pin("t") }`
     Seq {
         head: Box<Spanned<Pattern>>,
         tail: Box<Spanned<Pattern>>,
@@ -420,8 +425,16 @@ impl fmt::Display for SurfaceExpression {
                 }
                 write!(f, "]")
             }
-            SurfaceExpression::CaseArm { pattern, body } => {
-                write!(f, "[case {} {}]", pattern, body)
+            SurfaceExpression::CaseArm {
+                let_bindings,
+                pattern,
+                body,
+            } => {
+                if let Some(lb) = let_bindings {
+                    write!(f, "[case {} {} {}]", lb, pattern, body)
+                } else {
+                    write!(f, "[case {} {}]", pattern, body)
+                }
             }
             SurfaceExpression::Decl(decl) => {
                 // Delegate to SurfaceDeclaration Display.
@@ -508,10 +521,9 @@ impl fmt::Display for Pattern {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Pattern::Wildcard => write!(f, "_"),
-            Pattern::Variable(name) => write!(f, "{name}"),
             Pattern::Literal(lit) => write!(f, "{lit}"),
             Pattern::TypeTag(tag) => write!(f, "{tag}"),
-            Pattern::Pin(name) => write!(f, "${name}"),
+            Pattern::Pin(name) => write!(f, "{name}"),
             Pattern::TypeAssertPending { annotation, inner } => {
                 if let Some(inner) = inner {
                     write!(f, "[@{} {}]", annotation.node, inner.node)
@@ -711,6 +723,10 @@ pub enum SurfaceExpression {
         bindings: Vec<Arc<SurfaceNode>>,
     },
     CaseArm {
+        /// For 3-arg form `[case [let bindings] pattern body]`: the `[let ...]` node
+        /// declaring which names in `pattern` are binding targets vs. pin-comparisons.
+        /// `None` for the legacy 2-arg form `[case [let v: Ctor] body]`.
+        let_bindings: Option<Arc<SurfaceNode>>,
         pattern: Arc<SurfaceNode>,
         body: Arc<SurfaceNode>,
     },
@@ -1089,6 +1105,9 @@ pub enum CoreExpr {
         bindings: Vec<Spanned<CoreExpr>>,
     },
     CaseArm {
+        /// For 3-arg form: lowered `[let ...]` node declaring binding targets.
+        /// `None` for the legacy 2-arg form.
+        let_bindings: Option<Arc<Spanned<CoreExpr>>>,
         pattern: Arc<Spanned<CoreExpr>>,
         body: Arc<Spanned<CoreExpr>>,
     },

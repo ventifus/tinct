@@ -591,10 +591,18 @@ impl<'a> Formatter<'a> {
                 }
                 self.output.push(']');
             }
-            SurfaceExpression::CaseArm { pattern, body } => {
+            SurfaceExpression::CaseArm {
+                let_bindings,
+                pattern,
+                body,
+            } => {
                 self.output.push('[');
                 self.output.push_str("case");
                 self.output.push(' ');
+                if let Some(lb) = let_bindings {
+                    self.format_expr(lb, false);
+                    self.output.push(' ');
+                }
                 self.format_expr(pattern, false);
                 self.output.push(' ');
                 self.format_expr(body, false);
@@ -864,9 +872,23 @@ impl<'a> Formatter<'a> {
                 }
                 width + 1 // ]
             }
-            SurfaceExpression::CaseArm { pattern, body } => {
-                1 + 4 + 1 + self.measure_expr_width(pattern) + 1 + self.measure_expr_width(body) + 1
-                // [case <pattern> <body>]
+            SurfaceExpression::CaseArm {
+                let_bindings,
+                pattern,
+                body,
+            } => {
+                // [case <pattern> <body>] or [case <let_bindings> <pattern> <body>]
+                let lb_width = let_bindings
+                    .as_ref()
+                    .map(|lb| 1 + self.measure_expr_width(lb))
+                    .unwrap_or(0);
+                1 + 4
+                    + 1
+                    + lb_width
+                    + self.measure_expr_width(pattern)
+                    + 1
+                    + self.measure_expr_width(body)
+                    + 1
             }
             SurfaceExpression::Placeholder | SurfaceExpression::Decl(_) => 3, // ...
             SurfaceExpression::Rest(name) => 3 + name.as_ref().map_or(0, |n| n.len()),
@@ -881,9 +903,8 @@ impl<'a> Formatter<'a> {
         use crate::ast::{LiteralPattern, Pattern};
         match pattern {
             Pattern::Wildcard => 1,
-            Pattern::Variable(name) => name.len(),
             Pattern::TypeTag(tag) => tag.len(),
-            Pattern::Pin(name) => 1 + name.len(), // $name
+            Pattern::Pin(name) => name.len(), // bare name (T-1154)
             Pattern::TypeAssertPending { annotation, inner } => {
                 // [@Ann inner] or [@Ann] — 3 for "[@" + "]", annotation width, optional inner
                 let ann_width = format!("{}", annotation.node).len();
@@ -1275,10 +1296,10 @@ impl<'a> Formatter<'a> {
         use crate::ast::{LiteralPattern, Pattern};
         match &pattern.node {
             Pattern::Wildcard => self.output.push('_'),
-            Pattern::Variable(name) => self.output.push_str(name),
             Pattern::TypeTag(tag) => self.output.push_str(tag),
             Pattern::Pin(name) => {
-                self.output.push('$');
+                // T-1154: bare lowercase names in pattern position are now Pin.
+                // Display as the bare name (without $); this round-trips correctly.
                 self.output.push_str(name);
             }
             Pattern::Literal(lit) => match lit {

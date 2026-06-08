@@ -19,12 +19,12 @@
 # rooted at `$_`. Used by WRAP rules to detect when wrapping is needed.
 is-direct-underscore: [fn [let expr@Expression]
   [match expr
-    [Var name: "_" escaped: _ span: _]:
-      true
-    [DotAccess target: t field: _ span: _]:
-      [is-direct-underscore t]
-    [Pipe lhs: l rhs: _ span: _]:
-      [is-direct-underscore l]
+    [case [let _] [Var name: "_" escaped: _ span: _]
+      true]
+    [case [let t] [DotAccess target: t field: _ span: _]
+      [is-direct-underscore t]]
+    [case [let l] [Pipe lhs: l rhs: _ span: _]
+      [is-direct-underscore l]]
     _:
       false]]
 
@@ -60,25 +60,25 @@ try-wrap: [fn [let expr@Expression depth@Int]
     []  # No wrapping at depth > 0
     [match expr
       # WRAP-CALL: any arg (not func position) is DIRECT
-      [Call fn: _ args: a named: na implied: _ span: _]:
+      [case [let a na] [Call fn: _ args: a named: na implied: _ span: _]
         [if [or [has-direct-in-args a] [has-direct-in-named na]]
           [wrap-in-lambda expr]
-          []]
+          []]]
       # WRAP-DICT: any value (not key) is DIRECT
-      [Dict entries: es span: _]:
+      [case [let es] [Dict entries: es span: _]
         [if [has-direct-in-entries es]
           [wrap-in-lambda expr]
-          []]
+          []]]
       # WRAP-DOT: target is DIRECT
-      [DotAccess target: t field: _ span: _]:
+      [case [let t] [DotAccess target: t field: _ span: _]
         [if [is-direct-underscore t]
           [wrap-in-lambda expr]
-          []]
+          []]]
       # WRAP-PIPE: LHS is DIRECT
-      [Pipe lhs: l rhs: _ span: _]:
+      [case [let l] [Pipe lhs: l rhs: _ span: _]
         [if [is-direct-underscore l]
           [wrap-in-lambda expr]
-          []]
+          []]]
       # All other cases: no wrapping
       _:
         []]]]
@@ -100,8 +100,8 @@ desugar-expr-impl: [fn [let expr@Expression depth@Int]
   [if [not [= wrapped []]]
     # Wrapping occurred — recurse into the wrapped body at depth+1
     [match wrapped
-      [Fn params: ps body: b return-ann: ra desugared: d span: s]:
-        [Fn params: ps body: [desugar-expr-impl b [+ depth 1]] return-ann: ra desugared: d span: s]
+      [case [let ps b ra d s] [Fn params: ps body: b return-ann: ra desugared: d span: s]
+        [Fn params: ps body: [desugar-expr-impl b [+ depth 1]] return-ann: ra desugared: d span: s]]
       _: wrapped]  # Shouldn't happen, but defensive
     # No wrapping — recurse into children
     [desugar-children expr depth]]]
@@ -112,82 +112,82 @@ desugar-expr-impl: [fn [let expr@Expression depth@Int]
 desugar-children: [fn [let expr@Expression depth@Int]
   [match expr
     # Literals: no children
-    [IntLiteral value: _ span: _]: expr
-    [FloatLiteral value: _ span: _]: expr
-    [BoolLiteral value: _ span: _]: expr
-    [StrLiteral value: _ span: _]: expr
-    [Var name: _ escaped: _ span: _]: expr
-    [Rest name: _ span: _]: expr
-    [Placeholder span: _]: expr
-    [ExprError span: _]: expr
+    [case [let _] [IntLiteral value: _ span: _]   expr]
+    [case [let _] [FloatLiteral value: _ span: _] expr]
+    [case [let _] [BoolLiteral value: _ span: _]  expr]
+    [case [let _] [StrLiteral value: _ span: _]   expr]
+    [case [let _] [Var name: _ escaped: _ span: _] expr]
+    [case [let _] [Rest name: _ span: _]           expr]
+    [case [let _] [Placeholder span: _]            expr]
+    [case [let _] [ExprError span: _]              expr]
 
     # Access expressions: recurse into target
-    [DotAccess target: t field: f span: s]:
-      [DotAccess target: [desugar-expr-impl t depth] field: f span: s]
+    [case [let t f s] [DotAccess target: t field: f span: s]
+      [DotAccess target: [desugar-expr-impl t depth] field: f span: s]]
 
     # Pipe: recurse into both sides (pipe-to-call transformation is done in lower.rs)
-    [Pipe lhs: l rhs: r span: s]:
-      [Pipe lhs: [desugar-expr-impl l depth] rhs: [desugar-expr-impl r depth] span: s]
+    [case [let l r s] [Pipe lhs: l rhs: r span: s]
+      [Pipe lhs: [desugar-expr-impl l depth] rhs: [desugar-expr-impl r depth] span: s]]
 
     # Sequential: recurse into all expressions
-    [Sequential exprs: es span: s]:
-      [Sequential exprs: [map [fn [let e] [desugar-expr-impl e depth]] es] span: s]
+    [case [let es s] [Sequential exprs: es span: s]
+      [Sequential exprs: [map [fn [let e] [desugar-expr-impl e depth]] es] span: s]]
 
     # Dict: recurse into entries
-    [Dict entries: es span: s]:
-      [Dict entries: [map [fn [let e] [desugar-entry e depth]] es] span: s]
+    [case [let es s] [Dict entries: es span: s]
+      [Dict entries: [map [fn [let e] [desugar-entry e depth]] es] span: s]]
 
     # Call: recurse into func, args, named args
-    [Call fn: f args: a named: na implied: impl span: s]:
+    [case [let f a na impl s] [Call fn: f args: a named: na implied: impl span: s]
       [Call
         fn: [desugar-expr-impl f depth]
         args: [map [fn [let arg] [desugar-expr-impl arg depth]] a]
         named: [map [fn [let n] [desugar-named-arg n depth]] na]
         implied: impl
-        span: s]
+        span: s]]
 
     # Fn: increment depth if `_` is a parameter
-    [Fn params: ps body: b return-ann: ra desugared: d span: s]:
+    [case [let ps b ra d s] [Fn params: ps body: b return-ann: ra desugared: d span: s]
       [new-depth: [if [has-underscore-param ps] [+ depth 1] depth]]
       [Fn
         params: ps  # Parameter annotations desugaring skipped for simplicity
         body: [desugar-expr-impl b new-depth]
         return-ann: ra  # Return annotation desugaring skipped
         desugared: d
-        span: s]
+        span: s]]
 
     # TypeAssert: recurse into expression (annotation desugaring skipped)
-    [TypeAssert annotation: ann expr: e span: s]:
-      [TypeAssert annotation: ann expr: [desugar-expr-impl e depth] span: s]
+    [case [let ann e s] [TypeAssert annotation: ann expr: e span: s]
+      [TypeAssert annotation: ann expr: [desugar-expr-impl e depth] span: s]]
 
     # Annotated: no child expressions
-    [Annotated name: _ annotation: _ span: _]: expr
+    [case [let _] [Annotated name: _ annotation: _ span: _] expr]
 
     # Quote: DO NOT recurse (AST frozen)
-    [Quote expr: _ span: _]: expr
+    [case [let _] [Quote expr: _ span: _] expr]
 
     # Unquote and UnquoteSplice: DO recurse
-    [Unquote expr: e span: s]:
-      [Unquote expr: [desugar-expr-impl e depth] span: s]
-    [UnquoteSplice expr: e span: s]:
-      [UnquoteSplice expr: [desugar-expr-impl e depth] span: s]
+    [case [let e s] [Unquote expr: e span: s]
+      [Unquote expr: [desugar-expr-impl e depth] span: s]]
+    [case [let e s] [UnquoteSplice expr: e span: s]
+      [UnquoteSplice expr: [desugar-expr-impl e depth] span: s]]
 
     # Match: recurse into scrutinee and arm bodies
-    [Match scrutinee: scr arms: as span: s]:
+    [case [let scr as s] [Match scrutinee: scr arms: as span: s]
       [Match
         scrutinee: [desugar-expr-impl scr depth]
         arms: [map [fn [let a] [desugar-match-arm a depth]] as]
-        span: s]
+        span: s]]
 
     # Pattern/LetDecl: recurse into bindings
-    [PatternDecl bindings: bs span: s]:
-      [PatternDecl bindings: [map [fn [let b] [desugar-expr-impl b depth]] bs] span: s]
-    [LetDecl bindings: bs span: s]:
-      [LetDecl bindings: [map [fn [let b] [desugar-expr-impl b depth]] bs] span: s]
+    [case [let bs s] [PatternDecl bindings: bs span: s]
+      [PatternDecl bindings: [map [fn [let b] [desugar-expr-impl b depth]] bs] span: s]]
+    [case [let bs s] [LetDecl bindings: bs span: s]
+      [LetDecl bindings: [map [fn [let b] [desugar-expr-impl b depth]] bs] span: s]]
 
     # CaseArm: recurse into pattern and body
-    [CaseArm pattern: p body: b span: s]:
-      [CaseArm pattern: [desugar-expr-impl p depth] body: [desugar-expr-impl b depth] span: s]
+    [case [let p b s] [CaseArm pattern: p body: b span: s]
+      [CaseArm pattern: [desugar-expr-impl p depth] body: [desugar-expr-impl b depth] span: s]]
 
     # Catch-all for any variants not explicitly handled
     _: expr]]

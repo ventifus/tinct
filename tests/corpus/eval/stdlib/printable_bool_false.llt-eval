@@ -1,0 +1,4 @@
+# Printable instance for Bool: PrintableBool.print converts false to "false"
+[PrintableBool.print false]
+=== out
+String("false")

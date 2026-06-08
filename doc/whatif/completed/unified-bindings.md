@@ -35,7 +35,7 @@ A reader unfamiliar with tinct sees `[fn [a b c] body]` and can reasonably parse
 
 **Readable without foreknowledge.** `[fn [let x@Int y@Float] body]` is unambiguous to a reader who has never seen tinct: the `let` keyword signals binding declaration. `[fn [x@Int y@Float] body]` is not — it looks like calling `x@Int` as a function with arg `y@Float`.
 
-**Uniform match arms.** The `[case ...]` form makes match arm scoping explicit: `[case [let v: Ok] body]` has `v` clearly scoped to `body` — the same mechanism as `[fn [let x] body]`. Current match arms (`[Ok v]: body`) look like dict entries; the scoping of `v` to `body` is implicit.
+**Uniform match arms.** The `[case ...]` form makes match arm scoping explicit: `[case [let v] [Result.Ok v] body]` has `v` clearly declared in `[let v]` and scoped to `body` — the same mechanism as `[fn [let x] body]`. Current match arms (`[Ok v]: body`) look like dict entries; the scoping of `v` to `body` is implicit.
 
 **Referential transparency of binding positions.** Because `[let ...]` is always a binding list and other brackets are always expressions, tools can identify all binding sites by checking for `let` as the first element — without knowing which enclosing keyword they're inside.
 
@@ -48,15 +48,10 @@ A reader unfamiliar with tinct sees `[fn [a b c] body]` and can reasonably parse
 - `name` — bare lowercase identifier, introduces an untyped binding
 - `name@Type` — typed binding: name constrained to Type (type annotation, not structural test)
 - `_` — wildcard, matches anything, introduces no binding
-- `name: Constructor` — structural test: scrutinee must be this constructor; `name` binds to its payload. The `:` separates the binding name (left) from the structural constraint (right).
-- `name@Type: Constructor` — typed single-payload structural test: test Constructor tag, payload must be Type, bind to name. Example: `[let v@Int: Ok]` means "test Ok tag, payload must be Int, bind to v".
-- `[name₁ name₂ ...]: Constructor` — multi-payload structural test; bracket groups the payload bindings before `:`
-- `_: Constructor` — structural test with no payload binding
-- Nested: any binding pattern as the left-hand side of `:`
 
 `[let ...]` **never parses as an implied call**. The `let` keyword is in the reserved keyword set.
 
-The `:` separator reads as "from" or "extracted via": `v: Ok` = "v from Ok's payload." This is consistent with tinct's general `name: thing` pattern — the name is on the left, what it's associated with is on the right. The semantic distinction from dict entries: in `[let ...]`, `:` means structural extraction; outside `[let ...]`, `:` means dict key assignment. Both associate a name on the left with something on the right. The distinction is carried by the `[let ...]` binding context.
+Structural constructor tests (`name: Constructor`) are NOT part of the `[let ...]` element syntax. Instead, constructor testing and payload binding are expressed through the 3-argument `[case ...]` form: the `[let bindings]` declares which names are bound, and the separate `pattern` argument carries the constructor check. See the `[case ...]` section below.
 
 ### Function Parameters
 
@@ -133,84 +128,52 @@ All type patterns in instance arms are binding lists. Instance arms use `[let ..
 
 ### Match Arms — `[case ...]`
 
-The scoping problem with current constructor patterns: `[Ok v]: body` uses `v` as both a pattern variable and a name that must scope to `body` — but the pattern system handles this implicitly, making the scoping relationship invisible. The `[case ...]` form makes scoping explicit by putting `[let ...]` as the **first argument**, where its bindings naturally scope to everything that follows:
+The scoping problem with current constructor patterns: `[Ok v]: body` uses `v` as both a pattern variable and a name that must scope to `body` — but the pattern system handles this implicitly, making the scoping relationship invisible. The `[case ...]` form makes scoping explicit by separating binding declarations from pattern structure:
 
 ```tinct
-[match scrutinee
-  [case binding-pattern  body]
-  [case binding-pattern  body]
-  ...]
+[case [let bindings]  pattern  body]
 ```
 
-`binding-pattern` is either `[let ...]` (introduces new names) or a bare scalar/nullary expression (exact-value match, no new names):
+`[case ...]` takes **exactly 3 arguments**:
+
+1. **`[let bindings]`** — declares which names in `pattern` are binding targets. Names listed here are introduced into `body`'s scope. An empty `[let]` means no new bindings.
+2. **`pattern`** — the structural match expression. Dispatch depends on the head token:
+   - Uppercase or dot-access head (`[Result.Ok v]`, `[Constructor field: v]`) → structural match against a nominal variant; names in `[let]` bind payload fields
+   - Lowercase or operator head (`[> n 0]`, `[= n x]`) → guard expression, evaluated with all `[let]` names bound to the scrutinee
+   - `_` → wildcard, always matches
+3. **`body`** — evaluated when the arm matches, with `[let]` names in scope.
+
+**Binding-name rule:** A name appearing in `pattern` that is listed in `[let bindings]` is a fresh binding. A name in `pattern` NOT listed in `[let]` is a pin — looked up from the enclosing scope and compared.
 
 ```tinct
 [match result
-  [case [let v: Ok]   v]          # structural test Ok, bind payload to v
-  [case [let e: Err]  [log e]]    # structural test Err, bind payload to e
-  [case [let _]       0]]         # wildcard
+  [case [let v]  [Result.Ok v]   v]           # bind v to Ok's payload
+  [case [let e]  [Result.Err e]  [log e]]     # bind e to Err's payload
+  [case [let _]  _               0]]          # wildcard
 
 [match status
-  [case 200           "ok"]       # exact value — integer literal
-  [case 404           "missing"]
-  [case [let n@Int]   [str n]]]   # typed binding, no structural test
-```
+  [case [let]   200              "ok"]        # exact value — empty [let], no new bindings
+  [case [let]   404              "missing"]
+  [case [let n] n@Int            [str n]]]    # typed binding
 
-### Binding Patterns Inside `[let ...]` in `case`
-
-**Plain binding**:
-
-```tinct
-[let n]       # bind n to scrutinee
-[let n@Int]   # bind n, type constraint Int → n : scrutinee_ty ∩ Int
-[let _]       # wildcard
-```
-
-**Single-payload structural test** — binding name first, `:`, constructor:
-
-```tinct
-[let v: Ok]      # test Ok tag, v binds to Ok's payload
-[let v@Int: Ok]  # test Ok, payload must be Int, bind to v
-[let _: Ok]      # test Ok, discard payload
-```
-
-`[let v: None]` where `None` is a nullary constructor (no payload) is a **type error** — use `[let _: None]` to test a nullary constructor.
-
-The `@Type` annotation in `name@Type: Constructor` is a **compile-time type constraint** on the payload, not a runtime type test. The runtime only tests the constructor tag. In the arm body, `v : payload_type(Ok) ∩ Int`. If `payload_type(Ok) ∩ Int = Never` (e.g., Ok wraps a String), the type checker emits a dead-arm warning: "this arm can never match." The runtime never checks whether the payload is Int.
-
-**Multi-payload structural test** — bracket groups the payload bindings before `:`:
-
-```tinct
-[let [a b]: Pair]              # test Pair, a gets first component, b gets second
-[let [x@Float y@Float]: Pair]  # test Pair, both components must be Float
-[let [a _ c]: Triple]          # test Triple, bind first and third, discard second
-```
-
-This example was originally used to argue that the `:` form reads better than juxtaposition — purely visual, not a special semantic case. The binding list `[let ok: Ok  a  b  c: Something  de: SomethingElse]` has five entries, which would match a five-component tuple scrutinee positionally (same rule as instance arms: N elements = N components, one-to-one). For a single-value scrutinee, five elements is an arity mismatch → type error.
-
-**Nested structural patterns** — the left-hand side of `:` is itself a binding pattern:
-
-```tinct
-[let [[a b]: Pair]: Ok]    # test Ok; payload must be Pair; bind its components to a, b
-[let [v: Ok]: Some]        # test Some; payload must be Ok; bind Ok's payload to v
-[let [e: Err]: Some]       # test Some; payload must be Err; bind Err's payload to e
+[match value
+  [case [let n]  [> n 0]  "positive"]        # guard: lowercase head → guard expression
+  [case [let n]  [< n 0]  "negative"]
+  [case [let _]  _        "zero"]]           # wildcard fallback
 ```
 
 ### Exact-Value Matching
 
-When the first argument to `[case ...]` is NOT `[let ...]`, it is an exact-value match: the expression is evaluated from the enclosing scope and compared to the scrutinee via `values_equal`. This follows normal scoping rules — if the name is not in scope, it is an undefined variable error, not a silent fallback.
+When the `pattern` argument to `[case ...]` is a literal or a name evaluated from the enclosing scope, the arm compares it to the scrutinee via `values_equal`. Use an empty `[let]` for arms with no new bindings:
 
 ```tinct
-[case 42         body]   # literal
-[case "hello"    body]   # string literal
-[case None       body]   # evaluates None from scope; undefined if not imported
-[case sentinel   body]   # evaluates sentinel from scope; any casing valid
-[case MyVar      body]   # evaluates MyVar from scope; uppercase variable names work
+[case [let]  42         body]   # literal integer
+[case [let]  "hello"    body]   # string literal
+[case [let]  None       body]   # evaluates None from scope; undefined if not imported
+[case [let]  sentinel   body]   # evaluates sentinel from scope; any casing valid
 ```
 
-There is no case-convention disambiguation. Uppercase and lowercase names in exact-value position are treated identically — they are scope lookups. Whether a name refers to a constructor value or an ordinary variable depends only on what is in scope, not on its casing.
-
-**Type restriction**: exact-value matching is valid only for scalar types (Int, Float, Bool, Str) and nullary constructor values. The type checker rejects exact-value arms where the expression's type is non-scalar and non-nullary (e.g., a constructor function type like `String → Result` — use `[let v: Ok]` for non-nullary constructors).
+**Type restriction**: exact-value matching is valid only for scalar types (Int, Float, Bool, Str) and nullary constructor values. The type checker rejects exact-value arms where the expression's type is non-scalar and non-nullary (e.g., a constructor function type like `String → Result` — use `[case [let v] [Result.Ok v] body]` for non-nullary constructors).
 
 **`values_equal` for nullary variants**: `values_equal` is extended to compare `Value::Variant { payload: None }` by tag equality. Two nullary variant values are equal iff their tags match.
 
@@ -227,7 +190,7 @@ Multi-payload constructors pack their components into a single positional dict a
 [Triple a b c]     # runtime: Value::Variant { tag: "Triple", payload: Some(thunk([0: a  1: b  2: c])) }
 ```
 
-The bracket group `[a b]` in `[let [a b]: Pair]` destructures the positional dict payload: `a` binds to index 0, `b` binds to index 1. This reuses the existing positional dict pattern machinery.
+Multi-payload destructuring uses the `pattern` argument of `[case ...]`: the bound names in `[let a b]` receive the positional dict payload fields — `a` binds to index 0, `b` to index 1. This reuses the existing positional dict pattern machinery.
 
 Constructor declarations with multiple payloads specify the count:
 
@@ -247,44 +210,29 @@ Registry entries from [type Result [Ok a] [Err String]]:
   Err → payload: String    (concrete)
 ```
 
-When typing `[case [let v: Ok] body]` with scrutinee of type `Result String`:
+When typing `[case [let v] [Result.Ok v] body]` with scrutinee of type `Result String`:
 
 1. Narrow the scrutinee type to the Ok branch: `scrutinee_ty ∩ Ok@String`
 2. Look up Ok's payload type: `a` instantiated with `String` → `String`
 3. In `body`: `v : String`, scrutinee narrowed to `Ok@String`
 
-**Typing rules for binding patterns:**
+**Typing rules for `[let bindings]` elements:**
 
-| Pattern | Type of introduced names | Narrowed scrutinee in body |
-|---------|--------------------------|---------------------------|
+| `[let ...]` element | Type of introduced name | Narrowed scrutinee in body |
+|---------------------|-------------------------|---------------------------|
 | `[let n]` | `n : scrutinee_ty` | `scrutinee_ty` (unchanged) |
 | `[let n@T]` | `n : scrutinee_ty ∩ T` | `scrutinee_ty ∩ T` |
 | `[let _]` | (none) | `scrutinee_ty` |
-| `[let v: C]` | `v : domain(TypeEnv.lookup(C))` — the domain type of C's function type in scope | `scrutinee_ty ∩ C-tagged` |
-| `[let [v₁ v₂]: C]` | `v₁ : component_1_type, v₂ : component_2_type` | `scrutinee_ty ∩ C-tagged` |
-| `[let _: C]` / `[case C body]` | (none) | `scrutinee_ty ∩ C-tagged` |
 
-Constructor types are looked up from the local TypeEnv (scope-aware). `[let v: Ok]` fails with "undefined variable: Ok" if Ok is not in scope.
+Constructor narrowing is expressed through the `pattern` argument of `[case ...]`, not through `[let ...]` element syntax. When `pattern` has an uppercase/dot-access head (`[Result.Ok v]`), the type checker narrows the scrutinee to the constructor's tagged branch and types bound names from the constructor's payload type in the registry.
+
+Constructor types are looked up from the local TypeEnv (scope-aware). An undefined constructor name in the pattern is a type error.
 
 **`Unknown ∩ T` normalizes to `T`** (AGT, Garcia et al. 2016): intersection with the gradual type is identity. When the scrutinee type is `Unknown`, `[let n@Int]` gives `n : Int` (not `n : Int & ?`). `normalize_intersection` must implement this case alongside the existing `Top`-as-identity rule.
 
-**Multi-element `[let ...]` in case arms** — N elements in `[let ...]` match N components of the scrutinee positionally (same rule as instance arms: N elements = N class params, one-to-one). For a single-value scrutinee, only 1 element is valid. For a tuple scrutinee `[x y z]`, N elements match N components. Arity mismatch → type error. The type checker enforces that the element count equals the component count of the scrutinee's type.
+**Unknown constructor warning** — if a constructor name in the `pattern` is looked up and not found in scope, it is a type error ("undefined variable: X"), same as any undefined name. If found in scope but not a constructor type, it is a type error ("X is not a constructor type"). There is no silent Unknown fallback for constructor names.
 
-**Arity mismatch in multi-payload destructuring** — `[let [a b c]: Pair]` when `Pair` has 2 registered components is a **type error** ("pattern has 3 bindings but Pair has 2 components"), not a silent `Unknown` fallback. The TypeEnv knows the arity of registered constructors.
-
-**Unknown constructor warning** — if `Ok` is looked up and not found in scope, it is a type error ("undefined variable: Ok"), same as any undefined name. If found in scope but not a constructor type, it is a type error ("Ok is not a constructor type"). There is no silent Unknown fallback for constructor names.
-
-**Nested pattern typing** is compositional — the narrowed scrutinee type flows into the inner pattern recursively:
-
-```tinct
-[case [let [[x y]: Pair]: Ok] body]
-```
-
-1. Narrow to `Ok` branch: get Ok payload type = `Pair Float Float` (from registry, instantiated)
-2. Narrow payload to `Pair` branch: `x : Float`, `y : Float`
-3. In `body`: `x : Float`, `y : Float`
-
-**Unknown payload**: if the constructor's payload type cannot be determined (scrutinee type is `Unknown`, or the constructor is not in the registry), all payload bindings get type `Unknown`. This is sound under tinct's gradual typing model and does not prevent the arm from being used — it simply provides no static type information for the payload.
+**Unknown payload**: if the constructor's payload type cannot be determined (scrutinee type is `Unknown`, or the constructor is not in the registry), payload bindings get type `Unknown`. This is sound under tinct's gradual typing model and does not prevent the arm from being used — it simply provides no static type information for the payload.
 
 ### `[let ...]` Validity
 
@@ -293,19 +241,19 @@ Constructor types are looked up from the local TypeEnv (scope-aware). `[let v: O
 1. First expression inside `[fn ...]` (parameter list)
 2. First expression inside `[class ...]` (TypeVar list)
 3. First expression inside `[type ...]` when parameterized (alias params)
-4. First expression inside `[case ...]` (binding pattern)
+4. First expression inside `[case ...]` (binding name declarations)
 5. First expression inside `[instance ...]` arms followed by `:` (arm key)
 6. Value of `bind:` in `fn@[...]` metadata dict
 
 Anywhere else (e.g., `[f [let x y]]` — a `LetDecl` as a function call argument), the type checker produces: "binding declaration `[let ...]` is not valid in expression position."
 
-- Structural test patterns (`name: Constructor`) are valid ONLY in case arm position (`[case ...]`). In fn parameter position, they are a type error: "structural test patterns are only valid in case arms, not function parameters." In fn params, only `name`, `name@Type`, `_`, and `...rest@Type` bindings are valid.
+In fn params, only `name`, `name@Type`, `_`, and `...rest@Type` bindings are valid.
 
 ### Parsing Invariant
 
 The parser has two complete rules for brackets:
 
-> 1. A bracket starting with `let` is always a binding declaration list (`Expr::LetDecl`). Inside `[let ...]`, the implied-call rule is suspended. Binding patterns use `name`, `name@Type`, `_`, `name: Constructor`, `[names...]: Constructor`. The `:` token inside `[let ...]` is a structural-test separator, not a dict key separator. Nested `[...]` inside `[let ...]` is always a binding-pattern group, not an expression.
+> 1. A bracket starting with `let` is always a binding declaration list (`Expr::LetDecl`). Inside `[let ...]`, the implied-call rule is suspended. Binding patterns use `name`, `name@Type`, and `_`. The `:` token inside `[let ...]` is a parse error ("structural test syntax removed; use [case [let bindings] [Constructor v] body] form instead"). Nested `[...]` inside `[let ...]` is a binding-pattern group, not an expression.
 > 2. Every other bracket is always an expression — implied call, positional dict, keyed dict, or type assertion — determined by content and context as today.
 
 This is formally equivalent to having two syntactic sorts: *binding patterns* (introduced by `let`) and *expressions* (everything else). This is standard in multi-sorted abstract syntax (Harper, PFPL §1) and matches how ML and Haskell distinguish pattern positions from expression positions — the difference being that tinct's distinction is explicitly self-announced by the keyword rather than determined by enclosing context.
@@ -336,8 +284,8 @@ config: [host: "localhost"  port: ...]
 
 # Unreachable branch guard
 [match x
-  [case [let v: Ok]  v]
-  [case [let _: Err] ...]]   # should never execute
+  [case [let v]  [Result.Ok v]   v]
+  [case [let _]  [Result.Err _]  ...]]   # should never execute
 
 # Composes with laziness — no error until forced
 x: ...
@@ -363,7 +311,7 @@ config: [host: "localhost"  port: ...]   # port is required, not yet set
 port: [$get-or config.port 8080]
 ```
 
-`get-or: [fn [let val default] [match [$try val] [case [let v: Ok] v] [case [let _: Err] default]]]`
+`get-or: [fn [let val default] [match [$try val] [case [let v] [Result.Ok v] v] [case [let _] [Result.Err _] default]]]`
 
 The error kind is `ErrorKind::Unimplemented` — callers can distinguish `...` placeholders from other errors (network failure, parse error, etc.) when needed.
 
@@ -377,10 +325,6 @@ The error kind is `ErrorKind::Unimplemented` — callers can distinguish `...` p
 | `...` | Inside `[let ...]` | Placeholder binding — a binding that raises UnimplementedError when the bound name is forced. Used in `[fn [let x@Int ...] body]` to declare that some params are abstract/unimplemented. |
 
 The third form is unambiguous at the token level: `Token::Spread` not followed by `Token::Identifier` in value position → `Expr::Placeholder`.
-
-### Existing Match Shorthands
-
-The current match arm shorthands (`[Ok v]:`, `n@Int:`, `_:`) remain valid. They coexist with `[case ...]` arms. Migration to `[case ...]` is encouraged but not required.
 
 ## What Would Change
 
@@ -399,16 +343,19 @@ The current match arm shorthands (`[Ok v]:`, `n@Int:`, `_:`) remain valid. They 
 Expr::LetDecl {
     // Each element: one of:
     // - VarRef(name) — bare binding
-    // - Annotated(name, ann) — typed binding (name@Type) or structural test (name: Constructor)
+    // - Annotated(name, ann) — typed binding (name@Type)
     // - Wildcard — _
-    // - LetDecl { .. } — nested bracket group for multi-payload
     bindings: Vec<Spanned<Expr>>,
 }
 
 Expr::CaseArm {
-    // Either Expr::LetDecl (binding pattern) or any expression (exact-value match)
-    pattern: Box<Spanned<Expr>>,
-    body: Box<Spanned<Expr>>,
+    // 3-argument form: [case [let bindings] pattern body]
+    // let_bindings: always Expr::LetDecl; declares which names are bound
+    // pattern: the structural match expression (constructor, guard, wildcard, or literal)
+    // body: evaluated when arm matches, with let_bindings names in scope
+    let_bindings: Option<Arc<SurfaceNode>>,
+    pattern: Arc<SurfaceNode>,
+    body: Arc<SurfaceNode>,
 }
 
 Expr::Placeholder    // the ... expression; source span carried by Spanned<>
@@ -424,7 +371,7 @@ Expr::Placeholder    // the ... expression; source span carried by Spanned<>
 
 **`StackFrame::LetDecl`**: Pushed when `[let` is encountered. Collects binding-pattern entries. Inside this frame, `Token::OpenBracket` unconditionally pushes another `StackFrame::LetDecl` (the one context-sensitive dispatch rule: the inner bracket is always a binding group, never an expression). Closes to `Expr::LetDecl`.
 
-**`StackFrame::CaseDecl`**: Pushed when `[case` is encountered. Collects two expressions: first = pattern (`Expr::LetDecl` or exact-value expression), second = body. Closes to `Expr::CaseArm`.
+**`StackFrame::CaseDecl`**: Pushed when `[case` is encountered. Collects three expressions in order: first = `[let bindings]` (`Expr::LetDecl`), second = pattern, third = body. Closes to `Expr::CaseArm`. All three must be present; any missing argument is a parse error "case arm requires exactly 3 positional arguments: [let bindings] pattern body".
 
 **Per-frame updates:**
 
@@ -432,7 +379,7 @@ Expr::Placeholder    // the ... expression; source span carried by Spanned<>
 - `StackFrame::ClassDecl`: first expression must be `Expr::LetDecl`
 - `StackFrame::TypeAlias`: if first expression is `Expr::LetDecl`, it is the param list; otherwise it is the body (no-param alias)
 - `StackFrame::InstanceDecl`: `Expr::LetDecl` followed by `:` = arm key
-- `StackFrame::Match`: `Expr::CaseArm` = new-style arm; existing `pending_pattern_expr` path = legacy shorthands (both coexist)
+- `StackFrame::Match`: `Expr::CaseArm` = 3-arg case arm; existing `pending_pattern_expr` path = shorthand keyed arms (`[Tag v]:`, `n@Int:`, `_:`) which remain valid for non-binding arms
 
 **`Expr::Placeholder` parsing**: `Token::Spread` not followed by `Token::Identifier` in value expression position → `Expr::Placeholder`. This is a content-based dispatch rule (same as other expression classifiers); no new StackFrame needed.
 
@@ -528,7 +475,7 @@ The source span (carried in `Spanned<Expr::Placeholder>`) is stored in the thunk
 
 This proposal requires `[let ...]` uniformly at all binding positions. A future parse-stage macro system could introduce syntactic elision where it is safe and unambiguous — for example, `[fn [x@Int y@Float] body]` expanding to `[fn [let x@Int y@Float] body]` when the binding bracket contains no structural tests.
 
-Note that `[case [v: Ok] body]` and `[case [let v: Ok] body]` are semantically distinct (the former is an exact-value dict match; the latter is a structural constructor match), so any parse-stage elision for case arms must be semantics-aware. Parse-stage macros (which operate before AST construction) are the right mechanism for this, as they can inspect token streams and apply context-sensitive transformations before the parser assigns meaning to `:`.
+Note that `[case [let v] [Result.Ok v] body]` (3-arg structural match with explicit binding declaration) differs fundamentally from shorthand `[Result.Ok v]: body` (keyed arm) in that the binding scope is stated explicitly — any parse-stage elision for case arms must preserve the scoping semantics. Parse-stage macros (which operate before AST construction) are the right mechanism for this, as they can inspect token streams and apply context-sensitive transformations before the parser assigns structure.
 
 The hard `[let ...]` requirement here is intentional and load-bearing — it establishes the clean semantic model that parse-stage macros will later soften in specific, well-defined ways.
 

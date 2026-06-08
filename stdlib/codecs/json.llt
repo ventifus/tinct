@@ -128,9 +128,9 @@ to-json-pretty-primitive: [fn [let v depth@Int]
 
 to-json-pretty-impl: [fn [let v depth@Int]
   [match v
-    [Program  _]:   [json-program v]
-    [Document _]:   [json-document v]
-    [Expression _]: [json-expression v]
+    [case [let _] [Program]     [json-program v]]
+    [case [let _] [Document]    [json-document v]]
+    [case [let _] [Expression]  [json-expression v]]
     _:              [to-json-pretty-primitive v depth]]]
 
 # ---- Back to regular serializer helpers ----
@@ -139,8 +139,8 @@ json-annotation: [fn [let a@Annotation] [to-json a]]
 
 json-dotkey: [fn [let k@DotKey]
   [match k
-    [Ident s]: [json-variant "Ident" [v: s]]
-    [Index i]: [json-variant "Index" [v: i]]]]
+    [case [let s] [Ident s] [json-variant "Ident" [v: s]]]
+    [case [let i] [Index i] [json-variant "Index" [v: i]]]]]
 
 json-parameter: [fn [let p@Parameter]
   [to-json-dict
@@ -170,73 +170,75 @@ json-match-arm: [fn [let a@MatchArm]
 
 json-expression: [fn [let expr@Expression]
   [match expr
-    [IntLiteral   value: v  span: s]: [json-variant "IntLiteral"   [value: v  span: [json-span s]]]
-    [FloatLiteral value: v  span: s]: [json-variant "FloatLiteral" [value: v  span: [json-span s]]]
-    [BoolLiteral  value: v  span: s]: [json-variant "BoolLiteral"  [value: v  span: [json-span s]]]
-    [StrLiteral   value: v  span: s]: [json-variant "StrLiteral"   [value: v  span: [json-span s]]]
-    [Var name: n  escaped: e  span: s]:
-      [json-variant "Var" [name: n  escaped: e  span: [json-span s]]]
-    [DotAccess target: t  field: f  span: s]:
+    [case [let v s] [IntLiteral   value: v  span: s] [json-variant "IntLiteral"   [value: v  span: [json-span s]]]]
+    [case [let v s] [FloatLiteral value: v  span: s] [json-variant "FloatLiteral" [value: v  span: [json-span s]]]]
+    [case [let v s] [BoolLiteral  value: v  span: s] [json-variant "BoolLiteral"  [value: v  span: [json-span s]]]]
+    [case [let v s] [StrLiteral   value: v  span: s] [json-variant "StrLiteral"   [value: v  span: [json-span s]]]]
+    [case [let n e s] [Var name: n  escaped: e  span: s]
+      [json-variant "Var" [name: n  escaped: e  span: [json-span s]]]]
+    [case [let t f s] [DotAccess target: t  field: f  span: s]
       [json-variant "DotAccess"
-        [target: [json-expression t]  field: [json-dotkey f]  span: [json-span s]]]
-    [Pipe lhs: l  rhs: r  span: s]:
-      [json-variant "Pipe" [lhs: [json-expression l]  rhs: [json-expression r]  span: [json-span s]]]
-    [Sequential exprs: es  span: s]:
-      [json-variant "Sequential" [exprs: [to-json-seq [map json-expression es]]  span: [json-span s]]]
-    [Dict entries: es  span: s]:
-      [json-variant "Dict" [entries: [to-json-seq [map json-entry es]]  span: [json-span s]]]
-    [Call fn: f  args: a  named: na  implied: impl  span: s]:
+        [target: [json-expression t]  field: [json-dotkey f]  span: [json-span s]]]]
+    [case [let l r s] [Pipe lhs: l  rhs: r  span: s]
+      [json-variant "Pipe" [lhs: [json-expression l]  rhs: [json-expression r]  span: [json-span s]]]]
+    [case [let es s] [Sequential exprs: es  span: s]
+      [json-variant "Sequential" [exprs: [to-json-seq [map json-expression es]]  span: [json-span s]]]]
+    [case [let es s] [Dict entries: es  span: s]
+      [json-variant "Dict" [entries: [to-json-seq [map json-entry es]]  span: [json-span s]]]]
+    [case [let f a na impl s] [Call fn: f  args: a  named: na  implied: impl  span: s]
       [json-variant "Call"
         [fn: [json-expression f]  args: [to-json-seq [map json-expression a]]
-         named: [to-json-seq [map json-named-arg na]]  implied: impl  span: [json-span s]]]
-    [Fn params: ps  body: b  return-ann: ann  desugared: d  span: s]:
+         named: [to-json-seq [map json-named-arg na]]  implied: impl  span: [json-span s]]]]
+    [case [let ps b ann d s] [Fn params: ps  body: b  return-ann: ann  desugared: d  span: s]
       [json-variant "Fn"
         [params: [to-json-seq [map json-parameter ps]]  body: [json-expression b]
-         return-ann: [json-annotation ann]  desugared: d  span: [json-span s]]]
-    [TypeAssert annotation: ann  expr: e  span: s]:
-      [json-variant "TypeAssert" [annotation: [json-annotation ann]  expr: [json-expression e]  span: [json-span s]]]
-    [Annotated name: n  annotation: ann  span: s]:
-      [json-variant "Annotated" [name: n  annotation: [json-annotation ann]  span: [json-span s]]]
-    [Rest name: n  span: s]:
-      [json-variant "Rest" [name: n  span: [json-span s]]]
-    [Match scrutinee: e  arms: as  span: s]:
-      [json-variant "Match" [scrutinee: [json-expression e]  arms: [to-json-seq [map json-match-arm as]]  span: [json-span s]]]
-    [Quote         expr: e  span: s]: [json-variant "Quote"         [expr: [json-expression e]  span: [json-span s]]]
-    [Unquote       expr: e  span: s]: [json-variant "Unquote"       [expr: [json-expression e]  span: [json-span s]]]
-    [UnquoteSplice expr: e  span: s]: [json-variant "UnquoteSplice" [expr: [json-expression e]  span: [json-span s]]]
-    [PatternDecl bindings: bs  span: s]:
-      [json-variant "PatternDecl" [bindings: [to-json-seq [map json-expression bs]]  span: [json-span s]]]
-    [LetDecl     bindings: bs  span: s]:
-      [json-variant "LetDecl"     [bindings: [to-json-seq [map json-expression bs]]  span: [json-span s]]]
-    [CaseArm pattern: p  body: b  span: s]:
-      [json-variant "CaseArm" [pattern: [json-expression p]  body: [json-expression b]  span: [json-span s]]]
-    [Placeholder  span: s]: [json-variant "Placeholder" [span: [json-span s]]]
-    [ExprError    span: s]: [json-variant "ExprError"   [span: [json-span s]]]
+         return-ann: [json-annotation ann]  desugared: d  span: [json-span s]]]]
+    [case [let ann e s] [TypeAssert annotation: ann  expr: e  span: s]
+      [json-variant "TypeAssert" [annotation: [json-annotation ann]  expr: [json-expression e]  span: [json-span s]]]]
+    [case [let n ann s] [Annotated name: n  annotation: ann  span: s]
+      [json-variant "Annotated" [name: n  annotation: [json-annotation ann]  span: [json-span s]]]]
+    [case [let n s] [Rest name: n  span: s]
+      [json-variant "Rest" [name: n  span: [json-span s]]]]
+    [case [let e as s] [Match scrutinee: e  arms: as  span: s]
+      [json-variant "Match" [scrutinee: [json-expression e]  arms: [to-json-seq [map json-match-arm as]]  span: [json-span s]]]]
+    [case [let e s] [Quote         expr: e  span: s] [json-variant "Quote"         [expr: [json-expression e]  span: [json-span s]]]]
+    [case [let e s] [Unquote       expr: e  span: s] [json-variant "Unquote"       [expr: [json-expression e]  span: [json-span s]]]]
+    [case [let e s] [UnquoteSplice expr: e  span: s] [json-variant "UnquoteSplice" [expr: [json-expression e]  span: [json-span s]]]]
+    [case [let bs s] [PatternDecl bindings: bs  span: s]
+      [json-variant "PatternDecl" [bindings: [to-json-seq [map json-expression bs]]  span: [json-span s]]]]
+    [case [let bs s] [LetDecl     bindings: bs  span: s]
+      [json-variant "LetDecl"     [bindings: [to-json-seq [map json-expression bs]]  span: [json-span s]]]]
+    [case [let p b s] [CaseArm pattern: p  body: b  span: s]
+      [json-variant "CaseArm" [pattern: [json-expression p]  body: [json-expression b]  span: [json-span s]]]]
+    [case [let s] [Placeholder  span: s] [json-variant "Placeholder" [span: [json-span s]]]]
+    [case [let s] [ExprError    span: s] [json-variant "ExprError"   [span: [json-span s]]]]
     # MacroDecl, Splice, SyntaxClass are Declaration forms —
     # they appear in Document.declarations, not expressions. See json-declaration.
     ]]
 
 json-declaration: [fn [let d@Declaration]
   [match d
-    [TypeAlias params: ps  body: b]:
-      [json-variant "TypeAlias" [params: [to-json ps]  body: [json-expression b]]]
-    [ClassDecl name: n  params: ps  superclasses: sc  methods: ms
-               determines: ds  resolver: r  resolver-injective: ri]:
+    [case [let ps b] [TypeAlias params: ps  body: b]
+      [json-variant "TypeAlias" [params: [to-json ps]  body: [json-expression b]]]]
+    [case [let n ps sc ms ds r ri] [ClassDecl name: n  params: ps  superclasses: sc  methods: ms
+               determines: ds  resolver: r  resolver-injective: ri]
       [json-variant "ClassDecl"
-        [name: n  params: [to-json ps]  superclasses: [to-json sc]  resolver-injective: ri]]
-    [InstanceDecl class-name: cn  arms: as]:
-      [json-variant "InstanceDecl" [class-name: cn]]
-    [MacroDecl name: n  params: p  body: b]:
-      [json-variant "MacroDecl" [name: n  params: [json-expression p]  body: [json-expression b]]]
-    [Splice forms: fs]:
-      [json-variant "Splice" [forms: [to-json-seq [map json-expression fs]]]]
-    [SyntaxClass name: n  pattern: p  message: m]:
-      [json-variant "SyntaxClass" [name: n  pattern: [json-expression p]  message: m]]]]
+        [name: n  params: [to-json ps]  superclasses: [to-json sc]  resolver-injective: ri]]]
+    [case [let cn as] [InstanceDecl class-name: cn  arms: as]
+      [json-variant "InstanceDecl" [class-name: cn]]]
+    [case [let n p b] [MacroDecl name: n  params: p  body: b]
+      [json-variant "MacroDecl" [name: n  params: [json-expression p]  body: [json-expression b]]]]
+    [case [let fs] [Splice forms: fs]
+      [json-variant "Splice" [forms: [to-json-seq [map json-expression fs]]]]]
+    [case [let n p m] [SyntaxClass name: n  pattern: p  message: m]
+      [json-variant "SyntaxClass" [name: n  pattern: [json-expression p]  message: m]]]]]
 
 json-document: [fn [let d@Document]
   [to-json-dict
     [stage:        [match d.stage Runtime: "Runtime" Type: "Type"]
-     name:         [match d.name [Named n]: n  Unnamed: []]
+     name:         [match d.name
+                     [case [let n] [Named n] n]
+                     Unnamed: []]
      expressions:  [to-json-seq [map json-expression  d.expressions]]
      declarations: [to-json-seq [map json-declaration d.declarations]]]]]
 
@@ -529,9 +531,9 @@ Primitive types (Bool, Int, Float, String, Dict, Seq, null) serialize directly.
 Not every tinct type is serializable — Fn, Handle, Task, Channel etc. produce null."]:
   [fn [let v]
     [match v
-      [Program  _]:   [json-program v]
-      [Document _]:   [json-document v]
-      [Expression _]: [json-expression v]
+      [case [let _] [Program]     [json-program v]]
+      [case [let _] [Document]    [json-document v]]
+      [case [let _] [Expression]  [json-expression v]]
       _:              [to-json-primitive v]]]
 
 to-json-pretty@[doc: "Serialize any tinct value to a pretty-printed JSON string with 2-space indentation.

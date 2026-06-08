@@ -19,6 +19,10 @@ project_name := "tinct"
 # Propagate TIMEOUT env var to podman as --timeout=N (seconds), or omit if unset
 timeout_flag := if env_var_or_default("TIMEOUT", "") != "" { " --timeout=" + env_var_or_default("TIMEOUT", "") } else { "" }
 
+# Test recipes need longer timeouts (lib tests: ~2100 tests @ --test-threads=1 ≈ 960s).
+# Minimum 1200s regardless of caller's TIMEOUT.
+test_timeout_flag := " --timeout=" + env_var_or_default("TEST_TIMEOUT", "1200")
+
 # Container memory limit applied via --memory.
 # Also used to compute tinct's --max-memory (RLIMIT_AS) at 95% of this value.
 container_memory := "10g"
@@ -32,6 +36,7 @@ tinct_max_memory := "10200547328"
 # target/ is a bind mount so binaries land on the host (symlinkable from ~/.local/bin)
 # cargo registry cache stays a named volume — no need to expose it on the host
 run_flags := "--rm --memory " + container_memory + timeout_flag + " -v .:/workspace:z -v ./target:/workspace/target:z -v " + project_name + "-cargo:/usr/local/cargo/registry -w /workspace"
+test_run_flags := "--rm --memory " + container_memory + test_timeout_flag + " -v .:/workspace:z -v ./target:/workspace/target:z -v " + project_name + "-cargo:/usr/local/cargo/registry -w /workspace"
 
 # Default recipe - show available commands
 default:
@@ -55,11 +60,11 @@ build-release:
 # followed by corpus integration tests, CLI integration tests, and LSP corpus tests, in separate containers.
 # --test-threads=1 serializes deep-eval tests (each 128MB unnamed thread) so only one runs at a time.
 test: build-release
-    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 -e RUSTFLAGS="-D warnings" {{rust_image}} cargo test --lib -- --test-threads=1
-    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 -e RUSTFLAGS="-D warnings" {{rust_image}} cargo test --test corpus_tests -- --test-threads=1
-    {{container}} run {{run_flags}} -e RUSTFLAGS="-D warnings" {{rust_image}} cargo test --test cli_tests
-    {{container}} run {{run_flags}} -e RUSTFLAGS="-D warnings" {{rust_image}} cargo test --test integration_async
-    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 -e RUSTFLAGS="-D warnings" {{rust_image}} cargo test --features lsp --test lsp_corpus_tests -- --test-threads=1
+    {{container}} run {{test_run_flags}} -e RUST_MIN_STACK=67108864 -e RUSTFLAGS="-D warnings" {{rust_image}} cargo test --lib -- --test-threads=1 --quiet
+    {{container}} run {{test_run_flags}} -e RUST_MIN_STACK=67108864 -e RUSTFLAGS="-D warnings" {{rust_image}} cargo test --test corpus_tests -- --test-threads=1 --quiet
+    {{container}} run {{run_flags}} -e RUSTFLAGS="-D warnings" {{rust_image}} cargo test --test cli_tests -- --quiet
+    {{container}} run {{run_flags}} -e RUSTFLAGS="-D warnings" {{rust_image}} cargo test --test integration_async -- --quiet
+    {{container}} run {{test_run_flags}} -e RUST_MIN_STACK=67108864 -e RUSTFLAGS="-D warnings" {{rust_image}} cargo test --features lsp --test lsp_corpus_tests -- --test-threads=1 --quiet
 
 # Run a specific test
 test-one TEST:
@@ -69,15 +74,15 @@ test-one TEST:
 # Run only lib unit tests (no integration tests)
 # --test-threads=1 prevents OOM from parallel stdlib cache accumulation (same as `just test`)
 test-lib:
-    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 -e RUSTFLAGS="-D warnings" {{rust_image}} cargo test --lib -- --test-threads=1
+    {{container}} run {{test_run_flags}} -e RUST_MIN_STACK=67108864 -e RUSTFLAGS="-D warnings" {{rust_image}} cargo test --lib -- --test-threads=1 --quiet
 
 # Run lib tests and show only failures + summary lines
 test-lib-summary:
-    -{{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 -e RUSTFLAGS="-D warnings" {{rust_image}} sh -c "cargo test --lib -- --test-threads=1 2>&1 | grep -E 'FAILED|test result:|failures:'"
+    -{{container}} run {{test_run_flags}} -e RUST_MIN_STACK=67108864 -e RUSTFLAGS="-D warnings" {{rust_image}} sh -c "cargo test --lib -- --test-threads=1 2>&1 | grep -E 'FAILED|test result:|failures:'"
 
 # Run corpus tests and show only failures + summary lines
 test-corpus-summary:
-    -{{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 -e RUSTFLAGS="-D warnings" {{rust_image}} sh -c "cargo test --test corpus_tests -- --test-threads=1 2>&1 | grep -E 'FAILED|test result:|failures:'"
+    -{{container}} run {{test_run_flags}} -e RUST_MIN_STACK=67108864 -e RUSTFLAGS="-D warnings" {{rust_image}} sh -c "cargo test --test corpus_tests -- --test-threads=1 2>&1 | grep -E 'FAILED|test result:|failures:'"
 
 # Run CLI tests and show only failures + summary lines
 test-cli-summary:
@@ -90,12 +95,12 @@ test-lsp-summary:
 
 # Run only corpus tests (NOTE: does not include LSP corpus tests — use `just test-lsp` for those)
 test-corpus:
-    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo test --test corpus_tests
+    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo test --test corpus_tests -- --quiet
 
 # Run slow TCO tests (10,000-iteration loops, excluded from default `just test`).
 # Use this to verify tail-call optimization handles large iteration counts.
 test-slow:
-    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 -e RUSTFLAGS="-D warnings" {{rust_image}} cargo test --test corpus_tests -- test_eval_corpus_slow --include-ignored --test-threads=1
+    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 -e RUSTFLAGS="-D warnings" {{rust_image}} cargo test --test corpus_tests -- test_eval_corpus_slow --include-ignored --test-threads=1 --quiet
 
 # Update corpus test expected outputs to match actual evaluator output.
 # Usage:
@@ -132,7 +137,7 @@ update-corpus *ARGS:
 
 # Run only LSP corpus tests (requires --features lsp)
 test-lsp:
-    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo test --features lsp --test lsp_corpus_tests -- --test-threads=1
+    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo test --features lsp --test lsp_corpus_tests -- --test-threads=1 --quiet
 
 # Run all lint checks. Always runs every check regardless of failures; exits non-zero if any failed.
 lint:

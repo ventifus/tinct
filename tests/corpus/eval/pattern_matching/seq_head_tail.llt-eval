@@ -1,6 +1,8 @@
-# Seq pattern: match head and tail
+# Seq pattern: match head and tail.
+# T-1154: [Seq h t] no longer binds h/t (both are Pattern::Pin — wildcard, no binding).
+# Use [case [let p] [Seq.Cons p] p.head] to bind the payload dict and access head.
 [match [seq 1 [seq 2 [seq 3 []]]]
-    [Seq h t]:  h
-    _:          0]
+  [case [let p] [Seq.Cons p] p.head]
+  _:                         0]
 === out
 Int(1)

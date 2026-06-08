@@ -9,39 +9,29 @@
 [include %libdir "crypto.llt"]   # provides HkdfHash, Sha256, Sha384, Sha512, Blake2s
 
 [instance@[bind: [h]] [ByteStream [TlsConnection h]]
-  read-bytes:  tls-read-bytes
-  write-bytes: tls-write-bytes]
+  read:  tls-read-bytes
+  write: tls-write-bytes]
 
 # ── Internal. ────────────────────────────────────────────────────────────────────────────────────
 
 [
-  int->ct: [fn [let n@Int]
-    [match n 20: ContentType.ChangeCipherSpec  21: ContentType.Alert
-               22: ContentType.Handshake       23: ContentType.ApplicationData
-               _:  [error [str "TLS: unknown content type: " n]]]]
-
-  ct->int: [fn [let ct@ContentType]
-    [match ct
-      [ContentType.ChangeCipherSpec]: 20  [ContentType.Alert]: 21
-      [ContentType.Handshake]:        22  [ContentType.ApplicationData]: 23]]
-
   read-tls-record: [fn@[bind: [h]  constraint: [h: ByteStream]] [let h@h]
-    [header: [read-bytes h 5]]
-    [len: [uint16 BigEndian [slice header 3 5]]]    # RFC 8446 §5.2: 16-bit length
+    [header: [read h 5]]
+    [len: [@TlsLength [uint16 NetworkEndian [slice header 3 5]]]]  # RFC 8446 §5.2: 16-bit length
     [if [> len 16640] [error [str "TLS: record too large: " len]] null]
-    [TlsRecord [content-type: [int->ct [get header 0]]  payload: [read-bytes h len]]]]
+    [TlsRecord [content-type: [or [get code: [get header 0] ContentType] [error [str "TLS: unknown content type: " [get header 0]]]]  payload: [read h len]]]]
 
   write-tls-record: [fn@[bind: [h]  constraint: [h: ByteStream]] [let h@h r@TlsRecord]
-    [len: [length r.payload]]
-    [write-bytes h
+    [len: [@TlsLength [length r.payload]]]
+    [write h
       [concat
-        [bytes BigEndian [@UInt8 [ct->int r.content-type]]]
+        [bytes NetworkEndian [@UInt8 r.content-type.code]]
         [0x03 0x03]
-        [bytes BigEndian [@UInt16 len]]
+        [bytes NetworkEndian len]   # TlsLength (NetworkEndian)
         r.payload]]]
 
   tls-nonce: [fn [let iv@[Bytes 12] seq@Int]
-    [bytes-xor iv [concat [0x00 0x00 0x00 0x00] [bytes BigEndian [@UInt64 seq]]]]]
+    [bytes-xor iv [concat [0x00 0x00 0x00 0x00] [bytes NetworkEndian [@UInt64 seq]]]]]
 
   # aad: RFC 8446 §5.2 additional data = 5-byte TLSCiphertext header.
   # Must be 0x17 0x03 0x03 || ciphertext-length(2). Passed explicitly so both
@@ -62,8 +52,8 @@
 
   # aad = 0x17 0x03 0x03 || ciphertext-length(2).
   # Ciphertext length = inner-plaintext length + 16 (AEAD tag). Known before encrypt.
-  tls-record-aad: [fn [let ct-len@Int]
-    [concat [0x17] [0x03 0x03] [bytes BigEndian [@UInt16 ct-len]]]]
+  tls-record-aad: [fn [let ct-len@TlsLength]
+    [concat [0x17] [0x03 0x03] [bytes NetworkEndian ct-len]]]  # TlsLength (NetworkEndian)
 
   tls-write-record: [fn [let conn@TlsConnection ct@ContentType plain@Bytes]
     # write-seq channel holds exactly one value (atomic counter). Closed.Closed is impossible.
@@ -71,8 +61,8 @@
       [Closed.Closed]: [error "TLS: write-seq channel closed unexpectedly"]
       [Result.Ok seq]:
         [send conn.write-seq [+ seq 1]]
-        [inner:  [concat plain [bytes [ct->int ct]]]]    # inner = data || content-type byte
-        [ct-len: [+ [length inner] 16]]                  # ciphertext = inner + 16-byte tag
+        [inner:  [concat plain [bytes ct.code]]]              # inner = data || content-type byte
+        [ct-len: [@TlsLength [+ [length inner] 16]]]          # ciphertext = inner + 16-byte tag
         [aad:    [tls-record-aad ct-len]]
         [ciphertext: [tls-seal conn inner [tls-nonce conn.write-iv seq] aad]]
         [write-tls-record conn.underlying
@@ -87,7 +77,7 @@
       [Closed.Closed]: [error "TLS: read-seq channel closed unexpectedly"]
       [Result.Ok seq]:
         [send conn.read-seq [+ seq 1]]
-        [aad: [tls-record-aad [length record.payload]]]  # ciphertext length is payload length
+        [aad: [tls-record-aad [@TlsLength [length record.payload]]]]  # ciphertext length is payload length
         [plain: [tls-open conn record.payload [tls-nonce conn.read-iv seq] aad]]
         [strip-inner-ct plain]]]
 
@@ -104,16 +94,17 @@
   tls-read-acc: [fn [let conn@TlsConnection remaining@Int acc@[Seq Bytes]]
     [if [= remaining 0]
       [reduce concat [] acc]
-      [plain: [tls-decrypt-conn-record conn [read-tls-record conn.underlying]]]
-      [got:   [min remaining [length plain]]]
-      [tls-read-acc conn [- remaining got] [append [list [slice 0 got plain]] acc]]]]
+      [block
+        [plain: [tls-decrypt-conn-record conn [read-tls-record conn.underlying]]]
+        [got:   [min remaining [length plain]]]
+        [tls-read-acc conn [- remaining got] [append [list [slice 0 got plain]] acc]]]]]
 
   init-seq-ch: [fn []
     [ch: [channel 1]]
     [send ch 0]
     ch]
 
-  new-conn: [fn [let h@Handle wk@[Bytes 32] rk@[Bytes 32] wi@[Bytes 12] ri@[Bytes 12] c@CipherSuite sni]
+  new-conn: [fn [let h@Handle wk@[Bytes 32] rk@[Bytes 32] wi@[Bytes 12] ri@[Bytes 12] c@CipherSuite sni alpn@[or String Absent]]
     [TlsConnection
       [underlying: h
        write-key: wk  write-iv: wi
@@ -121,12 +112,13 @@
        cipher:    c
        write-seq: [init-seq-ch]
        read-seq:  [init-seq-ch]
-       sni:       sni]]]
+       sni:       sni
+       negotiated-alpn: alpn]]]
 
   encode-hs: [fn [let type@Int body@Bytes]
     [len: [length body]]
-    [concat [bytes BigEndian [@UInt8 type]]
-            [bytes BigEndian [@UInt24 len]]
+    [concat [bytes NetworkEndian [@UInt8 type]]
+            [bytes NetworkEndian [@UInt24 len]]
             body]]
 
   parse-finished:    [fn [let payload@Bytes] [slice 4 32 payload]]
@@ -157,16 +149,16 @@
     [random:     [slice payload 2 34]]
     [sid-len:    [get payload 34]]
     [after-sid:  [+ 35 sid-len]]
-    [cs-len:     [uint16 BigEndian [slice payload after-sid [+ after-sid 2]]]]
+    [cs-len:     [uint16 NetworkEndian [slice payload after-sid [+ after-sid 2]]]]
     [cs-start:   [+ after-sid 2]]
     [after-cs:   [+ cs-start cs-len]]
     # compression(1+1), then extensions(2+N)
     [ext-start:  [+ after-cs 2]]
-    [ext-len:    [uint16 BigEndian [slice payload ext-start [+ ext-start 2]]]]
+    [ext-len:    [uint16 NetworkEndian [slice payload ext-start [+ ext-start 2]]]]
     [random: random
      session-id: [slice payload 35 [+ 35 sid-len]]
      cipher-suites: [collect [map [fn [let i]
-       [uint16 BigEndian [slice payload [+ cs-start (* i 2)] [+ cs-start (* i 2) 2]]]]
+       [uint16 NetworkEndian [slice payload [+ cs-start [* i 2]] [+ cs-start [* i 2] 2]]]]
        [range 0 [/ cs-len 2]]]]
      extensions: [slice payload [+ ext-start 2] [+ ext-start 2 ext-len]]]]
 
@@ -177,9 +169,9 @@
     [random:    [slice payload 2 34]]
     [sid-len:   [get payload 34]]
     [after-sid: [+ 35 sid-len]]
-    [cs:        [uint16 BigEndian [slice payload after-sid [+ after-sid 2]]]]
+    [cs:        [uint16 NetworkEndian [slice payload after-sid [+ after-sid 2]]]]
     [ext-off:   [+ after-sid 3]]  # skip cipher_suite(2) + compression(1)
-    [ext-len:   [uint16 BigEndian [slice payload ext-off [+ ext-off 2]]]]
+    [ext-len:   [uint16 NetworkEndian [slice payload ext-off [+ ext-off 2]]]]
     [random: random
      cipher-suite: cs
      extensions: [slice payload [+ ext-off 2] [+ ext-off 2 ext-len]]]]
@@ -189,34 +181,60 @@
   parse-certificate: [fn [let payload@Bytes]
     [ctx-len: [get payload 0]]
     [after-ctx: [+ 1 ctx-len]]
-    [list-len: [uint24 BigEndian [slice payload after-ctx [+ after-ctx 3]]]]
-    [let parse-certs [fn [offset acc]
+    [list-len: [uint24 NetworkEndian [slice payload after-ctx [+ after-ctx 3]]]]
+    [parse-certs: [fn [let offset acc]
       [if [>= offset [+ after-ctx 3 list-len]]
         acc
-        [cert-len: [uint24 BigEndian [slice payload offset [+ offset 3]]]]
-        [cert: [slice payload [+ offset 3] [+ offset 3 cert-len]]]
-        [ext-off: [+ offset 3 cert-len]]
-        [ext-len: [uint16 BigEndian [slice payload ext-off [+ ext-off 2]]]]
-        [parse-certs [+ ext-off 2 ext-len] [append acc [list cert]]]]]]
+        [block
+          [cert-len: [uint24 NetworkEndian [slice payload offset [+ offset 3]]]]
+          [cert: [slice payload [+ offset 3] [+ offset 3 cert-len]]]
+          [ext-off: [+ offset 3 cert-len]]
+          [ext-len: [uint16 NetworkEndian [slice payload ext-off [+ ext-off 2]]]]
+          [parse-certs [+ ext-off 2 ext-len] [append acc [list cert]]]]]]]
     [parse-certs [+ after-ctx 3] []]]
 
   # RFC 8446 §4.4.3: CertificateVerify = algorithm(2) + signature(2+N).
   # Returns record with fields: algorithm signature
   parse-certificate-verify-sig: [fn [let payload@Bytes]
-    [alg: [uint16 BigEndian [slice payload 0 2]]]
-    [sig-len: [uint16 BigEndian [slice payload 2 4]]]
+    [alg: [uint16 NetworkEndian [slice payload 0 2]]]
+    [sig-len: [uint16 NetworkEndian [slice payload 2 4]]]
     [algorithm: alg  signature: [slice payload 4 [+ 4 sig-len]]]]
+
+  # Parse ALPN extension from EncryptedExtensions payload.
+  # RFC 8446 §4.3.1: EncryptedExtensions = extensions(2+N).
+  # ALPN extension (0x0010): list-len(2) + protocol-len(1) + protocol-bytes.
+  # Returns the selected protocol string or Absent if ALPN was not negotiated.
+  parse-ee-alpn: [fn [let ee-payload@Bytes]
+    # ee-payload starts at offset 4 (after handshake type + length header)
+    [ext-len: [uint16 NetworkEndian [slice ee-payload 4 6]]]
+    [if [= ext-len 0]
+      Absent.Absent
+      [find-alpn-ext: [fn [let exts pos limit]
+        [if [>= pos limit]
+          Absent.Absent
+          [block
+            [ext-type: [uint16 NetworkEndian [slice exts pos [+ pos 2]]]]
+            [ext-val-len: [uint16 NetworkEndian [slice exts [+ pos 2] [+ pos 4]]]]
+            [if [= ext-type 0x0010]
+              # ALPN extension found: list-len(2) + protocol-len(1) + protocol-bytes
+              [block
+                [list-len: [uint16 NetworkEndian [slice exts [+ pos 4] [+ pos 6]]]]
+                [proto-len: [get exts [+ pos 6]]]
+                [bytes-str [slice exts [+ pos 7] [+ pos 7 proto-len]]]]
+              [find-alpn-ext exts [+ pos 4 ext-val-len] limit]]]]]
+       [find-alpn-ext ee-payload 6 [+ 6 ext-len]]]]]
+
   encode-encrypted-extensions: [fn [let alpn@[or String Absent]] [encode-hs 8 []]]
-  encode-certificate:          [fn [let cert@Bytes] [encode-hs 11 [concat [0x00] [bytes BigEndian [@UInt16 [+ [length cert] 5]]] [bytes BigEndian [@UInt32 [length cert]]] cert [bytes BigEndian [@UInt16 0]]]]]
-  encode-certificate-verify:   [fn [let sig@Bytes]  [encode-hs 15 [concat [0x08 0x04] [bytes BigEndian [@UInt16 [length sig]]] sig]]]
+  encode-certificate:          [fn [let cert@Bytes] [encode-hs 11 [concat [0x00] [bytes NetworkEndian [@UInt16 [+ [length cert] 5]]] [bytes NetworkEndian [@UInt32 [length cert]]] cert [bytes NetworkEndian [@UInt16 0]]]]]
+  encode-certificate-verify:   [fn [let sig@Bytes]  [encode-hs 15 [concat [0x08 0x04] [bytes NetworkEndian [@UInt16 [length sig]]] sig]]]
   negotiate-alpn: [fn [let client-alpn@[Seq String] server-alpn@[Seq String]]
     [match [filter [fn [let p] [any? [fn [let s] [= p s]] server-alpn]] client-alpn]
       []: null
       [let [first ...rest]]: first]]
   choose-cipher: [fn [let suites@[Seq Int] cfg@TlsServerConfig]
     # Prefer ChaCha20 → AES-256 → AES-128.
-    [if [any? [fn [let s] [= s 0x1303]] suites] [CipherSuite.Chacha20Poly1305Sha256]
-      [if [any? [fn [let s] [= s 0x1302]] suites] [CipherSuite.Aes256GcmSha384] [CipherSuite.Aes128GcmSha256]]]]
+    [if [any? [fn [let s] [= s CipherSuite.Chacha20Poly1305Sha256.code]] suites] CipherSuite.Chacha20Poly1305Sha256
+      [if [any? [fn [let s] [= s CipherSuite.Aes256GcmSha384.code]] suites] CipherSuite.Aes256GcmSha384 CipherSuite.Aes128GcmSha256]]]
 
   # RFC 8446 §7.1: key schedule hash and key/IV lengths per cipher suite.
   cipher-params: [fn [let c@CipherSuite]
@@ -244,6 +262,12 @@
 [
   # HkdfHash, Sha256, Sha384, Sha512, Blake2s — re-exported from crypto.llt (included above).
 
+  # Named domain types with fixed byte-order encodings per RFC 8446.
+  # All TLS 1.3 multi-byte integers are big-endian (network byte order) per RFC 8446 §1.
+  TlsLength:     [type UInt16@[encoding: NetworkEndian]]   # RFC 8446 §5.1: 16-bit record/fragment length
+  TlsCipherCode: [type UInt16@[encoding: NetworkEndian]]   # RFC 8446 §B.4: 16-bit cipher suite code
+  TlsExtType:    [type UInt16@[encoding: NetworkEndian]]   # RFC 8446 §4.2: 16-bit extension type
+
   TlsServerConfig: [type
     [certificate: Bytes
      private-key: Bytes
@@ -256,10 +280,10 @@
      ech:         Bytes
      trust-roots: [or [Seq Bytes] Symbol]]]
 
-  CipherSuite: [union
-    [CipherSuite.Aes128GcmSha256]
-    [CipherSuite.Aes256GcmSha384]
-    [CipherSuite.Chacha20Poly1305Sha256]]
+  CipherSuite: [type
+    [Aes128GcmSha256        code: 0x1301]
+    [Aes256GcmSha384        code: 0x1302]
+    [Chacha20Poly1305Sha256 code: 0x1303]]
 
   # TlsConnection is parametric over its underlying ByteStream h so TLS can be stacked
   # on top of any stream (TCP Handle, WireguardConnection, NoiseConnection, etc.).
@@ -275,7 +299,11 @@
      sni:              [or String Absent]
      negotiated-alpn:  [or String Absent]]]  # RFC 8446 §4.4: ALPN protocol selected during handshake
 
-  ContentType: [union [ChangeCipherSpec] [Alert] [Handshake] [ApplicationData]]
+  ContentType: [type
+    [ChangeCipherSpec  code: 20]
+    [Alert             code: 21]
+    [Handshake         code: 22]
+    [ApplicationData   code: 23]]
 
   TlsRecord: [type [content-type: ContentType  payload: Bytes]]
 
@@ -287,7 +315,7 @@
   TlsRecordCodec: [type [h] [conn: [TlsConnection h]]]
 
   # TLS alert descriptions per RFC 8446 §6.2.
-  TlsAlertDescription: [union
+  TlsAlertDescription: [type
     [CloseNotify] [UnexpectedMessage] [BadRecordMac] [RecordOverflow]
     [HandshakeFailure] [BadCertificate] [UnsupportedCertificate]
     [CertificateRevoked] [CertificateExpired] [CertificateUnknown]
@@ -298,7 +326,7 @@
     [UnknownAlert code@UInt8]]   # forward-compat: alerts not listed above
 
   # TLS error type — distinct failure modes callers can pattern-match on.
-  TlsError: [union
+  TlsError: [type
     [HandshakeFailed         reason@String]      # generic handshake failure
     [CertificateExpired]                          # server cert is past its notAfter
     [CertificateUntrusted    subject@String]      # cert chain does not lead to a trusted root
@@ -327,15 +355,16 @@
   tls-write-bytes: [fn [let conn@TlsConnection data@Bytes]
     [if [<= [length data] 16384]
       [tls-write-record conn [ApplicationData] data]
-      [tls-write-record conn [ApplicationData] [slice 0 16384 data]]
-      [tls-write-bytes conn [slice 16384 [length data] data]]]]
+      [block
+        [tls-write-record conn [ApplicationData] [slice 0 16384 data]]
+        [tls-write-bytes conn [slice 16384 [length data] data]]]]]
 
   # hash: the PRF hash for this cipher suite — passed from cipher-params.
   hkdf-expand-label: [fn [let secret@Bytes label@String context@Bytes len@Int hash@HkdfHash]
     [label-str: [str "tls13 " label]]
-    [info: [concat [bytes BigEndian [@UInt16 len]]
-                   [bytes BigEndian [@UInt8 [length [str-bytes label-str]]]] [str-bytes label-str]
-                   [bytes BigEndian [@UInt8 [length context]]] context]]
+    [info: [concat [bytes NetworkEndian [@UInt16 len]]
+                   [bytes NetworkEndian [@UInt8 [length [str-bytes label-str]]]] [str-bytes label-str]
+                   [bytes NetworkEndian [@UInt8 [length context]]] context]]
     [hkdf-expand hash secret info len]]
 
   derive-secret: [fn [let secret@Bytes label@String transcript@Bytes hash@HkdfHash]
@@ -447,30 +476,31 @@
     # Step 2: build ClientHello extensions
     # supported_versions (0x002b): TLS 1.3 = 0x0304
     [ext-supported-versions:
-      [concat [0x00 0x2b] [bytes BigEndian [@UInt16 3]] [0x02] [0x03 0x04]]]
+      [concat [0x00 0x2b] [bytes NetworkEndian [@UInt16 3]] [0x02] [0x03 0x04]]]
     # supported_groups (0x000a): x25519 (0x001d)
     [ext-supported-groups:
-      [concat [0x00 0x0a] [bytes BigEndian [@UInt16 6]] [bytes BigEndian [@UInt16 4]] [bytes BigEndian [@UInt16 0x001d]] [bytes BigEndian [@UInt16 0x0017]]]]
+      [concat [0x00 0x0a] [bytes NetworkEndian [@UInt16 6]] [bytes NetworkEndian [@UInt16 4]] [bytes NetworkEndian [@UInt16 0x001d]] [bytes NetworkEndian [@UInt16 0x0017]]]]
     # key_share (0x0033): x25519 public key (32 bytes)
-    [key-share-entry: [concat [bytes BigEndian [@UInt16 0x001d]] [bytes BigEndian [@UInt16 32]] eph.public]]
+    [key-share-entry: [concat [bytes NetworkEndian [@UInt16 0x001d]] [bytes NetworkEndian [@UInt16 32]] eph.public]]
     [ext-key-share:
-      [concat [0x00 0x33] [bytes BigEndian [@UInt16 [+ 2 [length key-share-entry]]]] [bytes BigEndian [@UInt16 [length key-share-entry]]] key-share-entry]]
+      [concat [0x00 0x33] [bytes NetworkEndian [@UInt16 [+ 2 [length key-share-entry]]]] [bytes NetworkEndian [@UInt16 [length key-share-entry]]] key-share-entry]]
     # server_name (0x0000): sni
     [sni-bytes: [str-bytes cfg.sni]]
-    [sni-entry:  [concat [0x00] [bytes BigEndian [@UInt16 [length sni-bytes]]] sni-bytes]]
+    [sni-entry:  [concat [0x00] [bytes NetworkEndian [@UInt16 [length sni-bytes]]] sni-bytes]]
     [ext-sni:
-      [concat [0x00 0x00] [bytes BigEndian [@UInt16 [+ 2 [length sni-entry]]]] [bytes BigEndian [@UInt16 [length sni-entry]]] sni-entry]]
+      [concat [0x00 0x00] [bytes NetworkEndian [@UInt16 [+ 2 [length sni-entry]]]] [bytes NetworkEndian [@UInt16 [length sni-entry]]] sni-entry]]
     # signature_algorithms (0x000d): ecdsa_secp256r1_sha256 (0x0403), rsa_pss_rsae_sha256 (0x0804), ed25519 (0x0807)
     [ext-sig-algs:
-      [concat [0x00 0x0d] [bytes BigEndian [@UInt16 8]] [bytes BigEndian [@UInt16 6]] [0x04 0x03] [0x08 0x04] [0x08 0x07]]]
+      [concat [0x00 0x0d] [bytes NetworkEndian [@UInt16 8]] [bytes NetworkEndian [@UInt16 6]] [0x04 0x03] [0x08 0x04] [0x08 0x07]]]
     # application_layer_protocol_negotiation (0x0010): from cfg.alpn
     [ext-alpn: [if [empty? cfg.alpn]
       [bytes 0]
-      [alpn-list: [apply concat [map [fn [let p]
-        [pb: [str-bytes p]]
-        [concat [bytes BigEndian [@UInt8 [length pb]]] pb]]
-        cfg.alpn]]]
-      [concat [0x00 0x10] [bytes BigEndian [@UInt16 [+ 2 [length alpn-list]]]] [bytes BigEndian [@UInt16 [length alpn-list]]] alpn-list]]]
+      [block
+        [alpn-list: [apply concat [map [fn [let p]
+          [pb: [str-bytes p]]
+          [concat [bytes NetworkEndian [@UInt8 [length pb]]] pb]]
+          cfg.alpn]]]
+        [concat [0x00 0x10] [bytes NetworkEndian [@UInt16 [+ 2 [length alpn-list]]]] [bytes NetworkEndian [@UInt16 [length alpn-list]]] alpn-list]]]]
 
     # Step 3: build and send ClientHello
     [extensions: [apply concat [filter [fn [let e] [> [length e] 0]]
@@ -479,11 +509,13 @@
       [concat
         [0x03 0x03]                                            # legacy_version = 0x0303
         client-random                                          # 32-byte random
-        [bytes BigEndian [@UInt8 32]] session-id               # session_id (1+32)
-        [bytes BigEndian [@UInt16 6]]                          # cipher_suites length
-        [0x13 0x03] [0x13 0x02] [0x13 0x01]                  # TLS_CHACHA20_POLY1305_SHA256, TLS_AES_256_GCM_SHA384, TLS_AES_128_GCM_SHA256
-        [bytes BigEndian [@UInt8 1]] [0x00]                   # compression (null only)
-        [bytes BigEndian [@UInt16 [length extensions]]]        # extensions length
+        [bytes NetworkEndian [@UInt8 32]] session-id               # session_id (1+32)
+        [bytes NetworkEndian [@UInt16 6]]                          # cipher_suites length (3 suites × 2 bytes)
+        [bytes NetworkEndian [@UInt16 CipherSuite.Chacha20Poly1305Sha256.code]]  # TLS_CHACHA20_POLY1305_SHA256
+        [bytes NetworkEndian [@UInt16 CipherSuite.Aes256GcmSha384.code]]         # TLS_AES_256_GCM_SHA384
+        [bytes NetworkEndian [@UInt16 CipherSuite.Aes128GcmSha256.code]]         # TLS_AES_128_GCM_SHA256
+        [bytes NetworkEndian [@UInt8 1]] [0x00]                   # compression (null only)
+        [bytes NetworkEndian [@UInt16 [length extensions]]]        # extensions length
         extensions]]
     [ch-msg: [encode-hs 1 ch-body]]   # type 1 = ClientHello
     [write-tls-record stream [TlsRecord [content-type: ContentType.Handshake  payload: ch-msg]]]
@@ -493,27 +525,26 @@
     [sh-record: [read-tls-record stream]]
     [if [not [= [tag-of sh-record.content-type] "ContentType.Handshake"]]
       [TlsError.HandshakeFailed "expected Handshake record for ServerHello"]
+      [block
       [sh: [parse-server-hello [slice sh-record.payload 4 [length sh-record.payload]]]]
       [sh-bytes: sh-record.payload]  # transcript accumulates
       [transcript: [concat ch-bytes sh-bytes]]
 
       # Step 5: derive handshake keys from server key_share
       # Extract server key_share from ServerHello extensions (0x0033)
-      [server-pub: [let find-ks [fn [exts pos]
-        [if [>= pos [length exts]] [error "TLS: no key_share in ServerHello"]
-          [ext-type: [uint16 BigEndian [slice exts pos [+ pos 2]]]]
-          [ext-len:  [uint16 BigEndian [slice exts [+ pos 2] [+ pos 4]]]]
-          [if [= ext-type 0x0033]
-            # key_share: group(2) + key-len(2) + key-bytes
-            [slice exts [+ pos 8] [+ pos 8 32]]   # x25519 key is 32 bytes
-            [find-ks exts [+ pos 4 ext-len]]]]]]
-        sh.extensions 0]]
+      [find-ks: [fn [let exts pos]
+        [if [>= pos [length exts]]
+          [error "TLS: no key_share in ServerHello"]
+          [block
+            [ext-type: [uint16 NetworkEndian [slice exts pos [+ pos 2]]]]
+            [ext-len:  [uint16 NetworkEndian [slice exts [+ pos 2] [+ pos 4]]]]
+            [if [= ext-type 0x0033]
+              # key_share: group(2) + key-len(2) + key-bytes
+              [slice exts [+ pos 8] [+ pos 8 32]]   # x25519 key is 32 bytes
+              [find-ks exts [+ pos 4 ext-len]]]]]]]
+      [server-pub: [find-ks sh.extensions 0]]
       [dh-shared: [x25519-dh eph.private server-pub]]
-      [cipher: [match sh.cipher-suite
-        0x1301: CipherSuite.Aes128GcmSha256
-        0x1302: CipherSuite.Aes256GcmSha384
-        0x1303: CipherSuite.Chacha20Poly1305Sha256
-        _: [return TlsError.NoMutualCipherSuite]]]
+      [cipher: [or [get code: sh.cipher-suite CipherSuite] [return TlsError.NoMutualCipherSuite]]]
       [ks: [tls13-key-schedule dh-shared ch-bytes sh-bytes cipher]]
 
       # Step 6: read EncryptedExtensions, Certificate, CertificateVerify, Finished
@@ -529,6 +560,7 @@
       # EncryptedExtensions (type 8)
       [ee-record: [tls-decrypt-conn-record hs-conn [read-tls-record stream]]]
       [transcript: [concat transcript ee-record]]
+      [negotiated-alpn: [parse-ee-alpn ee-record]]
 
       # Read Certificate (type 11) or CertificateRequest (type 13)
       [cert-record: [tls-decrypt-conn-record hs-conn [read-tls-record stream]]]
@@ -573,7 +605,7 @@
       [tls-write-record hs-conn ContentType.Handshake [encode-finished client-fin-data]]
 
       # Step 9: install application traffic keys → return TlsConnection
-      [new-conn stream ks.app-client-key ks.app-server-key ks.app-client-iv ks.app-server-iv cipher cfg.sni]]]
+      [new-conn stream ks.app-client-key ks.app-server-key ks.app-client-iv ks.app-server-iv cipher cfg.sni negotiated-alpn]]]]
 
   # ── Server TLS ────────────────────────────────────────────────────────────────
 
@@ -601,38 +633,47 @@
       [TlsError.HandshakeFailed "expected Handshake record for ClientHello"]
       [if [not [= [get ch-record.payload 0] 1]]   # type byte must be 1 (ClientHello)
         [TlsError.HandshakeFailed "expected ClientHello message"]
+        [block
         [ch: [parse-client-hello [slice ch-record.payload 4 [length ch-record.payload]]]]
         [ch-bytes: ch-record.payload]
 
         # Step 2: choose cipher suite and parse client key_share
         [cipher: [choose-cipher ch.cipher-suites cfg]]
         # Extract client x25519 key_share from extensions (0x0033)
-        [client-pub: [let find-ks [fn [exts pos]
-          [if [>= pos [length exts]] [error "TLS: no key_share in ClientHello"]
-            [ext-type: [uint16 BigEndian [slice exts pos [+ pos 2]]]]
-            [ext-len:  [uint16 BigEndian [slice exts [+ pos 2] [+ pos 4]]]]
-            [if [= ext-type 0x0033]
-              # key_share_list: list-len(2) then entry: group(2)+key-len(2)+key-bytes
-              [list-len: [uint16 BigEndian [slice exts [+ pos 4] [+ pos 6]]]]
-              [slice exts [+ pos 10] [+ pos 10 32]]   # x25519 = 32-byte key
-              [find-ks exts [+ pos 4 ext-len]]]]]]
-          ch.extensions 0]]
+        [find-ks: [fn [let exts pos]
+          [if [>= pos [length exts]]
+            [error "TLS: no key_share in ClientHello"]
+            [block
+              [ext-type: [uint16 NetworkEndian [slice exts pos [+ pos 2]]]]
+              [ext-len:  [uint16 NetworkEndian [slice exts [+ pos 2] [+ pos 4]]]]
+              [if [= ext-type 0x0033]
+                # key_share_list: list-len(2) then entry: group(2)+key-len(2)+key-bytes
+                [block
+                  [list-len: [uint16 NetworkEndian [slice exts [+ pos 4] [+ pos 6]]]]
+                  [slice exts [+ pos 10] [+ pos 10 32]]]   # x25519 = 32-byte key
+                [find-ks exts [+ pos 4 ext-len]]]]]]]
+        [client-pub: [find-ks ch.extensions 0]]
         # Extract ALPN from ClientHello extensions if present
-        [client-alpn: [let find-alpn [fn [exts pos]
-          [if [>= pos [length exts]] []
-            [ext-type: [uint16 BigEndian [slice exts pos [+ pos 2]]]]
-            [ext-len:  [uint16 BigEndian [slice exts [+ pos 2] [+ pos 4]]]]
-            [if [= ext-type 0x0010]
-              # ALPN list: list-len(2) + entries of len(1)+bytes
-              [let parse-alpn [fn [p acc limit]
-                [if [>= p limit] acc
-                  [plen: [get exts p]]
-                  [proto: [bytes-str [slice exts [+ p 1] [+ p 1 plen]]]]
-                  [parse-alpn [+ p 1 plen] [append acc [list proto]] limit]]]]
-              [alpn-list-len: [uint16 BigEndian [slice exts [+ pos 4] [+ pos 6]]]]
-              [parse-alpn [+ pos 6] [] [+ pos 6 alpn-list-len]]
-              [find-alpn exts [+ pos 4 ext-len]]]]]]
-          ch.extensions 0]]
+        [parse-alpn: [fn [let p acc limit exts]
+          [if [>= p limit]
+            acc
+            [block
+              [plen: [get exts p]]
+              [proto: [bytes-str [slice exts [+ p 1] [+ p 1 plen]]]]
+              [parse-alpn [+ p 1 plen] [append acc [list proto]] limit exts]]]]]
+        [find-alpn: [fn [let exts pos]
+          [if [>= pos [length exts]]
+            []
+            [block
+              [ext-type: [uint16 NetworkEndian [slice exts pos [+ pos 2]]]]
+              [ext-len:  [uint16 NetworkEndian [slice exts [+ pos 2] [+ pos 4]]]]
+              [if [= ext-type 0x0010]
+                # ALPN list: list-len(2) + entries of len(1)+bytes
+                [block
+                  [alpn-list-len: [uint16 NetworkEndian [slice exts [+ pos 4] [+ pos 6]]]]
+                  [parse-alpn [+ pos 6] [] [+ pos 6 alpn-list-len] exts]]
+                [find-alpn exts [+ pos 4 ext-len]]]]]]]
+        [client-alpn: [find-alpn ch.extensions 0]]
         [negotiated-alpn: [negotiate-alpn client-alpn cfg.alpn]]
 
         # Step 3: generate server ephemeral + derive handshake keys
@@ -641,24 +682,21 @@
         [dh-shared:    [x25519-dh eph.private client-pub]]
 
         # Step 4: build ServerHello
-        [cs-bytes: [match cipher
-          [CipherSuite.Aes128GcmSha256]:        [0x13 0x01]
-          [CipherSuite.Aes256GcmSha384]:        [0x13 0x02]
-          [CipherSuite.Chacha20Poly1305Sha256]: [0x13 0x03]]]
+        [cs-bytes: [bytes NetworkEndian [@UInt16 cipher.code]]]
         [key-share-ext:
-          [concat [0x00 0x33] [bytes BigEndian [@UInt16 36]] [bytes BigEndian [@UInt16 34]]
-                  [bytes BigEndian [@UInt16 0x001d]] [bytes BigEndian [@UInt16 32]] eph.public]]
+          [concat [0x00 0x33] [bytes NetworkEndian [@UInt16 36]] [bytes NetworkEndian [@UInt16 34]]
+                  [bytes NetworkEndian [@UInt16 0x001d]] [bytes NetworkEndian [@UInt16 32]] eph.public]]
         [sv-ext:
-          [concat [0x00 0x2b] [bytes BigEndian [@UInt16 2]] [0x03 0x04]]]
+          [concat [0x00 0x2b] [bytes NetworkEndian [@UInt16 2]] [0x03 0x04]]]
         [sh-extensions: [concat key-share-ext sv-ext]]
         [sh-body:
           [concat
             [0x03 0x03]                                           # legacy_version
             server-random                                         # 32-byte random
-            [bytes BigEndian [@UInt8 32]] ch.session-id           # echo back session_id
+            [bytes NetworkEndian [@UInt8 32]] ch.session-id           # echo back session_id
             cs-bytes                                              # chosen cipher
             [0x00]                                                # null compression
-            [bytes BigEndian [@UInt16 [length sh-extensions]]]
+            [bytes NetworkEndian [@UInt16 [length sh-extensions]]]
             sh-extensions]]
         [sh-msg: [encode-hs 2 sh-body]]   # type 2 = ServerHello
         [write-tls-record h [TlsRecord [content-type: ContentType.Handshake  payload: sh-msg]]]
@@ -677,12 +715,13 @@
         # Step 6: send EncryptedExtensions (type 8)
         [alpn-ext: [if [absent? negotiated-alpn]
           [bytes 0]
-          [apb: [str-bytes negotiated-alpn]]
-          [concat [0x00 0x10] [bytes BigEndian [@UInt16 [+ 5 [length apb]]]]
-                  [bytes BigEndian [@UInt16 [+ 3 [length apb]]]]
-                  [bytes BigEndian [@UInt8 [length apb]]] apb]]]
+          [block
+            [apb: [str-bytes negotiated-alpn]]
+            [concat [0x00 0x10] [bytes NetworkEndian [@UInt16 [+ 5 [length apb]]]]
+                    [bytes NetworkEndian [@UInt16 [+ 3 [length apb]]]]
+                    [bytes NetworkEndian [@UInt8 [length apb]]] apb]]]]
         [ee-exts: [if [> [length alpn-ext] 0]
-          [concat [bytes BigEndian [@UInt16 [length alpn-ext]]] alpn-ext]
+          [concat [bytes NetworkEndian [@UInt16 [length alpn-ext]]] alpn-ext]
           [0x00 0x00]]]
         [ee-msg: [encode-hs 8 ee-exts]]
         [tls-write-record hs-conn ContentType.Handshake ee-msg]
@@ -735,7 +774,7 @@
              cipher:          cipher
              write-seq:       [init-seq-ch]  read-seq: [init-seq-ch]
              sni:             Absent.Absent
-             negotiated-alpn: negotiated-alpn]]]]]]]]
+             negotiated-alpn: negotiated-alpn]]]]]]]]]
 
   # Serve layer kept for explicit use; TlsLayer server instance uses it internally.
   tls-serve: [fn@[bind: [h]  constraint: [h: ByteStream]]
@@ -756,16 +795,16 @@
       [Closed.Closed]: [error "TlsRecordCodec.encode: write-seq channel closed"]
       [Result.Ok seq]:
         [send conn.write-seq [+ seq 1]]
-        [inner:      [concat record.payload [bytes [ct->int record.content-type]]]]
-        [ct-len:     [+ [length inner] 16]]
+        [inner:      [concat record.payload [bytes record.content-type.code]]]
+        [ct-len:     [@TlsLength [+ [length inner] 16]]]
         [aad:        [tls-record-aad ct-len]]
         [ciphertext: [tls-seal conn inner [tls-nonce conn.write-iv seq] aad]]
         # Wire format: 0x17 0x03 0x03 || length(2) || ciphertext
-        [concat [0x17] [0x03 0x03] [bytes BigEndian [@UInt16 ct-len]] ciphertext]]]
+        [concat [0x17] [0x03 0x03] [bytes NetworkEndian ct-len] ciphertext]]  # TlsLength (NetworkEndian)]
   decode: [fn [let codec@[TlsRecordCodec h] data@Bytes]
     # Wire format: content-type(1) 0x03 0x03 length(2) ciphertext
     [conn:       codec.conn]
-    [ct-len:     [uint16 BigEndian [slice data 3 5]]]
+    [ct-len:     [@TlsLength [uint16 NetworkEndian [slice data 3 5]]]]
     [ciphertext: [slice data 5 [+ 5 ct-len]]]
     [match [recv conn.read-seq]
       [Closed.Closed]: [error "TlsRecordCodec.decode: read-seq channel closed"]
@@ -775,22 +814,22 @@
         [plain:  [tls-open conn ciphertext [tls-nonce conn.read-iv seq] aad]]
         # RFC 8446 §5.2: TLSInnerPlaintext = content || content_type || zeros*.
         # Scan from end to find last non-zero byte (the content-type byte).
-        [let find-ct-idx [fn [i]
+        [find-ct-idx: [fn [let i]
           [if [< i 0] [error "TlsRecordCodec.decode: all-zero decrypted record"]
             [if [= [get plain i] 0] [find-ct-idx [- i 1]] i]]]]
         [ct-idx:  [find-ct-idx [- [length plain] 1]]]
-        [TlsRecord content-type: [int->ct [get plain ct-idx]]
+        [TlsRecord content-type: [or [get code: [get plain ct-idx] ContentType] [error "TlsRecordCodec.decode: unknown content type"]]
                    payload:      [slice plain 0 ct-idx]]]]]
 
 # ── TlsLayer typeclass — bidirectional tls ────────────────────────────────────
 
-[class [TlsLayer input output]
+[class [let TlsLayer input output]
   tls: [Fn@output [input]]]
 
 # Client: TcpHandle → TlsHandle (sni inferred from addr, ALPN open for downstream layer)
-[instance [TlsLayer TcpHandle TlsHandle]
-  tls: [fn [let h@TcpHandle]
-    [TlsHandle [handle: h  sni: null  alpn: []  ech: []  trust-roots: SystemRoots]]]]
+[instance TlsLayer
+  [let a@TcpHandle b@TlsHandle]: [tls: [fn [let h@TcpHandle]
+    [TlsHandle [handle: h  sni: null  alpn: []  ech: []  trust-roots: SystemRoots]]]]]
 
 # Server: TlsServerConfig → (Channel@h → Channel@TlsConnection h)
 # Usage: [tcp-listen cap 443] | [tls cert] | h2 | recv

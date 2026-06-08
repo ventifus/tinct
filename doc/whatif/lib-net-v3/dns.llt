@@ -9,13 +9,122 @@
 # ── Types (camelCase — accessible to internal helpers; re-exported as PascalCase in Public API) ──
 
 [
-  dnsQtype: [union [A] [AAAA] [CNAME] [MX] [NS] [TXT] [PTR] [SRV] [HTTPS] [SOA] [ANY]]
+  dnsQtype: [type
+    [A          code: 1    description: "IPv4 address record"              doc: "RFC 1035"]
+    [NS         code: 2    description: "Authoritative name server"        doc: "RFC 1035"]
+    [Md         code: 3    description: "Mail destination (obsolete)"      doc: "RFC 1035"]
+    [Mf         code: 4    description: "Mail forwarder (obsolete)"        doc: "RFC 1035"]
+    [CNAME      code: 5    description: "Canonical name for an alias"      doc: "RFC 1035"]
+    [SOA        code: 6    description: "Start of a zone of authority"     doc: "RFC 1035"]
+    [Mb         code: 7    description: "Mailbox domain name (experimental)"  doc: "RFC 1035"]
+    [Mg         code: 8    description: "Mail group member (experimental)"    doc: "RFC 1035"]
+    [Mr         code: 9    description: "Mail rename name (experimental)"     doc: "RFC 1035"]
+    [Null       code: 10   description: "Null RR (experimental)"              doc: "RFC 1035"]
+    [WKS        code: 11   description: "Well known service description"   doc: "RFC 1035"]
+    [PTR        code: 12   description: "Domain name pointer"              doc: "RFC 1035"]
+    [HINFO      code: 13   description: "Host information"                 doc: "RFC 1035"]
+    [Minfo      code: 14   description: "Mailbox or mail list info"        doc: "RFC 1035"]
+    [MX         code: 15   description: "Mail exchange"                    doc: "RFC 1035"]
+    [TXT        code: 16   description: "Text strings"                     doc: "RFC 1035"]
+    [RP         code: 17   description: "Responsible person"               doc: "RFC 1183"]
+    [AFSDB      code: 18   description: "AFS data base location"           doc: "RFC 1183"]
+    [X25        code: 19   description: "X.25 PSDN address"               doc: "RFC 1183"]
+    [Isdn       code: 20   description: "ISDN address"                    doc: "RFC 1183"]
+    [RT         code: 21   description: "Route through"                    doc: "RFC 1183"]
+    [Nsap       code: 22   description: "NSAP address (deprecated)"       doc: "RFC 1706"]
+    [NsapPtr    code: 23   description: "NSAP pointer (deprecated)"       doc: "RFC 1706"]
+    [SIG        code: 24   description: "Security signature"               doc: "RFC 2535"]
+    [KEY        code: 25   description: "Security key"                     doc: "RFC 2535"]
+    [Px         code: 26   description: "X.400 mail mapping info"         doc: "RFC 2163"]
+    [Gpos       code: 27   description: "Geographical position"           doc: "RFC 1712"]
+    [AAAA       code: 28   description: "IPv6 address record"              doc: "RFC 3596"]
+    [LOC        code: 29   description: "Location information"             doc: "RFC 1876"]
+    [Nxt        code: 30   description: "Next domain (obsolete)"          doc: "RFC 2535"]
+    [Eid        code: 31   description: "Endpoint identifier"             doc: "Michael Patton"]
+    [Nimloc     code: 32   description: "Nimrod locator"                  doc: "Michael Patton"]
+    [SRV        code: 33   description: "Server selection"                 doc: "RFC 2782"]
+    [Atma       code: 34   description: "ATM address"                     doc: "ATM Forum"]
+    [NAPTR      code: 35   description: "Naming authority pointer"         doc: "RFC 3403"]
+    [KX         code: 36   description: "Key exchanger"                    doc: "RFC 2230"]
+    [CERT       code: 37   description: "Certificate record"               doc: "RFC 4398"]
+    [A6         code: 38   description: "IPv6 address (obsolete)"         doc: "RFC 2874"]
+    [DNAME      code: 39   description: "Delegation name"                  doc: "RFC 6672"]
+    [Sink       code: 40   description: "Kitchen sink"                    doc: "draft-eastlake-kitchen-sink"]
+    [OPT        code: 41   description: "Option (EDNS)"                    doc: "RFC 6891"]
+    [APL        code: 42   description: "Address prefix list"              doc: "RFC 3123"]
+    [DS         code: 43   description: "Delegation signer"                doc: "RFC 4034"]
+    [SSHFP      code: 44   description: "SSH public key fingerprint"       doc: "RFC 4255"]
+    [IPSECKEY   code: 45   description: "IPsec key"                        doc: "RFC 4025"]
+    [RRSIG      code: 46   description: "DNSSEC signature"                 doc: "RFC 4034"]
+    [NSEC       code: 47   description: "Next secure record"               doc: "RFC 4034"]
+    [DNSKEY     code: 48   description: "DNS key record"                   doc: "RFC 4034"]
+    [DHCID      code: 49   description: "DHCP identifier"                  doc: "RFC 4701"]
+    [NSEC3      code: 50   description: "Next secure record version 3"     doc: "RFC 5155"]
+    [NSEC3PARAM code: 51   description: "NSEC3 parameters"                 doc: "RFC 5155"]
+    [TLSA       code: 52   description: "TLS authentication"               doc: "RFC 6698"]
+    [SMIMEA     code: 53   description: "S/MIME cert association"          doc: "RFC 8162"]
+    [HIP        code: 55   description: "Host identity protocol"           doc: "RFC 8005"]
+    [Ninfo      code: 56   description: "Zone status information"         doc: "Jim Reid"]
+    [Rkey       code: 57   description: "Resolver key"                    doc: "Jim Reid"]
+    [Talink     code: 58   description: "Trust anchor link"               doc: "Wouter Wijngaards"]
+    [CDS        code: 59   description: "Child delegation signer"          doc: "RFC 7344"]
+    [CDNSKEY    code: 60   description: "Child DNS key"                    doc: "RFC 7344"]
+    [OPENPGPKEY code: 61   description: "OpenPGP public key"               doc: "RFC 7929"]
+    [CSYNC      code: 62   description: "Child-to-parent synchronization"  doc: "RFC 7477"]
+    [ZONEMD     code: 63   description: "Message digest for DNS zone"      doc: "RFC 8976"]
+    [SVCB       code: 64   description: "Service binding"                  doc: "RFC 9460"]
+    [HTTPS      code: 65   description: "HTTPS service binding"            doc: "RFC 9460"]
+    [Nid        code: 104  description: "Node identifier (ILNP)"           doc: "RFC 6742"]
+    [L32        code: 105  description: "32-bit locator (ILNP)"            doc: "RFC 6742"]
+    [L64        code: 106  description: "64-bit locator (ILNP)"            doc: "RFC 6742"]
+    [Lp         code: 107  description: "Locator pointer (ILNP)"           doc: "RFC 6742"]
+    [EUI48      code: 108  description: "MAC address (EUI-48)"             doc: "RFC 7043"]
+    [EUI64      code: 109  description: "MAC address (EUI-64)"             doc: "RFC 7043"]
+    [Nxname     code: 128  description: "NXDOMAIN indicator"               doc: "RFC 9824"]
+    [TKEY       code: 249  description: "Transaction key"                  doc: "RFC 2930"]
+    [TSIG       code: 250  description: "Transaction signature"            doc: "RFC 8945"]
+    [IXFR       code: 251  description: "Incremental zone transfer"        doc: "RFC 1995"]
+    [AXFR       code: 252  description: "Authoritative zone transfer"      doc: "RFC 5936"]
+    [Mailb      code: 253  description: "Mailbox-related records"          doc: "RFC 1035"]
+    [Maila      code: 254  description: "Mail agent (obsolete)"            doc: "RFC 1035"]
+    [ANY        code: 255  description: "Any record type (*)"              doc: "RFC 1035"]
+    [URI        code: 256  description: "Uniform resource identifier"      doc: "RFC 7553"]
+    [CAA        code: 257  description: "Certification authority authorization"  doc: "RFC 8659"]
+    [Avc        code: 258  description: "Application visibility and control"     doc: "Wolfgang Riedel"]
+    [Doa        code: 259  description: "Digital object architecture"            doc: "draft-durand-doa-over-dns"]
+    [Amtrelay   code: 260  description: "Automatic multicast tunneling relay"    doc: "RFC 8777"]
+    [Resinfo    code: 261  description: "Resolver information"                   doc: "RFC 9606"]
+    [Wallet     code: 262  description: "Wallet address"                         doc: "Paul Hoffman"]
+    [Cla        code: 263  description: "CLA over DNS"                           doc: "draft-johnson-dns-ipn-cla"]
+    [Ipn        code: 264  description: "IPN over DNS"                           doc: "draft-johnson-dns-ipn-cla"]
+    [Ta         code: 32768  description: "DNSSEC trust authorities"             doc: "Sam Weiler"]
+    [Dlv        code: 32769  description: "DNSSEC lookaside validation (obsolete)"  doc: "RFC 8749"]]
 
-  # DNS domain name: case-insensitive dot-separated labels (RFC 1035 §2.3.1).
-  # May be absolute (ends with ".") or relative. "." alone = root zone.
-  # Distinct from Hostname: may contain underscores, the root label, relative names,
-  # or SOA rname (email encoded as DNS name). Max 63 bytes/label, 253 bytes total.
-  dnsName: [type String]
+  # DNS label: RFC 1035 §2.3.1 — 1–63 chars.
+  # Underscores are permitted (SRV, DKIM, etc.) despite RFC 952 restrictions.
+  dnsLabel: [type String@[is: [and [>= [length _] 1] [<= [length _] 63]]]]
+
+  # DNS name as a sequence of labels. Null at the final position marks an absolute
+  # (fully-qualified) name; all preceding elements must be dnsLabel.
+  # Structural contract: null-only-at-end? enforces this positional constraint at runtime.
+  # See tracker: compile-time [Seq ...@T S] type form would make this static.
+  #
+  # ["example" "com"]        = example.com  (relative)
+  # ["example" "com" Null]   = example.com. (absolute/canonical)
+  # [Null]                   = .            (root zone)
+  dnsName: [type [Seq [or dnsLabel Null]]@[is: dns-name-valid?]]
+
+  # Structural contracts for dnsName:
+  # 1. Null appears only at the final position (never mid-sequence)
+  # 2. Total label content ≤ 253 chars (RFC 1035 §2.3.4)
+  dns-name-valid?: [fn [let xs@[Seq [or dnsLabel Null]]]
+    [labels: [filter [fn [let x] [not [null? x]]] xs]]
+    [total:  [reduce [fn [let acc l] [+ acc [+ [length l] 1]]] -1 labels]]
+    [and
+      # Null can only be the last element — all elements except the last must be dnsLabel
+      [all? [fn [let e] [not [null? e]]] [if [<= [length xs] 1] [] [take [- [length xs] 1] xs]]]
+      # RFC 1035 §2.3.4: total ≤ 253 chars (joined with dots)
+      [<= total 253]]]
 
   # RFC 9460 §2.3 SvcParams: a record of optional typed fields, one per SvcParamKey.
   # Each field uses [or T Absent] so absence of a param is distinct from an empty value.
@@ -29,7 +138,7 @@
      mandatory:       [or [Seq Int] Absent]          # key 0: Absent = no mandatory keys
      other:           [Map Int Bytes]]]              # unknown SvcParamKeys (extensibility)
 
-  dnsRecord: [union
+  dnsRecord: [type
     [ARecord      addr@IpAddress.Ipv4  ttl@Duration]   # wire bytes ARE the Ipv4 address; no conversion
     [AAAARecord   addr@IpAddress.Ipv6  ttl@Duration]   # wire bytes ARE the Ipv6 address; no conversion
     [CNameRecord  name@dnsName     ttl@Duration]        # canonical name (FQDN, often trailing ".")
@@ -43,7 +152,77 @@
                   refresh@Duration  retry@Duration  expire@Duration  minimum@Duration  ttl@Duration]
     [UnknownRecord  qtype@Int  data@Bytes  ttl@Duration]]
 
-  dnsRcode: [union [NoError] [FormErr] [ServFail] [NXDomain] [NotImpl] [Refused]]
+  dnsRcode: [type
+    [NoError    rcode: 0   description: "No Error"                                doc: "RFC 1035"]
+    [FormErr    rcode: 1   description: "Format Error"                            doc: "RFC 1035"]
+    [ServFail   rcode: 2   description: "Server Failure"                          doc: "RFC 1035"]
+    [NXDomain   rcode: 3   description: "Non-Existent Domain"                     doc: "RFC 1035"]
+    [NotImpl    rcode: 4   description: "Not Implemented"                         doc: "RFC 1035"]
+    [Refused    rcode: 5   description: "Query Refused"                           doc: "RFC 1035"]
+    [YXDomain   rcode: 6   description: "Name exists when it should not"          doc: "RFC 2136"]
+    [YXRRSet    rcode: 7   description: "RR set exists when it should not"        doc: "RFC 2136"]
+    [NXRRSet    rcode: 8   description: "RR set that should exist does not"       doc: "RFC 2136"]
+    [NotAuth    rcode: 9   description: "Server not authoritative / not authorized"  doc: "RFC 2136"]
+    [NotZone    rcode: 10  description: "Name not contained in zone"              doc: "RFC 2136"]
+    [DsoTypeNI  rcode: 11  description: "DSO-TYPE not implemented"                doc: "RFC 8490"]
+    [BadVers    rcode: 16  description: "Bad OPT version / TSIG signature failure"  doc: "RFC 6891"]
+    [BadKey     rcode: 17  description: "Key not recognized"                      doc: "RFC 8945"]
+    [BadTime    rcode: 18  description: "Signature out of time window"            doc: "RFC 8945"]
+    [BadMode    rcode: 19  description: "Bad TKEY mode"                           doc: "RFC 2930"]
+    [BadName    rcode: 20  description: "Duplicate key name"                      doc: "RFC 2930"]
+    [BadAlg     rcode: 21  description: "Algorithm not supported"                 doc: "RFC 2930"]
+    [BadTrunc   rcode: 22  description: "Bad truncation"                          doc: "RFC 8945"]
+    [BadCookie  rcode: 23  description: "Bad/missing server cookie"               doc: "RFC 7873"]]
+
+  dnsOpcode: [type
+    [Query   code: 0  description: "Standard query"              doc: "RFC 1035"]
+    [IQuery  code: 1  description: "Inverse query (obsolete)"    doc: "RFC 1035"]
+    [Status  code: 2  description: "Server status request"       doc: "RFC 1035"]
+    [Notify  code: 4  description: "Zone change notification"    doc: "RFC 1996"]
+    [Update  code: 5  description: "Dynamic update"              doc: "RFC 2136"]
+    [Dso     code: 6  description: "DNS Stateful Operations"     doc: "RFC 8490"]]
+
+  dnsClass: [type
+    [IN   code: 1    description: "Internet"         doc: "RFC 1035"]
+    [CH   code: 3    description: "Chaos"            doc: "D. Moon, Chaosnet"]
+    [HS   code: 4    description: "Hesiod"           doc: "Dyer and Hsu, Hesiod"]
+    [None code: 254  description: "QCLASS NONE"      doc: "RFC 2136"]
+    [Any  code: 255  description: "QCLASS * (any)"   doc: "RFC 1035"]]
+
+  dnsExtendedError: [type
+    [Other                    code: 0   description: "Other Error"                      doc: "RFC 8914"]
+    [UnsupportedDnskeyAlg     code: 1   description: "Unsupported DNSKEY Algorithm"     doc: "RFC 8914"]
+    [UnsupportedDsDigest      code: 2   description: "Unsupported DS Digest Type"       doc: "RFC 8914"]
+    [StaleAnswer              code: 3   description: "Stale Answer"                     doc: "RFC 8914"]
+    [ForgedAnswer             code: 4   description: "Forged Answer"                    doc: "RFC 8914"]
+    [DnssecIndeterminate      code: 5   description: "DNSSEC Indeterminate"             doc: "RFC 8914"]
+    [DnssecBogus              code: 6   description: "DNSSEC Bogus"                     doc: "RFC 8914"]
+    [SignatureExpired          code: 7   description: "Signature Expired"                doc: "RFC 8914"]
+    [SignatureNotYetValid      code: 8   description: "Signature Not Yet Valid"          doc: "RFC 8914"]
+    [DnskeyMissing            code: 9   description: "DNSKEY Missing"                   doc: "RFC 8914"]
+    [RrsigsMissing            code: 10  description: "RRSIGs Missing"                   doc: "RFC 8914"]
+    [NoZoneKeyBit             code: 11  description: "No Zone Key Bit Set"              doc: "RFC 8914"]
+    [NsecMissing              code: 12  description: "NSEC Missing"                     doc: "RFC 8914"]
+    [CachedError              code: 13  description: "Cached Error"                     doc: "RFC 8914"]
+    [NotReady                 code: 14  description: "Not Ready"                        doc: "RFC 8914"]
+    [Blocked                  code: 15  description: "Blocked"                          doc: "RFC 8914"]
+    [Censored                 code: 16  description: "Censored"                         doc: "RFC 8914"]
+    [Filtered                 code: 17  description: "Filtered"                         doc: "RFC 8914"]
+    [Prohibited               code: 18  description: "Prohibited"                       doc: "RFC 8914"]
+    [StaleNxdomainAnswer      code: 19  description: "Stale NXDomain Answer"            doc: "RFC 8914"]
+    [NotAuthoritative         code: 20  description: "Not Authoritative"                doc: "RFC 8914"]
+    [NotSupported             code: 21  description: "Not Supported"                    doc: "RFC 8914"]
+    [NoReachableAuthority     code: 22  description: "No Reachable Authority"           doc: "RFC 8914"]
+    [NetworkError             code: 23  description: "Network Error"                    doc: "RFC 8914"]
+    [InvalidData              code: 24  description: "Invalid Data"                     doc: "RFC 8914"]
+    [SignatureExpiredBeforeValid code: 25  description: "Signature Expired before Valid"  doc: "RFC 8914"]
+    [TooEarly                 code: 26  description: "Too Early"                        doc: "RFC 9250"]
+    [UnsupportedNsec3Iter     code: 27  description: "Unsupported NSEC3 Iterations"    doc: "RFC 9276"]
+    [UnableToConformToPolicy  code: 28  description: "Unable to conform to policy"      doc: "RFC 8914"]
+    [Synthesized              code: 29  description: "Synthesized"                      doc: "RFC 8914"]
+    [InvalidQueryType         code: 30  description: "Invalid Query Type"               doc: "RFC 9824"]
+    [RateLimited              code: 31  description: "Rate Limited"                     doc: "RFC 8914"]
+    [OverQuota                code: 32  description: "Over Quota"                       doc: "RFC 8914"]]
 
   dnsResponse: [type
     [id:         Int
@@ -60,7 +239,7 @@
      recursive: Bool
      respond:   [or [Fn [dnsResponse] Null] Null]]]
 
-  nameserver: [union
+  nameserver: [type
     [UdpNameserver  addr@SocketAddress]
     [DotNameserver  addr@SocketAddress  sni@String]
     [DohNameserver  addr@SocketAddress  sni@String  path@String]
@@ -82,7 +261,7 @@
      sortlist:       [Seq String]]]
 
   # DNS error type — distinct failure modes callers can pattern-match on.
-  dnsError: [union
+  dnsError: [type
     [NXDomain    name@String]    # NXDOMAIN: name definitively does not exist
     [ServerFailure]              # SERVFAIL: retry with a different nameserver
     [Refused]                    # REFUSED: server policy rejected the query
@@ -96,29 +275,33 @@
 
 [
   # Verified: str-chars=✓ (builtin-str-chars), get?=✓ (core builtin)
-  # random-id: not in prelude; use [uint16 BigEndian [crypto-random 2]] — [Bytes 2] → UInt16
+  # random-id: not in prelude; use [uint16 NetworkEndian [crypto-random 2]] — [Bytes 2] → UInt16
 
-  encode-dns-name: [fn [let name@String]
-    [labels: [filter [fn [let s] [not [= s ""]]]
-               [str-split "." [if [ends-with? "." name] name [str name "."]]]]]
+  # Parse a string into the dnsName seq structure.
+  # "example.com"  → ["example" "com"]           (relative)
+  # "example.com." → ["example" "com" Null]       (absolute)
+  # "."            → [Null]                        (root zone)
+  parse-dns-name-str: [fn [let s@String]
+    [absolute: [ends-with? "." s]]
+    [bare:     [if absolute [str-slice 0 [- [length s] 1] s] s]]
+    [labels:   [if [= bare ""] [] [str-split "." bare]]]
+    [if absolute [append labels [list Null]] labels]]
+
+  # Convert a dnsName seq back to its string representation.
+  # Used for display and interop (TLS SNI, HTTP Host headers, etc.).
+  # Substitute for Showable until R-14 (Printable typeclass) lands.
+  dns-name->string: [fn [let name@dnsName]
+    [parts: [filter [fn [let x] [not [null? x]]] name]]
+    [base:  [join "." parts]]
+    [if [and [not [empty? name]] [null? [last name]]] [str base "."] base]]
+
+  encode-dns-name: [fn [let name@dnsName]
+    [labels: [filter [fn [let x] [not [null? x]]] name]]
     [concat
       [flat-map [fn [let label]
         [concat [bytes [length label]] [str-bytes label]]]
        labels]
       [bytes 0]]]
-
-  qtype->int: [fn [let qt@dnsQtype]
-    [match qt
-      [dnsQtype.A]: 1    [dnsQtype.AAAA]: 28  [dnsQtype.CNAME]: 5
-      [dnsQtype.MX]: 15  [dnsQtype.NS]: 2     [dnsQtype.TXT]: 16
-      [dnsQtype.PTR]: 12 [dnsQtype.SRV]: 33   [dnsQtype.HTTPS]: 65
-      [dnsQtype.SOA]: 6  [dnsQtype.ANY]: 255]]
-
-  int->rcode: [fn [let n@Int]
-    [match n
-      0: dnsRcode.NoError   1: dnsRcode.FormErr   2: dnsRcode.ServFail
-      3: dnsRcode.NXDomain  4: dnsRcode.NotImpl   5: dnsRcode.Refused
-      _: dnsRcode.ServFail]]
 
   rotate-list: [fn [let xs]
     [match xs [] [] [let [h ...t]]: [append [list h] t]]]
@@ -132,7 +315,7 @@
         [let [ns ...rest]]:
           [resolver: [ns-to-resolver cap ns]]
           [match [try [await [timeout timeout [resolver
-                  dnsQuery.dnsQuery id: [uint16 BigEndian [crypto-random 2]]  name: name
+                  dnsQuery.dnsQuery id: [uint16 NetworkEndian [crypto-random 2]]  name: name
                                     qtype: qtype  recursive: true  respond: null]]]]
             [Result.Ok resp]:
               [match resp.rcode
@@ -144,12 +327,13 @@
   candidate-names: [fn [let host@String search@[Seq String] ndots@Int]
     [if [ends-with? "." host]
       [list host]
-      [dot-count: [length [filter [fn [let c] [= c "."]] [str-chars host]]]
-       absolute:  [str host "."]
-       searched:  [map [fn [let d] [str host "." d "."]] search]
-       [if [>= dot-count ndots]
-         [cons absolute searched]
-         [append [list absolute] searched]]]]]
+      [block
+        [dot-count: [length [filter [fn [let c] [= c "."]] [str-chars host]]]
+         absolute:  [str host "."]
+         searched:  [map [fn [let d] [str host "." d "."]] search]]
+        [if [>= dot-count ndots]
+          [cons absolute searched]
+          [append [list absolute] searched]]]]]
 
   dns-query-with-retry: [fn [let cap@NetCap nameservers@[Seq Nameserver]
                               name@String qtype@DnsQtype
@@ -210,30 +394,32 @@
   # table: DnsName → Int (byte offset in message where that name begins).
   # offset: current write position in the message (for registering new names).
   # Returns {bytes: Bytes  table: [Map DnsName Int]} with the updated table.
-  encode-dns-name-compressed: [fn [let name@DnsName offset@Int table@[Map DnsName Int]]
-    [labels: [filter [fn [let s] [not [= s ""]]] [str-split "." name]]]
+  encode-dns-name-compressed: [fn [let name@dnsName offset@Int table@[Map dnsName Int]]
+    [labels: [filter [fn [let x] [not [null? x]]] name]]
     # Try each suffix (longest first) to find a compression pointer.
-    [let try-suffix [fn [i prefix-bytes prefix-offset]
+    [try-suffix: [fn [let i prefix-bytes prefix-offset]
       [if [> i [length labels]]
         # No suffix matched — emit root byte, register full name.
-        [full: [concat prefix-bytes [0x00]]]
-        [bytes: full  table: [set name prefix-offset table]]
+        [block
+          [full: [concat prefix-bytes [0x00]]]
+          [bytes: full  table: [set name prefix-offset table]]]
         # Try suffix starting at label i.
-        [suffix: [apply str [intersperse "." [append [slice labels i [length labels]] [list ""]]]]]
-        [match [get? table suffix]
-          [let ptr-off]:
-            # Found! Emit prefix labels + 2-byte pointer.
-            [ptr: [bytes BigEndian [@UInt16 [bor 0xC000 ptr-off]]]]
-            [full: [concat prefix-bytes ptr]]
-            [bytes: full  table: [set name prefix-offset table]]
-          [Absent.Absent]:
-            # Register this suffix for future compression, then try shorter.
-            [label:      [get labels i]]
-            [label-wire: [concat [bytes BigEndian [@UInt8 [length [str-bytes label]]]] [str-bytes label]]]
-            [new-prefix: [concat prefix-bytes label-wire]]
-            [new-off:    [+ prefix-offset [length label-wire]]]
-            [new-table:  [set suffix prefix-offset table]]
-            [try-suffix [+ i 1] new-prefix new-off new-table]]]]]
+        [block
+          [suffix: [apply str [intersperse "." [append [slice labels i [length labels]] [list ""]]]]]
+          [match [get? table suffix]
+            [let ptr-off]:
+              # Found! Emit prefix labels + 2-byte pointer.
+              [ptr: [bytes NetworkEndian [@UInt16 [bor 0xC000 ptr-off]]]]
+              [full: [concat prefix-bytes ptr]]
+              [bytes: full  table: [set name prefix-offset table]]
+            [Absent.Absent]:
+              # Register this suffix for future compression, then try shorter.
+              [label:      [get labels i]]
+              [label-wire: [concat [bytes NetworkEndian [@UInt8 [length [str-bytes label]]]] [str-bytes label]]]
+              [new-prefix: [concat prefix-bytes label-wire]]
+              [new-off:    [+ prefix-offset [length label-wire]]]
+              [new-table:  [set suffix prefix-offset table]]
+              [try-suffix [+ i 1] new-prefix new-off new-table]]]]]]]
     [try-suffix 0 [bytes 0] offset table]]
 
   # Encode a name and return {bytes: Bytes  table: [Map DnsName Int]}.
@@ -249,10 +435,10 @@
     # Owner name is "." (root) — single zero byte, no compression.
     [owner:   [0x00]]
     [header:  [concat owner
-                      [bytes BigEndian [@UInt16 rtype]]
-                      [bytes BigEndian [@UInt16 1]]          # class = IN
-                      [bytes BigEndian [duration->ttl ttl]]
-                      [bytes BigEndian [@UInt16 [length rdata]]]]]
+                      [bytes NetworkEndian [@UInt16 rtype]]
+                      [bytes NetworkEndian [@UInt16 1]]          # class = IN
+                      [bytes NetworkEndian [duration->ttl ttl]]
+                      [bytes NetworkEndian [@UInt16 [length rdata]]]]]
     [full: [concat header rdata]]
     [bytes: full  table: table]]
 
@@ -275,7 +461,7 @@
 
       [dnsRecord.MxRecord pref: pref name: name ttl: ttl]:
         [nr: [enc-name name [+ rdata-base 2] table]]
-        [rr-wire-compressed 15 ttl [concat [bytes BigEndian [@UInt16 pref]] nr.bytes] offset nr.table]
+        [rr-wire-compressed 15 ttl [concat [bytes NetworkEndian [@UInt16 pref]] nr.bytes] offset nr.table]
 
       [dnsRecord.NsRecord name: name ttl: ttl]:
         [nr: [enc-name name rdata-base table]]
@@ -283,7 +469,7 @@
 
       [dnsRecord.TxtRecord strings: strings ttl: ttl]:
         [rdata: [apply concat [map [fn [let s]
-          [concat [bytes BigEndian [@UInt8 [length s]]] s]] strings]]]
+          [concat [bytes NetworkEndian [@UInt8 [length s]]] s]] strings]]]
         [rr-wire-compressed 16 ttl rdata offset table]
 
       [dnsRecord.PtrRecord name: name ttl: ttl]:
@@ -292,9 +478,9 @@
 
       [dnsRecord.SrvRecord prio: prio weight: weight port: port target: target ttl: ttl]:
         [nr: [enc-name target [+ rdata-base 6] table]]
-        [rdata: [concat [bytes BigEndian [@UInt16 prio]]
-                        [bytes BigEndian [@UInt16 weight]]
-                        [bytes BigEndian [@UInt16 port]]
+        [rdata: [concat [bytes NetworkEndian [@UInt16 prio]]
+                        [bytes NetworkEndian [@UInt16 weight]]
+                        [bytes NetworkEndian [@UInt16 port]]
                         nr.bytes]]
         [rr-wire-compressed 33 ttl rdata offset nr.table]
 
@@ -302,16 +488,16 @@
                            refresh: refresh retry: retry expire: expire minimum: minimum ttl: ttl]:
         [mn: [enc-name mname rdata-base table]]
         [rn: [enc-name rname [+ rdata-base [length mn.bytes]] mn.table]]
-        [times: [concat [bytes BigEndian serial]
-                        [bytes BigEndian [duration->ttl refresh]]
-                        [bytes BigEndian [duration->ttl retry]]
-                        [bytes BigEndian [duration->ttl expire]]
-                        [bytes BigEndian [duration->ttl minimum]]]]
+        [times: [concat [bytes NetworkEndian serial]
+                        [bytes NetworkEndian [duration->ttl refresh]]
+                        [bytes NetworkEndian [duration->ttl retry]]
+                        [bytes NetworkEndian [duration->ttl expire]]
+                        [bytes NetworkEndian [duration->ttl minimum]]]]
         [rr-wire-compressed 6 ttl [concat mn.bytes rn.bytes times] offset rn.table]
 
       [dnsRecord.HttpsRecord prio: prio target: target params: _ ttl: ttl]:
         [nr: [enc-name target [+ rdata-base 2] table]]
-        [rr-wire-compressed 65 ttl [concat [bytes BigEndian [@UInt16 prio]] nr.bytes] offset nr.table]
+        [rr-wire-compressed 65 ttl [concat [bytes NetworkEndian [@UInt16 prio]] nr.bytes] offset nr.table]
 
       [dnsRecord.UnknownRecord qtype: qtype data: data ttl: ttl]:
         [rr-wire-compressed qtype ttl data offset table]]]
@@ -325,15 +511,35 @@
 # ── Public API. ───────────────────────────────────────────────────────────────────────────────────
 
 [
+  # Named domain types with fixed byte-order encodings per RFC 1035.
+  # All DNS multi-byte integers are big-endian (network byte order) per RFC 1035 §2.3.2.
+  DnsId:       [type UInt16@[encoding: NetworkEndian]]   # RFC 1035 §4.1.1: 16-bit query ID
+  DnsQClass:   [type UInt16@[encoding: NetworkEndian]]   # RFC 1035 §3.2.4: 16-bit query class (e.g. IN=1)
+  DnsTtl:      [type UInt32@[encoding: NetworkEndian]]   # RFC 1035 §3.2.1: 32-bit TTL in seconds
+  DnsRdLength: [type UInt16@[encoding: NetworkEndian]]   # RFC 1035 §3.2.1: 16-bit RDATA length
+
   # Re-export types under canonical PascalCase names.
   # (Defined with camelCase in the types dict above so internal helpers can access them.)
   # Note: runtime constructor tags carry the camelCase prefix (e.g. "dnsQtype.A") — see R-13.
   SvcParams:   svcParams     # RFC 9460 SvcParams record type
-  DnsName:     dnsName       # DNS domain name (RFC 1035 §2.3.1)
+  DnsLabel:    dnsLabel      # RFC 1035 §2.3.1: one label (1–63 chars)
+  DnsName:     dnsName       # RFC 1035 §2.3.1: seq of labels, Null = trailing dot
   DnsQtype:    dnsQtype
+
+  # Parse a string into the DnsName seq structure.
+  # "example.com"  → ["example" "com"]           (relative)
+  # "example.com." → ["example" "com" Null]       (absolute/canonical)
+  # "."            → [Null]                        (root zone)
+  # Validates via dnsName structural contract (label length, total length, Null at end only).
+  dns-name:        parse-dns-name-str
+
+  dns-name->string: dns-name->string
   DnsRecord:   dnsRecord
-  DnsRcode:    dnsRcode
-  DnsError:    dnsError
+  DnsRcode:          dnsRcode
+  DnsOpcode:         dnsOpcode
+  DnsClass:          dnsClass
+  DnsExtendedError:  dnsExtendedError
+  DnsError:          dnsError
 
   # Codec for a single DNS resource record.
   # msg: the full DNS message bytes, needed for name decompression during decode.
@@ -346,13 +552,13 @@
 
   encode-dns-wire: [fn [let q@DnsQuery]
     [concat
-      [bytes BigEndian [@UInt16 q.id]]
-      [bytes BigEndian [@UInt16 [if q.recursive 0x0100 0x0000]]]
-      [bytes BigEndian [@UInt16 1]]  [bytes BigEndian [@UInt16 0]]
-      [bytes BigEndian [@UInt16 0]]  [bytes BigEndian [@UInt16 0]]
+      [bytes NetworkEndian [@UInt16 q.id]]
+      [bytes NetworkEndian [@UInt16 [if q.recursive 0x0100 0x0000]]]
+      [bytes NetworkEndian [@UInt16 1]]  [bytes NetworkEndian [@UInt16 0]]
+      [bytes NetworkEndian [@UInt16 0]]  [bytes NetworkEndian [@UInt16 0]]
       [encode-dns-name q.name]
-      [bytes BigEndian [@UInt16 [qtype->int q.qtype]]]
-      [bytes BigEndian [@UInt16 1]]]]
+      [bytes NetworkEndian [@UInt16 q.qtype.code]]
+      [bytes NetworkEndian [@UInt16 1]]]]
 
   # RFC 1035 §4 DNS wire format decoder.
   # Algorithm:
@@ -377,22 +583,25 @@
       [name: ""  next: offset]   # pointer loop guard — return empty
       [if [>= offset [length b]]
         [name: ""  next: offset]
-        [len-byte: [get b offset]]
-        [if [= len-byte 0]
-          # End of name (root label)
-          [name: ""  next: [+ offset 1]]
-          [if [= [band len-byte 0xC0] 0xC0]
-            # Pointer: next byte gives offset (RFC 1035 §4.1.4)
-            [ptr-offset: [bor [shl [band len-byte 0x3F] 8] [get b [+ offset 1]]]]
-            [target: [parse-dns-name b ptr-offset [- ptr-depth 1]]]
-            # next advances past the 2-byte pointer; pointer target's next is discarded
-            [name: target.name  next: [+ offset 2]]
-            # Regular label
-            [label-end: [+ offset 1 len-byte]]
-            [label:     [bytes-str [slice b [+ offset 1] label-end]]]
-            [rest:      [parse-dns-name b label-end ptr-depth]]
-            [name: [if [= rest.name ""] label [str label "." rest.name]]
-             next: rest.next]]]]]]
+        [block
+          [len-byte: [get b offset]]
+          [if [= len-byte 0]
+            # End of name (root label)
+            [name: ""  next: [+ offset 1]]
+            [if [= [band len-byte 0xC0] 0xC0]
+              # Pointer: next byte gives offset (RFC 1035 §4.1.4)
+              [block
+                [ptr-offset: [band [uint16 NetworkEndian [slice b offset [+ offset 2]]] 0x3FFF]]
+                [target: [parse-dns-name b ptr-offset [- ptr-depth 1]]]
+                # next advances past the 2-byte pointer; pointer target's next is discarded
+                [name: target.name  next: [+ offset 2]]]
+              # Regular label
+              [block
+                [label-end: [+ offset 1 len-byte]]
+                [label:     [bytes-str [slice b [+ offset 1] label-end]]]
+                [rest:      [parse-dns-name b label-end ptr-depth]]
+                [name: [if [= rest.name ""] label [str label "." rest.name]]
+                 next: rest.next]]]]]]]]
 
   # RFC 1035 §4.1.3: parse RDATA for a given type, returning a dnsRecord.
   # b: full message (for name decompression); offset: start of RDATA; rdlength: length.
@@ -407,64 +616,69 @@
         [name-res: [parse-dns-name b offset 5]]
         [dnsRecord.CNameRecord  name: name-res.name  ttl: ttl]
       15: # MX — preference(2) + name
-        [pref: [uint16 BigEndian [slice b offset [+ offset 2]]]]
+        [pref: [uint16 NetworkEndian [slice b offset [+ offset 2]]]]
         [name-res: [parse-dns-name b [+ offset 2] 5]]
         [dnsRecord.MxRecord  pref: pref  name: name-res.name  ttl: ttl]
       2:  # NS — compressed name
         [name-res: [parse-dns-name b offset 5]]
         [dnsRecord.NsRecord  name: name-res.name  ttl: ttl]
       16: # TXT — series of length-prefixed strings
-        [let parse-txt [fn [pos acc]
+        [parse-txt: [fn [let pos acc]
           [if [>= pos data-end]
             acc
-            [slen: [get b pos]]
-            [s:    [slice b [+ pos 1] [+ pos 1 slen]]]
-            [parse-txt [+ pos 1 slen] [append acc [list s]]]]]]
+            [block
+              [slen: [get b pos]]
+              [s:    [slice b [+ pos 1] [+ pos 1 slen]]]
+              [parse-txt [+ pos 1 slen] [append acc [list s]]]]]]]
         [dnsRecord.TxtRecord  strings: [parse-txt offset []]  ttl: ttl]
       12: # PTR — compressed name
         [name-res: [parse-dns-name b offset 5]]
         [dnsRecord.PtrRecord  name: name-res.name  ttl: ttl]
       33: # SRV — priority(2) weight(2) port(2) target
-        [prio: [uint16 BigEndian [slice b offset [+ offset 2]]]]
-        [wt:   [uint16 BigEndian [slice b [+ offset 2] [+ offset 4]]]]
-        [port: [uint16 BigEndian [slice b [+ offset 4] [+ offset 6]]]]
+        [prio: [uint16 NetworkEndian [slice b offset [+ offset 2]]]]
+        [wt:   [uint16 NetworkEndian [slice b [+ offset 2] [+ offset 4]]]]
+        [port: [uint16 NetworkEndian [slice b [+ offset 4] [+ offset 6]]]]
         [name-res: [parse-dns-name b [+ offset 6] 5]]
         [dnsRecord.SrvRecord  prio: prio  weight: wt  port: port  target: name-res.name  ttl: ttl]
       6:  # SOA — mname rname serial refresh retry expire minimum
         [mname-res: [parse-dns-name b offset 5]]
         [rname-res: [parse-dns-name b mname-res.next 5]]
         [p: rname-res.next]
-        [serial:  [@UInt32 [uint32 BigEndian [slice b p          [+ p 4]]]]]
-        [refresh: [seconds [uint32 BigEndian [slice b [+ p 4]    [+ p 8]]]]]
-        [retry:   [seconds [uint32 BigEndian [slice b [+ p 8]    [+ p 12]]]]]
-        [expire:  [seconds [uint32 BigEndian [slice b [+ p 12]   [+ p 16]]]]]
-        [minimum: [seconds [uint32 BigEndian [slice b [+ p 16]   [+ p 20]]]]]
+        [serial:  [@UInt32 [uint32 NetworkEndian [slice b p          [+ p 4]]]]]
+        [refresh: [seconds [uint32 NetworkEndian [slice b [+ p 4]    [+ p 8]]]]]
+        [retry:   [seconds [uint32 NetworkEndian [slice b [+ p 8]    [+ p 12]]]]]
+        [expire:  [seconds [uint32 NetworkEndian [slice b [+ p 12]   [+ p 16]]]]]
+        [minimum: [seconds [uint32 NetworkEndian [slice b [+ p 16]   [+ p 20]]]]]
         [dnsRecord.SoaRecord  mname: mname-res.name  rname: rname-res.name
                               serial: serial  refresh: refresh  retry: retry
                               expire: expire  minimum: minimum  ttl: ttl]
       65: # HTTPS (RFC 9460) — priority(2) target-name + SvcParams
-        [prio: [uint16 BigEndian [slice b offset [+ offset 2]]]]
+        [prio: [uint16 NetworkEndian [slice b offset [+ offset 2]]]]
         [target-res: [parse-dns-name b [+ offset 2] 5]]
         # Parse SvcParams: each is key(2)+value-len(2)+value-bytes
-        [let parse-svcparams [fn [pos params]
+        [parse-svcparams: [fn [let pos params]
           [if [>= pos data-end]
             params
-            [key:     [uint16 BigEndian [slice b pos [+ pos 2]]]]
-            [vlen:    [uint16 BigEndian [slice b [+ pos 2] [+ pos 4]]]]
-            [vdata:   [slice b [+ pos 4] [+ pos 4 vlen]]]
-            [new-params: [match key
-              0:  [merge params {mandatory: [collect [map [fn [let i] [uint16 BigEndian [slice vdata [* i 2] [+ [* i 2] 2]]]] [range 0 [/ vlen 2]]]]}]
-              1:  # alpn: comma-separated protocol strings
-                  [let parse-alpn [fn [p acc]
-                    [if [>= p vlen] acc
-                      [alen: [get vdata p]]
-                      [proto: [bytes-str [slice vdata [+ p 1] [+ p 1 alen]]]]
-                      [parse-alpn [+ p 1 alen] [append acc [list proto]]]]]]
-                  [merge params {alpn: [parse-alpn 0 []]}]
-              3:  [merge params {port: [uint16 BigEndian vdata]}]
-              5:  [merge params {ech: vdata}]
-              _:  params]]
-            [parse-svcparams [+ pos 4 vlen] new-params]]]]
+            [block
+              [key:     [uint16 NetworkEndian [slice b pos [+ pos 2]]]]
+              [vlen:    [uint16 NetworkEndian [slice b [+ pos 2] [+ pos 4]]]]
+              [vdata:   [slice b [+ pos 4] [+ pos 4 vlen]]]
+              [new-params: [match key
+                0:  [merge params {mandatory: [collect [map [fn [let i] [uint16 NetworkEndian [slice vdata [* i 2] [+ [* i 2] 2]]]] [range 0 [/ vlen 2]]]]}]
+                1:  # alpn: comma-separated protocol strings
+                    [block
+                      [parse-alpn: [fn [let p acc]
+                        [if [>= p vlen]
+                          acc
+                          [block
+                            [alen: [get vdata p]]
+                            [proto: [bytes-str [slice vdata [+ p 1] [+ p 1 alen]]]]
+                            [parse-alpn [+ p 1 alen] [append acc [list proto]]]]]]]
+                      [merge params {alpn: [parse-alpn 0 []]}]]
+                3:  [merge params {port: [uint16 NetworkEndian vdata]}]
+                5:  [merge params {ech: vdata}]
+                _:  params]]
+              [parse-svcparams [+ pos 4 vlen] new-params]]]]]
         [raw-params: [parse-svcparams target-res.next {}]]
         [params: [svcParams
           alpn:            [or [get? raw-params alpn] Absent.Absent]
@@ -483,46 +697,49 @@
   parse-rrs: [fn [let b@Bytes offset@Int n@Int acc@[Seq dnsRecord]]
     [if [= n 0]
       [records: acc  next: offset]
-      [name-res: [parse-dns-name b offset 5]]
-      [p:        name-res.next]
-      [rtype:    [uint16 BigEndian [slice b p          [+ p 2]]]]
-      [rclass:   [uint16 BigEndian [slice b [+ p 2]    [+ p 4]]]]
-      [ttl:      [seconds [uint32 BigEndian [slice b [+ p 4] [+ p 8]]]]]  # RFC 1035: TTL in seconds
-      [rdlen:    [uint16 BigEndian [slice b [+ p 8]    [+ p 10]]]]
-      [rdata-off: [+ p 10]]
-      [rr:       [parse-dns-rdata b rdata-off rdlen rtype ttl]]
-      [parse-rrs b [+ rdata-off rdlen] [- n 1] [append acc [list rr]]]]]
+      [block
+        [name-res: [parse-dns-name b offset 5]]
+        [p:        name-res.next]
+        [rtype:    [uint16 NetworkEndian [slice b p          [+ p 2]]]]
+        [rclass:   [uint16 NetworkEndian [slice b [+ p 2]    [+ p 4]]]]
+        [ttl:      [seconds [uint32 NetworkEndian [slice b [+ p 4] [+ p 8]]]]]  # RFC 1035: TTL in seconds
+        [rdlen:    [uint16 NetworkEndian [slice b [+ p 8]    [+ p 10]]]]
+        [rdata-off: [+ p 10]]
+        [rr:       [parse-dns-rdata b rdata-off rdlen rtype ttl]]
+        [parse-rrs b [+ rdata-off rdlen] [- n 1] [append acc [list rr]]]]]]
 
   decode-dns-wire: [fn@[return: [or dnsResponse dnsError]] [let b@Bytes]
     [if [< [length b] 12]
       [dnsError.DecodeFailed "response too short"]
-      [id:        [uint16 BigEndian [slice b 0 2]]
-       flags:     [uint16 BigEndian [slice b 2 4]]
-       qdcount:   [uint16 BigEndian [slice b 4 6]]
-       ancount:   [uint16 BigEndian [slice b 6 8]]
-       nscount:   [uint16 BigEndian [slice b 8 10]]
-       arcount:   [uint16 BigEndian [slice b 10 12]]
-       rcode-int: [band flags 0x000F]
-       truncated: [= [band [shr flags 9] 1] 1]]
-      [rcode: [int->rcode rcode-int]]
-      # §4.1.2: Skip question section — each question is: name + qtype(2) + qclass(2)
-      [let skip-questions [fn [offset n]
-        [if [= n 0]
-          offset
-          [name-res: [parse-dns-name b offset 5]]
-          [skip-questions [+ name-res.next 4] [- n 1]]]]]
-      [after-q: [skip-questions 12 qdcount]]
-      # §4.1.3: Parse answer, authority, additional sections
-      [an-result: [parse-rrs b after-q ancount []]]
-      [ns-result: [parse-rrs b an-result.next nscount []]]
-      [ar-result: [parse-rrs b ns-result.next arcount []]]
-      [dnsResponse.dnsResponse
-        id:         id
-        rcode:      rcode
-        answers:    an-result.records
-        authority:  ns-result.records
-        additional: ar-result.records
-        truncated:  truncated]]]]
+      [block
+        [id:        [uint16 NetworkEndian [slice b 0 2]]
+         flags:     [uint16 NetworkEndian [slice b 2 4]]
+         qdcount:   [uint16 NetworkEndian [slice b 4 6]]
+         ancount:   [uint16 NetworkEndian [slice b 6 8]]
+         nscount:   [uint16 NetworkEndian [slice b 8 10]]
+         arcount:   [uint16 NetworkEndian [slice b 10 12]]
+         rcode-int: [band flags 0x000F]
+         truncated: [= [band [shr flags 9] 1] 1]]
+        [rcode: [or [get rcode: rcode-int dnsRcode] dnsRcode.ServFail]]
+        # §4.1.2: Skip question section — each question is: name + qtype(2) + qclass(2)
+        [skip-questions: [fn [let offset n]
+          [if [= n 0]
+            offset
+            [block
+              [name-res: [parse-dns-name b offset 5]]
+              [skip-questions [+ name-res.next 4] [- n 1]]]]]]
+        [after-q: [skip-questions 12 qdcount]]
+        # §4.1.3: Parse answer, authority, additional sections
+        [an-result: [parse-rrs b after-q ancount []]]
+        [ns-result: [parse-rrs b an-result.next nscount []]]
+        [ar-result: [parse-rrs b ns-result.next arcount []]]
+        [dnsResponse.dnsResponse
+          id:         id
+          rcode:      rcode
+          answers:    an-result.records
+          authority:  ns-result.records
+          additional: ar-result.records
+          truncated:  truncated]]]]]
 
   # Encode all records in one section, threading the compression table and offset.
   # Returns {bytes: Bytes  offset: Int  table: [Map DnsName Int]}.
@@ -536,16 +753,14 @@
      records]]
 
   encode-dns-response: [fn [let resp@DnsResponse]
-    [rcode-int: [match resp.rcode
-      [dnsRcode.NoError]: 0  [dnsRcode.FormErr]: 1  [dnsRcode.ServFail]: 2
-      [dnsRcode.NXDomain]: 3 [dnsRcode.NotImpl]: 4  [dnsRcode.Refused]: 5  _: 2]]
+    [rcode-int: resp.rcode.rcode]
     [header: [concat
-      [bytes BigEndian [@UInt16 resp.id]]
-      [bytes BigEndian [@UInt16 [bor 0x8080 rcode-int]]]
-      [bytes BigEndian [@UInt16 0]]
-      [bytes BigEndian [@UInt16 [length resp.answers]]]
-      [bytes BigEndian [@UInt16 [length resp.authority]]]
-      [bytes BigEndian [@UInt16 [length resp.additional]]]]]
+      [bytes NetworkEndian [@UInt16 resp.id]]
+      [bytes NetworkEndian [@UInt16 [bor 0x8080 rcode-int]]]
+      [bytes NetworkEndian [@UInt16 0]]
+      [bytes NetworkEndian [@UInt16 [length resp.answers]]]
+      [bytes NetworkEndian [@UInt16 [length resp.authority]]]
+      [bytes NetworkEndian [@UInt16 [length resp.additional]]]]]
     # Thread compression table across all three sections — cross-section compression works.
     [an: [encode-section resp.answers    [length header] []]]
     [ns: [encode-section resp.authority  an.offset       an.table]]
@@ -583,9 +798,9 @@
 
   dns-framed-send: [fn@[bind: [h]  constraint: [h: ByteStream]] [let h@h q@DnsQuery]
     [wire: [encode-dns-wire q]]
-    [write-bytes h [concat [bytes BigEndian [@UInt16 [length wire]]] wire]]
-    [resp-len: [uint16 BigEndian [read-bytes h 2]]]
-    [match [decode-dns-wire [read-bytes h resp-len]]
+    [write h [concat [bytes NetworkEndian [@UInt16 [length wire]]] wire]]
+    [resp-len: [uint16 NetworkEndian [read h 2]]]
+    [match [decode-dns-wire [read h resp-len]]
       [Result.Ok r]:    r
       [Result.Error e]: [error [str "dns-framed: " e]]]]
 
@@ -607,17 +822,19 @@
       [Hostname.Hostname h]:
         [config: %dns]
         [if config.single-request
-          [v6: [match [try [dns-resolve cap h DnsQtype.AAAA]] [Result.Ok a]: a [Result.Error _]: []]
-           v4: [match [try [dns-resolve cap h DnsQtype.A]]    [Result.Ok a]: a [Result.Error _]: []]
-           [interleave v6 v4]]
-          [v6-task: [task [dns-resolve cap h DnsQtype.AAAA]]
-           v4-task: [task [dns-resolve cap h DnsQtype.A]]
-           v6-first: [match [timeout [millis 50] v6-task] [Result.Ok a]: a [Result.Error _]: []]
-           v4: [await v4-task]
-           v6: [if [= [] v6-first]
-             [match [try [await v6-task]] [Result.Ok a]: a [Result.Error _]: []]
-             v6-first]
-           [interleave v6 v4]]]
+          [block
+            [v6: [match [try [dns-resolve cap h DnsQtype.AAAA]] [Result.Ok a]: a [Result.Error _]: []]
+             v4: [match [try [dns-resolve cap h DnsQtype.A]]    [Result.Ok a]: a [Result.Error _]: []]]
+            [interleave v6 v4]]
+          [block
+            [v6-task: [task [dns-resolve cap h DnsQtype.AAAA]]
+             v4-task: [task [dns-resolve cap h DnsQtype.A]]]
+            [v6-first: [match [timeout [millis 50] v6-task] [Result.Ok a]: a [Result.Error _]: []]]
+            [v4: [await v4-task]]
+            [v6: [if [= [] v6-first]
+              [match [try [await v6-task]] [Result.Ok a]: a [Result.Error _]: []]
+              v6-first]]
+            [interleave v6 v4]]]
       [let ip@IpAddress]: [list ip]]]
 
   # dns-resolve: resolve a hostname to IPs for a specific query type.
@@ -628,19 +845,15 @@
       dnsError.ServerFailure
       [dns-try-names cap config [candidate-names host config.search config.ndots] qtype]]]
 
-  dns-server-loop: [fn [let query-ch@[Channel DnsQuery]
-                         handler@[Fn [DnsQuery] DnsResponse]]
-    [let step [fn []
-      [match [recv query-ch]
-        [Closed.Closed]: []
-        [Result.Ok q]:   [[task [q.respond [handler q]]] [step]]]]]
-    [step]]
+  dns-server-loop: [fn@Task [let query-ch@[Channel DnsQuery]
+                              handler@[Fn [DnsQuery] DnsResponse]]
+    [drain [fn [let q] [task [q.respond [handler q]]]] query-ch]]
 
   dns-udp-server: [fn [let cap@NetCap port@Port]
     [sock: [udp-socket cap BindTarget.IpBind {addr: IpAddress.Ipv4 [0 0 0 0]  port: port}]]
     [out:  [channel 256]]
     [task
-      [let step [fn []
+      [step: [fn []
         [dg: [recv sock]]
         [match [decode-dns-wire dg.data]
           [Result.Ok q]:
@@ -666,6 +879,21 @@
       [dns-try-names cap config [candidate-names host config.search config.ndots] dnsQtype.A]]]
 ]
 
+[instance Printable
+  [let a@dnsName]:  [print: dns-name->string]]
+
+[instance Printable
+  [let a@dnsRcode]: [print: [fn [let rc] rc.description]]]
+
+[instance Printable
+  [let a@dnsOpcode]: [print: [fn [let op] op.description]]]
+
+[instance Printable
+  [let a@dnsClass]: [print: [fn [let cl] cl.description]]]
+
+[instance Printable
+  [let a@dnsExtendedError]: [print: [fn [let e] e.description]]]
+
 # DnsRecordCodec: Codec dnsRecord ↔ full RR bytes (RFC 1035 §3.2.1) with name compression.
 # encode: dnsRecord → compressed RR bytes (within-record compression, offset=0, fresh table)
 # decode: compressed RR bytes → dnsRecord, using codec.msg for pointer decompression.
@@ -673,16 +901,18 @@
 # Round-trip: decode(DnsRecordCodec msg, encode(_, r)) = r for any dnsRecord r,
 #             because single-record encoding uses within-record compression with no cross-record
 #             pointers; the encoded bytes are self-contained and decode correctly with msg=rr-bytes.
-[instance [Codec DnsRecordCodec dnsRecord Bytes]
-  encode: [fn [let _ r] [encode-rr r]]   # encode-rr uses encode-rr-compressed offset=0 table=[]
-  decode: [fn [let codec rr-bytes]
-    [msg:     [if [empty? codec.msg] rr-bytes codec.msg]]
-    [name-res: [parse-dns-name msg 0 5]]
-    [p:       name-res.next]
-    [rtype:   [uint16 BigEndian [slice rr-bytes p [+ p 2]]]]
-    [ttl-raw: [uint32 BigEndian [slice rr-bytes [+ p 4] [+ p 8]]]]
-    [rdlen:   [uint16 BigEndian [slice rr-bytes [+ p 8] [+ p 10]]]]
-    [parse-dns-rdata msg [+ p 10] rdlen rtype [seconds ttl-raw]]]]
+[instance Codec
+  [let a@DnsRecordCodec b@dnsRecord c@Bytes]: [encode: [fn [let _ r] [encode-rr r]]   # encode-rr uses encode-rr-compressed offset=0 table=[]
+                                               decode: [fn [let codec rr-bytes@Bytes offset@Int]
+                                                 [frame: [slice rr-bytes offset [length rr-bytes]]]
+                                                 [msg:     [if [empty? codec.msg] frame codec.msg]]
+                                                 [name-res: [parse-dns-name msg 0 5]]
+                                                 [p:       name-res.next]
+                                                 [rtype:   [uint16 NetworkEndian [slice frame p [+ p 2]]]]
+                                                 [ttl-raw: [uint32 NetworkEndian [slice frame [+ p 4] [+ p 8]]]]
+                                                 [rdlen:   [uint16 NetworkEndian [slice frame [+ p 8] [+ p 10]]]]
+                                                 [value: [parse-dns-rdata msg [+ p 10] rdlen rtype [seconds ttl-raw]]
+                                                  next:  [+ offset p 10 rdlen]]]]]
 
 # Transport typeclass instances — live here because they need dns-resolve.
 #
@@ -695,8 +925,8 @@
 #   Tcp — parallel A+AAAA, 50ms v6 head start, race connections with 250ms stagger.
 #   Udp — same address resolution; pick first from interleaved list (no connection to race).
 
-[instance [Transport Tcp]
-  connect: [fn [let cap@NetCap _@Tcp ep@HostPort]
+[instance Transport
+  [let h@Tcp]: [connect: [fn [let cap@NetCap _@Tcp ep@HostPort]
     [addr: ep.host  port: ep.port]
     # TcpHandle wraps the original addr (for SNI inference etc.) + a lazy stream thunk.
     # The stream thunk evaluates on first read/write; tinct memoizes the result.
@@ -720,14 +950,14 @@
            [Closed.Closed]: [error [str "connect: all TCP attempts failed for " [str addr]]]
            [Result.Ok h]:
              [par-map [fn [let t] [cancel-task t]] tasks]
-             h]]]]]
+             h]]]]]]
 
-[instance [Transport Udp]
-  connect: [fn [let cap@NetCap _@Udp ep@HostPort]
+[instance Transport
+  [let h@Udp]: [connect: [fn [let cap@NetCap _@Udp ep@HostPort]
     [addr: ep.host  port: ep.port]
     [addrs: [resolve-address cap addr]]
     [if [empty? addrs] [error "connect: no addresses resolved"] null]
     [peer: {addr: [get addrs 0]  port: [@Port port]}]
     ConnectedUdp
       sock: [udp-socket cap BindTarget.IpBind {addr: IpAddress.Ipv4 [0 0 0 0]  port: 0}]
-      peer: peer]]
+      peer: peer]]]

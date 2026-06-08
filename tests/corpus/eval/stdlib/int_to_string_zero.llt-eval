@@ -1,0 +1,4 @@
+# int->string: zero converts to "0"
+[int->string 0]
+=== out
+String("0")

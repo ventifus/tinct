@@ -313,6 +313,7 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
         crate::imports::build_prelude_env(),
         false, // disable scheme_map (not needed for eval)
         false, // not in prelude load
+        Some(&resolution_table),
     );
     let type_annotation_table = std::sync::Arc::new(type_annotation_table);
 
@@ -459,6 +460,7 @@ pub fn eval_source_with_cap_net(
         crate::imports::build_prelude_env(),
         false, // disable scheme_map (not needed for eval)
         false, // not in prelude load
+        Some(&resolution_table),
     );
     let type_annotation_table = std::sync::Arc::new(type_annotation_table);
 

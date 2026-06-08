@@ -2162,8 +2162,11 @@ fn run_eval(
                 _final_env,
                 type_annotation_table_from_env,
             ) = tinct::typecheck::typecheck_surface_program_with_env(
-                &program, type_env, false, // disable scheme_map (not needed for eval)
+                &program,
+                type_env,
+                false, // disable scheme_map (not needed for eval)
                 false, // not in prelude load
+                Some(&resolution_table),
             );
             if !type_errors.is_empty() {
                 let file_name = match stage {

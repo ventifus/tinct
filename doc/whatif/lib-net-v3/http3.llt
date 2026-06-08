@@ -12,24 +12,24 @@
   # RFC 9000 §16: QUIC variable-length integer encoding.
   # 2-bit prefix: 0=1byte(6-bit), 1=2byte(14-bit), 2=4byte(30-bit), 3=8byte(62-bit).
   read-varint: [fn@[bind: [h]  constraint: [h: ByteStream]] [let h@h]
-    [b0: [get [read-bytes h 1] 0]]
+    [b0: [get [read h 1] 0]]
     [prefix: [shr [band b0 0xC0] 6]]
     [match prefix
       0: [band b0 0x3F]
-      1: [bor [shl [band b0 0x3F] 8] [get [read-bytes h 1] 0]]
-      2: [band [uint32 BigEndian [concat [bytes BigEndian [@UInt8 b0]] [read-bytes h 3]]] 0x3FFFFFFF]
-      3: [band [uint64 BigEndian [concat [bytes BigEndian [@UInt8 b0]] [read-bytes h 7]]] 0x3FFFFFFFFFFFFFFF]
+      1: [band [uint16 NetworkEndian [concat [bytes NetworkEndian [@UInt8 b0]] [read h 1]]] 0x3FFF]
+      2: [band [uint32 NetworkEndian [concat [bytes NetworkEndian [@UInt8 b0]] [read h 3]]] 0x3FFFFFFF]
+      3: [band [uint64 NetworkEndian [concat [bytes NetworkEndian [@UInt8 b0]] [read h 7]]] 0x3FFFFFFFFFFFFFFF]
       _: [error "unreachable"]]]
 
   # Encode n as QUIC variable-length integer. Chooses minimum-width encoding.
   encode-varint: [fn [let n@Int]
     [if [<= n 63]
-      [bytes BigEndian [@UInt8 n]]
+      [bytes NetworkEndian [@UInt8 n]]
       [if [<= n 16383]
-        [bytes BigEndian [@UInt16 [bor 0x4000 n]]]
+        [bytes NetworkEndian [@UInt16 [bor 0x4000 n]]]
         [if [<= n 1073741823]
-          [bytes BigEndian [@UInt32 [bor 0x80000000 n]]]
-          [bytes BigEndian [@UInt64 [bor 0xC000000000000000 n]]]]]]]
+          [bytes NetworkEndian [@UInt32 [bor 0x80000000 n]]]
+          [bytes NetworkEndian [@UInt64 [bor 0xC000000000000000 n]]]]]]]
 
   # RFC 9204 §4: QPACK integer decode (same algorithm as HPACK RFC 7541 §5.1).
   qpack-decode-int: [fn [let data@Bytes offset@Int prefix-bits@Int]
@@ -37,13 +37,14 @@
     [first: [band [get data offset] mask]]
     [if [< first mask]
       [value: first  next: [+ offset 1]]
-      [let read-multi [fn [i acc]
-        [b:       [get data [+ offset 1 i]]]
-        [new-acc: [+ acc [shl [band b 0x7F] [* i 7]]]]
-        [if [= [band b 0x80] 0]
-          [value: [+ mask new-acc]  next: [+ offset 2 i]]
-          [read-multi [+ i 1] new-acc]]]]
-      [read-multi 0 0]]]
+      [block
+        [read-multi: [fn [let i acc]
+          [b:       [get data [+ offset 1 i]]]
+          [new-acc: [+ acc [shl [band b 0x7F] [* i 7]]]]
+          [if [= [band b 0x80] 0]
+            [value: [+ mask new-acc]  next: [+ offset 2 i]]
+            [read-multi [+ i 1] new-acc]]]]
+        [read-multi 0 0]]]]
 
   # RFC 9204 §4: QPACK string decode (literal UTF-8; Huffman not required for static-only).
   qpack-decode-str: [fn [let data@Bytes offset@Int]
@@ -56,47 +57,46 @@
     [str:     [if huffman [error "QPACK: Huffman-encoded strings not supported"] [bytes-str raw]]]
     [value: str  next: next]]
 
-  int->h3-frame-type: [fn [let n@Int]
-    [match n
-      0: H3FrameType.H3Data   1: H3FrameType.H3Headers   3: H3FrameType.H3CancelPush
-      4: H3FrameType.H3Settings  5: H3FrameType.H3PushPromise
-      7: H3FrameType.H3Goaway    13: H3FrameType.H3MaxPushId
-      _: [error [str "HTTP/3: unknown frame type: " n]]]]
-
-  h3-frame-type->int: [fn [let t@H3FrameType]
-    [match t
-      [H3FrameType.H3Data]: 0    [H3FrameType.H3Headers]: 1    [H3FrameType.H3CancelPush]: 3
-      [H3FrameType.H3Settings]: 4  [H3FrameType.H3PushPromise]: 5
-      [H3FrameType.H3Goaway]: 7  [H3FrameType.H3MaxPushId]: 13]]
-
   read-h3-frame: [fn@[bind: [h]  constraint: [h: ByteStream]] [let h@h]
+    [ft-int: [read-varint h]]
     [H3Frame
-      [type:    [int->h3-frame-type [read-varint h]]
-       payload: [read-bytes h [read-varint h]]]]]
+      [type:    [or [get code: ft-int H3FrameType] [error [str "HTTP/3: unknown frame type: " ft-int]]]
+       payload: [read h [read-varint h]]]]]
 
   write-h3-frame: [fn@[bind: [h]  constraint: [h: ByteStream]] [let h@h frame@H3Frame]
-    [write-bytes h
+    [write h
       [concat
-        [encode-varint [h3-frame-type->int frame.type]]
+        [encode-varint frame.type.code]
         [encode-varint [length frame.payload]]
         frame.payload]]]
 ]
 
 # HttpConnect instance for Http3Connection.
-[instance [HttpConnect Http3Connection]
-  request: request]
+[instance HttpConnect
+  [let h@Http3Connection]: [request: request]]
 
 # QPACK codec: HTTP/3 header compression (RFC 9204).
 # encode: headers → QPACK-encoded Bytes; decode: QPACK Bytes → headers.
-[instance [Codec QpackCodec Headers Bytes]
-  encode: qpack-encode
-  decode: qpack-decode]
+[instance Codec
+  [let a@QpackCodec b@Headers c@Bytes]: [encode: qpack-encode
+                                          decode: qpack-decode]]
 
 # ── Public API. ───────────────────────────────────────────────────────────────────────────────────
 
 [
-  H3FrameType: [union
-    [H3Data] [H3Headers] [H3CancelPush] [H3Settings] [H3PushPromise] [H3Goaway] [H3MaxPushId]]
+  # Named domain types with fixed byte-order encodings per RFC 9114 / RFC 9000.
+  # HTTP/3 uses QUIC variable-length integers (NetworkEndian prefix encoding, RFC 9000 §16).
+  H3SettingId:   [type UInt64@[encoding: NetworkEndian]]   # RFC 9114 §7.2.4: SETTINGS identifier (QUIC varint)
+  H3SettingValue:[type UInt64@[encoding: NetworkEndian]]   # RFC 9114 §7.2.4: SETTINGS value (QUIC varint)
+
+  H3FrameType: [type
+    [H3Data       code: 0]
+    [H3Headers    code: 1]
+    [H3CancelPush code: 3]
+    [H3Settings   code: 4]
+    [H3PushPromise code: 5]
+    [H3Goaway     code: 7]
+    [H3MaxPushId  code: 13]]
 
   H3Frame: [type [type: H3FrameType  payload: Bytes]]
 
@@ -107,8 +107,8 @@
 
   # RFC 9114 §4 HTTP/3 SETTINGS parameters — a record of typed optional fields, not a map.
   Http3Settings: [type
-    [qpack-max-table-size:    [or UInt32 Absent]   # SETTINGS_QPACK_MAX_TABLE_CAPACITY (default 0)
-     max-field-section-size:  [or UInt32 Absent]]] # SETTINGS_MAX_FIELD_SECTION_SIZE (default unlimited)
+    [qpack-max-table-size:    [or H3SettingValue Absent]   # SETTINGS_QPACK_MAX_TABLE_CAPACITY (default 0)
+     max-field-section-size:  [or H3SettingValue Absent]]] # SETTINGS_MAX_FIELD_SECTION_SIZE (default unlimited)
 
   Http3Connection: [type
     [quic:         QuicConnection
@@ -127,12 +127,12 @@
     [qpack-enc:  [quic-open-stream conn]]   # QPACK encoder stream
     [qpack-dec:  [quic-open-stream conn]]   # QPACK decoder stream
     # Announce stream types
-    [write-bytes ctrl-send  [bytes BigEndian [@UInt8 0x00]]]
-    [write-bytes qpack-enc  [bytes BigEndian [@UInt8 0x02]]]
-    [write-bytes qpack-dec  [bytes BigEndian [@UInt8 0x03]]]
+    [write ctrl-send  [bytes NetworkEndian [@UInt8 0x00]]]
+    [write qpack-enc  [bytes NetworkEndian [@UInt8 0x02]]]
+    [write qpack-dec  [bytes NetworkEndian [@UInt8 0x03]]]
     # Send SETTINGS frame (empty → all defaults; RFC 9114 §7.2.4)
-    [settings-payload: [bytes BigEndian [@UInt8 0]]]
-    [write-bytes ctrl-send [concat [encode-varint 4] [encode-varint [length settings-payload]] settings-payload]]
+    [settings-payload: [bytes NetworkEndian [@UInt8 0]]]
+    [write ctrl-send [concat [encode-varint 4] [encode-varint [length settings-payload]] settings-payload]]
     # Read peer control stream, receive peer SETTINGS
     # Peer sends control stream first with stream type byte (0x00), then SETTINGS frame
     [ctrl-recv: [match [recv conn.substreams]
@@ -145,20 +145,21 @@
     [settings-type:   [read-varint ctrl-recv]]
     [if [not [= settings-type 4]] [error "HTTP/3: expected SETTINGS frame on control stream"] null]
     [settings-len:    [read-varint ctrl-recv]]
-    [settings-bytes:  [read-bytes ctrl-recv settings-len]]
+    [settings-bytes:  [read ctrl-recv settings-len]]
     # Parse SETTINGS key-value pairs: each is varint id + varint value
-    [let parse-settings [fn [offset qpack-max-table-size max-field-section-size]
+    [parse-settings: [fn [let offset qpack-max-table-size max-field-section-size]
       [if [>= offset settings-len]
         [Http3Settings
           qpack-max-table-size: qpack-max-table-size
           max-field-section-size: max-field-section-size]
-        [id-res: [qpack-decode-int settings-bytes offset 8]]  # varint — use qpack int decode
-        [val-res: [qpack-decode-int settings-bytes id-res.next 8]]
-        [match id-res.value
-          1:  [parse-settings val-res.next qpack-max-table-size val-res.value]   # MAX_FIELD_SECTION_SIZE
-          6:  [parse-settings val-res.next val-res.value max-field-section-size]  # QPACK_MAX_TABLE_CAPACITY
-          7:  [parse-settings val-res.next qpack-max-table-size max-field-section-size]  # QPACK_BLOCKED_STREAMS (ignored)
-          _:  [parse-settings val-res.next qpack-max-table-size max-field-section-size]]]]]   # unknown: skip
+        [block
+          [id-res: [qpack-decode-int settings-bytes offset 8]]  # varint — use qpack int decode
+          [val-res: [qpack-decode-int settings-bytes id-res.next 8]]
+          [match id-res.value
+            1:  [parse-settings val-res.next qpack-max-table-size val-res.value]   # MAX_FIELD_SECTION_SIZE
+            6:  [parse-settings val-res.next val-res.value max-field-section-size]  # QPACK_MAX_TABLE_CAPACITY
+            7:  [parse-settings val-res.next qpack-max-table-size max-field-section-size]  # QPACK_BLOCKED_STREAMS (ignored)
+            _:  [parse-settings val-res.next qpack-max-table-size max-field-section-size]]]]]]]   # unknown: skip
     [peer-settings: [parse-settings 0 Absent.Absent Absent.Absent]]
     # Receive peer QPACK encoder and decoder streams (next two incoming streams)
     [peer-qpack-enc: [match [recv conn.substreams]
@@ -189,32 +190,34 @@
   request: [fn [let conn@Http3Connection req@RawRequest]
     [task
       [stream: [quic-open-stream conn.quic]]
-      # Send HEADERS frame: frame-type=1 (varint) + length (varint) + qpack-encoded headers
+      # Send HEADERS frame: frame-type=H3Headers.code (varint) + length (varint) + qpack-encoded headers
       [headers-bytes: [qpack-encode req.headers]]
-      [write-bytes stream [concat [encode-varint 1] [encode-varint [length headers-bytes]] headers-bytes]]
-      # Send DATA frame if body non-empty: frame-type=0 + length + body
+      [write stream [concat [encode-varint H3FrameType.H3Headers.code] [encode-varint [length headers-bytes]] headers-bytes]]
+      # Send DATA frame if body non-empty: frame-type=H3Data.code + length + body
       [if [> [length req.body] 0]
-        [write-bytes stream [concat [encode-varint 0] [encode-varint [length req.body]] req.body]]
+        [write stream [concat [encode-varint H3FrameType.H3Data.code] [encode-varint [length req.body]] req.body]]
         null]
       # Read response: HEADERS frame then DATA frames
       [resp-type: [read-varint stream]]
       [resp-len:  [read-varint stream]]
-      [resp-headers-bytes: [read-bytes stream resp-len]]
+      [resp-headers-bytes: [read stream resp-len]]
       [resp-headers: [qpack-decode resp-headers-bytes]]
       [status: [int-of-str [or [get? resp-headers ":status"] "200"]]]
       # Accumulate DATA frames (type 0) until stream end (Closed.Closed from read-varint)
-      # Stream ends when peer closes the writable side — read-bytes will signal via error/eof.
-      [let accumulate-data [fn [acc]
+      # Stream ends when peer closes the writable side — read will signal via error/eof.
+      [accumulate-data: [fn [let acc]
         [match [try [read-varint stream]]
           [Result.Error _]:  acc   # stream closed — done
           [Result.Ok ft]:
             [flen: [read-varint stream]]
-            [if [= ft 0]   # DATA frame
-              [chunk: [read-bytes stream flen]]
-              [accumulate-data [concat acc chunk]]
+            [if [= ft H3FrameType.H3Data.code]   # DATA frame
+              [block
+                [chunk: [read stream flen]]
+                [accumulate-data [concat acc chunk]]]
               # Non-DATA frame on response stream (e.g. trailing HEADERS, PUSH_PROMISE) — skip
-              [_ : [read-bytes stream flen]]
-              [accumulate-data acc]]]]]
+              [block
+                [_: [read stream flen]]
+                [accumulate-data acc]]]]]]
       [resp-body: [accumulate-data [bytes 0]]]
       [RawResponse
         status:  status
@@ -223,29 +226,32 @@
 
   # Drain incoming QUIC streams, parse HEADERS, emit RawRequest with respond fn.
   http3-req-conn: [fn [let conn@Http3Connection out@[Channel RawRequest]]
-    [task [let step [fn []
-      [match [recv conn.quic.substreams]
-        [Closed.Closed]: []
-        [Result.Ok stream]:
-          [task
-            [frame-type: [read-varint stream]]
-            [frame-len:  [read-varint stream]]
-            [if [= frame-type 1]   # HEADERS frame
-              [headers-bytes: [read-bytes stream frame-len]]
-              [headers: [qpack-decode headers-bytes]]
-              [send out [RawRequest
-                method:  [or [get? headers ":method"] "GET"]
-                path:    [or [get? headers ":path"]   "/"]
-                headers: headers
-                body:    [bytes 0]
-                respond: [fn [let resp]
-                  [resp-bytes: [qpack-encode resp.headers]]
-                  [write-bytes stream [concat [encode-varint 1] [encode-varint [length resp-bytes]] resp-bytes]]
-                  [if [> [length resp.body] 0]
-                    [write-bytes stream [concat [encode-varint 0] [encode-varint [length resp.body]] resp.body]]
-                    null]]]]
-              null]]
-          [step]]]]]
+    [task
+      [step: [fn []
+        [match [recv conn.quic.substreams]
+          [Closed.Closed]: []
+          [Result.Ok stream]:
+            [task
+              [frame-type: [read-varint stream]]
+              [frame-len:  [read-varint stream]]
+              [if [= frame-type H3FrameType.H3Headers.code]   # HEADERS frame
+                [block
+                  [headers-bytes: [read stream frame-len]]
+                  [headers: [qpack-decode headers-bytes]]
+                  [send out [RawRequest
+                    method:  [or [get? headers ":method"] "GET"]
+                    path:    [or [get? headers ":path"]   "/"]
+                    headers: headers
+                    body:    [bytes 0]
+                    respond: [fn [let resp]
+                      [resp-bytes: [qpack-encode resp.headers]]
+                      [write stream [concat [encode-varint H3FrameType.H3Headers.code] [encode-varint [length resp-bytes]] resp-bytes]]
+                      [if [> [length resp.body] 0]
+                        [write stream [concat [encode-varint H3FrameType.H3Data.code] [encode-varint [length resp.body]] resp.body]]
+                        null]]]]]
+                null]]
+            [step]]]]
+      [step]]]
 
   h3-open-stream: [fn [let conn@Http3Connection]
     [quic-open-stream conn.quic]]
@@ -302,46 +308,52 @@
     ["user-agent" ""]                     ["x-forwarded-for" ""]            ["x-frame-options" "deny"]
     ["x-frame-options" "sameorigin"]]
 
-  qpack-decode: [fn [let data@Bytes]
+  qpack-decode: [fn [let data@Bytes offset@Int]
+    # Slice from offset — internal loop operates on buf with buf-relative offsets.
+    [buf: [slice data offset [length data]]]
     # RFC 9204 §3.2.1: skip Required Insert Count (varint) and S+DeltaBase (varint)
     # Both are 0 for static-only / literal-only encoded blocks.
-    [ric-res:  [qpack-decode-int data 0 8]]    # Required Insert Count (8-bit prefix varint)
-    [sdb-res:  [qpack-decode-int data ric-res.next 7]]  # S bit (1) + Delta Base (7-bit prefix)
+    [ric-res:  [qpack-decode-int buf 0 8]]    # Required Insert Count (8-bit prefix varint)
+    [sdb-res:  [qpack-decode-int buf ric-res.next 7]]  # S bit (1) + Delta Base (7-bit prefix)
     # Parse field lines starting at sdb-res.next
-    [let decode-loop [fn [offset headers]
-      [if [>= offset [length data]]
-        headers
-        [b0: [get data offset]]
-        [if [= [band b0 0x80] 0x80]
-          # §4.5.2: Indexed Field Line — bit 7=1, bit 6=T (static), 6-bit index
-          [t-static: [= [band b0 0x40] 0x40]]
-          [idx-res: [qpack-decode-int data offset 6]]
-          [entry: [if t-static [get qpack-static-table idx-res.value] [error "QPACK: dynamic table not supported"]]]
-          [name: [get entry 0]  value: [get entry 1]]
-          [decode-loop idx-res.next [merge headers {$name: value}]]
-          [if [= [band b0 0x40] 0x40]
-            # §4.5.4: Literal Field Line With Name Reference — bit 7=0, bit 6=1, bit 4=T (static), 4-bit index
-            [t-static: [= [band b0 0x10] 0x10]]
-            [idx-res:  [qpack-decode-int data offset 4]]
-            [name:     [if t-static
-              [get [get qpack-static-table idx-res.value] 0]
-              [error "QPACK: dynamic name reference not supported"]]]
-            [v-res:    [qpack-decode-str data idx-res.next]]
-            [decode-loop v-res.next [merge headers {$name: v-res.value}]]
-            # §4.5.6: Literal Field Line Without Name Reference — bit 7=0, bit 6=0, bit 5=1 (0x20 prefix)
-            [n-res: [qpack-decode-str data [+ offset 1]]]   # skip the 0x20 prefix byte
-            [v-res: [qpack-decode-str data n-res.next]]
-            [decode-loop v-res.next [merge headers {$n-res.value: v-res.value}]]]]]]
+    [decode-loop: [fn [let off headers]
+      [if [>= off [length buf]]
+        [value: headers  next: [length data]]
+        [block
+          [b0: [get buf off]]
+          [if [= [band b0 0x80] 0x80]
+            # §4.5.2: Indexed Field Line — bit 7=1, bit 6=T (static), 6-bit index
+            [block
+              [t-static: [= [band b0 0x40] 0x40]]
+              [idx-res: [qpack-decode-int buf off 6]]
+              [entry: [if t-static [get qpack-static-table idx-res.value] [error "QPACK: dynamic table not supported"]]]
+              [name: [get entry 0]  value: [get entry 1]]
+              [decode-loop idx-res.next [merge headers {$name: value}]]]
+            [if [= [band b0 0x40] 0x40]
+              # §4.5.4: Literal Field Line With Name Reference — bit 7=0, bit 6=1, bit 4=T (static), 4-bit index
+              [block
+                [t-static: [= [band b0 0x10] 0x10]]
+                [idx-res:  [qpack-decode-int buf off 4]]
+                [name:     [if t-static
+                  [get [get qpack-static-table idx-res.value] 0]
+                  [error "QPACK: dynamic name reference not supported"]]]
+                [v-res:    [qpack-decode-str buf idx-res.next]]
+                [decode-loop v-res.next [merge headers {$name: v-res.value}]]]
+              # §4.5.6: Literal Field Line Without Name Reference — bit 7=0, bit 6=0, bit 5=1 (0x20 prefix)
+              [block
+                [n-res: [qpack-decode-str buf [+ off 1]]]   # skip the 0x20 prefix byte
+                [v-res: [qpack-decode-str buf n-res.next]]
+                [decode-loop v-res.next [merge headers {$n-res.value: v-res.value}]]]]]]]]]
     [decode-loop sdb-res.next {}]]
 
   # Safe literal-only encoding: Required Insert Count=0, S=0, Delta Base=0 (3 zero bytes),
   # then each header as literal field line without name reference (RFC 9204 §4.5.3).
   # Bit pattern: 0b0010_0000 (0x20) | name-ref=0x00 | name-len | name | value-len | value.
   qpack-encode: [fn [let headers@[Map String String]]
-    [prefix: [concat [bytes BigEndian [@UInt8 0]] [bytes BigEndian [@UInt8 0]]]]  # RIC=0, S+DeltaBase=0
+    [prefix: [concat [bytes NetworkEndian [@UInt8 0]] [bytes NetworkEndian [@UInt8 0]]]]  # RIC=0, S+DeltaBase=0
     [fields: [apply concat [map-kv [fn [let k v]
       [k-bytes: [str-bytes k]  v-bytes: [str-bytes v]]
-      [concat [bytes BigEndian [@UInt8 0x20]]   # literal without name reference
+      [concat [bytes NetworkEndian [@UInt8 0x20]]   # literal without name reference
               [encode-varint [length k-bytes]] k-bytes
               [encode-varint [length v-bytes]] v-bytes]]
      headers]]]
@@ -359,67 +371,59 @@
 # decode: parses bytes as QUIC varint(type) + QUIC varint(length) + payload → H3Frame
 # parse-varint-at: RFC 9000 §16 QUIC variable-length integer decode from Bytes at offset.
 # Returns {value next} where next is the offset of the first byte after the varint.
-[instance [Codec H3FrameCodec H3Frame Bytes]
-  encode: [fn [let _ frame@H3Frame]
+[instance Codec
+  [let a@H3FrameCodec b@H3Frame c@Bytes]: [encode: [fn [let _ frame@H3Frame]
     [concat
-      [encode-varint [h3-frame-type->int frame.type]]
+      [encode-varint frame.type.code]
       [encode-varint [length frame.payload]]
       frame.payload]]
-  decode: [fn [let _ data@Bytes]
-    [let parse-varint-at [fn [b offset]
-      [b0:     [get b offset]]
+  decode: [fn [let _ data@Bytes offset@Int]
+    [parse-varint-at: [fn [let b off]
+      [b0:     [get b off]]
       [prefix: [shr [band b0 0xC0] 6]]
       [match prefix
-        0: [value: [band b0 0x3F]  next: [+ offset 1]]
-        1: [value: [bor [shl [band b0 0x3F] 8] [get b [+ offset 1]]]  next: [+ offset 2]]
-        2: [value: [bor [shl [band b0 0x3F] 24]
-                        [bor [shl [get b [+ offset 1]] 16]
-                             [bor [shl [get b [+ offset 2]] 8] [get b [+ offset 3]]]]]
-                   next: [+ offset 4]]
-        3: [value: [bor [shl [band b0 0x3F] 56]
-                        [bor [shl [get b [+ offset 1]] 48]
-                             [bor [shl [get b [+ offset 2]] 40]
-                                  [bor [shl [get b [+ offset 3]] 32]
-                                       [bor [shl [get b [+ offset 4]] 24]
-                                            [bor [shl [get b [+ offset 5]] 16]
-                                                 [bor [shl [get b [+ offset 6]] 8] [get b [+ offset 7]]]]]]]]]
-                   next: [+ offset 8]]
+        0: [value: [band b0 0x3F]  next: [+ off 1]]
+        1: [value: [band [uint16 NetworkEndian [slice b off [+ off 2]]] 0x3FFF]           next: [+ off 2]]
+        2: [value: [band [uint32 NetworkEndian [slice b off [+ off 4]]] 0x3FFFFFFF]      next: [+ off 4]]
+        3: [value: [band [uint64 NetworkEndian [slice b off [+ off 8]]] 0x3FFFFFFFFFFFFFFF] next: [+ off 8]]
         _: [error "H3FrameCodec: unreachable varint prefix"]]]]
-    [type-res: [parse-varint-at data 0]]
+    [type-res: [parse-varint-at data offset]]
     [len-res:  [parse-varint-at data type-res.next]]
-    [H3Frame
-      [type:    [int->h3-frame-type type-res.value]
-       payload: [slice data len-res.next [+ len-res.next len-res.value]]]]]]]]
+    [ft-int:   type-res.value]
+    [value: [H3Frame
+      [type:    [or [get code: ft-int H3FrameType] [error [str "H3FrameCodec: unknown frame type: " ft-int]]]
+       payload: [slice data len-res.next [+ len-res.next len-res.value]]]]
+     next: [+ len-res.next len-res.value]]]]]]]
 
 # ── H3Layer typeclass — bidirectional h3 ─────────────────────────────────────
 
-[class [H3Layer input output]
+[class [let H3Layer input output]
   h3: [Fn@output [input]]]
 
 # Client: QuicHandle → Http3Connection (fires QUIC+TLS with alpn:["h3"] + H3 setup)
-[instance [H3Layer QuicHandle Http3Connection]
-  h3: [fn [let qh@QuicHandle] [h3 qh]]]   # delegates to h3 function above
+[instance H3Layer
+  [let a@QuicHandle b@Http3Connection]: [h3: [fn [let qh@QuicHandle] [h3 qh]]]]   # delegates to h3 function above
 
 # Server: Channel@QuicConnection → Channel@Http3Connection
-[instance [H3Layer [Channel QuicConnection] [Channel Http3Connection]]
-  h3: [fn [let ch@[Channel QuicConnection]]
-    [channel-map h3-accept ch]]]
+[instance H3Layer
+  [let a@[Channel QuicConnection] b@[Channel Http3Connection]]: [h3: [fn [let ch@[Channel QuicConnection]]
+    [channel-map h3-accept ch]]]]
 
 # ── HttpStream Http3Connection ────────────────────────────────────────────────
 
-[instance [HttpStream Http3Connection]
-  send: [fn [let conn@Http3Connection req@RawRequest]
-    [request req conn]]   # delegates to request above
-  recv: [fn [let conn@Http3Connection]
-    [conn.quic.substreams]]]  # incoming QUIC streams
+[instance HttpStream
+  [let h@Http3Connection]: [send: [fn [let conn@Http3Connection req@RawRequest]
+                              [request req conn]]   # delegates to request above
+                            recv: [fn [let conn@Http3Connection]
+                              [conn.quic.substreams]]]]  # incoming QUIC streams
 
-[instance [HttpStream [Channel Http3Connection]]
-  send: [error "not applicable: Channel@Http3Connection is receive-only"]
-  recv: [fn [let ch@[Channel Http3Connection]]
-    [channel-flat-map http3-req-conn ch]]]
+[instance HttpStream
+  [let h@[Channel Http3Connection]]: [send: [error "not applicable: Channel@Http3Connection is receive-only"]
+                                      recv: [fn [let ch@[Channel Http3Connection]]
+                                        [channel-flat-map http3-req-conn ch]]]]
 
 # ── Multiplexed Http3Connection ───────────────────────────────────────────────
 
-[instance [Multiplexed Http3Connection QuicStream]
-  substreams: [fn [let ch@[Channel Http3Connection]]
-    [channel-map h3-open-stream ch]]]
+[instance Multiplexed
+  [let a@Http3Connection b@QuicStream]: [substreams: [fn [let ch@[Channel Http3Connection]]
+    [channel-map h3-open-stream ch]]]]

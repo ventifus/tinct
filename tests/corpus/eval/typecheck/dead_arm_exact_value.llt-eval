@@ -1,5 +1,7 @@
+# 3-arg exact-value matching: [case [let] literal body].
+# First arm (pattern "hello") misses scrutinee 42; second arm (pattern 42) fires.
 [match 42
-  [case "hello" 1]
-  [case 42 2]]
+  [case [let] "hello" 1]
+  [case [let] 42 2]]
 === out
 Int(2)

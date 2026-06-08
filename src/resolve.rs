@@ -204,7 +204,14 @@ impl SurfaceResolver {
                 }
             }
 
-            SurfaceExpression::CaseArm { pattern, body } => {
+            SurfaceExpression::CaseArm { let_bindings, pattern, body } => {
+                // For 3-arg form: let_bindings names the binding targets (no resolution
+                // needed — these are declarations, not variable references). Walk pattern
+                // to resolve pin variables (names NOT in the let_bindings set) and body
+                // to resolve names bound by the arm.
+                if let Some(lb) = let_bindings {
+                    self.walk_surface_node(lb);
+                }
                 self.walk_surface_node(pattern);
                 self.walk_surface_node(body);
             }
@@ -400,13 +407,18 @@ fn surface_node_static_keys(node: &Arc<SurfaceNode>) -> Option<Vec<String>> {
 /// Extract all variable names bound by a pattern.
 /// This is used to create scope bindings for match arm bodies.
 ///
-/// Examples:
+/// T-1154: Pattern::Variable has been removed; bare lowercase names are now Pin.
+/// Pin patterns do NOT introduce bindings — they compare or act as wildcards.
+/// After T-1154, this function returns [] for all leaf patterns.
+///
+/// Examples (post-T-1154):
 /// - `_` (Wildcard) → []
-/// - `x` (Variable) → ["x"]
-/// - `[Some v]` (Constructor) → ["v"]
-/// - `[Dict {x, y: z}]` → ["x", "z"]
-/// - `[seq h t]` → ["h", "t"]
-/// - `x | y` (Or) → ["x", "y"] (both branches must bind same vars)
+/// - `x` (Pin, unresolved) → [] (wildcard, no binding)
+/// - `$x` (Pin, escaped) → [] (compare, no binding)
+/// - `[Some v]` (Constructor with Pin binding) → [] (Pin doesn't bind)
+/// - `[Dict {x, y: z}]` → [] (Pin sub-patterns don't bind)
+/// - `[seq h t]` → [] (Pin sub-patterns don't bind)
+/// - `x | y` (Or with Pin branches) → []
 fn extract_pattern_bindings(pattern: &Spanned<Pattern>) -> Vec<String> {
     let mut bindings = Vec::new();
     collect_pattern_bindings(&pattern.node, &mut bindings);
@@ -414,13 +426,11 @@ fn extract_pattern_bindings(pattern: &Spanned<Pattern>) -> Vec<String> {
 }
 
 /// Recursively collect all variable bindings from a pattern.
+#[allow(clippy::only_used_in_recursion)]
 fn collect_pattern_bindings(pattern: &Pattern, out: &mut Vec<String>) {
     match pattern {
         Pattern::Wildcard => {
             // Wildcard matches anything but binds no variables
-        }
-        Pattern::Variable(name) => {
-            out.push(name.clone());
         }
         Pattern::Literal(_) => {
             // Literal patterns bind no variables

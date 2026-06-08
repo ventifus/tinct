@@ -743,31 +743,55 @@ Note: `SurfaceExpression::TypeApp` has been removed from the AST. Type construct
 [let x]             # bare binding
 [let x@Int]         # typed binding
 [let _]             # wildcard
-[let v: Ok]         # structural test — v binds to Ok's payload
-[let [a b]: Pair]   # multi-payload structural test
 ```
 
-`[let ...]` appears as the first expression in `fn`, `class`, `type`, `instance`, and `case` positions. Outside these positions, `[let ...]` is a type error. Every bracket NOT starting with `let` is always an expression — no exceptions.
+`[let ...]` is valid in `fn`, `class`, `type`, `instance`, and `case` positions. Outside these positions, `[let ...]` is a type error. Every bracket NOT starting with `let` is always an expression — no exceptions.
 
 This invariant is complete: `[a b c]` is always an implied call. A reader never needs to know the enclosing context to determine whether a bracket introduces names or calls a function.
 
 ### Match Arms — `[case ...]`
 
-`case` is a keyword. `[case pattern body]` is a match arm with explicit scoping:
+`case` is a keyword. `[case ...]` is a **3-argument** match arm:
+
+```tinct
+[case [let bindings]  pattern  body]
+```
+
+- **`[let bindings]`** — declares which names in `pattern` are binding targets. Each name listed here is introduced into scope for `body`.
+- **`pattern`** — the structural match expression. Dispatch depends on the head token:
+  - Uppercase or dot-access head (`Constructor`, `Result.Ok`) → structural match against a nominal variant
+  - Lowercase or operator head (`[> n 0]`, `[= n x]`) → guard expression, evaluated with all `[let]` names bound to the scrutinee
+  - `_` → wildcard, always matches
+- **`body`** — the expression evaluated when the arm matches, with `[let]` names in scope.
+
+**Binding-name rule:** A name appearing in `pattern` that is listed in `[let bindings]` is a fresh binding — it receives a value from the match. A name in `pattern` that is NOT listed in `[let]` is a pin — it is looked up from the enclosing scope and compared against the scrutinee.
 
 ```tinct
 [match result
-  [case [let v: Ok]   v]           # structural test; v scoped to body
-  [case [let e: Err]  [log e]]     # structural test; e scoped to body
-  [case [let _]       0]]          # wildcard
+  [case [let v]  [Result.Ok v]   v]           # bind v to Ok's payload
+  [case [let e]  [Result.Err e]  [log e]]     # bind e to Err's payload
+  [case [let _]  _               0]]          # wildcard
 
 [match status
-  [case 200           "ok"]        # exact value — no [let ...], no new bindings
-  [case 404           "missing"]
-  [case [let n@Int]   [str n]]]    # typed binding
+  [case [let]   200              "ok"]        # exact value — empty [let], no new bindings
+  [case [let]   404              "missing"]
+  [case [let n] n@Int            [str n]]]    # typed binding
+
+[match value
+  [case [let n]  [> n 0]  "positive"]        # guard: lowercase head → guard expression
+  [case [let n]  [< n 0]  "negative"]
+  [case [let _]  _        "zero"]]           # wildcard fallback
 ```
 
-Existing match arm shorthands (`[Ok v]:`, `n@Int:`, `_:`) coexist with `[case ...]`. Migration to `[case ...]` is encouraged.
+Non-binding arms (no new names needed) use shorthand keyed syntax:
+
+```tinct
+[match color
+  Color.Red:   "#ff0000"   # unit constructor — no binding
+  Color.Green: "#00ff00"
+  42:          "forty-two" # literal equality — no binding
+  _:           "other"]    # wildcard — no binding
+```
 
 ### Placeholder Expression — `...`
 
@@ -779,8 +803,8 @@ process: [fn@Result [let data@Input] ...]    # stub — type-checks, fails at ca
 config: [host: "localhost"  port: ...]        # required but unset — fails when accessed
 
 [match x
-  [case [let v: Ok]  v]
-  [case [let _: Err] ...]]                   # unreachable branch guard
+  [case [let v]  [Result.Ok v]   v]
+  [case [let _]  [Result.Err _]  ...]]       # unreachable branch guard
 ```
 
 `...` has type `Unknown` — the gradual escape hatch. It satisfies any type constraint without generating a type error. `UnimplementedError` is catchable via `$try`.
@@ -791,13 +815,13 @@ config: [host: "localhost"  port: ...]        # required but unset — fails whe
 
 ```tinct
 [match x
-  [case 0           "zero"]
-  [case 1           "one"]
-  [case [let _]     "other"]]
+  [case [let]   0  "zero"]
+  [case [let]   1  "one"]
+  [case [let _] _  "other"]]
 
 [match response
-  [case [let result: Ok]  result]
-  [case [let msg: Err]    [error msg]]]
+  [case [let result]  [Result.Ok result]   result]
+  [case [let msg]     [Result.Err msg]     [error msg]]]
 ```
 
 Patterns include wildcards, variable bindings, literals, type tags, pins, and dict/list destructuring. See the `[case ...]` section above for the full binding pattern specification.
@@ -1047,7 +1071,8 @@ ctor_name    = UPPERCASE ~ ident_cont*             // constructor name must star
 ctor_field   = field_name ~ fn_annotation? ~ ":" ~ value   // field@[...]: Type
 field_name   = ident_start ~ ident_cont*           // lowercase field name
 let_form     = keyword_let ~ param+
-case_form    = keyword_case ~ value ~ value
+case_form    = keyword_case ~ let_decl ~ value ~ value
+let_decl     = "[" ~ keyword_let ~ param* ~ "]"
 
 keyword_call = "call" ~ !ident_char ~ !colon_ahead
 keyword_fn   = "fn" ~ !ident_char ~ !colon_ahead

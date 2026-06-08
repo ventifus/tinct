@@ -1,0 +1,4 @@
+# float->string: whole-number float — Rust f64 Display omits the decimal point for whole numbers
+[float->string 1.0]
+=== out
+String("1")

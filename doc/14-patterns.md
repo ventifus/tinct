@@ -124,7 +124,46 @@ The `[match]` special form provides pattern matching with exhaustiveness checkin
     patternₙ: exprₙ]
 ```
 
-Each arm is a `pattern: body` keyed entry — the pattern is the key, the body is the value. This uses tinct's standard key-value syntax and makes arm boundaries unambiguous.
+Match arms come in two forms:
+
+**Keyed shorthand arms** — pattern is the key, body is the value. Concise for non-binding or simple arms:
+
+```tinct
+[match color
+  Color.Red:   "#ff0000"   # unit constructor — no binding
+  Color.Green: "#00ff00"
+  42:          "forty-two" # literal equality — no binding
+  _:           "other"]    # wildcard — no binding
+```
+
+**`[case ...]` arms** — the canonical 3-argument form when names must be bound:
+
+```tinct
+[case [let bindings]  pattern  body]
+```
+
+- **`[let bindings]`** — declares which names in `pattern` are binding targets. Listed names are introduced into `body`'s scope. Empty `[let]` means no new bindings.
+- **`pattern`** — the structural match. Dispatch rules:
+  - Uppercase or dot-access head (`[Result.Ok v]`, `[Constructor field: v]`) → structural constructor match; names listed in `[let]` bind payload fields
+  - Lowercase or operator head (`[> n 0]`, `[= n x]`) → guard expression, evaluated with all `[let]` names bound to the scrutinee
+  - `_` → wildcard, always matches
+- **`body`** — evaluated when the arm matches, with `[let]` names in scope.
+
+**Binding-name rule:** A name in `pattern` that IS listed in `[let bindings]` is a fresh binding target. A name in `pattern` that is NOT listed in `[let]` is a pin — looked up from the enclosing scope and compared to the scrutinee.
+
+```tinct
+[match result
+  [case [let v]  [Result.Ok v]   v]           # v listed in [let] → fresh binding
+  [case [let e]  [Result.Err e]  [log e]]     # e listed in [let] → fresh binding
+  [case [let _]  _               0]]          # wildcard
+
+[match n
+  [case [let n]  [> n 0]  "positive"]        # guard: [> n 0] evaluated with n bound to scrutinee
+  [case [let n]  [< n 0]  "negative"]
+  [case [let _]  _        "zero"]]
+```
+
+Both arm forms can appear in the same `[match]` expression.
 
 ### Patterns
 

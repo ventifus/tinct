@@ -862,11 +862,21 @@ async fn expand_surface_expr_inner(
             }))
         }
 
-        SurfaceExpression::CaseArm { pattern, body } => {
+        SurfaceExpression::CaseArm {
+            let_bindings,
+            pattern,
+            body,
+        } => {
+            let expanded_let_bindings = if let Some(lb) = let_bindings {
+                Some(expand_surface_expr(lb, env, ctx, stdlib_env).await?)
+            } else {
+                None
+            };
             let expanded_pattern = expand_surface_expr(pattern, env, ctx, stdlib_env).await?;
             let expanded_body = expand_surface_expr(body, env, ctx, stdlib_env).await?;
             Ok(Arc::new(SurfaceNode {
                 expr: SurfaceExpression::CaseArm {
+                    let_bindings: expanded_let_bindings,
                     pattern: expanded_pattern,
                     body: expanded_body,
                 },
@@ -1628,7 +1638,14 @@ fn pre_scan_surface_expr<'a>(
                 Ok(())
             }
 
-            SurfaceExpression::CaseArm { pattern, body } => {
+            SurfaceExpression::CaseArm {
+                let_bindings,
+                pattern,
+                body,
+            } => {
+                if let Some(lb) = let_bindings {
+                    pre_scan_surface_expr(lb, env, &ctx, &stdlib_env).await?;
+                }
                 pre_scan_surface_expr(pattern, env, &ctx, &stdlib_env).await?;
                 pre_scan_surface_expr(body, env, &ctx, &stdlib_env).await
             }

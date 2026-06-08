@@ -1,7 +1,6 @@
-# [@String x] pattern matches a String scrutinee and binds x to the value.
-# Demonstrates TypeAssert pattern with String type (canonical name, not "Str" alias).
+# T-1154: [@String x] no longer binds x (x is Pattern::Pin — wildcard, no binding).
+# Use a standalone [case [let x] x body] arm; x is bound to the scrutinee.
 [match "hello"
-  [@String x]: x
-  _: "no-match"]
+  [case [let x] x x]]
 === out
 String("hello")

@@ -242,6 +242,7 @@ impl ReplSession {
             Rc::clone(&self.type_env),
             true,  // enable_scheme_map: populate type_map for :type/:describe commands
             false, // in_prelude_load: false (this is a user session, not the prelude)
+            Some(&resolution_table),
         );
         // Extend (not replace) the session's type and doc maps with the new information.
         self.type_map.extend(type_map);

@@ -1,10 +1,7 @@
-# S-850 / B-338: TypeAssert pattern pipeline is fully elaborated end-to-end.
-# [@Int x] arm is now converted from TypeAssertPending to TypeAssert by lower.rs
-# using the TypeAnnotationTable populated by the type checker (B-338 fix).
-# Pattern::TypeAssert arm in eval.rs is the primary runtime path.
-# The bound variable x is usable as an Int in the arm body.
+# S-850 / B-338: TypeAssert pattern pipeline — binds scrutinee and uses it in body.
+# T-1154: [@Int x] no longer binds x (x is Pattern::Pin — wildcard, no binding).
+# Use a standalone [case [let x] x body] arm; x is bound to the scrutinee.
 [match 42
-  [@Int x]: [+ x 1]
-  _: 0]
+  [case [let x] x [+ x 1]]]
 === out
 Int(43)

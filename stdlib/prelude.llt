@@ -29,7 +29,7 @@
   #   Map     — TypeNode.TypeApplication of TypeNode.TypeConstructor "Map"
   #   union   — TypeNode.Union
   #   all     — TypeNode.Intersect
-  #   without — TypeNode.Negation (placeholder; not yet in TypeNode ADT; falls back)
+  #   without — TypeNode.Negation
   #
   # Arithmetic resolvers use builtin-tag-of to dispatch on the TypeNode tag string
   # ("TypeNode.Int", "TypeNode.Float", etc.) rather than the old .name field.
@@ -57,10 +57,7 @@
       args: [builtin-seq key [builtin-seq val [builtin-variant "Seq.Nil"]]]]]
   union:   [fn [let ...types] [Union types: [builtin-collect types]]]
   all:     [fn [let ...types] [Intersect types: [builtin-collect types]]]
-  # TypeNode has no Negation constructor yet (T-1129).
-  # without used to produce kind: "negation" which dict_to_type never handled → Unknown.
-  # Preserve that behavior: return TypeNode.Unknown so the type checker sees a gradual type.
-  without: [fn [let t]        [builtin-variant "TypeNode.Unknown"]]
+  without: [fn [let inner]    [Negation inner: [as-typenode inner]]]
 
   # ============================================================================
   # Arithmetic Type-Stage Resolvers
@@ -185,6 +182,8 @@
       types@Child: [Seq TypeNode]]          # @Child on Seq → Seq (map over elements)
     [Intersect@[as-type: [fn [let i] i]  guarding: false]
       types@Child: [Seq TypeNode]]
+    [Negation@[as-type: [fn [let n] n]  guarding: false]
+      inner@Child: TypeNode]                    # @Child on TypeNode → One
     # TypeConstructor — two roles:
     #   Transient (pre-normalization): bare name lookup result, eliminated by expansion
     #   Leaf identity (post-normalization): qualified name "Color.Red", carries nominal identity
@@ -545,8 +544,8 @@ cond-impl: [fn@Any [let pairs@Dict i@Int]
 
 has?-impl: [fn@Bool [let try-result]
     [match try-result
-        [Result.Ok _]: true
-        [Result.Error _]: false]]
+        [case [let _] [Result.Ok]   true]
+        [case [let _] [Result.Error] false]]]
 
 # values-seq-impl: Build a lazy Seq of values (O(1) per element).
 # Recursion naturally produces correct order: recurse first, then cons.
@@ -633,8 +632,8 @@ partition-finish: [fn [let result]
 # Uses builtin-try to test key existence without the public get-or wrapper.
 group-by-get-bucket: [fn [let k acc]
     [match [builtin-try [fn [let] [builtin-get k acc]]]
-        [Result.Ok v]:    v
-        [Result.Error _]: []]]
+        [case [let v] [Result.Ok v]    v]
+        [case [let _] [Result.Error]   []]]]
 
 # group-by-insert: update key k in plain dict acc with x prepended to existing bucket.
 # Uses builtin-merge (right-biased overlay) to store the updated bucket.
@@ -675,8 +674,8 @@ transpose-impl: [fn@Dict [let rows@Dict col-keys]
 
 try-or-impl: [fn [let try-result default]
     [match try-result
-        [Result.Ok v]: v
-        [Result.Error _]: default]]
+        [case [let v] [Result.Ok v]    v]
+        [case [let _] [Result.Error]   default]]]
 
 # ============================================================================
 # Seq helpers for collection functions (only depend on builtins + siblings)
@@ -766,10 +765,10 @@ uniq-reduce-step: [fn [let acc v]
 # Uses the Result.Ok/Result.Error variants produced by [try thunk].
 retry-impl: [fn [let n@Int thunk@Fn]
     [match [builtin-try thunk]
-        [Result.Ok v]:    v
-        [Result.Error _]: [builtin-if [builtin-gte n 1]
+        [case [let v] [Result.Ok v]    v]
+        [case [let _] [Result.Error]   [builtin-if [builtin-gte n 1]
                        [retry-impl [builtin-sub n 1] thunk]
-                       [builtin-raise "retry limit exceeded"]]]]
+                       [builtin-raise "retry limit exceeded"]]]]]
 
 # select-impl: recursive event-loop body.
 # Calls select-once on sources, passes result to handler, then loops.
@@ -780,9 +779,9 @@ select-impl: [fn [let ctx sources@Seq handler@Fn]
     [builtin-if [builtin-cancelled-q ctx]
         []
         [match [builtin-select-once ctx sources]
-            [case [let v: Result.Ok]
+            [case [let v] [Result.Ok v]
                 [[fn [let item] [handler item] [select-impl ctx sources handler]] v]]
-            [case [let _: Closed]
+            [case [let _] [Closed]
                 [variant "Closed"]]]]]
 
 ]
@@ -1533,8 +1532,8 @@ find-deep-try@[doc: "Find-deep try (internal helper)"]: [fn@Any [let subtree@Dic
 
 find-deep-try-check@[doc: "Find-deep try-check (internal helper)"]: [fn@Any [let result parent@Dict target ks i@Int]
     [match result
-        [Result.Ok v]: v
-        [Result.Error _]: [find-deep-impl parent target ks [builtin-add i 1]]]]
+        [case [let v] [Result.Ok v]    v]
+        [case [let _] [Result.Error]   [find-deep-impl parent target ks [builtin-add i 1]]]]]
 
 find-deep: [fn@[return: Any  doc: """
 Recursively search for a key in nested dicts.
@@ -1910,8 +1909,8 @@ Example: [ok? [Result.Error "bad"]] => false
 Note: Predicate for Result success case.
 """] [let r]
     [match r
-        [Result.Ok _]: true
-        [Result.Error _]: false]]
+        [case [let _] [Result.Ok]    true]
+        [case [let _] [Result.Error] false]]]
 
 error?: [fn@[return: Bool  doc: """
 Check if Result is Error.
@@ -1922,8 +1921,8 @@ Example: [error? [Result.Ok 42]] => false
 Note: Predicate for Result error case.
 """] [let r]
     [match r
-        [Result.Ok _]: false
-        [Result.Error _]: true]]
+        [case [let _] [Result.Ok]    false]
+        [case [let _] [Result.Error] true]]]
 
 and-then: [fn@[doc: """
 Monad bind for Result (chain computations).
@@ -1935,8 +1934,8 @@ Note: Signature is Fn -> Result -> Result (subject-last for pipeline composition
 If Ok, applies f to the value; if Error, passes through. Matches Rust's .and_then(f) and Haskell's result >>= f. Equivalent to MonadResult.bind.
 """] [let f result]
     [match result
-        [Result.Ok v]: [f v]
-        [Result.Error msg]: [Error msg: msg]]]
+        [case [let v]   [Result.Ok v]    [f v]]
+        [case [let msg] [Result.Error msg] [Error msg: msg]]]]
 
 result-or: [fn@[return: a  doc: """
 Unwrap Ok value or return default.
@@ -1947,8 +1946,8 @@ Example: [result-or 99 [Result.Error "bad"]] => 99
 Note: Default-value behavior for Result. Returns the Ok value if present, otherwise the default.
 """] [let default@a result]
     [match result
-        [Result.Ok v]: v
-        [Result.Error _]: default]]
+        [case [let v] [Result.Ok v]    v]
+        [case [let _] [Result.Error]   default]]]
 
 result-map: [fn@[return: Unknown  doc: """
 Functor map over Result.
@@ -1959,8 +1958,8 @@ Example: [result-map [fn [x] [* x 2]] [Error msg: "bad"]] => Variant(Result.Erro
 Note: Maps a function over the Ok value; passes Error through unchanged.
 """] [let f result]
     [match result
-        [Result.Ok v]: [Ok value: [f v]]
-        [Result.Error msg]: [Error msg: msg]]]
+        [case [let v]   [Result.Ok v]    [Ok value: [f v]]]
+        [case [let msg] [Result.Error msg] [Error msg: msg]]]]
 
 result@[doc: "Result monad dict for [do result ...] chains"]:
   [bind: [fn [let r f] [and-then f r]]  pure: Ok]
@@ -2049,12 +2048,12 @@ FoldableResult@[doc: "Foldable instance for Result"]:
     [let t@Result]: [
       fold:   [fn [let f init r]
         [match r
-          [Result.Ok a]:  [f init a]
-          [Result.Error _]: init]]
+          [case [let a] [Result.Ok a]    [f init a]]
+          [case [let _] [Result.Error]   init]]]
       to-seq: [fn [let r]
         [match r
-          [Result.Ok a]:  [0: a]
-          [Result.Error _]: []]]]]
+          [case [let a] [Result.Ok a]    [0: a]]
+          [case [let _] [Result.Error]   []]]]]]
 
 # Traverses a structure applying effects (traverse)
 Traversable@[doc: "Type class for traversable structures"]:
@@ -2079,8 +2078,8 @@ TraversableResult@[doc: "Traversable instance for Result"]:
     [let t@Result]: [
       traverse: [fn [let f r]
         [match r
-          [Result.Ok a]:  [f.fmap Ok [f a]]
-          [Result.Error e]: [f.pure [Error msg: e]]]]]]
+          [case [let a] [Result.Ok a]    [f.fmap Ok [f a]]]
+          [case [let e] [Result.Error e] [f.pure [Error msg: e]]]]]]]
 
 # ============================================================================
 # Maybe ADT and Instances
@@ -2111,7 +2110,7 @@ absent?@[doc: "True if x is Absent.Absent (a missing value), false otherwise. NO
 
 maybe-map@[doc: "Map over Maybe value"]: [fn [let f ma]
   [match ma
-    [Maybe.Some a]: [Some [f a]]
+    [case [let a] [Maybe.Some a] [Some [f a]]]
     [Maybe.None]:   None]]
 
 # Functor instance for Maybe type
@@ -2126,9 +2125,10 @@ ApplicativeMaybe@[doc: "Applicative instance for Maybe"]:
       pure:  Some
       lift2: [fn [let f ma mb]
         [match ma
-          [Maybe.Some a]: [match mb
-            [Maybe.Some b]: [Some a: [f a b]]
-            [Maybe.None]:   None]
+          [case [let a] [Maybe.Some a]
+            [match mb
+              [case [let b] [Maybe.Some b] [Some a: [f a b]]]
+              [Maybe.None]:   None]]
           [Maybe.None]: None]]]]
 
 # Monad instance for Maybe type
@@ -2137,7 +2137,7 @@ MonadMaybe@[doc: "Monad instance for Maybe"]:
     [let m@Maybe]: [
       bind: [fn [let ma f]
         [match ma
-          [Maybe.Some a]: [f a]
+          [case [let a] [Maybe.Some a] [f a]]
           [Maybe.None]:   None]]]]
 
 # Traversable instance for Maybe type
@@ -2146,7 +2146,7 @@ TraversableMaybe@[doc: "Traversable instance for Maybe"]:
     [let t@Maybe]: [
       traverse: [fn [let f ma]
         [match ma
-          [Maybe.Some a]: [f.fmap Some [f a]]
+          [case [let a] [Maybe.Some a] [f.fmap Some [f a]]]
           [Maybe.None]:   [f.pure None]]]]]
 
 # ============================================================================
@@ -2313,6 +2313,39 @@ ShowableStr@[doc: "Showable instance for Str"]:
 ShowableBool@[doc: "Showable instance for Bool"]:
   [instance Showable
     [let a@Bool]: [str: str]]
+
+# ============================================================================
+# Type Class Declarations: Printable
+# ============================================================================
+#
+# Printable is the well-typed typeclass for converting a specific primitive to
+# a String via its `print` method. Unlike Showable (which references the `str`
+# builtin directly and therefore cannot serve as the implementation of `str`),
+# Printable instances use the thin primitives `builtin-int->string` and
+# `builtin-float->string` that do no typeclass dispatch and cannot recurse.
+#
+# Future work: once `str` is reimplemented as a tinct stdlib function that
+# dispatches through Printable instances, Showable can be removed. That
+# migration is a separate sprint.
+
+Printable@[doc: "Type class for types that can be converted to a String via print"]:
+  [class [let Printable a]]
+
+PrintableInt@[doc: "Printable instance for Int: print converts an Int to its decimal string"]:
+  [instance Printable
+    [let a@Int]: [print: [fn [let x@Int] [builtin-int->string x]]]]
+
+PrintableFloat@[doc: "Printable instance for Float: print converts a Float to its string representation"]:
+  [instance Printable
+    [let a@Float]: [print: [fn [let x@Float] [builtin-float->string x]]]]
+
+PrintableBool@[doc: "Printable instance for Bool: print converts a Bool to \"true\" or \"false\""]:
+  [instance Printable
+    [let a@Bool]: [print: [fn [let x@Bool] [builtin-if x "true" "false"]]]]
+
+PrintableStr@[doc: "Printable instance for String: print is the identity (strings are already strings)"]:
+  [instance Printable
+    [let a@String]: [print: [fn [let x@String] x]]]
 
 # ============================================================================
 # Type Class Declarations: Mappable
@@ -2531,6 +2564,8 @@ str: builtin-str
 str-length: builtin-str-length
 append: builtin-append
 to-int: builtin-to-int
+int->string: builtin-int->string
+float->string: builtin-float->string
 
 # ============================================================================
 # Prelude Re-exports for User-Visible Builtins (prelude-missing-wrappers)
@@ -3371,8 +3406,8 @@ integrity-hash: optional blake3 hex digest for integrity verification (--require
     [load source name: path]
     [load source name: path hash: integrity-hash]]]
   [match [try [fn [let] [eval-file [expand program] [] cap]]]
-    [Result.Ok result]: [include-cache-success hash result]
-    [Result.Error e]:   [include-cache-failure hash e]]]
+    [case [let result] [Result.Ok result]    [include-cache-success hash result]]
+    [case [let e]      [Result.Error e]      [include-cache-failure hash e]]]]
 
 # include: load, expand, and evaluate a tinct file from a DirCap.
 #
@@ -3398,7 +3433,7 @@ Included files start with % = [] (fresh pipeline input).
   [source: [builtin-read-all [open cap path Readable]]]
   [hash:   [blake3 [str [cap-identity cap] "|" source]]]
   [match [builtin-include-cache-get hash]
-    [IncludeCacheEntry.Cached result]: result
+    [case [let result] [IncludeCacheEntry.Cached result] result]
     [IncludeCacheEntry.Pending]:       [error [str "circular include: " path]]
     [IncludeCacheEntry.Missing]:       [include-evaluate-and-cache source path hash cap integrity-hash: integrity-hash]]]
 
@@ -3662,8 +3697,8 @@ the parent context is cancelled. Cleanup return value is discarded.
 Rust-level EvalErrors bypass finally.
 """]: [fn [let cleanup@Fn body@Fn]
     [match [try body]
-        [Result.Ok v]:    [do [with-context [non-cancellable] [cleanup]] v]
-        [Result.Error e]: [do [with-context [non-cancellable] [cleanup]] [raise e]]]]
+        [case [let v] [Result.Ok v]    [do [with-context [non-cancellable] [cleanup]] v]]
+        [case [let e] [Result.Error e] [do [with-context [non-cancellable] [cleanup]] [raise e]]]]]
 
 # ============================================================================
 # Macro transformer helpers and public transformers

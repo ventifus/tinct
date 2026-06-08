@@ -8,8 +8,11 @@
   ok-val: [Ok value: 42]
   err-val: [Error msg: "fail"]
   ok-matched: [match [Ok value: 1]
-    [Result.Ok v]: v.value
-    [Result.Error e]: 0]
+    [case [let v] [Result.Ok v]    v.value]
+    [Result.Error _]:              0]
 ]
 === out
 Dict({"Ok": Function(payload), "Error": Function(payload), "ok-val": Variant(Result.Ok, Dict({"value": Int(42)})), "err-val": Variant(Result.Error, Dict({"msg": String("fail")})), "ok-matched": Int(1)})
+
+=== warn
+[TypeError] unreachable match arm: this pattern is already covered by prior arms

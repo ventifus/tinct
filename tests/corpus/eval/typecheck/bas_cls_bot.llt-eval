@@ -5,7 +5,7 @@
 # The [Result.Error _] arm correctly matches an uninhabited scrutinee type.
 [result: [try [fn [] 42]]
  value: [match result
-   [Result.Ok v]:  v
-   [Result.Error _]: 0]]
+   [case [let v] [Result.Ok v]    v]
+   [Result.Error _]:              0]]
 === out
 Dict({"result": Variant(Result.Ok, Int(42)), "value": Int(42)})

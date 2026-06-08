@@ -236,13 +236,11 @@ pub(crate) fn elaborate_pattern(
             })
         }
 
-        // Pass-through patterns: Variable, Wildcard, Literal, Pin, TypeTag carry no
+        // Pass-through patterns: Wildcard, Literal, Pin, TypeTag carry no
         // sub-patterns and require no annotation resolution.
-        Pattern::Variable(_)
-        | Pattern::Wildcard
-        | Pattern::Literal(_)
-        | Pattern::Pin(_)
-        | Pattern::TypeTag(_) => Ok(pat.clone()),
+        Pattern::Wildcard | Pattern::Literal(_) | Pattern::Pin(_) | Pattern::TypeTag(_) => {
+            Ok(pat.clone())
+        }
 
         // T-1140: Predicate patterns — pass through unchanged.
         // The contained SurfaceNode is not type-checked here; it will be evaluated at runtime.

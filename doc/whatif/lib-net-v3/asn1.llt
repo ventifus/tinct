@@ -1,0 +1,137 @@
+# stdlib/asn1.llt — ASN.1 DER/BER parser and value type.
+# Part of: lib-net-v3
+#
+# ASN.1 (Abstract Syntax Notation One, ITU-T X.680) is a data description language.
+# DER (Distinguished Encoding Rules, ITU-T X.690 §11) is the canonical binary encoding
+# used in X.509 certificates, PKCS structures, SNMP, LDAP, and many other protocols.
+#
+# This file provides:
+#   - AsnValue: a recursive nominal ADT representing any DER-encoded value
+#   - parse-der: parse DER bytes → AsnValue
+#   - parse-der-seq: parse a sequence of DER-encoded values from a byte buffer
+#   - oid->string: render an OID [Seq Int] as dotted notation (e.g. "2.5.29.17")
+#
+# Crypto-specific uses (X.509, PKCS#8, etc.) live in crypto.llt which includes this file.
+
+[include %libdir "net.llt"]
+
+# AsnValue: recursive DER value tree. Declared at file scope before the internal dict
+# so der-parse-one can construct AsnValue.* values without a two-dict ordering issue.
+[
+  asnValue: [type
+    [AsnBool     Bool]
+    [AsnInt      Bytes]             # arbitrary-precision integer as raw bytes
+    [AsnBitStr   Bytes]             # BIT STRING (leading unused-bits byte included)
+    [AsnOctetStr Bytes]             # OCTET STRING
+    [AsnNull]                       # NULL
+    [AsnOid      [Seq Int]]         # OBJECT IDENTIFIER as [Seq Int] of arc values
+    [AsnStr      String]            # PrintableString / UTF8String / IA5String / VisibleString
+    [AsnSeq      [Seq asnValue]]    # SEQUENCE — recursive
+    [AsnSet      [Seq asnValue]]    # SET — recursive
+    [AsnTime     String]            # UTCTime / GeneralizedTime as raw string
+    [AsnRaw      tag@Int  data@Bytes]]  # unknown/unsupported tag — raw bytes preserved
+]
+
+# ── Internal. ────────────────────────────────────────────────────────────────────────────────────
+
+[
+  # Read a multi-byte big-endian unsigned integer from a byte slice.
+  decode-be-int: [fn [let b@Bytes offset@Int len@Int]
+    [reduce [fn [let acc i] [+ [* acc 256] [get b [+ offset i]]]] 0 [range 0 len]]]
+
+  # ITU-T X.690 §8.1 OID arc decoding: high-bit continuation bytes, 7 bits per byte.
+  decode-oid-arc: [fn [let b@Bytes offset@Int acc@Int]
+    [byte:    [get b offset]]
+    [new-acc: [+ [* acc 128] [band byte 0x7F]]]
+    [if [= [band byte 0x80] 0]
+      [arc: new-acc  next: [+ offset 1]]
+      [decode-oid-arc b [+ offset 1] new-acc]]]
+
+  decode-oid-arcs: [fn [let b@Bytes offset@Int acc@[Seq Int]]
+    [if [>= offset [length b]]
+      acc
+      [block
+        [arc-result: [decode-oid-arc b offset 0]]
+        [decode-oid-arcs b arc-result.next [append [list arc-result.arc] acc]]]]]
+
+  # ITU-T X.690 §8.19: OID first byte encodes two arcs: arc1 * 40 + arc2 (arc1 < 3).
+  decode-oid: [fn [let b@Bytes]
+    [if [= [length b] 0] [error "DER: empty OID"] null]
+    [first-byte: [get b 0]]
+    # X.680 §B.8: first-byte = 40*arc1 + arc2 for arc1 ∈ {0,1};
+    # arc1 = 2: first-byte = 80 + arc2 (arc2 may exceed 39).
+    [arc1: [if [< first-byte 80] [/ first-byte 40] 2]]
+    [arc2: [if [< first-byte 80] [mod first-byte 40] [- first-byte 80]]]
+    [cons arc1 [cons arc2 [decode-oid-arcs b 1 []]]]]
+
+  # Parse one DER TLV (Tag-Length-Value) element from b starting at offset.
+  # Returns {value: AsnValue  next: Int} where next is the offset after this element.
+  # Supports: short-form (≤127 byte) and long-form (multi-byte) length encoding.
+  der-parse-one: [fn [let b@Bytes offset@Int]
+    [tag-byte:    [get b offset]]
+    [constructed: [= [band tag-byte 0x20] 0x20]]
+    [tag-num:     [band tag-byte 0x1F]]
+    [if [= tag-num 31] [error "DER: long-form tag numbers (>30) not supported"] null]
+    [len-byte:    [get b [+ offset 1]]]
+    [len-result:
+      [if [= [band len-byte 0x80] 0]
+        # Short form: length in low 7 bits.
+        [len: len-byte  value-offset: [+ offset 2]]
+        # Long form: low 7 bits = number of length bytes following.
+        [n-len-bytes: [band len-byte 0x7F]
+         big-len:     [decode-be-int b [+ offset 2] n-len-bytes]
+         len:         big-len
+         value-offset: [+ offset 2 n-len-bytes]]]]
+    [raw: [slice len-result.value-offset [+ len-result.value-offset len-result.len] b]]
+    [value:
+      [if constructed
+        [[fn [let children]
+           [match tag-num
+             16: [asnValue.AsnSeq children]
+             17: [asnValue.AsnSet children]
+             _:  [asnValue.AsnSeq children]]]   # context-constructed: treat as SEQUENCE
+         [der-parse-seq raw 0 []]]
+        [match tag-num
+          1:  [asnValue.AsnBool  [not [= [get raw 0] 0]]]
+          2:  [asnValue.AsnInt   raw]
+          3:  [asnValue.AsnBitStr raw]
+          4:  [asnValue.AsnOctetStr raw]
+          5:  asnValue.AsnNull
+          6:  [asnValue.AsnOid  [decode-oid raw]]
+          12: [asnValue.AsnStr  [bytes-str raw]]    # UTF8String
+          19: [asnValue.AsnStr  [bytes-str raw]]    # PrintableString
+          22: [asnValue.AsnStr  [bytes-str raw]]    # IA5String
+          23: [asnValue.AsnTime [bytes-str raw]]    # UTCTime
+          24: [asnValue.AsnTime [bytes-str raw]]    # GeneralizedTime
+          _:  [asnValue.AsnRaw  tag-num raw]]]]
+    [value: value  next: [+ len-result.value-offset len-result.len]]]
+
+  # Parse a sequence of DER elements from b[offset..] into a [Seq AsnValue].
+  der-parse-seq: [fn [let b@Bytes offset@Int acc@[Seq asnValue]]
+    [if [>= offset [length b]]
+      acc
+      [[fn [let result]
+         [der-parse-seq b result.next [append [list result.value] acc]]]
+       [der-parse-one b offset]]]]
+]
+
+# ── Public API. ───────────────────────────────────────────────────────────────────────────────────
+
+[
+  # Re-export AsnValue type under canonical name.
+  AsnValue: asnValue
+
+  # Parse a single DER-encoded value from bytes. Returns AsnValue.
+  # Raises [error "..."] if bytes are malformed.
+  parse-der: [fn [let b@Bytes]
+    [result: [der-parse-one b 0]]
+    result.value]
+
+  # Parse all DER-encoded values in bytes (e.g. a SEQUENCE body already stripped of its header).
+  parse-der-seq: [fn [let b@Bytes]
+    [der-parse-seq b 0 []]]
+
+  # Render an OID [Seq Int] as dotted-decimal notation. E.g. [2 5 29 17] → "2.5.29.17".
+  oid->string: [fn [let oid@[Seq Int]]
+    [apply str [intersperse "." [map [fn [let n] [str n]] oid]]]]
+]

@@ -22,9 +22,10 @@
   ]
 ]
 === error
-[E013] no instance for Multipliable (Dict, Dict) (defined at 19:22-19:29) (called at 19:17-19:30)
+[E002] undefined variable: r (did you mean the string "r"? Use quotes.) (defined at 19:25-19:26) (called at 19:17-19:30)
   in [* ...] at 19:22-19:29
   in [* ...] at 19:17-19:30
 
 === warn
-[TypeError] non-exhaustive match: missing coverage for [Shape.Circle _]
+[UndefinedVariable] undefined variable: r
+[UndefinedVariable] undefined variable: r

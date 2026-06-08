@@ -1,7 +1,6 @@
-# [@Dict x] pattern matches a Dict scrutinee and binds x to the value.
-# Demonstrates TypeAssert pattern with Dict type.
+# T-1154: [@Dict x] no longer binds x (x is Pattern::Pin — wildcard, no binding).
+# Use a standalone [case [let x] x body] arm; x is bound to the scrutinee dict.
 [match [a: 1  b: 2]
-  [@Dict x]: [get "a" x]
-  _: 0]
+  [case [let x] x [get "a" x]]]
 === out
 Int(1)

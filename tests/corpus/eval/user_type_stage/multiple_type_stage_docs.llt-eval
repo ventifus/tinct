@@ -1,0 +1,19 @@
+--- stage: type
+[
+  # First type-stage document
+  pair: [fn [let a b] [record [fst: a  snd: b]]]
+]
+--- stage: type
+[
+  # Second type-stage document can reference the first
+  string-pair: [pair String String]
+]
+---
+[
+  # Use the composed type from the second type-stage document
+  result@string-pair: [fst: "hello"  snd: "world"]
+]
+---
+[fst: "hello"  snd: "world"]
+=== out
+Dict({"fst": String("hello"), "snd": String("world")})

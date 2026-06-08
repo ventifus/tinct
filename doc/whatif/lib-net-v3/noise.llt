@@ -7,8 +7,8 @@
 [include %libdir "crypto.llt"]   # for HkdfHash (used in NoiseConfig.hash field)
 
 [instance@[bind: [h]] [ByteStream [NoiseConnection h]]
-  read-bytes:  noise-read
-  write-bytes: noise-write]
+  read:  noise-read
+  write: noise-write]
 
 # ── Internal. ────────────────────────────────────────────────────────────────────────────────────
 
@@ -38,24 +38,26 @@
   encrypt-and-hash: [fn [let state@NoiseState plaintext@Bytes]
     [if [absent? state.k]
       [ciphertext: plaintext   new-h: [mix-hash state.h plaintext]]
-      [nonce12:    [noise-nonce state.n]]
-      [ciphertext: [chacha20-poly1305-seal state.k nonce12 plaintext state.h]]
-      [new-h:      [mix-hash state.h ciphertext]]]
+      [block
+        [nonce12:    [noise-nonce state.n]]
+        [ciphertext: [chacha20-poly1305-seal state.k nonce12 plaintext state.h]]
+        [new-h:      [mix-hash state.h ciphertext]]]]
     [ciphertext: ciphertext  new-h: new-h  new-n: [+ state.n 1]]]
 
   decrypt-and-hash: [fn [let state@NoiseState ciphertext@Bytes]
     [if [absent? state.k]
       [plaintext: ciphertext  new-h: [mix-hash state.h ciphertext]  new-n: state.n]
-      [nonce12:  [noise-nonce state.n]]
-      [match [chacha20-poly1305-open state.k nonce12 ciphertext state.h]
-        [Result.Ok p]:
-          [new-h: [mix-hash state.h ciphertext]]
-          [plaintext: p  new-h: new-h  new-n: [+ state.n 1]]
-        [Result.Error _]: [error "Noise: decryption failed"]]]]
+      [block
+        [nonce12:  [noise-nonce state.n]]
+        [match [chacha20-poly1305-open state.k nonce12 ciphertext state.h]
+          [Result.Ok p]:
+            [new-h: [mix-hash state.h ciphertext]]
+            [plaintext: p  new-h: new-h  new-n: [+ state.n 1]]
+          [Result.Error _]: [error "Noise: decryption failed"]]]]
 
   # Noise spec §12: ChaCha20-Poly1305 nonce = 32 zero bits || little-endian 64-bit n.
-  noise-nonce: [fn [let n@UInt64]
-    [concat [0 0 0 0] [bytes LittleEndian n]]]  # n: UInt64
+  noise-nonce: [fn [let n@NoiseNonce]
+    [concat [0 0 0 0] [bytes LittleEndian n]]]  # n: NoiseNonce (LittleEndian per Noise spec §12)
 
   # noise-split: derive send/recv keys per Noise spec §5.2 HKDF(state.ck, empty, 2).
   # Single 64-byte expand per RFC 5869: T(1)||T(2); T(2) = HMAC(PRK, T(1)||0x02).
@@ -71,27 +73,28 @@
   # Each message: encrypt-and-hash payload bytes + update handshake state.
   # State init: h = hash(protocol-name), ck = h, prologue mixed in.
   noise-xx-connect: [fn@[bind: [h]  constraint: [h: ByteStream]] [let h@h cfg@NoiseConfig]
+    [protocol-name: [str "Noise_" NoisePattern.XX.name "_25519_ChaChaPoly_SHA256"]]
     [state: [NoiseState
       s: cfg.private-key  e: Absent.Absent  rs: Absent.Absent  re: Absent.Absent
-      ck: [noise-init-h "Noise_XX_25519_ChaChaPoly_SHA256"]
-      h:  [noise-init-h "Noise_XX_25519_ChaChaPoly_SHA256"]
+      ck: [noise-init-h protocol-name]
+      h:  [noise-init-h protocol-name]
       k:  Absent.Absent  n: 0]]
     [state: [mix-hash state cfg.prologue]]
     # → e: send ephemeral public key
     [eph: [x25519-keypair]]
     [state: [mix-hash state eph.public]]
-    [write-bytes h eph.public]
+    [write h eph.public]
     # ← e,ee,s,es: receive peer ephemeral, DH, receive peer static encrypted, DH
-    [re-bytes: [read-bytes h 32]]  # peer ephemeral public
+    [re-bytes: [read h 32]]  # peer ephemeral public
     [state: [mix-hash state re-bytes]]
     [state: [mix-key state [x25519-dh eph.private re-bytes]]]  # ee
-    [s-enc: [read-bytes h [+ 32 16]]]   # encrypted peer static (32) + AEAD tag (16)
+    [s-enc: [read h [+ 32 16]]]   # encrypted peer static (32) + AEAD tag (16)
     [rs-result: [decrypt-and-hash state s-enc]]
     [rs-bytes: rs-result.ciphertext  state: [merge state rs-result]]
     [state: [mix-key state [x25519-dh eph.private rs-bytes]]]   # es
     # → s,se: send our static key encrypted + DH
     [s-enc2: [encrypt-and-hash state cfg.public-key].ciphertext]
-    [write-bytes h s-enc2]
+    [write h s-enc2]
     [state: [mix-key state [x25519-dh cfg.private-key re-bytes]]]   # se
     # Split: derive send/recv keys
     [keys: [noise-split state true]]
@@ -101,26 +104,27 @@
 
   noise-xx-accept: [fn@[bind: [h]  constraint: [h: ByteStream]] [let h@h cfg@NoiseConfig]
     # Mirror of xx-connect: ← e  → e,ee,s,es  ← s,se
-    # Responder state init: h = hash("Noise_XX_25519_ChaChaPoly_SHA256"), ck = h, prologue mixed in.
+    # Responder state init: h = hash(protocol-name), ck = h, prologue mixed in.
+    [protocol-name: [str "Noise_" NoisePattern.XX.name "_25519_ChaChaPoly_SHA256"]]
     [state: [NoiseState
       s: cfg.private-key  e: Absent.Absent  rs: Absent.Absent  re: Absent.Absent
-      ck: [noise-init-h "Noise_XX_25519_ChaChaPoly_SHA256"]
-      h:  [noise-init-h "Noise_XX_25519_ChaChaPoly_SHA256"]
+      ck: [noise-init-h protocol-name]
+      h:  [noise-init-h protocol-name]
       k:  Absent.Absent  n: 0]]
     [state: [mix-hash state cfg.prologue]]
     # ← e: receive initiator ephemeral public key
-    [re-bytes: [read-bytes h 32]]
+    [re-bytes: [read h 32]]
     [state: [mix-hash state re-bytes]]
     # → e,ee,s,es: send our ephemeral, DH(ee), send our static encrypted, DH(es)
     [eph: [x25519-keypair]]
     [state: [mix-hash state eph.public]]
-    [write-bytes h eph.public]
+    [write h eph.public]
     [state: [mix-key state [x25519-dh eph.private re-bytes]]]   # ee
     [s-enc: [encrypt-and-hash state cfg.public-key].ciphertext]
-    [write-bytes h s-enc]
+    [write h s-enc]
     [state: [mix-key state [x25519-dh cfg.private-key re-bytes]]]   # es
     # ← s,se: receive initiator static encrypted + DH(se)
-    [rs-enc: [read-bytes h [+ 32 16]]]   # encrypted initiator static (32) + AEAD tag (16)
+    [rs-enc: [read h [+ 32 16]]]   # encrypted initiator static (32) + AEAD tag (16)
     [rs-result: [decrypt-and-hash state rs-enc]]
     [rs-bytes: rs-result.ciphertext  state: [merge state rs-result]]
     [state: [mix-key state [x25519-dh eph.private rs-bytes]]]   # se
@@ -137,11 +141,12 @@
     [match cfg.remote-key
       [Absent.Absent]: [error "noise-ik-connect: remote-key required for IK pattern"]
       [let rs]:
-        # State init: h = hash("Noise_IK_25519_ChaChaPoly_SHA256"), ck = h, prologue mixed in.
+        # State init: h = hash(protocol-name), ck = h, prologue mixed in.
+        [protocol-name: [str "Noise_" NoisePattern.IK.name "_25519_ChaChaPoly_SHA256"]]
         [state: [NoiseState
           s: cfg.private-key  e: Absent.Absent  rs: rs  re: Absent.Absent
-          ck: [noise-init-h "Noise_IK_25519_ChaChaPoly_SHA256"]
-          h:  [noise-init-h "Noise_IK_25519_ChaChaPoly_SHA256"]
+          ck: [noise-init-h protocol-name]
+          h:  [noise-init-h protocol-name]
           k:  Absent.Absent  n: 0]]
         [state: [mix-hash state cfg.prologue]]
         # Mix responder static key into h (IK initiator knows rs at start)
@@ -149,17 +154,17 @@
         # → e,es,s,ss: send ephemeral, DH(es), send static encrypted, DH(ss)
         [eph: [x25519-keypair]]
         [state: [mix-hash state eph.public]]
-        [write-bytes h eph.public]
+        [write h eph.public]
         [state: [mix-key state [x25519-dh eph.private rs]]]   # es
         [s-enc: [encrypt-and-hash state cfg.public-key].ciphertext]
-        [write-bytes h s-enc]
+        [write h s-enc]
         [state: [mix-key state [x25519-dh cfg.private-key rs]]]   # ss
         # PSK injection for IKpsk2: mix PSK after ss if present (Noise spec §9.2)
         [state: [match cfg.psk
           [Absent.Absent]: state
           [let psk]: [mix-key state psk]]]
         # ← e,ee,se: receive responder ephemeral, DH(ee), DH(se)
-        [re-bytes: [read-bytes h 32]]
+        [re-bytes: [read h 32]]
         [state: [mix-hash state re-bytes]]
         [state: [mix-key state [x25519-dh eph.private re-bytes]]]   # ee
         [state: [mix-key state [x25519-dh cfg.private-key re-bytes]]]   # se
@@ -172,19 +177,20 @@
   noise-ik-accept: [fn@[bind: [h]  constraint: [h: ByteStream]] [let h@h cfg@NoiseConfig]
     # Mirror of ik-connect: ← e,es,s,ss  → e,ee,se
     # State init
+    [protocol-name: [str "Noise_" NoisePattern.IK.name "_25519_ChaChaPoly_SHA256"]]
     [state: [NoiseState
       s: cfg.private-key  e: Absent.Absent  rs: Absent.Absent  re: Absent.Absent
-      ck: [noise-init-h "Noise_IK_25519_ChaChaPoly_SHA256"]
-      h:  [noise-init-h "Noise_IK_25519_ChaChaPoly_SHA256"]
+      ck: [noise-init-h protocol-name]
+      h:  [noise-init-h protocol-name]
       k:  Absent.Absent  n: 0]]
     [state: [mix-hash state cfg.prologue]]
     # Mix our static public key into h (IK: responder knows its own key is known)
     [state: [mix-hash state cfg.public-key]]
     # ← e,es,s,ss: receive initiator ephemeral, DH(es), receive encrypted static, DH(ss)
-    [re-bytes: [read-bytes h 32]]
+    [re-bytes: [read h 32]]
     [state: [mix-hash state re-bytes]]
     [state: [mix-key state [x25519-dh cfg.private-key re-bytes]]]   # es (responder: dh(s, re))
-    [rs-enc: [read-bytes h [+ 32 16]]]   # encrypted initiator static (32) + tag (16)
+    [rs-enc: [read h [+ 32 16]]]   # encrypted initiator static (32) + tag (16)
     [rs-result: [decrypt-and-hash state rs-enc]]
     [rs-bytes: rs-result.ciphertext  state: [merge state rs-result]]
     [state: [mix-key state [x25519-dh cfg.private-key rs-bytes]]]   # ss
@@ -195,7 +201,7 @@
     # → e,ee,se: send our ephemeral, DH(ee), DH(se)
     [eph: [x25519-keypair]]
     [state: [mix-hash state eph.public]]
-    [write-bytes h eph.public]
+    [write h eph.public]
     [state: [mix-key state [x25519-dh eph.private re-bytes]]]   # ee
     [state: [mix-key state [x25519-dh eph.private rs-bytes]]]   # se (responder: dh(e, rs))
     # Split: derive send/recv keys (responder is NOT initiator)
@@ -210,11 +216,12 @@
     [match cfg.remote-key
       [Absent.Absent]: [error "noise-nk-connect: remote-key (server static) required for NK pattern"]
       [let rs]:
-        # State init: h = hash("Noise_NK_25519_ChaChaPoly_SHA256"), ck = h, prologue mixed in.
+        # State init: h = hash(protocol-name), ck = h, prologue mixed in.
+        [protocol-name: [str "Noise_" NoisePattern.NK.name "_25519_ChaChaPoly_SHA256"]]
         [state: [NoiseState
           s: Absent.Absent  e: Absent.Absent  rs: rs  re: Absent.Absent
-          ck: [noise-init-h "Noise_NK_25519_ChaChaPoly_SHA256"]
-          h:  [noise-init-h "Noise_NK_25519_ChaChaPoly_SHA256"]
+          ck: [noise-init-h protocol-name]
+          h:  [noise-init-h protocol-name]
           k:  Absent.Absent  n: 0]]
         [state: [mix-hash state cfg.prologue]]
         # Mix responder static key into h (NK: initiator knows rs at start)
@@ -222,10 +229,10 @@
         # → e,es: send ephemeral public key, DH(es) with responder static
         [eph: [x25519-keypair]]
         [state: [mix-hash state eph.public]]
-        [write-bytes h eph.public]
+        [write h eph.public]
         [state: [mix-key state [x25519-dh eph.private rs]]]   # es
         # ← e,ee: receive responder ephemeral, DH(ee)
-        [re-bytes: [read-bytes h 32]]
+        [re-bytes: [read h 32]]
         [state: [mix-hash state re-bytes]]
         [state: [mix-key state [x25519-dh eph.private re-bytes]]]   # ee
         # Split: derive send/recv keys (initiator)
@@ -237,22 +244,23 @@
   noise-nk-accept: [fn@[bind: [h]  constraint: [h: ByteStream]] [let h@h cfg@NoiseConfig]
     # Mirror of nk-connect: ← e,es  → e,ee
     # State init
+    [protocol-name: [str "Noise_" NoisePattern.NK.name "_25519_ChaChaPoly_SHA256"]]
     [state: [NoiseState
       s: cfg.private-key  e: Absent.Absent  rs: Absent.Absent  re: Absent.Absent
-      ck: [noise-init-h "Noise_NK_25519_ChaChaPoly_SHA256"]
-      h:  [noise-init-h "Noise_NK_25519_ChaChaPoly_SHA256"]
+      ck: [noise-init-h protocol-name]
+      h:  [noise-init-h protocol-name]
       k:  Absent.Absent  n: 0]]
     [state: [mix-hash state cfg.prologue]]
     # Mix our static public key into h (NK: responder's static key is known a priori)
     [state: [mix-hash state cfg.public-key]]
     # ← e,es: receive initiator ephemeral, DH(es) with our static key
-    [re-bytes: [read-bytes h 32]]
+    [re-bytes: [read h 32]]
     [state: [mix-hash state re-bytes]]
     [state: [mix-key state [x25519-dh cfg.private-key re-bytes]]]   # es (responder: dh(s, re))
     # → e,ee: send our ephemeral, DH(ee)
     [eph: [x25519-keypair]]
     [state: [mix-hash state eph.public]]
-    [write-bytes h eph.public]
+    [write h eph.public]
     [state: [mix-key state [x25519-dh eph.private re-bytes]]]   # ee
     # Split: derive send/recv keys (responder is NOT initiator)
     [keys: [noise-split state false]]
@@ -265,18 +273,19 @@
   noise-read-acc: [fn [let conn@NoiseConnection remaining@Int acc@[Seq Bytes]]
     [if [= remaining 0]
       [reduce concat [] acc]
-      [len: [uint16 BigEndian [read-bytes conn.underlying 2]]]
-      [ct: [read-bytes conn.underlying len]]
-      # recv-n channel holds exactly one value (atomic counter). Closed.Closed is impossible.
-      [match [recv conn.recv-n]
-        [Closed.Closed]: [error "Noise: recv-n channel closed unexpectedly"]
-        [Result.Ok n]:
-          [send conn.recv-n [+ n 1]]
-          [plain: [match [chacha20-poly1305-open conn.recv-key [noise-nonce n] ct []]
-            [Result.Ok p]:    p
-            [Result.Error _]: [error "Noise: decryption failed"]]]
-          [got: [min remaining [length plain]]]
-          [noise-read-acc conn [- remaining got] [append [list [slice 0 got plain]] acc]]]]]]
+      [block
+        [len: [uint16 BigEndian [read conn.underlying 2]]]
+        [ct: [read conn.underlying len]]
+        # recv-n channel holds exactly one value (atomic counter). Closed.Closed is impossible.
+        [match [recv conn.recv-n]
+          [Closed.Closed]: [error "Noise: recv-n channel closed unexpectedly"]
+          [Result.Ok n]:
+            [send conn.recv-n [+ n 1]]
+            [plain: [match [chacha20-poly1305-open conn.recv-key [noise-nonce n] ct []]
+              [Result.Ok p]:    p
+              [Result.Error _]: [error "Noise: decryption failed"]]]
+            [got: [min remaining [length plain]]]
+            [noise-read-acc conn [- remaining got] [append [list [slice 0 got plain]] acc]]]]]]]
 
   init-nonce-ch: [fn []
     [ch: [channel 1]]
@@ -290,13 +299,24 @@
 # ── Public API. ───────────────────────────────────────────────────────────────────────────────────
 
 [
-  NoisePattern: [union [XX] [IK] [IKpsk2] [NK] [XK] [KK] [IX]]
+  # Named domain type for ChaCha20-Poly1305 nonce counters per Noise spec §12.
+  # Nonce = 32 zero bits || little-endian 64-bit counter (ChaCha20-Poly1305, RFC 7539).
+  NoiseNonce: [type UInt64@[encoding: LittleEndian]]
+
+  NoisePattern: [type
+    [XX     name: "XX"]
+    [IK     name: "IK"]
+    [IKpsk2 name: "IKpsk2"]
+    [NK     name: "NK"]
+    [XK     name: "XK"]
+    [KK     name: "KK"]
+    [IX     name: "IX"]]
 
   # DH algorithm selector (currently only X25519 is supported).
-  NoiseDh: [union [X25519]]
+  NoiseDh: [type [X25519]]
 
   # Symmetric cipher selector for Noise transport messages.
-  NoiseCipher: [union [ChaChaPoly] [AESGCM]]
+  NoiseCipher: [type [ChaChaPoly] [AESGCM]]
 
   NoiseConfig: [type
     [pattern:    NoisePattern
@@ -317,7 +337,7 @@
      ck: [Bytes 32]               # chaining key
      h:  [Bytes 32]               # handshake hash
      k:  [or [Bytes 32] Absent]   # cipher key; Absent = no encryption yet (before mix-key)
-     n:  UInt64]]                 # nonce counter; Noise spec §12: 64-bit little-endian
+     n:  NoiseNonce]]             # nonce counter; Noise spec §12: 64-bit little-endian
 
   # NoiseConnection is parametric over its underlying ByteStream h so Noise
   # can be stacked over any stream (Handle, TlsConnection, etc.).
@@ -326,8 +346,8 @@
     [underlying: h
      send-key:   [Bytes 32]
      recv-key:   [Bytes 32]
-     send-n:     [Channel UInt64]   # 64-bit nonce counter (Noise spec §12)
-     recv-n:     [Channel UInt64]]]
+     send-n:     [Channel NoiseNonce]   # 64-bit nonce counter (Noise spec §12)
+     recv-n:     [Channel NoiseNonce]]]
 
   # NoiseTransportCodec: Bytes ↔ encrypted framed Bytes at the Noise transport layer.
   # Carries the NoiseConnection for send/recv keys and nonce counters.
@@ -366,7 +386,7 @@
       [Result.Ok n]:
         [send conn.send-n [+ n 1]]
         [ct: [chacha20-poly1305-seal conn.send-key [noise-nonce n] data []]]
-        [write-bytes conn.underlying [concat [bytes BigEndian [@UInt16 [length ct]]] ct]]]]
+        [write conn.underlying [concat [bytes BigEndian [@UInt16 [length ct]]] ct]]]]
 
   noise-read: [fn [let conn@NoiseConnection wanted@Int]
     [noise-read-acc conn wanted []]]
@@ -399,7 +419,7 @@
 
 # ── NoiseLayer typeclass — bidirectional noise ────────────────────────────────
 
-[class [NoiseLayer input output]
+[class [let NoiseLayer input output]
   noise: [Fn@output [NoiseConfig input]]]
 
 [instance@[bind: [h]  constraint: [h: ByteStream]]

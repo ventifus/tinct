@@ -1,4 +1,4 @@
-# stdlib/protocols/http.llt — High-level HTTP: http-channel, fetch, router, middleware.
+# stdlib/protocols/http.llt — High-level HTTP: http-channel, fetch, middleware.
 # Part of: lib-net-v3
 
 [include %libdir "net.llt"]
@@ -28,7 +28,7 @@
       [collect [map [fn [let e]
         [i: e.0  addr: e.1]
         [task
-          [recv [timer-channel %clock [millis (* i 250)]]]
+          [recv [timer-channel %clock [millis [* i 250]]]]
           [match [try [quic-h3-connect cap host addr port ech]]
             [Result.Ok h]:    [try [send result-ch h]]
             [Result.Error _]: null]]]
@@ -37,7 +37,7 @@
       [collect [map [fn [let e]
         [i: e.0  addr: e.1]
         [task
-          [recv [timer-channel %clock [millis [+ [if h3? 250 0] (* i 250)]]]]
+          [recv [timer-channel %clock [millis [+ [if h3? 250 0] [* i 250]]]]]
           [match [try [tcp-h2-connect cap host addr port ech]]
             [Result.Ok h]:    [try [send result-ch h]]
             [Result.Error _]: null]]]
@@ -82,23 +82,24 @@
 [
   # HTTP error type — callers distinguish application-level failures from transport failures.
   # Transport failures (TCP, TLS, DNS) surface as NetError or TlsError from the connect layer.
-  HttpError: [union
+  HttpError: [type
     [StatusError      status@Int  body@Bytes]   # 4xx/5xx response; body may contain error detail
     [ProtocolError    reason@String]             # HTTP/2 or HTTP/3 framing violation
     [TooManyRedirects url@Url]                  # redirect loop or depth limit exceeded
     [InvalidResponse  reason@String]]            # unparseable response (truncated, corrupt, etc.)
 
-  SvcbRecord: [union
+  SvcbRecord: [type
     [AliasMode  target@String]           # SvcPriority=0 (RFC 9460 §3): redirect to target
     [ServiceMode                         # SvcPriority>0: connection hints
       priority@Int                       # lower = more preferred when multiple records exist
       target@[or String Absent]          # Absent/"." = use original QNAME (RFC 9460 §2.5.2)
-      params@SvcParams]]                 # fully-typed SvcParams — access via params.alpn etc.
+      params@SvcParams                   # fully-typed SvcParams — access via params.alpn etc.
+      other@[Map Int Bytes]]]            # unknown SvcParamKeys not in the known set (1,3,4,5,6)
 
-  http-channel: [fn [let cap@NetCap port@Port]
+  http-channel:  [fn [let cap@NetCap port@Port]
     [http1-serve [tcp-listen-port cap port]]]
 
-  http-channel-tls: [fn [let cap@NetCap port@Port cert@TlsServerConfig]
+  https-channel: [fn [let cap@NetCap port@Port cert@TlsServerConfig]
     [http1-serve [[tcp-listen-port cap port] | [tls-serve cert]]]]
 
   resolve-svcb: [fn [let cap@NetCap host@String depth@Int]
@@ -122,10 +123,18 @@
               [get services 0] services]]
             [match best
               [dnsRecord.HttpsRecord prio: prio  target: target  params: params]:
-                SvcbRecord.ServiceMode
-                  priority: prio
-                  target:   [if [or [= target "."] [= target ""]] Absent.Absent target]
-                  params:   params]]   # pass SvcParams through directly — already fully typed
+                # RFC 9460 §8: verify mandatory param compliance before accepting ServiceMode record
+                # Known SvcParamKeys: 1=alpn, 3=port, 4=ipv4hint, 5=ech, 6=ipv6hint
+                [known-keys: [1 3 4 5 6]]
+                [mandatory-valid?: [all? [fn [let key] [any? [fn [let k] [= key k]] known-keys]] params.mandatory]]
+                [if mandatory-valid?
+                  SvcbRecord.ServiceMode
+                    priority: prio
+                    target:   [if [or [= target "."] [= target ""]] Absent.Absent target]
+                    params:   params
+                    other:    params.other   # pass through unknown SvcParams from dns.llt parsing
+                  # Mandatory param violation — skip this record and fall through
+                  null]]
         [Result.Error _]: null]]]
 
   http-connect: [fn [let cap@NetCap host@String port@Int]
@@ -172,13 +181,6 @@
     [raw:  [connect cap [host-port [hostname host] port] Tcp]]
     [http1-request raw "GET" url.path [] [] host]]
 
-  router: [fn [let routes@[Seq [Seq t]]]
-    [fn [let req@RawRequest]
-      # find returns [Some x] or [None] (prelude function — constructs explicit Maybe).
-      [match [find [fn [let route] [starts-with? [get route 0] req.path]] routes]
-        [Some route]: [[get route 1] req]
-        [None]:       not-found]]]
-
   headers-map: [fn [let req@RawRequest] req.headers]
 
   # SECURITY: disable compression on endpoints that reflect user-controlled
@@ -194,13 +196,14 @@
       [ae: [get? req.headers "accept-encoding"]]
       [if [null? ae]
         resp
-        [codec: [negotiate-encoding ae registry]]
-        [if [= codec.name "identity"]
-          resp
-          [RawResponse
-            [status:  resp.status
-             headers: [merge resp.headers ["content-encoding": codec.name]]
-             body:    [codec.encode resp.body]]]]]]]
+        [block
+          [codec: [negotiate-encoding ae registry]]
+          [if [= codec.name "identity"]
+            resp
+            [RawResponse
+              [status:  resp.status
+               headers: [merge resp.headers ["content-encoding": codec.name]]
+               body:    [codec.encode resp.body]]]]]]]]
 
   logging: [fn [let handler@[Fn [RawRequest] RawResponse]]
     [fn [let req@RawRequest]

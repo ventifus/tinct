@@ -14,7 +14,7 @@
   quic-accept-loop: [fn [let sock@UdpSocket out@[Channel QuicConnection]]
     [conns-ch: [channel 1]]
     [send conns-ch []]
-    [let step [fn []
+    [step: [fn []
       [dg:    [recv sock]]
       [dcid:  [quic-extract-dcid dg.data]]
       [match [recv conns-ch]
@@ -26,19 +26,20 @@
              [send conns-ch table]   # put table back
              [step]]
             # New connection — register it and spawn handler task.
-            [conn-ch: [channel 64]]
-            [send conns-ch [merge table [$dcid: conn-ch]]]   # $dcid: computed key — uses VALUE of dcid ([Bytes 20]) as key
-            [task
-              [conn: [quic-new-conn sock dg.src dcid conn-ch]]
-              [send out conn]]
-            [step]]]]]
+            [block
+              [conn-ch: [channel 64]]
+              [send conns-ch [merge table [$dcid: conn-ch]]]   # $dcid: computed key — uses VALUE of dcid ([Bytes 20]) as key
+              [task
+                [conn: [quic-new-conn sock dg.src dcid conn-ch]]
+                [send out conn]]
+              [step]]]]]]
     [step]]
 
   quic-extract-dcid: [fn [let pkt@Bytes]
     [byte0: [get pkt 0]]
     [if [= [band byte0 0x80] 0x80]
-      [slice 6 [+ 6 [get pkt 5]] pkt]      # long header: dcid-len at byte 5
-      [slice 1 20 pkt]]]             # short header: 20-byte DCID assumed
+      [slice pkt 6 [+ 6 [get pkt 5]]]      # long header: dcid-len at byte 5
+      [slice pkt 1 20]]]                   # short header: 20-byte DCID assumed
 
   # Server-side QUIC connection handler. Called from quic-accept-loop for each new DCID.
   # Receives datagrams from in-ch, processes Initial/Handshake/1-RTT packets.
@@ -65,11 +66,11 @@
     [payload-off: [+ pn-off 1]]   # 1-byte packet number assumed
     [aad: [slice pkt 0 payload-off]]
     [ct: [slice pkt payload-off [length pkt]]]
-    [srv-recv-nonce: [bytes-xor initial-keys.server.recv-iv [concat [0 0 0 0 0 0 0 0 0 0 0] [bytes BigEndian [@UInt8 0]]]]]
+    [srv-recv-nonce: [bytes-xor initial-keys.server.recv-iv [concat [0 0 0 0 0 0 0 0 0 0 0] [bytes NetworkEndian [@UInt8 0]]]]]
     [plain: [match [aes-128-gcm-open initial-keys.server.recv-key srv-recv-nonce ct aad]
       [Result.Ok p]:    p
       [Result.Error _]: [error "QUIC: Initial packet decryption failed"]]]
-    [_crypto-data: [extract-crypto-data plain 0 []]]  # ClientHello TLS bytes (for future use)
+    [_crypto-data: [extract-crypto-data plain]]  # ClientHello TLS bytes (for future use)
     # Build server QuicConnection — data-plane keys will be updated when Handshake completes.
     [streams-ch:  [channel 256]]
     [pn-init-ch:  [channel 1]  pn-hs-ch: [channel 1]  pn-app-ch: [channel 1]]
@@ -152,20 +153,20 @@
     [initial-secret: [hkdf-extract [Sha256] quic-initial-salt dcid]]
     # client_in = HKDF-Expand-Label(initial_secret, "client in", "", hash_len=32)
     [client-label:  [str-bytes "tls13 client in"]]
-    [client-info:   [concat [bytes BigEndian [@UInt16 32]] [bytes BigEndian [@UInt8 [length client-label]]] client-label [bytes BigEndian [@UInt8 0]]]]
+    [client-info:   [concat [bytes NetworkEndian [@UInt16 32]] [bytes NetworkEndian [@UInt8 [length client-label]]] client-label [bytes NetworkEndian [@UInt8 0]]]]
     [client-in:     [hkdf-expand [Sha256] initial-secret client-info 32]]
     # server_in = HKDF-Expand-Label(initial_secret, "server in", "", hash_len=32)
     [server-label:  [str-bytes "tls13 server in"]]
-    [server-info:   [concat [bytes BigEndian [@UInt16 32]] [bytes BigEndian [@UInt8 [length server-label]]] server-label [bytes BigEndian [@UInt8 0]]]]
+    [server-info:   [concat [bytes NetworkEndian [@UInt16 32]] [bytes NetworkEndian [@UInt8 [length server-label]]] server-label [bytes NetworkEndian [@UInt8 0]]]]
     [server-in:     [hkdf-expand [Sha256] initial-secret server-info 32]]
     # Derive key(16), iv(12), hp(16) from each secret via HKDF-Expand-Label
     [derive-keys:   [fn [let secret]
       [key-label: [str-bytes "tls13 quic key"]]
-      [key-info:  [concat [bytes BigEndian [@UInt16 16]] [bytes BigEndian [@UInt8 [length key-label]]] key-label [bytes BigEndian [@UInt8 0]]]]
+      [key-info:  [concat [bytes NetworkEndian [@UInt16 16]] [bytes NetworkEndian [@UInt8 [length key-label]]] key-label [bytes NetworkEndian [@UInt8 0]]]]
       [iv-label:  [str-bytes "tls13 quic iv"]]
-      [iv-info:   [concat [bytes BigEndian [@UInt16 12]] [bytes BigEndian [@UInt8 [length iv-label]]] iv-label [bytes BigEndian [@UInt8 0]]]]
+      [iv-info:   [concat [bytes NetworkEndian [@UInt16 12]] [bytes NetworkEndian [@UInt8 [length iv-label]]] iv-label [bytes NetworkEndian [@UInt8 0]]]]
       [hp-label:  [str-bytes "tls13 quic hp"]]
-      [hp-info:   [concat [bytes BigEndian [@UInt16 16]] [bytes BigEndian [@UInt8 [length hp-label]]] hp-label [bytes BigEndian [@UInt8 0]]]]
+      [hp-info:   [concat [bytes NetworkEndian [@UInt16 16]] [bytes NetworkEndian [@UInt8 [length hp-label]]] hp-label [bytes NetworkEndian [@UInt8 0]]]]
       [send-key:  [hkdf-expand [Sha256] secret key-info 16]
        send-iv:   [hkdf-expand [Sha256] secret iv-info 12]
        hp-key:    [hkdf-expand [Sha256] secret hp-info 16]]]]
@@ -188,24 +189,24 @@
 
   encode-quic-varint: [fn [let n@Int]
     [if [<= n 63]
-      [bytes BigEndian [@UInt8 n]]
+      [bytes NetworkEndian [@UInt8 n]]
       [if [<= n 16383]
-        [bytes BigEndian [@UInt16 [bor 0x4000 n]]]
+        [bytes NetworkEndian [@UInt16 [bor 0x4000 n]]]
         [if [<= n 1073741823]
-          [bytes BigEndian [@UInt32 [bor 0x80000000 n]]]
-          [bytes BigEndian [@UInt64 [bor 0xC000000000000000 n]]]]]]]
+          [bytes NetworkEndian [@UInt32 [bor 0x80000000 n]]]
+          [bytes NetworkEndian [@UInt64 [bor 0xC000000000000000 n]]]]]]]
 
   # Build QUIC Initial long header packet (RFC 9000 §17.2.2).
   # Packet: flags(1) version(4) dcid-len(1) dcid scid-len(1) scid token-len(varint) token pn(1-4) payload
   build-quic-initial-packet: [fn [let dcid@Bytes scid@Bytes pn@Int payload@Bytes]
-    [pn-bytes:  [bytes BigEndian [@UInt8 pn]]]   # 1-byte packet number for simplicity
+    [pn-bytes:  [bytes NetworkEndian [@UInt8 pn]]]   # 1-byte packet number for simplicity
     [pkt-len:   [+ [length payload] 1 16]]        # payload + pn-byte + AEAD tag
     [concat
       [0xC3]                                        # Long Header, Initial packet type 0x3 → bits: 1100_0011
       [0x00 0x00 0x00 0x01]                        # QUIC version 1
-      [bytes BigEndian [@UInt8 [length dcid]]]
+      [bytes NetworkEndian [@UInt8 [length dcid]]]
       dcid
-      [bytes BigEndian [@UInt8 [length scid]]]
+      [bytes NetworkEndian [@UInt8 [length scid]]]
       scid
       [0x00]                                        # token length = 0 (no retry token)
       [encode-quic-varint pkt-len]
@@ -214,41 +215,23 @@
 
   # Extract CRYPTO frame data from a decrypted QUIC packet payload.
   # Returns Bytes (concatenated CRYPTO frame data from all CRYPTO frames in payload).
-  extract-crypto-data: [fn [let payload@Bytes offset@Int acc@Bytes]
-    [if [>= offset [length payload]]
-      acc
-      [frame-type: [get payload offset]]
-      [match frame-type
-        0x06:  # CRYPTO frame
-          [off-res: [decode-quic-varint payload [+ offset 1]]]
-          [len-res: [decode-quic-varint payload off-res.next]]
-          [data:    [slice payload len-res.next [+ len-res.next len-res.value]]]
-          [extract-crypto-data payload [+ len-res.next len-res.value] [concat acc data]]
-        0x00:  # PADDING — skip
-          [extract-crypto-data payload [+ offset 1] acc]
-        0x01:  # PING — skip
-          [extract-crypto-data payload [+ offset 1] acc]
-        _:     # Unknown frame — stop
-          acc]]]
+  # Uses decode-all with QuicFrameCodec to parse all frames, then collects CRYPTO frame data.
+  extract-crypto-data: [fn [let payload@Bytes]
+    [frames: [decode-all QuicFrameCodec payload]]
+    [reduce [fn [let acc f]
+      [match f
+        [QuicFrame.Crypto p]: [concat acc p.data]
+        _:                    acc]]
+     [] frames]]
 
   decode-quic-varint: [fn [let b@Bytes offset@Int]
     [b0: [get b offset]]
     [prefix: [shr [band b0 0xC0] 6]]
     [match prefix
       0: [value: [band b0 0x3F]  next: [+ offset 1]]
-      1: [value: [bor [shl [band b0 0x3F] 8] [get b [+ offset 1]]]  next: [+ offset 2]]
-      2: [value: [bor [shl [band b0 0x3F] 24]
-                      [bor [shl [get b [+ offset 1]] 16]
-                           [bor [shl [get b [+ offset 2]] 8] [get b [+ offset 3]]]]]
-                 next: [+ offset 4]]
-      3: [value: [bor [shl [band b0 0x3F] 56]
-                      [bor [shl [get b [+ offset 1]] 48]
-                           [bor [shl [get b [+ offset 2]] 40]
-                                [bor [shl [get b [+ offset 3]] 32]
-                                     [bor [shl [get b [+ offset 4]] 24]
-                                          [bor [shl [get b [+ offset 5]] 16]
-                                               [bor [shl [get b [+ offset 6]] 8] [get b [+ offset 7]]]]]]]]]
-                 next: [+ offset 8]]
+      1: [value: [band [uint16 NetworkEndian [slice b offset [+ offset 2]]] 0x3FFF]           next: [+ offset 2]]
+      2: [value: [band [uint32 NetworkEndian [slice b offset [+ offset 4]]] 0x3FFFFFFF]      next: [+ offset 4]]
+      3: [value: [band [uint64 NetworkEndian [slice b offset [+ offset 8]]] 0x3FFFFFFFFFFFFFFF] next: [+ offset 8]]
       _: [error "unreachable"]]]
 
   # Initialization for QUIC loss state
@@ -262,26 +245,34 @@
 ]
 
 # QuicStream implements ByteStream — readable/writable channels give byte access.
-[instance [ByteStream QuicStream]
-  # Accumulate bytes from the stream's readable channel until n bytes collected.
-  read-bytes: [fn [let s@QuicStream n@Int]
-    [let acc [fn [remaining buf]
-      [if [= remaining 0]
-        buf
-        [match [recv s.readable]
-          [Closed.Closed]: buf   # stream closed; return what we have (may be < n)
-          [Result.Ok chunk]:
-            [take: [min remaining [length chunk]]]
-            [acc [- remaining take] [concat buf [slice chunk 0 take]]]]]]
-    [acc n [bytes 0]]]
+[instance ByteStream
+  [let h@QuicStream]: [
+    # Accumulate bytes from the stream's readable channel until n bytes collected.
+    read: [fn [let s@QuicStream n@Int]
+      [acc: [fn [let remaining buf]
+        [if [= remaining 0]
+          buf
+          [match [recv s.readable]
+            [Closed.Closed]: buf   # stream closed; return what we have (may be < n)
+            [Result.Ok chunk]:
+              [take: [min remaining [length chunk]]]
+              [acc [- remaining take] [concat buf [slice chunk 0 take]]]]]]
+      [acc n [bytes 0]]]
 
-  # Send data bytes to the stream's writable channel in chunks.
-  write-bytes: [fn [let s@QuicStream data@Bytes]
-    [send s.writable data]]]
+    # Send data bytes to the stream's writable channel in chunks.
+    write: [fn [let s@QuicStream data@Bytes]
+      [send s.writable data]]]]
 
 # ── Public API. ───────────────────────────────────────────────────────────────────────────────────
 
 [
+  # Named domain types with fixed byte-order encodings per RFC 9000.
+  # QUIC integers are network byte order (big-endian) when encoded as fixed-width fields.
+  # Variable-length QUIC varints use NetworkEndian prefix bits (RFC 9000 §16).
+  QuicPacketNumber: [type UInt64@[encoding: NetworkEndian]]   # RFC 9000 §17.1: packet numbers, NetworkEndian
+  QuicStreamId:     [type UInt64@[encoding: NetworkEndian]]   # RFC 9000 §2.1: stream IDs as QUIC varints
+  QuicVersion:      [type UInt32@[encoding: NetworkEndian]]   # RFC 9000 §15: 4-byte version field
+
   # QuicHandle: QUIC+TLS config accumulated before handshake fires.
   # quic creates it (sni inferred, ALPN open); h3/doq/etc add ALPN via with-alpn then quic-commit.
   QuicHandle: [type
@@ -291,10 +282,10 @@
      ech:         Bytes
      trust-roots: [or [Seq Bytes] Symbol]]]
 
-  QuicPacketType: [union [Initial] [ZeroRTT] [Handshake] [Retry] [OneRTT]]
+  QuicPacketType: [type [Initial] [ZeroRTT] [Handshake] [Retry] [OneRTT]]
 
   # QUIC error type — RFC 9000 §20 transport error codes as named variants.
-  QuicError: [union
+  QuicError: [type
     [ProtocolViolation  frame-type@Int  reason@String]   # QUIC_PROTOCOL_VIOLATION (0xa)
     [StreamReset        id@Int  error-code@Int]           # stream reset by peer (RESET_STREAM)
     [ConnectionClose    error-code@Int  reason@String]    # peer sent CONNECTION_CLOSE
@@ -306,7 +297,7 @@
   # RFC 9000 §3.2: each ACK range is a (gap, range) pair — two distinct semantics in one slot.
   AckRange: [type [gap: Int  range: Int]]
 
-  QuicFrame: [union
+  QuicFrame: [type
     [Padding       length@Int]
     [Ping]
     [Ack           largest@Int  delay@Int  ranges@[Seq AckRange]]
@@ -429,28 +420,32 @@
     [eph: [x25519-keypair]]
     [client-random: [crypto-random 32]]
     # Build ClientHello (same as tls-handshake step 2-3; QUIC wraps it in CRYPTO frames)
-    [sni-bytes: [str-bytes sni]]
-    [sni-entry: [concat [0x00] [bytes BigEndian [@UInt16 [length sni-bytes]]] sni-bytes]]
-    [ext-sni:   [concat [0x00 0x00] [bytes BigEndian [@UInt16 [+ 2 [length sni-entry]]]] [bytes BigEndian [@UInt16 [length sni-entry]]] sni-entry]]
-    [key-share-entry: [concat [bytes BigEndian [@UInt16 0x001d]] [bytes BigEndian [@UInt16 32]] eph.public]]
-    [ext-key-share: [concat [0x00 0x33] [bytes BigEndian [@UInt16 [+ 2 [length key-share-entry]]]] [bytes BigEndian [@UInt16 [length key-share-entry]]] key-share-entry]]
-    [ext-supported-versions: [concat [0x00 0x2b] [bytes BigEndian [@UInt16 3]] [0x02] [0x03 0x04]]]
-    [ext-sig-algs: [concat [0x00 0x0d] [bytes BigEndian [@UInt16 8]] [bytes BigEndian [@UInt16 6]] [0x04 0x03] [0x08 0x04] [0x08 0x07]]]
-    [ext-supported-groups: [concat [0x00 0x0a] [bytes BigEndian [@UInt16 6]] [bytes BigEndian [@UInt16 4]] [bytes BigEndian [@UInt16 0x001d]] [bytes BigEndian [@UInt16 0x0017]]]]
+    # SNI extension chain — each depends on the previous
+    [sni-bytes: [str-bytes sni]
+     sni-entry: [concat [0x00] [bytes NetworkEndian [@UInt16 [length sni-bytes]]] sni-bytes]
+     ext-sni:   [concat [0x00 0x00] [bytes NetworkEndian [@UInt16 [+ 2 [length sni-entry]]]] [bytes NetworkEndian [@UInt16 [length sni-entry]]] sni-entry]]
+    # Key share extension chain
+    [key-share-entry: [concat [bytes NetworkEndian [@UInt16 0x001d]] [bytes NetworkEndian [@UInt16 32]] eph.public]
+     ext-key-share:   [concat [0x00 0x33] [bytes NetworkEndian [@UInt16 [+ 2 [length key-share-entry]]]] [bytes NetworkEndian [@UInt16 [length key-share-entry]]] key-share-entry]]
+    # Independent extensions (no inter-dependencies)
+    [ext-supported-versions: [concat [0x00 0x2b] [bytes NetworkEndian [@UInt16 3]] [0x02] [0x03 0x04]]
+     ext-sig-algs:           [concat [0x00 0x0d] [bytes NetworkEndian [@UInt16 8]] [bytes NetworkEndian [@UInt16 6]] [0x04 0x03] [0x08 0x04] [0x08 0x07]]
+     ext-supported-groups:   [concat [0x00 0x0a] [bytes NetworkEndian [@UInt16 6]] [bytes NetworkEndian [@UInt16 4]] [bytes NetworkEndian [@UInt16 0x001d]] [bytes NetworkEndian [@UInt16 0x0017]]]]
     [alpn-ext: [if [empty? pqh.alpn]
       [bytes 0]
-      [alpn-list: [apply concat [map [fn [let p] [pb: [str-bytes p]] [concat [bytes BigEndian [@UInt8 [length pb]]] pb]] pqh.alpn]]]
-      [concat [0x00 0x10] [bytes BigEndian [@UInt16 [+ 2 [length alpn-list]]]] [bytes BigEndian [@UInt16 [length alpn-list]]] alpn-list]]]
+      [block
+        [alpn-list: [apply concat [map [fn [let p] [pb: [str-bytes p]] [concat [bytes NetworkEndian [@UInt8 [length pb]]] pb]] pqh.alpn]]]
+        [concat [0x00 0x10] [bytes NetworkEndian [@UInt16 [+ 2 [length alpn-list]]]] [bytes NetworkEndian [@UInt16 [length alpn-list]]] alpn-list]]]]
     [session-id: [crypto-random 32]]
     [extensions: [apply concat [filter [fn [let e] [> [length e] 0]]
       [list ext-supported-versions ext-supported-groups ext-key-share ext-sni ext-sig-algs alpn-ext]]]]
     [ch-body: [concat
       [0x03 0x03] client-random
-      [bytes BigEndian [@UInt8 32]] session-id
-      [bytes BigEndian [@UInt16 6]]
+      [bytes NetworkEndian [@UInt8 32]] session-id
+      [bytes NetworkEndian [@UInt16 6]]
       [0x13 0x03] [0x13 0x02] [0x13 0x01]
-      [bytes BigEndian [@UInt8 1]] [0x00]
-      [bytes BigEndian [@UInt16 [length extensions]]] extensions]]
+      [bytes NetworkEndian [@UInt8 1]] [0x00]
+      [bytes NetworkEndian [@UInt16 [length extensions]]] extensions]]
     [ch-msg: [encode-hs 1 ch-body]]   # ClientHello handshake message
     [ch-bytes: ch-msg]
 
@@ -458,13 +453,13 @@
     [crypto-frame: [encode-quic-crypto-frame 0 ch-msg]]
     # Encrypt CRYPTO frame with Initial keys
     [pn: 0]
-    [aead-nonce: [bytes-xor initial-keys.client.send-iv [concat [0 0 0 0 0 0 0 0 0 0 0] [bytes BigEndian [@UInt8 pn]]]]]
+    [aead-nonce: [bytes-xor initial-keys.client.send-iv [concat [0 0 0 0 0 0 0 0 0 0 0] [bytes NetworkEndian [@UInt8 pn]]]]]
     # Build unprotected header for AAD
     [tmp-pkt: [build-quic-initial-packet dcid scid pn [bytes 0]]]
     [hdr-len: [- [length tmp-pkt] 1]]
     [aad: [slice tmp-pkt 0 hdr-len]]
     [ct: [aes-128-gcm-seal initial-keys.client.send-key aead-nonce crypto-frame aad]]
-    [full-pkt: [concat aad [bytes BigEndian [@UInt8 pn]] ct]]
+    [full-pkt: [concat aad [bytes NetworkEndian [@UInt8 pn]] ct]]
     # NOTE: Header protection (apply-hp) skipped — AES-ECB primitive not yet available.
     # In production, mask = AES-ECB(hp_key, sample) must be XOR'd into first byte and pn bytes.
     [match pqh.pending
@@ -489,22 +484,24 @@
     [srv-payload-off: [+ srv-pn-off 1]]
     [srv-aad: [slice srv-pkt 0 srv-payload-off]]
     [srv-ct: [slice srv-pkt srv-payload-off [length srv-pkt]]]
-    [srv-nonce: [bytes-xor initial-keys.server.send-iv [concat [0 0 0 0 0 0 0 0 0 0 0] [bytes BigEndian [@UInt8 0]]]]]
+    [srv-nonce: [bytes-xor initial-keys.server.send-iv [concat [0 0 0 0 0 0 0 0 0 0 0] [bytes NetworkEndian [@UInt8 0]]]]]
     [srv-plain: [match [aes-128-gcm-open initial-keys.server.send-key srv-nonce srv-ct srv-aad]
       [Result.Ok p]:    p
       [Result.Error _]: [return QuicError.InternalError "QUIC: server Initial packet decryption failed"]]]
-    [sh-bytes: [extract-crypto-data srv-plain 0 []]]   # ServerHello TLS message
+    [sh-bytes: [extract-crypto-data srv-plain]]   # ServerHello TLS message
 
     # Step 5: parse ServerHello, derive handshake keys
     [sh: [parse-server-hello [slice sh-bytes 4 [length sh-bytes]]]]
-    [server-pub: [let find-ks [fn [exts pos]
-      [if [>= pos [length exts]] [error "QUIC TLS: no key_share in ServerHello"]
-        [ext-type: [uint16 BigEndian [slice exts pos [+ pos 2]]]]
-        [ext-len:  [uint16 BigEndian [slice exts [+ pos 2] [+ pos 4]]]]
-        [if [= ext-type 0x0033]
-          [slice exts [+ pos 8] [+ pos 8 32]]
-          [find-ks exts [+ pos 4 ext-len]]]]]]
-      sh.extensions 0]]
+    [find-ks: [fn [let exts pos]
+      [if [>= pos [length exts]]
+        [error "QUIC TLS: no key_share in ServerHello"]
+        [block
+          [ext-type: [uint16 NetworkEndian [slice exts pos [+ pos 2]]]]
+          [ext-len:  [uint16 NetworkEndian [slice exts [+ pos 2] [+ pos 4]]]]
+          [if [= ext-type 0x0033]
+            [slice exts [+ pos 8] [+ pos 8 32]]
+            [find-ks exts [+ pos 4 ext-len]]]]]]]
+    [server-pub: [find-ks sh.extensions 0]]
     [dh-shared: [x25519-dh eph.private server-pub]]
     [cipher: [match sh.cipher-suite
       0x1301: CipherSuite.Aes128GcmSha256
@@ -589,7 +586,7 @@
         # RFC 9000 §19.8: STREAM frame = 0x0a..0x0f | stream-id (varint) | [offset (varint)] | [length (varint)] | data
         # Simplified: use type 0x0a (no offset, no length = extends to packet end) for each write.
         [task
-          [let send-loop [fn [offset]
+          [send-loop: [fn [let offset]
             [match [recv writable]
               [Closed.Closed]: null   # stream closed — send FIN (0x0b flag) in final frame
               [Result.Ok chunk]:
@@ -602,17 +599,17 @@
                 # Encrypt and send as 1-RTT (Short Header) packet
                 [match conn.app-keys
                   [Absent.Absent]: [error "QUIC: no app keys for stream send"]
-                  [let ak]:
+                  ak:
                     [match [recv conn.pn-app]
                       [Closed.Closed]: null
                       [Result.Ok pn]:
                         [send conn.pn-app [+ pn 1]]
-                        [nonce: [bytes-xor ak.send-iv [concat [0 0 0 0 0 0 0 0 0 0 0] [bytes BigEndian [@UInt8 pn]]]]]
+                        [nonce: [bytes-xor ak.send-iv [concat [0 0 0 0 0 0 0 0 0 0 0] [bytes NetworkEndian [@UInt8 pn]]]]]
                         # Short Header: flag(1) dcid pn
-                        [hdr: [concat [0x40] conn.dcid [bytes BigEndian [@UInt8 pn]]]]
+                        [hdr: [concat [0x40] conn.dcid [bytes NetworkEndian [@UInt8 pn]]]]
                         [ct: [aes-128-gcm-seal ak.send-key nonce stream-frame hdr]]
                         [send conn.socket conn.peer-addr [concat hdr ct]]
-                        [send-loop [+ offset [length chunk]]]]]]]]]
+                        [send-loop [+ offset [length chunk]]]]]]]]
           [send-loop 0]]
         [QuicStream id: id  readable: readable  writable: writable]]
 
@@ -628,8 +625,8 @@
 # encode: QuicFrame → frame-type varint + type-specific TLV fields as Bytes.
 # decode: Bytes → QuicFrame by dispatching on frame-type varint.
 # Operates at the unencrypted frame level (inside decrypted QUIC packet payloads).
-[instance [Codec QuicFrameCodec QuicFrame Bytes]
-  encode: [fn [let _ frame@QuicFrame]
+[instance Codec
+  [let a@QuicFrameCodec b@QuicFrame c@Bytes]: [encode: [fn [let _ frame@QuicFrame]
     [match frame
       [QuicFrame.Padding  n]:       [reduce [fn [let acc _] [concat acc [bytes 0]]] [] [range 0 n]]   # n PADDING bytes (0x00)
       [QuicFrame.Ping]:             [encode-quic-varint 0x01]
@@ -686,99 +683,105 @@
                 [encode-quic-varint [length reason-bytes]]
                 reason-bytes]
       [QuicFrame.HandshakeDone]: [encode-quic-varint 0x1e]]]
-  decode: [fn [let _ data@Bytes]
-    [type-res: [decode-quic-varint data 0]]
+  decode: [fn [let _ data@Bytes offset@Int]
+    [type-res: [decode-quic-varint data offset]]
     [p:        type-res.next]
     [match type-res.value
-      0x00: [QuicFrame.Padding [- [length data] p]]    # remaining bytes are padding
-      0x01: [QuicFrame.Ping]
+      0x00: [value: [QuicFrame.Padding [- [length data] p]]  next: [length data]]  # remaining bytes are padding
+      0x01: [value: QuicFrame.Ping  next: p]
       0x02: # ACK
         [lar-res:  [decode-quic-varint data p]]
         [del-res:  [decode-quic-varint data lar-res.next]]
         [cnt-res:  [decode-quic-varint data del-res.next]]
         [fst-res:  [decode-quic-varint data cnt-res.next]]   # first ACK range
-        [let read-ranges [fn [i p acc]
+        [read-ranges: [fn [let i p acc]
           [if [= i 0]
-            acc
-            [g-res: [decode-quic-varint data p]]
-            [r-res: [decode-quic-varint data g-res.next]]
-            [read-ranges [- i 1] r-res.next [append acc [list [AckRange gap: g-res.value  range: r-res.value]]]]]]]
-        [ranges: [read-ranges cnt-res.value fst-res.next []]]
-        [QuicFrame.Ack largest: lar-res.value  delay: del-res.value  ranges: ranges]
+            [ranges: acc  next: p]
+            [block
+              [g-res: [decode-quic-varint data p]]
+              [r-res: [decode-quic-varint data g-res.next]]
+              [read-ranges [- i 1] r-res.next [append acc [list [AckRange gap: g-res.value  range: r-res.value]]]]]]]]
+        [rr: [read-ranges cnt-res.value fst-res.next []]]
+        [value: [QuicFrame.Ack largest: lar-res.value  delay: del-res.value  ranges: rr.ranges]  next: rr.next]
       0x04: # RESET_STREAM
         [id-res:  [decode-quic-varint data p]]
         [err-res: [decode-quic-varint data id-res.next]]
         [fs-res:  [decode-quic-varint data err-res.next]]
-        [QuicFrame.ResetStream id: id-res.value  error: err-res.value  final-size: fs-res.value]
+        [value: [QuicFrame.ResetStream id: id-res.value  error: err-res.value  final-size: fs-res.value]  next: fs-res.next]
       0x05: # STOP_SENDING
         [id-res:  [decode-quic-varint data p]]
         [err-res: [decode-quic-varint data id-res.next]]
-        [QuicFrame.StopSending id: id-res.value  error: err-res.value]
+        [value: [QuicFrame.StopSending id: id-res.value  error: err-res.value]  next: err-res.next]
       0x06: # CRYPTO
         [off-res: [decode-quic-varint data p]]
         [len-res: [decode-quic-varint data off-res.next]]
-        [QuicFrame.Crypto offset: off-res.value
-                          data:   [slice data len-res.next [+ len-res.next len-res.value]]]
+        [value: [QuicFrame.Crypto offset: off-res.value
+                                  data:   [slice data len-res.next [+ len-res.next len-res.value]]]
+         next:  [+ len-res.next len-res.value]]
       0x07: # NEW_TOKEN
         [len-res: [decode-quic-varint data p]]
-        [QuicFrame.NewToken token: [slice data len-res.next [+ len-res.next len-res.value]]]
+        [value: [QuicFrame.NewToken token: [slice data len-res.next [+ len-res.next len-res.value]]]
+         next:  [+ len-res.next len-res.value]]
       0x10: # MAX_DATA
         [max-res: [decode-quic-varint data p]]
-        [QuicFrame.MaxData max: max-res.value]
+        [value: [QuicFrame.MaxData max: max-res.value]  next: max-res.next]
       0x11: # MAX_STREAM_DATA
         [id-res:  [decode-quic-varint data p]]
         [max-res: [decode-quic-varint data id-res.next]]
-        [QuicFrame.MaxStreamData id: id-res.value  max: max-res.value]
+        [value: [QuicFrame.MaxStreamData id: id-res.value  max: max-res.value]  next: max-res.next]
       0x12: # MAX_STREAMS (bidi)
         [max-res: [decode-quic-varint data p]]
-        [QuicFrame.MaxStreams bidi: true  max: max-res.value]
+        [value: [QuicFrame.MaxStreams bidi: true  max: max-res.value]  next: max-res.next]
       0x13: # MAX_STREAMS (uni)
         [max-res: [decode-quic-varint data p]]
-        [QuicFrame.MaxStreams bidi: false  max: max-res.value]
+        [value: [QuicFrame.MaxStreams bidi: false  max: max-res.value]  next: max-res.next]
       0x14: # DATA_BLOCKED
         [lim-res: [decode-quic-varint data p]]
-        [QuicFrame.DataBlocked limit: lim-res.value]
+        [value: [QuicFrame.DataBlocked limit: lim-res.value]  next: lim-res.next]
       0x1c: # CONNECTION_CLOSE (QUIC layer)
         [err-res: [decode-quic-varint data p]]
         [ft-res:  [decode-quic-varint data err-res.next]]
         [rl-res:  [decode-quic-varint data ft-res.next]]
         [reason:  [bytes-str [slice data rl-res.next [+ rl-res.next rl-res.value]]]]
-        [QuicFrame.ConnectionClose error: err-res.value  frame-type: ft-res.value  reason: reason]
-      0x1e: [QuicFrame.HandshakeDone]
+        [value: [QuicFrame.ConnectionClose error: err-res.value  frame-type: ft-res.value  reason: reason]
+         next:  [+ rl-res.next rl-res.value]]
+      0x1e: [value: QuicFrame.HandshakeDone  next: p]
       _: # STREAM frames 0x08..0x0f
         [if [and [>= type-res.value 0x08] [<= type-res.value 0x0f]]
-          [off-bit: [= [band type-res.value 0x04] 0x04]]
-          [len-bit: [= [band type-res.value 0x02] 0x02]]
-          [fin-bit: [= [band type-res.value 0x01] 0x01]]
-          [id-res:  [decode-quic-varint data p]]
-          [off-res: [if off-bit [decode-quic-varint data id-res.next] [value: 0  next: id-res.next]]]
-          [len-res: [if len-bit [decode-quic-varint data off-res.next] [value: [- [length data] off-res.next]  next: off-res.next]]]
-          [QuicFrame.Stream id:     id-res.value
-                            offset: off-res.value
-                            fin:    fin-bit
-                            data:   [slice data len-res.next [+ len-res.next len-res.value]]]
+          [block
+            [off-bit: [= [band type-res.value 0x04] 0x04]]
+            [len-bit: [= [band type-res.value 0x02] 0x02]]
+            [fin-bit: [= [band type-res.value 0x01] 0x01]]
+            [id-res:  [decode-quic-varint data p]]
+            [off-res: [if off-bit [decode-quic-varint data id-res.next] [value: 0  next: id-res.next]]]
+            [len-res: [if len-bit [decode-quic-varint data off-res.next] [value: [- [length data] off-res.next]  next: off-res.next]]]
+            [value: [QuicFrame.Stream id:     id-res.value
+                                      offset: off-res.value
+                                      fin:    fin-bit
+                                      data:   [slice data len-res.next [+ len-res.next len-res.value]]]
+             next:  [+ len-res.next len-res.value]]]
           [error [str "QuicFrameCodec: unknown frame type: " type-res.value]]]]]]
 
 # ── QuicLayer typeclass — bidirectional quic ──────────────────────────────────
 
-[class [QuicLayer input output]
+[class [let QuicLayer input output]
   quic: [Fn@output [input]]]
 
 # Client: ConnectedUdp → QuicHandle (sni inferred from peer addr, ALPN open for h3/doq)
-[instance [QuicLayer ConnectedUdp QuicHandle]
-  quic: [fn [let sock@ConnectedUdp]
-    [QuicHandle [pending: sock  sni: null  alpn: []  ech: []  trust-roots: SystemRoots]]]]
+[instance QuicLayer
+  [let a@ConnectedUdp b@QuicHandle]: [quic: [fn [let sock@ConnectedUdp]
+    [QuicHandle [pending: sock  sni: Absent.Absent  alpn: []  ech: []  trust-roots: SystemRoots]]]]]
 
 # Server: UdpSocket → Channel@QuicConnection (starts the QUIC accept loop)
 # Usage: [udp-listen cap 443] | quic | h3 | recv
-[instance [QuicLayer UdpSocket [Channel QuicConnection]]
-  quic: [fn [let sock@UdpSocket]
+[instance QuicLayer
+  [let a@UdpSocket b@[Channel QuicConnection]]: [quic: [fn [let sock@UdpSocket]
     [out: [channel 64]]
     [task [quic-accept-loop sock out]]
-    out]]
+    out]]]
 
 # ── Multiplexed QuicConnection ────────────────────────────────────────────────
 
-[instance [Multiplexed QuicConnection QuicStream]
-  substreams: [fn [let ch@[Channel QuicConnection]]
-    [channel-map [fn [let c] [quic-open-stream c]] ch]]]
+[instance Multiplexed
+  [let a@QuicConnection b@QuicStream]: [substreams: [fn [let ch@[Channel QuicConnection]]
+    [channel-map [fn [let c] [quic-open-stream c]] ch]]]]

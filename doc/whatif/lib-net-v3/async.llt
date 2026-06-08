@@ -1,7 +1,7 @@
 # stdlib/async.llt — async channel operators.
 # Part of: lib-net-v3
 #
-# MIGRATION NOTE: task, await, send, recv, channel, loop-select, context,
+# MIGRATION NOTE: task, await, send, recv, channel, select, context,
 # cancel-task, cancel-root, drain, exit, graceful-exit, etc. are all defined in
 # stdlib/prelude.llt. This file provides channel-map, channel-flat-map, and
 # collect-channel — higher-level channel combinators built on those prelude primitives.
@@ -25,7 +25,7 @@
     [fn@[return: [Channel result]] [let in-ch@[Channel element]  buffer-size@[type: Int  default: 64]]
       [out: [channel buffer-size]]
       [task
-        [let step [fn []
+        [step: [fn []
           [match [recv in-ch]
             [Closed.Closed]: []
             [Result.Ok x]:   [[task [send out [f x]]] [step]]]]]
@@ -38,7 +38,7 @@
     [fn@[return: [Channel item]] [let in-ch@[Channel element]  buffer-size@[type: Int  default: 256]]
       [out: [channel buffer-size]]
       [task
-        [let step [fn []
+        [step: [fn []
           [match [recv in-ch]
             [Closed.Closed]: []
             [Result.Ok x]:   [[task [f x out]] [step]]]]]

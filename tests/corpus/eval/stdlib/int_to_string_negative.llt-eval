@@ -1,0 +1,4 @@
+# int->string: convert a negative integer to its decimal string representation
+[int->string -7]
+=== out
+String("-7")

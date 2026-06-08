@@ -15,41 +15,50 @@
 
 # CompressionCodec refines Codec Bytes Bytes with an HTTP content-encoding name.
 # Superclass constraint [Codec c Bytes Bytes] is positional per class declaration syntax.
-[class [CompressionCodec c] [Codec c Bytes Bytes]
+[class [let CompressionCodec c] [Codec c Bytes Bytes]
   codec-name: [Fn [c@c] String]]
 
 [type [GzipCodec]] [type [DeflateCodec]] [type [BrotliCodec]]
 [type [ZstdCodec]] [type [IdentityCodec]]
 
-[instance [Codec GzipCodec Bytes Bytes]
-  encode: [fn [let _ b] [builtin-gzip-encode b]]
-  decode: [fn [let _ b] [builtin-gzip-decode b]]]
-[instance [CompressionCodec GzipCodec]
-  codec-name: [fn [let _] "gzip"]]
+[instance Codec
+  [let a@GzipCodec b@Bytes c@Bytes]: [encode: [fn [let _ b] [builtin-gzip-encode b]]
+                                       decode: [fn [let _ b@Bytes offset@Int]
+                                         [buf: [slice b offset [length b]]]
+                                         [value: [builtin-gzip-decode buf]  next: [length b]]]]]
+[instance CompressionCodec
+  [let h@GzipCodec]: [codec-name: [fn [let _] "gzip"]]]
 
-[instance [Codec DeflateCodec Bytes Bytes]
-  encode: [fn [let _ b] [builtin-deflate-encode b]]
-  decode: [fn [let _ b] [builtin-deflate-decode b]]]
-[instance [CompressionCodec DeflateCodec]
-  codec-name: [fn [let _] "deflate"]]
+[instance Codec
+  [let a@DeflateCodec b@Bytes c@Bytes]: [encode: [fn [let _ b] [builtin-deflate-encode b]]
+                                          decode: [fn [let _ b@Bytes offset@Int]
+                                            [buf: [slice b offset [length b]]]
+                                            [value: [builtin-deflate-decode buf]  next: [length b]]]]]
+[instance CompressionCodec
+  [let h@DeflateCodec]: [codec-name: [fn [let _] "deflate"]]]
 
-[instance [Codec BrotliCodec Bytes Bytes]
-  encode: [fn [let _ b] [builtin-brotli-encode b]]
-  decode: [fn [let _ b] [builtin-brotli-decode b]]]
-[instance [CompressionCodec BrotliCodec]
-  codec-name: [fn [let _] "br"]]
+[instance Codec
+  [let a@BrotliCodec b@Bytes c@Bytes]: [encode: [fn [let _ b] [builtin-brotli-encode b]]
+                                         decode: [fn [let _ b@Bytes offset@Int]
+                                           [buf: [slice b offset [length b]]]
+                                           [value: [builtin-brotli-decode buf]  next: [length b]]]]]
+[instance CompressionCodec
+  [let h@BrotliCodec]: [codec-name: [fn [let _] "br"]]]
 
-[instance [Codec ZstdCodec Bytes Bytes]
-  encode: [fn [let _ b] [builtin-zstd-encode b]]
-  decode: [fn [let _ b] [builtin-zstd-decode b]]]
-[instance [CompressionCodec ZstdCodec]
-  codec-name: [fn [let _] "zstd"]]
+[instance Codec
+  [let a@ZstdCodec b@Bytes c@Bytes]: [encode: [fn [let _ b] [builtin-zstd-encode b]]
+                                       decode: [fn [let _ b@Bytes offset@Int]
+                                         [buf: [slice b offset [length b]]]
+                                         [value: [builtin-zstd-decode buf]  next: [length b]]]]]
+[instance CompressionCodec
+  [let h@ZstdCodec]: [codec-name: [fn [let _] "zstd"]]]
 
-[instance [Codec IdentityCodec Bytes Bytes]
-  encode: [fn [let _ b] b]
-  decode: [fn [let _ b] b]]
-[instance [CompressionCodec IdentityCodec]
-  codec-name: [fn [let _] "identity"]]
+[instance Codec
+  [let a@IdentityCodec b@Bytes c@Bytes]: [encode: [fn [let _ b] b]
+                                           decode: [fn [let _ b@Bytes offset@Int]
+                                             [value: [slice b offset [length b]]  next: [length b]]]]]
+[instance CompressionCodec
+  [let h@IdentityCodec]: [codec-name: [fn [let _] "identity"]]]
 
 # ── Internal. ────────────────────────────────────────────────────────────────
 
@@ -60,7 +69,7 @@
     [CompressedCodec
       [name:   [codec-name c]
        encode: [fn [let b] [encode c b]]
-       decode: [fn [let b] [decode c b]]]]]
+       decode: [fn [let b] [decode c b 0].value]]]]   # CompressedCodec.decode → whole-buffer; pass offset=0, extract value
 
   # Hardcoded codec registry — temporary pending R-12 (open nominal ADTs / typeclass instance
   # enumeration). Once [instance [CompressionCodec X] ...] declarations can be enumerated

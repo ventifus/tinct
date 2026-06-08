@@ -37,10 +37,11 @@ use crate::builtins_dict::{
 };
 // String implementations.
 use crate::builtins_string::{
-    builtin_bytes_str, builtin_char_code, builtin_chr, builtin_regex_match, builtin_replace,
-    builtin_split, builtin_str, builtin_str_bytes, builtin_str_chars, builtin_str_index_of,
-    builtin_str_length, builtin_str_map_chars, builtin_str_slice, builtin_str_to_lower_char,
-    builtin_str_to_upper_char, builtin_trim, builtin_trim_end, builtin_trim_start,
+    builtin_bytes_str, builtin_char_code, builtin_chr, builtin_float_to_string,
+    builtin_int_to_string, builtin_regex_match, builtin_replace, builtin_split, builtin_str,
+    builtin_str_bytes, builtin_str_chars, builtin_str_index_of, builtin_str_length,
+    builtin_str_map_chars, builtin_str_slice, builtin_str_to_lower_char, builtin_str_to_upper_char,
+    builtin_trim, builtin_trim_end, builtin_trim_start,
 };
 // Bytes implementations.
 use crate::builtins_bytes::{
@@ -287,6 +288,18 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
         ),
         // ── String ops ───────────────────────────────────────────────────────────────
         builtin!("builtin-str", builtin_str, [Strictness::Seq]),
+        builtin!(
+            "builtin-int->string",
+            builtin_int_to_string,
+            [Strictness::Seq],
+            1
+        ),
+        builtin!(
+            "builtin-float->string",
+            builtin_float_to_string,
+            [Strictness::Seq],
+            1
+        ),
         builtin!(
             "builtin-split",
             builtin_split,
@@ -1443,6 +1456,28 @@ pub fn core_type_env(env: &mut TypeEnv) {
             inner_schemes: None,
         },
     );
+    // int->string: Int -> Str  (primitive backing Printable; no typeclass constraint)
+    for name in ["int->string", "builtin-int->string"] {
+        env.insert(
+            name.to_string(),
+            Type::Function {
+                params: vec![(None, Type::Int)],
+                ret: Box::new(Type::Str),
+                variadic: false,
+            },
+        );
+    }
+    // float->string: Float -> Str  (primitive backing Printable; no typeclass constraint)
+    for name in ["float->string", "builtin-float->string"] {
+        env.insert(
+            name.to_string(),
+            Type::Function {
+                params: vec![(None, Type::Float)],
+                ret: Box::new(Type::Str),
+                variadic: false,
+            },
+        );
+    }
     env.insert(
         "split".to_string(),
         Type::Function {
@@ -3725,6 +3760,8 @@ pub fn core_type_env(env: &mut TypeEnv) {
         ("builtin-drop", "drop"),
         // String operations
         ("builtin-str", "str"),
+        ("builtin-int->string", "int->string"),
+        ("builtin-float->string", "float->string"),
         ("builtin-split", "split"),
         ("builtin-trim", "trim"),
         ("builtin-trim-start", "trim-start"),

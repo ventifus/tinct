@@ -12,3 +12,5 @@
 === warn
 [UndefinedVariable] undefined variable: Ok
 [UndefinedVariable] undefined variable: Error
+[UndefinedVariable] undefined variable: v
+[UndefinedVariable] undefined variable: v

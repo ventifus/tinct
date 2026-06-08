@@ -5,7 +5,7 @@
 # layers (h2-serve, h3-serve, ws-serve, http1-serve, http2-requests, etc.) live
 # in their respective protocol files alongside the accept functions they wrap.
 #
-# task, send, recv, channel, loop-select, context are all in prelude.
+# task, send, recv, channel, drain, select, context are all in prelude.
 
 [include %libdir "net.llt"]
 
@@ -59,7 +59,7 @@
            [let c@[Codec c input output]  source@[Channel input]]
     [out: [channel 64]]
     [task
-      [let step [fn []
+      [step: [fn []
         [match [recv source]
           [Closed.Closed]: []
           [Result.Ok v]:   [[send out [encode c v]] [step]]]]]
@@ -69,12 +69,7 @@
   # sink S source — terminal stage: drain source and write each encoded value to S.
   # Returns a Task. Await it when the drain must complete before exit.
   sink: [fn [let s  source@[Channel Bytes]]
-    [task
-      [let step [fn []
-        [match [recv source]
-          [Closed.Closed]: []
-          [Result.Ok v]:   [[write-bytes s v] [step]]]]]
-      [step]]]
+    [drain [fn [let v] [write s v]] source]]
 
   # ── MessageStream constructors ────────────────────────────────────────────────
 
@@ -94,4 +89,38 @@
   #   %emit | [codec JsonCodec] | [codec NdjsonFramer] | [sink %stdout]
   drain-emit: [fn@[bind: [c output]] [let c@[Codec c Any output]  s]
     [sink s [%emit | [codec c]]]]
+
+  # serve: the generic protocol server terminator. Drains a channel of request-like
+  # values, spawning a task per item that calls handler and responds via req.respond.
+  # Works for any type with a respond: field — RawRequest, DnsQuery, AppMessage, etc.
+  #
+  # Subject-last — composes naturally at the end of a protocol stack pipeline:
+  #   [[tcp-listen cap port] | http1-serve | [serve handler]]
+  #   [[tcp-listen cap port] | [tls-serve cert] | http1-serve | [serve handler]]
+  #   [[dns-udp-server cap 53] | [serve [fn [let q] [dns-lookup q.name q.type]]]]
+  serve: [fn@Task [let handler ch]
+    [drain [fn [let req] [task [req.respond [handler req]]]] ch]]
+
+  # stream-drain read-fn handler source — drains a ByteStream-backed source via read-fn.
+  # read-fn source → reads the next item (returns [Result.Ok item] | Closed.Closed).
+  # handler item → called for each item; return value is discarded.
+  # Runs synchronously until the source closes; wrap in [task ...] for concurrency.
+  #
+  # Use for per-stream loops where each stream is a ByteStream (e.g., QuicStream):
+  #   [task [stream-drain read-icmp handle-icmp stream]]
+  stream-drain: [fn@Null [let read-fn handler source]
+    [let step [fn []
+      [match [read-fn source]
+        [Closed.Closed]: []
+        [Result.Ok item]: [[handler item] [step]]]]]
+    [step]]
+
+  # serve-streams read-fn handler stream-ch — for each stream arriving on stream-ch,
+  # starts a concurrent task running stream-drain read-fn handler on that stream.
+  # Returns a Task that exits when stream-ch closes.
+  #
+  # Usage: [channel-of-streams | [serve-streams read-fn handler]]
+  # Equivalent to: [drain [fn [let s] [task [stream-drain read-fn handler s]]] stream-ch]
+  serve-streams: [fn@Task [let read-fn handler stream-ch]
+    [drain [fn [let s] [task [stream-drain read-fn handler s]]] stream-ch]]
 ]

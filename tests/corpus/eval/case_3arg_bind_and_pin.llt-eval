@@ -1,0 +1,11 @@
+# 3-arg form with bind and pin in a dict pattern.
+# [let result] declares result as a binding target.
+# Pattern: a dict with key "ok" equal to true (pinned) and key "value" bound to result.
+# The scrutinee must have ok: true (pin matches) and result captures the value field.
+[record: [ok: true  value: 99]]
+[expected-ok: true]
+[match record
+  [case [let result] [ok: expected-ok  value: result] [+ result 1]]
+  [case [let _] _ 0]]
+=== out
+Int(100)

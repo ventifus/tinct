@@ -1,8 +1,8 @@
+# T-1154: n@[is: guard] no longer binds n (n is Pattern::Pin — wildcard, no binding).
+# Use [case [let n] n body] to bind n, then inline the guard check in the body.
+# n has type Unknown in CaseArm (scrutinee_ty is always Unknown for CaseArm).
+# No UnificationFailure warning: Unknown is compatible with 0 (gradual typing).
 [match -5
-    n@[is: [> n 0]]:   "positive"
-    _:                  "other"]
+  [case [let n] n [if [> n 0] "positive" "other"]]]
 === out
 String("other")
-
-=== warn
-[UnificationFailure] cannot unify -5 with 0

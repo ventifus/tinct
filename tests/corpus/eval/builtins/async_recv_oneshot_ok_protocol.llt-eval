@@ -18,3 +18,6 @@
 === error
 [E001] key not found: first-result (defined at 1:1-1:1) (accessed at 14:8-14:22)
   in accessing .first-result at 14:8-14:22
+
+=== warn
+[UndefinedVariable] undefined variable: v

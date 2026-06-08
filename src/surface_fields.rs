@@ -120,7 +120,7 @@ pub fn surface_expr_field_names(expr: &SurfaceExpression) -> &'static [&'static 
         SurfaceExpression::UnquoteSplice(_) => &["expr", "span"],
         SurfaceExpression::PatternDecl { .. } => &["bindings", "span"],
         SurfaceExpression::LetDecl { .. } => &["bindings", "span"],
-        SurfaceExpression::CaseArm { .. } => &["pattern", "body", "span"],
+        SurfaceExpression::CaseArm { .. } => &["let_bindings", "pattern", "body", "span"],
         SurfaceExpression::Placeholder | SurfaceExpression::Decl(_) => &["span"],
         SurfaceExpression::Error(_) => &["span"],
     }
@@ -242,6 +242,10 @@ pub fn surface_node_get_field(
         }
 
         // --- CaseArm ---
+        (SurfaceExpression::CaseArm { let_bindings: Some(lb), .. }, "let_bindings") => {
+            Value::Expression(Arc::clone(lb))
+        }
+        (SurfaceExpression::CaseArm { let_bindings: None, .. }, "let_bindings") => null(),
         (SurfaceExpression::CaseArm { pattern, .. }, "pattern") => {
             Value::Expression(Arc::clone(pattern))
         }
@@ -807,6 +811,7 @@ mod tests {
             (
                 "CaseArm",
                 SurfaceExpression::CaseArm {
+                    let_bindings: None,
                     pattern: node.clone(),
                     body: node.clone(),
                 },

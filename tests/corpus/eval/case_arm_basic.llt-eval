@@ -1,8 +1,7 @@
-# Basic case arm: [case [let n@Int] body] inside a match expression.
-# Exercises typecheck_case_arm with a typed binding — n gets type scrutinee_ty ∩ Int.
-# With scrutinee 42 (Int), n is bound to 42, and [+ n 1] evaluates to 43.
+# Basic case arm: 3-arg [case [let n] n body] — binds n to scrutinee, returns n+1.
+# binding_set = {"n"}; pattern `n` (in set) binds scrutinee 42 to n.
 [match 42
-  [case [let n@Int] [+ n 1]]
-  [case [let _] 0]]
+  [case [let n] n [+ n 1]]
+  [case [let _] _ 0]]
 === out
 Int(43)

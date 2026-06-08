@@ -457,14 +457,18 @@ Patterns compose: a constructor pattern's binding can itself be a dict pattern, 
 ]
 ```
 
-**`[case ...]` arms** — the canonical form for match arms that bind variables. Each arm is self-contained: `[case pattern body]` where `pattern` is a `[let ...]` binding expression. The shorthand keyed forms (`[Constructor v]:`, `n@Int:`, `_:`) are equivalent and accepted but `[case ...]` is the intended syntax:
+**`[case ...]` arms** — the canonical form for match arms that bind variables. Each arm takes exactly 3 arguments: `[case [let bindings] pattern body]`.
+
+- **`[let bindings]`** — names that will be bound by this arm (empty `[let]` for no new bindings)
+- **`pattern`** — the structural match: uppercase/dot-access head = constructor check; lowercase/operator head = guard expression; `_` = wildcard
+- **`body`** — the expression to evaluate when the arm matches, with bound names in scope
 
 ```tinct
 [
   handle: [fn [let result]
     [match result
-      [case [let v: Result.Ok]    [str "ok: " [str v]]]
-      [case [let _: Result.Error] "error"]]]
+      [case [let v]  [Result.Ok v]   [str "ok: " [str v]]]
+      [case [let _]  [Result.Err _]  "error"]]]
 
   r1: [handle [Result.Ok 42]]    # → "ok: 42"
   r2: [handle [Result.Error ""]] # → "error"

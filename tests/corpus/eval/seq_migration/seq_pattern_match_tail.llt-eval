@@ -1,7 +1,11 @@
-# [Seq h t] pattern: bind tail and use it — tail is a lazy Seq.Cons
-# Regression: tail binding must remain unevaluated (lazy), head accessible via further pattern
+# [Seq.Cons p] pattern: bind payload dict, access head via p.head and tail via p.tail.
+# T-1154: [Seq h t] no longer binds h/t; use [Seq.Cons p] form for both outer and inner.
+# Regression: tail binding must remain unevaluated (lazy) until accessed as p.tail.
 [match [range 10 13]
-    [Seq h t]: [match t [Seq h2 _]: [+ h h2] _: 0]
-    _:         0]
+  [case [let p] [Seq.Cons p]
+    [match p.tail
+      [case [let p2] [Seq.Cons p2] [+ p.head p2.head]]
+      _: 0]]
+  _: 0]
 === out
 Int(21)

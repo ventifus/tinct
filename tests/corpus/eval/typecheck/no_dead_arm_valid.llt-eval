@@ -1,5 +1,7 @@
+# 3-arg form: first arm binds n to scrutinee and returns n.
+# No type warnings — plain binding arms with no unreachable static types.
 [match 42
-  [case [let n@Int] n]
-  [case [let m@Int] [+ m 1]]]
+  [case [let n] n n]
+  [case [let m] m [+ m 1]]]
 === out
 Int(42)

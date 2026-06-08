@@ -142,11 +142,9 @@ fn lower_pattern(pat: &Pattern, types: &TypeAnnotationTable) -> Pattern {
         },
 
         // Leaf patterns: no sub-patterns to lower.
-        Pattern::Variable(_)
-        | Pattern::Wildcard
-        | Pattern::Literal(_)
-        | Pattern::Pin(_)
-        | Pattern::TypeTag(_) => pat.clone(),
+        Pattern::Wildcard | Pattern::Literal(_) | Pattern::Pin(_) | Pattern::TypeTag(_) => {
+            pat.clone()
+        }
 
         // T-1140: Predicate patterns carry a SurfaceNode — passed through unchanged.
         // The SurfaceNode is lowered on demand inside MatchDispatch at eval time,
@@ -347,7 +345,14 @@ fn lower_expr(
             bindings: bindings.iter().map(|b| lower(b, res, types)).collect(),
         },
 
-        SurfaceExpression::CaseArm { pattern, body } => CoreExpr::CaseArm {
+        SurfaceExpression::CaseArm {
+            let_bindings,
+            pattern,
+            body,
+        } => CoreExpr::CaseArm {
+            let_bindings: let_bindings
+                .as_ref()
+                .map(|lb| Arc::new(lower(lb, res, types))),
             pattern: Arc::new(lower(pattern, res, types)),
             body: Arc::new(lower(body, res, types)),
         },
@@ -530,7 +535,14 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
                 })
                 .collect(),
         ),
-        CoreExpr::CaseArm { pattern, body } => SurfaceExpression::CaseArm {
+        CoreExpr::CaseArm {
+            let_bindings,
+            pattern,
+            body,
+        } => SurfaceExpression::CaseArm {
+            let_bindings: let_bindings
+                .as_ref()
+                .map(|lb| core_expr_to_surface_node(lb.as_ref())),
             pattern: core_expr_to_surface_node(pattern),
             body: core_expr_to_surface_node(body),
         },

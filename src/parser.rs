@@ -782,9 +782,10 @@ enum StackFrame {
     /// Used in fn params, class TypeVars, type alias params, instance arm keys, and case arms.
     ///
     /// Colon semantics inside [let ...]:
-    /// - `name: Constructor` (VarRef, uppercase RHS) → structural test binding
     /// - `name: default_val` (VarRef, other RHS) → named param with default
-    /// - `[a b]: Constructor` (nested LetDecl, uppercase RHS) → multi-payload destructuring
+    ///
+    /// The `name: Constructor` structural test form has been removed; use the 3-arg
+    /// `[case [let bindings] pattern body]` form instead (T-1151).
     ///
     /// `pending_key` holds the left-hand side node popped when `:` is seen.
     /// - VarRef { name, .. } → single-binding left-hand side
@@ -804,9 +805,16 @@ enum StackFrame {
         pending_rhs: Option<Arc<SurfaceNode>>,
         span_start: Position,
     },
-    /// Match arm with explicit scoping: `[case [let v: Ok] v]`
-    /// Collects two expressions: first = pattern, second = body.
+    /// Match arm with explicit scoping: `[case [let bindings] pattern body]`
+    ///
+    /// Collects exactly three positional expressions:
+    ///   - `let_bindings`: the `[let ...]` node declaring which names are binding targets
+    ///   - `pattern`:      the structural pattern to match against the scrutinee
+    ///   - `body`:         the expression to evaluate when the arm matches
+    ///
+    /// Fewer than three expressions is a parse error.
     CaseDecl {
+        let_bindings: Option<Arc<SurfaceNode>>,
         pattern: Option<Arc<SurfaceNode>>,
         body: Option<Arc<SurfaceNode>>,
         span_start: Position,
@@ -1624,10 +1632,11 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             Some((Token::Colon, _))
                         ) =>
                     {
-                        // CaseArm form: [case [let v: Ok] v]
+                        // CaseArm form: [case [let bindings] pattern body]
                         // (Not a case form if the keyword is followed by colon: [case: x] is a dict.)
                         // (depth already checked above)
                         stack.push(StackFrame::CaseDecl {
+                            let_bindings: None,
                             pattern: None,
                             body: None,
                             span_start: span.start,
@@ -2648,25 +2657,32 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                     }
 
                     StackFrame::CaseDecl {
+                        let_bindings,
                         pattern,
                         body,
                         span_start,
                     } => {
-                        // CaseDecl requires both pattern and body
-                        if pattern.is_none() {
+                        // CaseDecl requires exactly 3 positional args: [let bindings] pattern body
+                        if let_bindings.is_none() {
                             close_bracket_recover!(ParseError {
-                                message: "case form requires a pattern expression".to_string(),
+                                message: "case arm requires exactly 3 positional arguments: [let bindings] pattern body".to_string(),
+                                span: Some(dict_span(span_start)),
+                            });
+                        } else if pattern.is_none() {
+                            close_bracket_recover!(ParseError {
+                                message: "case arm requires exactly 3 positional arguments: [let bindings] pattern body".to_string(),
                                 span: Some(dict_span(span_start)),
                             });
                         } else if body.is_none() {
                             close_bracket_recover!(ParseError {
-                                message: "case form requires a body expression".to_string(),
+                                message: "case arm requires exactly 3 positional arguments: [let bindings] pattern body".to_string(),
                                 span: Some(dict_span(span_start)),
                             });
                         } else {
                             #[allow(clippy::unnecessary_unwrap)] // Checked above by is_none() guard
                             let spanned_case = Arc::new(SurfaceNode {
                                 expr: SurfaceExpression::CaseArm {
+                                    let_bindings,
                                     pattern: pattern.unwrap(),
                                     body: body.unwrap(),
                                 },
@@ -4861,25 +4877,40 @@ fn pop_last_value_from_frame(
             }
         }
         Some(StackFrame::CaseDecl {
+            ref mut let_bindings,
             ref mut pattern,
             ref mut body,
             ..
         }) => {
-            // In body phase (pattern already set): pop the body expr as dot-access target.
-            // In pattern phase: dot access in a case pattern is invalid.
+            // Dot access is valid in the pattern and body positions (to form qualified names
+            // like `Result.Ok` as the pattern or extend the body with field access).
+            // It is not valid inside the [let bindings] position.
             if pattern.is_some() {
+                // body phase: pop body as dot-access target, or pattern if body not yet set
                 if let Some(b) = body.take() {
                     Ok(b)
                 } else {
-                    Err(ParseError {
-                        message: "dot access requires a target before '.' in case arm body"
-                            .to_string(),
-                        span: Some(span),
-                    })
+                    // pattern is set, body is not yet set — this means the pattern itself
+                    // is being extended with dot access (e.g. `Result.Ok` as the pattern).
+                    if let Some(p) = pattern.take() {
+                        Ok(p)
+                    } else {
+                        Err(ParseError {
+                            message: "dot access requires a target before '.' in case arm"
+                                .to_string(),
+                            span: Some(span),
+                        })
+                    }
                 }
+            } else if let_bindings.is_some() {
+                Err(ParseError {
+                    message: "dot access is not valid in case arm [let bindings] position"
+                        .to_string(),
+                    span: Some(span),
+                })
             } else {
                 Err(ParseError {
-                    message: "dot access is not valid in case arm pattern".to_string(),
+                    message: "dot access requires a target before '.' in case arm".to_string(),
                     span: Some(span),
                 })
             }
@@ -4900,7 +4931,8 @@ fn pop_last_value_from_frame(
 ///
 /// Pattern syntax (basic implementation):
 /// - `_` → Wildcard
-/// - Bare lowercase identifier → Variable binding
+/// - Bare lowercase identifier → Pin (T-1154: was Variable binding; now compare/wildcard)
+/// - `$name` (escaped) → Pin (explicit pin against scope value)
 /// - Bare uppercase identifier → Constructor { tag, binding: None } (unqualified — type checker elaborates)
 /// - Int/Float/Bool/Str literal → Literal pattern
 /// - `[Constructor]` (zero-arg bracket) → Constructor { binding: None } — matches unit variants by tag
@@ -4913,11 +4945,9 @@ fn pattern_variables(pattern: &Pattern) -> std::collections::HashSet<String> {
 }
 
 /// Recursively collect all variable bindings from a pattern
+#[allow(clippy::only_used_in_recursion)]
 fn collect_pattern_variables(pattern: &Pattern, vars: &mut std::collections::HashSet<String>) {
     match pattern {
-        Pattern::Variable(name) => {
-            vars.insert(name.clone());
-        }
         Pattern::Dict { fields, .. } => {
             for (_, field_pattern) in fields {
                 collect_pattern_variables(&field_pattern.node, vars);
@@ -5052,7 +5082,7 @@ fn surface_node_to_pattern_with_guard(
             let base_pattern = if name == "_" {
                 Pattern::Wildcard
             } else if name.chars().next().is_some_and(|c| c.is_lowercase()) {
-                Pattern::Variable(name.clone())
+                Pattern::Pin(name.clone())
             } else if name.chars().next().is_some_and(|c| c.is_uppercase()) {
                 // B-334: Annotated uppercase names in pattern position (e.g., `Int@[is: pred]:`)
                 // produce Pattern::Constructor (NOT Pattern::TypeTag). This is intentional post-S-845:
@@ -5095,7 +5125,7 @@ fn surface_node_to_pattern_with_guard(
         SurfaceExpression::VarRef { name, .. }
             if name.chars().next().is_some_and(|c| c.is_lowercase()) =>
         {
-            (Pattern::Variable(name.clone()), None)
+            (Pattern::Pin(name.clone()), None)
         }
         SurfaceExpression::VarRef { name, .. }
             if name.chars().next().is_some_and(|c| c.is_uppercase()) =>
@@ -5951,12 +5981,19 @@ fn push_expr_to_parent(
                 Ok(())
             }
             Some(StackFrame::CaseDecl {
+                ref mut let_bindings,
                 ref mut pattern,
                 ref mut body,
                 ..
             }) => {
-                // CaseDecl collects two expressions: first = pattern, second = body.
-                if pattern.is_none() {
+                // CaseDecl collects exactly three expressions:
+                //   1. let_bindings: the [let ...] binding declaration
+                //   2. pattern:      the structural pattern
+                //   3. body:         the arm body
+                if let_bindings.is_none() {
+                    *let_bindings = Some(node);
+                    Ok(())
+                } else if pattern.is_none() {
                     *pattern = Some(node);
                     Ok(())
                 } else if body.is_none() {
@@ -5964,8 +6001,9 @@ fn push_expr_to_parent(
                     Ok(())
                 } else {
                     Err(ParseError {
-                        message: "case form can only have two expressions (pattern and body)"
-                            .to_string(),
+                        message:
+                            "case arm can only have three expressions: [let bindings] pattern body"
+                                .to_string(),
                         span: Some(node.span.clone()),
                     })
                 }
@@ -6017,53 +6055,33 @@ fn commit_let_pending(
         file: None,
     };
 
-    // Detect structural test: RHS is an uppercase constructor name (bare or qualified).
-    let constructor_name =
-        dot_path_name(&rhs_node).filter(|s| s.starts_with(|c: char| c.is_uppercase()));
+    // Detect if RHS is an uppercase constructor name (bare or qualified).
+    // This form is no longer supported — the `name: Constructor` structural test syntax has been
+    // removed in favour of the 3-arg `[case [let bindings] pattern body]` form (T-1151).
+    let is_constructor_rhs =
+        dot_path_name(&rhs_node).is_some_and(|s| s.starts_with(|c: char| c.is_uppercase()));
 
-    match (key_node.expr.clone(), constructor_name) {
-        // Case 1: `name: Constructor` or `name: Type.Constructor` — structural test.
-        // Encoded as Annotated { name: "name", annotation: PropertyDict([_constructor: "Ctor"]) }.
-        (SurfaceExpression::VarRef { name: key_name, .. }, Some(ctor_name)) => {
-            let sentinel_key = Arc::new(SurfaceNode {
-                expr: SurfaceExpression::Str("_constructor".to_string()),
-                span: rhs_node.span.clone(),
-            });
-            let ctor_val = Arc::new(SurfaceNode {
-                expr: SurfaceExpression::Str(ctor_name),
-                span: rhs_node.span.clone(),
-            });
-            let ann = Spanned::new(
-                Annotation::PropertyDict(vec![Spanned::new(
-                    SurfaceEntry {
-                        key: Some(sentinel_key),
-                        value: ctor_val,
-                    },
-                    rhs_node.span.clone(),
-                )]),
-                rhs_node.span.clone(),
-            );
-            let annotated = Arc::new(SurfaceNode {
-                expr: SurfaceExpression::Annotated {
-                    name: key_name,
-                    annotation: ann,
-                },
-                span: combined_span,
-            });
-            bindings.push(annotated);
-            Ok(())
-        }
+    match key_node.expr.clone() {
+        // `name: Constructor` — formerly the structural test form; now a parse error.
+        SurfaceExpression::VarRef { name: key_name, .. } if is_constructor_rhs => Err(ParseError {
+            message: format!(
+                "structural test syntax `{}: ...` removed; \
+                     use [case [let bindings] [Constructor v] body] form instead",
+                key_name
+            ),
+            span: Some(combined_span),
+        }),
 
-        // Case 2: `[a b]: Constructor` — multi-payload structural test.
-        // TODO(unified-bindings-structural-tests): constructor test is silently dropped;
-        // see the longer comment in the original push_value handler.
-        (SurfaceExpression::LetDecl { .. }, Some(_ctor_name)) => {
-            bindings.push(key_node);
-            Ok(())
-        }
+        // `[a b]: Constructor` — multi-payload structural test, also removed.
+        SurfaceExpression::LetDecl { .. } if is_constructor_rhs => Err(ParseError {
+            message: "structural test syntax `[...]: Constructor` removed; \
+                      use [case [let bindings] [Constructor v] body] form instead"
+                .to_string(),
+            span: Some(rhs_node.span.clone()),
+        }),
 
         // Case 3: `name: default_value` — named param with default.
-        (SurfaceExpression::VarRef { name: key_name, .. }, None) => {
+        SurfaceExpression::VarRef { name: key_name, .. } => {
             let key_span = key_node.span.clone();
             let surf_key = Arc::new(SurfaceNode {
                 expr: SurfaceExpression::Str("default".to_string()),
@@ -6090,13 +6108,16 @@ fn commit_let_pending(
             Ok(())
         }
 
-        // Case 4: `[a b]: default_value` — invalid; binding group requires a constructor.
-        (SurfaceExpression::LetDecl { .. }, None) => Err(ParseError {
-            message: "binding group `[...]` before `:` requires a constructor name (uppercase identifier) for multi-payload structural test".to_string(),
+        // `[a b]: default_value` — binding group before colon with a non-constructor RHS;
+        // the structural test form has been removed, and a binding group cannot have a default.
+        SurfaceExpression::LetDecl { .. } => Err(ParseError {
+            message: "binding group `[...]` before `:` is no longer supported; \
+                      use [case [let bindings] pattern body] form for structural tests"
+                .to_string(),
             span: Some(rhs_node.span.clone()),
         }),
 
-        // Case 5: Other LHS forms — should not arise from valid parse paths.
+        // Other LHS forms — should not arise from valid parse paths.
         _ => Err(ParseError {
             message: "unexpected form before `:` in [let ...] binding".to_string(),
             span: Some(key_node.span.clone()),
@@ -6521,7 +6542,14 @@ fn stamp_expr(expr: &mut SurfaceExpression, file: &Arc<SourceFile>) {
             }
         }
 
-        SurfaceExpression::CaseArm { pattern, body } => {
+        SurfaceExpression::CaseArm {
+            let_bindings,
+            pattern,
+            body,
+        } => {
+            if let Some(lb) = let_bindings {
+                stamp_node(lb, file);
+            }
             stamp_node(pattern, file);
             stamp_node(body, file);
         }
@@ -6616,11 +6644,7 @@ fn stamp_pattern_spanned(pat: &mut Spanned<Pattern>, file: &Arc<SourceFile>) {
 /// Stamp all spans inside a `Pattern`.
 fn stamp_pattern(pat: &mut Pattern, file: &Arc<SourceFile>) {
     match pat {
-        Pattern::Wildcard
-        | Pattern::Variable(_)
-        | Pattern::Literal(_)
-        | Pattern::Pin(_)
-        | Pattern::TypeTag(_) => {}
+        Pattern::Wildcard | Pattern::Literal(_) | Pattern::Pin(_) | Pattern::TypeTag(_) => {}
 
         Pattern::TypeAssertPending { annotation, inner } => {
             annotation.span.file = Some(Arc::clone(file));

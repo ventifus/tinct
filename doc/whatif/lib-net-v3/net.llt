@@ -7,121 +7,132 @@
 # own document headers — they do NOT get builtins by including net.llt.
 --- uses: ["net"]
 
-# ── IO Typeclasses ────────────────────────────────────────────────────────────────────────────────
+[include %include-dir "prelude.llt"]   # ByteStream, Seekable/SeekFrom, MessageStream, Codec, Indexed, decode, UInt8/16/32/64, ByteOrder, bytes/uint*
 
-[class [let ByteStream h]
-  read-bytes:  [Fn@Bytes [h Int]]
-  write-bytes: [Fn@Null [h Bytes]]]
+# ── Networking-specific typeclasses ───────────────────────────────────────────────────────────────
 
 [class [let Datagram d]
   send: [Fn@Null [d SocketAddress Bytes]]
   recv: [Fn@UdpDatagram [d]]]
 
-[class [let MessageStream s t]
-  # FD: s determines t (each MessageStream type has exactly one message type)
-  send: [Fn@Null [s t]]
-  recv: [Fn@[or [Result.Ok t] Closed.Closed] [s]]]
-
-[class [let Codec c input output]
-  encode: [Fn@output [c input]]
-  decode: [Fn@input  [c output]]]
-
 [class [let Listener l]
   accept: [Fn@Handle [l]]]
 
-[class [let Indexed s e]
-  get:    [Fn@e [s Int]]
-  slice:  [Fn@s [s Int Int]]
-  length: [Fn@Int [s]]]
-
-[type [BigEndian]]
-[type [LittleEndian]]
-[type [NativeEndian]]
-
 # ── Typeclass Instances ───────────────────────────────────────────────────────────────────────────
-
-[instance [ByteStream Handle]
-  read-bytes:  builtin-read-bytes
-  write-bytes: builtin-write-bytes]
+# Handle ByteStream, Channel MessageStream, Bytes/Seq Indexed instances live in prelude.llt.
+# Instances below are for types defined in net.llt itself.
 
 # TcpHandle: transparent wrapper around Handle carrying the original address.
 # The stream field is a lazy thunk — the TCP connection establishes on first access.
 # Tinct's memoization ensures the connection is created exactly once.
 # addr is always visible, enabling tls to infer SNI from [Hostname h] before committing.
-[instance [ByteStream TcpHandle]
-  read-bytes:  [fn [let h@TcpHandle n@Int]  [read-bytes  h.stream n]]
-  write-bytes: [fn [let h@TcpHandle b@Bytes] [write-bytes h.stream b]]]
+[instance ByteStream
+  [let h@TcpHandle]: [read:  [fn [let h@TcpHandle n@Int]  [read  h.stream n]]
+                      write: [fn [let h@TcpHandle b@Bytes] [write h.stream b]]]]
 
-[instance [ByteStream FileHandle]
-  read-bytes:  [fn [let h@FileHandle n@Int]  [read-bytes  h.file n]]
-  write-bytes: [fn [let h@FileHandle b@Bytes] [write-bytes h.file b]]]
+[instance ByteStream
+  [let h@FileHandle]: [read:  [fn [let h@FileHandle n@Int]  [read  h.file n]]
+                       write: [fn [let h@FileHandle b@Bytes] [write h.file b]]]]
 
-[instance [Datagram UdpSocket]
-  send: builtin-udp-send
-  recv: builtin-udp-recv]
+[instance Seekable
+  [let h@FileHandle]: [seek: [fn [let h@FileHandle from@SeekFrom] [builtin-seek h.file from]]]]
+
+[instance Datagram
+  [let h@UdpSocket]: [send: builtin-udp-send
+                      recv: builtin-udp-recv]]
 
 # ConnectedUdp: peer is fixed at creation; send ignores the address argument.
-[instance [Datagram ConnectedUdp]
-  send: [fn [let conn@ConnectedUdp _@SocketAddress data@Bytes]
-    [send conn.sock conn.peer data]]
-  recv: [fn [let conn@ConnectedUdp]
-    [recv conn.sock]]]
+[instance Datagram
+  [let h@ConnectedUdp]: [send: [fn [let conn@ConnectedUdp _@SocketAddress data@Bytes]
+                           [send conn.sock conn.peer data]]
+                         recv: [fn [let conn@ConnectedUdp]
+                           [recv conn.sock]]]]
 
-[instance@[bind: [t]] [MessageStream [Channel t] t]
-  send: builtin-send
-  recv: builtin-recv]   # returns [Result.Ok v] | Closed.Closed (B-192)
-
-[instance [Listener TcpListener]
-  accept: tcp-accept]
-
-[instance [Indexed Bytes UInt8]
-  get:    [fn [let b@Bytes i@Int]           builtin-bytes-get]
-  slice:  [fn [let b@Bytes s@Int n@Int]     builtin-bytes-slice]
-  length: [fn [let b@Bytes]                 builtin-bytes-length]]
-
-[instance@[bind: [T]] [Indexed [Seq T] T]
-  get:    [fn [let s@[Seq T] i@Int]         builtin-seq-get]
-  slice:  [fn [let s@[Seq T] s2@Int n@Int]  builtin-seq-slice]
-  length: [fn [let s@[Seq T]]               builtin-seq-length]]
-
-# Integer ↔ bytes conversion. ByteOrder is always required — there is no endianness-ambiguous
-# multi-byte encoding. The type of the second argument to bytes determines the output width.
-#
-# bytes: [Fn [ByteOrder UInt8]  [Bytes 1]]  — builtin-bytes-u8  (ByteOrder harmless for 1 byte)
-# bytes: [Fn [ByteOrder UInt16] [Bytes 2]]  — builtin-bytes-u16
-# bytes: [Fn [ByteOrder UInt24] [Bytes 3]]  — builtin-bytes-u24
-# bytes: [Fn [ByteOrder UInt32] [Bytes 4]]  — builtin-bytes-u32
-# bytes: [Fn [ByteOrder UInt64] [Bytes 8]]  — builtin-bytes-u64
-#
-# uint16: [Fn [ByteOrder [Bytes 2]] UInt16]  — builtin-uint16 (always succeeds; [Bytes 2] is exact)
-# uint24: [Fn [ByteOrder [Bytes 3]] UInt24]  — builtin-uint24
-# uint32: [Fn [ByteOrder [Bytes 4]] UInt32]  — builtin-uint32
-# uint64: [Fn [ByteOrder [Bytes 8]] UInt64]  — builtin-uint64
-# (single byte: use [get buf i] from the Indexed typeclass — no ByteOrder needed)
+[instance Listener
+  [let h@TcpListener]: [accept: tcp-accept]]
 
 # ── Internal. ────────────────────────────────────────────────────────────────────────────────────
 
 [
-  # Race connections to addrs with 250ms stagger. First success wins; rest cancelled.
-  # Returns [or Handle NetError] — all attempts failed → NetError.AllConnectionsFailed.
+  # Race TCP connections to addrs with 250ms stagger. First success wins; rest cancelled.
+  # tcp-connect returns [Result Handle NetError] — no try or string classification needed.
+  # Failed attempts are recorded as ConnectionAttempt values in err-ch so that if all
+  # fail, AllConnectionsFailed carries the full per-address failure detail.
   happy-connect: [fn@[return: [or Handle NetError]] [let cap@NetCap port@Int addrs@[Seq IpAddress] host@Host]
-    [result-ch:  [channel 1]
+    [n:          [length addrs]
+     result-ch:  [channel 1]
+     err-ch:     [channel n]    # bounded by n — all failures fit without blocking
      attempt-ms: 250]
     [tasks: [collect [map [fn [let e]
-      [i: e.0  addr: e.1]
+      [i:    e.0
+       addr: e.1
+       sa:   [addr: addr  port: [@Port port]]]
       [task
-        [recv [timer-channel %clock [millis (* i attempt-ms)]]]
-        [match [try [tcp-connect cap {addr: addr  port: [@Port port]}]]
-          [Result.Ok  h]: [try [send result-ch h]]
-          [Result.Error _]: null]]]
+        [recv [timer-channel %clock [millis [* i attempt-ms]]]]
+        [match [tcp-connect cap sa]
+          [Result.Ok h]:
+            [try [send result-ch h]]   # try: result-ch may already have a winner
+          [Result.Error err]:
+            [send err-ch [ConnectionAttempt addr: sa  proto: Tcp  error: err]]]]]
       [entries addrs]]]]
     [match [recv result-ch]
-      [Closed.Closed]: NetError.AllConnectionsFailed host: host  attempted: [length addrs]
       [Result.Ok h]:
+        # First success — cancel remaining attempts and return the handle.
         [par-map [fn [let t] [cancel-task t]] tasks]
-        h]]
+        h
+      [Closed.Closed]:
+        # All tasks exited without sending a success. Since err-ch capacity = n and
+        # every task sends exactly one error before exiting, all n errors are buffered.
+        NetError.AllConnectionsFailed host: host
+                                      attempts: [collect-channel err-ch]]]
 
-  ipv6-canonical: [fn [let b@[Bytes 16]] builtin-ipv6-canonical]
+  # Format a 16-bit integer as lowercase hex with no leading zeros (RFC 5952 §4.1).
+  hex16: [fn [let n@Int]
+    [digits: "0123456789abcdef"]
+    [if [= n 0]
+      "0"
+      [block
+        [acc: [fn [let v s]
+          [if [= v 0] s
+            [acc [/ v 16] [str [str-slice [mod v 16] [+ [mod v 16] 1] digits] s]]]]]
+        [acc n ""]]]]
+
+  # RFC 791 §2.3 dotted-decimal IPv4 string from [Bytes 4].
+  ipv4-string: [fn [let b@[Bytes 4]]
+    [str [get b 0] "." [get b 1] "." [get b 2] "." [get b 3]]]
+
+  # RFC 5952 canonical IPv6 string from [Bytes 16].
+  # §4.1: no leading zeros per group. §4.2.2: :: for longest run of zero groups (min 2).
+  # §4.3: lowercase. Tie between equal-length zero runs: compress the first.
+  ipv6-canonical: [fn [let b@[Bytes 16]]
+    # Extract 8 × 16-bit groups
+    [groups: [collect [map [fn [let i]
+                 [uint16 NetworkEndian [slice b [* i 2] [+ [* i 2] 2]]]]
+               [range 0 8]]]]
+    # Find the longest run of consecutive zero groups
+    [best: [reduce [fn [let st i]
+      [g:   [get groups i]]
+      [cs:  st.cs  cl: st.cl  bs: st.bs  bl: st.bl]
+      [if [= g 0]
+        [block
+          [nl: [+ cl 1]]
+          [merge st [cl: nl
+                     bs: [if [> nl bl] cs bs]
+                     bl: [if [> nl bl] nl bl]]]]
+        [merge st [cs: [+ i 1]  cl: 0]]]]
+      [cs: 0  cl: 0  bs: -1  bl: 0]
+      [range 0 8]]]
+    [zs: best.bs
+     zl: [if [>= best.bl 2] best.bl 0]]
+    # Build the string left to right
+    [build: [fn [let i]
+      [if [>= i 8]
+        ""
+        [if [and [> zl 0] [= i zs]]
+          # Start of compressed run: emit ::, then skip the run
+          [str "::" [if [= [+ zs zl] 8] "" [build [+ zs zl]]]]
+          [str [if [= i 0] "" ":"] [hex16 [get groups i]] [build [+ i 1]]]]]]]
+    [build 0]]
 
 ]
 
@@ -129,7 +140,7 @@
 
 [
   # Address types.
-  IpAddress: [union
+  IpAddress: [type
     [Ipv4     [Bytes 4]]
     [Ipv6     [Bytes 16]]
     [Ipv6Zone [Bytes 16] zone@String]]
@@ -165,30 +176,41 @@
      respond: [Fn [Bytes] Null]]]
 
   # Capability types.
-  BindTarget: [union
+  BindTarget: [type
     [IpBind        SocketAddress]
     [InterfaceBind String Port]]
 
   # Scope enforced by pre-bind prefix check in src/builtins.rs, not by kernel.
-  BindScope: [union
+  BindScope: [type
     [AnyScope]
     [LinkLocal]    # 169.254.0.0/16 or fe80::/10 + ff02::/16
     [GlobalScope]
     [Loopback]]    # 127.0.0.0/8 or ::1
 
-  # Wire encoding.
-  ByteOrder: [union [BigEndian] [LittleEndian] [NativeEndian]]
+  # RFC 791 §2.1: all multi-byte fields in network protocols are transmitted MSB first.
+  # NetworkEndian is an alias for BigEndian (defined in prelude) for protocol code clarity.
+  NetworkEndian: BigEndian
 
   # 24-bit unsigned integer — used for HTTP/2 frame lengths (RFC 7540 §4.1).
   UInt24: [type Int@[is: [between 0 16777215]  repr: u32]]
 
+  # Per-attempt record for AllConnectionsFailed. addr/proto identify exactly what was tried;
+  # error is the specific failure. proto is Tcp or Udp — important when SVCB races both.
+  ConnectionAttempt: [type
+    [addr:  SocketAddress
+     proto: Symbol      # Tcp | Udp
+     error: NetError]]  # the specific failure for this attempt
+
   # Network/transport error type — callers distinguish connection failure modes.
-  NetError: [union
+  NetError: [type
     [ConnectionRefused     addr@SocketAddress]   # TCP RST or ICMP port unreachable
     [ConnectionTimeout     addr@SocketAddress]   # no SYN-ACK within timeout
     [NetworkUnreachable    addr@SocketAddress]   # ICMP network unreachable
     [NoAddressesResolved   host@Host]            # DNS returned no usable addresses
-    [AllConnectionsFailed  host@Host  attempted@Int]]  # Happy Eyeballs: every attempt refused/timed out
+    # Happy Eyeballs / SVCB race: every attempt failed.
+    # attempts carries one ConnectionAttempt per tried addr+proto pair — callers can
+    # distinguish "all timed out" from "all refused" from "TLS failed on specific IP".
+    [AllConnectionsFailed  host@Host  attempts@[Seq ConnectionAttempt]]]
 
   # Convenience BindTarget constructors.
   bind-ip:        [fn [let addr@SocketAddress]    BindTarget.IpBind addr]
@@ -205,7 +227,7 @@
     [listen-loop [tcp-bind cap target]]]
 
   tcp-listen-port: [fn [let cap@NetCap port@Port]
-    [tcp-listen cap BindTarget.IpBind {addr: IpAddress.Ipv4 [0 0 0 0]  port: port}]]
+    [tcp-listen cap BindTarget.IpBind [addr: IpAddress.Ipv4 [0 0 0 0]  port: port]]]
 
   udp-bind: [fn [let cap@NetCap target@BindTarget]
     [sock: [udp-socket cap target]]
@@ -214,29 +236,16 @@
     out]
 
   udp-ephemeral: [fn [let cap@NetCap]
-    [udp-socket cap BindTarget.IpBind {addr: IpAddress.Ipv4 [0 0 0 0]  port: 0}]]
+    [udp-socket cap BindTarget.IpBind [addr: IpAddress.Ipv4 [0 0 0 0]  port: 0]]]
 
   # udp-listen: bind a UdpSocket on all interfaces at port (for use with | quic server instance).
   udp-listen: [fn [let cap@NetCap port@Port]
-    [udp-socket cap BindTarget.IpBind {addr: IpAddress.Ipv4 [0 0 0 0]  port: port}]]
-
-  # HttpStream: bidirectional HTTP request/response typeclass.
-  # send (client): initiate request on established connection → Task@RawResponse
-  # recv (server): pull next RawRequest from a connection or channel of connections
-  [class [HttpStream c]
-    send: [Fn@[Task RawResponse] [c RawRequest]]
-    recv: [Fn@[Channel RawRequest] [c]]]
+    [udp-socket cap BindTarget.IpBind [addr: IpAddress.Ipv4 [0 0 0 0]  port: port]]]
 
   # Multiplexed: connection types that expose subsubstreams as a Channel.
   # substreams: Channel@c → Channel@s — opens one stream per incoming connection.
   [class [Multiplexed c s]
     substreams: [Fn@[Channel s] [[Channel c]]]]
-
-  # HttpConnect typeclass: generic request dispatch across H1/H2/H3 connections.
-  # Enables [http-request req conn] to resolve based on conn type.
-  # Subject-last: req first, connection (subject) last.
-  [class [HttpConnect c]
-    request: [Fn@[Task RawResponse] [c RawRequest]]]
 
   # Transport typeclass: protocol type p determines connection type c.
   # determines: [p → c] is a functional dependency: given p, c is uniquely determined.
@@ -272,13 +281,14 @@
   TcpHandle: [type [addr: Host  port: Port  stream: Handle]]
 
   # FileHandle: transparent wrapper around Handle for file I/O. path/mode visible.
+  # FileHandle implements both ByteStream (read/write) and Seekable (seek).
   FileHandle: [type [path: String  mode: Symbol  file: Handle]]
 
   # connect: see dns.llt for Transport instances (Tcp → TcpHandle, Udp → ConnectedUdp).
 
   ip->string: [fn [let addr@IpAddress]
     [match addr
-      [IpAddress.Ipv4     b]:   [str [get b 0] "." [get b 1] "." [get b 2] "." [get b 3]]
+      [IpAddress.Ipv4     b]:   [ipv4-string b]
       [IpAddress.Ipv6     b]:   [ipv6-canonical b]
       [IpAddress.Ipv6Zone b z]: [str "[" [ipv6-canonical b] "%" z "]"]]]
 
@@ -291,8 +301,8 @@
   ip-is-link-local?: [fn [let addr@IpAddress]
     [match addr
       [IpAddress.Ipv4     b]:   [and [= [get b 0] 169] [= [get b 1] 254]]
-      [IpAddress.Ipv6     b]:   [= [band [uint16 BigEndian [slice b 0 2]] 0xFFC0] 0xFE80]
-      [IpAddress.Ipv6Zone b _]: [= [band [uint16 BigEndian [slice b 0 2]] 0xFFC0] 0xFE80]]]
+      [IpAddress.Ipv6     b]:   [= [band [uint16 NetworkEndian [slice b 0 2]] 0xFFC0] 0xFE80]
+      [IpAddress.Ipv6Zone b _]: [= [band [uint16 NetworkEndian [slice b 0 2]] 0xFFC0] 0xFE80]]]
 
   Url: [type
     [scheme:   String
@@ -314,21 +324,24 @@
     [apply str [flat-map [fn [let c]
       [if [unreserved? c]
         [list c]
-        [let b: [str-bytes c]]
-        [map [fn [let byte] [str "%" [hex-byte byte]]] [range 0 [length b]]]]]
+        [block
+          [b: [str-bytes c]]
+          [map [fn [let byte] [str "%" [hex-byte byte]]] [range 0 [length b]]]]]]
      [str-chars s]]]]
 
   # Percent-decode a string per RFC 3986 §2.1. %XX sequences → decoded bytes → UTF-8 string.
   url-decode: [fn [let s@String]
     [chars: [str-chars s]]
-    [let step [fn [i acc]
+    [step: [fn [let i acc]
       [if [>= i [length chars]]
         [bytes-str [apply bytes acc]]
-        [c: [get chars i]]
-        [if [= c "%"]
-          [hex: [str [get chars [+ i 1]] [get chars [+ i 2]]]]
-          [step [+ i 3] [append acc [list [hex-str->byte hex]]]]
-          [step [+ i 1] [append acc [str-bytes c]]]]]]]
+        [block
+          [c: [get chars i]]
+          [if [= c "%"]
+            [block
+              [hex: [str [get chars [+ i 1]] [get chars [+ i 2]]]]
+              [step [+ i 3] [append acc [list [hex-str->byte hex]]]]]
+            [step [+ i 1] [append acc [str-bytes c]]]]]]]]
     [step 0 []]]]
 
   parse-query: [fn [let q@String]
@@ -350,3 +363,35 @@
       [if [null? u.fragment] "" [str "#" u.fragment]]]]
 
 ]
+
+[instance Printable
+  [let a@IpAddress]: [print: ip->string]]
+
+[instance Printable
+  [let a@SocketAddress]: [print: [fn [let sa@SocketAddress]
+    [str [print sa.addr] ":" sa.port]]]]
+
+[instance Printable
+  [let a@Hostname]: [print: [fn [let h@Hostname] h.value]]]
+
+[instance Printable
+  [let a@Host]: [print: [fn [let h@Host]
+    [match h
+      [let ip@IpAddress]: [print ip]
+      [let hn@Hostname]:  [print hn]]]]]
+
+[instance Printable
+  [let a@HostPort]: [print: [fn [let hp@HostPort]
+    [str [print hp.host] ":" hp.port]]]]
+
+[instance Printable
+  [let a@Url]: [print: url->string]]
+
+[instance Printable
+  [let a@NetError]: [print: [fn [let e@NetError]
+    [match e
+      [NetError.ConnectionRefused     addr]: [str "connection refused: "  [print addr]]
+      [NetError.ConnectionTimeout     addr]: [str "timed out: "           [print addr]]
+      [NetError.NetworkUnreachable    addr]: [str "unreachable: "         [print addr]]
+      [NetError.NoAddressesResolved   host]: [str "no addresses resolved: " [print host]]
+      [NetError.AllConnectionsFailed  host _]: [str "all connections failed: " [print host]]]]]]

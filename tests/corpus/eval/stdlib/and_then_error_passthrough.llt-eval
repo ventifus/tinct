@@ -1,0 +1,5 @@
+# and-then: Error passes through unchanged — msg payload bound correctly
+# Tests that [case [let msg] [Result.Error msg] ...] binds msg to the Error payload.
+[and-then [fn [let x] [Ok [* x 2]]] [try [fn [let] [raise "failure"]]]]
+=== out
+Variant(Result.Error, String("failure"))

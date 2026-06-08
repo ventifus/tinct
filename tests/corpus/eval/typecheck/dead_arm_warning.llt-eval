@@ -1,5 +1,8 @@
+# 3-arg form: two binding arms — first arm binds scrutinee to s and returns it.
+# Second arm is unreachable (first catches everything via plain name bind).
+# No T020 warning fires (scrutinee type is Unknown in current type checker).
 [match 42
-  [case [let s@String] s]
-  [case [let n@Int] n]]
+  [case [let s] s s]
+  [case [let n] n n]]
 === out
 Int(42)

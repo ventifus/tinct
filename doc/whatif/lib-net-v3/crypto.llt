@@ -57,9 +57,10 @@
     # 3. Match hostname against SAN names (wildcards: *.example.com matches sub.example.com)
     [any? [fn [let name]
       [if [starts-with? name "*."]
-        [let suffix: [slice-str name 1 [length name]]]
-        [and [ends-with? hostname suffix]
-             [not [contains? [slice-str hostname 0 [- [length hostname] [length suffix]]] "."]]]
+        [block
+          [suffix: [slice-str name 1 [length name]]]
+          [and [ends-with? hostname suffix]
+               [not [contains? [slice-str hostname 0 [- [length hostname] [length suffix]]] "."]]]]
         [= hostname name]]]
      san-names]]
 
@@ -121,7 +122,7 @@
 [
   # Hash algorithm selector union for all HKDF calls.
   # The four [type [X]] top-level declarations above define Sha256/Sha384/Sha512/Blake2s.
-  HkdfHash: [union [Sha256] [Sha384] [Sha512] [Blake2s]]
+  HkdfHash: [type [Sha256] [Sha384] [Sha512] [Blake2s]]
 
   # AsnValue is exported by asn1.llt (included above) — no re-export needed here.
 

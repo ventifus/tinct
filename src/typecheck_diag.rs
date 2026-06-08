@@ -171,7 +171,14 @@ pub(crate) fn stq_walk_node_unknown(node: &SurfaceNode, spans: &mut HashSet<(usi
                 stq_walk_node_unknown(b, spans);
             }
         }
-        SurfaceExpression::CaseArm { pattern, body } => {
+        SurfaceExpression::CaseArm {
+            let_bindings,
+            pattern,
+            body,
+        } => {
+            if let Some(lb) = let_bindings {
+                stq_walk_node_unknown(lb, spans);
+            }
             stq_walk_node_unknown(pattern, spans);
             stq_walk_node_unknown(body, spans);
         }
@@ -310,7 +317,14 @@ pub(crate) fn stq_walk_node_overbroad(
                 stq_walk_node_overbroad(b, type_map, diagnostics);
             }
         }
-        SurfaceExpression::CaseArm { pattern, body } => {
+        SurfaceExpression::CaseArm {
+            let_bindings,
+            pattern,
+            body,
+        } => {
+            if let Some(lb) = let_bindings {
+                stq_walk_node_overbroad(lb, type_map, diagnostics);
+            }
             stq_walk_node_overbroad(pattern, type_map, diagnostics);
             stq_walk_node_overbroad(body, type_map, diagnostics);
         }
@@ -446,7 +460,14 @@ pub(crate) fn stq_collect_node_spans(node: &SurfaceNode, map: &mut HashMap<(usiz
                 stq_collect_node_spans(b, map);
             }
         }
-        SurfaceExpression::CaseArm { pattern, body } => {
+        SurfaceExpression::CaseArm {
+            let_bindings,
+            pattern,
+            body,
+        } => {
+            if let Some(lb) = let_bindings {
+                stq_collect_node_spans(lb, map);
+            }
             stq_collect_node_spans(pattern, map);
             stq_collect_node_spans(body, map);
         }
@@ -590,7 +611,14 @@ pub(crate) fn scan_explicit_unknown_t011(
                     emit_t011_for_node(b, diagnostics);
                 }
             }
-            SurfaceExpression::CaseArm { pattern, body } => {
+            SurfaceExpression::CaseArm {
+                let_bindings,
+                pattern,
+                body,
+            } => {
+                if let Some(lb) = let_bindings {
+                    emit_t011_for_node(lb, diagnostics);
+                }
                 emit_t011_for_node(pattern, diagnostics);
                 emit_t011_for_node(body, diagnostics);
             }

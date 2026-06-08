@@ -1,0 +1,254 @@
+# stdlib/prelude.llt additions — proposed by lib-net-v3.
+# Part of: lib-net-v3
+#
+# These declarations merge into stdlib/prelude.llt on acceptance.
+# They belong in prelude because they are general-purpose IO abstractions
+# used by any program doing I/O, not just network programs.
+#
+# The draft .llt files include this via [include %include-dir "prelude.llt"].
+# In the real stdlib, prelude is always loaded — no explicit include needed.
+
+# ── block and task multi-body (T-1157, T-1158) ───────────────────────────────
+# block: lazy multi-body in expression position. Desugars to an immediately-invoked
+# zero-arg lambda so intermediate dict bindings are sequentially scoped.
+# [block e1 e2 e3] → [[fn [] e1 e2 e3]]
+#
+# task multi-body: [task e1 e2 e3] → [task [block e1 e2 e3]]
+# Both are macros implemented via the macros-v2 `macro` form.
+# Consult doc/whatif/completed/macros-v2.md for exact implementation syntax.
+# The closest existing reference is [macro do [let first ...rest] ...] in prelude.llt.
+#
+# These declarations are placeholders until T-1157 and T-1158 land.
+[macro block [let ...body]
+  [quote [[fn [let] [unquote-splice body]]]]]
+
+[macro task [let first ...rest]
+  [if [empty? rest]
+    [quote [builtin-task [unquote first]]]
+    [quote [builtin-task [block [unquote first] [unquote-splice rest]]]]]]
+
+# ── ByteStream ────────────────────────────────────────────────────────────────
+# Ordered, reliable, connection-oriented byte pipe.
+# read n bytes from the stream; write bytes to it.
+# Base instance: Handle (any TCP socket, file, pipe, stdin/stdout).
+
+[class [let ByteStream h]
+  read:  [Fn@Bytes [h Int]]
+  write: [Fn@Null [h Bytes]]]
+
+[instance ByteStream
+  [let h@Handle]: [read:  builtin-read-bytes
+                   write: builtin-write-bytes]]
+
+# ── Seekable ──────────────────────────────────────────────────────────────────
+# Random-access extension of ByteStream. Only files implement this — network
+# streams and pipes do not. seek returns the new absolute position.
+# tell  = [seek h [SeekFrom.Current 0]]
+# size  = [seek h [SeekFrom.End 0]]   (seek back after if needed)
+
+[class [let Seekable h] [ByteStream h]
+  seek: [Fn@Int [h SeekFrom]]]
+
+# ── Printable ─────────────────────────────────────────────────────────────────
+# User-readable string representation. Follows the -able typeclass naming convention
+# (Seekable, Addable, etc.). Method: print returns a human-readable String.
+# No existing `print` function in tinct — unambiguous. `emit` is the output primitive.
+
+[class [let Printable t]
+  print: [Fn@String [t]]]
+
+# ── MessageStream ─────────────────────────────────────────────────────────────
+# Bidirectional typed-message interface. You send/recv one complete typed value;
+# the implementation handles all serialization and framing internally.
+# Channel T is the base instance — already delivers typed values with no framing.
+# Used by %emit (CLI output pipeline), WebSocket, gRPC, and custom protocols.
+
+[class [let MessageStream s t]
+  # FD: s determines t (each MessageStream type has exactly one message type)
+  send: [Fn@Null [s t]]
+  recv: [Fn@[or [Result.Ok t] Closed.Closed] [s]]]
+
+[instance@[bind: [t]] MessageStream
+  [let a@[Channel t] b@t]: [send: builtin-send
+                             recv: builtin-recv]]   # returns [Result.Ok v] | Closed.Closed (B-192)
+
+# ── Codec ─────────────────────────────────────────────────────────────────────
+# Bridge between IO shapes. encode: input → output; decode: output+offset → input+next.
+# decode takes (codec, buffer, offset) → {value: decoded, next: offset-after-frame}.
+# For whole-buffer codecs (gzip, text): call with offset=0, next = [length buf].
+# For framing codecs (QUIC, H2, H3): offset advances through a packet payload.
+
+[class [let Codec c input output]
+  encode: [Fn@output [c input]]
+  decode: [Fn@[value: input  next: Int] [c output Int]]]
+
+# ── Indexed ───────────────────────────────────────────────────────────────────
+# Lookup by key. Generalised to any key type k — not just integers.
+# get: look up by key, returning [or v Absent]; slice: subsequence; length: element count.
+#
+# Key types by instance:
+#   Seq    → Int    (positional index)
+#   Dict   → String (named key)
+#   Bytes  → Int    (byte at position)
+#   TypeLookupTable → [Map String Any]  (named-field selector: [get rcode: 2 DnsRcode])
+#
+# For type lookup tables, named arguments form the selector dict:
+#   [get rcode: 2 DnsRcode]     → DnsRcode.ServFail   (Absent if not found)
+#   [get abbrev: "OK" DnsRcode] → DnsRcode.NoError
+
+[class [let Indexed s k v]
+  get:    [Fn@[or v Absent] [s k]]
+  slice:  [Fn@s [s Int Int]]
+  length: [Fn@Int [s]]]
+
+[instance Indexed
+  [let a@Bytes b@Int c@UInt8]: [get:    builtin-bytes-get
+                                 slice:  builtin-bytes-slice
+                                 length: builtin-bytes-length]]
+
+[instance@[bind: [T]] Indexed
+  [let a@[Seq T] b@Int c@T]: [get:    builtin-seq-get
+                               slice:  builtin-seq-slice
+                               length: builtin-seq-length]]
+
+# Dict lookup — String key. Already available via get/has?/get? builtins.
+# Shown here to illustrate the unified Indexed model.
+[instance Indexed
+  [let a@Dict b@String c@Any]: [get: builtin-dict-get
+                                 slice:  [fn [let _ _ _] [error "slice not defined for Dict"]]
+                                 length: builtin-dict-length]]
+
+# Type lookup tables — named-field selector as key.
+# [get rcode: 2 DnsRcode] → named args {rcode: 2} become the selector dict.
+# get iterates the variant table and returns the first matching variant.
+# The variant table is a Seq of all variants (type name evaluates to this at runtime).
+[instance@[bind: [T]] Indexed
+  [let a@[Seq T] b@[Map String Any] c@T]:
+    [get: [fn [let variants@[Seq T] selector@[Map String Any]]
+      [find [fn [let v]
+        [all? [fn [let e] [= [get e.key v] e.value]] [entries selector]]]
+       variants]]
+     slice:  [fn [let _ _ _] [error "slice not defined for type lookup table"]]
+     length: builtin-seq-length]]
+
+# ── Public API (final dict — exported to callers) ─────────────────────────────
+
+[
+  # Fixed-width unsigned integer types. Already in stdlib/numeric.llt (numeric-types sprint);
+  # listed here because prelude additions must export them for Indexed, bytes/uint*, etc.
+  UInt8:  [type Int@[is: [between 0 255]          repr: u8]]
+  UInt16: [type Int@[is: [between 0 65535]         repr: u16]]
+  UInt32: [type Int@[is: [between 0 4294967295]    repr: u32]]
+  # [>= _ 0] uses _ shorthand: desugars to [fn [_] [>= _ 0]] → [>= subject 0] = subject >= 0.
+  # Upper bound [between 0u 18446744073709551615u] requires T-1136 u suffix; added then.
+  UInt64: [type Int@[is: [>= _ 0]  repr: u64]]
+
+  # Byte order for integer ↔ bytes conversions.
+  ByteOrder: [type BigEndian LittleEndian NativeEndian]
+
+  # Seekable position argument. tell = [seek h [SeekFrom.Current 0]],
+  # size = [seek h [SeekFrom.End 0]].
+  SeekFrom: [type [Start pos@Int] [End pos@Int] [Current pos@Int]]
+
+  # Integer ↔ fixed-width bytes. ByteOrder is always required — no endianness-ambiguous
+  # multi-byte encoding is possible. Width is determined by the integer type argument.
+  # For a single byte, use [get buf i] via the Indexed typeclass — no ByteOrder needed.
+  bytes@[doc:   "Encode integer as fixed-width bytes in the given byte order. Width: UInt8→1, UInt16→2, UInt24→3, UInt32→4, UInt64→8."]: builtin-bytes
+  uint16@[doc:  "Decode 2 bytes as UInt16 in the given byte order."]:  builtin-uint16
+  uint32@[doc:  "Decode 4 bytes as UInt32 in the given byte order."]:  builtin-uint32
+  uint64@[doc:  "Decode 8 bytes as UInt64 in the given byte order."]:  builtin-uint64
+
+  # Decode all frames from a buffer as a lazy Seq.
+  # The tail is a thunk — each frame is decoded only when the tail is forced.
+  # [decode codec buf] → lazy Seq of decoded values (via this 2-arg function)
+  # [decode codec buf offset] → {value next} (via 3-arg Codec typeclass method)
+  decode: [fn@[bind: [c i o]  constraint: [c: [Codec c i o]]] [let codec@c buf@o]
+    [step: [fn [let offset]
+      [if [>= offset [length buf]]
+        []
+        [block
+          [r: [decode codec buf offset]]
+          [seq r.value [step r.next]]]]]]
+    [step 0]]
+
+  # select: repeatedly dispatch from a set of channels until context is cancelled.
+  # select-once is the one-shot primitive; select is the recurring wrapper.
+  # sources: Seq of {ch: Channel  handler: Fn} — whichever channel fires, its handler is called
+  #          with the received value; its return value is passed to finalizer.
+  # finalizer: called after each handler invocation; use identity to discard.
+  #
+  # Example:
+  #   [select [context]
+  #     [seq [ch: req-ch  handler: [fn [let req] [task [req.respond [handle req]]]]]
+  #      [seq [ch: sig-ch handler: [fn [let _]   [exit 0]]] []]]
+  #     identity]
+  select@[doc: "Repeatedly select from channels until context cancelled. sources: Seq of {ch: handler:} dicts."]:
+    [fn@[bind: [r]] [let ctx@Context
+             sources@[Seq [bind: [t]] [ch: [Channel t]  handler: [Fn@r t]]]
+             finalizer@[Fn@Any r]]
+      [step: [fn []
+        [if [cancelled? ctx]
+          null
+          [match [select-once ctx sources]
+            [Closed.Closed]: null
+            [Result.Ok result]:
+              [finalizer result]
+              [step]]]]]
+      [step]]
+
+  # drain: drain a single channel, calling f on each item for its side effect.
+  # Returns a Task. Stops when the channel closes.
+  # Use channel-map when you need an output channel; use drain for pure side effects.
+  # Subject-last: f first, channel last. [drain [fn [let req] ...] requests]
+  drain: [fn@[return: Task  bind: [t r]] [let f@[Fn@r t]  ch@[Channel t]]
+    [task
+      [step: [fn []
+        [match [recv ch]
+          [Closed.Closed]: null
+          [Result.Ok x]:   [[f x] [step]]]]]
+      [step]]]
+
+  # stream-drain: drain a ByteStream-backed packet source via a read function.
+  # read-one: called on source, returns [Result.Ok item] | Closed.Closed.
+  # handler: called for each item for its side effect.
+  # Returns a Task. Analogous to drain but for read-function sources (not channels).
+  # [stream-drain read-icmp handle-pkt stream]
+  stream-drain: [fn@[return: Task  bind: [t r s]]
+                 [let read-one@[Fn@[or [Result.Ok t] Closed.Closed] s]
+                      handler@[Fn@r t]
+                      source@s]
+    [task
+      [step: [fn []
+        [match [read-one source]
+          [Closed.Closed]: null
+          [Result.Ok item]:   [[handler item] [step]]]]]
+      [step]]]
+
+  # serve-streams: for each stream in stream-ch, start a concurrent task that
+  # drains it via stream-drain with the given read function and handler.
+  # Combines drain + stream-drain for the common "channel of streams" pattern.
+  # [channel-of-streams | [serve-streams read-fn handler]]
+  serve-streams: [fn@[return: Task  bind: [t r s]]
+                  [let read-one@[Fn@[or [Result.Ok t] Closed.Closed] s]
+                       handler@[Fn@r t]
+                       stream-ch@[Channel s]]
+    [drain [fn [let stream@s] [task [stream-drain read-one handler stream]]] stream-ch]]
+
+  # ── Printable instances for primitive types ──────────────────────────────────
+  # These back the str reimplementation below. Rust builtins handle the actual
+  # primitive-to-string conversion; everything else is tinct.
+
+  # str: variadic string concatenation via Printable.
+  # Replaces the str Rust builtin — any type implementing Printable works automatically.
+  # [str "x=" x " y=" y] → concatenates all args via [print arg] for each.
+  # Removing the Rust str builtin and replacing with this tinct function is tracked in T-1176.
+  str: [fn [let ...args]
+    [reduce [fn [let acc x] [concat acc [print x]]] "" args]]
+]
+
+# Primitive Printable instances — must be top-level (not in a dict) like all instances.
+# Int and Float use Rust builtins for the actual number formatting.
+[instance Printable [let a@Int]:    [print: builtin-int->string]]
+[instance Printable [let a@Float]:  [print: builtin-float->string]]
+[instance Printable [let a@Bool]:   [print: [fn [let b] [if b "true" "false"]]]]
+[instance Printable [let a@String]: [print: identity]]

@@ -1,0 +1,4 @@
+# Printable instance for Float: PrintableFloat.print converts a Float to its string representation
+[PrintableFloat.print 2.5]
+=== out
+String("2.5")

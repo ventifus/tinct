@@ -1,7 +1,8 @@
-# [Seq h t] pattern: destructure a Seq.Cons, bind head variable
-# Regression: Pattern::Seq must match Value::Variant{Seq.Cons} after migration
+# [Seq.Cons p] pattern: destructure a Seq.Cons, access head via p.head.
+# T-1154: [Seq h t] no longer binds h/t (Pattern::Pin — wildcard, no binding).
+# Regression: Pattern::Constructor("Seq.Cons") must match Value::Variant{Seq.Cons}.
 [match [range 42 46]
-    [Seq h t]: h
-    _:         0]
+  [case [let p] [Seq.Cons p] p.head]
+  _:                         0]
 === out
 Int(42)

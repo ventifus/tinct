@@ -5,8 +5,8 @@
 [
   Result: [type [Ok value: a] [Error msg: Str]]
   matched: [match [Ok value: 42]
-    [Result.Ok v]:    v.value
-    [Result.Error _]: 0]
+    [case [let v] [Result.Ok v]    v.value]
+    [Result.Error _]:              0]
 ]
 === out
 Dict({"Ok": Function(payload), "Error": Function(payload), "matched": Int(42)})

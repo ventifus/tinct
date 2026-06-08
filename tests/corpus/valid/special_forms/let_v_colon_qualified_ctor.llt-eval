@@ -1,10 +1,11 @@
-# [let v: Result.Ok] — pending_rhs qualified constructor path.
-# The parser must defer committing the `v: ...` pair until the full dot-access
-# RHS (Result.Ok) has been assembled, so the qualified name is preserved whole.
-# Verifies no parse error occurs (pending_rhs handles DotAccess correctly).
+# [let v: Result.Ok] — REMOVED (T-1151).
+# The name: Constructor structural test syntax inside [let ...] is now a parse error.
+# The pending_rhs mechanism for assembling qualified dot-access RHS still applies
+# but only for the default-value form (name: default_value).
 [let v: Result.Ok]
-
-
+=== out
+<error at 4:6-4:18>
 
 === warn
+[TypeError] syntax error at 4:6 (cannot typecheck error node)
 [TypeError] binding declaration [let ...] is not valid in expression position

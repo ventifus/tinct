@@ -3,14 +3,14 @@
 ---
 [call %.str-substr -1 2 "hello"]
 === error
-[E080] str-substr: start -1 must be >= 0 (defined at stdlib/prelude.llt:2447:28-2447:47)
-  --> stdlib/prelude.llt:2447:28-2447:47
+[E080] str-substr: start -1 must be >= 0 (defined at stdlib/prelude.llt:2480:28-2480:47)
+  --> stdlib/prelude.llt:2480:28-2480:47
    |
-  2447 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2480 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
-  in [builtin-raise ...] at stdlib/prelude.llt:2447:28-2447:47
+  in [builtin-raise ...] at stdlib/prelude.llt:2480:28-2480:47
    |
-  2447 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2480 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
   in materialized at 88:5-94:43
   in [if ...] at 88:5-94:43

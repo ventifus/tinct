@@ -632,7 +632,7 @@ fn hover_at_surface_node(
             None
         }
 
-        SurfaceExpression::CaseArm { pattern, body } => {
+        SurfaceExpression::CaseArm { pattern, body, .. } => {
             if let Some(text) = hover_at_surface_node(
                 pattern,
                 offset,
@@ -933,7 +933,7 @@ fn name_at_offset(node: &Arc<SurfaceNode>, offset: usize) -> Option<String> {
             bindings.iter().find_map(|b| name_at_offset(b, offset))
         }
 
-        SurfaceExpression::CaseArm { pattern, body } => {
+        SurfaceExpression::CaseArm { pattern, body, .. } => {
             name_at_offset(pattern, offset).or_else(|| name_at_offset(body, offset))
         }
 
@@ -1019,7 +1019,7 @@ fn find_key_definition(node: &Arc<SurfaceNode>, name: &str) -> Option<Span> {
             bindings.iter().find_map(|b| find_key_definition(b, name))
         }
 
-        SurfaceExpression::CaseArm { pattern, body } => {
+        SurfaceExpression::CaseArm { pattern, body, .. } => {
             find_key_definition(pattern, name).or_else(|| find_key_definition(body, name))
         }
 
@@ -1340,7 +1340,7 @@ fn collect_var_refs_spanned(
             }
         }
 
-        SurfaceExpression::CaseArm { pattern, body } => {
+        SurfaceExpression::CaseArm { pattern, body, .. } => {
             collect_var_refs_spanned(pattern, name, source, uri, out);
             collect_var_refs_spanned(body, name, source, uri, out);
         }
@@ -3170,7 +3170,7 @@ fn collect_rename_edits_spanned(
             }
         }
 
-        SurfaceExpression::CaseArm { pattern, body } => {
+        SurfaceExpression::CaseArm { pattern, body, .. } => {
             collect_rename_edits_spanned(pattern, name, source, out);
             collect_rename_edits_spanned(body, name, source, out);
         }
@@ -3305,7 +3305,7 @@ fn collect_definition_key_edits(
             }
         }
 
-        SurfaceExpression::CaseArm { pattern, body } => {
+        SurfaceExpression::CaseArm { pattern, body, .. } => {
             collect_definition_key_edits(pattern, name, source, out);
             collect_definition_key_edits(body, name, source, out);
         }
@@ -3546,7 +3546,7 @@ fn collect_dict_keys_in_scope(
                 collect_dict_keys_in_scope(binding, offset, items, seen);
             }
         }
-        SurfaceExpression::CaseArm { pattern, body } => {
+        SurfaceExpression::CaseArm { pattern, body, .. } => {
             collect_dict_keys_in_scope(pattern, offset, items, seen);
             collect_dict_keys_in_scope(body, offset, items, seen);
         }
@@ -3733,7 +3733,7 @@ fn find_enclosing_call(node: &Arc<SurfaceNode>, offset: usize) -> Option<((usize
             .iter()
             .find_map(|binding| find_enclosing_call(binding, offset)),
 
-        SurfaceExpression::CaseArm { pattern, body } => {
+        SurfaceExpression::CaseArm { pattern, body, .. } => {
             find_enclosing_call(pattern, offset).or_else(|| find_enclosing_call(body, offset))
         }
 

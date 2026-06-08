@@ -1,11 +1,7 @@
-# case: [case [let v: Ok]] — payload bound to v, used in arm body
-[value: [Ok 99]]
-[match value
-  [case [let v: Ok]    [+ v 1]]
-  [case [let _: Error] -1]
-  [case [let _]        0]]
+# 3-arg case: bind a named field from a dict pattern and use in arithmetic.
+# Pattern [val: v] binds the "val" field to v; body computes v+1.
+[match [val: 99]
+  [case [let v] [val: v] [+ v 1]]
+  [case [let _] _ 0]]
 === out
-Int(0)
-
-=== warn
-[UndefinedVariable] undefined variable: Ok
+Int(100)

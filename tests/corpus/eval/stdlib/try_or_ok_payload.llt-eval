@@ -1,0 +1,4 @@
+# try-or: Ok value extracted — tests 3-arg case [Result.Ok v] payload binding
+[try-or [fn [] [+ 1 41]] 99]
+=== out
+Int(42)

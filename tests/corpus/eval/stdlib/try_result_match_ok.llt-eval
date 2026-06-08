@@ -1,7 +1,7 @@
 # Test try result pattern matching - Result.Ok arm
 # try returns [Result.Ok value] on success; pattern match extracts value
 [match [try [fn [] [+ 10 5]]]
-  [Result.Ok v]: v
-  [Result.Error _]: 0]
+  [case [let v] [Result.Ok v] v]
+  [Result.Error _]:            0]
 === out
 Int(15)

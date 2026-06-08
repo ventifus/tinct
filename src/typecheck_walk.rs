@@ -23,6 +23,7 @@
 //! | `TypeNode.TypeApplication` | `ctor`, `args` | One, Seq   |
 //! | `TypeNode.Arrow`   | `params`, `result`      | Seq, One   |
 //! | `TypeNode.Recursive` | `body`                | One        |
+//! | `TypeNode.Negation` | `inner`                | One        |
 //! | All others         | (none — leaf nodes)     | —          |
 //!
 //! Leaf constructors: `Int`, `Float`, `String`, `Bool`, `Absent`, `Unknown`, `Never`,
@@ -254,6 +255,7 @@ fn is_typenode_typevar(node: &Value) -> bool {
 /// | `TypeNode.TypeApplication` | `ctor` (One), `args` (Seq of TypeNode)|
 /// | `TypeNode.Arrow`           | `params` (Seq of TypeNode), `result` (One) |
 /// | `TypeNode.Recursive`       | `body` (One TypeNode)                 |
+/// | `TypeNode.Negation`        | `inner` (One TypeNode)                |
 /// | All others                 | No children (leaf nodes)              |
 ///
 /// Leaf constructors: `TypeNode.Int`, `TypeNode.Float`, `TypeNode.String`,
@@ -355,6 +357,16 @@ where
         "TypeNode.Recursive" => {
             if let Some(body_val) = get_payload_field(node, "body", ctx) {
                 if let Some(result) = walk_typenode(&body_val, ctx, f) {
+                    return Some(result);
+                }
+            }
+        }
+
+        // ── Negation: `inner@Child: TypeNode` ────────────────────────────────
+        // Produced by the `without` combinator (T-1171). Has exactly one child: `inner`.
+        "TypeNode.Negation" => {
+            if let Some(inner_val) = get_payload_field(node, "inner", ctx) {
+                if let Some(result) = walk_typenode(&inner_val, ctx, f) {
                     return Some(result);
                 }
             }

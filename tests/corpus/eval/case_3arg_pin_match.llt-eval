@@ -1,0 +1,9 @@
+# 3-arg [case [let bindings] pattern body] — pin semantics.
+# `expected` is NOT in the let-bindings set, so it is pinned (compared for equality).
+# The arm fires when the scrutinee equals the current value of `expected`.
+[expected: 42]
+[match 42
+  [case [let] expected "hit"]
+  [case [let] _ "miss"]]
+=== out
+String("hit")

@@ -1,7 +1,7 @@
 //! String builtins: `str`, `split`, `replace`, `trim`, `str-length`,
 //! `str-slice`, `str-chars`, `str-index-of`, `char-code`, `chr`, `str-bytes`, `bytes-str`,
 //! `trim-start`, `trim-end`, `str-to-upper-char`, `str-to-lower-char`, `str-map-chars`,
-//! `regex-match?`.
+//! `regex-match?`, `int->string`, `float->string`.
 //!
 //! Note: `upper` and `lower` are no longer Rust builtins. They live in `stdlib/strings.llt`
 //! and are implemented using `str-map-chars` + `str-to-upper-char` / `str-to-lower-char`.
@@ -1178,6 +1178,80 @@ pub(crate) fn builtin_str_map_chars(
         }
 
         ok_val(string_val(&result), call_span)
+    })
+}
+
+/// `int->string`: Convert an Int to its decimal string representation.
+///
+/// Takes exactly 1 arg: an `Int`.
+/// Returns the decimal representation as a String (same as `[str n]` for integers).
+/// This is the thin primitive backing `Printable` instances in the stdlib — it does
+/// not call `stringify` and cannot infinitely recurse back through `str`.
+pub(crate) fn builtin_int_to_string(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx: _,
+        } = ctx_arg;
+        reject_named("int->string", named.as_ref(), call_span.clone())?;
+        let val = args
+            .into_iter()
+            .next()
+            .ok_or_else(|| EvalError::arity_mismatch(1, 0, call_span.clone()))?;
+        let materialized = val
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        match materialized {
+            Value::Int(n) => ok_val(string_val(&n.to_string()), call_span),
+            other => Err(EvalError::type_mismatch_ctx(
+                "int->string".to_string(),
+                "Int",
+                other.type_name(),
+                call_span,
+            )
+            .into()),
+        }
+    })
+}
+
+/// `float->string`: Convert a Float to its string representation.
+///
+/// Takes exactly 1 arg: a `Float`.
+/// Returns the Rust Display representation of the float as a String.
+/// This is the thin primitive backing `Printable` instances in the stdlib — it does
+/// not call `stringify` and cannot infinitely recurse back through `str`.
+pub(crate) fn builtin_float_to_string(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx: _,
+        } = ctx_arg;
+        reject_named("float->string", named.as_ref(), call_span.clone())?;
+        let val = args
+            .into_iter()
+            .next()
+            .ok_or_else(|| EvalError::arity_mismatch(1, 0, call_span.clone()))?;
+        let materialized = val
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        match materialized {
+            Value::Float(n) => ok_val(string_val(&n.to_string()), call_span),
+            other => Err(EvalError::type_mismatch_ctx(
+                "float->string".to_string(),
+                "Float",
+                other.type_name(),
+                call_span,
+            )
+            .into()),
+        }
     })
 }
 

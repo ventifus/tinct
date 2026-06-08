@@ -1,6 +1,8 @@
-# Seq pattern: process head; bind and ignore tail
+# Seq pattern: process head; payload dict p has p.head and p.tail fields.
+# T-1154: [Seq h t] no longer binds h/t; use [Seq.Cons p] to bind the payload dict.
+# Only p.head is accessed in the body — the tail is not forced.
 [match [seq 10 [seq 20 [seq 30 []]]]
-    [Seq h t]:  [+ h 5]
-    _:          0]
+  [case [let p] [Seq.Cons p] [+ p.head 5]]
+  _:                         0]
 === out
 Int(15)

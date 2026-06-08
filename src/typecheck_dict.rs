@@ -360,7 +360,7 @@ fn collect_dependencies(
                     worklist.push(b);
                 }
             }
-            SurfaceExpression::CaseArm { pattern, body } => {
+            SurfaceExpression::CaseArm { pattern, body, .. } => {
                 worklist.push(pattern);
                 worklist.push(body);
             }

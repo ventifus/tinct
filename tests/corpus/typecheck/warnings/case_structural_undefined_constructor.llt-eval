@@ -1,14 +1,11 @@
-# T018 warning: structural test references a constructor name not in scope.
-# [let v: Bogus] — 'Bogus' is not defined anywhere, so T018 is emitted.
-# At runtime the arm soft-skips (the tag can never match), so the wildcard fires.
-[value: [Ok 42]]
-[match value
-  [case [let v: Bogus] [str "bogus " v]]
-  [case [let _]        "fallthrough"]]
+# 3-arg [case [let x@BogusType] ...]: undefined type annotation in [let ...] binding
+# triggers [UndefinedType] warning. Eval proceeds regardless (advisory only).
+# binding_set = {"x"}; pattern x binds scrutinee 42 to x; body returns x = 42.
+[match 42
+  [case [let x@BogusType] x x]
+  [case [let _] _ -1]]
 === out
-String("fallthrough")
+Int(42)
 
 === warn
-[UndefinedVariable] undefined variable: Ok
-undefined constructor `Bogus` in structural test; no variable with this name is in scope — the arm will never match
-inferred type is Unknown — consider adding a type annotation
+[UndefinedType] undefined type: BogusType

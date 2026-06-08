@@ -5,7 +5,7 @@
 # The eval output verifies runtime correctness: Result.Ok arm executes and returns payload.
 [result: [try [fn [] 42]]
  value: [match result
-   [Result.Ok v]:  v
-   [Result.Error _]: 0]]
+   [case [let v] [Result.Ok v]    v]
+   [Result.Error _]:              0]]
 === out
 Dict({"result": Variant(Result.Ok, Int(42)), "value": Int(42)})

@@ -1,0 +1,13 @@
+# 3-arg case: zero-arg constructor pattern matches a payload-bearing variant.
+# [Result.Ok] with zero args in the pattern should tag-check only (no payload.is_none() check).
+# This is the "tag-only check" form used with [let _] wildcard or when the payload
+# is accessed separately via [let v] binding of the whole scrutinee.
+[match [Ok 42]
+  [case [let _] [Result.Ok]    "ok"]
+  [case [let _] [Result.Error] "error"]
+  [case [let _] _              "other"]]
+=== out
+String("ok")
+
+=== warn
+[UndefinedVariable] undefined variable: Ok

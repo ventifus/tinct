@@ -1524,6 +1524,8 @@ impl TypeEnv {
             ("builtin-emit", "emit"),
             ("builtin-env", "env"),
             ("builtin-str", "str"),
+            ("builtin-int->string", "int->string"),
+            ("builtin-float->string", "float->string"),
             ("builtin-split", "split"),
             ("builtin-trim", "trim"),
             ("builtin-str-length", "str-length"),

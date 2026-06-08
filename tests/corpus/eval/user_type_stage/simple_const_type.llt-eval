@@ -1,0 +1,14 @@
+--- stage: type
+[
+  # Simple constant type alias
+  MyInt: Int
+]
+---
+[
+  # Use the user-defined type alias in an annotation
+  result@MyInt: 42
+]
+---
+42
+=== out
+Int(42)

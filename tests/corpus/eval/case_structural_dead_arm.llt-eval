@@ -1,12 +1,7 @@
-# case: [let _: Constructor] — structural test with wildcard binding (no name)
-# Tests that [let _: Constructor] correctly matches on tag without binding.
-[value: [Ok 42]]
-[match value
-  [case [let _: Ok]    "matched-ok"]
-  [case [let _: Error] "matched-err"]
-  [case [let _]        "no-match"]]
+# 3-arg case: dict pattern match — first arm matches any dict with field "tag",
+# making the second arm dead. Tests that the matching arm fires and dead arm is skipped.
+[match [tag: "ok"  val: 42]
+  [case [let v] [tag: "ok"  val: v] v]
+  [case [let _] _ -1]]
 === out
-String("no-match")
-
-=== warn
-[UndefinedVariable] undefined variable: Ok
+Int(42)

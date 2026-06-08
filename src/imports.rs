@@ -154,7 +154,7 @@ fn typecheck_and_merge_stdlib_module(
         state,
         final_env,
         _annotation_table, // not needed for stdlib module type merging
-    ) = typecheck_surface_program_with_env(&program, Rc::clone(parent_env), false, true);
+    ) = typecheck_surface_program_with_env(&program, Rc::clone(parent_env), false, true, None);
 
     // Merge the generalized schemes from the final env into the output env.
     //
@@ -661,6 +661,128 @@ pub fn build_type_stage_env() -> Option<Arc<RwLock<crate::value::Environment>>> 
     })
 }
 
+/// Build a type-stage evaluation environment for a user file by extending the prelude
+/// type-stage env with the file's `--- stage: type` sections.
+///
+/// This is the T-1175 implementation: user files can define type-stage functions in
+/// type-stage documents and use them in annotations in runtime documents.
+///
+/// # Algorithm
+///
+/// 1. Get the prelude type-stage env (from `build_type_stage_env()`)
+/// 2. Filter the program to only `--- stage: type` documents
+/// 3. Evaluate each type-stage document with the prelude env as parent
+/// 4. Extract bindings from the result and insert into a new env extending the prelude
+/// 5. Return the extended env
+///
+/// # Returns
+///
+/// - `Some(env)` if at least one type-stage document was successfully evaluated
+/// - `None` if:
+///   - The program has no type-stage documents
+///   - The prelude type-stage env is unavailable (bootstrap recursion guard)
+///   - All type-stage documents failed to evaluate
+pub fn build_user_type_stage_env(
+    program: &SurfaceProgram,
+    resolution_table: &std::sync::Arc<crate::ast::ResolutionTable>,
+) -> Option<Arc<RwLock<crate::value::Environment>>> {
+    // Get the prelude type-stage env as the base
+    let prelude_env = build_type_stage_env()?;
+
+    // Check if the program has any type-stage documents
+    let has_type_stage_docs = program
+        .documents
+        .iter()
+        .any(|doc| doc.node.stage == Some(crate::ast::Stage::Type));
+
+    if !has_type_stage_docs {
+        // No user type-stage sections — return None so the caller uses prelude env directly
+        return None;
+    }
+
+    // Create a child env extending the prelude env
+    let user_type_stage_env = Arc::new(RwLock::new(crate::value::Environment::with_parent(
+        Arc::clone(&prelude_env),
+    )));
+
+    // Build a minimal EvalContext for type-stage evaluation
+    // AMBIENT-OK: type-stage evaluation performs no file I/O
+    #[allow(clippy::disallowed_methods)]
+    let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority()).ok()?;
+    let ctx =
+        crate::eval::EvalContext::new_empty(base_dir, Arc::clone(&user_type_stage_env), false);
+
+    let empty_types = std::sync::Arc::new(crate::ast::TypeAnnotationTable::new());
+    let mut any_success = false;
+
+    // Evaluate each type-stage document
+    for doc in &program.documents {
+        if doc.node.stage == Some(crate::ast::Stage::Type) {
+            // Collect expression nodes (skip Decl items)
+            let expr_nodes: Vec<Arc<crate::ast::SurfaceNode>> =
+                doc.node.expressions().cloned().collect();
+
+            for expr_node in &expr_nodes {
+                // Evaluate this expression item with the current user_type_stage_env
+                let result = crate::async_rt::block_on_anywhere(crate::eval::eval_document_exprs(
+                    std::slice::from_ref(expr_node),
+                    Arc::clone(&user_type_stage_env),
+                    &ctx,
+                    resolution_table,
+                    &empty_types,
+                ));
+
+                let result_thunk = match result {
+                    Ok(t) => t,
+                    Err(_) => continue, // Skip failed expressions
+                };
+
+                // Materialize and extract bindings
+                let val = crate::eval::materialize_sync(&result_thunk, None, &ctx);
+                let val = match val {
+                    Ok(v) => v,
+                    Err(_) => continue, // Skip failed materialization
+                };
+
+                let dict = match val {
+                    crate::value::Value::Dict(map) => map,
+                    crate::value::Value::Overlay(l_id, r_id) => {
+                        match crate::builtins::flatten_overlay(
+                            &l_id,
+                            &r_id,
+                            "user type-stage",
+                            &ctx,
+                            expr_node.span.clone(),
+                        ) {
+                            Ok(d) => d,
+                            Err(_) => continue,
+                        }
+                    }
+                    _ => continue, // Non-dict result — no bindings to extract
+                };
+
+                // Insert bindings into user type-stage env
+                for (key, thunk_id) in dict {
+                    let name = match key {
+                        crate::value::Key::String(s) => s.to_string(),
+                        crate::value::Key::Int(n) => n.to_string(),
+                    };
+                    let thunk = ctx.get_thunk(thunk_id);
+                    user_type_stage_env.write().unwrap().insert(name, thunk);
+                    any_success = true;
+                }
+            }
+        }
+    }
+
+    if any_success {
+        Some(user_type_stage_env)
+    } else {
+        // All type-stage documents failed — fall back to prelude env
+        None
+    }
+}
+
 /// Replace all TypeVar occurrences in a type with Top.
 ///
 /// TypeVars extracted from the prelude's type_map are stale: they were created
@@ -883,7 +1005,10 @@ fn collect_include_paths_from_node(
                 collect_include_paths_from_node(binding, paths);
             }
         }
-        SurfaceExpression::CaseArm { pattern, body } => {
+        SurfaceExpression::CaseArm { let_bindings, pattern, body } => {
+            if let Some(lb) = let_bindings {
+                collect_include_paths_from_node(lb, paths);
+            }
             collect_include_paths_from_node(pattern, paths);
             collect_include_paths_from_node(body, paths);
         }
@@ -1094,7 +1219,13 @@ fn resolve_includes(
         };
         let in_prelude_load = cap_name.as_deref() == Some("%libdir");
         let (_type_errors, type_map, _doc_map, _scheme_map, _diagnostics, _state, _final_env, _ann) =
-            typecheck_surface_program_with_env(&program, typecheck_env, false, in_prelude_load);
+            typecheck_surface_program_with_env(
+                &program,
+                typecheck_env,
+                false,
+                in_prelude_load,
+                None,
+            );
 
         // Extract bindings from this program and track them
         let mut new_env = TypeEnv::with_parent(&env);
@@ -1277,7 +1408,10 @@ fn apply_include_type_to_node(
                 apply_include_type_to_node(binding, include_bindings, type_map);
             }
         }
-        SurfaceExpression::CaseArm { pattern, body } => {
+        SurfaceExpression::CaseArm { let_bindings, pattern, body } => {
+            if let Some(lb) = let_bindings {
+                apply_include_type_to_node(lb, include_bindings, type_map);
+            }
             apply_include_type_to_node(pattern, include_bindings, type_map);
             apply_include_type_to_node(body, include_bindings, type_map);
         }

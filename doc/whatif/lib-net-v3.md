@@ -2,25 +2,35 @@
 
 **State:** Draft — 2026-05-21
 
-**Depends on:** [`runtime-v2.md`](runtime-v2.md) ✓ complete — `task`/`await`/`channel`/`recv`/`send`/`select-once`/`loop-select`, `Arc`-based thunks, async Tokio runtime. All async utilities are in `stdlib/prelude.llt` (merged from the now-deleted `stdlib/async.llt`). All concurrency primitives are used here without redefinition. `tcp-connect` is the only Rust primitive here — `tls`, `quic`, `h2`, `h3`, and `connect` are tinct stdlib functions defined in this whatif.
-
-**Depends on:** [`builtin-privacy.md`](builtin-privacy.md) ✓ complete — `--- uses: ["net"]` headers, `builtin_module("net")` registry, `eval-programs`, `eval-program`, `module` and related bootstrap machinery are all in place. Net stdlib files declare `--- uses: ["net"]` to access their Rust builtins. `select-once` returns `[Result.Ok v]` | `Closed.Closed` (B-192); `loop-select` is pure tinct. `recv` also returns `[Result.Ok v]` | `Closed.Closed` for uniform channel semantics.
-
-**Uri/Url:** `Uri` is currently an opaque Rust object. Making it a tinct-native data structure is confirmed scope for this whatif — the `builtin_uri` function already returns a `Value::Dict` of URI components rather than a `Value::Uri`, so the decomposition is implemented; what remains is formalising the type in `stdlib/net.llt`.
-
 **Extends:** [`completed/lib-tls.md`](completed/lib-tls.md), [`completed/lib-net-v2.md`](completed/lib-net-v2.md) — replaces the opaque-Rust-type model for TLS, HTTP/2, HTTP/3, QUIC, WebSocket, WireGuard, and Noise with tinct stdlib implementations; adds the compositional serve/connect layer model; introduces `[Bytes N]` fixed-size byte types and a `cap-std::Pool`-backed `NetCap`.
-
-**Resolved:** Binary integer serialization uses `[bytes ByteOrder value]` where the type of `value` determines the output width (`UInt8`→`[Bytes 1]`, `UInt16`→`[Bytes 2]`, `UInt24`→`[Bytes 3]`, `UInt32`→`[Bytes 4]`, `UInt64`→`[Bytes 8]`). ByteOrder is always explicit — no endianness-ambiguous byte creation is possible. Decoding uses `uint16`/`uint32`/`uint64` with the same explicit byte order. `ByteLabel` and `to-bytes` are not needed. See §Fixed-Size Bytes: `[Bytes N]`.
 
 ---
 
 ## Problem
 
-After runtime-v2 provides the async foundation (`task`, `await`, `channel`, `select-once`, `loop-select`), building a network server still requires boilerplate: accept a connection, hand it off to a task, loop. Every protocol layer adds the same pattern. There is no compositional model for stacking protocol layers, no separation between transport (how bytes move) and application protocol (what the bytes mean), and no typed representation for fixed-size byte sequences like IP addresses and cryptographic keys.
+After runtime-v2 provides the async foundation (`task`, `await`, `channel`, `select-once`, `select`), building a network server still requires boilerplate: accept a connection, hand it off to a task, loop. Every protocol layer adds the same pattern. There is no compositional model for stacking protocol layers, no separation between transport (how bytes move) and application protocol (what the bytes mean), and no typed representation for fixed-size byte sequences like IP addresses and cryptographic keys.
 
 ---
 
-## Design Principle: Subject Last
+## Architecture: Seven Layers
+
+The network stack is organised in seven layers. Each layer composes cleanly with the one below it using tinct's `|` pipeline operator. Layers 1–3 define the abstractions; Layers 4–7 apply them.
+
+| Layer | Name | What it provides |
+|-------|------|-----------------|
+| 1 | Rust Primitives | OS socket syscalls via cap-std; opaque `Handle` and `UdpSocket` types; crypto |
+| 2 | IO Typeclasses | `ByteStream`, `Datagram`, `Seekable`, `MessageStream` — abstract IO interfaces |
+| 3 | Codecs | `Codec` typeclass — data transformations enabling encryption, framing, compression |
+| 4 | Protocol Layers | `tls`, `quic`, `h2`, `h3`, `ws`, `wireguard`, `noise` — composable with `\|` |
+| 5 | Serve/Connect Patterns | `Transport`/`Protocol` typeclasses; `serve`, `drain`, `select` |
+| 6 | Full Stack Compositions | Worked examples showing Layers 1–5 assembled end-to-end |
+| 7 | Convenience Functions | Pre-composed stacks (`https-channel` etc.) — the explicit form is always available |
+
+---
+
+## Design Principles
+
+### Subject Last
 
 Every function in this API places the **subject** — the thing being transformed, wrapped, or consumed — as the **last parameter**. This is the same convention already used throughout tinct's prelude (`map f seq`, `filter pred seq`, `reduce f init seq`).
 
@@ -39,93 +49,7 @@ There are no `with-*` wrappers, no `via` / `layer` adapters, no argument-flippin
 
 ---
 
-## The Proposal
-
-Define the **serve/connect layer model** as composable tinct stdlib functions. OS-level transport primitives (`tcp-bind`/`tcp-accept`, `udp-socket`/`udp-recv`/`udp-send`) are the only Rust boundary — exactly seven functions. Everything above — accept loops, connection multiplexing, protocol handshakes, HTTP/2, QUIC, TLS, WireGuard — is tinct. Client-side follows the same symmetry. Application protocols are codecs — pure marshal/unmarshal — independent of transport. `[Bytes N]` fixed-size byte sequences give the crypto and address types static size guarantees.
-
-Three API levels, all built from the same components:
-
-**Level 1 — One-liner.** `fetch` dispatches via the `Protocol` typeclass:
-
-```tinct
-[fetch %nc [Url "https://api.example.com/data"]]
-[fetch %nc cloudflare-dot [dns-query "IN" "A" "example.com"]]
-```
-
-**Level 2 — Connection reuse or protocol selection.** Explicit transport + request:
-
-```tinct
-[c:    [connect %nc Http [host-port [hostname "api.example.com"] 443]]
- resp: [http-request c "GET" "/data"  user-agent: "tinct/0.1"]]
-```
-
-**Level 3 — Raw composition.** Full pipeline control for custom stacks:
-
-```tinct
-[[connect %nc Tcp [host-port [hostname "api.example.com"] 443]] | tls | h2 | [http-request req]]
-[[connect %nc Tcp [host-port [hostname "redis.internal"] 6379]] | [codec RedisCodec]]
-[[connect %nc Udp [host-port [hostname "vpn.example.com"] 51820]] | [wireguard cfg]]
-```
-
-`fetch` is not a special case — it uses `connect Http` which wires `connect Tcp | tls | h2` (or `quic | h3` if SVCB indicates). No hidden implementations. Users who define a new `Transport` instance and `Protocol` instance get Level 1 for free.
-
----
-
-## The Symmetry
-
-```text
-                  Server (receive)                Client (initiate)
-                  ──────────────────────          ──────────────────────
-Transport     [listen/bind] → Channel@A       connect %net Proto [HostPort h p] → A
-1:1 layer     [layer cfg] Channel@A→Channel@B [layer] A → B   (same name, dispatch by type)
-data exchange Channel@conn | recv → Channel@req   conn | [send req] → Task@resp
-```
-
-Protocol layer functions are **bidirectional**: the same verb dispatches to client or server instance based on input type. `Channel@X` → server instance; single `X` → client instance:
-
-```tinct
-# Client: starts from connect
-[connect %net Tcp [host-port [hostname "api.example.com"] 443]]
-  | tls | h2 | [send req]                    # TcpHandle → TlsHandle → Http2Connection
-
-[connect %net Udp [host-port [hostname "api.example.com"] 443]]
-  | quic | h3 | [send req]                   # ConnectedUdp → QuicHandle → Http3Connection
-
-# Server: starts from a listener
-[tcp-listen cap 443] | [tls cert] | h2 | recv      # Channel@h → Channel@TlsConnection → Channel@Http2Connection
-[udp-listen cap 443] | quic | h3 | recv             # UdpSocket → Channel@QuicConnection → Channel@Http3Connection
-
-# Arbitrary stacking — same verbs, direction implicit from source
-[udp-listen cap 443] | quic | h3 | substreams | [wireguard wg-cfg]
-```
-
-`HostPort` bundles address + port as a single subject — `[connect %net Tcp]` is a partial application waiting for an endpoint. On the client side, `connect` is always the bottom of the stack:
-
-```tinct
-# HTTPS/2 — sni and alpn inferred by tls/h2 layers
-[connect %net Tcp [host-port [hostname "api.example.com"] 443]]
-  | tls | h2 | [http-request req]
-
-# HTTP/3 — quic creates QuicHandle; h3 adds alpn: ["h3"] before firing
-[connect %net Udp [host-port [hostname "api.example.com"] 443]]
-  | quic | h3 | [http-request req]
-
-# DNS over TLS — tls fires with no alpn, dns-framed-send writes bytes
-[connect %net Tcp [host-port [hostname "dns.cloudflare.com"] 853]]
-  | tls | [dns-framed-send query]
-
-# WireGuard VPN — noise-based, no TLS layer
-[connect %net Udp [host-port [hostname "vpn.example.com"] 51820]]
-  | [wireguard cfg]
-```
-
-`connect` is polymorphic on protocol via the `Transport` typeclass — `Tcp` produces a `Handle` (`ByteStream`); `Udp` produces a `ConnectedUdp` (`Datagram`). For `[Hostname h]`, Happy Eyeballs applies universally: parallel A+AAAA with 50ms IPv6 head start, interleaved addresses, then Tcp races connections (250ms stagger) while Udp picks the first.
-
-A "layer violation" — a protocol that skips or reorders traditional stack layers — is expressed through its input and output types. `quic` expects a `Datagram`; it does not compose with a `Handle` (`ByteStream`). `tls-serve` expects `Channel@ByteStream`; it does not compose with `Channel@QuicConnection` (QUIC carries integrated TLS). No special cases: the type system is the rule.
-
----
-
-## Error Philosophy
+### Error Philosophy
 
 Network operations fail in predictable, distinguishable ways. `try` in tinct is for exceptional and unexpected failures; expected protocol failure modes return typed discriminated unions that callers can pattern-match directly. This is the Rust/Haskell model: one typed error union per subsystem, no string matching.
 
@@ -154,65 +78,7 @@ Each subsystem defines its own error type; callers handle only the failures rele
 
 ---
 
-## The `Transport` and `Protocol` Typeclasses
-
-Two typeclasses partition the connection lifecycle. Together they make every protocol — built-in or user-defined — a first-class participant in the same system.
-
-```tinct
-# Transport: how to connect. p determines the connection type c.
-[class [Transport p] determines: [p → c]
-  connect: [Fn@c [NetCap p HostPort]]]
-
-# Protocol: how to exchange. fetch dispatches by protocol type.
-[class [Protocol p req resp]
-  fetch: [Fn@resp [NetCap p req]]]
-```
-
-| Typeclass | Answers | Built-in instances | User-extensible? |
-|---|---|---|---|
-| `Transport p` | How do I connect? | `Tcp`, `Udp`, `Http` | Yes — define a new `[type [MyProto]]` |
-| `Protocol p req resp` | How do I exchange? | `Http` (URL→response), `DoT`, … | Yes — implement for any type |
-
-**`Http` as a Transport** bundles SVCB lookup + H3/H2/H1 negotiation — the same components available to power users, just pre-composed:
-
-```tinct
-# Http transport: SVCB-first, then H3 or H2 based on hints
-[instance [Transport Http] determines: [Http → HttpConnection]
-  connect: [fn [let cap addr port _@Http]
-    # Resolve SVCB; if h3 available → connect Udp | quic | h3
-    #              otherwise        → connect Tcp | tls | h2 (or h1 fallback)
-    [error "TODO: Http transport — SVCB + protocol negotiation"]]]
-```
-
-**User-defined protocols** implement both typeclasses and get Level 1 (`fetch`) for free:
-
-```tinct
-# DNS over TLS — user-defined
-DoT: [type [server: Host  port: Port]]
-
-[instance [Transport DoT] determines: [DoT → TlsHandle]
-  connect: [fn [let cap@NetCap _@DoT ep@HostPort]
-    [TlsHandle [handle: [connect cap Tcp ep]  sni: Absent.Absent  alpn: []  ech: []  trust-roots: SystemRoots]]]]
-
-[instance [Protocol DoT DnsQuery DnsResponse]
-  fetch: [fn [let cap@NetCap proto@DoT req@DnsQuery]
-    [th: [connect cap DoT [host-port proto.server proto.port]]]
-    [tls-commit th | [dns-framed-send req]]]]
-
-# One definition — three call sites work:
-cloudflare-dot: [DoT [server: [hostname "dns.cloudflare.com"]  port: 853]]
-
-[fetch %nc cloudflare-dot [dns-query "IN" "A" "example.com"]]                              # Level 1
-[c: [connect %nc DoT [host-port [hostname "dns.cloudflare.com"] 853]]                       # Level 2
- [dns-framed-send [tls-commit c] query]]
-[[connect %nc Tcp [host-port [hostname "dns.cloudflare.com"] 853]] | tls | [dns-framed-send q]] # Level 3
-```
-
-The same pattern works for any protocol: gRPC (HTTP/2 with ALPN `"h2"`), MQTT, custom binary protocols over TLS. Implement `Transport` + `Protocol`; the rest of the stack composes automatically.
-
----
-
-## Transparent Handle Design
+### Transparent Handle Design
 
 `Handle` is the unified ByteStream interface from the Rust layer — a single opaque type for any sequential I/O stream (TCP, file, pipe). Tinct wraps it in transparent records that carry visible metadata. Since tinct is lazy, the `stream` field is a thunk — the OS connection happens on first access, memoized:
 
@@ -255,7 +121,201 @@ h3:          QuicHandle→Http3Connection     (with-alpn ["h3"] + quic-commit)
 
 ---
 
-## Connection Interfaces: `ByteStream` and `Datagram`
+## Layer 1 — Rust Primitives
+
+Everything above Layer 1 is tinct. The Rust boundary is deliberately thin — exactly these primitives, nothing more.
+
+The primitives follow two rules: (1) the transport boundary maps 1:1 to cap-std's networking API — no higher-level protocol logic belongs in Rust; (2) all crypto operations are Rust for security correctness, not performance, because tinct's lazy evaluator cannot guarantee constant-time execution paths and variable-time crypto leaks secret key material via timing side-channels.
+
+### Transport Primitives
+
+These correspond directly to cap-std's `TcpListener`, `UdpSocket`, and `TcpStream` types. Everything above the OS socket layer — accept loops, connection multiplexing, protocol handshakes — is tinct.
+
+| Primitive | Signature | Description | Why Rust |
+|-----------|-----------|-------------|----------|
+| `tcp-bind` | `[Fn [cap@NetCap target@BindTarget] TcpListener]` | Bind and listen on a TCP socket | **IpBind(SocketAddress)**: if address is `Ipv4` or `Ipv6` (no zone), `pool.bind_tcp_listener(addr)` — atomic check+bind. If address is `Ipv6Zone(bytes, zone)`, the zone name is looked up in `interface_entries` (Pool compares only IP bytes; zone ID must be validated against the cap separately); `if_nametoindex(zone)` converts interface name → kernel scope_id; `sockaddr_in6.sin6_scope_id` is set before bind. **InterfaceBind(name, port)**: `SO_BINDTODEVICE(name)` + scope prefix-check on the actual bind address; validates against `interface_entries` |
+| `tcp-accept` | `[Fn [h@TcpListener] Handle]` | Accept one incoming TCP connection (async) | OS accept() syscall on a `TcpListener` handle + tokio reactor registration; tinct cannot make socket syscalls |
+| `tcp-connect` | `[Fn [cap@NetCap addr@SocketAddress] [Result Handle NetError]]` | Connect to a TCP endpoint; returns typed error on failure | `pool.connect_tcp_stream(addr)` — capability check and socket syscall are one indivisible operation; no TOCTOU window. Returns `Result.Ok Handle` on success, `Result.Error NetError` (ConnectionRefused/ConnectionTimeout/NetworkUnreachable) on failure |
+| `udp-socket` | `[Fn [cap@NetCap target@BindTarget] UdpSocket]` | Bind a UDP socket; use `port = 0` for ephemeral | Same routing as `tcp-bind`: `pool.bind_udp_socket(addr)` for `IpBind` with non-zoned address; zone-aware path through `interface_entries` + `if_nametoindex()` for `Ipv6Zone`; `SO_BINDTODEVICE` + scope enforcement for `InterfaceBind` |
+| `udp-recv` | `[Fn [sock@UdpSocket] UdpDatagram]` | Receive one UDP datagram with source address (async) | Reads from `UdpSocket` opaque Rust state; tinct cannot access UdpSocket internals |
+| `udp-send` | `[Fn [sock@UdpSocket addr@SocketAddress data@Bytes] Null]` | Send a datagram to a specific address | Writes through `UdpSocket` opaque Rust state |
+| `unix-listen` | `[Fn [cap@DirCap path@String] [Channel Handle]]` | Incoming Unix socket connections | cap-std's `UnixListener` is not yet implemented upstream; wraps the accept loop internally using `openat2(RESOLVE_BENEATH)` + raw `UnixListener`. When cap-std adds `UnixListener`, two new Rust primitives appear: `unix-bind: [Fn [DirCap String] UnixListener]` and `unix-accept: [Fn [UnixListener] Handle]`; one `[instance [Listener UnixListener] accept: unix-accept]` declaration is added; `unix-listen` becomes pure tinct using `listen-loop` |
+| `builtin-read-bytes` | `[Fn [h@Handle n@Int] Bytes]` | Read exactly n bytes from a Handle (async, suspends until available). Exposed as `read` via the `ByteStream` typeclass instance. | Handle is opaque Rust state backed by tokio `AsyncRead`; tinct cannot access Handle internals or call tokio I/O directly |
+| `builtin-write-bytes` | `[Fn [h@Handle b@Bytes] Null]` | Write bytes to a Handle (async). Exposed as `write` via the `ByteStream` typeclass instance. | Handle is opaque Rust state backed by tokio `AsyncWrite` |
+| `try-recv` | `[Fn [ch@[Channel t]] [Result t]]` | Non-blocking recv — `Err` if no item immediately available | Requires reading Channel's internal buffer occupancy without consuming an item; `select-once` + 0ms-timer is scheduler-dependent and not guaranteed non-blocking |
+| `channel-count` | `[Fn [ch@[Channel t]] Int]` | Current number of items in the channel buffer | Reads `Arc<ChannelInner>` buffer count without consuming; tinct cannot access Channel internals; used by `collect-channel` to snapshot size before draining |
+
+`tcp-listen`, `udp-bind`, `quic-listen`, and all higher-level connection factories are tinct. The `Listener` typeclass (same pattern as `ByteStream`, `Datagram`, `MessageStream`) provides `accept` as a polymorphic dispatch method.
+
+**Scope of `NetCap`:** everything here is IP-layer (layer 3 and above). Non-IP Ethernet protocols operate at layer 2 via `AF_PACKET` raw sockets with EtherType filtering and require a different capability type. The most immediately useful is **LLDP** (IEEE 802.1AB, EtherType `0x88CC`): tinct programs that discover network topology, map switch adjacency, or inspect LLDP neighbor advertisements are practical infrastructure tools. Following the same `name@flags=resource` pattern as `--cap-net` and `--cap-fs` (where `name` becomes `%name` in the program and `resource` identifies what is being accessed):
+
+```sh
+--cap-ethernet lldp@r=eth0:0x88CC    # %lldp: receive LLDP frames on eth0
+--cap-ethernet arp@rw=eth0:0x0806    # %arp: send+receive ARP on eth0
+--cap-ethernet net@r=eth0            # %net: receive all EtherTypes on eth0
+```
+
+The flag letters `@r` (receive) and `@w` (send/write) deliberately mirror DirCap's `@r` (read) and `@w` (write) — the analogy is: reading bytes from the wire ↔ reading bytes from a file; injecting frames ↔ writing bytes to a file. Both capabilities use the same semantic: `@r` = consume, `@w` = produce. This consistency is intentional, not a collision. A future EthernetCap spec should state this analogy explicitly to avoid confusion between "receive frame" and "read file".
+
+Other EtherType candidates: ARP (`0x0806`), PTP (`0x88F7`), IS-IS (`0x8847`), 802.1X (`0x888E`). `NetCap` is IP-only by design, not by accident, and `EthernetCap` sits cleanly alongside it without retrofitting. `TcpListener` and `UnixListener` are opaque Rust types with `Listener` instances that delegate to `tcp-accept`/`unix-accept`. `listen-loop` is parametric over any `Listener l`. Adding a new listener type requires one Rust primitive pair and one `[instance [Listener ...] ...]` declaration — no changes to `accept`, `listen-loop`, or any call site. `read-bytes` and `write-bytes` are the `Handle` instance methods for `ByteStream`; `udp-recv` and `udp-send` are the `UdpSocket` instance methods for `Datagram`. All are called through typeclass dispatch in tinct code.
+
+### Crypto Primitives
+
+All operate on `Bytes` and `[Bytes N]`. All are Rust for one reason: timing-sensitive arithmetic cannot be done correctly in tinct regardless of whether `BigInt` exists, because tinct's lazy evaluator cannot guarantee constant-time execution paths. This is a correctness constraint, not a performance one. `BigInt` is already in tinct for general-purpose use; it has no role here — every operation that needs large-number arithmetic on secret material is a Rust primitive.
+
+| Primitive | Signature | Description | Why Rust (security) |
+|-----------|-----------|-------------|---------------------|
+| `chacha20-poly1305-seal` | `[Fn [key@[Bytes 32]  nonce@[Bytes 12]  plaintext@Bytes  associated-data@Bytes] Bytes]` | ChaCha20-Poly1305 AEAD encrypt | Constant-time required |
+| `chacha20-poly1305-open` | `[Fn [key@[Bytes 32]  nonce@[Bytes 12]  ciphertext@Bytes  associated-data@Bytes] [Result Bytes]]` | ChaCha20-Poly1305 AEAD decrypt | Constant-time; tag comparison must not branch on secret |
+| `aes-128-gcm-seal` | `[Fn [key@[Bytes 16]  nonce@[Bytes 12]  plaintext@Bytes  associated-data@Bytes] Bytes]` | AES-128-GCM AEAD encrypt | Constant-time; hardware AES-NI |
+| `aes-128-gcm-open` | `[Fn [key@[Bytes 16]  nonce@[Bytes 12]  ciphertext@Bytes  associated-data@Bytes] [Result Bytes]]` | AES-128-GCM AEAD decrypt | Constant-time; hardware AES-NI |
+| `aes-256-gcm-seal` | `[Fn [key@[Bytes 32]  nonce@[Bytes 12]  plaintext@Bytes  associated-data@Bytes] Bytes]` | AES-256-GCM AEAD encrypt | Same |
+| `aes-256-gcm-open` | `[Fn [key@[Bytes 32]  nonce@[Bytes 12]  ciphertext@Bytes  associated-data@Bytes] [Result Bytes]]` | AES-256-GCM AEAD decrypt | Same |
+| `x25519-keypair` | `[Fn [] [private: [Bytes 32]  public: [Bytes 32]]]` | Generate X25519 key pair | CSPRNG + constant-time scalar multiplication |
+| `x25519-dh` | `[Fn [private@[Bytes 32]  peer-public@[Bytes 32]] [Bytes 32]]` | X25519 Diffie-Hellman | Constant-time scalar multiplication over Curve25519 |
+| `ed25519-keypair` | `[Fn [] [private: [Bytes 32]  public: [Bytes 32]]]` | Generate Ed25519 signing key pair | CSPRNG + constant-time |
+| `ed25519-sign` | `[Fn [private@[Bytes 32]  msg@Bytes] [Bytes 64]]` | Ed25519 signature | Constant-time |
+| `ed25519-verify` | `[Fn [public@[Bytes 32]  msg@Bytes  sig@[Bytes 64]] Bool]` | Ed25519 verification | Constant-time |
+| `p256-keypair` | `[Fn [] [private: [Bytes 32]  public: [Bytes 65]]]` | Generate ECDSA P-256 key pair (public: uncompressed) | CSPRNG + constant-time |
+| `p256-sign` | `[Fn [private@[Bytes 32]  msg@Bytes] [Bytes 64]]` | ECDSA P-256 signature (r\|\|s) | Constant-time |
+| `p256-verify` | `[Fn [public@[Bytes 65]  msg@Bytes  sig@[Bytes 64]] Bool]` | ECDSA P-256 verification | Constant-time |
+| `p384-sign` | `[Fn [private@[Bytes 48]  msg@Bytes] [Bytes 96]]` | ECDSA P-384 signature | Constant-time |
+| `p384-verify` | `[Fn [public@[Bytes 97]  msg@Bytes  sig@[Bytes 96]] Bool]` | ECDSA P-384 verification | Constant-time |
+| `rsa-pss-sign` | `[Fn [private@Bytes  msg@Bytes] Bytes]` | RSA-PSS signature | Constant-time private-key modular exponentiation; key and output size depend on key length |
+| `rsa-pss-verify` | `[Fn [public@Bytes  msg@Bytes  sig@Bytes] Bool]` | RSA-PSS signature verification | Constant-time; required for X.509 cert validation in TLS |
+| `rsa-pkcs1-verify` | `[Fn [public@Bytes  msg@Bytes  sig@Bytes] Bool]` | RSA PKCS#1 v1.5 verification | Constant-time; legacy TLS cert signatures |
+| `sha1` | `[Fn [data@Bytes] [Bytes 20]]` | SHA-1 | Constant-time; WebSocket upgrade |
+| `sha256` | `[Fn [data@Bytes] [Bytes 32]]` | SHA-256 | Constant-time |
+| `sha384` | `[Fn [data@Bytes] [Bytes 48]]` | SHA-384 | Constant-time |
+| `sha512` | `[Fn [data@Bytes] [Bytes 64]]` | SHA-512 | Constant-time |
+| `blake2s` | `[Fn [data@Bytes] [Bytes 32]]` | BLAKE2s unkeyed | Constant-time; WireGuard hashing |
+| `blake2s-mac` | `[Fn [key@[Bytes 32]  data@Bytes] [Bytes 32]]` | BLAKE2s keyed MAC | Constant-time; WireGuard in place of HMAC |
+| `aes-ecb-encrypt` | `[Fn [key@[Bytes 16] block@[Bytes 16]] [Bytes 16]]` | AES-ECB single block encrypt | Required for QUIC header protection (RFC 9001 §5.4); NOT for bulk data — ECB is not an AEAD |
+| `hmac-sha256` | `[Fn [key@Bytes  data@Bytes] [Bytes 32]]` | HMAC-SHA-256 | Constant-time |
+| `hkdf-extract` | `[Fn [hash@HkdfHash  salt@Bytes  input-key-material@Bytes] Bytes]` | HKDF-Extract (hash: `[Sha256]` `[Sha384]` `[Sha512]` `[Blake2s]`) | Constant-time; output size = hash output size (32 for Sha256/Blake2s, 48 for Sha384, 64 for Sha512) |
+| `hkdf-expand` | `[Fn@[Bytes len] [hash@HkdfHash  pseudorandom-key@Bytes  info@Bytes  len@Int]]` | HKDF-Expand | Constant-time; return type `[Bytes len]` inferred from argument |
+| `crypto-random` | `[Fn@[Bytes len] [let len@Int]]` | Cryptographically secure random bytes | OS entropy source; return type `[Bytes len]` inferred from argument — no TypeAssert needed at call site |
+
+---
+
+## Layer 2 — IO Typeclasses
+
+The abstract IO interfaces. Protocol layers (Layer 4) implement these typeclasses; serve patterns (Layer 5) consume them.
+
+### Type-Level Lookup Tables
+
+Every protocol uses enumerations with associated wire codes: DNS record types carry QTYPE integers, HTTP/2 and HTTP/3 frames carry opcode bytes, TLS records carry content-type codes, WebSocket frames carry opcode nibbles. The naive approach produces paired lookup functions (`qtype->int` and `int->qtype`) that are verbose, error-prone, and separated from the type they serve.
+
+**Type-level lookup tables** solve this by embedding compile-time constants directly into variant declarations. The constants travel with the type — they cannot get out of sync, and they eliminate all lookup functions.
+
+#### Syntax
+
+Variants may carry named compile-time constants (lowercase identifiers followed by `:` and a literal value) alongside or instead of runtime payload fields (names followed by `@Type`). Constants and payload fields may appear in any order in the same variant:
+
+```tinct
+DnsRcode: [type
+  [NoError  rcode: 0  description: "No Error"]
+  [FormErr  rcode: 1  description: "Format Error"]
+  [ServFail rcode: 2  description: "Server Failure"]
+  [NXDomain rcode: 3  description: "Non-Existent Domain"]
+  [NotImpl  rcode: 4  description: "Not Implemented"]
+  [Refused  rcode: 5  description: "Query Refused"]]
+```
+
+Variants may also mix constants with runtime payload fields:
+
+```tinct
+WsFrame: [type
+  [Text   opcode: 0x01  data@String]
+  [Binary opcode: 0x02  data@Bytes]
+  [Close  opcode: 0x08  code@WsCloseCode  reason@String]
+  [Ping   opcode: 0x09  data@Bytes]
+  [Pong   opcode: 0x0A  data@Bytes]]
+```
+
+#### Access Patterns
+
+**Forward lookup (constant from variant):** dot-access on a variant instance or on the type name itself:
+
+```tinct
+DnsRcode.ServFail.rcode         # → 2 (from type name: DnsRcode.VariantName.field)
+DnsRcode.ServFail.description   # → "Server Failure"
+some-rcode.rcode                # → the rcode constant for whatever variant some-rcode is
+frame.opcode                    # → 0x01 for Text, 0x02 for Binary, etc. — no match needed
+```
+
+**Reverse lookup (variant from constant):** a new form of `get` that takes a named-field query and a type name:
+
+```tinct
+[get rcode: 2 DnsRcode]         # → DnsRcode.ServFail
+[get rcode: 99 DnsRcode]        # → Absent.Absent (unknown value)
+[get opcode: 0x01 WsFrame]      # → WsFrame.Text (unit lookup — no payload fields resolved)
+```
+
+`[get field: value TypeName]` returns `Absent.Absent` for unknown constants, so callers use `[or ...]` or pattern match to handle that case.
+
+#### Wire Encoding
+
+Constants plug directly into existing byte-encoding primitives — no new magic:
+
+```tinct
+# Encode: use the constant directly
+[bytes NetworkEndian [@UInt16 DnsRcode.ServFail.rcode]]   # → [0x00 0x02]
+[bytes NetworkEndian [@UInt8 frame.type.code]]             # → opcode byte from H2FrameType variant
+
+# Decode: reverse lookup with fallback
+[rcode: [or [get rcode: [band flags 0x000F] DnsRcode] DnsRcode.ServFail]]
+[ct:    [or [get code: [get header 0] ContentType] [error "TLS: unknown content type"]]]
+```
+
+#### Eliminated Boilerplate
+
+Every `*->int` and `int->*` function across the protocol files is replaced by this pattern. The before/after for DNS:
+
+```tinct
+# Before — two lookup functions, risk of mismatch:
+qtype->int: [fn [let qt@DnsQtype]
+  [match qt
+    [DnsQtype.A]: 1    [DnsQtype.AAAA]: 28  ...]]
+
+int->rcode: [fn [let n@Int]
+  [match n  0: DnsRcode.NoError  1: DnsRcode.FormErr  ... _: DnsRcode.ServFail]]
+
+# After — zero lookup functions, constants live on the type:
+DnsQtype: [type [A code: 1] [AAAA code: 28] ...]
+DnsRcode: [type [NoError rcode: 0] [FormErr rcode: 1] ...]
+
+# Encode:
+[bytes NetworkEndian [@UInt16 q.qtype.code]]
+
+# Decode:
+[or [get rcode: rcode-int DnsRcode] DnsRcode.ServFail]
+```
+
+#### Generalised `Indexed`: Lookup by Any Key Type
+
+`[get field: value TypeName]` is not special syntax — it is a natural extension of the `Indexed` typeclass. `Indexed` was previously constrained to `Int` keys; this whatif generalises it to any key type `k`:
+
+```tinct
+[class [let Indexed s k v]
+  get:    [Fn@[or v Absent] [s k]]
+  slice:  [Fn@s [s Int Int]]
+  length: [Fn@Int [s]]]
+```
+
+The key type determines which instance fires:
+
+| Expression | `s` | `k` | Instance |
+|---|---|---|---|
+| `[get 0 seq]` | `[Seq T]` | `Int` | Seq by integer index |
+| `[get "key" dict]` | `Dict` | `String` | Dict by string key |
+| `[get rcode: 2 DnsRcode]` | `[Seq DnsRcode]` | `[Map String Any]` | Type lookup table |
+
+For type lookup tables, the type name evaluates at runtime to a Seq of all its variants (each carrying their compile-time constants as accessible fields). The named-argument dict `{rcode: 2}` is the key — `get` finds the first variant where all selector fields match. `Absent.Absent` for no match, consistent with `get?` on dicts.
+
+This unifies three previously separate concepts under one typeclass: sequential access, dictionary access, and enumeration lookup.
+
+---
 
 Two typeclasses cover all network IO. Every transport, tunnel, and framing layer is either a byte stream or a datagram socket — no other fundamental shapes exist.
 
@@ -264,9 +324,9 @@ Two typeclasses cover all network IO. Every transport, tunnel, and framing layer
 An ordered, reliable, connection-oriented byte pipe. Reading and writing are symmetric; addressing was resolved at connection time.
 
 ```tinct
-[class [ByteStream h]
-  read-bytes:  [Fn [h@h n@Int] Bytes]
-  write-bytes: [Fn [h@h data@Bytes] Null]]
+[class [let ByteStream h]
+  read:  [Fn@Bytes [h Int]]
+  write: [Fn@Null  [h Bytes]]]
 ```
 
 `Handle` is the opaque Rust I/O handle — the unified type for any sequential stream (TCP, file, pipe). It is the base `ByteStream` instance backed by `builtin-read-bytes`/`builtin-write-bytes`. `TcpHandle` and `FileHandle` are transparent tinct records that wrap `Handle` with visible metadata (`addr`, `path`, etc.). Every protocol layer above produces a new `ByteStream` instance — a tinct record wrapping the layer below:
@@ -274,8 +334,8 @@ An ordered, reliable, connection-oriented byte pipe. Reading and writing are sym
 ```tinct
 # stdlib/net.llt
 [instance [ByteStream Handle]
-  read-bytes:  builtin-read-bytes    # Rust: tokio AsyncRead
-  write-bytes: builtin-write-bytes]  # Rust: tokio AsyncWrite
+  read:  builtin-read-bytes    # Rust: tokio AsyncRead
+  write: builtin-write-bytes]  # Rust: tokio AsyncWrite
 
 # stdlib/protocols/tls13.llt
 TlsConnection: [type [h]   # h must satisfy ByteStream
@@ -287,10 +347,10 @@ TlsConnection: [type [h]   # h must satisfy ByteStream
    cipher:     CipherSuite        # Aes128GcmSha256 | Aes256GcmSha384 | Chacha20Poly1305Sha256
    write-seq:  [Channel Int]     # TLS sequence number (XOR'd with IV per RFC 8446 §5.3)
    read-seq:   [Channel Int]
-   sni:        [or String Null]]]
+   sni:        [or String Absent]]]
 [instance@[bind: [h]] [ByteStream [TlsConnection h]]
-  read-bytes:  tls-read-bytes    # reads one TLS record, decrypts
-  write-bytes: tls-write-bytes]  # encrypts, frames as TLS record
+  read:  tls-read-bytes    # reads one TLS record, decrypts
+  write: tls-write-bytes]  # encrypts, frames as TLS record
 
 # stdlib/protocols/wireguard.llt
 WireguardConnection: [type
@@ -307,17 +367,17 @@ WireguardConnection: [type
                                   # or trigger rekeying at the limit (WireGuard wire nonce
                                   # is 64-bit; tinct Int is unbounded).
 [instance [ByteStream WireguardConnection]
-  read-bytes:  wg-read-bytes     # reads one WG frame, decrypts
-  write-bytes: wg-write-bytes]   # encrypts, stamps nonce, frames
+  read:  wg-read-bytes     # reads one WG frame, decrypts
+  write: wg-write-bytes]   # encrypts, stamps nonce, frames
 
 # stdlib/protocols/noise.llt
 NoiseConnection: [type [underlying: Handle  send-key: [Bytes 32]  recv-key: [Bytes 32]
                         send-n: [Channel Int]]]
-[instance [ByteStream NoiseConnection] read-bytes: noise-read write-bytes: noise-write]
+[instance [ByteStream NoiseConnection] read: noise-read write: noise-write]
 
 # stdlib/protocols/websocket.llt — WebSocketConnection implements MessageStream, not ByteStream.
 # WebSocket frames carry semantic types (text/binary/ping/pong/close) that
-# ByteStream's read-bytes interface cannot express. See §MessageStream below.
+# ByteStream's read/write interface cannot express. See §MessageStream below.
 WebSocketConnection: [type [underlying: Handle  server-side: Bool]]
 # (WebSocketConnection instance declared in the MessageStream section)
 ```
@@ -379,11 +439,11 @@ A bidirectional typed-message interface. You write a typed value and the impleme
 
 # rebind works on any MessageStream handle — swaps the routing implementation
 rebind: [fn [let ms new-impl]
-  [send ms.impl new-impl]]
+  [builtin-cell-set ms.impl new-impl]]
 
 # Constructor: create a repluggable MessageStream handle from an initial implementation
 message-stream: [fn [let initial-impl]
-  [MessageStreamHandle impl: [watch-channel initial-impl]]]
+  [MessageStreamHandle [impl: [builtin-reactive-cell initial-impl]]]]
 ```
 
 The method names are `send` and `recv` — the same names used everywhere for channel operations. There are no separate `send-message`/`recv-message` names; those were redundant with `send`/`recv`.
@@ -495,20 +555,17 @@ All callers that have already captured `syslog` and are calling `[send syslog ev
 # Logger task — runs forever, never knows about rotation
 [log: [message-stream [file-codec [open log-cap "app.1.log" Writable]]]]
 
-[task [let step [fn []
-  [match [recv event-ch]
-    [Closed.Closed]: []
-    [Result.Ok e]:   [[send log e] [step]]]]]
-  [step]]
+[drain [fn [let e] [send log e]] event-ch]
 
 # Rotation task — triggered by size limit or schedule
-[task [let step [fn []
-  [match [recv rotation-trigger]
-    [Closed.Closed]: []
-    [Result.Ok _]:
-      [new-file: [open log-cap [next-log-filename] Writable]]
-      [rebind log [file-codec new-file]]
-      [step]]]]
+[task
+  [step: [fn []
+    [match [recv rotation-trigger]
+      [Closed.Closed]: []
+      [Result.Ok _]:
+        [new-file: [open log-cap [next-log-filename] Writable]]
+        [rebind log [file-codec new-file]]
+        [step]]]]
   [step]]
 ```
 
@@ -527,6 +584,10 @@ Both are a single `send` to a pre-configured `MessageStream`. The codec is pre-w
 ```
 
 The output formatter and the HTTP client are the same abstraction: a `MessageStream` handle whose codec layer is configured once (via `rebind` or at construction) and then used uniformly.
+
+## Layer 3 — Codecs
+
+Data transformations that sit between IO layers and protocol layers. Codecs enable encryption, compression, framing, and serialization — they are what protocol layers are *built with*. Every codec bridges two of the IO shapes defined in Layer 2: `ByteStream`, `Datagram`, `MessageStream`, or another `Codec` stage.
 
 ### `Codec`
 
@@ -632,25 +693,69 @@ The type chain: `MessageStream@Any → MessageStream@String → ByteStream → B
 | `Datagram` | packet + address | per-packet | `UdpSocket` |
 | `MessageStream T` | one typed `T` | protocol's job | `Channel T` |
 | `Codec input output` | `input → output` | codec's job | `NdjsonCodec`, `GzipCodec`, `HpackCodec` |
+---
 
-### What Changes in the Implementation
+## Layer 4 — Protocol Layers
 
-- **New**: `ByteStream`, `Datagram`, `MessageStream`, and `Codec` class declarations in `stdlib/net.llt`
-- **New**: `[instance [ByteStream Handle] ...]`, `[instance [Datagram UdpSocket] ...]`, and `[instance [MessageStream [Channel t] t] ...]` in `stdlib/net.llt`
-- **New**: `MessageStreamHandle` — the repluggable handle type; holds a `ReactiveCell` (backed by `builtin-reactive-cell` / `tokio::sync::watch`) carrying the current routing implementation. `send`/`recv` on a handle transparently delegate to the current impl; `rebind` replaces it atomically. All `MessageStream` handles are `MessageStreamHandle` instances.
-- **New**: `rebind` — universal operation that swaps the routing implementation on any `MessageStream` handle without the senders knowing. Defined in `stdlib/serve.llt`.
-- **New**: `message-stream` — constructor that wraps an initial implementation in a `MessageStreamHandle`. Defined in `stdlib/serve.llt`.
-- **New**: `codec-stream source codec sink → MessageStream` — wraps a source `MessageStream` with a `Codec` instance and a `ByteStream` sink. Returns a write-through `MessageStream` that calls `encode` on each value via the codec, then routes the output to the sink. The codec instance's `output` type determines which route is taken (write-bytes for ByteStream, send for MessageStream, send for Datagram). Defined in `stdlib/serve.llt`.
-- **New**: `codec-sink source codec sink → Task` — drains a source `MessageStream`, applies codec to each value, writes to sink. Returns a Task (await it when done). `drain-emit codec sink` is sugar for `codec-sink %emit codec sink`. Defined in `stdlib/serve.llt`.
-- **New**: `codec C source` — wraps source through a Codec stage; argument order (C, source) enables `|` pipelines. `sink S source` — terminal stage, drains source to ByteStream S. Both in `stdlib/serve.llt`.
-- **New**: `to-messages v` — adapter from any tinct value to a `MessageStream`. Bridges arbitrary shapes into the MessageStream world: Seq → yields each element, scalar → yields one element. Follows the `to-json`/`to-tinct` naming convention. Enables `[[to-messages %] | out]` and, once `out` is made polymorphic, `[% | out]`. Defined in `stdlib/serve.llt`.
-- **Removed**: `make-encrypted-handle` Rust primitive — superseded by tinct `ByteStream` instances
-- **Updated**: `read-bytes`, `write-bytes` Rust primitives become `Handle`'s `ByteStream` instance methods; `udp-send`, `udp-recv` become `UdpSocket`'s `Datagram` instance methods. They remain in the primitives table as the Rust backing but are exposed through typeclass dispatch.
-- **Updated**: All `*-accept` signatures use `constraint: [h: ByteStream]`; protocol layers are typed records; `WebSocketConnection` implements `MessageStream WsFrame` rather than `ByteStream`
+Each protocol layer takes a type from Layer 2 and produces a richer connection type, composable with `|`. The same verb dispatches to client or server based on input type.
+
+### The Symmetry
+
+```text
+                  Server (receive)                       Client (initiate)
+                  ──────────────────────                 ──────────────────────
+Transport     [listen/bind] → Channel@A            connect %net Proto [HostPort h p] → A
+1:1 layer     [layer cfg] Channel@A→Channel@B      [layer] A → B   (same name, dispatch by type)
+requests      ... | *-requests → Channel@Req       conn | [send req] → Task@resp
+serve         Channel@Req | [serve handler] → Task (handler called per request via req.respond)
+```
+
+Protocol layer functions are **bidirectional**: the same verb dispatches to client or server instance based on input type. `Channel@X` → server instance; single `X` → client instance:
+
+```tinct
+# Client: starts from connect
+[connect %net Tcp [host-port [hostname "api.example.com"] 443]]
+  | tls | h2 | [send req]                       # TcpHandle → TlsHandle → Http2Connection
+
+[connect %net Udp [host-port [hostname "api.example.com"] 443]]
+  | quic | h3 | [send req]                      # ConnectedUdp → QuicHandle → Http3Connection
+
+# Server: build the protocol stack, extract requests, serve
+[tcp-listen cap 443] | [tls cert] | h2 | http2-requests | [serve handler]
+[udp-listen cap 443] | quic | h3 | http3-requests | [serve handler]
+[tcp-listen cap 443] | http1-serve | [serve handler]   # HTTP/1.1 — http1-serve extracts requests directly
+
+# Arbitrary stacking — same verbs, direction implicit from source
+[udp-listen cap 443] | quic | h3 | substreams | [wireguard wg-cfg]
+```
+
+`HostPort` bundles address + port as a single subject — `[connect %net Tcp]` is a partial application waiting for an endpoint. On the client side, `connect` is always the bottom of the stack:
+
+```tinct
+# HTTPS/2 — sni and alpn inferred by tls/h2 layers
+[connect %net Tcp [host-port [hostname "api.example.com"] 443]]
+  | tls | h2 | [http-request req]
+
+# HTTP/3 — quic creates QuicHandle; h3 adds alpn: ["h3"] before firing
+[connect %net Udp [host-port [hostname "api.example.com"] 443]]
+  | quic | h3 | [http-request req]
+
+# DNS over TLS — tls fires with no alpn, dns-framed-send writes bytes
+[connect %net Tcp [host-port [hostname "dns.cloudflare.com"] 853]]
+  | tls | [dns-framed-send query]
+
+# WireGuard VPN — noise-based, no TLS layer
+[connect %net Udp [host-port [hostname "vpn.example.com"] 51820]]
+  | [wireguard cfg]
+```
+
+`connect` is polymorphic on protocol via the `Transport` typeclass — `Tcp` produces a `Handle` (`ByteStream`); `Udp` produces a `ConnectedUdp` (`Datagram`). For `[Hostname h]`, Happy Eyeballs applies universally: parallel A+AAAA with 50ms IPv6 head start, interleaved addresses, then Tcp races connections (250ms stagger) while Udp picks the first.
+
+A "layer violation" — a protocol that skips or reorders traditional stack layers — is expressed through its input and output types. `quic` expects a `Datagram`; it does not compose with a `Handle` (`ByteStream`). `tls-serve` expects `Channel@ByteStream`; it does not compose with `Channel@QuicConnection` (QUIC carries integrated TLS). No special cases: the type system is the rule.
 
 ---
 
-## Server Layers
+### Server Layers
 
 ### `codec-stream`, `codec-sink`, and `drain-emit`
 
@@ -661,15 +766,33 @@ Three codec utilities in `stdlib/serve.llt` complete the `MessageStream` replugg
 ```tinct
 codec-stream: [fn@[bind: [c input output]]
     [let source@[MessageStream input]  codec@[Codec c input output]  sink]
-  [task [loop-select [context]
-    [[source [fn [let v] [route-encoded sink [encode codec v]]]]]
-    identity]]]
+  [task [drain [fn [let v] [route-encoded sink [encode codec v]]] source]]]
 ```
 
 Where `route-encoded` dispatches based on the encoded output type: `write-bytes` for `ByteStream`, `send` for `MessageStream`, `send` for `Datagram`. The concrete codec instance's type signature determines which branch is taken.
 
 - **`codec-sink source codec sink`** — drains a source `MessageStream` in a background task, applies `encode` on the `Codec` for each value, and routes the output to `sink`. Returns a `Task`; await it when the drain must complete before the program exits.
 - **`drain-emit codec sink`** — sugar for `codec-sink %emit codec sink`. The common case: drain `%emit` through a `Codec` instance into a `ByteStream` sink.
+
+### `stream-drain` and `serve-streams`
+
+Two utilities in `stdlib/serve.llt` for ByteStream-backed per-stream loops. Where `drain` exhausts a `Channel`, `stream-drain` exhausts a `ByteStream`-backed source by calling a `read-fn` repeatedly until `Closed.Closed`. `serve-streams` composes both: for each stream arriving on a channel, it starts a concurrent `stream-drain` task.
+
+- **`stream-drain read-fn handler source`** — reads items from `source` using `read-fn` (which returns `[Result.Ok item]` or `Closed.Closed`), calling `handler` for each item. Runs synchronously until the source closes; wrap in `[task ...]` for per-stream concurrency:
+
+```tinct
+# Instead of a hand-rolled step loop:
+[task [stream-drain read-icmp handle-icmp stream]]
+```
+
+- **`serve-streams read-fn handler stream-ch`** — for each stream arriving on `stream-ch`, starts a concurrent `stream-drain` task. Returns a `Task` that exits when `stream-ch` closes. Composable with `|`:
+
+```tinct
+# All streams from a channel, each handled concurrently:
+[stream-ch | [serve-streams read-icmp handle-icmp]]
+```
+
+When a stream channel also needs per-stream side effects on arrival (e.g., registering the stream in a client table), use `select` with an explicit arm rather than `serve-streams` — that keeps the side effect visible alongside the task launch.
 
 ### `channel-map` and `channel-flat-map`
 
@@ -765,7 +888,7 @@ A complete stack (HTTP over TLS over WireGuard over Unix socket):
 
 ---
 
-## Client Layers
+### Client Layers
 
 Client-side layers are named after their protocol. `connect` is always the bottom; layers accumulate upward. Each layer either accumulates config (returning a handle type with open fields) or fires a handshake (returning a committed connection). The pattern is uniform across protocols.
 
@@ -809,7 +932,7 @@ resp:   [http-request c "GET" "/data"  accept: "application/json"]
 
 ---
 
-## Bidirectional Connections
+### Bidirectional Connections
 
 For protocols where either side can initiate — HTTP/2 server push, HTTP/3, WebSocket — the connection type is the same on both sides. `h2-serve` and `h2` both produce `Http2Connection`; `h3-serve` and `h3` both produce `Http3Connection`. These are tinct records, so stream access and channel adapters are tinct stdlib functions in `http2.llt`/`http3.llt`/`quic.llt`:
 
@@ -834,7 +957,11 @@ wg-ch: [quic-listen cap 443]
 
 ---
 
-## Transport-Agnostic Application Protocols
+## Layer 5 — Serve/Connect Patterns
+
+The recurring infrastructure for consuming and composing protocol stacks: `serve`, `drain`, `select`, `stream-drain`, `serve-streams`, and the `Transport`/`Protocol` typeclasses that make `fetch` and `connect` polymorphic.
+
+### Transport-Agnostic Application Protocols
 
 Application protocols are codecs — pure marshal/unmarshal between transport messages and domain objects. The `respond` closure pattern makes them transport-independent. Each protocol message type carries a `respond` field that is a closure capturing the transport-specific response path:
 
@@ -892,25 +1019,96 @@ dns-https-resolver: [fn [let cap addr@SocketAddress sni@String path@String]
   [client: [h3-client [[connect cap Udp ep] | [quic-with-sni sni]]]]
   [fn [let q] [task [dns-https-send client q path]]]]
 
-# Server — loop is transport-agnostic
-dns-server-loop: [fn [let query-ch]
-  [let step [fn []
-    [match [recv query-ch]
-      [Closed.Closed]: []
-      [Result.Ok q]:   [[task [q.respond [dns-lookup q.name q.type]]] [step]]]]]
-  [step]]
+# Server — loop is transport-agnostic; serve terminates any transport that yields DnsQuery
+handle-query: [fn@[Task DnsResponse] [let q@DnsQuery]
+  [dns-lookup q.name q.type]]
 
-# Plug in any transport
-dns-server-loop [dns-udp-server net-cap 53]
-dns-server-loop [dns-tls-server [[tcp-listen net-cap 853] | [tls-serve cert]]]
-dns-server-loop [dns-https-server [[quic-listen net-cap 443] | h3-serve | http3-requests]]
+[dns-udp-server net-cap 53]                         | [serve handle-query]
+[[tcp-listen net-cap 853] | [tls-serve cert]]       | [serve handle-query]
+[[quic-listen net-cap 443] | h3-serve | http3-requests] | [serve handle-query]
 ```
 
 ---
 
-## Worked Example: ICMP Ping Tunnel over H3
+### The `Transport` and `Protocol` Typeclasses
+
+Two typeclasses partition the connection lifecycle. Together they make every protocol — built-in or user-defined — a first-class participant in the same system.
+
+```tinct
+# Transport: how to connect. p determines the connection type c.
+[class [Transport p] determines: [p → c]
+  connect: [Fn@c [NetCap p HostPort]]]
+
+# Protocol: how to exchange. fetch dispatches by protocol type.
+[class [Protocol p req resp]
+  fetch: [Fn@resp [NetCap p req]]]
+```
+
+| Typeclass | Answers | Built-in instances | User-extensible? |
+|---|---|---|---|
+| `Transport p` | How do I connect? | `Tcp`, `Udp`, `Http` | Yes — define a new `[type [MyProto]]` |
+| `Protocol p req resp` | How do I exchange? | `Http` (URL→response), `DoT`, … | Yes — implement for any type |
+
+**`Http` as a Transport** bundles SVCB lookup + H3/H2/H1 negotiation — the same components available to power users, just pre-composed:
+
+```tinct
+# Http transport: SVCB-first, then H3 or H2 based on hints
+[instance [Transport Http] determines: [Http → HttpConnection]
+  connect: [fn [let cap addr port _@Http]
+    # Resolve SVCB; if h3 available → connect Udp | quic | h3
+    #              otherwise        → connect Tcp | tls | h2 (or h1 fallback)
+    [error "TODO: Http transport — SVCB + protocol negotiation"]]]
+```
+
+**User-defined protocols** implement both typeclasses and get Level 1 (`fetch`) for free:
+
+```tinct
+# DNS over TLS — user-defined
+DoT: [type [server: Host  port: Port]]
+
+[instance [Transport DoT] determines: [DoT → TlsHandle]
+  connect: [fn [let cap@NetCap _@DoT ep@HostPort]
+    [TlsHandle [handle: [connect cap Tcp ep]  sni: Absent.Absent  alpn: []  ech: []  trust-roots: SystemRoots]]]]
+
+[instance [Protocol DoT DnsQuery DnsResponse]
+  fetch: [fn [let cap@NetCap proto@DoT req@DnsQuery]
+    [th: [connect cap DoT [host-port proto.server proto.port]]]
+    [tls-commit th | [dns-framed-send req]]]]
+
+# One definition — three call sites work:
+cloudflare-dot: [DoT [server: [hostname "dns.cloudflare.com"]  port: 853]]
+
+[fetch %nc cloudflare-dot [dns-query "IN" "A" "example.com"]]                              # Level 1
+[c: [connect %nc DoT [host-port [hostname "dns.cloudflare.com"] 853]]                       # Level 2
+ [dns-framed-send [tls-commit c] query]]
+[[connect %nc Tcp [host-port [hostname "dns.cloudflare.com"] 853]] | tls | [dns-framed-send q]] # Level 3
+```
+
+The same pattern works for any protocol: gRPC (HTTP/2 with ALPN `"h2"`), MQTT, custom binary protocols over TLS. Implement `Transport` + `Protocol`; the rest of the stack composes automatically.
+
+---
+
+## Layer 6 — Full Stack Compositions
+
+Complete programs assembling Layers 1–5. Each example shows how the same `|` pipeline model extends from raw TCP sockets to high-level application protocols.
+
+### Worked Example: ICMP Ping Tunnel over H3
 
 H3 used as byte transport — not HTTP. Each QUIC substream carries raw ICMP echo packets. The pipeline: `udp-listen | quic | h3 | substreams` yields a `Channel@QuicStream`, each stream a bidirectional byte channel (ICMP request/reply on both sides).
+
+`read-icmp stream` returns `IcmpRequest` — a record with the received packet and a `respond` closure that sends the reply back over that stream. The handler receives the request and calls `req.respond` to reply, with no knowledge of the underlying transport.
+
+```tinct
+# stdlib/protocols/icmp.llt
+IcmpPacket: [union
+  [EchoRequest id@Int  seq@Int  data@Bytes]
+  [EchoReply   id@Int  seq@Int  data@Bytes]]
+
+# read-icmp returns IcmpRequest — packet + respond closure (not the raw packet directly)
+IcmpRequest: [type
+  [packet:  IcmpPacket
+   respond: [Fn [IcmpPacket] Null]]]   # sends reply back over the stream
+```
 
 ```tinct
 [
@@ -925,19 +1123,12 @@ H3 used as byte transport — not HTTP. Each QUIC substream carries raw ICMP ech
   clients:   [channel 256]
   tick:      [timer-channel %clock probe-interval]
 
-  serve-icmp-stream: [fn@Null [let stream@QuicStream]
-    [let step [fn []
-      [match [read-icmp stream]
-        [Closed.Closed]: []
-        [Result.Ok pkt]:
-          [match pkt
-            [EchoRequest [id: id  seq: seq  data: data]]:
-              [send-icmp stream [EchoReply id seq data]]
-            [EchoReply [seq: seq]]:
-              [log [str "RTT reply seq=" seq]]
-            _: null]
-          [step]]]]
-    [step]]
+  # Named, typed handler — receives one IcmpRequest, responds or logs.
+  handle-icmp: [fn@Null [let req@IcmpRequest]
+    [match req.packet
+      [EchoRequest r]: [req.respond [EchoReply r.id r.seq r.data]]
+      [EchoReply r]:   [log [str "RTT reply seq=" r.seq]]
+      _: null]]
 
   probe-all-clients: [fn@Null [let clients-ch scheduled]
     [lag:    [timestamp-diff [now %clock] scheduled]
@@ -947,45 +1138,38 @@ H3 used as byte transport — not HTTP. Each QUIC substream carries raw ICMP ech
     [par-map [fn [let stream] [send-icmp stream probe] [send clients-ch stream]] active]
     [log [str "lag=" lag "ms  clients=" [length active]]]]
 ]
-[loop-select [context]
-  [[stream-ch [fn [let stream]    [send clients stream] [task [serve-icmp-stream stream]]]]
+[select [context]
+  [[stream-ch [fn [let stream]    [send clients stream] [task [stream-drain read-icmp handle-icmp stream]]]]
    [tick      [fn [let scheduled] [probe-all-clients clients scheduled]]]]
   identity]
 ```
 
-**What this demonstrates:** `udp-listen | quic | h3 | substreams` as a fully composed server stack; H3 as byte transport (not HTTP); per-connection tasks; shared client registry via channel; timer-driven server-initiated probes via `par-map`; transport-agnostic ICMP logic; `loop-select` coordinating two event sources.
+**What this demonstrates:** `udp-listen | quic | h3 | substreams` as a fully composed server stack; H3 as byte transport (not HTTP); per-connection tasks via `stream-drain`; shared client registry via channel; timer-driven server-initiated probes via `par-map`; transport-agnostic ICMP logic; `select` coordinating two event sources.
 
 ---
 
-## Worked Example: Simple HTTP Server
+### Worked Example: Simple HTTP Server
 
 The NetCap is not a binary "can access the network" flag — it is a specific grant of address and port. A development server that only needs to listen on localhost gets a minimal, precise capability:
 
 ```sh
-tinct run --cap-net 127.0.0.1:8080 server.llt
+tinct run --cap-net net@b=127.0.0.1:8080 server.llt
 ```
 
 This grant lets the program bind on localhost:8080 and do nothing else with the network. It cannot connect to external hosts, cannot bind on other ports, and cannot accidentally become a public-facing server. The capability model makes the program's intent explicit and verifiable from the command line.
 
 ```tinct
-# Run with: tinct run --cap-net server@b=127.0.0.1:8080 server.llt
 [
-  cap:      %server                     # Bindable on 127.0.0.1:8080 only
-  port:     [@Port 8080]
-  requests: [http-channel cap port]    # tcp-listen + http1-serve on localhost
-
-  handler: [router
-    ["/hello":   [fn [let _] [ok "world"]]]
-    ["/healthz": [fn [let _] [ok "ok"]]]]
+  handler: [fn [let req@RawRequest]
+    [match req.path
+      "/hello":   [ok "world"]
+      "/healthz": [ok "ok"]
+      _:          [not-found]]]
 ]
-[let step [fn []
-  [match [recv requests]
-    [Closed.Closed]: []
-    [Result.Ok req]: [[task [req.respond [handler req]]] [step]]]]]
-[step]
+[[tcp-listen %net [@Port 8080]] | http1-serve | [serve handler]]
 ```
 
-**What this demonstrates:** the full TCP → HTTP/1.1 stack hidden behind `http-channel`; `router` for path dispatch; `ok` for text responses; a `loop` that concurrently handles each request in its own task via `req.respond`; and the NetCap as a precise, minimal network grant rather than a broad permission.
+**What this demonstrates:** the protocol stack composed with `|`; `match` on the request path for dispatch; `ok`/`not-found` for responses; `serve` handles the concurrent request loop; and the NetCap as a precise, minimal network grant rather than a broad permission.
 
 Extending to a public HTTPS server requires a wider cap and a certificate:
 
@@ -995,26 +1179,19 @@ tinct run --cap-net listen@b=0.0.0.0:443 --cap-fs certs@r=./certs server.llt
 
 ```tinct
 [
-  cap:      %listen                              # Bindable on 0.0.0.0:443 only
-  key-cap:  %certs                              # ./certs read-only
-  port:     [@Port 443]
-  cert:     [slurp-secret key-cap "server.pem"]
-  requests: [http-channel-tls cap port cert]      # tcp-listen + tls-serve + http1-serve
-
-  handler: [router
-    ["/hello":   [fn [let _] [ok "world"]]]
-    ["/healthz": [fn [let _] [ok "ok"]]]]
+  cert:    [slurp-secret %certs "server.pem"]
+  handler: [fn [let req@RawRequest]
+    [match req.path
+      "/hello":   [ok "world"]
+      "/healthz": [ok "ok"]
+      _:          [not-found]]]
 ]
-[let step [fn []
-  [match [recv requests]
-    [Closed.Closed]: []
-    [Result.Ok req]: [[task [req.respond [handler req]]] [step]]]]]
-[step]
+[[tcp-listen %listen [@Port 443]] | [tls-serve cert] | http1-serve | [serve handler]]
 ```
 
 ---
 
-## Worked Example: HTTP Client with SVCB/HTTPS Records
+### Worked Example: HTTP Client with SVCB/HTTPS Records
 
 HTTPS DNS records (RFC 9460) add a protocol dimension to Happy Eyeballs. An HTTPS record contains three things relevant to connection establishment:
 
@@ -1157,78 +1334,12 @@ quic-with-sni-ech: [fn [let sni@String ech@Bytes qh@QuicHandle]
 
 ---
 
-## New Rust Primitives
+## Layer 7 — Convenience Functions
 
-The primitives follow two rules: (1) the transport boundary maps 1:1 to cap-std's networking API — no higher-level protocol logic belongs in Rust; (2) all crypto operations are Rust for security correctness, not performance, because tinct's lazy evaluator cannot guarantee constant-time execution paths and variable-time crypto leaks secret key material via timing side-channels.
+Pre-composed stacks that hide Layers 1–4 behind a single function call. The explicit pipeline form is always available and more instructive; these exist for the common cases only.
 
-### Transport Primitives
-
-These correspond directly to cap-std's `TcpListener`, `UdpSocket`, and `TcpStream` types. Everything above the OS socket layer — accept loops, connection multiplexing, protocol handshakes — is tinct.
-
-| Primitive | Signature | Description | Why Rust |
-|-----------|-----------|-------------|----------|
-| `tcp-bind` | `[Fn [cap@NetCap target@BindTarget] TcpListener]` | Bind and listen on a TCP socket | **IpBind(SocketAddress)**: if address is `Ipv4` or `Ipv6` (no zone), `pool.bind_tcp_listener(addr)` — atomic check+bind. If address is `Ipv6Zone(bytes, zone)`, the zone name is looked up in `interface_entries` (Pool compares only IP bytes; zone ID must be validated against the cap separately); `if_nametoindex(zone)` converts interface name → kernel scope_id; `sockaddr_in6.sin6_scope_id` is set before bind. **InterfaceBind(name, port)**: `SO_BINDTODEVICE(name)` + scope prefix-check on the actual bind address; validates against `interface_entries` |
-| `tcp-accept` | `[Fn [h@TcpListener] Handle]` | Accept one incoming TCP connection (async) | OS accept() syscall on a `TcpListener` handle + tokio reactor registration; tinct cannot make socket syscalls |
-| `tcp-connect` | `[Fn [cap@NetCap addr@SocketAddress] Handle]` | Connect to a TCP endpoint | `pool.connect_tcp_stream(addr)` — capability check and socket syscall are one indivisible operation; no TOCTOU window |
-| `udp-socket` | `[Fn [cap@NetCap target@BindTarget] UdpSocket]` | Bind a UDP socket; use `port = 0` for ephemeral | Same routing as `tcp-bind`: `pool.bind_udp_socket(addr)` for `IpBind` with non-zoned address; zone-aware path through `interface_entries` + `if_nametoindex()` for `Ipv6Zone`; `SO_BINDTODEVICE` + scope enforcement for `InterfaceBind` |
-| `udp-recv` | `[Fn [sock@UdpSocket] UdpDatagram]` | Receive one UDP datagram with source address (async) | Reads from `UdpSocket` opaque Rust state; tinct cannot access UdpSocket internals |
-| `udp-send` | `[Fn [sock@UdpSocket addr@SocketAddress data@Bytes] Null]` | Send a datagram to a specific address | Writes through `UdpSocket` opaque Rust state |
-| `unix-listen` | `[Fn [cap@DirCap path@String] [Channel Handle]]` | Incoming Unix socket connections | cap-std's `UnixListener` is not yet implemented upstream; wraps the accept loop internally using `openat2(RESOLVE_BENEATH)` + raw `UnixListener`. When cap-std adds `UnixListener`, two new Rust primitives appear: `unix-bind: [Fn [DirCap String] UnixListener]` and `unix-accept: [Fn [UnixListener] Handle]`; one `[instance [Listener UnixListener] accept: unix-accept]` declaration is added; `unix-listen` becomes pure tinct using `listen-loop` |
-| `read-bytes` | `[Fn [h@Handle n@Int] Bytes]` | Read exactly n bytes from a Handle (async, suspends until available) | Handle is opaque Rust state backed by tokio `AsyncRead`; tinct cannot access Handle internals or call tokio I/O directly |
-| `write-bytes` | `[Fn [h@Handle b@Bytes] Null]` | Write bytes to a Handle (async) | Handle is opaque Rust state backed by tokio `AsyncWrite` |
-| `try-recv` | `[Fn [ch@[Channel t]] [Result t]]` | Non-blocking recv — `Err` if no item immediately available | Requires reading Channel's internal buffer occupancy without consuming an item; `select-once` + 0ms-timer is scheduler-dependent and not guaranteed non-blocking |
-| `channel-count` | `[Fn [ch@[Channel t]] Int]` | Current number of items in the channel buffer | Reads `Arc<ChannelInner>` buffer count without consuming; tinct cannot access Channel internals; used by `collect-channel` to snapshot size before draining |
-
-`tcp-listen`, `udp-bind`, `quic-listen`, and all higher-level connection factories are tinct. The `Listener` typeclass (same pattern as `ByteStream`, `Datagram`, `MessageStream`) provides `accept` as a polymorphic dispatch method.
-
-**Scope of `NetCap`:** everything here is IP-layer (layer 3 and above). Non-IP Ethernet protocols operate at layer 2 via `AF_PACKET` raw sockets with EtherType filtering and require a different capability type. The most immediately useful is **LLDP** (IEEE 802.1AB, EtherType `0x88CC`): tinct programs that discover network topology, map switch adjacency, or inspect LLDP neighbor advertisements are practical infrastructure tools. Following the same `name@flags=resource` pattern as `--cap-net` and `--cap-fs` (where `name` becomes `%name` in the program and `resource` identifies what is being accessed):
-
-```sh
---cap-ethernet lldp@r=eth0:0x88CC    # %lldp: receive LLDP frames on eth0
---cap-ethernet arp@rw=eth0:0x0806    # %arp: send+receive ARP on eth0
---cap-ethernet net@r=eth0            # %net: receive all EtherTypes on eth0
-```
-
-The flag letters `@r` (receive) and `@w` (send/write) deliberately mirror DirCap's `@r` (read) and `@w` (write) — the analogy is: reading bytes from the wire ↔ reading bytes from a file; injecting frames ↔ writing bytes to a file. Both capabilities use the same semantic: `@r` = consume, `@w` = produce. This consistency is intentional, not a collision. A future EthernetCap spec should state this analogy explicitly to avoid confusion between "receive frame" and "read file".
-
-Other EtherType candidates: ARP (`0x0806`), PTP (`0x88F7`), IS-IS (`0x8847`), 802.1X (`0x888E`). `NetCap` is IP-only by design, not by accident, and `EthernetCap` sits cleanly alongside it without retrofitting. `TcpListener` and `UnixListener` are opaque Rust types with `Listener` instances that delegate to `tcp-accept`/`unix-accept`. `listen-loop` is parametric over any `Listener l`. Adding a new listener type requires one Rust primitive pair and one `[instance [Listener ...] ...]` declaration — no changes to `accept`, `listen-loop`, or any call site. `read-bytes` and `write-bytes` are the `Handle` instance methods for `ByteStream`; `udp-recv` and `udp-send` are the `UdpSocket` instance methods for `Datagram`. All are called through typeclass dispatch in tinct code.
-
-### Crypto Primitives
-
-All operate on `Bytes` and `[Bytes N]`. All are Rust for one reason: timing-sensitive arithmetic cannot be done correctly in tinct regardless of whether `BigInt` exists, because tinct's lazy evaluator cannot guarantee constant-time execution paths. This is a correctness constraint, not a performance one. `BigInt` is already in tinct for general-purpose use; it has no role here — every operation that needs large-number arithmetic on secret material is a Rust primitive.
-
-| Primitive | Signature | Description | Why Rust (security) |
-|-----------|-----------|-------------|---------------------|
-| `chacha20-poly1305-seal` | `[Fn [key@[Bytes 32]  nonce@[Bytes 12]  plaintext@Bytes  associated-data@Bytes] Bytes]` | ChaCha20-Poly1305 AEAD encrypt | Constant-time required |
-| `chacha20-poly1305-open` | `[Fn [key@[Bytes 32]  nonce@[Bytes 12]  ciphertext@Bytes  associated-data@Bytes] [Result Bytes]]` | ChaCha20-Poly1305 AEAD decrypt | Constant-time; tag comparison must not branch on secret |
-| `aes-128-gcm-seal` | `[Fn [key@[Bytes 16]  nonce@[Bytes 12]  plaintext@Bytes  associated-data@Bytes] Bytes]` | AES-128-GCM AEAD encrypt | Constant-time; hardware AES-NI |
-| `aes-128-gcm-open` | `[Fn [key@[Bytes 16]  nonce@[Bytes 12]  ciphertext@Bytes  associated-data@Bytes] [Result Bytes]]` | AES-128-GCM AEAD decrypt | Constant-time; hardware AES-NI |
-| `aes-256-gcm-seal` | `[Fn [key@[Bytes 32]  nonce@[Bytes 12]  plaintext@Bytes  associated-data@Bytes] Bytes]` | AES-256-GCM AEAD encrypt | Same |
-| `aes-256-gcm-open` | `[Fn [key@[Bytes 32]  nonce@[Bytes 12]  ciphertext@Bytes  associated-data@Bytes] [Result Bytes]]` | AES-256-GCM AEAD decrypt | Same |
-| `x25519-keypair` | `[Fn [] [private: [Bytes 32]  public: [Bytes 32]]]` | Generate X25519 key pair | CSPRNG + constant-time scalar multiplication |
-| `x25519-dh` | `[Fn [private@[Bytes 32]  peer-public@[Bytes 32]] [Bytes 32]]` | X25519 Diffie-Hellman | Constant-time scalar multiplication over Curve25519 |
-| `ed25519-keypair` | `[Fn [] [private: [Bytes 32]  public: [Bytes 32]]]` | Generate Ed25519 signing key pair | CSPRNG + constant-time |
-| `ed25519-sign` | `[Fn [private@[Bytes 32]  msg@Bytes] [Bytes 64]]` | Ed25519 signature | Constant-time |
-| `ed25519-verify` | `[Fn [public@[Bytes 32]  msg@Bytes  sig@[Bytes 64]] Bool]` | Ed25519 verification | Constant-time |
-| `p256-keypair` | `[Fn [] [private: [Bytes 32]  public: [Bytes 65]]]` | Generate ECDSA P-256 key pair (public: uncompressed) | CSPRNG + constant-time |
-| `p256-sign` | `[Fn [private@[Bytes 32]  msg@Bytes] [Bytes 64]]` | ECDSA P-256 signature (r\|\|s) | Constant-time |
-| `p256-verify` | `[Fn [public@[Bytes 65]  msg@Bytes  sig@[Bytes 64]] Bool]` | ECDSA P-256 verification | Constant-time |
-| `p384-sign` | `[Fn [private@[Bytes 48]  msg@Bytes] [Bytes 96]]` | ECDSA P-384 signature | Constant-time |
-| `p384-verify` | `[Fn [public@[Bytes 97]  msg@Bytes  sig@[Bytes 96]] Bool]` | ECDSA P-384 verification | Constant-time |
-| `rsa-pss-sign` | `[Fn [private@Bytes  msg@Bytes] Bytes]` | RSA-PSS signature | Constant-time private-key modular exponentiation; key and output size depend on key length |
-| `rsa-pss-verify` | `[Fn [public@Bytes  msg@Bytes  sig@Bytes] Bool]` | RSA-PSS signature verification | Constant-time; required for X.509 cert validation in TLS |
-| `rsa-pkcs1-verify` | `[Fn [public@Bytes  msg@Bytes  sig@Bytes] Bool]` | RSA PKCS#1 v1.5 verification | Constant-time; legacy TLS cert signatures |
-| `sha1` | `[Fn [data@Bytes] [Bytes 20]]` | SHA-1 | Constant-time; WebSocket upgrade |
-| `sha256` | `[Fn [data@Bytes] [Bytes 32]]` | SHA-256 | Constant-time |
-| `sha384` | `[Fn [data@Bytes] [Bytes 48]]` | SHA-384 | Constant-time |
-| `sha512` | `[Fn [data@Bytes] [Bytes 64]]` | SHA-512 | Constant-time |
-| `blake2s` | `[Fn [data@Bytes] [Bytes 32]]` | BLAKE2s unkeyed | Constant-time; WireGuard hashing |
-| `blake2s-mac` | `[Fn [key@[Bytes 32]  data@Bytes] [Bytes 32]]` | BLAKE2s keyed MAC | Constant-time; WireGuard in place of HMAC |
-| `aes-ecb-encrypt` | `[Fn [key@[Bytes 16] block@[Bytes 16]] [Bytes 16]]` | AES-ECB single block encrypt | Required for QUIC header protection (RFC 9001 §5.4); NOT for bulk data — ECB is not an AEAD |
-| `hmac-sha256` | `[Fn [key@Bytes  data@Bytes] [Bytes 32]]` | HMAC-SHA-256 | Constant-time |
-| `hkdf-extract` | `[Fn [hash@HkdfHash  salt@Bytes  input-key-material@Bytes] Bytes]` | HKDF-Extract (hash: `[Sha256]` `[Sha384]` `[Sha512]` `[Blake2s]`) | Constant-time; output size = hash output size (32 for Sha256/Blake2s, 48 for Sha384, 64 for Sha512) |
-| `hkdf-expand` | `[Fn [hash@HkdfHash  pseudorandom-key@Bytes  info@Bytes  len@Int] Bytes]` | HKDF-Expand | Constant-time; output length is runtime `len` — returns `Bytes`, annotate `@[Bytes N]` at call site |
-| `crypto-random` | `[Fn [len@Int] Bytes]` | Cryptographically secure random bytes | OS entropy source; length is runtime — returns `Bytes`, annotate `@[Bytes N]` at call site |
+- **`http-channel cap port`** = `[[tcp-listen cap port] | http1-serve]` — plain HTTP/1.1 request channel
+- **`https-channel cap port cert`** = `[[tcp-listen cap port] | [tls-serve cert] | http1-serve]` — HTTPS request channel
 
 ---
 
@@ -1239,6 +1350,7 @@ Each module is fully specified as a draft `.llt` file in [`doc/whatif/lib-net-v3
 | Draft file | Target stdlib path | Key exports |
 |---|---|---|
 | [`async.llt`](lib-net-v3/async.llt) | `stdlib/prelude.llt` (merged — `stdlib/async.llt` deleted by builtin-privacy S-786) | `channel-map`, `channel-flat-map`, `collect-channel` |
+| [`prelude.llt`](lib-net-v3/prelude.llt) | `stdlib/prelude.llt` (merged — additions to prelude) | `ByteStream` typeclass + `Handle` instance; `Seekable` typeclass + `SeekFrom`; `MessageStream` typeclass + `Channel@T` instance; `Codec` typeclass + `decode` (lazy Seq decoder); `Indexed` typeclass + `Bytes`/`Seq` instances |
 | [`net.llt`](lib-net-v3/net.llt) | `stdlib/net.llt` | IO typeclasses (`ByteStream`, `Datagram`, `MessageStream`, `Codec`, `Listener`, `Indexed`); `Transport` typeclass; `Protocol` typeclass (`fetch`); `HttpConnect` typeclass (`http-request`); `HttpStream` typeclass (`send`/`recv` — bidirectional request/response); `Multiplexed` typeclass (`substreams` — Channel of connections → Channel of subsubstreams); `IpAddress`, `Address`, `Port`, `SocketAddress`, `HostPort`; `TcpHandle`, `FileHandle`, `ConnectedUdp`; `tcp-listen`, `udp-bind`, `udp-ephemeral`, `listen-loop`, `ip->string`, `Url`, `parse-url`, `url-decode`. Rust boundary: `Handle` + `UdpSocket`. |
 | *(not yet written)* | `stdlib/codecs/json.llt` | `NdjsonCodec` (`Codec Any Bytes`) — NDJSON serialization with `\n` framing; used by `cli/out/json.llt` via `codec-stream` |
 | [`dns.llt`](lib-net-v3/dns.llt) | `stdlib/dns.llt` | `DnsQuery`, `DnsRecord`, `DnsResponse`, `Nameserver`, `DnsConfig`; `encode-dns-wire`, `decode-dns-wire`; resolver factories (`dns-udp-resolver`, `dns-tls-resolver`, `dns-https-resolver`, `dns-quic-resolver`); `dns-framed-send`; `resolve-address` (Happy Eyeballs address resolution for `Address`); `Transport Tcp` + `Transport Udp` instances (the `connect` typeclass method — lives here because it needs `dns-resolve`); `dns-resolve-host`, `dns-resolve`, `dns-resolve` (alias), `dns-server-loop` |
@@ -1247,7 +1359,7 @@ Each module is fully specified as a draft `.llt` file in [`doc/whatif/lib-net-v3
 | [`http2.llt`](lib-net-v3/http2.llt) | `stdlib/protocols/http2.llt` | `H2Layer` typeclass (`h2` — bidirectional: client `TlsHandle→Http2Connection`, server `Channel@TlsConnection→Channel@Http2Connection`); `HttpStream Http2Connection` instance (`send`/`recv`); `Multiplexed Http2Connection H2Stream` instance (`substreams`); `H2Frame`, `HpackTable`, `Http2Connection`; `hpack-decode`, `hpack-encode`; `h2-accept`; `http-request`; `HpackCodec`, `H2FrameCodec` |
 | [`http3.llt`](lib-net-v3/http3.llt) | `stdlib/protocols/http3.llt` | `H3Layer` typeclass (`h3` — bidirectional: client `QuicHandle→Http3Connection`, server `Channel@QuicConnection→Channel@Http3Connection`); `HttpStream Http3Connection` instance (`send`/`recv`); `Multiplexed Http3Connection QuicStream` instance (`substreams`); `H3Frame`, `Http3Connection`; `h3-accept`; `http-request`; `qpack-decode`, `qpack-encode` |
 | [`http1.llt`](lib-net-v3/http1.llt) | `stdlib/protocols/http1.llt` | `RawRequest`, `RawResponse`; `ok`, `json-ok`, `redirect`, `not-found`, `server-error`; `parse-request`, `write-response`, `http1-conn`, `http1-request` |
-| [`http.llt`](lib-net-v3/http.llt) | `stdlib/protocols/http.llt` | `Http` transport type + `Transport Http` instance (SVCB-first, selects H3/H2/H1 — the `Http` in `[connect %nc Http [HostPort ...]]`); `HttpConnection` (wraps `Http2Connection` or `Http3Connection`); `fetch` (Level 1: `[fetch %nc url]`); `[instance [Protocol Http Url RawResponse] ...]`; `SvcbRecord`; `http-channel`, `http-channel-tls`, `resolve-svcb`; `router`, `headers-map`; `compression`, `logging`, `timeout`, `cors`, `auth` |
+| [`http.llt`](lib-net-v3/http.llt) | `stdlib/protocols/http.llt` | `Http` transport type + `Transport Http` instance (SVCB-first, selects H3/H2/H1 — the `Http` in `[connect %nc Http [HostPort ...]]`); `HttpConnection` (wraps `Http2Connection` or `Http3Connection`); `fetch` (Level 1: `[fetch %nc url]`); `[instance [Protocol Http Url RawResponse] ...]`; `SvcbRecord`; `http-channel`, `https-channel`, `resolve-svcb`; `headers-map`; `compression`, `logging`, `timeout`, `cors`, `auth` |
 | [`websocket.llt`](lib-net-v3/websocket.llt) | `stdlib/protocols/websocket.llt` | `WsFrame`, `WebSocketConnection`; `ws-accept`, `ws` (client handshake), `ws-recv-frame`, `ws-send-frame`; `ws-serve` |
 | [`wireguard.llt`](lib-net-v3/wireguard.llt) | `stdlib/protocols/wireguard.llt` | `WireguardLayer` typeclass (`wireguard` — bidirectional: `[wireguard cfg]` on single handle or channel); `WireguardConfig`, `WireguardConnection`; `wireguard-accept` (TODO — WireGuard framing differs from Noise framing); `wg-read-bytes`, `wg-write-bytes`; framing helpers. Data plane: ChaCha20-Poly1305 with little-endian nonce counter. |
 | [`noise.llt`](lib-net-v3/noise.llt) | `stdlib/protocols/noise.llt` | `NoiseLayer` typeclass (`noise` — bidirectional: `[noise cfg]` on single handle or channel); `NoisePattern`, `NoiseDh`, `NoiseCipher`, `NoiseConfig`, `NoiseState`, `NoiseConnection`; `noise-accept`, `noise-read`, `noise-write`; patterns XX, IK, IKpsk2, NK |
@@ -1255,8 +1367,8 @@ Each module is fully specified as a draft `.llt` file in [`doc/whatif/lib-net-v3
 | [`crypto.llt`](lib-net-v3/crypto.llt) | `stdlib/crypto.llt` | `HkdfHash` union; `Sha256`, `Sha384`, `Sha512`, `Blake2s` (hash algorithm selectors for HKDF — used by TLS, WireGuard, Noise, etc.); X.509 functions using `asn1.llt`: `parse-cert`, `cert-san`, `cert-public-key`, `verify-cert-chain` |
 | [`text.llt`](lib-net-v3/text.llt) | `stdlib/text.llt` | `TextCodec` typeclass + instances (UTF-8, UTF-16, Windows-1252, ~38 WHATWG encodings); `TextEncoding` runtime record (renamed from `Codec` to avoid collision with `Codec` typeclass); `TextBytes`; `to-encoding`, `encoding-for-name`, `text-encode`, `text-decode`, `decode-http-body` |
 | [`compress.llt`](lib-net-v3/compress.llt) | `stdlib/compress.llt` | `CompressionCodec` typeclass (superclass `[Codec c Bytes Bytes]`, with `codec-name`) + instances (`GzipCodec`, `DeflateCodec`, `BrotliCodec`, `ZstdCodec`, `IdentityCodec`); `CompressedCodec` runtime record; `to-compressed-codec`; `codec-for-encoding`, `negotiate-encoding` (both accept optional `registry@[Map String CompressedCodec]` for user codecs) |
-| [`serve.llt`](lib-net-v3/serve.llt) | `stdlib/serve.llt` | Generic codec pipeline only — no protocol imports. `MessageStreamHandle` type + `MessageStream` instance (delegates to `ReactiveCell` impl); `message-stream`, `rebind`; `codec`, `sink`, `to-messages`, `drain-emit`. Protocol-specific serve layers (`h2-serve`, `h3-serve`, etc.) live alongside their `*-accept` functions in their respective protocol files. |
-| *(not yet written)* | `stdlib/protocols/icmp.llt` | `EchoRequest`, `EchoReply`; `read-icmp`, `send-icmp` |
+| [`serve.llt`](lib-net-v3/serve.llt) | `stdlib/serve.llt` | Generic codec pipeline only — no protocol imports. `MessageStreamHandle` type + `MessageStream` instance (delegates to `ReactiveCell` impl); `message-stream`, `rebind`; `codec`, `sink`, `to-messages`, `drain-emit`; `serve` (channel terminator); `stream-drain` (ByteStream-backed per-stream loop); `serve-streams` (per-stream task launcher). Protocol-specific serve layers (`h2-serve`, `h3-serve`, etc.) live alongside their `*-accept` functions in their respective protocol files. |
+| *(not yet written)* | `stdlib/protocols/icmp.llt` | `IcmpPacket` union (`EchoRequest`, `EchoReply`); `IcmpRequest` record (`packet: IcmpPacket`, `respond: [Fn [IcmpPacket] Null]`); `read-icmp` (reads one `IcmpRequest` from a stream), `send-icmp` (writes raw `IcmpPacket` to a stream for server-initiated sends) |
 | *(not yet written)* | `stdlib/protocols/socks5.llt` | SOCKS5 proxy protocol |
 | *(not yet written)* | `stdlib/protocols/grpc.llt` | gRPC framing over `http2.llt` |
 | *(not yet written)* | `stdlib/protocols/mqtt.llt` | MQTT frame parsing |
@@ -1357,7 +1469,7 @@ UdpDatagram: [type
 ```tinct
 key@[Bytes 32]:  [192 168 1 1 ...]    # annotation validates: length = 32
 addr@[Bytes 4]:  [192 168 1 1]        # [Seq UInt8] narrows to [Bytes 4] at TypeAssert
-nonce@[Bytes 12]: crypto-random-bytes # result annotated at call site
+nonce:           [crypto-random 12]   # inferred as [Bytes 12] — dependent return type
 ```
 
 No separate `bytes` constructor function — uppercase `[Bytes N]` is a type annotation, and seq literals with `@[Bytes N]` annotations handle construction uniformly.
@@ -1370,9 +1482,7 @@ No separate `bytes` constructor function — uppercase `[Bytes N]` is a type ann
   slice:  [Fn [s@s start@Int len@Int] s]
   length: [Fn [s@s] Int]]
 
-[instance [Indexed [Bytes N] UInt8] ...]   # element type is statically UInt8; index bounds
-                                            # are checked at runtime (not type level — that
-                                            # would require dependent types)
+[instance [Indexed [Bytes N] UInt8] ...]
 [instance [Indexed String Char] ...]
 [instance [Indexed [Seq T] T] ...]
 ```
@@ -1408,7 +1518,25 @@ concat: [fn@[bind: [t]  return: t  constraint: [t: Appendable]] [...args@t]
 
 ---
 
-## What Would Change
+## Implementation Details
+
+What the implementation adds to the Rust runtime and stdlib to realise this whatif.
+
+### What Changes in the Implementation
+
+- **New**: `ByteStream`, `Datagram`, `MessageStream`, and `Codec` class declarations in `stdlib/net.llt`
+- **New**: `[instance [ByteStream Handle] ...]`, `[instance [Datagram UdpSocket] ...]`, and `[instance [MessageStream [Channel t] t] ...]` in `stdlib/net.llt`
+- **New**: `MessageStreamHandle` — the repluggable handle type; holds a `ReactiveCell` (backed by `builtin-reactive-cell` / `tokio::sync::watch`) carrying the current routing implementation. `send`/`recv` on a handle transparently delegate to the current impl; `rebind` replaces it atomically. All `MessageStream` handles are `MessageStreamHandle` instances.
+- **New**: `rebind` — universal operation that swaps the routing implementation on any `MessageStream` handle without the senders knowing. Defined in `stdlib/serve.llt`.
+- **New**: `message-stream` — constructor that wraps an initial implementation in a `MessageStreamHandle`. Defined in `stdlib/serve.llt`.
+- **New**: `codec-stream source codec sink → MessageStream` — wraps a source `MessageStream` with a `Codec` instance and a `ByteStream` sink. Returns a write-through `MessageStream` that calls `encode` on each value via the codec, then routes the output to the sink. The codec instance's `output` type determines which route is taken (write-bytes for ByteStream, send for MessageStream, send for Datagram). Defined in `stdlib/serve.llt`.
+- **New**: `codec-sink source codec sink → Task` — drains a source `MessageStream`, applies codec to each value, writes to sink. Returns a Task (await it when done). `drain-emit codec sink` is sugar for `codec-sink %emit codec sink`. Defined in `stdlib/serve.llt`.
+- **New**: `codec C source` — wraps source through a Codec stage; argument order (C, source) enables `|` pipelines. `sink S source` — terminal stage, drains source to ByteStream S. Both in `stdlib/serve.llt`.
+- **New**: `to-messages v` — adapter from any tinct value to a `MessageStream`. Bridges arbitrary shapes into the MessageStream world: Seq → yields each element, scalar → yields one element. Follows the `to-json`/`to-tinct` naming convention. Enables `[[to-messages %] | out]` and, once `out` is made polymorphic, `[% | out]`. Defined in `stdlib/serve.llt`.
+- **Removed**: `make-encrypted-handle` Rust primitive — superseded by tinct `ByteStream` instances
+- **Updated**: `read-bytes`, `write-bytes` Rust primitives become `Handle`'s `ByteStream` instance methods; `udp-send`, `udp-recv` become `UdpSocket`'s `Datagram` instance methods. They remain in the primitives table as the Rust backing but are exposed through typeclass dispatch.
+- **Updated**: All `*-accept` signatures use `constraint: [h: ByteStream]`; protocol layers are typed records; `WebSocketConnection` implements `MessageStream WsFrame` rather than `ByteStream`
+
 
 ### Add Rust primitives
 
@@ -1428,7 +1556,7 @@ Both `--cap-fs` (DirCap) and `--cap-net` (NetCap) use the same `name@flags=resou
 |---|---|---|
 | `b` | Bindable | `tcp-bind`, `udp-socket` (listen/receive on this address) |
 | `c` | Connectable | `tcp-connect`, `udp-send` (connect/send to this address) |
-| (no `@`) | both | default when flags omitted — equivalent to `@bc` |
+| (no `@`) | connectable | default when flags omitted — equivalent to `@c`; bindable must be explicit |
 
 DNS resolution is **implied** by any named hostname entry — if you grant `api@c=api.example.com:443`, you implicitly can resolve `api.example.com` to reach it. A separate `Resolvable` flag is unnecessary: a hostname in the NetCap serves no purpose unless the program can resolve it.
 
@@ -1539,26 +1667,26 @@ With named caps, each network operation receives the minimal capability it needs
 
 A compromised component holding `%upstream` can only connect to the internal range — it cannot bind on any port, cannot reach external hosts. The capability surface is explicit in both the command line and the code.
 
-### Restructure `Value::NetCap` — action-split Pools
+### Restructure `Value::NetCap` — per-cap single Pool
 
 `Value::NetCap` currently holds `Rc<Vec<NetCapEntry>>` with a single allowlist checked by `check_net_cap_allowlist`. This design conflates listening and connecting, and does not use cap-std's networking capability primitives.
 
-Replace with two cap-std Pools plus interface entries for name-based and scope-restricted bindings:
+Each named capability (`%listen`, `%api`, etc.) becomes its own `Value::NetCap` with a **single** cap-std Pool corresponding to its flag. The pool is tied to the specific named cap — `%listen` has a bind pool, `%api` has a connect pool. There is no shared or split pool within one cap.
 
 ```rust
 struct NetCapInner {
     // Hostname-level entries (globs, wildcards) checked before DNS resolution.
-    // Resolution is always implied for any named entry.
-    hostname_entries: Vec<NetCapEntry>,   // Hostname, HostPort, HostnameGlob, Any + action
+    hostname_entries: Vec<NetCapEntry>,   // Hostname, HostPort, HostnameGlob
 
-    // Bindable IP addresses: tcp-bind, udp-socket go through listen_pool.
-    listen_pool:  cap_std::net::Pool,
+    // The single cap-std pool for this capability's addresses.
+    // tcp-bind/udp-socket use it when flags is Bindable.
+    // tcp-connect/udp-send use it when flags is Connectable.
+    pool: cap_std::net::Pool,
 
-    // Connectable IP addresses: tcp-connect, udp-send go through connect_pool.
-    connect_pool: cap_std::net::Pool,
+    // Whether this cap grants Bindable, Connectable, or both.
+    flags: NetCapFlags,
 
-    // Interface-name bindings: tcp-bind, udp-socket with InterfaceBind target.
-    // Supports scope restriction (link-local only, global only, etc.).
+    // Interface-name bindings (Ipv6Zone and SO_BINDTODEVICE).
     interface_entries: Vec<InterfaceEntry>,
 }
 
@@ -1570,24 +1698,18 @@ struct InterfaceEntry {
 }
 ```
 
-`--cap-net` parsing routes entries by flag: `@b` entries populate `listen_pool`; `@c` entries populate `connect_pool`; `@bc` or no-flag (default) populates both. Named hostname entries with `@c` also populate `hostname_entries` (for glob support) AND `connect_pool` (for IP-level enforcement after resolution).
+`--cap-net listen@b=0.0.0.0:443` creates one `NetCapInner` with `flags: Bindable` and `pool` containing `0.0.0.0:443`. `--cap-net api@c=api.example.com:443` creates another with `flags: Connectable` and its own pool. A cap with `@bc` sets both flags on its single pool.
 
-**`Ipv6Zone` addresses do NOT go into the Pool.** When parsing `[fe80::1%eth0]:8080`, tinct recognises the zone ID, converts the entry into an `InterfaceEntry { name: "eth0", port: Some(8080), scope: LinkLocal, flags: Bindable }`, and stores it in `interface_entries` — not in `listen_pool`. The reason: `cap_std::net::Pool` compares only IP bytes; two `Ipv6Zone` values with the same bytes but different interface names (e.g., `fe80::1%eth0` and `fe80::1%wlan0`) are indistinguishable at the Pool level. Zone-aware capability checking requires an exact interface-name match, which only `interface_entries` provides. At bind time, `if_nametoindex(zone)` converts the interface name to the kernel scope_id and sets `sockaddr_in6.sin6_scope_id` — the Pool is not involved for zoned addresses.
+`tcp-bind` checks: `cap.flags.contains(Bindable)`? If yes, `cap.pool.bind_tcp_listener(addr)`. `tcp-connect` checks: `cap.flags.contains(Connectable)`? If yes, `cap.pool.connect_tcp_stream(addr)`. All are indivisible Pool operations with no TOCTOU window.
 
-**Flag parsing:** flags are parsed character-by-character from the `@flags` suffix; `@bc` means Bindable (`b`) + Connectable (`c`). The bracket form `@[Bindable Connectable]` accepts full names space-separated.
+**`Ipv6Zone` addresses do NOT go into the Pool.** They become `InterfaceEntry` records checked separately — `cap_std::net::Pool` compares only IP bytes and cannot distinguish `fe80::1%eth0` from `fe80::1%wlan0`. At bind time, `if_nametoindex(zone)` converts the interface name to the kernel scope_id.
 
-**Hostname+Bindable rejected at startup:** `--cap-net server@b=api.example.com:8080` is rejected at parse time with a clear error: `"@b (Bindable) entries must be IP literals, not hostnames — you cannot bind() on a remote address"`. Bindable requires a local address; a hostname that resolves to a remote IP would always fail `bind()` with `EADDRNOTAVAIL`.
+**Capability error messages:**
 
-`tcp-bind` calls `listen_pool.bind_tcp_listener(addr)` — atomic capability check + OS bind + listen. `tcp-connect` calls `connect_pool.connect_tcp_stream(addr)` — atomic capability check + OS connect. `udp-socket` calls `listen_pool.bind_udp_socket(addr)`. All are indivisible Pool operations with no TOCTOU window.
+- `tcp-connect %listen addr` with `%listen@b=...` → `"cap %listen has no Connectable grant (@c) — cannot tcp-connect"`
+- `resolve-host %listen "api.example.com"` → `"cap %listen has no Connectable grant — resolve-host requires @c"`
 
-**Capability error messages:** when a Bindable-only cap is used where Connectable is needed, tinct produces a clear structured error — not an opaque pool failure:
-
-- `tcp-connect %server some-addr` with `%server@b=...` → `"cap %server has no Connectable grant (@c) — cannot tcp-connect"`
-- `resolve-host %server "api.example.com"` with `%server@b=...` → `"cap %server has no Connectable grant — resolve-host requires @c to send DNS queries"`
-
-`resolve-host` checks upfront whether `connect_pool` is empty and errors immediately with a capability message, not a DNS failure.
-
-`resolve-host` checks `hostname_entries` for the name, then validates the resolved IP against `connect_pool`'s CIDR entries as a defence-in-depth step before returning the `IpAddress`.
+`resolve-host` checks `cap.flags.contains(Connectable)` upfront and errors with a cap message, not a DNS failure.
 
 ### `tcp-connect` takes an IP address, not a hostname
 
@@ -1725,17 +1847,13 @@ ns-to-resolver: [fn [let cap@NetCap ns@Nameserver]
 
 ---
 
-## Prerequisites
-
-- [`runtime-v2.md`](runtime-v2.md) complete — `task`, `await`, `channel`, `recv`, `send`, `select-once`, `loop-select`, `context`, `with-timeout`, `finally`, `Arc`-based async runtime, and async utilities (`loop-select`, `retry`, `finally`, etc.) all present in `stdlib/prelude.llt` (`stdlib/async.llt` was merged into prelude in the builtin-privacy-stdlib sprint). (`tcp-connect` is the only Rust primitive here; `tls`, `quic`, `h2`, `h3`, and `connect` are tinct stdlib functions defined in this whatif.)
-
 ---
 
 ## References
 
 - Marlow, S. et al. (2009). "Runtime Support for Multicore Haskell." *ICFP '09*. — `par`/`seq` sparks; implicit parallelism underlying the serve/connect layer model.
 - Syme, D., Petricek, T. & Lomov, D. (2011). "The F# Asynchronous Programming Model." *PADL '11*. — Async workflows as first-class values; request-client pattern.
-- Go language specification. "Select statements." — `select` over channels; `select-once` is the primitive, `loop-select` the recurring wrapper.
+- Go language specification. "Select statements." — `select` over channels; `select-once` is the primitive, `select` the recurring wrapper.
 - Leijen, D., Schulte, W. & Burckhardt, S. (2009). "The Design of a Task Parallel Library." *OOPSLA '09*. — `await-all`/`await-any` semantics.
 - Donenfeld, J. A. (2017). "WireGuard: Next Generation Kernel Network Tunnel." *NDSS '17*. — Protocol design (Noise_IKpsk2, ChaCha20-Poly1305, BLAKE2s) for `stdlib/protocols/wireguard.llt`; tinct implements the user-mode protocol, not the kernel TUN variant.
 - Perrin, T. (2018). "The Noise Protocol Framework." *noiseprotocol.org*. — `stdlib/protocols/noise.llt` generic pattern combinator; `wireguard.llt` uses Noise_IKpsk2.
@@ -1748,3 +1866,5 @@ ns-to-resolver: [fn [let cap@NetCap ns@Nameserver]
 - Rescorla, E. (2018). RFC 8446 — TLS 1.3. — Handshake and record layer for `stdlib/protocols/tls.llt`.
 - Schwartz, B. & Bishop, M. (2022). RFC 9460 — Service Binding and Parameter Specification via the DNS. — SVCB and HTTPS record types; `SvcbRecord`, `resolve-svcb`, and `http-connect` alias-chain logic in `stdlib/protocols/http.llt`.
 - Pauly, T. et al. (2023). RFC 8305 — Happy Eyeballs Version 2. — Parallel A/AAAA resolution and staggered connection racing; extended here to the protocol dimension (h3/QUIC vs h2/TCP).
+
+

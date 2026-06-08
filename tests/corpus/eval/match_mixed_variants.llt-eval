@@ -1,5 +1,6 @@
 # Match on variants with and without payloads
 # Some has a payload field, None is unit-like
+# T-1154: Pattern::Variable replaced by Pattern::Pin; use 3-arg [case [let n] [Some n] n] to bind.
 
 [
   [type Option [Some value: Int] [None]]
@@ -8,12 +9,12 @@
   y: None
 
   result1: [match x
-    [Some n]:  n
-    [None]:    0]
+    [case [let n] [Some n] n]
+    [None]:                 0]
 
   result2: [match y
-    [Some n]:  n
-    [None]:    0]
+    [case [let n] [Some n] n]
+    [None]:                 0]
 
   both: [seq result1 result2]
 ]
@@ -21,5 +22,5 @@
 Dict({"Option": Variant(Option, Null), "Some": Function(payload), "None": Variant(None, Null), "x": Variant(Some, Seq(Int(10), ...)), "y": Variant(None, Null), "result1": Seq(Int(10), ...), "result2": Int(0), "both": Seq(Seq(Int(10), ...), ...)})
 
 === warn
-[TypeError] non-exhaustive match: missing coverage for [Option.Some _]
-[TypeError] non-exhaustive match: missing coverage for Option.None
+[TypeError] unreachable match arm: this pattern is already covered by prior arms
+[TypeError] unreachable match arm: this pattern is already covered by prior arms

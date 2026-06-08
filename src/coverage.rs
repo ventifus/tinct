@@ -428,7 +428,7 @@ impl ConstructorSignature {
 /// (Karachalias et al. 2015, §2.4).
 pub fn ast_pattern_to_coverage(pat: &ast::Pattern) -> CoveragePattern {
     match pat {
-        ast::Pattern::Wildcard | ast::Pattern::Variable(_) => CoveragePattern::Wildcard,
+        ast::Pattern::Wildcard | ast::Pattern::Pin(_) => CoveragePattern::Wildcard,
         ast::Pattern::TypeTag(tag) => {
             // TypeTag patterns match by runtime type name (Int, Str, Seq, Dict, etc.).
             // Map to CoveragePattern::Constructor with ConstructorTag::TypeTag so the
@@ -458,10 +458,6 @@ pub fn ast_pattern_to_coverage(pat: &ast::Pattern) -> CoveragePattern {
                 tag,
                 sub_patterns: vec![],
             }
-        }
-        ast::Pattern::Pin(_) => {
-            // Pin patterns depend on runtime values — opaque to coverage analysis
-            CoveragePattern::Wildcard
         }
         ast::Pattern::Dict { fields, rest: _ } => {
             if fields.len() == 1 {
@@ -1418,8 +1414,10 @@ mod tests {
     }
 
     #[test]
-    fn test_ast_variable_to_coverage() {
-        let pat = ast::Pattern::Variable("x".to_string());
+    fn test_ast_pin_to_coverage() {
+        // T-1154: Pattern::Variable retired; bare names are now Pattern::Pin.
+        // Pin patterns map to Wildcard for coverage purposes (same as before).
+        let pat = ast::Pattern::Pin("x".to_string());
         let coverage = ast_pattern_to_coverage(&pat);
         assert_eq!(coverage, CoveragePattern::Wildcard);
     }
@@ -1472,7 +1470,7 @@ mod tests {
             fields: vec![(
                 "ok".to_string(),
                 Spanned {
-                    node: ast::Pattern::Variable("v".to_string()),
+                    node: ast::Pattern::Pin("v".to_string()),
                     span,
                 },
             )],
@@ -1507,7 +1505,7 @@ mod tests {
         let pat = ast::Pattern::Constructor {
             tag: "Maybe.Some".to_string(),
             binding: Some(Box::new(Spanned {
-                node: ast::Pattern::Variable("x".to_string()),
+                node: ast::Pattern::Pin("x".to_string()),
                 span,
             })),
         };

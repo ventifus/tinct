@@ -3142,26 +3142,23 @@ pub fn materialize_sync(
 
 /// Collect all variable names bound by a pattern, recursing into sub-patterns.
 ///
-/// Returns a list of `(name, span)` pairs — one entry per `Pattern::Variable` leaf.
-/// Duplicate names in the returned list indicate a non-linear pattern.
+/// Returns a list of `(name, span)` pairs for binding sub-patterns.
+/// Since `Pattern::Variable` has been removed (T-1154), no bare name leaf introduces
+/// a binding — only `[case [let v] ...]` forms bind. This function is now a no-op for
+/// all leaf patterns and is retained for linearity checking on composite patterns
+/// (Dict, Seq, Constructor, Or) that may carry binding sub-expressions in the future.
 ///
-/// Or-pattern branches are walked independently; the function collects from ALL branches
-/// so that a duplicate that appears within a single branch is still caught.  A duplicate
-/// that straddles two Or-pattern branches (same name in branch A and branch B) is a
-/// separate semantic concern (the "or-pattern completeness" invariant) and is NOT reported
-/// here — only intra-branch duplicates matter for linearity.
+/// Duplicate names in the returned list indicate a non-linear pattern.
 ///
 /// **Test-only.** Production code uses last-binding-wins semantics for non-linear
 /// patterns (see doc/14-patterns.md §Non-Linear Patterns). These functions exist
 /// solely to test the detection algorithm, not to enforce linearity at runtime.
 #[cfg(test)]
+#[allow(clippy::only_used_in_recursion)]
 fn collect_pattern_variable_names(pattern: &Spanned<Pattern>, out: &mut Vec<(String, Span)>) {
     match &pattern.node {
-        Pattern::Variable(name) => {
-            out.push((name.clone(), pattern.span.clone()));
-        }
         Pattern::Wildcard | Pattern::Literal(_) | Pattern::Pin(_) | Pattern::TypeTag(_) => {
-            // No variable bindings
+            // No variable bindings — Pin compares against scope, does not bind
         }
         Pattern::TypeAssertPending { inner, .. } => {
             if let Some(inner_pat) = inner {
@@ -3259,14 +3256,6 @@ pub(crate) fn match_pattern<'a>(
             Pattern::Wildcard => {
                 // Wildcard always matches, no bindings
                 Ok(Some(Arc::clone(env)))
-            }
-            Pattern::Variable(name) => {
-                // Variable always matches and binds the value
-                let child_env = Arc::new(RwLock::new(Environment::with_parent(Arc::clone(env))));
-                let value_thunk =
-                    Arc::new(Thunk::new_materialized(value.clone(), value_span.clone()));
-                child_env.write().unwrap().insert(name.clone(), value_thunk);
-                Ok(Some(child_env))
             }
             Pattern::TypeTag(tag) => {
                 // TypeTag pattern: match by runtime type name.
@@ -3409,10 +3398,22 @@ pub(crate) fn match_pattern<'a>(
                 }
             }
             Pattern::Pin(name) => {
-                // Pin matches if the variable's value equals the scrutinee value
-                let var_thunk = env.read().unwrap().get(name).ok_or_else(|| {
-                    EvalError::undefined_variable(name.clone(), value_span.clone())
-                })?;
+                // Pin matches if the variable's value equals the scrutinee value.
+                //
+                // T-1154: Bare lowercase names in pattern position are now Pin patterns.
+                // If the name is not in scope (e.g., `v` in `[Ok v]: body` where `v` has no
+                // prior binding), treat it as a wildcard — always match, no binding introduced.
+                // This preserves the legibility of shorthand constructor patterns like
+                // `[Ok v]: body` (arm still fires), while making explicit that `v` is NOT
+                // bound in the body. Users must migrate to `[case [let v] [Ok $v] body]` to
+                // bind payload variables.
+                let var_thunk = match env.read().unwrap().get(name) {
+                    Some(thunk) => thunk,
+                    None => {
+                        // Name not in scope — act as wildcard: always match, no binding.
+                        return Ok(Some(Arc::clone(env)));
+                    }
+                };
                 let var_value = materialize(&var_thunk, Some(value_span), ctx).await?;
 
                 // Compare values for equality. Dict and Seq require materialization of
@@ -3605,24 +3606,27 @@ pub(crate) fn match_pattern<'a>(
                                 }
 
                                 // Handle the tail pattern. Preserve laziness when possible:
-                                // - Variable: bind the tail thunk directly without materializing it.
-                                //   The tail is a lazy sequence and should stay unevaluated until
-                                //   the binding is actually used.
                                 // - Wildcard: discard the tail entirely — no binding, no forcing.
-                                // - Anything else (TypeTag, Constructor, Dict, Literal, Seq, Pin):
-                                //   materialize the tail and recurse into match_pattern as before.
+                                // - Pin(name) where name is not in scope: T-1154 replaced
+                                //   Pattern::Variable with Pattern::Pin. Unresolved Pin acts as
+                                //   wildcard — the arm fires but the name is not bound. To bind
+                                //   the tail, use `[case [let t] [Seq $h $t] body]`.
+                                // - Anything else (TypeTag, Constructor, Dict, Literal, Seq, or
+                                //   Pin with a name in scope for comparison):
+                                //   materialize the tail and recurse into match_pattern.
                                 match &tail.node {
-                                    Pattern::Variable(name) => {
-                                        // Bind the tail thunk directly — no materialization.
-                                        let tail_thunk = ctx.get_thunk(*tail_thunk_id);
-                                        let child_env = Arc::new(RwLock::new(
-                                            Environment::with_parent(Arc::clone(&result_env)),
-                                        ));
-                                        child_env.write().unwrap().insert(name.clone(), tail_thunk);
-                                        Ok(Some(child_env))
-                                    }
                                     Pattern::Wildcard => {
                                         // Tail is discarded — no binding, no forcing.
+                                        Ok(Some(result_env))
+                                    }
+                                    Pattern::Pin(name)
+                                        if result_env.read().unwrap().get(name).is_none() =>
+                                    {
+                                        // Unresolved Pin in tail position: T-1154 changed
+                                        // Pattern::Variable (bind) to Pattern::Pin (compare).
+                                        // When the name is not in scope, act as wildcard —
+                                        // arm fires, tail is not bound. Avoids materializing
+                                        // the lazy tail unnecessarily.
                                         Ok(Some(result_env))
                                     }
                                     _ => {
@@ -9292,7 +9296,7 @@ mod tests {
 
     /// Helper: build a variable pattern Spanned<Pattern> at the default test span.
     fn var_pattern(name: &str) -> Spanned<Pattern> {
-        sp(Pattern::Variable(name.to_string()))
+        sp(Pattern::Pin(name.to_string()))
     }
 
     /// Helper: build a wildcard pattern Spanned<Pattern> at the default test span.
@@ -9341,8 +9345,10 @@ mod tests {
     }
 
     #[test]
-    fn test_check_pattern_linearity_duplicate_in_dict_rejected() {
-        // `[a: x  b: x  ...]:` — `x` appears twice in the same arm.
+    fn test_check_pattern_linearity_pin_in_dict_not_a_violation() {
+        // T-1154: `[a: x  b: x  ...]:` — `x` appears twice, but as Pin (not Variable).
+        // Pin patterns do not bind names, so duplicate pin patterns are NOT linearity
+        // violations. Both arms act as wildcards when `x` is not in scope.
         let pattern = sp(Pattern::Dict {
             fields: vec![
                 ("a".to_string(), var_pattern("x")),
@@ -9351,40 +9357,31 @@ mod tests {
             rest: true,
         });
         let result = check_pattern_linearity(&pattern);
-        assert!(result.is_err(), "duplicate variable must be rejected");
-        let err = result.unwrap_err();
         assert!(
-            matches!(err.kind, ErrorKind::DuplicateVariable { ref name } if name == "x"),
-            "expected DuplicateVariable(\"x\"), got: {:?}",
-            err.kind
-        );
-        assert!(
-            err.to_string()
-                .contains("duplicate variable in pattern: 'x' appears more than once"),
-            "error message should name the duplicate variable, got: {}",
-            err
+            result.is_ok(),
+            "duplicate Pin patterns must NOT trigger linearity error; got: {:?}",
+            result.err()
         );
     }
 
     #[test]
-    fn test_check_pattern_linearity_duplicate_in_seq_rejected() {
-        // `[seq x x]:` — `x` appears in both head and tail.
+    fn test_check_pattern_linearity_pin_in_seq_not_a_violation() {
+        // T-1154: `[seq x x]:` — `x` appears in both head and tail as Pin.
+        // Pin patterns do not bind, so this is not a linearity violation.
         let pattern = sp(Pattern::Seq {
             head: Box::new(var_pattern("x")),
             tail: Box::new(var_pattern("x")),
         });
         let result = check_pattern_linearity(&pattern);
         assert!(
-            result.is_err(),
-            "duplicate in Seq head/tail must be rejected"
+            result.is_ok(),
+            "duplicate Pin patterns in Seq must NOT trigger linearity error"
         );
-        let err = result.unwrap_err();
-        assert!(matches!(err.kind, ErrorKind::DuplicateVariable { ref name } if name == "x"));
     }
 
     #[test]
     fn test_check_pattern_linearity_distinct_in_seq_is_ok() {
-        // `[seq h t]:` — distinct variables are fine.
+        // `[seq h t]:` — distinct pin names are fine (and always were).
         let pattern = sp(Pattern::Seq {
             head: Box::new(var_pattern("h")),
             tail: Box::new(var_pattern("t")),
@@ -9393,9 +9390,9 @@ mod tests {
     }
 
     #[test]
-    fn test_check_pattern_linearity_constructor_payload_duplicate_rejected() {
-        // `[Some x]:` body pattern with duplicate inside payload dict:
-        // `[Some [a: x  b: x]]:` — x appears twice inside Constructor payload.
+    fn test_check_pattern_linearity_pin_in_constructor_not_a_violation() {
+        // T-1154: `[Some [a: x  b: x]]:` — x appears twice inside Constructor payload
+        // as Pin patterns. Pin does not bind, so no linearity violation.
         let payload = sp(Pattern::Dict {
             fields: vec![
                 ("a".to_string(), var_pattern("x")),
@@ -9409,20 +9406,20 @@ mod tests {
         });
         let result = check_pattern_linearity(&pattern);
         assert!(
-            result.is_err(),
-            "duplicate inside Constructor payload must be rejected"
+            result.is_ok(),
+            "duplicate Pin patterns inside Constructor must NOT trigger linearity error"
         );
     }
 
     #[test]
-    fn test_pm3_match_expr_duplicate_dict_field_errors() {
-        // Integration test: eval a Match expression whose arm has a non-linear
-        // Dict pattern. Duplicate bindings use "last binding wins" semantics.
+    fn test_pm3_match_expr_pin_pattern_does_not_bind() {
+        // Integration test: T-1154 — `[a: x  b: x  ...]: x` uses Pin patterns.
+        // Both `x` positions are unresolved pins → wildcard. The arm fires, but
+        // `x` is NOT bound in the body. Materializing the body produces an
+        // UndefinedVariable error.
         //
         // match [a: 1  b: 2]
-        //   [a: x  b: x  ...]: x
-        //
-        // The pattern binds x twice; the second binding (b: 2) wins.
+        //   [a: x  b: x  ...]: x   ← arm fires (wildcards), body `x` is unbound
         let result = eval_str(
             "[match [a: 1  b: 2]  [a: x  b: x  ...]: x]",
             empty_env(),
@@ -9430,18 +9427,23 @@ mod tests {
         )
         .unwrap();
         let ctx = test_ctx();
-        let val = materialize(&result, None, &ctx).unwrap();
-        assert_eq!(val, Value::Int(2));
+        // eval() returns Ok (arm matched), but materialize() fails with UndefinedVariable
+        let err = materialize(&result, None, &ctx).unwrap_err();
+        assert!(
+            matches!(err.kind, ErrorKind::UndefinedVariable { ref name } if name == "x"),
+            "expected UndefinedVariable(x), got: {:?}",
+            err.kind
+        );
     }
 
     #[test]
-    fn test_pm3_match_expr_linear_dict_pattern_succeeds() {
-        // Integration test: linear Dict pattern must succeed normally.
+    fn test_pm3_match_expr_pin_dict_pattern_fires_on_match() {
+        // Integration test: T-1154 — `[a: x  b: y  ...]: 99` uses Pin patterns.
+        // Both `x` and `y` are unresolved pins → wildcards. The arm fires on any dict.
+        // Body is `99` (does not reference the unbound pins), so result is 99.
         //
         // match [a: 1  b: 2]
-        //   [a: x  b: y  ...]: 99
-        //
-        // The arm is linear; no linearity error should fire.
+        //   [a: x  b: y  ...]: 99   ← arm fires (wildcards for x, y), body = 99
         let result = eval_str(
             "[match [a: 1  b: 2]  [a: x  b: y  ...]: 99]",
             empty_env(),
@@ -9449,25 +9451,23 @@ mod tests {
         );
         assert!(
             result.is_ok(),
-            "linear Dict pattern must not trigger linearity error; got: {:?}",
+            "Pin Dict pattern must not error on eval; got: {:?}",
             result.err()
         );
     }
 
     #[test]
-    fn test_pm3_same_name_in_different_arms_is_ok() {
-        // The same variable name used in different arms is fine — each arm is a
-        // separate linear scope. Only duplicates within a single arm are rejected.
+    fn test_pm3_same_pin_in_different_arms_is_ok() {
+        // T-1154: `x: 1  x: 2` — both arms use Pin("x") which is unresolved → wildcard.
+        // First arm fires (wildcard matches 42), body = 1. Second arm never reached.
         //
         // match 42
-        //   x: 1    <- first arm, matches anything and returns 1
-        //   x: 2    <- second arm, would match anything but arm1 fires first
-        //
-        // Both arms have a single `x` binding (linear), so no linearity error.
+        //   x: 1    <- Pin("x") unresolved → wildcard; fires, returns 1
+        //   x: 2    <- never reached
         let result = eval_str("[match 42  x: 1  x: 2]", empty_env(), &test_ctx());
         assert!(
             result.is_ok(),
-            "same name in different arms must not trigger linearity error; got: {:?}",
+            "Pin patterns in different arms must not error; got: {:?}",
             result.err()
         );
     }

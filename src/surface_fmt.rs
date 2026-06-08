@@ -403,14 +403,34 @@ fn collect_free_vars(
             }
         }
 
-        CoreExpr::CaseArm { pattern, body } => {
+        CoreExpr::CaseArm {
+            let_bindings,
+            pattern,
+            body,
+        } => {
             // Note: CoreExpr::CaseArm.pattern is a CoreExpr (not Pattern), so we cannot
-            // use collect_pattern_bindings here. However, if the pattern is a LetDecl,
-            // we need to extract the variable names from the bindings and add them to
-            // scope before recursing into the body.
+            // use collect_pattern_bindings here. However, if the pattern is a LetDecl
+            // (2-arg form) or let_bindings is set (3-arg form), we need to extract the
+            // variable names from the bindings and add them to scope before recursing
+            // into the body.
             let mut arm_scope = param_scope.clone();
 
-            // If the pattern is a LetDecl, extract variable names from bindings
+            // 3-arg form: extract binding names from the let_bindings node
+            if let Some(lb) = let_bindings {
+                if let CoreExpr::LetDecl { bindings } = &lb.node {
+                    for binding in bindings {
+                        if let CoreExpr::Str(name) | CoreExpr::FreeVar(name) = &binding.node {
+                            arm_scope.insert(name.clone());
+                        } else if let CoreExpr::Annotated { name, .. } = &binding.node {
+                            arm_scope.insert(name.clone());
+                        } else if let CoreExpr::Var { name, .. } = &binding.node {
+                            arm_scope.insert(name.clone());
+                        }
+                    }
+                }
+            }
+
+            // 2-arg form: pattern is the LetDecl — extract names from it as before
             if let CoreExpr::LetDecl { bindings } = &pattern.node {
                 for binding in bindings {
                     if let CoreExpr::Str(name) | CoreExpr::FreeVar(name) = &binding.node {
@@ -423,6 +443,9 @@ fn collect_free_vars(
                 }
             }
 
+            if let Some(lb) = let_bindings {
+                collect_free_vars(&lb.node, param_scope, stdlib_env, out);
+            }
             collect_free_vars(&pattern.node, param_scope, stdlib_env, out);
             collect_free_vars(&body.node, &arm_scope, stdlib_env, out);
         }
@@ -509,9 +532,29 @@ fn collect_free_vars_in_quote(
         CoreExpr::TypeAssert { expr, .. } => {
             collect_free_vars_in_quote(&expr.node, depth, param_scope, stdlib_env, out);
         }
-        CoreExpr::CaseArm { pattern, body } => {
-            // If the pattern is a LetDecl, extract variable names and extend scope
+        CoreExpr::CaseArm {
+            let_bindings,
+            pattern,
+            body,
+        } => {
+            // If the pattern is a LetDecl (2-arg) or let_bindings is set (3-arg),
+            // extract variable names and extend scope for the body.
             let mut arm_scope = param_scope.clone();
+
+            if let Some(lb) = let_bindings {
+                if let CoreExpr::LetDecl { bindings } = &lb.node {
+                    for binding in bindings {
+                        if let CoreExpr::Str(name) | CoreExpr::FreeVar(name) = &binding.node {
+                            arm_scope.insert(name.clone());
+                        } else if let CoreExpr::Annotated { name, .. } = &binding.node {
+                            arm_scope.insert(name.clone());
+                        } else if let CoreExpr::Var { name, .. } = &binding.node {
+                            arm_scope.insert(name.clone());
+                        }
+                    }
+                }
+                collect_free_vars_in_quote(&lb.node, depth, param_scope, stdlib_env, out);
+            }
 
             if let CoreExpr::LetDecl { bindings } = &pattern.node {
                 for binding in bindings {
@@ -550,11 +593,9 @@ fn collect_free_vars_in_quote(
 
 /// Collect all variable names introduced by a `Pattern` into `scope`.
 /// Used to extend param scope for a match arm's body.
+#[allow(clippy::only_used_in_recursion)]
 fn collect_pattern_bindings(pattern: &Pattern, scope: &mut HashSet<String>) {
     match pattern {
-        Pattern::Variable(name) => {
-            scope.insert(name.clone());
-        }
         Pattern::Dict { fields, .. } => {
             for (_, sub_pattern) in fields {
                 collect_pattern_bindings(&sub_pattern.node, scope);
@@ -924,10 +965,27 @@ fn core_expr_to_tinct(
             Ok(format!("[let {}]", parts.join(" ")))
         }
 
-        CoreExpr::CaseArm { pattern, body } => {
-            // If the pattern is a LetDecl, extract variable names from bindings and
-            // add them to scope before recursing into the body.
+        CoreExpr::CaseArm {
+            let_bindings,
+            pattern,
+            body,
+        } => {
+            // Extract variable names for scope: use let_bindings (3-arg) or pattern LetDecl (2-arg).
             let mut arm_scope = param_scope.clone();
+
+            if let Some(lb) = let_bindings {
+                if let CoreExpr::LetDecl { bindings } = &lb.node {
+                    for binding in bindings {
+                        if let CoreExpr::Str(name) | CoreExpr::FreeVar(name) = &binding.node {
+                            arm_scope.insert(name.clone());
+                        } else if let CoreExpr::Annotated { name, .. } = &binding.node {
+                            arm_scope.insert(name.clone());
+                        } else if let CoreExpr::Var { name, .. } = &binding.node {
+                            arm_scope.insert(name.clone());
+                        }
+                    }
+                }
+            }
 
             if let CoreExpr::LetDecl { bindings } = &pattern.node {
                 for binding in bindings {
@@ -941,11 +999,26 @@ fn core_expr_to_tinct(
                 }
             }
 
+            let lb_str = if let Some(lb) = let_bindings {
+                Some(core_expr_to_tinct(
+                    &lb.node,
+                    param_scope,
+                    substitutions,
+                    rename_map,
+                    ctx,
+                )?)
+            } else {
+                None
+            };
             let pattern_str =
                 core_expr_to_tinct(&pattern.node, param_scope, substitutions, rename_map, ctx)?;
             let body_str =
                 core_expr_to_tinct(&body.node, &arm_scope, substitutions, rename_map, ctx)?;
-            Ok(format!("[{}: {}]", pattern_str, body_str))
+            if let Some(lb) = lb_str {
+                Ok(format!("[case {} {} {}]", lb, pattern_str, body_str))
+            } else {
+                Ok(format!("[{}: {}]", pattern_str, body_str))
+            }
         }
     }
 }
@@ -1241,9 +1314,27 @@ fn core_expr_to_tinct_raw(
             }
             Ok(format!("[let {}]", parts.join(" ")))
         }
-        CoreExpr::CaseArm { pattern, body } => {
-            // If the pattern is a LetDecl, extract variable names and extend scope
+        CoreExpr::CaseArm {
+            let_bindings,
+            pattern,
+            body,
+        } => {
+            // Extract variable names for scope: use let_bindings (3-arg) or pattern LetDecl (2-arg).
             let mut arm_scope = param_scope.clone();
+
+            if let Some(lb) = let_bindings {
+                if let CoreExpr::LetDecl { bindings } = &lb.node {
+                    for binding in bindings {
+                        if let CoreExpr::Str(name) | CoreExpr::FreeVar(name) = &binding.node {
+                            arm_scope.insert(name.clone());
+                        } else if let CoreExpr::Annotated { name, .. } = &binding.node {
+                            arm_scope.insert(name.clone());
+                        } else if let CoreExpr::Var { name, .. } = &binding.node {
+                            arm_scope.insert(name.clone());
+                        }
+                    }
+                }
+            }
 
             if let CoreExpr::LetDecl { bindings } = &pattern.node {
                 for binding in bindings {
@@ -1257,6 +1348,18 @@ fn core_expr_to_tinct_raw(
                 }
             }
 
+            let lb_s = if let Some(lb) = let_bindings {
+                Some(core_expr_to_tinct_in_quote(
+                    &lb.node,
+                    depth,
+                    param_scope,
+                    substitutions,
+                    rename_map,
+                    ctx,
+                )?)
+            } else {
+                None
+            };
             let ps = core_expr_to_tinct_in_quote(
                 &pattern.node,
                 depth,
@@ -1273,7 +1376,11 @@ fn core_expr_to_tinct_raw(
                 rename_map,
                 ctx,
             )?;
-            Ok(format!("[{}: {}]", ps, bs))
+            if let Some(lb) = lb_s {
+                Ok(format!("[case {} {} {}]", lb, ps, bs))
+            } else {
+                Ok(format!("[{}: {}]", ps, bs))
+            }
         }
     }
 }
@@ -1282,7 +1389,6 @@ fn core_expr_to_tinct_raw(
 fn serialize_pattern(pattern: &Pattern) -> Result<String, String> {
     match pattern {
         Pattern::Wildcard => Ok("_".to_string()),
-        Pattern::Variable(name) => Ok(name.clone()),
         Pattern::TypeTag(tag) => Ok(tag.clone()),
         Pattern::TypeAssertPending { annotation, inner } => {
             if let Some(inner_pat) = inner {
@@ -1301,7 +1407,9 @@ fn serialize_pattern(pattern: &Pattern) -> Result<String, String> {
                 Ok("[@<resolved>]".to_string())
             }
         }
-        Pattern::Pin(name) => Ok(format!("${}", name)),
+        // T-1154: bare lowercase names in pattern position are now Pin patterns.
+        // Serialize as bare name (no $); this round-trips correctly through the parser.
+        Pattern::Pin(name) => Ok(name.clone()),
         Pattern::Literal(lit) => match lit {
             LiteralPattern::Int(n) => Ok(fmt_int(*n)),
             LiteralPattern::U64(n) => Ok(format!("{n}u")),
@@ -1509,11 +1617,20 @@ pub fn fmt_expression(node: &Arc<crate::ast::SurfaceNode>) -> Result<String, Str
             Ok(format!("{}@{}", name, annotation.node))
         }
 
-        // CaseArm — [pattern: body]
-        SurfaceExpression::CaseArm { pattern, body } => {
+        // CaseArm — 2-arg: [pattern: body] / 3-arg: [case [let ...] pattern body]
+        SurfaceExpression::CaseArm {
+            let_bindings,
+            pattern,
+            body,
+        } => {
             let pattern_str = fmt_expression(pattern)?;
             let body_str = fmt_expression(body)?;
-            Ok(format!("[{}: {}]", pattern_str, body_str))
+            if let Some(lb) = let_bindings {
+                let lb_str = fmt_expression(lb)?;
+                Ok(format!("[case {} {} {}]", lb_str, pattern_str, body_str))
+            } else {
+                Ok(format!("[{}: {}]", pattern_str, body_str))
+            }
         }
 
         // PatternDecl — [pattern bindings...]

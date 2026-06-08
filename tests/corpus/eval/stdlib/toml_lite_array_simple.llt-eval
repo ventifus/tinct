@@ -7,21 +7,24 @@
   [Ok parsed]: [get "id" [get 0 [get "item" parsed]]]
   [Error msg]: [raise msg]]
 === error
-[E080] open: failed to open file 'toml-lite.llt': No such file or directory (os error 2) (defined at stdlib/prelude.llt:3398:30-3398:54) (called at stdlib/prelude.llt:3398:3-3398:56)
-  --> stdlib/prelude.llt:3398:30-3398:54
+[E080] open: failed to open file 'toml-lite.llt': No such file or directory (os error 2) (defined at stdlib/prelude.llt:3433:30-3433:54) (called at stdlib/prelude.llt:3433:3-3433:56)
+  --> stdlib/prelude.llt:3433:30-3433:54
    |
-  3398 |   [source: [builtin-read-all [open cap path Readable]]]
+  3433 |   [source: [builtin-read-all [open cap path Readable]]]
        |                              ^^^^^^^^^^^^^^^^^^^^^^^^
-  in [open ...] at stdlib/prelude.llt:3398:30-3398:54
+  in [open ...] at stdlib/prelude.llt:3433:30-3433:54
    |
-  3398 |   [source: [builtin-read-all [open cap path Readable]]]
+  3433 |   [source: [builtin-read-all [open cap path Readable]]]
        |                              ^^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-read-all ...] at stdlib/prelude.llt:3398:12-3398:55
+  in [builtin-read-all ...] at stdlib/prelude.llt:3433:12-3433:55
    |
-  3398 |   [source: [builtin-read-all [open cap path Readable]]]
+  3433 |   [source: [builtin-read-all [open cap path Readable]]]
        |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   in materialized at 5:14-5:31
   in [include ...] at 1:1-1:34
   in accessing .parse-toml-lite at 5:14-5:31
   in materialized at 5:8-5:51
   in [<dot-access> ...] at 5:8-5:51
+
+=== warn
+[UndefinedVariable] undefined variable: parsed

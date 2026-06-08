@@ -1,0 +1,12 @@
+# 3-arg case: constructor pattern with positional payload binding.
+# Pattern [Tag v] matches Variant("Tag", {0: payload}) and binds v to the full payload dict.
+# Access the value via v.0 since variant-payload stores as integer-keyed dict.
+[s: [variant-payload "Tag" [0: 42]]]
+[match s
+  [case [let v] [Tag v] v.0]
+  [case [let _] _ 0]]
+=== out
+Int(42)
+
+=== warn
+[TypeError] unreachable match arm: this pattern is already covered by prior arms

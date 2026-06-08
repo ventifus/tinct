@@ -2,53 +2,53 @@
 [json: [include %libdir "codecs/json.llt"]]
 [json.from-json "{bad json"]
 === error
-[E080] JSON: expected string key in object (defined at stdlib/prelude.llt:2447:28-2447:47)
-  --> stdlib/prelude.llt:2447:28-2447:47
+[E080] JSON: expected string key in object (defined at stdlib/prelude.llt:2480:28-2480:47)
+  --> stdlib/prelude.llt:2480:28-2480:47
    |
-  2447 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2480 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
-  in [builtin-raise ...] at stdlib/prelude.llt:2447:28-2447:47
+  in [builtin-raise ...] at stdlib/prelude.llt:2480:28-2480:47
    |
-  2447 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2480 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
-  in [if ...] at 424:13-426:17
-  in [str-length ...] at 291:16-291:30
-  in materialized at 291:3-291:33
-  in [str-slice ...] at 291:3-291:33
-  in [str-length ...] at 380:10-380:24
-  in [= ...] at 380:7-380:27
-  in materialized at 380:3-398:81
-  in [if ...] at 380:3-398:81
-  in materialized at 423:3-426:19
-  in materialized at 421:26-437:60
-  in materialized at 442:3-444:49
-  in [if ...] at 442:3-444:49
-  in materialized at 439:20-444:50
-  in materialized at stdlib/prelude.llt:536:5-540:50
+  in [if ...] at 426:13-428:17
+  in [str-length ...] at 293:16-293:30
+  in materialized at 293:3-293:33
+  in [str-slice ...] at 293:3-293:33
+  in [str-length ...] at 382:10-382:24
+  in [= ...] at 382:7-382:27
+  in materialized at 382:3-400:81
+  in [if ...] at 382:3-400:81
+  in materialized at 425:3-428:19
+  in materialized at 423:26-439:60
+  in materialized at 444:3-446:49
+  in [if ...] at 444:3-446:49
+  in materialized at 441:20-446:50
+  in materialized at stdlib/prelude.llt:535:5-539:50
    |
-  536 |     [builtin-if [builtin-gte i [builtin-length pairs]]
-  537 |         []
-  538 |         [builtin-if [builtin-get i pairs].0
-  539 |             [builtin-get i pairs].1
-  540 |             [cond-impl pairs [builtin-add i 1]]]]]
+  535 |     [builtin-if [builtin-gte i [builtin-length pairs]]
+  536 |         []
+  537 |         [builtin-if [builtin-get i pairs].0
+  538 |             [builtin-get i pairs].1
+  539 |             [cond-impl pairs [builtin-add i 1]]]]]
       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-if ...] at stdlib/prelude.llt:538:9-540:49
+  in [builtin-if ...] at stdlib/prelude.llt:537:9-539:49
    |
-  538 |         [builtin-if [builtin-get i pairs].0
-  539 |             [builtin-get i pairs].1
-  540 |             [cond-impl pairs [builtin-add i 1]]]]]
+  537 |         [builtin-if [builtin-get i pairs].0
+  538 |             [builtin-get i pairs].1
+  539 |             [cond-impl pairs [builtin-add i 1]]]]]
       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-if ...] at stdlib/prelude.llt:536:5-540:50
+  in [builtin-if ...] at stdlib/prelude.llt:535:5-539:50
    |
-  536 |     [builtin-if [builtin-gte i [builtin-length pairs]]
-  537 |         []
-  538 |         [builtin-if [builtin-get i pairs].0
-  539 |             [builtin-get i pairs].1
-  540 |             [cond-impl pairs [builtin-add i 1]]]]]
+  535 |     [builtin-if [builtin-gte i [builtin-length pairs]]
+  536 |         []
+  537 |         [builtin-if [builtin-get i pairs].0
+  538 |             [builtin-get i pairs].1
+  539 |             [cond-impl pairs [builtin-add i 1]]]]]
       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in materialized at 448:3-458:81
-  in [if ...] at 448:3-458:81
-  in materialized at 446:19-458:82
-  in materialized at 565:5-569:65
-  in [if ...] at 566:7-569:64
+  in materialized at 450:3-460:81
+  in [if ...] at 450:3-460:81
+  in materialized at 448:19-460:82
+  in materialized at 567:5-571:65
+  in [if ...] at 568:7-571:64
   in [<dot-access> ...] at 2:1-2:29

@@ -1,0 +1,4 @@
+# try-or: Error case returns default — tests zero-arg [Result.Error] wildcard pattern
+[try-or [fn [] [raise "oops"]] 99]
+=== out
+Int(99)

@@ -24,7 +24,7 @@
   # state: 0=init 1=\r 2=\r\n 3=\r\n\r 4=done
   read-until-sep: [fn@[bind: [h]  constraint: [h: ByteStream]]
                     [let h@h acc@[Seq Bytes] state@Int]
-    [b:    [read-bytes h 1]]
+    [b:    [read h 1]]
     [byte: [get b 0]]
     [next: [match [state byte]
       [0 13]: 1  [1 10]: 2  [2 13]: 3  [3 10]: 4
@@ -58,7 +58,7 @@
         [RawResponse
           [status:  status
            headers: headers
-           body:    [if [> body-len 0] [read-bytes h body-len] []]]]]]
+           body:    [if [> body-len 0] [read h body-len] []]]]]]
 
   status->text: [fn [let n@Int]
     [match n
@@ -90,6 +90,19 @@
     [status:  Int
      headers: [Map String String]
      body:    Bytes]]
+
+  # HttpStream: bidirectional HTTP request/response typeclass.
+  # send (client): initiate request on established connection → Task@RawResponse
+  # recv (server): pull next RawRequest from a connection or channel of connections
+  # Implemented by Http2Connection, Http3Connection, and Http1Connection.
+  [class [HttpStream c]
+    send: [Fn@[Task RawResponse] [c RawRequest]]
+    recv: [Fn@[Channel RawRequest] [c]]]
+
+  # HttpConnect: generic request dispatch across H1/H2/H3 connections.
+  # Enables [http-request req conn] to resolve by conn type.
+  [class [HttpConnect c]
+    request: [Fn@[Task RawResponse] [c RawRequest]]]
 
   # Http1RequestCodec: codec for HTTP/1.1 request wire format (RFC 7230).
   # encode: RawRequest → Bytes (request line + headers + CRLF + body)
@@ -129,11 +142,11 @@
          [RawRequest
            [method:  [get parts 0]   path:    path
             query:   query           version: [get parts 2]
-            headers: headers         body:    [if [> body-len 0] [read-bytes h body-len] []]
+            headers: headers         body:    [if [> body-len 0] [read h body-len] []]
             respond: respond]]]]]
 
   write-response: [fn@[bind: [h]  constraint: [h: ByteStream]] [let h@h resp@RawResponse]
-    [write-bytes h
+    [write h
       [concat
         [str-bytes [str "HTTP/1.1 " resp.status " " [status->text resp.status] "\r\n"]]
         [str-bytes [str "content-length: " [length resp.body] "\r\n"]]
@@ -146,7 +159,7 @@
   # Serve one HTTP/1.1 connection: parse requests, emit to out channel, support keep-alive.
   # Terminates when the client closes the connection or sends Connection: close.
   http1-conn: [fn [let h@Handle out@[Channel RawRequest]]
-    [let step [fn []
+    [step: [fn []
       [match [try [parse-request h [fn [let resp] [write-response h resp]]]]
         [Result.Ok req]:
           [send out req]
@@ -161,7 +174,7 @@
     [validate-no-crlf method "method"]
     [validate-no-crlf path "path"]
     [validate-no-crlf host "host"]
-    [write-bytes h
+    [write h
       [concat
         [str-bytes [str method " " path " HTTP/1.1\r\n"]]
         [str-bytes [str "host: " host "\r\n"]]
@@ -181,8 +194,8 @@
 # Http1RequestCodec: RawRequest ↔ Bytes (RFC 7230 request wire format).
 # encode: produces "METHOD path?query HTTP/version\r\nheaders\r\n\r\nbody"
 # decode: parses request line + headers + body; respond field set to no-op fn.
-[instance [Codec Http1RequestCodec RawRequest Bytes]
-  encode: [fn [let _ req@RawRequest]
+[instance Codec
+  [let a@Http1RequestCodec b@RawRequest c@Bytes]: [encode: [fn [let _ req@RawRequest]
     [target: [if [= req.query ""] req.path [str req.path "?" req.query]]]
     [concat
       [str-bytes [str req.method " " target " " req.version "\r\n"]]
@@ -216,13 +229,13 @@
            [method:  [get parts 0]   path:    path
             query:   query           version: [get parts 2]
             headers: headers         body:    body
-            respond: [fn [let _] null]]]]]]]
+            respond: [fn [let _] null]]]]]]]]
 
 # Http1ResponseCodec: RawResponse ↔ Bytes (RFC 7230 response wire format).
 # encode: produces "HTTP/1.1 status text\r\nheaders\r\n\r\nbody"
 # decode: parses status line + headers + body.
-[instance [Codec Http1ResponseCodec RawResponse Bytes]
-  encode: [fn [let _ resp@RawResponse]
+[instance Codec
+  [let a@Http1ResponseCodec b@RawResponse c@Bytes]: [encode: [fn [let _ resp@RawResponse]
     [concat
       [str-bytes [str "HTTP/1.1 " resp.status " " [status->text resp.status] "\r\n"]]
       [str-bytes [str "content-length: " [length resp.body] "\r\n"]]
@@ -246,4 +259,4 @@
         [body-start: [+ sep-pos 4]]
         [body:       [if [null? cl] [slice data body-start [length data]]
                        [slice data body-start [+ body-start [to-int cl]]]]]
-        [RawResponse [status: status  headers: headers  body: body]]]]]
+        [RawResponse [status: status  headers: headers  body: body]]]]]]

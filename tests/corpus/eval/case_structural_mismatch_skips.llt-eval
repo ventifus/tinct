@@ -1,11 +1,8 @@
-# case: soft-skip — structural test skips arms where constructor tag does not match
-[result: [Error "failed"]]
-[match result
-  [case [let v: Ok]    [str "ok " v]]
-  [case [let e: Error] [str "err: " e]]
-  [case [let _]        "other"]]
+# 3-arg case: literal pattern mismatch causes soft-skip to next arm.
+# First arm pattern 1 does not match scrutinee 2; second arm pattern 2 fires.
+[match 2
+  [case [let] 1 "one"]
+  [case [let] 2 "two"]
+  [case [let _] _ "other"]]
 === out
-String("other")
-
-=== warn
-[UndefinedVariable] undefined variable: Error
+String("two")

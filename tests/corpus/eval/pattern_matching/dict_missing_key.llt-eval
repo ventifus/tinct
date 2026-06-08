@@ -4,3 +4,6 @@
     _:        99]
 === out
 Int(99)
+
+=== warn
+[UndefinedVariable] undefined variable: v

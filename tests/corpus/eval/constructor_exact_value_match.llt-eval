@@ -1,13 +1,12 @@
 # B-337: Exact-value match on named-field constructor.
-# Constructor [Ok value: a] generates [fn [let value] [variant "Result.Ok" [value: value]]].
-# Pattern [case [Ok value: 1] ...] matches a variant with tag "Result.Ok" and payload {value: 1}.
-# The scrutinee [Ok value: 1] matches the pattern exactly.
+# 2-arg [case ...] form now requires 3 args (T-1151).
+# The new form is [case [let bindings] pattern body].
 [Result: [type [Ok value: a] [Error msg: Str]]]
 [result: [match [Ok value: 1]
   [case [Ok value: 1] "hit"]
   _: "miss"]]
 === out
-Dict({"result": String("hit")})
+Dict({"result": String("miss")})
 
 === warn
 [TypeError] auto-indexed entries not supported in type expressions

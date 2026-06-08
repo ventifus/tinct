@@ -16,23 +16,29 @@
 [type [ISO2022JP]]
 # ... all ~38 WHATWG encodings backed by encoding_rs
 
-[instance [TextCodec UTF8]
-  encode:       [fn [let _ s@String] [Result.Ok [builtin-utf8-encode s]]]
-  decode:       [fn [let _ b@Bytes]  [builtin-utf8-decode b]]
-  decode-lossy: [fn [let _ b@Bytes]  [builtin-utf8-decode-lossy b]]
-  codec-name:   [fn [let _] "utf-8"]]
+[instance TextCodec
+  [let h@UTF8]: [encode:       [fn [let _ s@String] [Result.Ok [builtin-utf8-encode s]]]
+                 decode:       [fn [let _ b@Bytes offset@Int]
+                                 [buf: [slice b offset [length b]]]
+                                 [value: [builtin-utf8-decode buf]  next: [length b]]]
+                 decode-lossy: [fn [let _ b@Bytes]  [builtin-utf8-decode-lossy b]]
+                 codec-name:   [fn [let _] "utf-8"]]]
 
-[instance [TextCodec UTF16LE]
-  encode:       [fn [let _ s@String] [builtin-encoding-encode "utf-16le" s]]
-  decode:       [fn [let _ b@Bytes]  [builtin-encoding-decode "utf-16le" b]]
-  decode-lossy: [fn [let _ b@Bytes]  [builtin-encoding-decode-lossy "utf-16le" b]]
-  codec-name:   [fn [let _] "utf-16le"]]
+[instance TextCodec
+  [let h@UTF16LE]: [encode:       [fn [let _ s@String] [builtin-encoding-encode "utf-16le" s]]
+                    decode:       [fn [let _ b@Bytes offset@Int]
+                                    [buf: [slice b offset [length b]]]
+                                    [value: [builtin-encoding-decode "utf-16le" buf]  next: [length b]]]
+                    decode-lossy: [fn [let _ b@Bytes]  [builtin-encoding-decode-lossy "utf-16le" b]]
+                    codec-name:   [fn [let _] "utf-16le"]]]
 
-[instance [TextCodec Windows1252]
-  encode:       [fn [let _ s@String] [builtin-encoding-encode "windows-1252" s]]
-  decode:       [fn [let _ b@Bytes]  [builtin-encoding-decode "windows-1252" b]]
-  decode-lossy: [fn [let _ b@Bytes]  [builtin-encoding-decode-lossy "windows-1252" b]]
-  codec-name:   [fn [let _] "windows-1252"]]
+[instance TextCodec
+  [let h@Windows1252]: [encode:       [fn [let _ s@String] [builtin-encoding-encode "windows-1252" s]]
+                         decode:       [fn [let _ b@Bytes offset@Int]
+                                         [buf: [slice b offset [length b]]]
+                                         [value: [builtin-encoding-decode "windows-1252" buf]  next: [length b]]]
+                         decode-lossy: [fn [let _ b@Bytes]  [builtin-encoding-decode-lossy "windows-1252" b]]
+                         codec-name:   [fn [let _] "windows-1252"]]]
 
 # ── Internal. ────────────────────────────────────────────────────────────────────────────────────
 
@@ -66,7 +72,7 @@
     [TextEncoding
       [name:         [codec-name c]
        encode:       [fn [let s] [encode c s]]
-       decode:       [fn [let b] [decode c b]]
+       decode:       [fn [let b] [decode c b 0].value]   # TextEncoding.decode: whole-buffer; offset=0, extract value
        decode-lossy: [fn [let b] [decode-lossy c b]]]]]
 
   # builtin-encoding-for-name returns the canonical WHATWG encoding name (bare String) or null.
@@ -91,7 +97,7 @@
     [encode c s]]
 
   decode: [fn@[bind: [c]  return: [Result String]  constraint: [c: TextCodec]] [let c@c b@Bytes]
-    [decode c b]]
+    [decode c b 0].value]   # whole-buffer convenience wrapper; offset=0, extract value
 
   decode-lossy: [fn@[bind: [c]  return: String  constraint: [c: TextCodec]] [let c@c b@Bytes]
     [decode-lossy c b]]

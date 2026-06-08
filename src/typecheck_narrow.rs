@@ -358,28 +358,28 @@ pub(crate) fn apply_negation_narrowings(
 /// type-checking a match arm body, so that pattern-bound variables are in scope
 /// and have the best type available from the scrutinee's static type.
 ///
-/// Type narrowing rules (match-arm-scope sprint):
-/// - `Pattern::Variable(name)`: binds `name` to the full scrutinee type.
-/// - `Pattern::Dict { fields }`: for each `(key, Pattern::Variable(sub_name))` field,
-///   look up `key` in the scrutinee Record type and bind `sub_name` to that field's
-///   type. Falls back to `Unknown` when the scrutinee type is not a concrete Record
-///   or the key is absent (open rows may carry the field at runtime).
+/// Type narrowing rules (T-1154: Pattern::Variable retired, all bare names are now Pin):
+/// - `Pattern::Pin(name)`: compares against an in-scope value; does NOT introduce a
+///   new binding. For type checking, Pin in sub-pattern positions carries no type info.
+/// - `Pattern::Dict { fields }`: for each `(key, sub_pattern)` field, look up `key`
+///   in the scrutinee Record type. Sub-pattern types are propagated into recursive calls.
+///   Falls back to `Unknown` when the scrutinee type is not a concrete Record or the
+///   key is absent (open rows may carry the field at runtime).
 /// - `Pattern::Seq { head, tail }`: head gets `Unknown`, tail gets `Seq(Unknown)`.
-/// - `Pattern::Constructor { binding }`: payload gets the field type from the matching NominalVariant
-///   when scrutinee is Union or Intersection containing the tag; falls back to `Unknown`.
+/// - `Pattern::Constructor { binding }`: payload gets the field type from the matching
+///   NominalVariant when scrutinee is Union or Intersection containing the tag; falls
+///   back to `Unknown`.
 /// - `Pattern::Or(alts)`: collect from the first alternative only (all alts must bind
 ///   the same variable set by parser invariant).
 /// - `Pattern::Wildcard | Literal | Pin`: no bindings.
 /// - `Pattern::TypeAssertPending | TypeAssert`: forward inner pattern bindings if present.
+#[allow(clippy::only_used_in_recursion)]
 pub(crate) fn collect_pattern_bindings(
     pat: &Pattern,
     scrutinee_ty: &Type,
     out: &mut Vec<(String, Type)>,
 ) {
     match pat {
-        Pattern::Variable(name) => {
-            out.push((name.clone(), scrutinee_ty.clone()));
-        }
         Pattern::Wildcard | Pattern::Literal(_) | Pattern::Pin(_) | Pattern::TypeTag(_) => {}
         Pattern::TypeAssertPending { inner, .. } => {
             // Safety fallback for non-elaborated patterns. In normal typecheck flow,
@@ -481,7 +481,7 @@ pub(crate) fn collect_pattern_bindings(
                 // with `MyOk n: Int`), the binding receives the whole payload record so that
                 // field access `p.n` works correctly.
                 let binding_var_name: Option<&str> = match &b.node {
-                    Pattern::Variable(name) => Some(name.as_str()),
+                    Pattern::Pin(name) => Some(name.as_str()),
                     _ => None,
                 };
 

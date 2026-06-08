@@ -1,10 +1,7 @@
-# case: structural test — Ok payload is a dict; payload fields accessible via dot
-[result: [Ok [x: 1  y: 2]]]
-[match result
-  [case [let v: Ok] [+ v.x v.y]]
-  [case [let _]     0]]
+# 3-arg case: nested dict pattern destructuring.
+# Pattern [outer: [inner: v]] matches nested dict; v binds to the innermost value.
+[match [outer: [inner: 7]]
+  [case [let v] [outer: [inner: v]] [* v v]]
+  [case [let _] _ 0]]
 === out
-Int(0)
-
-=== warn
-[UndefinedVariable] undefined variable: Ok
+Int(49)

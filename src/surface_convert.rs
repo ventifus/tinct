@@ -458,11 +458,22 @@ fn dict_to_surface_node_inner(
 
         // ---- CaseArm ----
         "case-arm" | "CaseArm" => {
+            // Optional let_bindings field (present only in 3-arg form)
+            let let_bindings = match get_optional_dict_field(&dict, "let_bindings", ctx)? {
+                Some(v) if !matches!(v, Value::Dict(ref m) if m.is_empty()) => {
+                    Some(dict_to_surface_node(&v, ctx)?)
+                }
+                _ => None,
+            };
             let pattern_val = get_dict_field(&dict, "pattern", &["type"], ctx)?;
             let pattern = dict_to_surface_node(&pattern_val, ctx)?;
             let body_val = get_dict_field(&dict, "body", &["type"], ctx)?;
             let body = dict_to_surface_node(&body_val, ctx)?;
-            SurfaceExpression::CaseArm { pattern, body }
+            SurfaceExpression::CaseArm {
+                let_bindings,
+                pattern,
+                body,
+            }
         }
 
         // ---- Unknown variant: hard error (all variants must be handled natively) ----
@@ -679,7 +690,7 @@ fn dict_to_pattern(
 
         "variable" => {
             let name = get_string_field(dict, "name", path, ctx)?;
-            Pattern::Variable(name)
+            Pattern::Pin(name)
         }
 
         "type_tag" => {
@@ -1387,22 +1398,6 @@ fn pattern_to_thunk_id(
                 Key::String("type".into()),
                 ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     string_val("wildcard"),
-                    span.clone(),
-                ))),
-            );
-        }
-        Pattern::Variable(name) => {
-            dict.insert(
-                Key::String("type".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    string_val("variable"),
-                    span.clone(),
-                ))),
-            );
-            dict.insert(
-                Key::String("name".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    string_val(name),
                     span.clone(),
                 ))),
             );
@@ -2228,7 +2223,7 @@ fn surface_node_to_thunk_id(
         | SurfaceExpression::UnquoteSplice(_) => 1,
         SurfaceExpression::Match { .. } => 2,
         SurfaceExpression::PatternDecl { .. } | SurfaceExpression::LetDecl { .. } => 1,
-        SurfaceExpression::CaseArm { .. } => 2,
+        SurfaceExpression::CaseArm { .. } => 3,
         SurfaceExpression::Placeholder | SurfaceExpression::Decl(_) => 0,
         SurfaceExpression::Error(_) => 1,
     };
@@ -2643,8 +2638,18 @@ fn surface_node_to_thunk_id(
             );
         }
 
-        SurfaceExpression::CaseArm { pattern, body } => {
+        SurfaceExpression::CaseArm {
+            let_bindings,
+            pattern,
+            body,
+        } => {
             variant_tag = "CaseArm";
+            if let Some(lb) = let_bindings {
+                dict.insert(
+                    Key::String("let_bindings".into()),
+                    surface_node_to_thunk_id(lb, opts, ctx)?,
+                );
+            }
             dict.insert(
                 Key::String("pattern".into()),
                 surface_node_to_thunk_id(pattern, opts, ctx)?,

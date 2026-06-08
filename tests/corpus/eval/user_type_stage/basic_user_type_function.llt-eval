@@ -1,0 +1,14 @@
+--- stage: type
+[
+  # User-defined type-stage function: non-empty list combinator
+  non-empty-list: [fn [let elem] [mu [fn [let self] [or elem [Seq self]]]]]
+]
+---
+[
+  # Use the user-defined type-stage function in an annotation
+  result@[non-empty-list String]: ["hello" "world"]
+]
+---
+["hello" "world"]
+=== out
+Dict({0: String("hello"), 1: String("world")})

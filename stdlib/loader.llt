@@ -48,9 +48,9 @@
   # Returns the updated named dict (or unchanged state.named if doc.name is Unnamed).
   update-named: [fn [let state val doc]
     [match doc.name
-      [case [let n: Named]
+      [case [let n] [Named n]
         [builtin-merge state.named [make-entry [builtin-str "%" n] val]]]
-      [case [let _: Unnamed]
+      [case [let _] [Unnamed]
         state.named]]]
 
   # Evaluate a single program's documents, threading % through them.
