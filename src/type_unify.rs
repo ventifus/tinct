@@ -2719,7 +2719,7 @@ pub fn unify(
                     Err(TypeErrorTyped::Generic(GenericTypeError {
                         message: format!(
                             "type constructor '{n1}' refers to two distinct definitions \
-                             (cross-scope shadowing): cannot unify"
+                             (cross-scope shadowing): cannot unify {a} with {b}"
                         ),
                         span,
                         notes: vec![],

@@ -216,7 +216,18 @@ fn update_eval_corpus() {
         let (directive_line, source) = extract_parts(&content);
 
         // Run through the eval pipeline
-        let (output, error, warnings) = eval_test(&test.input, test.no_fs, &test.cap_net);
+        let (output, mut error, mut warnings) = eval_test(&test.input, test.no_fs, &test.cap_net);
+
+        // Strip errors/warnings from non-designated paths to force developers to notice regressions
+        let path_str = test_file.to_string_lossy();
+        if error.is_some() && !path_str.contains("error") {
+            eprintln!("  NOTE: stripping === error (path not under errors/)");
+            error = None;
+        }
+        if warnings.is_some() && !path_str.contains("warn") {
+            eprintln!("  NOTE: stripping === warn (path not under warnings/)");
+            warnings = None;
+        }
 
         // Guard: if the error lacks an [EXXX] code, skip this file.
         // The corpus runner requires all === error sections to have an error code.
