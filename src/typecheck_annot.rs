@@ -1209,6 +1209,28 @@ pub(crate) fn resolve_fn_metadata(
         }
     }
 
+    // B-361: Warn about unknown fn annotation keys.
+    // Valid keys: return, constraint, doc, bind, kinds.
+    const VALID_FN_ANNOTATION_KEYS: &[&str] = &["return", "constraint", "doc", "bind", "kinds"];
+    for entry in entries {
+        if let Some(key_expr) = &entry.node.key {
+            if let SurfaceExpression::Str(key_name) = &key_expr.expr {
+                if !VALID_FN_ANNOTATION_KEYS.contains(&key_name.as_str()) {
+                    state.diagnostics.push(crate::error::TypeDiagnostic {
+                        message: format!(
+                            "unknown function annotation key '{}' (valid keys: {})",
+                            key_name,
+                            VALID_FN_ANNOTATION_KEYS.join(", ")
+                        ),
+                        span: key_expr.span.clone(),
+                        code: super::typecheck_diag::T021_UNKNOWN_TYPE_PARAM_ANNOTATION,
+                        level: crate::error::DiagnosticLevel::Warn,
+                    });
+                }
+            }
+        }
+    }
+
     // If no return: key, default to Unknown (infer from body)
     let ret = return_type.unwrap_or(Type::Unknown);
 

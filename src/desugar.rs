@@ -1278,6 +1278,7 @@ fn recurse_children_surface(node: &mut Arc<SurfaceNode>, depth: usize) {
     match &mut node_mut.expr {
         // Literals: no children
         SurfaceExpression::Int(_)
+        | SurfaceExpression::U64(_)
         | SurfaceExpression::Float(_)
         | SurfaceExpression::Bool(_)
         | SurfaceExpression::Str(_)

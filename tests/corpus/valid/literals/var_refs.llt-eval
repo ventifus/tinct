@@ -4,6 +4,4 @@
 [name  has?  my-var  _private  get-or]
 
 === warn
-undefined variable: name at 1:2-1:7
-undefined variable: my-var at 1:13-1:19
-undefined variable: _private at 1:20-1:28
+undefined variable: name

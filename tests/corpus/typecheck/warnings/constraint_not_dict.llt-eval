@@ -4,4 +4,4 @@
 Function()
 
 === warn
-constraint: value must be a dict [a: Comparable] at 1:18-1:28
+constraint: value must be a dict [a: Comparable]

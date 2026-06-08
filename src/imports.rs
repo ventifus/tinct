@@ -889,6 +889,7 @@ fn collect_include_paths_from_node(
         }
         // Literals and other leaf nodes: no recursive traversal needed
         SurfaceExpression::Int(_)
+        | SurfaceExpression::U64(_)
         | SurfaceExpression::Float(_)
         | SurfaceExpression::Bool(_)
         | SurfaceExpression::Str(_)
@@ -1282,6 +1283,7 @@ fn apply_include_type_to_node(
         }
         // Leaf nodes: no recursive traversal needed
         SurfaceExpression::Int(_)
+        | SurfaceExpression::U64(_)
         | SurfaceExpression::Float(_)
         | SurfaceExpression::Bool(_)
         | SurfaceExpression::Str(_)

@@ -77,7 +77,7 @@ pub use crate::types::SchemeMap;
 ///
 /// This is distinct from runtime annotation evaluation (eval_annotation_property_dict in eval_dict.rs),
 /// which runs in the evaluator with full EvalContext and supports thunked expressions.
-fn eval_type_annotation_property_dict(
+pub(crate) fn eval_type_annotation_property_dict(
     annotation: &crate::ast::Annotation,
 ) -> Option<indexmap::IndexMap<String, crate::value::Value>> {
     use crate::ast::SurfaceExpression;
@@ -117,7 +117,13 @@ fn eval_type_annotation_property_dict(
 
                 result.insert(key_str, value);
             }
-            Some(result)
+            // B-359: return None (not Some(empty_map)) when all entries were non-literal.
+            // Callers use `.is_some()` to detect "has annotation" — Some(empty) would misfire.
+            if result.is_empty() {
+                None
+            } else {
+                Some(result)
+            }
         }
         _ => None,
     }
@@ -130,7 +136,7 @@ fn eval_type_annotation_property_dict(
 ///
 /// Only processes literal annotation values (strings, ints, floats, bools) — type metadata
 /// (type names, function expressions) is skipped, similar to `eval_type_annotation_property_dict`.
-fn extract_field_annotations_from_body(
+pub(crate) fn extract_field_annotations_from_body(
     body_node: &Arc<SurfaceNode>,
 ) -> indexmap::IndexMap<String, indexmap::IndexMap<String, crate::value::Value>> {
     use crate::ast::SurfaceExpression;

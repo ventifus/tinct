@@ -4,4 +4,4 @@
 Function(val)
 
 === warn
-constraint class list must start with 'each' keyword: use [each ClassName ...] at 1:19-1:21
+constraint class list must start with 'each' keyword: use [each ClassName ...]

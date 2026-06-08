@@ -6,4 +6,4 @@
 [match f [Net.Transport.Tcp payload] payload Net.Transport.Udp "udp" _ "unknown"]
 
 === warn
-undefined variable: f at 1:8-1:9
+undefined variable: f

@@ -1,0 +1,7 @@
+# B-361: Unknown function annotation key should emit a warning.
+# fn@[return: Int foo: "bar"] — foo is not a valid fn annotation key.
+[f: [fn@[return: Int  foo: "bar"] [let x@Int] x]]
+=== out
+Dict({"f": Function(x)})
+=== warn
+unknown function annotation key 'foo' (valid keys: return, constraint, doc, bind, kinds)

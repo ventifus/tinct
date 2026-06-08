@@ -31,15 +31,22 @@ fn inject_adt_constructor_schemes(
     alias_ty: &Type,
     dict_env: &mut TypeEnv,
     out_constructor_types: &mut HashMap<String, Type>,
+    type_vars: &[String],
 ) {
     match alias_ty {
         Type::NominalVariant { tag, fields } => {
-            inject_single_constructor(tag, fields, dict_env, out_constructor_types);
+            inject_single_constructor(tag, fields, dict_env, out_constructor_types, type_vars);
         }
         Type::Union(members) => {
             for member in members {
                 if let Type::NominalVariant { tag, fields } = member {
-                    inject_single_constructor(tag, fields, dict_env, out_constructor_types);
+                    inject_single_constructor(
+                        tag,
+                        fields,
+                        dict_env,
+                        out_constructor_types,
+                        type_vars,
+                    );
                 }
             }
         }
@@ -65,6 +72,7 @@ fn inject_single_constructor(
     fields: &Row,
     dict_env: &mut TypeEnv,
     out_constructor_types: &mut HashMap<String, Type>,
+    type_vars: &[String],
 ) {
     let constructor_ty = if fields.fields.is_empty() {
         // Unit constructor: no fields → the constructor is a value, not a function.
@@ -102,7 +110,34 @@ fn inject_single_constructor(
         }
     };
 
-    dict_env.insert(tag.to_string(), constructor_ty.clone());
+    // B-362: Register constructor types as polymorphic TypeSchemes when the
+    // constructor body actually contains TypeVars from the ADT's type parameters.
+    // Only quantify over vars that appear in the body to avoid tripping the
+    // has_inference_vars invariant in check_call_with_scheme (unit constructors
+    // and constructors with all-concrete fields stay mono).
+    let mut body_vars = std::collections::HashSet::new();
+    constructor_ty.collect_all_vars(&mut body_vars);
+    let used_vars: Vec<String> = type_vars
+        .iter()
+        .filter(|v| body_vars.contains(v.as_str()))
+        .cloned()
+        .collect();
+    if used_vars.is_empty() {
+        dict_env.insert(tag.to_string(), constructor_ty.clone());
+    } else {
+        dict_env.insert_scheme(
+            tag.to_string(),
+            TypeScheme {
+                type_vars: used_vars,
+                constraints: vec![],
+                body: constructor_ty.clone(),
+                label_vars: vec![],
+                kind_vars: vec![],
+                doc: None,
+                inner_schemes: None,
+            },
+        );
+    }
     out_constructor_types.insert(tag.to_string(), constructor_ty);
 }
 
@@ -414,6 +449,17 @@ pub(crate) fn infer_dict(
         if *is_alias {
             if let SurfaceExpression::Decl(decl) = &entry.node.value.expr {
                 if let SurfaceDeclaration::TypeAlias { params, body } = decl.as_ref() {
+                    // T-1134: Extract type-level annotation from key (e.g., `Name@[doc: "..."]`).
+                    let type_annotation: Option<crate::ast::Annotation> =
+                        entry.node.key.as_ref().and_then(|key_node| {
+                            if let SurfaceExpression::Annotated { annotation, .. } = &key_node.expr
+                            {
+                                Some(annotation.node.clone())
+                            } else {
+                                None
+                            }
+                        });
+
                     // [builtin-type "X"] body recognition (T-957).
                     // When the type body is a call `[builtin-type "DiscriminantName"]`,
                     // create a TyConDef with builtin_type discriminant instead of resolving
@@ -459,6 +505,10 @@ pub(crate) fn infer_dict(
                             let n_params = params.len();
                             let param_names: Vec<String> =
                                 params.iter().map(|(n, _)| n.clone()).collect();
+                            // T-1134: populate annotation from key @[...] annotation
+                            let annotation = type_annotation
+                                .as_ref()
+                                .and_then(super::eval_type_annotation_property_dict);
                             let tycon_def = Arc::new(TyConDef {
                                 params: param_names,
                                 body: Type::TyCon(alias_name.clone()),
@@ -466,7 +516,7 @@ pub(crate) fn infer_dict(
                                 variance: vec![Variance::Invariant; n_params],
                                 constructors: vec![],
                                 builtin_type: Some(discriminant),
-                                annotation: None,
+                                annotation,
                                 field_annotations: indexmap::IndexMap::new(),
                             });
                             dict_env.insert_tycon_def(alias_name.clone(), Arc::clone(&tycon_def));
@@ -501,14 +551,16 @@ pub(crate) fn infer_dict(
                     state.type_params_scope = None;
 
                     if let Ok(alias_ty) = alias_result {
+                        // B-362: Compute remapped_params before inject_adt_constructor_schemes
+                        // so polymorphic ADT constructors get proper TypeScheme quantification.
+                        let remapped_params: Vec<String> = params
+                            .iter()
+                            .map(|(p, _)| alias_ann_map.get(p).cloned().unwrap())
+                            .collect();
+
                         // Register the named alias (keyed entries only, or positional TypeAlias
                         // entries with a proper identifier name from B-344 fix).
                         if let Some(name) = key_name {
-                            let remapped_params: Vec<String> = params
-                                .iter()
-                                .map(|(p, _)| alias_ann_map.get(p).cloned().unwrap())
-                                .collect();
-
                             // B-344: Register in tycon_env when key_name is a valid type identifier
                             // (starts with alphabetic — indicates a proper type name extracted by the
                             // B-344 fix in entry_key_name, not an auto-index like "0" or "1").
@@ -525,6 +577,12 @@ pub(crate) fn infer_dict(
                                 );
                                 let constructors =
                                     super::extract_constructors_from_type(&alias_ty, name);
+                                // T-1134: populate annotation and field_annotations
+                                let annotation = type_annotation
+                                    .as_ref()
+                                    .and_then(super::eval_type_annotation_property_dict);
+                                let field_annotations =
+                                    super::extract_field_annotations_from_body(body);
                                 let tycon_def = Arc::new(TyConDef {
                                     params: remapped_params.clone(),
                                     body: alias_ty.clone(),
@@ -532,8 +590,8 @@ pub(crate) fn infer_dict(
                                     variance: inferred_variances,
                                     constructors,
                                     builtin_type: None,
-                                    annotation: None,
-                                    field_annotations: indexmap::IndexMap::new(),
+                                    annotation,
+                                    field_annotations,
                                 });
                                 dict_env.insert_tycon_def(name.clone(), Arc::clone(&tycon_def));
                                 state.tycon_env.insert(name.clone(), tycon_def);
@@ -554,6 +612,7 @@ pub(crate) fn infer_dict(
                             &alias_ty,
                             &mut dict_env,
                             &mut injected_constructor_types,
+                            &remapped_params,
                         );
                     }
                 }

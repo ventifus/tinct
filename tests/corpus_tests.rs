@@ -217,6 +217,7 @@ fn test_corpus_structure() {
         "tests/corpus/eval/slow",
         "tests/corpus/eval/constructors",
         "tests/corpus/eval/absent",
+        "tests/corpus/eval/adts",
         "tests/corpus/eval/annotation-system",
         "tests/corpus/eval/ast_dict",
         "tests/corpus/eval/let_binding",
@@ -320,6 +321,23 @@ fn test_corpus_structure() {
         absent_count >= 1,
         "tests/corpus/eval/absent/ has {} tests, expected at least 1",
         absent_count
+    );
+
+    // T-1096: ADT corpus tests
+    let adts_count = find_test_files(&manifest_dir.join("tests/corpus/eval/adts")).len();
+    assert!(
+        adts_count >= 3,
+        "tests/corpus/eval/adts/ has {} tests, expected at least 3",
+        adts_count
+    );
+
+    // T-1096: Seq migration corpus tests
+    let seq_migration_count =
+        find_test_files(&manifest_dir.join("tests/corpus/eval/seq_migration")).len();
+    assert!(
+        seq_migration_count >= 20,
+        "tests/corpus/eval/seq_migration/ has {} tests, expected at least 20",
+        seq_migration_count
     );
 }
 

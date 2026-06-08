@@ -10401,6 +10401,34 @@ fn test_is_subtype_recursive_structural_mismatch_returns_false() {
     );
 }
 
+/// T-1169a: μa.{x: a} NOT <: μb.{y: b} — different field names.
+/// Isomorphic in structure but distinct field names means NOT subtypes.
+#[test]
+fn test_is_subtype_recursive_different_field_names_returns_false() {
+    // μa.{x: a}
+    let rec_a = Type::Recursive {
+        var: "a".to_string(),
+        body: Box::new(Type::Record(crate::type_def::Row {
+            fields: [("x".to_string(), Type::TypeVar("a".to_string(), 0))].into(),
+            tail: crate::type_def::RowTail::Empty,
+        })),
+    };
+    // μb.{y: b} — same structure but different field name
+    let rec_b = Type::Recursive {
+        var: "b".to_string(),
+        body: Box::new(Type::Record(crate::type_def::Row {
+            fields: [("y".to_string(), Type::TypeVar("b".to_string(), 0))].into(),
+            tail: crate::type_def::RowTail::Empty,
+        })),
+    };
+    // S-Assum must terminate AND return false (field name mismatch).
+    let result = Type::is_subtype(&rec_a, &rec_b, None);
+    assert!(
+        !result,
+        "μa.{{x: a}} <: μb.{{y: b}} must be FALSE (different field names)"
+    );
+}
+
 // -- T-1166: Negative is_contractive_type unit tests (S-862) --
 // These tests verify the 3-rule contractiveness check for recursive type alias bodies.
 // The function is in src/typecheck_annot.rs; it's called at type alias construction time

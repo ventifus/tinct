@@ -4,4 +4,4 @@
 Function()
 
 === warn
-constraint key must be a bare word (TypeVar name) at 1:15-1:29
+constraint key must be a bare word (TypeVar name)

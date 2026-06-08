@@ -5,7 +5,7 @@ use super::{
 };
 use crate::ast::Span;
 use crate::type_def::{TyConDef, Variance};
-use crate::types::{Constraint, InferState, Kind, Label, Row, Substitution, Type};
+use crate::types::{Constraint, InferState, Kind, Label, Row, Substitution, Type, TypeEnv};
 use std::collections::HashMap;
 
 /// Task 1a: resolve_has_field on Type::Top should return Top (not Unknown)
@@ -1705,6 +1705,95 @@ fn test_unify_uniform_inconsistent_named_field_type_errors() {
     );
 }
 
+/// T-1116a: UNIFY-UNIFORM Empty+Uniform — TypeVar join.
+/// Unifying `{x: Int}` (Empty-tailed) with `{_ : α}` (Uniform with TypeVar) should
+/// bind α to Int (the join of all named fields from both rows).
+#[test]
+fn test_unify_empty_uniform_typevar_join() {
+    let mut state = InferState::new();
+    let mut subst = Substitution::new();
+    let span = Span::origin();
+
+    // LHS: {x: Int} with Empty tail
+    let mut fields_lhs = HashMap::new();
+    fields_lhs.insert("x".to_string(), Type::Int);
+    let row_lhs = crate::type_def::Row {
+        fields: fields_lhs,
+        tail: crate::type_def::RowTail::Empty,
+    };
+
+    // RHS: {_ : α} with Uniform TypeVar tail
+    let alpha = "_t_eu_test1".to_string();
+    state.levels.insert(alpha.clone(), 0);
+    let row_rhs = crate::type_def::Row {
+        fields: HashMap::new(),
+        tail: crate::type_def::RowTail::Uniform {
+            key: None,
+            value: Box::new(Type::TypeVar(alpha.clone(), 0)),
+        },
+    };
+
+    let rec_lhs = Type::Record(row_lhs);
+    let rec_rhs = Type::Record(row_rhs);
+
+    let result = unify(&rec_lhs, &rec_rhs, &mut subst, &mut state, span);
+    assert!(
+        result.is_ok(),
+        "Empty+Uniform TypeVar join should succeed: {:?}",
+        result.unwrap_err()
+    );
+
+    // After unification, α should be bound to Int (the field type from the Empty side).
+    let resolved = subst.apply(&Type::TypeVar(alpha, 0));
+    assert_eq!(
+        resolved,
+        Type::Int,
+        "α should be bound to Int after Empty+Uniform join"
+    );
+}
+
+/// T-1116b: UNIFY-UNIFORM Empty+Uniform — concrete subtype failure.
+/// Unifying `{x: Int}` (Empty-tailed) with `{_ : Str}` (Uniform with concrete Str) should
+/// fail because Int is not a subtype of Str.
+#[test]
+fn test_unify_empty_uniform_concrete_subtype_fail() {
+    let mut state = InferState::new();
+    let mut subst = Substitution::new();
+    let span = Span::origin();
+
+    // LHS: {x: Int} with Empty tail
+    let mut fields_lhs = HashMap::new();
+    fields_lhs.insert("x".to_string(), Type::Int);
+    let row_lhs = crate::type_def::Row {
+        fields: fields_lhs,
+        tail: crate::type_def::RowTail::Empty,
+    };
+
+    // RHS: {_ : Str} with Uniform concrete tail
+    let row_rhs = crate::type_def::Row {
+        fields: HashMap::new(),
+        tail: crate::type_def::RowTail::Uniform {
+            key: None,
+            value: Box::new(Type::Str),
+        },
+    };
+
+    let rec_lhs = Type::Record(row_lhs);
+    let rec_rhs = Type::Record(row_rhs);
+
+    let result = unify(&rec_lhs, &rec_rhs, &mut subst, &mut state, span);
+    assert!(
+        result.is_err(),
+        "Empty+Uniform with non-conforming concrete type should fail"
+    );
+    let err_msg = result.unwrap_err().message();
+    assert!(
+        err_msg.contains("does not conform to Uniform constraint")
+            || err_msg.contains("cannot unify"),
+        "Expected Uniform constraint violation or type mismatch, got: {err_msg}"
+    );
+}
+
 /// T-1020k: Variance is preserved through Clone.
 #[test]
 fn test_variance_clone() {
@@ -1768,4 +1857,33 @@ fn test_tycondef_partialeq_different_variance() {
         field_annotations: indexmap::IndexMap::new(),
     };
     assert_ne!(def1, def2);
+}
+
+/// T-1098: RowTail::Uniform polarity — infer_variance on a Uniform-tailed record
+/// should report the value type param as Covariant (positive position).
+#[test]
+fn test_infer_variance_uniform_tail_covariant() {
+    use std::rc::Rc;
+    let env = Rc::new(TypeEnv::new());
+
+    // Type alias body: {x: a, _: a} — both named field and Uniform tail use param "a"
+    // in positive position, so inferred variance should be Covariant.
+    let mut fields = HashMap::new();
+    fields.insert("x".to_string(), Type::TypeVar("_t0".to_string(), 0));
+    let body = Type::Record(crate::type_def::Row {
+        fields,
+        tail: crate::type_def::RowTail::Uniform {
+            key: None,
+            value: Box::new(Type::TypeVar("_t0".to_string(), 0)),
+        },
+    });
+
+    let variances =
+        crate::typecheck::typecheck_annot::infer_variance(&body, &["_t0".to_string()], &env);
+    assert_eq!(variances.len(), 1);
+    assert_eq!(
+        variances[0],
+        Variance::Covariant,
+        "Uniform tail value type param should be Covariant (positive polarity)"
+    );
 }

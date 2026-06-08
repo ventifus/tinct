@@ -5,4 +5,4 @@
 [match x Color.Red "red" _ "other"]
 
 === warn
-undefined variable: x at 1:8-1:9
+undefined variable: x

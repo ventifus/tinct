@@ -11,7 +11,7 @@
 Dict({"x": Function(a), "result": String("is-a-function")})
 
 === warn
-expected function type, got ~Fn@_ [ ...] at 8:39-8:40
+expected function type, got ~Fn@_ [ ...]
 inferred type is Unknown — consider adding a type annotation
 inferred type is Unknown — consider adding a type annotation
 inferred type is Unknown — consider adding a type annotation

@@ -4,4 +4,4 @@
 Function(x)
 
 === warn
-parameter annotation Int is more restrictive than required type String at 1:32-1:35
+parameter annotation Int is more restrictive than required type String

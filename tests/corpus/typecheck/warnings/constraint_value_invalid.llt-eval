@@ -4,4 +4,4 @@
 Function()
 
 === warn
-constraint value must be a class name or list of class names at 1:18-1:20
+constraint value must be a class name or list of class names

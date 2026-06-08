@@ -39,6 +39,55 @@ Tinct has one syntactic form: `[...]`. Whether it's a dict, a function call, or 
 
 ---
 
+## Strings
+
+Single-line strings use `"..."`. Multi-line strings use triple quotes — the closing `"""` on its own line sets the indentation anchor, and that much leading whitespace is stripped from every content line:
+
+```tinct
+[
+  greeting: "Hello, world!"
+
+  query: """
+    SELECT *
+    FROM users
+    WHERE active = true
+    """
+  # → "SELECT *\nFROM users\nWHERE active = true\n"
+
+  # Trailing newline included; wrap with trim to suppress it
+  label: [trim """
+    Click here
+    """]
+  # → "Click here"
+]
+```
+
+**String interpolation** — the `i"..."` prefix embeds variable references with `$name`:
+
+```tinct
+[
+  name:  "Alice"
+  count: 42
+
+  msg:   i"Hello $name, you have $count messages"
+  # → "Hello Alice, you have 42 messages"
+
+  # $$ escapes to a literal $
+  price: i"Total: $$$count"
+  # → "Total: $42"
+
+  # Triple-quoted interpolation works too
+  body:  i"""
+    Dear $name,
+    Your order is ready.
+    """
+]
+```
+
+Variable names stop at whitespace, brackets, and common punctuation (`.`, `,`, `!`, `?`). Only `$ident` is supported — there is no `${expr}` form.
+
+---
+
 ## Dot Access
 
 ```tinct
@@ -392,6 +441,95 @@ Patterns compose: a constructor pattern's binding can itself be a dict pattern, 
 
 **Tag patterns are unambiguous:** uppercase names in pattern position are always constructor patterns. Lowercase names are variable captures. `_` is the wildcard.
 
+**Type and binding patterns** — annotate a binding with a type to both narrow and bind:
+
+```tinct
+[
+  # n@Int: bind scrutinee to n, arm fires only when type is Int
+  describe: [fn [let x]
+    [match x
+      n@Int:  [str "int: " [str n]]
+      n@Str:  [str "str: " n]
+      _:      "other"]]
+
+  r1: [describe 42]       # → "int: 42"
+  r2: [describe "hello"]  # → "str: hello"
+]
+```
+
+**`[case ...]` arms** — the canonical form for match arms that bind variables. Each arm is self-contained: `[case pattern body]` where `pattern` is a `[let ...]` binding expression. The shorthand keyed forms (`[Constructor v]:`, `n@Int:`, `_:`) are equivalent and accepted but `[case ...]` is the intended syntax:
+
+```tinct
+[
+  handle: [fn [let result]
+    [match result
+      [case [let v: Result.Ok]    [str "ok: " [str v]]]
+      [case [let _: Result.Error] "error"]]]
+
+  r1: [handle [Result.Ok 42]]    # → "ok: 42"
+  r2: [handle [Result.Error ""]] # → "error"
+]
+```
+
+Non-binding arms (no `[let ...]` needed) remain keyed:
+
+```tinct
+[match color
+  Color.Red:   "#ff0000"   # unit constructor — no binding
+  Color.Green: "#00ff00"
+  42:          "forty-two" # literal equality — no binding
+  _:           "other"]    # wildcard — no binding
+```
+
+---
+
+## Type Classes
+
+`[class ...]` declares an interface; `[instance ...]` provides an implementation for a specific type. The class header always uses the `[let ClassName params...]` form. Both appear as entries inside a dict — classes as named values, instances as named single-arm entries or positional multi-arm entries:
+
+```tinct
+[
+  Printable:    [class [let Printable a]]
+
+  PrintableStr: [instance Printable [let a@String]: [print: [fn [let x] [str "str:" x]]]]
+  PrintableInt: [instance Printable [let a@Int]:    [print: [fn [let x] [str "int:" [str x]]]]]
+
+  # Named instances are regular dict values — pass them to generic functions
+  format: [fn [let inst x] [inst.print x]]
+  s: [format PrintableStr "hello"]   # → "str:hello"
+  n: [format PrintableInt 42]        # → "int:42"
+]
+```
+
+Named single-arm instances evaluate to their method dict at runtime, so `PrintableStr.print` is the function. Generic functions receive an explicit instance dict as an argument — this is dictionary-passing style.
+
+**Multiple methods** — the instance body is a dict:
+
+```tinct
+[
+  AppendableStr: [instance Appendable
+    [let a@String]: [
+      append-one: [fn [let a b] [str a b]]
+      empty:       ""]]
+]
+```
+
+**Multi-parameter classes with functional dependencies** — `determines` declares which parameters are determined by others; `resolver` names the instance dict injected at call sites. Multi-arm instances appear as positional entries (no key):
+
+```tinct
+[
+  Addable: [class [let Addable a b c] [determines: [[[a b] c]] resolver: AddResult]]
+
+  # Extend + to work on strings via concatenation
+  [instance Addable
+    [let a@String b@String c]: [+: [fn@String [let x@String y@String] [str x y]]]]
+
+  result: [+ "hello" " world"]   # → "hello world"
+]
+```
+
+The built-in `+`, `-`, `*`, `/`, `=`, `<`, etc. are all resolved through type class instances defined in the prelude.
+
 ---
 
 ## Error Handling
@@ -538,7 +676,7 @@ Standard injected caps (no declaration needed):
 
 - `%` — pipeline input (previous document's output)
 - `%libdir` — DirCap for stdlib directory
-- `%pwd` — DirCap for the working directory
+- `%cwd` — DirCap for the working directory
 
 Conditional caps (only when specific CLI flags are given):
 

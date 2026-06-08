@@ -9,4 +9,4 @@
 [Union types: "values"]
 
 === warn
-undefined variable: Union at 6:2-6:7
+undefined variable: Union

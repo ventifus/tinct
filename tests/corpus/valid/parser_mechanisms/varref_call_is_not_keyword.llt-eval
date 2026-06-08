@@ -5,6 +5,4 @@
 [call  f  x]
 
 === warn
-undefined variable: call at 2:2-2:7
-undefined variable: f at 2:8-2:9
-undefined variable: x at 2:10-2:11
+undefined variable: call

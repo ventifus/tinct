@@ -5,5 +5,4 @@
 [include "lib/utils.llt"]
 
 === warn
-cannot unify DirCap with "lib/utils.llt" at 1:10-1:25
-undefined variable: double at 3:11-3:17
+cannot unify DirCap with "lib/utils.llt"

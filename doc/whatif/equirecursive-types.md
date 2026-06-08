@@ -34,7 +34,7 @@ depth: [fn@Int [tree@TreeShape] ...]
 
 ### What's Missing
 
-1. `CheckerType = Node(Value)` — replaces the `Type` Rust enum; a thin wrapper around any TypeNode tinct value; `TypeVar` is `TypeNode.TypeVar name: String  level: Int` — a first-class TypeNode constructor, not a separate Rust variant
+1. `Type::Recursive { var: String, body: Box<Type> }` and `Type::RecursiveRef(String)` — two new variants added to the existing `Type` Rust enum. `CheckerType` is the permanent boundary between the type checker and the type-stage evaluator; `from_type` converts `Type` → TypeNode Value for type-stage eval; `typenode_value_to_type` converts back. The `Type` enum is NOT replaced — see §Architectural Note in §What Would Change.
 2. `TypeNode` nominal ADT with `Recursive { var: String  body: TypeNode }` and `RecursiveRef { name: String }` — equirecursive types' contribution to the primary type representation; body is a concrete TypeNode with `RecursiveRef(var)` at recursive positions, not a function
 3. General `@[...]` annotation syntax — attachable to top-level bindings, type alias declarations, constructor names in `[type ...]`, record field type declarations, `[class ...]` / `[instance ...]` / `[macro ...]` / `[let ...]` positions; uniform `IndexMap<String, Value>` storage; `Value::Annotated` wrapper for non-function values; `TyConDef.annotation` for type-level positions; `annotation-of` Rust builtin working across all sites
 4. `TypeNode.children`, `TypeNode.map-children`, and `TypeNode.as-type` protocol functions on the TypeNode dict — derived generically from `@Child` field annotations and constructor-level `as-type:`/`guarding:` annotations; no per-constructor implementations; requires `variant` Rust builtin for generic reconstruction; requires `object-map` in prelude (`[fn [let m f] [map-kv [fn [let k v] [pair k [f k v]]] m]]`)
@@ -204,9 +204,11 @@ process: [fn@Absent [tree@BinTree] ...]
 
 ### `TypeNode`: The Primary Type Representation
 
-`TypeNode` is the type system's primary representation. The type checker works directly on `TypeNode` values. `CheckerType` is simply `Node(Value)` — a thin wrapper with no separate variant for inference variables. TypeVar IS a TypeNode constructor (`TypeNode.TypeVar`), making it findable by `walk_type` and handled uniformly with all other TypeNode forms.
+`TypeNode` is the representation used by the **type-stage evaluator** — tinct code that computes and manipulates types at annotation resolution time. The type checker's internal representation is the `Type` Rust enum, which gains `Recursive` and `RecursiveRef` as new variants for equirecursive support.
 
-Equirecursive types contribute `Recursive`, `RecursiveRef`, and (foundationally) `TypeVar`. `Recursive` carries a `var` field — a globally unique gensym name generated at construction time by the `mu` combinator (via `gensym`) or by the expansion-stack resolver. This var is the sigma key used by S-Assum during subtype checking.
+`CheckerType` is the permanent boundary between these two worlds: `from_type` converts `Type` → TypeNode Value for type-stage eval; `typenode_value_to_type` converts back. The type checker never stores `CheckerType` internally — it works on `Type` throughout. `TypeVar` remains `Type::TypeVar` in the type checker; `TypeNode.TypeVar` is available in the type-stage evaluator for reflection only.
+
+`Recursive` carries a `var` field — a globally unique gensym name generated at construction time by the `mu` combinator (via `gensym`) or by the expansion-stack resolver. This var is the sigma key used by S-Assum during subtype checking.
 
 Each TypeNode constructor carries `as-type` and `guarding` in its constructor-level `@[...]` annotation. The traversal protocol (`children`, `map-children`) is derived automatically from field-level `@Child` annotations — no per-constructor implementation needed. `@Child` marks fields whose declared type contains TypeNode children; the traversal role is inferred from the field type (`TypeNode` → One, `[Seq TypeNode]` → Seq, `[Map K TypeNode]` → MapValues). Fields without `@Child` are non-children and pass through unchanged.
 
@@ -310,7 +312,26 @@ This requires three extensions, all specified in this proposal:
 
 **3. `annotation-of` reads the complete annotation dict** from both `Value::Function` (FnAnnotation) and TyConDef references — see General Annotation Syntax.
 
-**Adding a new TypeNode constructor** requires: (1) declare the constructor with `@[as-type: fn  guarding: Bool]` on the constructor name and `@Child` on the TypeNode-typed fields, (2) add explicit arms only to the four semantically-special walkers (`is_subtype_inner`, `unify`, `Substitution::apply`, `PartialEq`). All traversal walkers pick up the new constructor automatically — no `children:` function to write, no `map-children:` function to write.
+**Adding a new TypeNode constructor** requires only declaring it with the correct annotations:
+
+```tinct
+--- stage: type
+[
+  TypeNode: [merge TypeNode [
+    [MyNewType@[
+      guarding:  true                        # or false if non-guarding
+      as-type:   [fn [let t] t]             # identity if no normalization needed
+      subtype:   [fn [let a b sigma]        # open subtyping rule
+                   ...]
+      unify:     [fn [let a b subst]        # open unification rule
+                   ...]
+    ]
+      field@Child: TypeNode]]               # @Child marks TypeNode-typed fields
+  ]]
+]
+```
+
+All traversal walkers (`children`, `map-children`, `walk_type`, `expand_all_tycon_apps`) pick up the new constructor automatically via `@Child` annotations. The semantic walkers (`is_subtype_inner`, `unify`) dispatch to the `subtype:` and `unify:` annotations for unknown constructors — no Rust changes required.
 
 **`TypeNode.TypeConstructor` has two roles** that must be distinguished:
 
@@ -325,7 +346,9 @@ The `TypeNode.children`, `TypeNode.map-children`, and `TypeNode.as-type` protoco
 
 - **`TypeNode.children`** — flattens all `@Child` fields into a Seq, used by `walk_type` for pure structural traversal. No per-constructor implementation; role (One/Seq/MapValues) inferred from declared field type.
 - **`TypeNode.map-children`** — applies `f` to each `@Child` field and reconstructs the same-shaped variant, used by `expand_all_tycon_apps`. No per-constructor implementation; uses the `variant` Rust builtin for generic reconstruction.
-- **`TypeNode.as-type`** — normalizes user-defined TypeNode constructors to an existing form before the type checker applies subtyping or unification rules. Built-in constructors return themselves (identity). For open ADTs (see R-12), a user-defined constructor annotates its own `as-type` — ensuring soundness by construction.
+- **`TypeNode.as-type`** — normalizes user-defined TypeNode constructors to an existing form. Built-in constructors return themselves (identity). For constructors with distinct subtyping semantics, `as-type` returns `t` unchanged and the `subtype:` annotation handles dispatch.
+- **`subtype:` annotation** — `Fn@[pair Bool sigma] [TypeNode TypeNode sigma]`. Registered on the constructor; looked up via `annotation-of` for unknown constructors in `is_subtype_inner`. Known BAS constructors (Union, Intersect, Record, Arrow, Recursive, TypeVar) remain as explicit Rust arms (fast path). Unknown constructors fall through to type-stage eval via `annotation-of(ctor)["subtype:"]`. Sigma is threaded as an immutable dict (pair → bool) when crossing the Rust/tinct boundary.
+- **`unify:` annotation** — `Fn@[pair Bool subst] [TypeNode TypeNode subst]`. Same pattern as `subtype:` for unification.
 
 The Rust `walk_type` generic looks up `TypeNode.children` once at type-stage init time, then calls it per node:
 
@@ -367,10 +390,10 @@ All existing type-stage combinators (`or`, `record`, `arrow`, `seq`, `map`, etc.
 | `unfold_once` | No | — | `typenode_map_children` + RecursiveRef name predicate |
 | `contains_recvar` | No | — | `walk_type` + RecursiveRef name predicate |
 | `body_contains_tycon_ref` | No | — | `walk_type` + bare TypeConstructor tag predicate |
-| `is_subtype_inner` | Yes (2) | TypeVar, Recursive | TypeVar: gradual typing / subst lookup; Recursive: S-Assum + S-Exp |
-| `unify` | Yes (2) | TypeVar, Recursive | TypeVar: bind + occurs check; Recursive: 3 opening arms |
+| `is_subtype_inner` | Yes (2) + fallthrough | TypeVar, Recursive (fast path); unknown → `annotation-of(ctor)["subtype:"]` | TypeVar: gradual typing; Recursive: S-Assum + S-Exp; unknown constructors: open dispatch to type-stage eval |
+| `unify` | Yes (2) + fallthrough | TypeVar, Recursive (fast path); unknown → `annotation-of(ctor)["unify:"]` | TypeVar: bind + occurs check; Recursive: 3 opening arms; unknown constructors: open dispatch |
 | `Substitution::apply` | Yes (1) | TypeVar only | Subst lookup — all others handled by `typenode_map_children` |
-| `PartialEq` | Yes (1) | Recursive only | Structural equality: same `.var` name + same `body` (sufficient given globally unique gensym `.var` names) |
+| `PartialEq` | Yes (1) | Recursive only | Structural equality: same `.var` name + same `body` |
 
 **`collect_type_vars` reads level from `state.levels[name]`**, not from `payload["level"]`. The payload carries the creation-time level (fixed at `fresh_type_var()` call time); `state.levels` is the authoritative mutable current level (updated by level lowering). DICT-GEN generalization checks `state.levels[name] > enclosing_level` — always use `state.levels`, never the payload.
 
@@ -775,23 +798,41 @@ Explicit `mu` in annotation positions uses `[fn [let self] ...]` with `self` as 
 
 **Impact:** Moderate — new Value variant (transparent in most match arms); FnAnnotation extension; TyConDef annotation field; parser/desugar changes at each annotatable grammar position.
 
-### `src/type_def.rs` — `CheckerType` replaces `Type`
+### `src/type_def.rs` — Two new `Type` variants
 
-**Current:** The type checker operates on a `Type` Rust enum. `TypeNode` (tinct Value) is a separate format converted from `Type` during annotation resolution.
+### Architectural Note
 
-**Proposed:** `CheckerType` is simply `Node(Value)` — a thin wrapper with no separate variant:
+**The `Type` Rust enum is NOT replaced by `CheckerType`.** The type checker's internal state — `InferState`, `TypeScheme`, `TypeEnv.bindings`, `Substitution` — stays on the `Type` Rust enum. These require no thunk arenas and remain a pure Rust term algebra.
+
+`CheckerType` is the permanent boundary: `from_type` converts `Type` → TypeNode tinct Value when type-stage code needs to inspect or manipulate a type; `typenode_value_to_type` converts back.
+
+The original spec goal of "retire the `Type` enum" (T-1079–T-1082 in S-862) is **cancelled** — migrating InferState/Substitution to CheckerType was blocked by the arena access problem and is not needed for any user-facing feature.
+
+**User extensibility is preserved via annotation-based open dispatch.** `is_subtype_inner` and `unify` keep Rust fast-path arms for known BAS constructors (Union, Intersect, Record, Arrow, Recursive, TypeVar). For unknown/user-defined constructors, they fall through to type-stage eval and look up `subtype:` / `unify:` from `annotation-of(ctor)`. Users define new TypeNode constructors with full subtyping and unification semantics entirely in tinct — no Rust required. This does not require InferState to use CheckerType; TypeNode values are only passed across the boundary for the dispatch call.
+
+---
+
+**Current:** The type checker operates on a `Type` Rust enum with no equirecursive variants.
+
+**Proposed:** Add two new variants to `Type`:
 
 ```rust
-struct CheckerType(Value);   // every type is a TypeNode Value, including TypeVar
+// In src/type_def.rs — additions to the Type enum
+Type::Recursive { var: String, body: Box<Type> }
+// μ-binder. var is a globally unique gensym name (e.g. "𝜇ꜱʏᴍ⧼List⧽42").
+// body is a concrete Type tree with RecursiveRef(var) at recursive positions.
+
+Type::RecursiveRef(String)
+// Self-reference sentinel. The String is the var name of the enclosing Recursive.
+// Only appears inside a Recursive body; never reaches is_subtype_inner or unify
+// directly — unfolded by S-Exp before those sites are reached.
 ```
 
-The `Type` Rust enum is eliminated. `Substitution` maps TypeVar name `String → CheckerType`. All type checker operations take `CheckerType` (= `Node(Value)`) arguments — pattern match on the TypeNode variant tag using `typenode_tag(&value)`. All type forms, including `TypeVar`, are TypeNode values.
+Everything else in the type checker — `TypeScheme`, `TypeEnv.bindings`, `InferState.subst`, `Substitution`, `unify`, `is_subtype_inner`, builtin type signatures, the LSP TypeMap — continues to use `Type` unchanged.
 
-`TypeVar` has `name: String` (e.g. `"_t42"`) and `level: Int` (Kiselyov creation-time level). `state.levels` maps TypeVar name → level (unchanged). `fresh_type_var()` creates `Value::Variant { tag: "TypeNode.TypeVar", payload: { name: "_t42", level: current_level } }`. Substitution lookup: `subst.type_map.get(typevar_name)`.
+`is_subtype_inner` gains two new arms (S-Assum and S-Exp), each passing sigma. `unify` gains five new arms for the Recursive+TypeVar cases. `Substitution::apply` gains one new arm for TypeVar lookup; RecursiveRef passes through `typenode_map_children` correctly. `unfold_once` substitutes `RecursiveRef(var)` with the full `Recursive` node using `substitute_recvar`. All implemented in S-861 over `Type` directly.
 
-Pure-traversal walkers use `walk_type` dispatching through `TypeNode.children` — no exhaustive match, and TypeVars are found automatically since they are TypeNode Values. Only `is_subtype_inner`, `unify`, `Substitution::apply`, and `PartialEq` have explicit Rust arms — and fewer than before (see §Self-Hosted Type Traversal).
-
-**Impact:** Major — replaces `Type` enum with `CheckerType`. The actual migration scope is substantially larger than the ~40 match sites in `type_def.rs` and `type_unify.rs`. Full scope includes: `TypeScheme` (holds `Type` in its body field), `TypeEnv.bindings` (maps names to `TypeScheme`), `InferState.subst` (`Substitution` maps `String → Type`), builtin type signature registration in `builtins_core.rs` (~50 sites), `value_matches_type` in `eval_materialize.rs`, the LSP `TypeMap = HashMap<(usize,usize), Type>` public API, and all type normalisation functions in `type_normalize.rs`. Estimate: 150–200 affected sites across 10+ files. Migration must be incremental: introduce `CheckerType` alongside `Type`, migrate one subsystem at a time (annotation resolver → unifier → inference engine → builtins → LSP), retire `Type` last. Pure walkers simplified via `walk_type` once migration is complete.
+**Impact:** Two new match arms in every exhaustive match on `Type` (~20–30 sites). No arena access required. No migration of existing code.
 
 ### `src/type_env.rs` — Merged `TyConDef` (eliminates `TypeAlias`)
 
@@ -808,17 +849,15 @@ Migration: `insert_tycon_def` takes `Arc<TyConDef>`. Every `TyConDef { ... }` co
 ```rust
 pub struct TyConDef {
     /// Declared type parameter names (e.g., ["a", "k", "v"]).
-    /// In `body`, parameters appear as TypeNode.TypeConstructor(param_name) tokens — NOT TypeVars.
-    /// These are structural placeholders eliminated by expand_named at use sites.
+    /// In `body`, parameters appear as `Type::TypeVar` sentinels — distinct names from inference vars.
+    /// Eliminated by substitution in expand_named at use sites.
     pub params: Vec<String>,
 
-    /// Parametric TypeNode body. Parameter names appear as TypeNode.TypeConstructor(param_name)
-    /// tokens (unqualified, bare). Qualified TypeConstructor leaves (containing '.') are
-    /// constructor identity markers — never substituted.
+    /// Parametric Type body. Parameter names appear as `Type::TypeVar` with a distinct naming
+    /// convention (e.g. param prefix) to distinguish them from inference variables.
     ///
-    /// INVARIANT: body contains no CheckerType::Var (inference) variables.
-    /// Param tokens are TypeNode.TypeConstructor nodes (structural), not inference variables.
-    pub body: Value,   // TypeNode tinct Value
+    /// INVARIANT: body contains no inference TypeVars (those live in InferState.subst only).
+    pub body: Type,   // Type Rust enum — the type checker's internal representation
 
     /// Constructors for nominal ADTs: (qualified_tag, payload_arity).
     /// e.g., [("Color.Red", 0), ("Color.Green", 0)].

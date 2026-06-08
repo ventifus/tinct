@@ -1347,8 +1347,8 @@ impl TypeEnv {
     /// INNERMOST frame that has a match. Returns `None` if not found in any frame.
     ///
     /// Disambiguation: uses inner-wins semantics (same as TypeEnv bindings). If multiple TyCons
-    /// in the same frame have a constructor with the same unqualified name, the first match in
-    /// iteration order is returned (HashMap order; determinism not guaranteed for ambiguous cases).
+    /// in the same frame have a constructor with the same unqualified name, the lexicographically
+    /// first qualified tag is returned (B-363: deterministic resolution for coherence).
     pub fn resolve_constructor_tag(&self, name: &str) -> Option<String> {
         // Already qualified — no lookup needed.
         if name.contains('.') {
@@ -1356,6 +1356,10 @@ impl TypeEnv {
         }
 
         // Search the current frame first (inner-wins).
+        // B-363: collect all matches and pick the lexicographically smallest qualified tag
+        // to guarantee deterministic resolution when multiple TyCons in the same frame
+        // have a constructor with the same unqualified name.
+        let mut candidates: Vec<String> = Vec::new();
         for (tycon_name, def) in &self.tycon_defs {
             for (ctor_tag, _arity) in &def.constructors {
                 let unqualified = ctor_tag
@@ -1367,9 +1371,13 @@ impl TypeEnv {
                     } else {
                         format!("{}.{}", tycon_name, ctor_tag)
                     };
-                    return Some(qualified);
+                    candidates.push(qualified);
                 }
             }
+        }
+        if !candidates.is_empty() {
+            candidates.sort();
+            return Some(candidates.into_iter().next().unwrap());
         }
 
         // Walk the parent chain recursively if not found in current frame.

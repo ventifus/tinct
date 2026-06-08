@@ -3167,7 +3167,9 @@ pub fn process_deferred_equalities(state: &mut InferState, subst: &mut Substitut
                         state.diagnostics.push(crate::error::TypeDiagnostic {
                             message: format!(
                                 "deferred type equality failed: cannot unify {} with {} — {}",
-                                a_norm, b_norm, err.message()
+                                a_norm,
+                                b_norm,
+                                err.message()
                             ),
                             span: span.clone(),
                             code: crate::typecheck::typecheck_diag::T013_AMBIGUOUS_CONSTRAINT,

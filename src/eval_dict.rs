@@ -54,6 +54,19 @@ fn eval_annotation_property_dict(
             match &key_node.expr {
                 SurfaceExpression::Str(s) => Key::String(Rc::from(s.as_str())),
                 SurfaceExpression::Int(n) => Key::Int(*n),
+                // U64 values that fit in i64 are used as integer keys; larger values error.
+                SurfaceExpression::U64(n) => {
+                    if let Ok(i) = i64::try_from(*n) {
+                        Key::Int(i)
+                    } else {
+                        return Err(Box::new(EvalError::internal(
+                            format!(
+                                "u64 key {n} is too large for a dict integer key (max i64::MAX)"
+                            ),
+                            key_node.span.clone(),
+                        )));
+                    }
+                }
                 SurfaceExpression::VarRef { name, .. } => Key::String(Rc::from(name.as_str())),
                 _ => {
                     // For complex key expressions, we'd need to lower and evaluate
@@ -92,6 +105,10 @@ fn eval_annotation_property_dict(
                     Value::Int(*n),
                     entry.node.value.span.clone(),
                 )),
+                SurfaceExpression::U64(n) => Arc::new(Thunk::new_materialized(
+                    Value::U64(*n),
+                    entry.node.value.span.clone(),
+                )),
                 SurfaceExpression::Float(f) => Arc::new(Thunk::new_materialized(
                     Value::Float(*f),
                     entry.node.value.span.clone(),
@@ -117,6 +134,7 @@ fn eval_annotation_property_dict(
                 Some(k_node) => match &k_node.expr {
                     SurfaceExpression::Str(s) => s.clone(),
                     SurfaceExpression::Int(n) => n.to_string(),
+                    SurfaceExpression::U64(n) => n.to_string(),
                     SurfaceExpression::VarRef { name, .. } => name.clone(),
                     _ => "<computed key>".to_string(),
                 },
@@ -195,7 +213,11 @@ pub(crate) async fn eval_dict_core(
     let has_non_literal = entries.iter().any(|entry| {
         !matches!(
             &entry.node.value.node,
-            CoreExpr::Int(_) | CoreExpr::Float(_) | CoreExpr::Bool(_) | CoreExpr::Str(_)
+            CoreExpr::Int(_)
+                | CoreExpr::U64(_)
+                | CoreExpr::Float(_)
+                | CoreExpr::Bool(_)
+                | CoreExpr::Str(_)
         )
     });
 
@@ -250,6 +272,10 @@ pub(crate) async fn eval_dict_core(
         let value_thunk = match &entry.node.value.node {
             CoreExpr::Int(n) => Arc::new(Thunk::new_materialized(
                 Value::Int(*n),
+                entry.node.value.span.clone(),
+            )),
+            CoreExpr::U64(n) => Arc::new(Thunk::new_materialized(
+                Value::U64(*n),
                 entry.node.value.span.clone(),
             )),
             CoreExpr::Float(f) => Arc::new(Thunk::new_materialized(
@@ -346,6 +372,7 @@ pub(crate) async fn eval_dict_core(
                 Some(k_expr) => match &k_expr.node {
                     CoreExpr::Str(s) => s.clone(),
                     CoreExpr::Int(n) => n.to_string(),
+                    CoreExpr::U64(n) => n.to_string(),
                     CoreExpr::Annotated { name, .. } => name.clone(),
                     _ => "<computed key>".to_string(),
                 },
@@ -404,6 +431,17 @@ pub(crate) async fn eval_key_core(
     match &key_expr.node {
         CoreExpr::Str(s) => return Ok(Key::String(Rc::from(s.as_str()))),
         CoreExpr::Int(n) => return Ok(Key::Int(*n)),
+        // U64 keys that fit in i64 are used as integer keys; larger values error.
+        CoreExpr::U64(n) => {
+            if let Ok(i) = i64::try_from(*n) {
+                return Ok(Key::Int(i));
+            }
+            return Err(EvalError::internal(
+                format!("u64 key {n} is too large for a dict integer key (max i64::MAX)"),
+                key_expr.span.clone(),
+            )
+            .into());
+        }
         // Annotated keys (e.g., `name@[doc: "..."]`) always resolve to the bare name.
         // eval_core_expr for CoreExpr::Annotated already returns string_val(name);
         // skipping the thunk/materialize round-trip is both faster and avoids any

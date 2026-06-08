@@ -876,6 +876,7 @@ async fn expand_surface_expr_inner(
 
         // Leaf nodes — clone the Arc (shared immutable data)
         SurfaceExpression::Int(_)
+        | SurfaceExpression::U64(_)
         | SurfaceExpression::Float(_)
         | SurfaceExpression::Bool(_)
         | SurfaceExpression::Str(_)
@@ -938,6 +939,7 @@ fn validate_syntax_class_surface(
             let got_variant = match &arg.expr {
                 SurfaceExpression::VarRef { .. } => "VarRef",
                 SurfaceExpression::Int(_)
+                | SurfaceExpression::U64(_)
                 | SurfaceExpression::Float(_)
                 | SurfaceExpression::Bool(_)
                 | SurfaceExpression::Str(_) => "Literal",
@@ -991,6 +993,7 @@ fn validate_against_pattern_surface(
                     let got_variant = match &arg.expr {
                         SurfaceExpression::VarRef { .. } => "VarRef",
                         SurfaceExpression::Int(_)
+                        | SurfaceExpression::U64(_)
                         | SurfaceExpression::Float(_)
                         | SurfaceExpression::Bool(_)
                         | SurfaceExpression::Str(_) => "Literal",
@@ -1632,6 +1635,7 @@ fn pre_scan_surface_expr<'a>(
 
             // Leaf nodes — no children to scan
             SurfaceExpression::Int(_)
+            | SurfaceExpression::U64(_)
             | SurfaceExpression::Float(_)
             | SurfaceExpression::Bool(_)
             | SurfaceExpression::Str(_)

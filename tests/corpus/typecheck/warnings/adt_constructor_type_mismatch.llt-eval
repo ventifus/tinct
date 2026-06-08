@@ -13,5 +13,5 @@
 Dict({"Ok": Variant(Result.Ok, Null), "Error": Variant(Result.Error, Null), "ok-val": Variant(Result.Ok, Null), "err-val": Variant(Result.Error, Null), "mismatch": Bool(false)})
 
 === warn
-undefined variable: Error at 8:12-8:17
-type Fn@Ok [0: Error] does not satisfy constraint Equatable at 9:13-9:31
+[UndefinedVariable] undefined variable: Error
+[TypeError] type Fn@Ok [0: Error] does not satisfy constraint Equatable

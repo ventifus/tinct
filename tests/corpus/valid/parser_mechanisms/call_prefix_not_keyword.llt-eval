@@ -6,4 +6,4 @@
 [mycall f x]
 
 === warn
-undefined variable: mycall at 3:2-3:8
+undefined variable: mycall

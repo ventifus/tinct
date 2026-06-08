@@ -4562,6 +4562,7 @@ fn describe_surface_annotation_value(expr: &tinct::ast::SurfaceExpression) -> De
     match expr {
         tinct::ast::SurfaceExpression::Str(s) => DescribeJson::Str(s.clone()),
         tinct::ast::SurfaceExpression::Int(n) => DescribeJson::Int(*n),
+        tinct::ast::SurfaceExpression::U64(n) => DescribeJson::Int(*n as i64),
         tinct::ast::SurfaceExpression::Float(f) => DescribeJson::Float(*f),
         tinct::ast::SurfaceExpression::Bool(b) => DescribeJson::Bool(*b),
         tinct::ast::SurfaceExpression::VarRef { name, .. } => DescribeJson::Str(name.clone()),
