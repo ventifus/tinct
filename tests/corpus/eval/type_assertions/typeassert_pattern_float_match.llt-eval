@@ -1,0 +1,7 @@
+# [@Float x] pattern matches a Float scrutinee and binds x to the value.
+# Demonstrates TypeAssert pattern with Float type.
+[match 3.14
+  [@Float x]: x
+  _: -1.0]
+=== out
+Float(3.14)

@@ -1,0 +1,7 @@
+# [@String x] pattern matches a String scrutinee and binds x to the value.
+# Demonstrates TypeAssert pattern with String type (canonical name, not "Str" alias).
+[match "hello"
+  [@String x]: x
+  _: "no-match"]
+=== out
+String("hello")

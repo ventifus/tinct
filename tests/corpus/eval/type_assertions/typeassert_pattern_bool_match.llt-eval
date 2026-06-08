@@ -1,0 +1,10 @@
+# [@Bool x] pattern matches a Bool scrutinee and binds x to the value.
+# Demonstrates TypeAssert pattern with Bool type.
+[match true
+  [@Bool x]: x
+  _: false]
+=== out
+Bool(true)
+
+=== warn
+[TypeError] unreachable match arm: this pattern is already covered by prior arms

@@ -1,0 +1,16 @@
+# Nested match with TypeAssert patterns in both levels.
+# Demonstrates TypeAssert patterns work in nested match expressions.
+[
+  outer: [1 "hello" 3.14]
+  result: [match [get 1 outer]
+    [@String s]: [match [get 0 outer]
+      [@Int i]: [str i " and " s]
+      _: "no-int"]
+    _: "no-string"]
+]
+=== out
+Dict({"outer": Dict({0: Int(1), 1: String("hello"), 2: Float(3.14)}), "result": String("1 and hello")})
+
+=== warn
+[UnificationFailure] cannot unify Int with String
+[UnificationFailure] cannot unify Int with String

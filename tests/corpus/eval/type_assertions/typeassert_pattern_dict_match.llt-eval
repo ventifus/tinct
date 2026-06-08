@@ -1,0 +1,7 @@
+# [@Dict x] pattern matches a Dict scrutinee and binds x to the value.
+# Demonstrates TypeAssert pattern with Dict type.
+[match [a: 1  b: 2]
+  [@Dict x]: [get "a" x]
+  _: 0]
+=== out
+Int(1)

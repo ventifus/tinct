@@ -1,0 +1,9 @@
+# Multiple TypeAssert patterns in different match arms.
+# Demonstrates that TypeAssert patterns correctly discriminate between types.
+[
+  test-int:    [match 42       [@Int x]: "int"     [@String x]: "string"  _: "other"]
+  test-string: [match "hello"  [@Int x]: "int"     [@String x]: "string"  _: "other"]
+  test-float:  [match 3.14     [@Int x]: "int"     [@String x]: "string"  _: "other"]
+]
+=== out
+Dict({"test-int": String("int"), "test-string": String("string"), "test-float": String("other")})
