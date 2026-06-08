@@ -172,7 +172,7 @@ impl fmt::Display for CoveragePattern {
 /// coverage is advisory (warnings, not errors).
 ///
 /// Falls back to the unqualified `tag` if no matching TyCon is found (builtin or external type).
-fn qualify_nominal_tag(tag: &str, tycon_env: &TyConEnv) -> String {
+pub(crate) fn qualify_nominal_tag(tag: &str, tycon_env: &TyConEnv) -> String {
     tycon_env
         .iter()
         .find_map(|(tycon_name, def)| {
@@ -187,6 +187,45 @@ fn qualify_nominal_tag(tag: &str, tycon_env: &TyConEnv) -> String {
             }
         })
         .unwrap_or_else(|| tag.to_string())
+}
+
+/// Qualify any unqualified `Variant` tags in a `CoveragePattern` by looking them up in
+/// `tycon_env`. Recursively qualifies sub-patterns.
+///
+/// This is needed for traditional match arms (`Pattern::Constructor`) whose tags are stored
+/// unqualified (e.g., `"None"`) while the constructor signature uses qualified tags
+/// (e.g., `"Option.None"`). Without qualification, coverage checking incorrectly reports
+/// the arm as not covering `Option.None`.
+///
+/// Already-qualified tags (containing `.`) are left unchanged.
+pub(crate) fn qualify_coverage_pattern(
+    pat: CoveragePattern,
+    tycon_env: &TyConEnv,
+) -> CoveragePattern {
+    match pat {
+        CoveragePattern::Constructor { tag, sub_patterns } => {
+            let qualified_tag = match &tag {
+                ConstructorTag::Variant(name) if !name.contains('.') => {
+                    ConstructorTag::Variant(qualify_nominal_tag(name, tycon_env))
+                }
+                other => other.clone(),
+            };
+            let qualified_subs = sub_patterns
+                .into_iter()
+                .map(|p| qualify_coverage_pattern(p, tycon_env))
+                .collect();
+            CoveragePattern::Constructor {
+                tag: qualified_tag,
+                sub_patterns: qualified_subs,
+            }
+        }
+        CoveragePattern::Or(alts) => CoveragePattern::Or(
+            alts.into_iter()
+                .map(|p| qualify_coverage_pattern(p, tycon_env))
+                .collect(),
+        ),
+        CoveragePattern::Wildcard => CoveragePattern::Wildcard,
+    }
 }
 
 /// The complete constructor set for a type — used to determine when a match

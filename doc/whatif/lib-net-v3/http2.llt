@@ -569,6 +569,13 @@
 
   # Request-extraction: each Http2Connection yields its request substreams.
   http2-requests: [_ | [channel-flat-map http2-req-conn]]
+
+  # Combined: Channel@TlsConnection → Channel@RawRequest.
+  # Equivalent to: | h2-serve | http2-requests
+  # Mirrors http1-serve ergonomics — use this for the common server case.
+  # Use h2-serve + http2-requests separately only when you need the Http2Connection
+  # handle (e.g. for server push via h2-push).
+  http2-serve: [_ | h2-serve | http2-requests]
 ]
 
 # ── H2Layer typeclass — bidirectional h2 ─────────────────────────────────────

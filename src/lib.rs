@@ -595,8 +595,6 @@ pub fn typecheck_source(input: &str) -> Result<(), String> {
     // The type checker handles ADT constructor scoping via `inject_adt_constructor_schemes`
     // in typecheck_dict.rs (Pass 2), which gives constructors precise function types without
     // needing the surface-level injection that would conflict with [variant "..."] type inference.
-    // Variable resolution pass (Phase 1 of arena allocation strategy).
-    let _resolution_table = resolve::resolve_surface_program(&program);
     // Type check the surface program with prelude-seeded environment.
     let env = imports::build_prelude_env();
     let (type_errors, _type_map, _doc_map, _scheme_map, diagnostics) =
@@ -645,8 +643,6 @@ pub fn typecheck_source_errors_only(input: &str) -> Result<(), String> {
     // The type checker handles ADT constructor scoping via `inject_adt_constructor_schemes`
     // in typecheck_dict.rs (Pass 2), which gives constructors precise function types without
     // needing the surface-level injection that would conflict with [variant "..."] type inference.
-    // Variable resolution pass (Phase 1 of arena allocation strategy).
-    let _resolution_table = resolve::resolve_surface_program(&program);
     // Type check the surface program with prelude-seeded environment.
     let env = imports::build_prelude_env();
     let (type_errors, _type_map, _doc_map, _scheme_map, _diagnostics) =
@@ -2277,8 +2273,6 @@ mod tests {
         .expect("macro expansion failed");
         // Desugar after expansion so macros can introduce $_ patterns.
         desugar::desugar_surface_program(&mut program);
-        // Variable resolution pass (Phase 1 of arena allocation strategy).
-        let _resolution_table = resolve::resolve_surface_program(&program);
         let env = imports::build_prelude_env();
         let (type_errors, _type_map, _doc_map, _scheme_map, _diagnostics) =
             typecheck::typecheck_surface_program(&program, env);
@@ -2580,7 +2574,7 @@ mod tests {
         let input = r#"[call $emit "this should not appear"]"#;
         // typecheck_source only parses, expands, desugars, resolves, and type-checks.
         // It does not evaluate — so no emit side-effect fires.
-        let _result = typecheck_source_errors_only(input);
+        let _ = typecheck_source_errors_only(input);
         // If we reach here without IO side-effects, the test passes.
         // (Capturing stdout in a unit test would require infrastructure not worth adding.)
     }

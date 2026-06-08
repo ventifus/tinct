@@ -56,8 +56,6 @@ pub fn hover_at(
         .ok()?;
         // Desugar $_ implicit lambdas on SurfaceProgram
         crate::desugar::desugar_surface_program(&mut program);
-        // Variable resolution pass (Phase 1 of arena allocation strategy).
-        let _resolution_table = crate::resolve::resolve_surface_program(&program);
         let (seeded_env, _) = crate::imports::build_type_env(&program, None);
         let (_type_errors, block_type_map, block_doc_map, block_scheme_map, _diagnostics) =
             crate::typecheck::typecheck_surface_program(&program, seeded_env);
@@ -1431,8 +1429,6 @@ pub fn diagnostics_for(
                     }
                     // Desugar $_ implicit lambdas on SurfaceProgram
                     crate::desugar::desugar_surface_program(&mut program);
-                    // Variable resolution pass (Phase 1 of arena allocation strategy).
-                    let _resolution_table = crate::resolve::resolve_surface_program(&program);
 
                     // Type check
                     let (seeded_env, _) = crate::imports::build_type_env(&program, None);

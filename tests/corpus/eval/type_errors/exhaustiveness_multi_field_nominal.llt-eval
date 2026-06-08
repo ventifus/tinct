@@ -13,4 +13,4 @@
   result: 42
 ]
 === out
-inferred type is Unknown
+non-exhaustive match: missing coverage for [Shape.Square _]

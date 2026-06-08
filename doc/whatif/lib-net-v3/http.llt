@@ -4,7 +4,7 @@
 [include %libdir "net.llt"]
 [include %libdir "serve.llt"]
 [include %libdir "compress.llt"]
-[include %libdir "protocols/dns.llt"]   # for connect-host and dns-resolve
+[include %libdir "protocols/dns.llt"]   # for resolve, lookup-ips, resolve-address
 [include %include-dir "http1.llt"]
 [include %include-dir "http2.llt"]
 [include %include-dir "http3.llt"]
@@ -52,9 +52,17 @@
     [quic-connect cap [addr: addr  port: [@Port port]]
                   [sni: sni  alpn: ["h3"]  ech: ech  trust-roots: SystemRoots]]]
 
+  # tls-with-sni: wrap a TcpHandle into a TlsHandle with explicit SNI.
+  # Used when the TcpHandle.addr is an IP address (from SVCB IP hints) so automatic
+  # SNI inference from [Hostname h] is unavailable. Subject-last: TcpHandle is last.
+  # The handshake fires later when tls-commit is called (by h2, h3, or tls-commit directly).
+  tls-with-sni: [fn [let sni@String alpn@[Seq String] ech@Bytes trust-roots h@TcpHandle]
+    [TlsHandle [handle: h  sni: sni  alpn: alpn  ech: ech  trust-roots: trust-roots]]]
+
   tcp-h2-connect: [fn [let cap@NetCap sni@String addr@IpAddress port@Int ech@Bytes]
     [tcp-connect cap [addr: addr  port: [@Port port]]]
-      | [tls-layer sni [alpn: ["h2"]  ech: ech  trust-roots: SystemRoots]]]
+      | [tls-with-sni sni ["h2"] ech SystemRoots]
+      | tls-commit]
 
   scheme-default-port: [fn [let scheme@String]
     [match scheme "https": 443  "http": 80  _: 443]]
@@ -105,8 +113,9 @@
   resolve-svcb: [fn [let cap@NetCap host@String depth@Int]
     [if [> depth 3]
       null
-      [match [try [await [task [dns-resolve cap host DnsQtype.HTTPS]]]]
-        [Result.Ok records]:
+      [match [try [await [task [resolve cap DnsQtype.HTTPS host]]]]
+        [Result.Ok resp]:
+          [records: resp.answers]
           # RFC 9460 §3: AliasMode = prio 0; ServiceMode = prio > 0.
           # When multiple ServiceMode records exist, sort by priority (lowest first).
           [aliases:  [filter [fn [let r] [match r [dnsRecord.HttpsRecord prio: 0]: true _: false]] records]]
@@ -126,7 +135,10 @@
                 # RFC 9460 §8: verify mandatory param compliance before accepting ServiceMode record
                 # Known SvcParamKeys: 1=alpn, 3=port, 4=ipv4hint, 5=ech, 6=ipv6hint
                 [known-keys: [1 3 4 5 6]]
-                [mandatory-valid?: [all? [fn [let key] [any? [fn [let k] [= key k]] known-keys]] params.mandatory]]
+                # params.mandatory is [or [Seq Int] Absent] — Absent means no mandatory keys.
+                [mandatory-valid?: [match params.mandatory
+                  [Absent.Absent]: true
+                  [let mkeys]:     [all? [fn [let key] [any? [fn [let k] [= key k]] known-keys]] mkeys]]]
                 [if mandatory-valid?
                   SvcbRecord.ServiceMode
                     priority: prio
@@ -139,8 +151,8 @@
 
   http-connect: [fn [let cap@NetCap host@String port@Int]
     [svcb-task: [task [resolve-svcb cap host 0]]
-     v6-task:   [task [dns-resolve cap host DnsQtype.AAAA]]
-     v4-task:   [task [dns-resolve cap host DnsQtype.A]]]
+     v6-task:   [task [lookup-ips cap DnsQtype.AAAA host]]
+     v4-task:   [task [lookup-ips cap DnsQtype.A    host]]]
     [svcb: [match [async-timeout [millis 50] svcb-task]
       [Result.Ok r]: r  [Result.Error _]: null]]
     [match svcb
@@ -159,11 +171,11 @@
         [ech:          [match p.ech  [Absent.Absent]: [bytes 0]  [let e]: e]]
         [http-protocol-race cap connect-host use-port alpn [interleave v6 v4] ech]
       null:
+        # No SVCB — Happy Eyeballs TCP + TLS with H2/H1.1 ALPN negotiation.
         [addrs: [interleave
           [match [try [await v6-task]] [Result.Ok a]: a [Result.Error _]: []]
-          [await v4-task]]]
-        [raw: [happy-connect cap port addrs]]
-        [raw | [tls-layer sni: host  alpn: ["h2" "http/1.1"]  ech: []  trust-roots: SystemRoots]]]]
+          [match [try [await v4-task]] [Result.Ok a]: a [Result.Error _]: []]]]
+        [$addrs | [happy-connect cap port] | [tls-with-sni host ["h2" "http/1.1"] [] SystemRoots] | h2]]
 
   # fetch: high-level HTTP request. Returns [or RawResponse HttpError].
   # Transport failures (DNS, TCP, TLS) surface as NetError or TlsError from http-connect.

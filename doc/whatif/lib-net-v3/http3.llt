@@ -364,6 +364,13 @@
 
   # Request-extraction: each Http3Connection yields its request substreams.
   http3-requests: [_ | [channel-flat-map http3-req-conn]]
+
+  # Combined: Channel@QuicConnection → Channel@RawRequest.
+  # Equivalent to: | h3-serve | http3-requests
+  # Mirrors http1-serve ergonomics — use this for the common server case.
+  # Use h3-serve + http3-requests separately only when you need the Http3Connection
+  # handle (e.g. for QUIC stream-level control or h3-open-stream).
+  http3-serve: [_ | h3-serve | http3-requests]
 ]
 
 # H3FrameCodec: H3Frame ↔ Bytes (RFC 9114 §7 frame wire format).

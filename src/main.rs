@@ -2502,8 +2502,6 @@ async fn run_fmt(
         .map_err(|e| format!("{e}"))?;
         // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
         tinct::desugar::desugar_surface_program(&mut program);
-        // Variable resolution pass (Phase 1 of arena allocation strategy).
-        let _resolution_table = tinct::resolve::resolve_surface_program(&program);
         let env = tinct::build_prelude_env();
         let (type_errors, _type_map, _doc_map, _scheme_map, fmt_diagnostics) =
             tinct::typecheck::typecheck_surface_program(&program, env);
@@ -2653,8 +2651,6 @@ fn run_lint(
     .map_err(|e| format!("{e}"))?;
     // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
     tinct::desugar::desugar_surface_program(&mut program);
-    // Variable resolution pass (Phase 1 of arena allocation strategy).
-    let _resolution_table = tinct::resolve::resolve_surface_program(&program);
     // Type check with prelude environment
     let env = tinct::build_prelude_env();
     let (type_errors, _type_map, _doc_map, _scheme_map, diagnostics) =
@@ -3212,8 +3208,6 @@ fn run_literate_lint(tangled: &str, config: &LiterateConfig) -> Result<(), Strin
     // AST before resolve; lib.rs typecheck-only paths skip this because they run
     // typecheck_surface_program_with_env which already seeds from the prelude env. B-342
     tinct::desugar::inject_adt_constructors_surface_program(&mut program);
-    // Variable resolution pass (Phase 1 of arena allocation strategy).
-    let _resolution_table = tinct::resolve::resolve_surface_program(&program);
     // Type check with prelude environment
     let env = tinct::build_prelude_env();
     let (type_errors, _type_map, _doc_map, _scheme_map, diagnostics) =
@@ -4314,8 +4308,6 @@ fn run_describe(file_path: &str, json_mode: bool) -> Result<(), String> {
     .map_err(|e| format!("{e}"))?;
     // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
     tinct::desugar::desugar_surface_program(&mut program);
-    // Variable resolution pass (Phase 1 of arena allocation strategy).
-    let _resolution_table = tinct::resolve::resolve_surface_program(&program);
     // Type check to get DocMap (for doc strings)
     let env = tinct::build_prelude_env();
     let (_type_errors, _type_map, doc_map, _scheme_map, _diagnostics) =

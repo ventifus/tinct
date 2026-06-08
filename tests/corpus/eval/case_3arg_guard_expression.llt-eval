@@ -1,0 +1,5 @@
+[match 5
+  [case [let n] [> n 0] "positive"]
+  [case [let _] _ "other"]]
+=== out
+String("positive")

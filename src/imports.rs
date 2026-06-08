@@ -18,7 +18,6 @@ use crate::ast::{Span, SurfaceExpression, SurfaceNode, SurfaceProgram};
 use crate::desugar;
 use crate::expand;
 use crate::parser;
-use crate::resolve;
 use crate::typecheck::{typecheck_surface_program_with_env, TypeMap};
 use crate::types::{ClassEnv, InferState, InstanceEnv, Row, Type, TypeAlias, TypeEnv};
 
@@ -132,9 +131,6 @@ fn typecheck_and_merge_stdlib_module(
     // The type checker handles ADT constructor scoping via inject_adt_constructor_schemes
     // in typecheck_dict.rs (Pass 2), which exports constructors with precise NominalVariant
     // or Function types — far better than Unknown-typed [variant "..."] entries (B-296).
-
-    // Variable resolution pass (Phase 1 of arena allocation strategy).
-    let _res_table = resolve::resolve_surface_program(&program);
 
     // Type-check with the parent environment (builtins + prelude), capturing InferState
     // and the final TypeEnv (which holds properly generalized TypeSchemes for all prelude
@@ -1198,8 +1194,6 @@ fn resolve_includes(
         }
         // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
         desugar::desugar_surface_program(&mut program);
-        // Variable resolution pass (Phase 1 of arena allocation strategy).
-        let _resolution_table = resolve::resolve_surface_program(&program);
 
         // Type-check with the appropriate environment.
         // For %libdir files (stdlib modules), use the prelude TypeEnv as the baseline.

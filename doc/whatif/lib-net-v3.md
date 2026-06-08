@@ -54,7 +54,7 @@ There are no `with-*` wrappers, no `via` / `layer` adapters, no argument-flippin
 Network operations fail in predictable, distinguishable ways. `try` in tinct is for exceptional and unexpected failures; expected protocol failure modes return typed discriminated unions that callers can pattern-match directly. This is the Rust/Haskell model: one typed error union per subsystem, no string matching.
 
 ```tinct
-[match [dns-resolve cap host DnsQtype.A]
+[match [lookup-ips cap DnsQtype.A host]
   [Result.Ok addrs]:           [happy-connect cap port addrs]
   [DnsError.NXDomain name]:    [error [str "no such host: " name]]
   [DnsError.Timeout]:          [retry-with-tcp cap host]
@@ -991,13 +991,13 @@ my-codec: [fn [let raw-ch]
 ```tinct
 # stdlib/dns.llt
 
-dns-resolve: [fn [let resolver name type]
+query-via: [fn [let resolver name type]
   [await [resolver [name: name type: type id: [random-id]]]]]
 
-# All identical from dns-resolve's perspective:
-[dns-resolve udp-resolver  "example.com" A]
-[dns-resolve doh-resolver  "example.com" A]
-[dns-resolve dot-resolver  "example.com" A]
+# All identical from query-via's perspective — the resolver factory determines the transport:
+[query-via udp-resolver  "example.com" A]
+[query-via doh-resolver  "example.com" A]
+[query-via dot-resolver  "example.com" A]
 
 # Resolver factories — return Fn@[Task DnsResponse] [DnsQuery]
 # addr is a pre-resolved SocketAddress (resolver IPs come from system config, not DNS)
@@ -1019,9 +1019,11 @@ dns-https-resolver: [fn [let cap addr@SocketAddress sni@String path@String]
   [client: [h3-client [[connect cap Udp ep] | [quic-with-sni sni]]]]
   [fn [let q] [task [dns-https-send client q path]]]]
 
-# Server — loop is transport-agnostic; serve terminates any transport that yields DnsQuery
+# Server — loop is transport-agnostic; serve terminates any transport that yields DnsQuery.
+# This is a forwarding resolver: it looks up the query using the system resolver and responds.
 handle-query: [fn@[Task DnsResponse] [let q@DnsQuery]
-  [dns-lookup q.name q.type]]
+  [records: [resolve cap q.qtype q.name]]
+  [q.respond [DnsResponse rcode: DnsRcode.NoError  answers: records]]]
 
 [dns-udp-server net-cap 53]                         | [serve handle-query]
 [[tcp-listen net-cap 853] | [tls-serve cert]]       | [serve handle-query]
@@ -1229,7 +1231,7 @@ SvcParams: [type
 resolve-svcb: [fn [let cap@NetCap host@String depth@Int]
   [if [> depth 3]
     null
-    [match [try [await [task [dns-resolve cap host DnsQtype.HTTPS]]]]
+    [match [try [await [task [resolve cap DnsQtype.HTTPS host]]]]
       [Result.Ok records]:
         [aliases:  [filter [fn [let r] [match r [dnsRecord.HttpsRecord prio: 0]: true _: false]] records]]
         [services: [filter [fn [let r] [match r [dnsRecord.HttpsRecord prio: p]: [> p 0] _: false]] records]]
@@ -1255,8 +1257,8 @@ resolve-svcb: [fn [let cap@NetCap host@String depth@Int]
 # Races HTTPS record lookup against A/AAAA, then races h3/QUIC against h2/TCP.
 http-connect: [fn [let cap@NetCap host@String port@Int]
   [svcb-task: [task [resolve-svcb cap host 0]]
-   v6-task:   [task [dns-resolve cap host DnsQtype.AAAA]]
-   v4-task:   [task [dns-resolve cap host DnsQtype.A]]]
+   v6-task:   [task [lookup-ips cap DnsQtype.AAAA host]]
+   v4-task:   [task [lookup-ips cap DnsQtype.A    host]]]
 
   # Use same 50ms window as AAAA preference (RFC 8305 §5) — if SVCB arrives first, use it
   [svcb: [match [timeout [millis 50] svcb-task]
@@ -1353,7 +1355,7 @@ Each module is fully specified as a draft `.llt` file in [`doc/whatif/lib-net-v3
 | [`prelude.llt`](lib-net-v3/prelude.llt) | `stdlib/prelude.llt` (merged — additions to prelude) | `ByteStream` typeclass + `Handle` instance; `Seekable` typeclass + `SeekFrom`; `MessageStream` typeclass + `Channel@T` instance; `Codec` typeclass + `decode` (lazy Seq decoder); `Indexed` typeclass + `Bytes`/`Seq` instances |
 | [`net.llt`](lib-net-v3/net.llt) | `stdlib/net.llt` | IO typeclasses (`ByteStream`, `Datagram`, `MessageStream`, `Codec`, `Listener`, `Indexed`); `Transport` typeclass; `Protocol` typeclass (`fetch`); `HttpConnect` typeclass (`http-request`); `HttpStream` typeclass (`send`/`recv` — bidirectional request/response); `Multiplexed` typeclass (`substreams` — Channel of connections → Channel of subsubstreams); `IpAddress`, `Address`, `Port`, `SocketAddress`, `HostPort`; `TcpHandle`, `FileHandle`, `ConnectedUdp`; `tcp-listen`, `udp-bind`, `udp-ephemeral`, `listen-loop`, `ip->string`, `Url`, `parse-url`, `url-decode`. Rust boundary: `Handle` + `UdpSocket`. |
 | *(not yet written)* | `stdlib/codecs/json.llt` | `NdjsonCodec` (`Codec Any Bytes`) — NDJSON serialization with `\n` framing; used by `cli/out/json.llt` via `codec-stream` |
-| [`dns.llt`](lib-net-v3/dns.llt) | `stdlib/dns.llt` | `DnsQuery`, `DnsRecord`, `DnsResponse`, `Nameserver`, `DnsConfig`; `encode-dns-wire`, `decode-dns-wire`; resolver factories (`dns-udp-resolver`, `dns-tls-resolver`, `dns-https-resolver`, `dns-quic-resolver`); `dns-framed-send`; `resolve-address` (Happy Eyeballs address resolution for `Address`); `Transport Tcp` + `Transport Udp` instances (the `connect` typeclass method — lives here because it needs `dns-resolve`); `dns-resolve-host`, `dns-resolve`, `dns-resolve` (alias), `dns-server-loop` |
+| [`dns.llt`](lib-net-v3/dns.llt) | `stdlib/dns.llt` | `DnsQuery`, `DnsRecord`, `DnsResponse`, `Nameserver`, `DnsConfig`; `encode-dns-wire`, `decode-dns-wire`; resolver factories (`dns-udp-resolver`, `dns-tls-resolver`, `dns-https-resolver`, `dns-quic-resolver`); `dns-framed-send`; `resolve-address` (Happy Eyeballs address resolution for `Address`); `Transport Tcp` + `Transport Udp` instances (live here because they need `lookup-ips`); `resolve` (raw DNS records, any qtype); `lookup-ips` (IPs from A/AAAA, follows CNAMEs); `dns-server-loop` |
 | [`tls13.llt`](lib-net-v3/tls13.llt) | `stdlib/protocols/tls13.llt` | `TlsLayer` typeclass (`tls` — bidirectional: client `TcpHandle→TlsHandle`, server `TlsServerConfig→fn`); `TlsHandle`, `TlsServerConfig`, `TlsClientConfig`, `CipherSuite`, `TlsConnection`; `tls-commit`, `with-alpn`, `tls-handshake`; `hkdf-expand-label`, `derive-secret`, `tls13-key-schedule`; `tls-accept`, `tls-serve` |
 | [`quic.llt`](lib-net-v3/quic.llt) | `stdlib/protocols/quic.llt` | `QuicLayer` typeclass (`quic` — bidirectional: client `ConnectedUdp→QuicHandle`, server `UdpSocket→Channel@QuicConnection`); `Multiplexed QuicConnection QuicStream` instance (`substreams`); `QuicFrame`, `QuicConnection`, `QuicKeys`, `QuicLossState`, `QuicHandle`; `quic-commit`, `with-alpn`; `quic-connect` (sugar); `quic-open-stream` |
 | [`http2.llt`](lib-net-v3/http2.llt) | `stdlib/protocols/http2.llt` | `H2Layer` typeclass (`h2` — bidirectional: client `TlsHandle→Http2Connection`, server `Channel@TlsConnection→Channel@Http2Connection`); `HttpStream Http2Connection` instance (`send`/`recv`); `Multiplexed Http2Connection H2Stream` instance (`substreams`); `H2Frame`, `HpackTable`, `Http2Connection`; `hpack-decode`, `hpack-encode`; `h2-accept`; `http-request`; `HpackCodec`, `H2FrameCodec` |

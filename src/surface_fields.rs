@@ -242,10 +242,19 @@ pub fn surface_node_get_field(
         }
 
         // --- CaseArm ---
-        (SurfaceExpression::CaseArm { let_bindings: Some(lb), .. }, "let_bindings") => {
-            Value::Expression(Arc::clone(lb))
-        }
-        (SurfaceExpression::CaseArm { let_bindings: None, .. }, "let_bindings") => null(),
+        (
+            SurfaceExpression::CaseArm {
+                let_bindings: Some(lb),
+                ..
+            },
+            "let_bindings",
+        ) => Value::Expression(Arc::clone(lb)),
+        (
+            SurfaceExpression::CaseArm {
+                let_bindings: None, ..
+            },
+            "let_bindings",
+        ) => null(),
         (SurfaceExpression::CaseArm { pattern, .. }, "pattern") => {
             Value::Expression(Arc::clone(pattern))
         }

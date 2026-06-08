@@ -1,0 +1,7 @@
+# @[is: pred] annotated binding: predicate evaluates, arm fires if pred returns truthy.
+# n@[is: [fn [let x] [> x 10]]]: n binds to 42, predicate [> 42 10] = true, arm fires.
+[match 42
+  [case [let n@[is: [fn [let x] [> x 10]]]] _ n]
+  [case [let _] _ "small"]]
+=== out
+Int(42)

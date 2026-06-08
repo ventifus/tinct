@@ -7,6 +7,3 @@
   [case [let _] _ 0]]
 === out
 Int(42)
-
-=== warn
-[TypeError] unreachable match arm: this pattern is already covered by prior arms

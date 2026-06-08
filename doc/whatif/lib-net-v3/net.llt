@@ -249,7 +249,7 @@
 
   # Transport typeclass: protocol type p determines connection type c.
   # determines: [p → c] is a functional dependency: given p, c is uniquely determined.
-  # Transport instances live in dns.llt (they need dns-resolve for [Hostname h]).
+  # Transport instances live in dns.llt (they need lookup-ips for [Hostname h]).
   #
   # HostPort is the subject (last) — subject-last enables partial application:
   #   [connect %net Tcp]   → Fn@TcpHandle [HostPort]

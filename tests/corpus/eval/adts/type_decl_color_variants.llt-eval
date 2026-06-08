@@ -12,6 +12,3 @@
 ]
 === out
 Dict({"Color": Variant(Color, Null), "Red": Variant(Red, Null), "Green": Variant(Green, Null), "Blue": Variant(Blue, Null), "c": Variant(Red, Null), "name": String("red")})
-
-=== warn
-[TypeError] non-exhaustive match: missing coverage for Color.Red

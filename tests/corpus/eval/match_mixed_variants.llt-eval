@@ -20,7 +20,3 @@
 ]
 === out
 Dict({"Option": Variant(Option, Null), "Some": Function(payload), "None": Variant(None, Null), "x": Variant(Some, Seq(Int(10), ...)), "y": Variant(None, Null), "result1": Seq(Int(10), ...), "result2": Int(0), "both": Seq(Seq(Int(10), ...), ...)})
-
-=== warn
-[TypeError] unreachable match arm: this pattern is already covered by prior arms
-[TypeError] unreachable match arm: this pattern is already covered by prior arms

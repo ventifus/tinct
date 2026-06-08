@@ -1,6 +1,6 @@
 # stdlib/protocols/dns.llt — DNS wire format, resolver factories, name resolution.
 # Part of: lib-net-v3
-# Exports dns-resolve-host and dns-resolve. Include this directly when DNS resolution is needed.
+# Exports resolve (raw records) and lookup-ips (addresses). Include this directly when DNS resolution is needed.
 
 [include %libdir "net.llt"]
 [include %libdir "protocols/quic.llt"]   # quic-connect, quic-open-stream (DoQ resolver)
@@ -225,25 +225,56 @@
     [OverQuota                code: 32  description: "Over Quota"                       doc: "RFC 8914"]]
 
   dnsResponse: [type
-    [id:         Int
-     rcode:      dnsRcode
-     answers:    [Seq dnsRecord]
-     authority:  [Seq dnsRecord]
-     additional: [Seq dnsRecord]
-     truncated:  Bool]]
+    [id:         Int               # 16-bit message ID — matches the query id
+     rcode:      dnsRcode          # response code (4 bits + EDNS extended rcode)
+     answers:    [Seq dnsRecord]   # answer section (direct answers to the query)
+     authority:  [Seq dnsRecord]   # authority section (NS records, SOA for NXDOMAIN)
+     additional: [Seq dnsRecord]   # additional section (glue A/AAAA, EDNS OPT record)
+     # Response header flags:
+     aa:         Bool              # Authoritative Answer — true if from the authoritative server
+     tc:         Bool              # Truncated — response was cut short (retry over TCP)
+     rd:         Bool              # Recursion Desired — echoed from the query
+     ra:         Bool              # Recursion Available — resolver supports recursion
+     ad:         Bool              # Authentic Data — DNSSEC validation was performed
+     cd:         Bool]]            # Checking Disabled — echoed from the query
 
   dnsQuery: [type
-    [id:        Int
-     name:      DnsName    # the query name (e.g. "example.com." or "example.com")
-     qtype:     dnsQtype
-     recursive: Bool
-     respond:   [or [Fn [dnsResponse] Null] Null]]]
+    [id:        Int               # 16-bit message ID (matches in the response)
+     name:      DnsName           # query name (e.g. "example.com." or "example.com")
+     qtype:     dnsQtype          # query type
+     qclass:    dnsClass          # query class (almost always IN; CH for chaos queries)
+     # DNS header flags:
+     rd:        Bool              # Recursion Desired (true = ask resolver to recurse)
+     do:        Bool              # EDNS0 DNSSEC OK — request DNSSEC records in response
+     cd:        Bool              # Checking Disabled — bypass DNSSEC validation at resolver
+     ad:        Bool              # Authentic Data — request DNSSEC-validated result
+     # Transport hints (consumed by dns-try-servers, not encoded in the DNS wire message):
+     tcp:       Bool              # force TCP transport (port 53, no TLS); required for AXFR
+     edns:      Bool              # include EDNS0 OPT record (set false for old resolvers)
+     bufsize:   Int@[is: [between 512 65535]]  # EDNS UDP payload size; RFC 6891 §6.2.3: min 512, max 65535
+     ignore-tc: Bool              # accept truncated UDP response; skip TCP retry (dig +ignore)
+     respond:   [or [Fn [dnsResponse] Null] Null]]]  # server-side response callback
+
+  # dnsQueryOpts: the full set of options that control how a DNS query is constructed
+  # and sent. Passed from resolve → try-records → make-query.
+  # All fields are required — the record is always fully populated.
+  dnsQueryOpts: [type
+    [qclass:    dnsClass   # QCLASS (usually IN; CH for chaos queries like version.bind)
+     rd:        Bool       # Recursion Desired
+     do:        Bool       # EDNS0 DNSSEC OK bit
+     cd:        Bool       # Checking Disabled (bypass DNSSEC validation at resolver)
+     ad:        Bool       # Authentic Data (request DNSSEC-validated result)
+     tcp:       Bool       # force TCP transport (port 53, no TLS); required for AXFR
+     edns:      Bool       # include EDNS0 OPT record (false = RFC 1035 plain query)
+     bufsize:   Int@[is: [between 512 65535]]  # EDNS UDP payload size; RFC 6891 §6.2.3: min 512, max 65535
+     ignore-tc: Bool]]     # accept truncated UDP; skip TCP retry (maps to dig +ignore)
 
   nameserver: [type
-    [UdpNameserver  addr@SocketAddress]
-    [DotNameserver  addr@SocketAddress  sni@String]
-    [DohNameserver  addr@SocketAddress  sni@String  path@String]
-    [DoqNameserver  addr@SocketAddress  sni@String]]
+    [UdpNameserver  addr@SocketAddress]                          # UDP/53 — standard
+    [TcpNameserver  addr@SocketAddress]                          # raw TCP/53 (no TLS); for AXFR and tcp: true
+    [DotNameserver  addr@SocketAddress  sni@String]              # DNS-over-TLS (port 853)
+    [DohNameserver  addr@SocketAddress  sni@String  path@String] # DNS-over-HTTPS
+    [DoqNameserver  addr@SocketAddress  sni@String]]             # DNS-over-QUIC (port 853)
 
   dnsConfig: [type
     [nameservers:    [Seq nameserver]
@@ -306,23 +337,35 @@
   rotate-list: [fn [let xs]
     [match xs [] [] [let [h ...t]]: [append [list h] t]]]
 
+  # dns-try-servers: try each nameserver in turn, retrying on SERVFAIL or error.
+  # q: a fully-constructed dnsQuery (id, name, qtype, qclass, flags, transport hints).
+  # When q.tcp: true, uses dns-tcp-resolver regardless of the nameserver's protocol.
+  # When TC=1 and q.ignore-tc: false, retries the same server over TCP automatically.
   dns-try-servers: [fn [let cap@NetCap servers@[Seq nameserver]
-                         name@String qtype@dnsQtype remaining@Int timeout@Duration]
+                         q@dnsQuery remaining@Int timeout@Duration]
     [if [= remaining 0]
       dnsError.ServerFailure
       [match servers
         []: dnsError.ServerFailure
         [let [ns ...rest]]:
-          [resolver: [ns-to-resolver cap ns]]
-          [match [try [await [timeout timeout [resolver
-                  dnsQuery.dnsQuery id: [uint16 NetworkEndian [crypto-random 2]]  name: name
-                                    qtype: qtype  recursive: true  respond: null]]]]
+          # If q.tcp forced, use TCP resolver regardless of nameserver protocol;
+          # for UDP nameservers only — TcpNameserver/DoT/DoH/DoQ already use reliable transports.
+          [resolver: [match [if q.tcp [nameserver.TcpNameserver [addr: ns.addr]] ns]
+            [nameserver.UdpNameserver _]: [dns-tcp-resolver cap ns.addr]  # TCP override
+            _:                           [ns-to-resolver cap ns]]]        # keep native transport
+          [match [try [await [timeout timeout [resolver q]]]]
             [Result.Ok resp]:
               [match resp.rcode
-                [dnsRcode.ServFail]: [dns-try-servers cap rest name qtype [- remaining 1] timeout]
+                [dnsRcode.ServFail]: [dns-try-servers cap rest q [- remaining 1] timeout]
                 [dnsRcode.NotImpl]:  dnsError.NotImplemented
-                _:                   resp]
-            [Result.Error _]: [dns-try-servers cap rest name qtype [- remaining 1] timeout]]]]]
+                _:
+                  # TC=1: truncated UDP response — retry over TCP unless q.ignore-tc
+                  [if [and resp.tc [not q.ignore-tc] [match ns [nameserver.UdpNameserver _]: true _: false]]
+                    [match [try [await [timeout timeout [[dns-tcp-resolver cap ns.addr] q]]]]
+                      [Result.Ok tcp-resp]: tcp-resp
+                      [Result.Error _]:     resp]   # TCP retry failed — return truncated response
+                    resp]]
+            [Result.Error _]: [dns-try-servers cap rest q [- remaining 1] timeout]]]]]
 
   candidate-names: [fn [let host@String search@[Seq String] ndots@Int]
     [if [ends-with? "." host]
@@ -336,38 +379,100 @@
           [append [list absolute] searched]]]]]
 
   dns-query-with-retry: [fn [let cap@NetCap nameservers@[Seq Nameserver]
-                              name@String qtype@DnsQtype
-                              attempts@Int rotate@Bool timeout@Duration]
+                              q@DnsQuery attempts@Int rotate@Bool timeout@Duration]
     [dns-try-servers cap [if rotate [rotate-list nameservers] nameservers]
-                     name qtype attempts timeout]]
+                     q attempts timeout]]
 
-  dns-try-names: [fn [let cap@NetCap config@dnsConfig names@[Seq String] qtype@dnsQtype
-                       cname-depth@[type: Int  default: 0]]
+  # make-query: construct a dnsQuery from a candidate name string and an opts dict.
+  # opts is always a fully-populated dict (resolve fills all fields from its params,
+  # try-ips passes std-opts with every field set). Read fields directly — no guards needed.
+  #
+  # If make-query is ever called with a partial opts dict, use get?+absent? for
+  # boolean fields that default to true (rd, edns), since [or false true] = true
+  # and would override an explicit false:
+  #   rd: [let v [get? "rd" opts]] [if [absent? v] true v]
+  make-query: [fn [let name@String qtype@dnsQtype opts@dnsQueryOpts]
+    [dnsQuery.dnsQuery
+      id:        [uint16 NetworkEndian [crypto-random 2]]
+      name:      [parse-dns-name-str name]
+      qtype:     qtype
+      qclass:    opts.qclass
+      rd:        opts.rd
+      do:        opts.do
+      cd:        opts.cd
+      ad:        opts.ad
+      tcp:       opts.tcp
+      edns:      opts.edns
+      bufsize:   opts.bufsize
+      ignore-tc: opts.ignore-tc
+      respond:   null]]
+
+  # try-records: run the ndots+search candidate loop; return the full DnsResponse
+  # from the first name that resolves. No CNAME following, no IP extraction.
+  # Used by the public `resolve` function.
+  try-records: [fn [let cap@NetCap config@dnsConfig names@[Seq String] qtype@dnsQtype opts@dnsQueryOpts]
     [match names
       []: dnsError.ServerFailure
       [let [name ...rest]]:
-        [match [try [dns-query-with-retry cap config.nameservers name qtype
+        [q: [make-query name qtype opts]]
+        [match [try [dns-query-with-retry cap config.nameservers q
                                          config.attempts config.rotate config.timeout]]
           [Result.Ok resp]:
             [match resp.rcode
-              [dnsRcode.NXDomain]: [dns-try-names cap config rest qtype cname-depth]
+              [dnsRcode.NXDomain]: [try-records cap config rest qtype opts]
               [dnsRcode.Refused]:  dnsError.Refused
               [dnsRcode.NotImpl]:  dnsError.NotImplemented
-              _:                   [records->addrs resp.answers qtype cap cname-depth]]
-          [Result.Error _]: [dns-try-names cap config rest qtype cname-depth]]]]
+              _:                   resp]    # full DnsResponse
+          [Result.Error _]: [try-records cap config rest qtype opts]]]]
 
-  # cname-depth: current CNAME chain depth; error at 8 per RFC 1034 §3.6.2 guidance.
-  records->addrs: [fn [let records@[Seq dnsRecord] qtype@dnsQtype cap@NetCap cname-depth@[type: Int  default: 0]]
-    [if [>= cname-depth 8]
+  # try-ips: run the ndots+search candidate loop; extract IPs from the first name
+  # that resolves, following CNAMEs only when the recursive resolver didn't flatten them.
+  # Used by the public `lookup-ips` function. Always uses standard opts (IN, rd=true, no DNSSEC).
+  try-ips: [fn [let cap@NetCap config@dnsConfig names@[Seq String] qtype@dnsQtype]
+    [std-opts: [@dnsQueryOpts
+               [qclass: dnsClass.IN  rd: true  do: false  cd: false  ad: false
+                tcp: false  edns: true  bufsize: 1232  ignore-tc: false]]]
+    [match names
+      []: dnsError.ServerFailure
+      [let [name ...rest]]:
+        [q: [make-query name qtype std-opts]]
+        [match [try [dns-query-with-retry cap config.nameservers q
+                                         config.attempts config.rotate config.timeout]]
+          [Result.Ok resp]:
+            [match resp.rcode
+              [dnsRcode.NXDomain]: [try-ips cap config rest qtype]
+              [dnsRcode.Refused]:  dnsError.Refused
+              [dnsRcode.NotImpl]:  dnsError.NotImplemented
+              _:
+                [ips: [extract-ips resp.answers qtype cap 0]]
+                [if [empty? ips]
+                  [try-ips cap config rest qtype]   # no IPs in answer — try next candidate
+                  ips]]
+          [Result.Error _]: [try-ips cap config rest qtype]]]]
+
+  # extract-ips: pull IP addresses from an answer section.
+  # Only follows CNAME records when the answer contains NO IPs — recursive resolvers
+  # include final A/AAAA records alongside any CNAMEs, so this path fires only when
+  # talking to an authoritative server that returned a bare CNAME.
+  extract-ips: [fn [let records@[Seq dnsRecord] qtype@dnsQtype cap@NetCap depth@Int]
+    [if [>= depth 8]
       [error "DNS: CNAME chain too long (max 8)"]
+      [has-ips?: [any? [fn [let r]
+        [match r
+          [dnsRecord.ARecord _]:    [= qtype dnsQtype.A]
+          [dnsRecord.AAAARecord _]: [= qtype dnsQtype.AAAA]
+          _: false]] records]]
       [flat-map [fn [let r]
         [match r
           [dnsRecord.ARecord     addr: addr]: [if [= qtype dnsQtype.A]    [list addr] []]
           [dnsRecord.AAAARecord  addr: addr]: [if [= qtype dnsQtype.AAAA] [list addr] []]
           [dnsRecord.CNameRecord name: name]:
-            [match [try [dns-try-names cap %dns [list [str name "."]] qtype [+ cname-depth 1]]]
-              [Result.Ok addrs]: addrs
-              [Result.Error _]:  []]
+            # Only recurse if the answer has no IPs — recursive resolvers already flattened it.
+            [if has-ips?
+              []
+              [match [try [lookup-ips cap qtype [str name "."]]]
+                [Result.Ok addrs]: addrs
+                [Result.Error _]:  []]]
           _: []]]
        records]]]
 
@@ -545,20 +650,58 @@
   # msg: the full DNS message bytes, needed for name decompression during decode.
   # For bytes produced by encode (uncompressed names), pass the rr-bytes itself as msg.
   DnsRecordCodec: [type [msg: Bytes]]
-  DnsQuery:    dnsQuery
-  DnsResponse: dnsResponse
-  Nameserver:  nameserver
-  DnsConfig:   dnsConfig
+  DnsQuery:     dnsQuery
+  DnsResponse:  dnsResponse
+  DnsQueryOpts: dnsQueryOpts   # options for resolve: class, rd, do, cd, ad, tcp, edns, bufsize, ignore-tc
+  Nameserver:   nameserver
+  DnsConfig:    dnsConfig
 
+  # Encode a DnsQuery to DNS wire format (RFC 1035 §4, RFC 6891 EDNS0).
+  # Always includes an EDNS0 OPT record (arcount=1) — signals EDNS0 support,
+  # enables larger UDP responses (1232-byte payload per DNS Flag Day 2020), and
+  # carries the DO bit for DNSSEC. The OPT record is in the additional section.
+  #
+  # Flags word (16-bit, RFC 1035 §4.1.1):
+  #   QR=0 (query) | OPCODE=0000 (Query) | AA=0 | TC=0 | RD | RA=0 | Z=0 | AD | CD | RCODE=0000
+  # Encode a DnsQuery to DNS wire format (RFC 1035 §4, RFC 6891 EDNS0).
+  # When q.edns: includes an EDNS0 OPT record (arcount=1) with q.bufsize UDP payload
+  # and the DO bit from q.do. When q.edns=false: no OPT record (arcount=0).
+  #
+  # Flags word (16-bit, RFC 1035 §4.1.1):
+  #   QR=0 | OPCODE=0000 | AA=0 | TC=0 | RD | RA=0 | Z=0 | AD | CD | RCODE=0000
   encode-dns-wire: [fn [let q@DnsQuery]
-    [concat
-      [bytes NetworkEndian [@UInt16 q.id]]
-      [bytes NetworkEndian [@UInt16 [if q.recursive 0x0100 0x0000]]]
-      [bytes NetworkEndian [@UInt16 1]]  [bytes NetworkEndian [@UInt16 0]]
-      [bytes NetworkEndian [@UInt16 0]]  [bytes NetworkEndian [@UInt16 0]]
+    [flags: [bor [if q.rd 0x0100 0x0000]    # bit 8: Recursion Desired
+                 [if q.ad 0x0020 0x0000]    # bit 5: Authentic Data
+                 [if q.cd 0x0010 0x0000]]]  # bit 4: Checking Disabled
+    [question: [concat
       [encode-dns-name q.name]
       [bytes NetworkEndian [@UInt16 q.qtype.code]]
-      [bytes NetworkEndian [@UInt16 1]]]]
+      [bytes NetworkEndian [@UInt16 q.qclass.code]]]]
+    [if q.edns
+      # With EDNS0 OPT record (RFC 6891 §6):
+      [block
+        [edns-flags: [if q.do 0x8000 0x0000]]   # bit 15 of extended TTL = DO
+        [opt-rr: [concat
+          [bytes NetworkEndian [@UInt8  0x00]]                   # root label (.)
+          [bytes NetworkEndian [@UInt16 41]]                     # type OPT
+          [bytes NetworkEndian [@UInt16 q.bufsize]]              # class = UDP payload size
+          [bytes NetworkEndian [@UInt8  0]]                      # extended RCODE = 0
+          [bytes NetworkEndian [@UInt8  0]]                      # EDNS version = 0
+          [bytes NetworkEndian [@UInt16 edns-flags]]             # extended flags (DO bit)
+          [bytes NetworkEndian [@UInt16 0]]]]                    # RDLENGTH = 0
+        [concat
+          [bytes NetworkEndian [@UInt16 q.id]]
+          [bytes NetworkEndian [@UInt16 flags]]
+          [bytes NetworkEndian [@UInt16 1]]  [bytes NetworkEndian [@UInt16 0]]  # QDCOUNT=1 ANCOUNT=0
+          [bytes NetworkEndian [@UInt16 0]]  [bytes NetworkEndian [@UInt16 1]]  # NSCOUNT=0 ARCOUNT=1
+          question opt-rr]]
+      # Without EDNS0: plain RFC 1035 query
+      [concat
+        [bytes NetworkEndian [@UInt16 q.id]]
+        [bytes NetworkEndian [@UInt16 flags]]
+        [bytes NetworkEndian [@UInt16 1]]  [bytes NetworkEndian [@UInt16 0]]    # QDCOUNT=1 ANCOUNT=0
+        [bytes NetworkEndian [@UInt16 0]]  [bytes NetworkEndian [@UInt16 0]]    # NSCOUNT=0 ARCOUNT=0
+        question]]]
 
   # RFC 1035 §4 DNS wire format decoder.
   # Algorithm:
@@ -719,7 +862,12 @@
          nscount:   [uint16 NetworkEndian [slice b 8 10]]
          arcount:   [uint16 NetworkEndian [slice b 10 12]]
          rcode-int: [band flags 0x000F]
-         truncated: [= [band [shr flags 9] 1] 1]]
+         aa:        [= [band [shr flags 10] 1] 1]   # bit 10: Authoritative Answer
+         tc:        [= [band [shr flags  9] 1] 1]   # bit 9:  Truncated
+         rd:        [= [band [shr flags  8] 1] 1]   # bit 8:  Recursion Desired (echoed)
+         ra:        [= [band [shr flags  7] 1] 1]   # bit 7:  Recursion Available
+         ad:        [= [band [shr flags  5] 1] 1]   # bit 5:  Authentic Data (DNSSEC)
+         cd:        [= [band [shr flags  4] 1] 1]]  # bit 4:  Checking Disabled (echoed)
         [rcode: [or [get rcode: rcode-int dnsRcode] dnsRcode.ServFail]]
         # §4.1.2: Skip question section — each question is: name + qtype(2) + qclass(2)
         [skip-questions: [fn [let offset n]
@@ -739,7 +887,12 @@
           answers:    an-result.records
           authority:  ns-result.records
           additional: ar-result.records
-          truncated:  truncated]]]]]
+          aa:         aa
+          tc:         tc
+          rd:         rd
+          ra:         ra
+          ad:         ad
+          cd:         cd]]]]]
 
   # Encode all records in one section, threading the compression table and offset.
   # Returns {bytes: Bytes  offset: Int  table: [Map DnsName Int]}.
@@ -804,9 +957,18 @@
       [Result.Ok r]:    r
       [Result.Error e]: [error [str "dns-framed: " e]]]]
 
+  # dns-tcp-resolver: raw TCP/53 resolver (no TLS). Uses dns-framed-send for the 2-byte
+  # length-prefix framing required by DNS-over-TCP (RFC 1035 §4.2.2).
+  # Used when q.tcp: true, or when TC=1 (truncated) retry is needed.
+  dns-tcp-resolver: [fn [let cap addr@SocketAddress]
+    [fn [let q] [task
+      [th: [TcpHandle [addr: addr.addr  port: addr.port  stream: [tcp-connect cap addr]]]]
+      [dns-framed-send th q]]]]
+
   ns-to-resolver: [fn [let cap@NetCap ns@Nameserver]
     [match ns
       [nameserver.UdpNameserver addr: addr]:                [dns-udp-resolver   cap addr]
+      [nameserver.TcpNameserver addr: addr]:                [dns-tcp-resolver   cap addr]
       [nameserver.DotNameserver addr: addr  sni: sni]:      [dns-tls-resolver   cap addr sni]
       [nameserver.DohNameserver addr: addr  sni: sni  path: path]: [dns-https-resolver cap addr sni path]
       [nameserver.DoqNameserver addr: addr  sni: sni]:      [dns-quic-resolver  cap addr sni]]]
@@ -823,12 +985,12 @@
         [config: %dns]
         [if config.single-request
           [block
-            [v6: [match [try [dns-resolve cap h DnsQtype.AAAA]] [Result.Ok a]: a [Result.Error _]: []]
-             v4: [match [try [dns-resolve cap h DnsQtype.A]]    [Result.Ok a]: a [Result.Error _]: []]]
+            [v6: [match [try [lookup-ips cap DnsQtype.AAAA h]] [Result.Ok a]: a [Result.Error _]: []]
+             v4: [match [try [lookup-ips cap DnsQtype.A    h]] [Result.Ok a]: a [Result.Error _]: []]]
             [interleave v6 v4]]
           [block
-            [v6-task: [task [dns-resolve cap h DnsQtype.AAAA]]
-             v4-task: [task [dns-resolve cap h DnsQtype.A]]]
+            [v6-task: [task [lookup-ips cap DnsQtype.AAAA h]]
+             v4-task: [task [lookup-ips cap DnsQtype.A    h]]]
             [v6-first: [match [timeout [millis 50] v6-task] [Result.Ok a]: a [Result.Error _]: []]]
             [v4: [await v4-task]]
             [v6: [if [= [] v6-first]
@@ -837,46 +999,91 @@
             [interleave v6 v4]]]
       [let ip@IpAddress]: [list ip]]]
 
-  # dns-resolve: resolve a hostname to IPs for a specific query type.
-  # Returns [or [Seq IpAddress] DnsError] — callers pattern-match on the result.
-  dns-resolve: [fn@[return: [or [Seq IpAddress] DnsError]] [let cap@NetCap host@String qtype@DnsQtype]
+  # resolve: query DNS and return the raw answer section.
+  # Returns [or [Seq DnsRecord] DnsError].
+  # Applies ndots + search domain expansion (per /etc/resolv.conf semantics).
+  # Does NOT follow CNAME records — recursive resolvers include final records alongside
+  # CNAMEs in the answer, so this is sufficient in practice. Authoritative-server callers
+  # that receive bare CNAMEs must follow them manually or use lookup-ips.
+  #
+  # Required params first (cap, qtype, name), optional named params after.
+  # Required params must precede optional params — tinct call convention.
+  #
+  # Usage:
+  #   [resolve %net DnsQtype.A "api.example.com"]                         # standard query
+  #   [resolve %net DnsQtype.TXT "version.bind" class: DnsClass.CH]       # chaos class
+  #   [resolve %net DnsQtype.A "example.com" do: true]                    # DNSSEC OK
+  #   [resolve %net DnsQtype.DNSKEY "example.com" do: true cd: true]      # DNSSEC, no validation
+  #   "api.example.com" | [resolve %net DnsQtype.HTTPS]                   # pipeline form
+  resolve: [fn@[return: [or DnsResponse DnsError]]
+             [let cap@NetCap
+                  qtype@DnsQtype
+                  name@String                                          # required — position 2, pipeline subject
+                  class@[type: DnsClass  default: DnsClass.IN]          # QCLASS (almost always IN)
+                  rd@[type: Bool         default: true]                  # Recursion Desired
+                  do@[type: Bool         default: false]                 # EDNS0 DNSSEC OK bit
+                  cd@[type: Bool         default: false]                 # Checking Disabled
+                  ad@[type: Bool         default: false]                 # Authentic Data request
+                  tcp@[type: Bool        default: false]                 # force TCP transport
+                  edns@[type: Bool       default: true]                  # include EDNS0 OPT record
+                  bufsize@[type: Int@[is: [between 512 65535]]  default: 1232]  # EDNS UDP payload size (RFC 6891 §6.2.3)
+                  ignore-tc@[type: Bool  default: false]]                # skip TCP retry on TC=1
     [config: %dns]
     [if [empty? config.nameservers]
       dnsError.ServerFailure
-      [dns-try-names cap config [candidate-names host config.search config.ndots] qtype]]]
+      [opts: [@dnsQueryOpts
+             [qclass: class  rd: rd  do: do  cd: cd  ad: ad
+              tcp: tcp  edns: edns  bufsize: bufsize  ignore-tc: ignore-tc]]]
+      [try-records cap config [candidate-names name config.search config.ndots] qtype opts]]]
+
+  # lookup-ips: resolve a hostname to IP addresses. No flags exposed — always class=IN,
+  # rd=true, DNSSEC off. The IP convenience wrapper; use resolve for full control.
+  # Returns [or [Seq IpAddress] DnsError].
+  # Applies ndots + search domain expansion. Follows CNAME chains with depth limit 8
+  # (RFC 1034 §3.6.2) as a safety net for authoritative servers; recursive resolvers
+  # (1.1.1.1, 8.8.8.8, systemd-resolved) include final A/AAAA records in the answer
+  # alongside any CNAMEs, so CNAME recursion fires only in edge cases.
+  #
+  # Usage: [lookup-ips cap qtype name] — name is subject (last).
+  # Use DnsQtype.A for IPv4, DnsQtype.AAAA for IPv6 (call both in parallel for Happy Eyeballs).
+  lookup-ips: [fn@[return: [or [Seq IpAddress] DnsError]] [let cap@NetCap qtype@DnsQtype name@String]
+    [config: %dns]
+    [if [empty? config.nameservers]
+      dnsError.ServerFailure
+      [try-ips cap config [candidate-names name config.search config.ndots] qtype]]]
 
   dns-server-loop: [fn@Task [let query-ch@[Channel DnsQuery]
                               handler@[Fn [DnsQuery] DnsResponse]]
     [drain [fn [let q] [task [q.respond [handler q]]]] query-ch]]
 
   dns-udp-server: [fn [let cap@NetCap port@Port]
-    [sock: [udp-socket cap BindTarget.IpBind {addr: IpAddress.Ipv4 [0 0 0 0]  port: port}]]
+    [sock: [udp-socket cap BindTarget.IpBind [addr: IpAddress.Ipv4 [0 0 0 0]  port: port]]]
     [out:  [channel 256]]
     [task
       [step: [fn []
         [dg: [recv sock]]
         [match [decode-dns-wire dg.data]
           [Result.Ok q]:
-            [send out dnsQuery.dnsQuery
-              id:        q.id         name:      q.name
-              qtype:     q.qtype      recursive: q.recursive
+            # Reconstruct the incoming query as a dnsQuery for the server handler.
+            # Transport hints (tcp, edns, bufsize, ignore-tc) are not in the wire query —
+            # set to server-appropriate defaults: tcp=false (we received via UDP), edns=true.
+            [send out [dnsQuery
+              id:        q.id     name:      q.name
+              qtype:     q.qtype  qclass:    q.qclass
+              rd:        q.rd     do:        false
+              cd:        false    ad:        false
+              tcp:       false    edns:      true
+              bufsize:   1232     ignore-tc: false
               respond:   [fn [let resp@DnsResponse]
-                [send sock dg.src [encode-dns-response resp]]]]
+                [send sock dg.src [encode-dns-response resp]]]]]]
           [Result.Error _]: null]
         [step]]]
       [step]]
     out]
 
-  # resolve-address: exported so callers can resolve without connecting.
+  # resolve-address: resolve a Host (IpAddress | Hostname) to IPs with Happy Eyeballs.
+  # Exported so callers can resolve a Host without connecting.
   resolve-address: resolve-address
-
-  # dns-resolve-host: resolve to IPv4 addresses (A records).
-  # Returns [or [Seq IpAddress] DnsError].
-  dns-resolve-host: [fn@[return: [or [Seq IpAddress] DnsError]] [let cap@NetCap host@String]
-    [config: %dns]
-    [if [empty? config.nameservers]
-      dnsError.ServerFailure
-      [dns-try-names cap config [candidate-names host config.search config.ndots] dnsQtype.A]]]
 ]
 
 [instance Printable
@@ -914,7 +1121,7 @@
                                                  [value: [parse-dns-rdata msg [+ p 10] rdlen rtype [seconds ttl-raw]]
                                                   next:  [+ offset p 10 rdlen]]]]]
 
-# Transport typeclass instances — live here because they need dns-resolve.
+# Transport typeclass instances — live here because they need lookup-ips.
 #
 # connect is always used as the bottom of a protocol stack:
 #   [connect %net [Hostname "db.internal"] Tcp 5432]

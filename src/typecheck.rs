@@ -1601,6 +1601,81 @@ fn record_pattern_elaborations(
     }
 }
 
+/// Extract a `CoveragePattern` from a `SurfaceExpression::CaseArm` pattern expression.
+///
+/// In 3-arg `[case [let bindings] pattern body]` arms, the `SurfaceMatchArm.pattern` is a
+/// `Pattern::Wildcard` sentinel — the actual structural pattern is the `pattern` field of
+/// the `CaseArm` body expression. This function inspects that pattern expression and
+/// extracts a constructor tag when possible, so exhaustiveness checking sees the real
+/// pattern instead of a wildcard.
+///
+/// Returns `Some(CoveragePattern::Constructor { ... })` when the pattern expression is:
+/// - A constructor call: `[Shape.Circle p]` → `Call { func: DotAccess, args: [p] }`
+/// - A bare constructor reference: `Shape.Circle` → `DotAccess`
+///
+/// Returns `None` for wildcard/lowercase-name patterns (the caller should fall back to
+/// `CoveragePattern::Wildcard`).
+///
+/// `tycon_env` is used to qualify unqualified constructor tags (e.g., `Circle` → `Shape.Circle`)
+/// so they match the qualified forms in the constructor signature. This mirrors the B-341
+/// qualification applied in `elaborate_pattern` for `Pattern::Constructor`.
+fn extract_case_arm_coverage_pattern(
+    pattern_expr: &SurfaceExpression,
+    tycon_env: &crate::types::TyConEnv,
+) -> Option<coverage::CoveragePattern> {
+    // Determine whether the pattern head is a constructor call (with payload args)
+    // or a bare constructor reference (tag-only match).
+    //
+    // Four cases:
+    // 1. `[Shape.Circle p]`      → Call with positional args → constructor with payload
+    // 2. `[Shape.Circle r: v]`   → Call with named args only → constructor with payload
+    // 3. `[Shape.Circle]`        → Call with no args → constructor without payload (zero-arg call)
+    // 4. `Shape.Circle`          → DotAccess or VarRef → constructor without payload (bare ref)
+    let (head_expr, has_payload) = match pattern_expr {
+        SurfaceExpression::Call {
+            func,
+            args,
+            named_args,
+            ..
+        } if !args.is_empty() || !named_args.is_empty() => (&func.expr, true),
+        SurfaceExpression::Call { func, .. } => (&func.expr, false),
+        other => (other, false),
+    };
+
+    // Extract the constructor tag string from the head expression.
+    let tag = crate::ast::flatten_dot_access_to_tag(head_expr)?;
+
+    // Only uppercase-initial names are constructor patterns; lowercase names are
+    // variable bindings or wildcards, which should remain CoveragePattern::Wildcard.
+    if !tag.chars().next().is_some_and(|c| c.is_uppercase()) {
+        return None;
+    }
+
+    // Qualify unqualified constructor tags using tycon_env (mirrors B-341 in coverage.rs).
+    // If the tag contains a dot, it's already qualified (e.g., "Shape.Circle").
+    // If not, look up the TyCon that defines this constructor and qualify it.
+    let qualified_tag = if tag.contains('.') {
+        tag
+    } else {
+        coverage::qualify_nominal_tag(&tag, tycon_env)
+    };
+
+    // Produce a Constructor coverage pattern. Sub-patterns follow the same convention
+    // as ast_pattern_to_coverage for Pattern::Constructor:
+    // - binding: Some → vec![Wildcard] (payload slot present)
+    // - binding: None → vec![]       (sentinel for normalize_constructor_arities to fix up)
+    let sub_patterns = if has_payload {
+        vec![coverage::CoveragePattern::Wildcard]
+    } else {
+        vec![]
+    };
+
+    Some(coverage::CoveragePattern::Constructor {
+        tag: coverage::ConstructorTag::Variant(qualified_tag),
+        sub_patterns,
+    })
+}
+
 /// Type-infer a SurfaceNode expression.
 ///
 /// Natively walks SurfaceExpression variants without converting to Expr.
@@ -2293,9 +2368,71 @@ pub(crate) fn infer_surface_expr(
             if let Some(sig) = sig {
                 let coverage_patterns: Vec<coverage::CoveragePattern> = arms
                     .iter()
-                    .map(|arm| coverage::ast_pattern_to_coverage(&arm.pattern.node))
+                    .map(|arm| {
+                        // For [case ...] arms, the SurfaceMatchArm.pattern is a Wildcard
+                        // sentinel — the actual structural pattern is inside the CaseArm body.
+                        // Extract the constructor tag from the CaseArm pattern expression
+                        // so exhaustiveness checking sees the real pattern.
+                        if matches!(arm.pattern.node, Pattern::Wildcard) {
+                            if let SurfaceExpression::CaseArm { pattern, .. } = &arm.body.expr {
+                                if let Some(cp) = extract_case_arm_coverage_pattern(
+                                    &pattern.expr,
+                                    &state.tycon_env,
+                                ) {
+                                    return cp;
+                                }
+                            }
+                        }
+                        // Qualify any unqualified Variant tags so they match the qualified
+                        // constructor tags in the sig (e.g., "None" → "Option.None").
+                        // This is necessary for traditional Pattern::Constructor arms where
+                        // ast_pattern_to_coverage does not have access to tycon_env.
+                        coverage::qualify_coverage_pattern(
+                            coverage::ast_pattern_to_coverage(&arm.pattern.node),
+                            &state.tycon_env,
+                        )
+                    })
                     .collect();
-                let has_guards: Vec<bool> = arms.iter().map(|arm| arm.guard.is_some()).collect();
+                let has_guards: Vec<bool> = arms
+                    .iter()
+                    .map(|arm| {
+                        if arm.guard.is_some() {
+                            return true;
+                        }
+                        // Guard-expression case arms are opaque to coverage analysis
+                        // (Karachalias et al. 2015, §2.4): they may not always fire,
+                        // so they must be treated as guarded arms in the coverage matrix.
+                        // A [case ...] arm has Pattern::Wildcard as the SurfaceMatchArm.pattern;
+                        // the actual pattern is inside the CaseArm body. If
+                        // extract_case_arm_coverage_pattern returned None for that body pattern,
+                        // it is a guard expression (lowercase/operator head), not a constructor.
+                        // Plain `_` wildcards also return None but are genuine non-guarded wildcards;
+                        // they are distinguishable because a CaseArm body with a VarRef("_") pattern
+                        // is a true wildcard while a Call-headed body is a guard expression.
+                        if matches!(arm.pattern.node, Pattern::Wildcard) {
+                            if let SurfaceExpression::CaseArm { pattern, .. } = &arm.body.expr {
+                                if extract_case_arm_coverage_pattern(
+                                    &pattern.expr,
+                                    &state.tycon_env,
+                                )
+                                .is_none()
+                                {
+                                    // None returned from extract means: not a constructor.
+                                    // Check that it's not the literal _ wildcard — a bare wildcard
+                                    // VarRef with name "_" is a non-guarded wildcard, not a guard.
+                                    let is_bare_wildcard = matches!(
+                                        &pattern.expr,
+                                        SurfaceExpression::VarRef { name, .. } if name == "_"
+                                    );
+                                    if !is_bare_wildcard {
+                                        return true;
+                                    }
+                                }
+                            }
+                        }
+                        false
+                    })
+                    .collect();
                 let result = coverage::check_coverage(&coverage_patterns, &sig, &has_guards);
                 let mut match_errors: Vec<TypeError> = Vec::new();
 

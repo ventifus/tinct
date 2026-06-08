@@ -394,25 +394,6 @@ pub(crate) struct MatchDispatchData {
     pub(crate) match_span: Span,
 }
 
-/// Payload for Cont::CaseArmExactValueCheck. Boxed to keep the Cont enum ≤96 bytes.
-pub(crate) struct CaseArmExactValueCheckData {
-    /// Current arm index (for continuing to next arm if match fails)
-    pub(crate) arm_idx: usize,
-    pub(crate) arms: Arc<Vec<crate::ast::CoreMatchArm>>,
-    /// The original environment for fallback matching
-    pub(crate) env: Arc<RwLock<Environment>>,
-    pub(crate) ctx: Arc<EvalContext>,
-    pub(crate) match_span: Span,
-    /// Environment from the outer match arm (no pattern bindings for exact-value matches)
-    pub(crate) arm_env: Arc<RwLock<Environment>>,
-    /// The scrutinee value (for comparison with pattern value)
-    pub(crate) scrutinee_value: Value,
-    /// The arm body to evaluate if pattern matches
-    pub(crate) body: Arc<Spanned<CoreExpr>>,
-    /// The guard expression to evaluate if pattern matches (if any)
-    pub(crate) guard: Option<Arc<Spanned<CoreExpr>>>,
-}
-
 /// Payload for Cont::MatchGuardCheck. Boxed to keep the Cont enum ≤96 bytes.
 pub(crate) struct MatchGuardCheckData {
     /// Current arm index (for continuing to next arm if guard fails)
@@ -529,10 +510,6 @@ pub(crate) enum Cont {
     /// Dispatch to the next arm after materializing the scrutinee in a Match expression.
     /// Tries each arm pattern in order until one matches, then evaluates that arm's body.
     MatchDispatch(Box<MatchDispatchData>),
-    /// Check the result of an exact-value pattern evaluation for a CaseArm.
-    /// After materializing the pattern expression, compares it to the scrutinee using
-    /// values_equal and either proceeds with the body (match) or continues to next arm (no match).
-    CaseArmExactValueCheck(Box<CaseArmExactValueCheckData>),
     /// Check the guard result for a matched arm and either evaluate the body (guard passed)
     /// or continue to the next arm (guard failed).
     MatchGuardCheck(Box<MatchGuardCheckData>),
@@ -3492,50 +3469,9 @@ pub(crate) async fn apply_cont(
                                         }
                                     }
                                 } else {
-                                    // 2-arg legacy form: [case [let v: Ctor] body]
-                                    // pattern is the [let ...] expression
-                                    match &pattern.node {
-                                        CoreExpr::LetDecl { bindings } => {
-                                            // [let ...] binding pattern — structural test and variable binding
-                                            match eval_case_arm_let_pattern(
-                                                bindings,
-                                                &scrutinee_value,
-                                                &env,
-                                                match_span.clone(),
-                                                &ctx,
-                                            )
-                                            .await
-                                            {
-                                                Some(bound_env) => (bound_env, Arc::clone(body)),
-                                                None => {
-                                                    // Structural test failed — soft skip to next arm
-                                                    continue;
-                                                }
-                                            }
-                                        }
-                                        _ => {
-                                            // Exact-value pattern: evaluate the pattern expression and
-                                            // compare to the scrutinee using values_equal.
-                                            stack.push(Cont::CaseArmExactValueCheck(Box::new(
-                                                CaseArmExactValueCheckData {
-                                                    arm_idx: i,
-                                                    arms: Arc::clone(&arms),
-                                                    env: Arc::clone(&env),
-                                                    ctx: Arc::clone(&ctx),
-                                                    match_span: match_span.clone(),
-                                                    arm_env: Arc::clone(&arm_env),
-                                                    scrutinee_value: scrutinee_value.clone(),
-                                                    body: Arc::clone(body),
-                                                    guard: arm.guard.as_ref().map(Arc::clone),
-                                                },
-                                            )));
-                                            return Action::EvalCore {
-                                                expr: Arc::clone(pattern),
-                                                env: Arc::clone(&env),
-                                                ctx,
-                                            };
-                                        }
-                                    }
+                                    // 2-arg legacy form: unreachable for user code (T-1151 enforces 3-arg).
+                                    // Fall through with arm_env as the final env.
+                                    (arm_env, Arc::clone(body))
                                 }
                             } else {
                                 // Not a CaseArm body — use the arm environment as-is.
@@ -3581,80 +3517,6 @@ pub(crate) async fn apply_cont(
                         scrutinee_value.type_name(),
                         match_span.clone(),
                     ))))
-                }
-            }
-        }
-        Cont::CaseArmExactValueCheck(data) => {
-            let CaseArmExactValueCheckData {
-                arm_idx,
-                arms,
-                env,
-                ctx,
-                match_span,
-                arm_env,
-                scrutinee_value,
-                body,
-                guard,
-            } = *data;
-
-            match result {
-                Err(e) => Action::Continue(Err(e)),
-                Ok(pattern_value) => {
-                    // Compare the pattern value to the scrutinee using structural equality.
-                    // The canonical values_equal handles Dict/Seq/Variant recursively via async
-                    // materialize — cycle detection is provided by materialize's InProgress sentinel.
-                    let eq_result = values_equal(
-                        pattern_value,
-                        scrutinee_value.clone(),
-                        match_span.clone(),
-                        Arc::clone(&ctx),
-                    )
-                    .await;
-                    let patterns_match = match eq_result {
-                        Ok(b) => b,
-                        Err(e) => return Action::Continue(Err(e)),
-                    };
-                    if patterns_match {
-                        // Pattern matched. If there is a guard, evaluate it.
-                        if let Some(guard_expr) = guard {
-                            // Push a continuation to check the guard result
-                            stack.push(Cont::MatchGuardCheck(Box::new(MatchGuardCheckData {
-                                arm_idx,
-                                arms,
-                                env,
-                                ctx: Arc::clone(&ctx),
-                                match_span: match_span.clone(),
-                                arm_env: Arc::clone(&arm_env),
-                                scrutinee_value,
-                                body,
-                                callable_invoked: false,
-                            })));
-
-                            // Evaluate the guard
-                            Action::EvalCore {
-                                expr: guard_expr,
-                                env: arm_env,
-                                ctx,
-                            }
-                        } else {
-                            // No guard — arm matched, evaluate body
-                            Action::EvalCore {
-                                expr: body,
-                                env: arm_env,
-                                ctx,
-                            }
-                        }
-                    } else {
-                        // Pattern did not match — try the next arm
-                        stack.push(Cont::MatchDispatch(Box::new(MatchDispatchData {
-                            arm_idx: arm_idx + 1,
-                            arms,
-                            env,
-                            ctx: Arc::clone(&ctx),
-                            match_span: match_span.clone(),
-                        })));
-                        Action::Continue(Ok(scrutinee_value))
-                    }
                 }
             }
         }
@@ -4021,11 +3883,26 @@ async fn eval_case_arm_structural_pattern(
         scrutinee_value,
         env,
         &arm_env,
-        match_span,
+        match_span.clone(),
         ctx,
     )
     .await
     {
+        // Bind any remaining names from binding_set that weren't bound by the pattern.
+        // This ensures [case [let n] _ body] binds n = scrutinee when pattern is wildcard
+        // or when the pattern doesn't reference every declared name.
+        {
+            let mut env_write = arm_env.write().unwrap();
+            for name in binding_set {
+                if name != "_" && env_write.get(name).is_none() {
+                    let thunk = Arc::new(Thunk::new_materialized(
+                        scrutinee_value.clone(),
+                        match_span.clone(),
+                    ));
+                    env_write.insert(name.clone(), thunk);
+                }
+            }
+        }
         Some(arm_env)
     } else {
         None
@@ -4094,8 +3971,9 @@ fn eval_structural_pattern_inner<'a>(
 
             // Annotated name (name@Type): the annotation is a static constraint — at runtime,
             // treat as bind if in set, pin if not (type constraint is checked at compile time).
-            CoreExpr::Annotated { name, .. } => {
-                bind_or_pin_name(
+            CoreExpr::Annotated { name, annotation } => {
+                // First, perform the bind-or-pin operation
+                let bind_result = bind_or_pin_name(
                     name,
                     binding_set,
                     scrutinee_value,
@@ -4104,7 +3982,77 @@ fn eval_structural_pattern_inner<'a>(
                     &match_span,
                     ctx,
                 )
-                .await
+                .await;
+
+                if !bind_result {
+                    return false;
+                }
+
+                // Check if annotation contains an "is:" property (predicate)
+                if let Some(pred_surface_node) = annotation.node.get_property(IS_ANNOTATION_KEY) {
+                    // Evaluate the predicate expression to get a callable (function or builtin)
+                    let pred_expr_core = Arc::new(crate::lower::lower(
+                        pred_surface_node,
+                        crate::ast::empty_resolution_table(),
+                        crate::ast::empty_type_annotation_table(),
+                    ));
+
+                    let pred_thunk = Arc::new(Thunk::new_unevaluated_core(
+                        pred_expr_core,
+                        Arc::clone(arm_env),
+                        Arc::clone(ctx),
+                        match_span.clone(),
+                    ));
+
+                    let pred_value = match materialize(&pred_thunk, Some(&match_span), ctx).await {
+                        Ok(v) => v,
+                        Err(_) => return false,
+                    };
+
+                    // Get the bound value from arm_env
+                    let bound_value_thunk = if let Some(thunk) = arm_env.read().unwrap().get(name) {
+                        thunk
+                    } else {
+                        // Name not bound (shouldn't happen after bind_or_pin succeeded)
+                        return false;
+                    };
+
+                    let bound_value =
+                        match materialize(&bound_value_thunk, Some(&match_span), ctx).await {
+                            Ok(v) => v,
+                            Err(_) => return false,
+                        };
+
+                    // Apply the predicate to the bound value: [pred bound_value]
+                    let pred_call_thunk = apply_predicate_to_subject(
+                        pred_value,
+                        bound_value,
+                        match_span.clone(),
+                        match_span.clone(),
+                        arm_env,
+                        ctx,
+                    );
+
+                    // Materialize the predicate call result
+                    let pred_result =
+                        match materialize(&pred_call_thunk, Some(&match_span), ctx).await {
+                            Ok(v) => v,
+                            Err(_) => return false,
+                        };
+
+                    // Check if result is truthy (not false, not null/empty-dict)
+                    let is_falsy = match &pred_result {
+                        Value::Bool(false) => true,
+                        Value::Dict(m) => m.is_empty(),
+                        _ => false,
+                    };
+                    if is_falsy {
+                        // Predicate failed — soft-skip this arm
+                        return false;
+                    }
+                }
+
+                bind_result
             }
 
             // Literal patterns: compare exact value
@@ -4128,7 +4076,87 @@ fn eval_structural_pattern_inner<'a>(
             // Constructor pattern: [CtorName field_pat1 field_pat2 ...]
             // The scrutinee must be Variant { tag == CtorName }, then match
             // the payload against the args.
-            CoreExpr::Call { func, args, .. } => {
+            CoreExpr::Call {
+                func,
+                args,
+                named_args,
+                implied,
+            } => {
+                // First, check if this is a guard expression (lowercase name or operator)
+                // rather than a constructor pattern (uppercase name or qualified Type.Ctor).
+                let is_guard_expr = match &func.node {
+                    CoreExpr::FreeVar(name) | CoreExpr::Str(name) | CoreExpr::Var { name, .. } => {
+                        // Lowercase initial char → guard expression
+                        // Operator chars (>, <, =, !, +, -, *, /, etc.) → guard expression
+                        name.chars().next().is_some_and(|c| {
+                            c.is_lowercase()
+                                || matches!(
+                                    c,
+                                    '>' | '<'
+                                        | '='
+                                        | '!'
+                                        | '+'
+                                        | '-'
+                                        | '*'
+                                        | '/'
+                                        | '&'
+                                        | '|'
+                                        | '^'
+                                        | '~'
+                                        | '%'
+                                )
+                        })
+                    }
+                    _ => false,
+                };
+
+                if is_guard_expr {
+                    // This is a guard expression, not a constructor pattern.
+                    // Bind all names from binding_set to scrutinee_value in arm_env first.
+                    for name in binding_set {
+                        let scrutinee_thunk = Arc::new(Thunk::new_materialized(
+                            scrutinee_value.clone(),
+                            match_span.clone(),
+                        ));
+                        arm_env
+                            .write()
+                            .unwrap()
+                            .insert(name.clone(), scrutinee_thunk);
+                    }
+
+                    // Create a thunk from the full Call expression (func + args) using arm_env.
+                    // Preserve named_args and implied from the original Call — a guard expression
+                    // with named arguments (e.g., [pred key: n]) must pass them through.
+                    let guard_expr_spanned = Arc::new(crate::ast::Spanned::new(
+                        CoreExpr::Call {
+                            func: Arc::clone(func),
+                            args: args.to_vec(),
+                            named_args: named_args.to_vec(),
+                            implied: *implied,
+                        },
+                        match_span.clone(),
+                    ));
+                    let guard_thunk = Arc::new(Thunk::new_unevaluated_core(
+                        guard_expr_spanned,
+                        Arc::clone(arm_env),
+                        Arc::clone(ctx),
+                        match_span.clone(),
+                    ));
+
+                    // Materialize the guard result
+                    let guard_result = match materialize(&guard_thunk, Some(&match_span), ctx).await
+                    {
+                        Ok(v) => v,
+                        Err(_) => return false,
+                    };
+
+                    // Return true if result is truthy (not false, not null/empty-dict)
+                    let is_falsy = matches!(guard_result, Value::Bool(false))
+                        || matches!(&guard_result, Value::Dict(m) if m.is_empty());
+                    return !is_falsy;
+                }
+
+                // Not a guard expression — proceed with constructor pattern matching.
                 // Determine the constructor tag from the function position
                 let ctor_tag = match &func.node {
                     CoreExpr::FreeVar(name) | CoreExpr::Str(name) => Some(name.clone()),
@@ -4353,124 +4381,6 @@ async fn bind_or_pin_name(
         .await
         .unwrap_or_default()
     }
-}
-
-/// Evaluate a `[let ...]` binding pattern against a scrutinee value for a `[case ...]` arm.
-///
-/// Implements the soft-skip rule from unified-bindings.md §src/eval.rs:
-/// - For each binding element in `bindings`:
-///   - `Var("_") | FreeVar("_")`: wildcard, always succeeds, no binding
-///   - `Var(name) | FreeVar(name)`: bind `name` to the scrutinee; always succeeds
-///   - `Annotated { name, annotation }`: typed binding — bind `name` to the scrutinee;
-///     the annotation is a static type constraint only, no runtime tag check
-///     (the old `_constructor` sentinel path was removed in T-1151)
-///   - `LetDecl { bindings }`: multi-payload group (incomplete; bind names to scrutinee)
-/// - Returns `Some(new_env)` if all bindings succeed, `None` if any structural test fails
-///
-/// This function is async so that payload materialization (for constructor structural tests)
-/// uses `.await` on the CEK machine's async executor rather than `block_on_anywhere`, which
-/// could exhaust the Rust async call stack for deeply nested patterns.
-async fn eval_case_arm_let_pattern(
-    bindings: &[crate::ast::Spanned<CoreExpr>],
-    scrutinee_value: &Value,
-    env: &Arc<RwLock<Environment>>,
-    match_span: Span,
-    _ctx: &Arc<EvalContext>,
-) -> Option<Arc<RwLock<Environment>>> {
-    let arm_env = Arc::new(RwLock::new(Environment::with_parent(Arc::clone(env))));
-
-    for binding in bindings {
-        match &binding.node {
-            // Wildcard: _ — always succeeds, no binding.
-            // Check FreeVar first to handle "_" as an unresolved variable reference.
-            CoreExpr::FreeVar(name) if name == "_" => {
-                // No binding; continue
-            }
-            CoreExpr::Var { name, .. } if name == "_" => {
-                // No binding; continue
-            }
-
-            // Plain binding: VarRef(name) — bind to scrutinee
-            CoreExpr::FreeVar(name) => {
-                let scrutinee_thunk = Arc::new(Thunk::new_materialized(
-                    scrutinee_value.clone(),
-                    match_span.clone(),
-                ));
-                arm_env
-                    .write()
-                    .unwrap()
-                    .insert(name.clone(), scrutinee_thunk);
-            }
-            CoreExpr::Var { name, .. } => {
-                let scrutinee_thunk = Arc::new(Thunk::new_materialized(
-                    scrutinee_value.clone(),
-                    match_span.clone(),
-                ));
-                arm_env
-                    .write()
-                    .unwrap()
-                    .insert(name.clone(), scrutinee_thunk);
-            }
-
-            // Annotated binding: `name@Type` — typed binding (no runtime tag check).
-            // The annotation is a static type constraint only; at runtime, bind name to scrutinee.
-            // Note: the old `name: Constructor` structural test form (which used a `_constructor`
-            // sentinel key in the annotation) was removed in T-1151 — the parser now enforces
-            // the 3-arg [case [let bindings] pattern body] form exclusively. There is no
-            // `_constructor` sentinel that can be produced by user code.
-            CoreExpr::Annotated { name, .. } if name != "_" => {
-                let scrutinee_thunk = Arc::new(Thunk::new_materialized(
-                    scrutinee_value.clone(),
-                    match_span.clone(),
-                ));
-                arm_env
-                    .write()
-                    .unwrap()
-                    .insert(name.clone(), scrutinee_thunk);
-            }
-            CoreExpr::Annotated { .. } => {
-                // Wildcard annotated binding "_@Type" — no binding, just type assertion
-            }
-
-            // Nested LetDecl: multi-payload binding group [a b] — bind each named element
-            // to scrutinee as a fallback (constructor tag for multi-payload is lost in current
-            // parser representation). See T-1179 for proper implementation.
-            // Note: this entire function (eval_case_arm_let_pattern) is dead for user programs
-            // after T-1151 enforced 3-arg parser form. See T-1182 for deletion tracking.
-            CoreExpr::LetDecl { bindings: nested } => {
-                for nested_binding in nested {
-                    match &nested_binding.node {
-                        CoreExpr::FreeVar(name) if name != "_" => {
-                            let scrutinee_thunk = Arc::new(Thunk::new_materialized(
-                                scrutinee_value.clone(),
-                                match_span.clone(),
-                            ));
-                            arm_env
-                                .write()
-                                .unwrap()
-                                .insert(name.clone(), scrutinee_thunk);
-                        }
-                        CoreExpr::Var { name, .. } if name != "_" => {
-                            let scrutinee_thunk = Arc::new(Thunk::new_materialized(
-                                scrutinee_value.clone(),
-                                match_span.clone(),
-                            ));
-                            arm_env
-                                .write()
-                                .unwrap()
-                                .insert(name.clone(), scrutinee_thunk);
-                        }
-                        _ => {} // Wildcard or annotated — skip for now
-                    }
-                }
-            }
-
-            // Rest or other forms — skip (not valid in case arm let patterns)
-            _ => {}
-        }
-    }
-
-    Some(arm_env)
 }
 
 /// Main iterative evaluation loop. Executes actions until a final result is produced.

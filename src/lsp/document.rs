@@ -131,9 +131,6 @@ impl DocumentState {
                 // Desugar $_ implicit lambdas on SurfaceProgram (after expansion).
                 crate::desugar::desugar_surface_program(&mut program);
 
-                // Variable resolution pass (Phase 1 of arena allocation strategy).
-                let _resolution_table = crate::resolve::resolve_surface_program(&program);
-
                 // Capture the expanded+desugared SurfaceProgram.
                 // The imports API and type checker now operate on SurfaceProgram directly.
                 surface = Some(program.clone());
