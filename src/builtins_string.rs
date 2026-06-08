@@ -1,7 +1,7 @@
 //! String builtins: `str`, `split`, `replace`, `trim`, `str-length`,
 //! `str-slice`, `str-chars`, `str-index-of`, `char-code`, `chr`, `str-bytes`, `bytes-str`,
 //! `trim-start`, `trim-end`, `str-to-upper-char`, `str-to-lower-char`, `str-map-chars`,
-//! `regex-match?`, `int->string`, `float->string`.
+//! `regex-match?`, `int->string`, `float->string`, `builtin-string-concat`.
 //!
 //! Note: `upper` and `lower` are no longer Rust builtins. They live in `stdlib/strings.llt`
 //! and are implemented using `str-map-chars` + `str-to-upper-char` / `str-to-lower-char`.
@@ -1295,5 +1295,56 @@ pub(crate) fn builtin_regex_match(
             )
             .into()),
         }
+    })
+}
+
+/// `builtin-string-concat`: Concatenate exactly two strings.
+///
+/// Takes 2 args: `s1` (String), `s2` (String).
+/// Returns a new String that is the concatenation of `s1` and `s2`.
+/// This is a primitive string operation that doesn't go through `str` (avoiding
+/// circular recursion when str is eventually reimplemented via Printable).
+/// Inherently materializing: must inspect string content to concatenate.
+pub(crate) fn builtin_string_concat(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx: _,
+        } = ctx_arg;
+        reject_named("builtin-string-concat", named.as_ref(), call_span.clone())?;
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+
+        let s1_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let s2_val = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+
+        let s1 = require_string("builtin-string-concat", s1_val, args[0].span.clone())?;
+        let s2 = require_string("builtin-string-concat", s2_val, args[1].span.clone())?;
+
+        // Pre-check output size to prevent memory exhaustion
+        let output_len = s1.len().saturating_add(s2.len());
+        if output_len > MAX_STRING_SIZE {
+            return Err(EvalError::resource_limit_exceeded(
+                format!(
+                    "builtin-string-concat: output would exceed {} MB limit ({} bytes)",
+                    MAX_STRING_SIZE / (1024 * 1024),
+                    output_len
+                ),
+                call_span.clone(),
+            )
+            .into());
+        }
+
+        let result = format!("{}{}", s1, s2);
+        ok_val(string_val(&result), call_span)
     })
 }

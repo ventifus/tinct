@@ -1557,6 +1557,7 @@ impl TypeEnv {
             ("builtin-str-to-lower-char", "str-to-lower-char"),
             ("builtin-str-map-chars", "str-map-chars"),
             ("builtin-regex-match?", "regex-match?"),
+            ("builtin-string-concat", "string-concat"),
             // math functions (pow, sqrt, sin, etc.) are NOT injected here:
             // they are stdlib/math.llt exports (require [include %libdir "math.llt"]).
             // The aliases were removed in T-826 along with the runtime injection loop.

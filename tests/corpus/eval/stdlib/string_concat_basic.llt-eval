@@ -1,0 +1,3 @@
+[string-concat "hello" " world"]
+=== out
+String("hello world")

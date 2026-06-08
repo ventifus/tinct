@@ -2840,6 +2840,9 @@ str-map-chars@[doc: "Apply a function to each character of a string, returning a
 # Regular expression matching
 regex-match?@[doc: "Return true if the string matches the regular expression pattern"]: builtin-regex-match?
 
+# String concatenation (two-arg primitive)
+string-concat@[doc: "Concatenate two strings"]: builtin-string-concat
+
 # String replacement (all occurrences)
 replace@[doc: "Replace all occurrences of pattern with replacement in input"]: builtin-replace
 
