@@ -1,11 +1,13 @@
 # [Tag n]: (binding pattern) against a unit variant should NOT match — falls through to next arm.
 # D-1 equivalence applies only to [Tag]: (binding: None); [Tag n]: (binding: Some) requires a payload.
 [
-  [type Shape [Circle r: Int] [Square]]
+  Shape: [type Shape [Circle r: Int] [Square]]
 
-  unit-shape: Square
+  unit-shape: Shape.Square
 
   result: [match unit-shape
-    [Square n]: "has-payload"
-    [Square]:   "unit-match"]
+    [Shape.Square n]: "has-payload"
+    Shape.Square:     "unit-match"]
 ]
+=== out
+Dict({"Shape": Dict({"Shape": Variant(Shape.Shape, Null), "Circle": Function(r), "Square": Variant(Shape.Square, Null)}), "unit-shape": Variant(Shape.Square, Null), "result": String("unit-match")})

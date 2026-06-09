@@ -1,4 +1,6 @@
-# builtin-is-contractive returns true for a TypeNode.Union variant with no payload.
+# builtin-is-contractive
+--- uses: ["core"]
+# returns true for a TypeNode.Union variant with no payload.
 # The Union/Intersect branch (Case 3) tries to inspect the `types` child Seq.
 # When the payload is absent (unit variant), it cannot be inspected — the algorithm
 # returns true conservatively: "no self-references we can see = trivially contractive".

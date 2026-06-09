@@ -1,6 +1,7 @@
 # builtin-read-chunk: boundary read — exactly fills chunk, then EOF
 # Verifies: reading exactly n bytes when n == length produces full content;
 # subsequent read at EOF returns []
+--- uses: ["core"]
 [h: [string-handle "abcd"]]
 [chunk: [builtin-read-chunk h 4]]
 [eof: [builtin-read-chunk h 4]]

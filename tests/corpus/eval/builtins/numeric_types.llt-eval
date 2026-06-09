@@ -1,5 +1,6 @@
 # Comprehensive numeric type operations
 # Tests: decimal, big-int, to-int, to-float, type-of, nan?, inf?, finite?
+--- uses: ["math"]
 
 [
   # Decimal operations

@@ -2746,6 +2746,7 @@ fn infer_class_decl_from_surface(
         determines: fd_indices,
         resolver: resolver_name,
         resolver_injective,
+        prelude_origin: state.in_prelude_load,
     };
 
     state.class_env.insert(class_decl.clone());
@@ -2988,6 +2989,7 @@ fn infer_instance_decl_from_surface(
             instance_type: inst_type,
             det_positions,
             method_types,
+            prelude_origin: state.in_prelude_load,
         };
 
         // Structural overlap check: detect instances whose head types unify even if

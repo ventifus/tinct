@@ -164,6 +164,7 @@ fn test_promote_literal_not_promoted_for_non_promotable_class() {
         determines: vec![],
         resolver: None,
         resolver_injective: false,
+        prelude_origin: false,
     });
     state.constraints.push(Constraint::Class {
         class: my_class,
@@ -1086,6 +1087,7 @@ fn test_reverse_fd_back_propagates_determining_type() {
         determines: vec![(vec![0], vec![1])], // pos 0 determines pos 1
         resolver: None,
         resolver_injective: true,
+        prelude_origin: false,
     });
 
     // Register the class in class_env.
@@ -1096,6 +1098,7 @@ fn test_reverse_fd_back_propagates_determining_type() {
         determines: vec![(vec![0], vec![1])],
         resolver: None,
         resolver_injective: true,
+        prelude_origin: false,
     });
 
     // Register instance: MySeq Int Str
@@ -1112,6 +1115,7 @@ fn test_reverse_fd_back_propagates_determining_type() {
         instance_type,
         det_positions: vec![0], // determining position indices
         method_types: HashMap::new(),
+        prelude_origin: false,
     };
     state.instance_env.insert(inst).unwrap();
 
@@ -1167,6 +1171,7 @@ fn test_reverse_fd_does_not_fire_when_not_injective() {
         determines: vec![(vec![0], vec![1])],
         resolver: None,
         resolver_injective: false, // NOT injective
+        prelude_origin: false,
     });
 
     state.class_env.insert(ClassDecl {
@@ -1176,6 +1181,7 @@ fn test_reverse_fd_does_not_fire_when_not_injective() {
         determines: vec![(vec![0], vec![1])],
         resolver: None,
         resolver_injective: false,
+        prelude_origin: false,
     });
 
     // Register instance: MyNonInj Int Str
@@ -1191,6 +1197,7 @@ fn test_reverse_fd_does_not_fire_when_not_injective() {
         instance_type,
         det_positions: vec![0],
         method_types: HashMap::new(),
+        prelude_origin: false,
     };
     state.instance_env.insert(inst).unwrap();
 
@@ -1424,6 +1431,7 @@ fn test_fd_in_progress_terminates_mutual_recursion() {
         ],
         resolver: None,
         resolver_injective: true, // Enables reverse lookup: b=Str → a=Int
+        prelude_origin: false,
     });
 
     state.class_env.insert(ClassDecl {
@@ -1433,6 +1441,7 @@ fn test_fd_in_progress_terminates_mutual_recursion() {
         determines: vec![(vec![0], vec![1])],
         resolver: None,
         resolver_injective: true,
+        prelude_origin: false,
     });
 
     // Register instance: BiDir Int Str
@@ -1448,6 +1457,7 @@ fn test_fd_in_progress_terminates_mutual_recursion() {
         instance_type,
         det_positions: vec![0], // Position 0 determines position 1 (forward FD)
         method_types: HashMap::new(),
+        prelude_origin: false,
     };
     state.instance_env.insert(inst).unwrap();
 

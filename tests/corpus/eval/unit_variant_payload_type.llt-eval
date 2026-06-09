@@ -28,7 +28,7 @@
   # Pattern matching fails (match exhaustion) — see B-341 for the coverage checker gap.
   unwrap: [fn [let r@Result]
     [match r
-      [Ok v]: v
+      [case [let v] [Result.Ok v] v]
       [Err]: 0
     ]
   ]

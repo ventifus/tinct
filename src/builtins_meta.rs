@@ -3439,3 +3439,35 @@ fn validate_seq_items(
         }
     })
 }
+
+/// Register `builtin-*` type aliases for meta/reflection/eval builtins (T-1102).
+///
+/// Each alias copies the TypeScheme from the canonical name already registered in
+/// `core_type_env`. Call this AFTER `core_type_env` has run.
+pub fn meta_builtin_types(env: &mut crate::types::TypeEnv) {
+    env.alias_types(&[
+        ("builtin-eval-ast", "eval-ast"),
+        ("builtin-gensym", "gensym"),
+        ("builtin-llt-repr", "llt-repr"),
+        ("builtin-tag-of", "tag-of"),
+        ("builtin-variant", "variant"),
+        ("builtin-decimal", "decimal"),
+        ("builtin-big-int", "big-int"),
+        ("builtin-try", "try"),
+        ("builtin-apply", "apply"),
+        ("builtin-type-of", "type-of"),
+        ("builtin-narrow", "narrow"),
+        ("builtin-raise", "raise"),
+        ("builtin-blake3", "blake3"),
+        ("builtin-expand", "expand"),
+        ("builtin-eval", "eval"),
+        ("builtin-eval-types", "eval-types"),
+        ("builtin-load", "load"),
+        ("builtin-cap-identity", "cap-identity"),
+        ("builtin-include-cache-get", "include-cache-get"),
+        ("builtin-include-cache-put", "include-cache-put"),
+        ("builtin-annotation-of", "annotation-of"),
+        ("builtin-make-annotated", "make-annotated"),
+        ("builtin-proxy", "proxy"),
+    ]);
+}

@@ -223,15 +223,22 @@ fn update_eval_corpus() {
         // Run through the eval pipeline
         let (output, mut error, mut warnings) = eval_test(&test.input, test.no_fs, &test.cap_net);
 
-        // Strip errors/warnings from non-designated paths to force developers to notice regressions
+        // Strip errors/warnings from non-designated paths to force developers to notice regressions.
+        // Exception: if the existing file already has an === error or === warn section, preserve
+        // it by allowing update_corpus to update its content. This lets manually-added sections
+        // in files outside designated directories survive a round-trip through update_corpus.
         let path_str = test_file.to_string_lossy();
         if error.is_some() && !path_str.contains("error") {
-            eprintln!("  NOTE: stripping === error (path not under errors/)");
-            error = None;
+            if test.expectations.error.is_none() {
+                eprintln!("  NOTE: stripping === error (path not under errors/ and no existing === error)");
+                error = None;
+            }
         }
         if warnings.is_some() && !path_str.contains("warn") {
-            eprintln!("  NOTE: stripping === warn (path not under warnings/)");
-            warnings = None;
+            if test.expectations.warn.is_none() {
+                eprintln!("  NOTE: stripping === warn (path not under warnings/ and no existing === warn)");
+                warnings = None;
+            }
         }
 
         // Guard: if the error lacks an [EXXX] code, skip this file.

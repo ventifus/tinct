@@ -2,3 +2,6 @@
 [@Int "hello"]
 === out
 String("hello")
+
+=== warn
+[UnificationFailure] cannot unify Int with "hello"

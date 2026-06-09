@@ -3,10 +3,12 @@
 # Verifies the evaluator injects Color, Red, Green, Blue as Variant(_, Null)
 # entries and that match dispatch on unit variants works correctly.
 [
-  [type Color Red Green Blue]
-  c:    Red
+  Color: [type Color Red Green Blue]
+  c:    Color.Red
   name: [match c
-    [Red]:   "red"
-    [Green]: "green"
-    [Blue]:  "blue"]
+    Color.Red:   "red"
+    Color.Green: "green"
+    Color.Blue:  "blue"]
 ]
+=== out
+Dict({"Color": Dict({"Color": Variant(Color.Color, Null), "Red": Variant(Color.Red, Null), "Green": Variant(Color.Green, Null), "Blue": Variant(Color.Blue, Null)}), "c": Variant(Color.Red, Null), "name": String("red")})

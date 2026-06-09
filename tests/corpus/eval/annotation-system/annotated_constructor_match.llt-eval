@@ -3,11 +3,13 @@
 # Red@[category: "primary"] evaluates to Value::Annotated { inner: Variant("MyType.Red", None), .. }.
 # Before the fix, the Constructor arm fell through to _ => Ok(None), causing the wildcard to fire.
 # After the fix, Value::Annotated is peeled and the inner Variant tag "MyType.Red" is matched.
-# The typecheck warning "undefined variable: Red" is a pre-existing limitation tracked in T-1048.
+# Uses MyType.Red as scrutinee (T-1086: qualified form is in typecheck scope; unqualified Red is not).
 [
   MyType:  [type Red@[category: "primary"]]
-  matched: [match Red
+  matched: [match MyType.Red
     MyType.Red: "matched"
     _:          "wildcard"]
   result:  [= matched "matched"]
 ]
+=== out
+Dict({"MyType": Dict({"Red": Variant(MyType.Red, Null)}), "matched": String("matched"), "result": Bool(true)})

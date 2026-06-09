@@ -1058,6 +1058,31 @@ pub(crate) fn builtin_float(
     })
 }
 
+/// Register `builtin-*` type aliases for math and comparison builtins (T-1102).
+///
+/// Each alias copies the TypeScheme from the canonical name already registered in
+/// `core_type_env`. Call this AFTER `core_type_env` has run.
+pub fn math_builtin_types(env: &mut crate::types::TypeEnv) {
+    env.alias_types(&[
+        ("builtin-lt", "<"),
+        ("builtin-gt", ">"),
+        ("builtin-gte", ">="),
+        ("builtin-lte", "<="),
+        ("builtin-eq", "="),
+        ("builtin-add", "+"),
+        ("builtin-sub", "-"),
+        ("builtin-mul", "*"),
+        ("builtin-div", "/"),
+        ("builtin-if", "if"),
+        ("builtin-band", "band"),
+        ("builtin-bor", "bor"),
+        ("builtin-bxor", "bxor"),
+        ("builtin-shl", "shl"),
+        ("builtin-shr", "shr"),
+        ("builtin-float", "float"),
+    ]);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

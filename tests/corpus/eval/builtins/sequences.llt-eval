@@ -1,6 +1,7 @@
 # Comprehensive sequence operations
 # Tests: seq, head, tail, collect, range, iterate, take, drop, map, filter, reduce, cycle, repeat, unfold
 # Covers construction, deconstruction, transformations, and edge cases
+--- uses: ["core"]
 
 [
   # seq construction and collection

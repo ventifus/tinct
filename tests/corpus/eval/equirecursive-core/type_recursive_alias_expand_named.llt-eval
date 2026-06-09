@@ -1,4 +1,6 @@
-# builtin-is-contractive returns true for a TypeNode.Recursive variant.
+# builtin-is-contractive
+--- uses: ["core"]
+# returns true for a TypeNode.Recursive variant.
 # The Recursive constructor itself IS guarding (guarding: true in the TypeNode ADT).
 # This means an inner μb.T shields any outer recursive variable from RecursiveRef
 # nodes inside T — nested recursive types are contractive at the outer binder level.

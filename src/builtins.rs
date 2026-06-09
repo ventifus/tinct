@@ -609,6 +609,20 @@ pub(crate) fn builtin_to_float(
     })
 }
 
+/// Register `builtin-*` type aliases for core numeric builtins in this file (T-1102).
+///
+/// Covers `floor`, `round`, and `to-float`, which are implemented in `builtins.rs`
+/// and not claimed by any other per-file function. Each alias copies the TypeScheme
+/// from the canonical name already registered in `core_type_env`.
+/// Call this AFTER `core_type_env` has run.
+pub fn core_builtin_types(env: &mut crate::types::TypeEnv) {
+    env.alias_types(&[
+        ("builtin-floor", "floor"),
+        ("builtin-round", "round"),
+        ("builtin-to-float", "to-float"),
+    ]);
+}
+
 // Seq primitive builtins: seq, head, tail, collect.
 // Implementations live in builtins_seq_prim.rs; re-exported here so that
 // builtin_module() registration and unit tests (via `use super::*`) still work.
@@ -1803,6 +1817,7 @@ pub fn type_env_module(name: &str) -> Option<crate::types::TypeEnv> {
         "core" => {
             let mut env = crate::types::TypeEnv::new();
             crate::builtins_core::core_type_env(&mut env);
+            core_builtin_types(&mut env);
             Some(env)
         }
         "datetime" => {
@@ -1811,6 +1826,49 @@ pub fn type_env_module(name: &str) -> Option<crate::types::TypeEnv> {
             Some(env)
         }
         "net" => Some(crate::builtins_net::net_type_env()),
+        "io" => {
+            let mut env = crate::types::TypeEnv::new();
+            crate::builtins_core::core_type_env(&mut env);
+            crate::builtins_io::io_builtin_types(&mut env);
+            Some(env)
+        }
+        "math" => {
+            let mut env = crate::types::TypeEnv::new();
+            crate::builtins_core::core_type_env(&mut env);
+            crate::builtins_math::math_builtin_types(&mut env);
+            Some(env)
+        }
+        "meta" => {
+            let mut env = crate::types::TypeEnv::new();
+            crate::builtins_core::core_type_env(&mut env);
+            crate::builtins_meta::meta_builtin_types(&mut env);
+            Some(env)
+        }
+        "dict" => {
+            let mut env = crate::types::TypeEnv::new();
+            crate::builtins_core::core_type_env(&mut env);
+            crate::builtins_dict::dict_builtin_types(&mut env);
+            Some(env)
+        }
+        "string" => {
+            let mut env = crate::types::TypeEnv::new();
+            crate::builtins_core::core_type_env(&mut env);
+            crate::builtins_string::string_builtin_types(&mut env);
+            Some(env)
+        }
+        "seq" => {
+            let mut env = crate::types::TypeEnv::new();
+            crate::builtins_core::core_type_env(&mut env);
+            crate::builtins_seq_xform::seq_xform_builtin_types(&mut env);
+            crate::builtins_seq_reduce::seq_reduce_builtin_types(&mut env);
+            Some(env)
+        }
+        "async" => {
+            let mut env = crate::types::TypeEnv::new();
+            crate::builtins_core::core_type_env(&mut env);
+            crate::builtins_async::async_builtin_types(&mut env);
+            Some(env)
+        }
         _ => None,
     }
 }

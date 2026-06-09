@@ -6,3 +6,6 @@
  result: [f "hello"]]
 === out
 Dict({"f": Function(x), "result": String("hello")})
+
+=== warn
+[UnificationFailure] cannot unify Int with "hello"

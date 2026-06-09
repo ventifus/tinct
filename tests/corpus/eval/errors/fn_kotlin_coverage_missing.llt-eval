@@ -7,3 +7,6 @@
 [E024] missing argument for required parameter 'd' (defined at 3:11-3:21)
   in [f ...] at 3:11-3:21
   in [f ...] at 3:11-3:21
+
+=== warn
+[ArityMismatch] expected 3 arguments, got 2

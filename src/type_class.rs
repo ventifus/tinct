@@ -85,6 +85,10 @@ impl Constraint {
             determines: vec![],
             resolver: None,
             resolver_injective: false,
+            // Stub ClassDecl used only for Constraint::Class representation — not stored in ClassEnv.
+            // prelude_origin is irrelevant here (propagation gate in typecheck_dict.rs reads
+            // ClassDecl entries from ClassEnv, not from Constraint stubs).
+            prelude_origin: false,
         });
         Self::Class {
             class,
@@ -146,6 +150,15 @@ pub struct ClassDecl {
     /// Read site: `check_constraints_on_var` → `improve_functional_dependency_inner`
     /// (see `type_unify.rs`: `resolver_injective` is captured in `ApplicableConstraint::MultiParam`).
     pub(crate) resolver_injective: bool,
+    /// Whether this class was declared during prelude loading.
+    ///
+    /// `true` for classes declared in `prelude.llt` or pre-seeded in `InferState::new()`.
+    /// `false` for classes declared in user code.
+    ///
+    /// Used in `typecheck_dict.rs` to control per-declaration propagation: only declarations
+    /// with `prelude_origin = true` are merged into the outer frame when a child dict scope
+    /// exits. This replaces the coarse `state.in_prelude_load` gate (T-1110).
+    pub prelude_origin: bool,
 }
 
 impl fmt::Display for ClassDecl {
@@ -171,6 +184,15 @@ pub struct InstanceDecl {
     /// Method implementations: method_name -> inferred type
     /// (The actual dictionary value is stored in eval::ClassDictionary)
     pub method_types: HashMap<String, Type>,
+    /// Whether this instance was declared during prelude loading.
+    ///
+    /// `true` for instances declared in `prelude.llt` or pre-seeded in `InferState::new()`.
+    /// `false` for instances declared in user code.
+    ///
+    /// Used in `typecheck_dict.rs` to control per-declaration propagation: only declarations
+    /// with `prelude_origin = true` are merged into the outer frame when a child dict scope
+    /// exits. This replaces the coarse `state.in_prelude_load` gate (T-1110).
+    pub prelude_origin: bool,
 }
 
 /// Class environment: lexically scoped registry of type class declarations.
@@ -545,6 +567,7 @@ impl InstanceEnv {
                     instance_type: resolved_instance_type,
                     det_positions: inst.det_positions.clone(),
                     method_types: inst.method_types.clone(),
+                    prelude_origin: inst.prelude_origin,
                 });
             } else {
                 // F1 FIX: Restore state after failed probe (discard leaked mutations).
@@ -938,6 +961,7 @@ impl InstanceEnv {
             instance_type: freshened_instance_type,
             det_positions: winner.det_positions.clone(),
             method_types: freshened_method_types,
+            prelude_origin: winner.prelude_origin,
         }))
     }
 }
@@ -1054,6 +1078,7 @@ mod tests {
             instance_type,
             det_positions: vec![],
             method_types: HashMap::new(),
+            prelude_origin: false,
         }
     }
 

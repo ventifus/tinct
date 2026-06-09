@@ -6,13 +6,16 @@
 # Sources use {ch: handler:} dict format. The channel value is never serialized —
 # only %.result (a Variant) is accessed in doc 2.
 # Multi-doc pipeline: doc 1 returns the computation dict; doc 2 matches.
+--- uses: ["core"]
 [
   ch: [channel 10]
   sent: [send ch 42]
-  sources: [seq [{ch: ch  handler: [fn [let v] v]}] []]
+  sources: [seq [{ch: ch  handler: [fn [let v] v]}] [builtin-variant "Seq.Nil"]]
   result: [if [= sent []] [select-once [context] sources] [select-once [context] sources]]
 ]
 ---
 [match %.result
-  [Result.Ok v]: v
-  [Closed]: -1]
+  [case [let v] [Result.Ok v] v]
+  Closed.Closed: -1]
+=== out
+Int(42)

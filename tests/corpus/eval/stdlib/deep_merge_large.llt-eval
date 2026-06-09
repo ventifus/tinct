@@ -1,4 +1,5 @@
 # deep-merge: merge two non-overlapping 500-entry dicts into a 1000-entry result
+--- uses: ["core"]
 # d1 has integer keys 0..499, d2 has integer keys 500..999 (no overlap)
 [let d1 [collect [range 0 500]]]
 [let d2 [build-dict [builtin-map [fn [v] [key: v  value: v]] [each [collect [range 500 1000]]]]]]

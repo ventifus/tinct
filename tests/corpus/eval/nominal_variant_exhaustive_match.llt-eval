@@ -9,15 +9,15 @@
 # NOTE: This test will work correctly once T-968 (pattern tag qualification and field
 # extraction semantics) is implemented. For now it shows the T-974 intermediate state.
 [
-  [type Shape
+  Shape: [type Shape
     [Circle r: Int]
     [Square s: Int]
   ]
 
-  shape: [Circle r: 5]
+  shape: [Shape.Circle r: 5]
 
   area: [match shape
-    [Circle r]: [* 3 [* r r]]
-    [Square s]: [* s s]
+    [case [let p] [Shape.Circle p] [* 3 [* p.r p.r]]]
+    [case [let p] [Shape.Square p] [* p.s p.s]]
   ]
 ]

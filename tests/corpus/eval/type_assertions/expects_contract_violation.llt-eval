@@ -4,3 +4,6 @@
 [x: "hello"]
 === out
 Dict({"x": String("hello")})
+
+=== warn
+[TypeError] Pipeline input type [] does not satisfy expects contract [x: Int]

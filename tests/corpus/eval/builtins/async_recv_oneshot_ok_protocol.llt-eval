@@ -12,6 +12,9 @@
   sent: [send tx 99]
   first-result: [if [= sent []] [recv rx] [recv rx]]
 ]
+---
 [match %.first-result
-  [Result.Ok v]: v
-  [Closed]: -1]
+  [case [let v] [Result.Ok v] v]
+  Closed.Closed: -1]
+=== out
+Int(99)

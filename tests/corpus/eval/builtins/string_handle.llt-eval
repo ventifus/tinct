@@ -1,4 +1,5 @@
 # string-handle wraps a String as a readable Handle
+--- uses: ["core"]
 [h: [string-handle "hello\nworld"]]
 [first-line: [builtin-read-line h]]
 first-line

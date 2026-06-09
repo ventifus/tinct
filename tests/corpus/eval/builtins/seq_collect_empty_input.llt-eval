@@ -1,4 +1,5 @@
 # collect: Seq.Nil input returns empty dict
+--- uses: ["core"]
 [collect [builtin-variant "Seq.Nil"]]
 === out
 Dict({})

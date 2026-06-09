@@ -4,3 +4,6 @@
 [try [fn [] pi]]
 === out
 Variant(Result.Error, String("undefined variable: pi (did you mean the string \"pi\"? Use quotes.)"))
+
+=== warn
+[UndefinedVariable] undefined variable: pi

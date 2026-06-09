@@ -1,10 +1,12 @@
 [
-  [type Color [Red] [Green] [Blue]]
+  Color: [type Color [Red] [Green] [Blue]]
 
-  color: Red
+  color: Color.Red
 
   result: [match color
-    [Red]:    "#ff0000"
-    [Green]:  "#00ff00"
-    [Blue]:   "#0000ff"]
+    Color.Red:   "#ff0000"
+    Color.Green: "#00ff00"
+    Color.Blue:  "#0000ff"]
 ]
+=== out
+Dict({"Color": Dict({"Color": Variant(Color.Color, Null), "Red": Variant(Color.Red, Null), "Green": Variant(Color.Green, Null), "Blue": Variant(Color.Blue, Null)}), "color": Variant(Color.Red, Null), "result": String("#ff0000")})

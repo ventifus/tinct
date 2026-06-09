@@ -12,5 +12,5 @@
 Dict({"f": Function(x)})
 
 === warn
-explicit @Unknown annotation — type is not statically known
 inferred type is Unknown — consider adding a type annotation
+explicit @Unknown annotation — type is not statically known

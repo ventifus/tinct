@@ -1,9 +1,9 @@
 # cell-set updates the value; cell-get reads the new value
 
 [
-  cell: [builtin-reactive-cell 1]
-  _:    [builtin-cell-set 99 cell]
+  cell: [reactive-cell 1]
+  _:    [cell-set 99 cell]
 ]
-[builtin-cell-get cell]
+[cell-get cell]
 === out
 Int(99)

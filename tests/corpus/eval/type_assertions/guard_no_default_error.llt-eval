@@ -2,3 +2,6 @@
 [@Number "not a number"]
 === out
 String("not a number")
+
+=== warn
+[UnificationFailure] cannot unify Number with "not a number"

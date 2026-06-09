@@ -1,8 +1,8 @@
-# T-1038: Calling builtin-pow without --- uses: ["core"] produces a T002 warning.
+# T-1038: Calling builtin-pow without --- uses: produces a T002 warning.
 #
 # T002 is the type-checker's "undefined variable" warning (see `tinct explain T002`).
 # builtin-* aliases live in the builtins_env baseline frame which is NOT exported
-# into user-facing scope. Only --- uses: ["core"] injects them into document scope.
+# into user-facing scope. Only --- uses: ["math"] injects them into document scope.
 #
 # The warning format is:
 #   undefined variable: builtin-pow at SPAN
@@ -12,9 +12,11 @@
 # At runtime, the call still succeeds because the eval engine falls back to
 # looking up builtin-pow in parent env frames. The warning is informational.
 #
-# See also: tests/corpus/eval/stdlib/uses_core_builtin.llt-eval (WITH uses: ["core"])
-#           tests/corpus/eval/builtins/pow.llt-eval (same behavior, math context)
+# See also: tests/corpus/eval/stdlib/uses_doc_isolation.llt-eval (WITH uses: ["core"])
+#           tests/corpus/eval/builtins/pow.llt-eval (WITH uses: ["math"])
 [builtin-pow 2 10]
-
 === out
 Float(1024)
+
+=== warn
+[UndefinedVariable] undefined variable: builtin-pow

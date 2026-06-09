@@ -1,3 +1,4 @@
+--- uses: ["core"]
 [builtin-get "is-file" [call $stat %cwd "Cargo.toml"]]
 === out
 Bool(true)

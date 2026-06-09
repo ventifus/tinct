@@ -1348,3 +1348,34 @@ pub(crate) fn builtin_string_concat(
         ok_val(string_val(&result), call_span)
     })
 }
+
+/// Register `builtin-*` type aliases for string builtins (T-1102).
+///
+/// Each alias copies the TypeScheme from the canonical name already registered in
+/// `core_type_env`. Call this AFTER `core_type_env` has run.
+pub fn string_builtin_types(env: &mut crate::types::TypeEnv) {
+    env.alias_types(&[
+        ("builtin-str", "str"),
+        ("builtin-int->string", "int->string"),
+        ("builtin-float->string", "float->string"),
+        ("builtin-split", "split"),
+        ("builtin-trim", "trim"),
+        ("builtin-str-length", "str-length"),
+        ("builtin-str-slice", "str-slice"),
+        ("builtin-to-int", "to-int"),
+        ("builtin-replace", "replace"),
+        ("builtin-str-chars", "str-chars"),
+        ("builtin-char-code", "char-code"),
+        ("builtin-chr", "chr"),
+        ("builtin-str-bytes", "str-bytes"),
+        ("builtin-bytes-str", "bytes-str"),
+        ("builtin-str-index-of", "str-index-of"),
+        ("builtin-trim-start", "trim-start"),
+        ("builtin-trim-end", "trim-end"),
+        ("builtin-str-to-upper-char", "str-to-upper-char"),
+        ("builtin-str-to-lower-char", "str-to-lower-char"),
+        ("builtin-str-map-chars", "str-map-chars"),
+        ("builtin-regex-match?", "regex-match?"),
+        ("builtin-string-concat", "string-concat"),
+    ]);
+}

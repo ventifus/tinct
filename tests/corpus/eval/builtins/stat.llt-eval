@@ -1,3 +1,4 @@
+--- uses: ["core"]
 [builtin-get "type" [call $stat %cwd "Cargo.toml"]]
 === out
 String("file")

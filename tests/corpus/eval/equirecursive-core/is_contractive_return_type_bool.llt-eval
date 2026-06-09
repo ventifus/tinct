@@ -1,4 +1,6 @@
-# builtin-is-contractive return type is Bool: both true and false branches return Bool.
+# builtin-is-contractive
+--- uses: ["core"]
+# return type is Bool: both true and false branches return Bool.
 # This pins the return type contract — the builtin always returns a Bool value,
 # not a Variant or other type, regardless of whether the input is contractive.
 #

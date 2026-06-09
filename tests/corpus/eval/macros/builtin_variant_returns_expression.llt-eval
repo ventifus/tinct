@@ -1,5 +1,6 @@
 # builtin-variant returns Expression (not Variant) for known AST variant names
 # After runtime-v2 merge, macros work with Value::Expression directly
+--- uses: ["core"]
 [
   # Create a VarRef AST node using builtin-variant
   node: [builtin-variant "VarRef" [name: "x"]]

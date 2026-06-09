@@ -6,5 +6,5 @@
 #
 # Red@[category: "primary"] → annotation-of Red → Dict({"category": "primary"})
 [MyType: [type Red@[category: "primary"]]]
-[ann: [annotation-of Red]]
+[ann: [annotation-of MyType.Red]]
 [result: [= [get "category" ann] "primary"]]

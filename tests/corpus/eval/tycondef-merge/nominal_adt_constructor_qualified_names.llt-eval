@@ -22,7 +22,9 @@
       Color.Blue:  "blue"
       _:           "unknown"]]
 
-  r: [label Red]
-  g: [label Green]
-  b: [label Blue]
+  r: [label Color.Red]
+  g: [label Color.Green]
+  b: [label Color.Blue]
 ]
+=== out
+Dict({"Color": Dict({"Red": Variant(Color.Red, Null), "Green": Variant(Color.Green, Null), "Blue": Variant(Color.Blue, Null)}), "label": Function(c), "r": String("red"), "g": String("green"), "b": String("blue")})

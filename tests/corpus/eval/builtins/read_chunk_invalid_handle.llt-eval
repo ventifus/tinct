@@ -1,2 +1,3 @@
 # builtin-read-chunk: error when first argument is not a Handle
+--- uses: ["core"]
 [builtin-read-chunk "not-a-handle" 4]

@@ -1,4 +1,6 @@
-# builtin-is-contractive returns false for TypeNode.Union containing a bare RecursiveRef.
+# builtin-is-contractive
+--- uses: ["core"]
+# returns false for TypeNode.Union containing a bare RecursiveRef.
 # This is Case 3 of the contractiveness algorithm: Union and Intersect are non-guarding
 # combinators. The algorithm recurses into their `types` child Seq to check each member.
 # If any member is a bare RecursiveRef, the type is non-contractive.

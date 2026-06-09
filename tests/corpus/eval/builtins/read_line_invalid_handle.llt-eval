@@ -1,2 +1,3 @@
 # builtin-read-line: error when argument is not a Handle
+--- uses: ["core"]
 [builtin-read-line 42]

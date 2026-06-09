@@ -4,12 +4,12 @@
 # This test verifies that well-typed constructor calls produce zero type warnings.
 
 [
-  [type Shape
+  Shape: [type Shape
     [Circle r: Int]
     [Square s: Int]
   ]
 
   # Correct constructor calls — should typecheck without warnings
-  circle: [Circle r: 5]
-  square: [Square s: 10]
+  circle: [Shape.Circle r: 5]
+  square: [Shape.Square s: 10]
 ]

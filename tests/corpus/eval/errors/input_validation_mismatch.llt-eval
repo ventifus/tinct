@@ -10,3 +10,7 @@
 === error
 [E010] dot access: expected Dict, Proxy, or Variant, got Int (defined at 1:1-1:1) (accessed at 7:1-7:6)
   in accessing .foo at 7:1-7:6
+
+=== warn
+[TypeError] Pipeline input type 42 does not satisfy expects contract []
+[NotARecord] expected record type, got 42

@@ -817,6 +817,19 @@ pub(crate) fn builtin_drop(
 }
 
 /// Helper for `drop` on Seq: lazily drop elements one at a time.
+/// Register `builtin-*` type aliases for sequence transform builtins (T-1102).
+///
+/// Each alias copies the TypeScheme from the canonical name already registered in
+/// `core_type_env`. Call this AFTER `core_type_env` has run.
+pub fn seq_xform_builtin_types(env: &mut crate::types::TypeEnv) {
+    env.alias_types(&[
+        ("builtin-map", "map"),
+        ("builtin-filter", "filter"),
+        ("builtin-take", "take"),
+        ("builtin-drop", "drop"),
+    ]);
+}
+
 ///
 /// Args: (n_remaining, seq)
 pub(crate) fn builtin_drop_seq_step(

@@ -1,25 +1,25 @@
 # Unit variant constructors are callable with one argument to wrap the payload.
-# Runtime behavior: [Ok 42] calls the Ok unit variant constructor, wrapping 42 as payload.
+# Runtime behavior: [Result.Ok 42] calls the Ok unit variant constructor, wrapping 42 as payload.
 # Type checker should model this: NominalVariant(tag, {}) + 1 arg → NominalVariant(tag, {0: ArgType})
 #
-# Note: [Some] is a unit constructor (no fields), [Some value] is a field constructor (has field).
-# This test uses unit constructors to verify they can be called with 1 arg.
+# Uses prelude-defined Ok/Error and locally-qualified constructors for type-check correctness.
 [
-  _opt: [type Option [Some] None]
-  _status: [type Status Success [Failure]]
+  Status: [type Status Success [Failure]]
 
-  # Call unit variant constructor with Int
-  t1: [Some 42]
+  # Call unit variant constructor with Int (prelude Ok)
+  t1: [Ok 42]
 
-  # Call unit variant constructor with String
-  t2: [Failure "failed"]
+  # Call unit variant constructor with String (qualified local constructor)
+  t2: [Status.Failure "failed"]
 
   # Call unit variant constructor with another variant
-  t3: [Some [Failure "nested"]]
+  t3: [Ok [Status.Failure "nested"]]
 
-  # Bare reference to unit variant (no call)
+  # Bare reference to unit variant (prelude None)
   t4: None
 
-  # Bare reference to another unit variant
-  t5: Success
+  # Bare reference to qualified constructor
+  t5: Status.Success
 ]
+=== out
+Dict({"Status": Dict({"Status": Variant(Status.Status, Null), "Success": Variant(Status.Success, Null), "Failure": Variant(Status.Failure, Null)}), "t1": Variant(Result.Ok, Int(42)), "t2": Variant(Status.Failure, String("failed")), "t3": Variant(Result.Ok, Variant(Status.Failure, String("nested"))), "t4": Variant(Maybe.None, Null), "t5": Variant(Status.Success, Null)})

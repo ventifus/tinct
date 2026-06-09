@@ -16,7 +16,7 @@
 # Those warnings are expected and captured in the === warn section.
 [
   List: [type [Cons val: Int  tail: List]  Nil]
-  node: [Cons val: 1  tail: Nil]
+  node: [List.Cons val: 1  tail: List.Nil]
   result: [match node
     [case [let p] [List.Cons p] p.val]
     List.Nil:                   0]

@@ -1,5 +1,6 @@
 # builtin-read-line: read successive lines from a string-handle
 # Verifies: newline stripping, sequential reads on shared handle, EOF returns []
+--- uses: ["core"]
 [h: [string-handle "line1\nline2\nline3"]]
 [a: [builtin-read-line h]]
 [b: [builtin-read-line h]]

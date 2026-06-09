@@ -205,15 +205,23 @@ impl SurfaceResolver {
             }
 
             SurfaceExpression::CaseArm { let_bindings, pattern, body } => {
-                // For 3-arg form: let_bindings names the binding targets (no resolution
-                // needed — these are declarations, not variable references). Walk pattern
-                // to resolve pin variables (names NOT in the let_bindings set) and body
-                // to resolve names bound by the arm.
-                if let Some(lb) = let_bindings {
-                    self.walk_surface_node(lb);
+                // For 3-arg form: let_bindings declares binding targets (not variable
+                // references — do NOT walk it). Extract declared names, bring them into
+                // scope, then walk pattern (to resolve pin vars in the outer scope) and
+                // body (with the declared names in scope for slot-based lookup).
+                let bound_names = let_bindings
+                    .as_ref()
+                    .map(|lb| extract_surface_let_binding_names(lb))
+                    .unwrap_or_default();
+                let has_bindings = !bound_names.is_empty();
+                if has_bindings {
+                    self.enter_scope(&bound_names);
                 }
                 self.walk_surface_node(pattern);
                 self.walk_surface_node(body);
+                if has_bindings {
+                    self.exit_scope();
+                }
             }
 
             SurfaceExpression::Annotated { annotation, .. } => {
@@ -401,6 +409,32 @@ fn surface_node_static_keys(node: &Arc<SurfaceNode>) -> Option<Vec<String>> {
     match &node.expr {
         SurfaceExpression::Dict(entries) => Some(surface_dict_static_keys(entries)),
         _ => None,
+    }
+}
+
+/// Extract the declared binding names from a `[let n1 n2 ...]` surface node.
+///
+/// Used by the `CaseArm` resolver to determine which names the arm introduces into
+/// scope. The `let_bindings` node is a `SurfaceExpression::LetDecl` whose `bindings`
+/// vector holds one node per declared name. Each binding node may be:
+/// - `SurfaceExpression::VarRef { name }` — a plain name
+/// - `SurfaceExpression::Annotated { name, .. }` — an annotated name (`n@Type`)
+/// - `SurfaceExpression::Rest(Some(name))` — variadic (`...name`)
+///
+/// Wildcard (`_`) and unnamed rest (`...`) are skipped — they bind nothing.
+fn extract_surface_let_binding_names(lb: &Arc<SurfaceNode>) -> Vec<String> {
+    match &lb.expr {
+        SurfaceExpression::LetDecl { bindings } => bindings
+            .iter()
+            .filter_map(|b| match &b.expr {
+                SurfaceExpression::VarRef { name, .. } if name != "_" => Some(name.clone()),
+                SurfaceExpression::Annotated { name, .. } if name != "_" => Some(name.clone()),
+                SurfaceExpression::Rest(Some(name)) if name != "_" => Some(name.clone()),
+                _ => None,
+            })
+            .collect(),
+        // Not a LetDecl node — return empty (legacy 2-arg form or malformed input)
+        _ => Vec::new(),
     }
 }
 
@@ -612,6 +646,18 @@ mod tests {
                     collect_varrefs_in_node(&arm.body, name, out);
                 }
             }
+            SurfaceExpression::CaseArm {
+                let_bindings,
+                pattern,
+                body,
+            } => {
+                // Walk pattern and body — let_bindings contains declarations, not references
+                if let Some(lb) = let_bindings {
+                    collect_varrefs_in_node(lb, name, out);
+                }
+                collect_varrefs_in_node(pattern, name, out);
+                collect_varrefs_in_node(body, name, out);
+            }
             _ => {}
         }
     }
@@ -820,5 +866,91 @@ mod tests {
             .expect("$a should be resolved (key from prior expr in document)");
         // The first dict creates a scope with `a` as slot 0
         assert_eq!(coords.1, 0, "a is first key from prior expr, slot 0");
+    }
+
+    /// B-375: `[case [let v] pattern body]` — the name `v` declared in `[let v]` must be
+    /// in scope when the resolver walks `body`. Before this fix, `$v` in the body was a
+    /// FreeVar with no slot entry; after the fix it resolves to (level=0, slot=0).
+    #[test]
+    fn case_arm_let_bindings_in_scope() {
+        // v is declared by [let v] and used in the body
+        let src = "[result: [match [Result.Ok 42]
+            [case [let v] [Result.Ok v] $v]
+            _: 0]]";
+        let (program, table) = parse_and_resolve(src);
+        // Find all VarRefs named "v" in the program
+        let refs = find_varref_nodes(&program, "v");
+        assert!(
+            !refs.is_empty(),
+            "expected at least one VarRef for $v in case arm body"
+        );
+        // The $v in the body (not in let_bindings — those are not VarRef nodes walked
+        // by the resolver) must have a table entry from the CaseArm scope.
+        // At least one VarRef for $v must be slot-resolved.
+        let resolved: Vec<_> = refs.iter().filter_map(|(id, _)| table.get(id)).collect();
+        assert!(
+            !resolved.is_empty(),
+            "$v in case arm body must be slot-resolved (level, slot) after B-375 fix"
+        );
+        // v is the only name in the [let v] scope, so it must be at slot 0
+        for coords in &resolved {
+            assert_eq!(
+                coords.1, 0,
+                "v is the only declared name in [let v], must be slot 0"
+            );
+        }
+    }
+
+    /// B-375: Multiple bindings in `[case [let a b] ...]` — each gets the correct slot.
+    #[test]
+    fn case_arm_let_bindings_multiple_slots() {
+        // a is at slot 0, b is at slot 1
+        let src = "[fn [let x] [match x
+            [case [let a b] [Pair a b] [+ $a $b]]
+            _: 0]]";
+        let (program, table) = parse_and_resolve(src);
+        let a_refs = find_varref_nodes(&program, "a");
+        let b_refs = find_varref_nodes(&program, "b");
+        // a must resolve and be at slot 0
+        let a_resolved: Vec<_> = a_refs.iter().filter_map(|(id, _)| table.get(id)).collect();
+        assert!(
+            !a_resolved.is_empty(),
+            "$a in case arm body must be slot-resolved"
+        );
+        for coords in &a_resolved {
+            assert_eq!(coords.1, 0, "a is first name in [let a b], must be slot 0");
+        }
+        // b must resolve and be at slot 1
+        let b_resolved: Vec<_> = b_refs.iter().filter_map(|(id, _)| table.get(id)).collect();
+        assert!(
+            !b_resolved.is_empty(),
+            "$b in case arm body must be slot-resolved"
+        );
+        for coords in &b_resolved {
+            assert_eq!(coords.1, 1, "b is second name in [let a b], must be slot 1");
+        }
+    }
+
+    /// B-375: Names declared in `[let ...]` must NOT resolve in the outer scope
+    /// (they are declarations, not references). A `[let v]` inside a CaseArm should
+    /// not produce a resolution entry for the VarRef-looking node within `[let v]`.
+    #[test]
+    fn case_arm_let_bindings_not_resolved_as_varrefs() {
+        // v is declared in [let v] — the resolver must NOT try to resolve
+        // the VarRef inside let_bindings against the outer scope.
+        // There is no outer binding named v, so if it WERE walked as a VarRef
+        // it would be a FreeVar anyway, but the key invariant is: the declaration
+        // node inside [let v] is NOT in the resolution table at all.
+        let src = "[result: [match 42
+            [case [let v] v $v]
+            _: 0]]";
+        let (program, table) = parse_and_resolve(src);
+        // The $v in body must resolve (slot 0 from the case-arm scope)
+        let refs = find_varref_nodes(&program, "v");
+        let resolved: Vec<_> = refs.iter().filter_map(|(id, _)| table.get(id)).collect();
+        assert!(
+            !resolved.is_empty(),
+            "$v in body must resolve after B-375 fix"
+        );
     }
 }

@@ -1,4 +1,5 @@
 # builtin-finite? : check if a number is finite
+--- uses: ["math"]
 [builtin-finite? 42.0]
 === out
 Bool(true)

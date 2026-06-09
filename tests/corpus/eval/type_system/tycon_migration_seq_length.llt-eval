@@ -1,4 +1,5 @@
 # TyCon migration regression: verify Seq evaluation works after Type::Seq→App(TyCon("Seq")) migration.
+--- uses: ["core"]
 # S-842 replaced Type::Seq(T) with Type::seq() helper at ~285 match sites.
 # Seq must be collected before length() can be called (length operates on Dict/materialized Seq).
 [

@@ -1,4 +1,5 @@
 # eval-types: evaluate a simple quoted literal in the type stage environment
+--- uses: ["core"]
 [eval-types [seq [quote 42] [builtin-variant "Seq.Nil"]]]
 === out
 Seq(Int(42), ...)

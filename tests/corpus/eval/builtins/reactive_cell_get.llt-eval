@@ -1,5 +1,5 @@
 # cell-get reads the initial value from a reactive cell
 
-[builtin-cell-get [builtin-reactive-cell 42]]
+[cell-get [reactive-cell 42]]
 === out
 Int(42)

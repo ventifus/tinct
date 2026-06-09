@@ -1,4 +1,5 @@
 # builtin-sin : sine of 0 radians
+--- uses: ["math"]
 [builtin-sin 0]
 === out
 Float(0)

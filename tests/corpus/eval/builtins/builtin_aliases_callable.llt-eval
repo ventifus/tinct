@@ -1,4 +1,5 @@
-# builtin-* aliases are no longer accessible in user code
+# builtin-* aliases are accessible via --- uses: ["core"]
+--- uses: ["core"]
 [
   a: [builtin-lt 1 2]
 ]

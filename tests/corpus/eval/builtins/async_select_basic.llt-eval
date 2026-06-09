@@ -3,13 +3,16 @@
 # The send thunk is never materialized, so ch1 has no value.
 # select-once polls all channels up to MAX_SELECT_POLLS times, finds nothing,
 # and raises a resource limit error (E043).
+--- uses: ["core"]
 [
   ch1: [channel 5]
   ch2: [channel 5]
   sent: [send ch1 42]
   pair1: [ch: ch1  handler: [fn [let x] [str "ch1:" x]]]
   pair2: [ch: ch2  handler: [fn [let x] [str "ch2:" x]]]
-  sources: [seq pair1 [seq pair2 []]]
+  sources: [seq pair1 [seq pair2 [builtin-variant "Seq.Nil"]]]
   result: [select-once [context] sources]
 ]
 .result
+=== error
+[E043]

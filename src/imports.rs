@@ -420,11 +420,6 @@ fn build_prelude_env_inner() -> Rc<TypeEnv> {
             })),
         );
     }
-    // Inject builtin-* aliases for prelude type-checking only.
-    // prelude.llt uses builtin-lt, builtin-eq, etc. to call Rust primitives
-    // by stable names. These are NOT in user scope — inject_builtin_aliases()
-    // must NOT be called on the user-facing env (line 222 above).
-    builtins_env.inject_builtin_aliases();
     let builtins_env = Rc::new(builtins_env);
 
     match typecheck_and_merge_stdlib_module(

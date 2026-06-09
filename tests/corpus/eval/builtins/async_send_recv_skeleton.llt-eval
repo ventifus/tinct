@@ -1,7 +1,13 @@
 # Send and recv on channel - sends "hello" and receives it back
-
+# Use a pipeline: doc 1 sends/receives, doc 2 extracts the payload.
 [
-  ch: [channel 10]
-  _:  [send ch "hello"]
-  msg: [recv ch]
+  ch:   [channel 10]
+  sent: [send ch "hello"]
+  msg:  [if [= sent []] [recv ch] [recv ch]]
 ]
+---
+[match %.msg
+  [case [let v] [Result.Ok v] v]
+  Closed.Closed:               "closed"]
+=== out
+String("hello")

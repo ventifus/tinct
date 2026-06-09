@@ -1,4 +1,5 @@
-# builtin-is-contractive returns true for a plain Int value.
+# builtin-is-contractive: returns true for a plain Int value.
+--- uses: ["core"]
 # The contractiveness check falls to the default arm (Case 2): any value that is
 # neither TypeNode.RecursiveRef nor TypeNode.Union/Intersect is treated as guarding.
 # This represents the leaf case — primitive TypeNode constructors (Int, Float, Bool,

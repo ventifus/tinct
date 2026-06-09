@@ -230,6 +230,7 @@ impl InferState {
             determines: vec![],
             resolver: None,
             resolver_injective: false,
+            prelude_origin: true,
         });
 
         // Numeric: extends Equatable (primitive instances pre-seeded below for Int/Float/Number)
@@ -240,6 +241,7 @@ impl InferState {
             determines: vec![],
             resolver: None,
             resolver_injective: false,
+            prelude_origin: true,
         });
 
         // Addable: 3-parameter type class with functional dependency (a,b) → c
@@ -254,6 +256,7 @@ impl InferState {
             determines: vec![(vec![0, 1], vec![2])], // (a,b) → c
             resolver: None,
             resolver_injective: false,
+            prelude_origin: true,
         });
 
         // Subtractable: 3-parameter type class with functional dependency (a,b) → c
@@ -268,6 +271,7 @@ impl InferState {
             determines: vec![(vec![0, 1], vec![2])], // (a,b) → c
             resolver: None,
             resolver_injective: false,
+            prelude_origin: true,
         });
 
         // Multipliable: 3-parameter type class with functional dependency (a,b) → c
@@ -282,6 +286,7 @@ impl InferState {
             determines: vec![(vec![0, 1], vec![2])], // (a,b) → c
             resolver: None,
             resolver_injective: false,
+            prelude_origin: true,
         });
 
         // Divisible: 3-parameter type class with functional dependency (a,b) → c
@@ -296,6 +301,7 @@ impl InferState {
             determines: vec![(vec![0, 1], vec![2])], // (a,b) → c
             resolver: None,
             resolver_injective: false,
+            prelude_origin: true,
         });
 
         // Comparable: extends Equatable (primitive instances pre-seeded below; prelude also declares instances)
@@ -306,6 +312,7 @@ impl InferState {
             determines: vec![],
             resolver: None,
             resolver_injective: false,
+            prelude_origin: true,
         });
 
         // Showable: base class (primitive instances pre-seeded below; prelude also declares instances)
@@ -316,6 +323,7 @@ impl InferState {
             determines: vec![],
             resolver: None,
             resolver_injective: false,
+            prelude_origin: true,
         });
 
         // Mappable: base class (instances defined in prelude.llt; no primitive pre-seeding needed)
@@ -327,6 +335,7 @@ impl InferState {
             determines: vec![],
             resolver: None,
             resolver_injective: false,
+            prelude_origin: true,
         });
 
         // Appendable: base class. Seq instance pre-seeded below.
@@ -339,6 +348,7 @@ impl InferState {
             determines: vec![],
             resolver: None,
             resolver_injective: false,
+            prelude_origin: true,
         });
 
         // Indexable: 3-parameter type class with functional dependency (container, key) → value
@@ -354,6 +364,7 @@ impl InferState {
             determines: vec![(vec![0, 1], vec![2])], // (container, key) → value
             resolver: None,
             resolver_injective: false,
+            prelude_origin: true,
         });
 
         // Concatable: 3-parameter type class with functional dependency (a, b) → c
@@ -371,6 +382,7 @@ impl InferState {
             determines: vec![(vec![0, 1], vec![2])], // (a, b) → c
             resolver: None,
             resolver_injective: false,
+            prelude_origin: true,
         });
 
         let mut instance_env = InstanceEnv::new();
@@ -402,6 +414,7 @@ impl InferState {
             }),
             det_positions: vec![0, 1],
             method_types: HashMap::new(),
+            prelude_origin: true,
         };
         instance_env.insert(map_instance).unwrap();
 
@@ -422,6 +435,7 @@ impl InferState {
             }),
             det_positions: vec![0, 1],
             method_types: HashMap::new(),
+            prelude_origin: true,
         };
         instance_env.insert(seq_instance).unwrap();
 
@@ -447,6 +461,7 @@ impl InferState {
             }),
             det_positions: vec![0, 1],
             method_types: HashMap::new(),
+            prelude_origin: true,
         };
         instance_env.insert(concatable_seq_instance).unwrap();
 
@@ -484,6 +499,7 @@ impl InferState {
             }),
             det_positions: vec![0, 1],
             method_types: HashMap::new(),
+            prelude_origin: true,
         };
         instance_env.insert(concatable_record_instance).unwrap();
 
@@ -503,6 +519,7 @@ impl InferState {
             }),
             det_positions: vec![0, 1],
             method_types: HashMap::new(),
+            prelude_origin: true,
         };
         instance_env.insert(concatable_str_instance).unwrap();
 
@@ -522,6 +539,7 @@ impl InferState {
             }),
             det_positions: vec![0, 1],
             method_types: HashMap::new(),
+            prelude_origin: true,
         };
         instance_env.insert(concatable_bytes_instance).unwrap();
 
@@ -552,6 +570,7 @@ impl InferState {
                         instance_type: ty,
                         det_positions: vec![],
                         method_types: HashMap::new(),
+                        prelude_origin: true,
                     })
                     .unwrap();
             };

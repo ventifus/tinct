@@ -1,4 +1,5 @@
 # > : greater-than comparison on Bool (derived from <)
+# Runtime treats Bool as orderable; type checker does not (Bool not Comparable).
 [> true false]
 === out
 Bool(true)

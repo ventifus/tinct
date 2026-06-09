@@ -1,8 +1,8 @@
 # S-850: Pattern matching on Absent.Absent via Constructor pattern.
 # [Absent.Absent]: arm fires when the scrutinee is Value::Variant{tag:"Absent.Absent"}.
-# The catch-all arm v: v returns the value unchanged for non-Absent inputs.
+# The catch-all arm [case [let v] _ v] returns the value unchanged for non-Absent inputs.
 [result: [match [get? "x" []]
   [Absent.Absent]: "missing"
-  v: v]]
+  [case [let v] _ v]]]
 === out
 Dict({"result": String("missing")})

@@ -1,4 +1,5 @@
 # Shadowable operator wrappers: these functions delegate to builtin-* aliases
+--- uses: ["core"]
 # to ensure they can be shadowed while prelude functions remain functional.
 # Test that each wrapper produces the correct result when called directly.
 [

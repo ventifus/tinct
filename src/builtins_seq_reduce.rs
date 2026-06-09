@@ -703,6 +703,14 @@ pub(crate) fn builtin_concat(
 }
 
 /// Helper for concat on Seq: lazily chains xs tail with ys.
+/// Register `builtin-*` type aliases for sequence reduce builtins (T-1102).
+///
+/// Each alias copies the TypeScheme from the canonical name already registered in
+/// `core_type_env`. Call this AFTER `core_type_env` has run.
+pub fn seq_reduce_builtin_types(env: &mut crate::types::TypeEnv) {
+    env.alias_types(&[("builtin-reduce", "reduce")]);
+}
+
 ///
 /// Args: (xs_tail, ys)
 pub(crate) fn builtin_concat_seq_step(

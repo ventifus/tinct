@@ -13,3 +13,6 @@
   2442 | =@[doc: "Equality"]: [fn@[return: Bool constraint: [a: Equatable]] [let x@a y@a] [builtin-eq x y]]
        |                                                                                  ^^^^^^^^^^^^^^^^
   in [variant? ...] at 1:1-1:29
+
+=== warn
+[ArityMismatch] expected 1 arguments, got 2

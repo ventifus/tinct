@@ -1622,6 +1622,22 @@ impl TypeEnv {
             }
         }
     }
+
+    /// Register a batch of type aliases by copying the TypeScheme from a canonical name.
+    ///
+    /// For each `(alias, canonical)` pair: if `canonical` is found in the environment,
+    /// its `TypeScheme` is inserted under `alias`. If `canonical` is absent, the pair
+    /// is silently skipped (same behaviour as `inject_builtin_aliases`).
+    ///
+    /// Used by the per-file `*_builtin_types` functions (T-1102) to co-locate `builtin-*`
+    /// type alias declarations with their Rust implementations.
+    pub fn alias_types(&mut self, pairs: &[(&str, &str)]) {
+        for (alias, canonical) in pairs {
+            if let Some(scheme) = self.get(canonical).cloned() {
+                self.insert_scheme(alias.to_string(), scheme);
+            }
+        }
+    }
 }
 
 impl Default for TypeEnv {
@@ -1850,6 +1866,7 @@ mod help_suggestion_tests {
                 );
                 methods
             },
+            prelude_origin: false,
         };
 
         // Use a fresh InstanceEnv containing ONLY the test instance.
@@ -2041,6 +2058,7 @@ mod help_suggestion_tests {
             determines: vec![],
             resolver: None,
             resolver_injective: false,
+            prelude_origin: false,
         });
 
         // Constraint with origin_name="str" (as would be set by instantiate_scheme at a VarRef)
@@ -2138,6 +2156,7 @@ mod help_suggestion_tests {
             determines: vec![],
             resolver: None,
             resolver_injective: false,
+            prelude_origin: false,
         });
 
         // Constraint WITHOUT origin info (annotation-driven, as in existing tests)

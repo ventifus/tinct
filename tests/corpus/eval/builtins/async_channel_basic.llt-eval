@@ -1,3 +1,6 @@
 # Basic channel creation - creates a working channel with capacity 32
+# type-of returns "Channel" for the created channel value
 
-[channel 32]
+[type-of [channel 32]]
+=== out
+String("Channel")

@@ -1,4 +1,5 @@
 # eval: env: named arg injects bindings into the evaluation environment
+--- uses: ["core"]
 [eval [seq [quote $x] [builtin-variant "Seq.Nil"]] env: [x: 100]]
 === out
 Int(100)

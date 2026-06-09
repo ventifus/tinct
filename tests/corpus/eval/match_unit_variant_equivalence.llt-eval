@@ -2,17 +2,19 @@
 # D-1 decision: [Tag]: (binding:None) matches all variants regardless of payload,
 # same as [Tag _]: — users writing [Tag]: mean "match this tag, I don't care about payload."
 [
-  [type Color [Red] [Green] [Blue]]
-  [type Wrapper [Boxed value: Int] [Empty]]
+  Color:   [type Color [Red] [Green] [Blue]]
+  Wrapper: [type Wrapper [Boxed value: Int] [Empty]]
 
-  # [Red]: matches Red (unit variant, no payload) — same as [Red _]:
-  match1: [match Red
-    [Red]:   "red"
-    [Green]: "green"
-    [Blue]:  "blue"]
+  # [Color.Red]: matches Red (unit variant, no payload) — same as [Color.Red _]:
+  match1: [match Color.Red
+    Color.Red:   "red"
+    Color.Green: "green"
+    Color.Blue:  "blue"]
 
-  # [Boxed]: with a payload variant — [Boxed]: should match even though Boxed carries a payload
-  match2: [match [Boxed value: 42]
-    [Boxed]: "has-box"
-    [Empty]: "empty"]
+  # [Wrapper.Boxed]: with a payload variant — matches even though Boxed carries a payload
+  match2: [match [Wrapper.Boxed value: 42]
+    Wrapper.Boxed: "has-box"
+    Wrapper.Empty: "empty"]
 ]
+=== out
+Dict({"Color": Dict({"Color": Variant(Color.Color, Null), "Red": Variant(Color.Red, Null), "Green": Variant(Color.Green, Null), "Blue": Variant(Color.Blue, Null)}), "Wrapper": Dict({"Wrapper": Variant(Wrapper.Wrapper, Null), "Boxed": Function(value), "Empty": Variant(Wrapper.Empty, Null)}), "match1": String("red"), "match2": String("has-box")})

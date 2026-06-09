@@ -1,4 +1,6 @@
-# builtin-is-contractive returns true for TypeNode.Union where all children are guarding.
+# builtin-is-contractive
+--- uses: ["core"]
+# returns true for TypeNode.Union where all children are guarding.
 # Case 3: Union/Intersect recurse into their `types` Seq. Each child is checked.
 # A plain Int value (or any non-Union/Intersect/RecursiveRef value) is guarding — Case 2.
 # If ALL children of a Union/Intersect are guarding, the Union as a whole is contractive.

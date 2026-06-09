@@ -524,7 +524,7 @@ pub fn run_corpus_dir(
                 failed.push(Failure {
                     path: relative_path.to_path_buf(),
                     message: format!(
-                        "typecheck produced unexpected warnings (add === warn section or fix the warning):\n{}",
+                        "typecheck produced unexpected warnings (fix the warning or move this test to a warnings/ directory):\n{}",
                         actual_warnings
                     ),
                 });

@@ -405,7 +405,7 @@
 
 ]
 
---- uses: ["core"]
+--- uses: ["core" "io" "math" "meta" "dict" "string" "seq" "async"]
 
 # ============================================================================
 # LLT Standard Library (Prelude)

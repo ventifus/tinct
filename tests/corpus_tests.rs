@@ -359,6 +359,13 @@ fn test_eval_corpus() {
     let result = std::thread::Builder::new()
         .stack_size(256 * 1024 * 1024) // 256MB — debug-mode stdlib cleanup needs ~100MB; extra headroom for prelude growth
         .spawn(move || {
+            // B-380: Pre-populate the typecheck prelude cache at spawn thread startup.
+            // Thread-local caches (PRELUDE_CACHE, PRELUDE_INSTANCE_CACHE) start empty
+            // in the 256MB spawn thread. Without this call, the first build_prelude_env()
+            // inside typecheck_source() produces different class/instance registration
+            // than update_eval_corpus's default thread (which is pre-populated).
+            let _ = tinct::build_prelude_env();
+
             run_corpus_dir(
                 &corpus_dir,
                 &[type_errors_dir.as_path(), slow_dir.as_path()],

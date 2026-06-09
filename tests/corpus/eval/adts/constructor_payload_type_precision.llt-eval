@@ -13,7 +13,7 @@
   # The type checker must see p.n as Int (not Unknown) for [@Int p.n] to typecheck.
   unwrap-ok: [fn [let r@Result2]
     [match r
-      [MyOk p]: [@Int p.n]
+      [case [let p] [MyOk p] [@Int p.n]]
       [MyErr _]: 0
     ]
   ]

@@ -1,10 +1,10 @@
 # T-1017: Result.Ok value unification — two Ok calls produce independent types.
-# Declares Result locally so Ok is in typecheck scope (no T002 warnings).
+# Uses qualified Result.Ok constructor (T-1086: unqualified Ok not in type scope).
 # ok1 and ok2 use different payload types (Int vs String), verifying independent types.
 [
   Result: [type [Ok a] [Error String]]
-  ok1: [Ok 42]
-  ok2: [Ok "hello"]
+  ok1: [Result.Ok 42]
+  ok2: [Result.Ok "hello"]
   result: ok1
 ]
 === out

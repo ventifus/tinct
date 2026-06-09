@@ -5,3 +5,6 @@
 [@Int %]
 === out
 Dict({"x": Int(1)})
+
+=== warn
+[UnificationFailure] cannot unify Int with [x: 1]

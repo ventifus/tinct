@@ -3360,3 +3360,48 @@ pub(crate) fn builtin_read_link(
         ok_val(string_val(&target_str), call_span)
     })
 }
+
+/// Register `builtin-*` type aliases for I/O builtins (T-1102).
+///
+/// Each alias copies the TypeScheme from the canonical name already registered in
+/// `core_type_env`. Call this AFTER `core_type_env` has run.
+pub fn io_builtin_types(env: &mut crate::types::TypeEnv) {
+    env.alias_types(&[
+        ("builtin-env", "env"),
+        ("builtin-emit", "emit"),
+        ("builtin-open", "open"),
+        ("builtin-write", "write"),
+        ("builtin-write-atomic", "write-atomic"),
+        ("builtin-write-handle", "write-handle"),
+        ("builtin-flush", "flush"),
+        ("builtin-close", "close"),
+        ("builtin-stat", "stat"),
+        ("builtin-exists", "exists"),
+        ("builtin-stat-symlink", "stat-symlink"),
+        ("builtin-make-dir", "make-dir"),
+        ("builtin-rename", "rename"),
+        ("builtin-list-dir", "list-dir"),
+        ("builtin-string-handle", "string-handle"),
+        ("builtin-copy-file", "copy-file"),
+        ("builtin-symlink", "symlink"),
+        ("builtin-set-permissions", "set-permissions"),
+        ("builtin-link", "link"),
+        ("builtin-read-link", "read-link"),
+        ("builtin-get-xattr", "get-xattr"),
+        ("builtin-set-xattr", "set-xattr"),
+        ("builtin-remove-xattr", "remove-xattr"),
+        ("builtin-list-xattrs", "list-xattrs"),
+        ("builtin-raw-create", "raw-create"),
+        ("builtin-seek", "seek"),
+        ("builtin-seek-end", "seek-end"),
+        ("builtin-position", "position"),
+        ("builtin-revocable", "revocable"),
+        ("builtin-revoke-cap", "revoke-cap"),
+        ("builtin-cap-data", "cap-data"),
+        ("builtin-connect", "connect"),
+        ("builtin-tls-layer", "tls-layer"),
+        ("builtin-tls-peer-cert", "tls-peer-cert"),
+        ("builtin-send-datagram", "send-datagram"),
+        ("builtin-recv-datagram", "recv-datagram"),
+    ]);
+}

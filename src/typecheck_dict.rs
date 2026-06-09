@@ -1199,44 +1199,45 @@ pub(crate) fn infer_dict(
     // If future work requires true local-scoped classes (invisible outside the declaring dict),
     // a separate mechanism (export list or explicit opt-out) would be needed.
     //
-    // B-346 FIX: Gate merge-back on `state.in_prelude_load`.
+    // T-1110: Per-declaration propagation gate via `prelude_origin`.
     //
     // The unconditional merge-back (B-330/B-346 root cause) propagated ALL child-frame
     // class/instance declarations into the outer frame. This was necessary for prelude loading
     // (MonadResult, FunctorResult, etc. must be globally visible) but incorrect for user code
     // (a class declared inside a nested dict should NOT escape into the outer scope).
     //
-    // FIX: only merge-back when `state.in_prelude_load == true`. During prelude loading, all
-    // class/instance declarations must propagate so they end up in PRELUDE_INSTANCE_CACHE and
-    // become globally visible. During user-code type-checking (in_prelude_load == false), child
-    // declarations stay scoped — they do not propagate to the enclosing frame.
+    // B-346 FIX refined by T-1110: filter by `decl.prelude_origin` instead of the coarse
+    // `state.in_prelude_load` gate. Each ClassDecl/InstanceDecl carries `prelude_origin: bool`
+    // set at construction time (true when `state.in_prelude_load` was true, or for bootstrap
+    // instances pre-seeded in `InferState::new()`). Only declarations with `prelude_origin = true`
+    // propagate upward — user code declarations (`prelude_origin = false`) stay scoped to the
+    // declaring dict, regardless of the current loading phase.
     //
-    // Limitation: this is a coarse gate — it propagates ALL declarations during prelude loading,
-    // not just the ones that explicitly need global scope. A finer-grained solution would add
-    // `prelude_origin: bool` to ClassDecl/InstanceDecl and filter by that flag regardless of
-    // loading phase. That approach requires updating ~40 struct construction sites and is tracked
-    // as future refinement work in T-1110.
+    // This is semantically equivalent to the old `state.in_prelude_load` gate (since
+    // `prelude_origin` is set from `state.in_prelude_load` at construction), but enables future
+    // per-declaration refinement independent of the loading phase.
     {
         // Recover the outer frame (try_unwrap succeeds if no other Arc clone holds a reference
         // to the outer env; falls back to clone if the child still holds a parent reference).
         let mut outer_ce = Arc::try_unwrap(outer_class_env).unwrap_or_else(|arc| (*arc).clone());
         let mut outer_ie = Arc::try_unwrap(outer_instance_env).unwrap_or_else(|arc| (*arc).clone());
 
-        if state.in_prelude_load {
-            // Prelude loading: propagate all child-local declarations to the outer frame.
-            // This is required for prelude-declared classes/instances to become globally visible
-            // (they must reach PRELUDE_INSTANCE_CACHE via the seeding path in imports.rs).
-            let child_classes: Vec<_> = state.class_env.iter_classes().cloned().collect();
-            let child_instances: Vec<_> = state.instance_env.iter_instances().cloned().collect();
+        // Propagate only prelude-origin declarations to the outer frame.
+        // Prelude-origin declarations must reach PRELUDE_INSTANCE_CACHE via the seeding path
+        // in imports.rs to become globally visible. User-code declarations stay scoped.
+        let child_classes: Vec<_> = state.class_env.iter_classes().cloned().collect();
+        let child_instances: Vec<_> = state.instance_env.iter_instances().cloned().collect();
 
-            for class_decl in child_classes {
+        for class_decl in child_classes {
+            if class_decl.prelude_origin {
                 outer_ce.insert_if_absent(class_decl);
             }
-            for inst_decl in child_instances {
+        }
+        for inst_decl in child_instances {
+            if inst_decl.prelude_origin {
                 let _ = outer_ie.insert(inst_decl);
             }
         }
-        // Else: user-code type-checking — discard child-local declarations (lexical scoping).
 
         state.class_env = outer_ce;
         state.instance_env = outer_ie;

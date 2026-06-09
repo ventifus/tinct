@@ -1,4 +1,5 @@
 # seq: nested values in seq
+--- uses: ["core"]
 [collect [seq [x: 1] [seq [y: 2] [builtin-variant "Seq.Nil"]]]]
 === out
 Dict({0: Dict({"x": Int(1)}), 1: Dict({"y": Int(2)})})

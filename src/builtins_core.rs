@@ -919,6 +919,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
         determines: vec![(vec![0, 1], vec![2])], // (a,b) → c
         resolver: None,
         resolver_injective: false,
+        prelude_origin: true,
     });
 
     let subtractable_class = Arc::new(ClassDecl {
@@ -932,6 +933,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
         determines: vec![(vec![0, 1], vec![2])], // (a,b) → c
         resolver: None,
         resolver_injective: false,
+        prelude_origin: true,
     });
 
     let multipliable_class = Arc::new(ClassDecl {
@@ -945,6 +947,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
         determines: vec![(vec![0, 1], vec![2])], // (a,b) → c
         resolver: None,
         resolver_injective: false,
+        prelude_origin: true,
     });
 
     let divisible_class = Arc::new(ClassDecl {
@@ -958,6 +961,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
         determines: vec![(vec![0, 1], vec![2])], // (a,b) → c
         resolver: None,
         resolver_injective: false,
+        prelude_origin: true,
     });
 
     let equatable_class = Arc::new(ClassDecl {
@@ -967,6 +971,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
         determines: vec![],
         resolver: None,
         resolver_injective: false,
+        prelude_origin: true,
     });
 
     let comparable_class = Arc::new(ClassDecl {
@@ -976,6 +981,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
         determines: vec![],
         resolver: None,
         resolver_injective: false,
+        prelude_origin: true,
     });
 
     let indexable_class = Arc::new(ClassDecl {
@@ -989,6 +995,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
         determines: vec![(vec![0, 1], vec![2])], // (container, key) → value
         resolver: None,
         resolver_injective: false,
+        prelude_origin: true,
     });
 
     let concatable_class = Arc::new(ClassDecl {
@@ -1002,6 +1009,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
         determines: vec![(vec![0, 1], vec![2])], // (a, b) → c
         resolver: None,
         resolver_injective: false,
+        prelude_origin: true,
     });
 
     // ── Arithmetic ────────────────────────────────────────────────────────────
@@ -1883,25 +1891,11 @@ pub fn core_type_env(env: &mut TypeEnv) {
     env.insert(
         "apply".to_string(),
         Type::Function {
-            params: vec![
-                (
-                    None,
-                    Type::Function {
-                        params: vec![(None, Type::Top)],
-                        ret: Box::new(Type::Top),
-                        variadic: false,
-                        required_count: 1,
-                    },
-                ),
-                (
-                    None,
-                    Type::Record(Row {
-                        fields: BTreeMap::new(),
-                        tail: crate::type_def::RowTail::Empty,
-                    }),
-                ),
-            ],
-            ret: Box::new(Type::Top),
+            // apply accepts any function (variadic or otherwise) and any dict.
+            // Using Unknown for both params preserves gradual typing — the caller
+            // provides a concrete function and the callee applies it positionally.
+            params: vec![(None, Type::Unknown), (None, Type::Unknown)],
+            ret: Box::new(Type::Unknown),
             variadic: false,
             required_count: 2,
         },
@@ -2052,11 +2046,13 @@ pub fn core_type_env(env: &mut TypeEnv) {
         },
     );
     // annotation-of: takes any value, returns its annotation dict (or {} if none).
+    // Returns Unknown (not Top) so that dot-access on the result works gracefully
+    // under gradual typing — ann.doc, ann.version etc. resolve to Unknown, not an error.
     env.insert(
         "annotation-of".to_string(),
         Type::Function {
             params: vec![(None, Type::Top)],
-            ret: Box::new(Type::Top),
+            ret: Box::new(Type::Unknown),
             variadic: false,
             required_count: 1,
         },
@@ -4051,4 +4047,17 @@ pub fn core_type_env(env: &mut TypeEnv) {
             env.insert_scheme(alias.to_string(), scheme);
         }
     }
+
+    // Equirecursive type system builtins — used internally by the type checker
+    // and exposed for testing/meta-programming. Return type is Bool or Unknown.
+    // builtin-is-contractive: Top → Bool
+    env.insert(
+        "builtin-is-contractive".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Top)],
+            ret: Box::new(Type::Bool),
+            variadic: false,
+            required_count: 1,
+        },
+    );
 }

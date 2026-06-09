@@ -1,4 +1,5 @@
 # dict_to_surface_node_inner roundtrip: Literal(int) variant
+--- uses: ["core"]
 # [quote 42] produces Value::Expression(Literal node); eval re-evaluates it.
 [eval [seq [quote 42] [builtin-variant "Seq.Nil"]]]
 === out

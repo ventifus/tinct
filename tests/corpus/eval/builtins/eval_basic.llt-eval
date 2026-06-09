@@ -1,4 +1,5 @@
 # eval: evaluate a single quoted literal expression, verify the result
+--- uses: ["core"]
 [eval [seq [quote 42] [builtin-variant "Seq.Nil"]]]
 === out
 Int(42)

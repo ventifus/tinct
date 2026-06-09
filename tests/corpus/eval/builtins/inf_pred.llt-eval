@@ -1,4 +1,5 @@
 # builtin-inf? : check if result is infinite
+--- uses: ["math"]
 [builtin-inf? [builtin-log 0]]
 === out
 Bool(true)
