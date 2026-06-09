@@ -1,4 +1,5 @@
 # validate: valid input passes through unchanged
+--- uses: ["core"]
 [validate [type: "Int" min: 1 max: 100] 42]
 === out
 Int(42)

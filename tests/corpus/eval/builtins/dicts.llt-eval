@@ -1,7 +1,7 @@
 # Comprehensive dict operations
 # Tests: keys, merge, map, filter, reduce, length, take, drop, get
 # Covers construction, transformation, merging, and edge cases
-
+--- uses: ["core"]
 [
   # Keys extraction
   keys_basic: [keys [a: 1  b: 2]]

@@ -1,4 +1,5 @@
 # bytes-find: empty pattern
+--- uses: ["core"]
 [bytes-find [bytes-of [1 2 3]] [bytes-of []]]
 === out
 Int(0)

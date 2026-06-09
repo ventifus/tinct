@@ -1,4 +1,5 @@
 # validate: range constraints
+--- uses: ["core"]
 [validate [type: "Int" min: 1 max: 65535] 8080]
 === out
 Int(8080)

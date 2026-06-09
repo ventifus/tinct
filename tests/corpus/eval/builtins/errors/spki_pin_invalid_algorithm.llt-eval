@@ -1,5 +1,6 @@
 # Test: spki-pin (now in net.llt) accepts any algorithm variant and fingerprint bytes
 # Algorithm validation is deferred to tls-connect which validates pins at connection time
+--- uses: ["core"]
 [include %libdir "net.llt"]
 
 [InvalidAlgorithm: [variant "InvalidAlgorithm"]]
@@ -8,3 +9,6 @@
 
 === out
 String("InvalidAlgorithm")
+
+=== warn
+[UndefinedVariable] undefined variable: spki-pin

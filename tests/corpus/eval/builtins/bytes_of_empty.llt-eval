@@ -1,4 +1,5 @@
 # bytes-of: empty sequence
+--- uses: ["core"]
 [bytes-of []]
 === out
 Bytes(0 bytes)

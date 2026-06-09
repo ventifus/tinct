@@ -1,4 +1,5 @@
 # bytes-find: pattern found at start
+--- uses: ["core"]
 [bytes-find [bytes-of [1 2 3 4 5]] [bytes-of [1 2]]]
 === out
 Int(0)

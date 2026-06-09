@@ -1,7 +1,8 @@
 # validate: range constraint violation
+--- uses: ["core"]
 [validate [type: "Int" min: 1 max: 65535] 100000]
 === error
 [E090] schema validation failed with 1 error(s):
   : must be <= 65535
- (defined at 1:1-1:50)
-  in [validate ...] at 1:1-1:50
+ (defined at 2:1-2:50)
+  in [validate ...] at 2:1-2:50

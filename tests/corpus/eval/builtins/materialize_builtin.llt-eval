@@ -1,4 +1,5 @@
 # materialize: forces its argument to WHNF and returns it
+--- uses: ["core"]
 [materialize [+ 1 2]]
 === out
 Int(3)

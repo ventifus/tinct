@@ -1,4 +1,5 @@
 # validate: collect multiple errors
+--- uses: ["core"]
 [
   schema: [
     fields: [
@@ -19,5 +20,5 @@
 [E090] schema validation failed with 2 error(s):
   port: must be <= 65535
   hostname: length must be >= 3
- (defined at 15:11-15:59) (called at 1:1-16:9)
-  in [validate ...] at 15:11-15:59
+ (defined at 16:11-16:59) (called at 2:1-17:9)
+  in [validate ...] at 16:11-16:59

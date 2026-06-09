@@ -1,4 +1,5 @@
 # until - iterate function until predicate holds
+--- uses: ["core"]
 [until [fn [let x] [>= x 100]] [fn [let x] [* x 2]] 1]
 === out
 Int(128)

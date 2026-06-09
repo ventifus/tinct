@@ -1,5 +1,6 @@
 # Test: spki-pin creates a valid pin dict with Sha256 algorithm and bytes fingerprint
 # Expected: dict with algorithm and fingerprint fields
+--- uses: ["core"]
 [include %libdir "net.llt"]
 
 [Sha256: [variant "Sha256"]]
@@ -11,3 +12,6 @@
 
 === out
 Dict({"algorithm": String("Sha256"), "fingerprint": Bool(true)})
+
+=== warn
+[UndefinedVariable] undefined variable: spki-pin
