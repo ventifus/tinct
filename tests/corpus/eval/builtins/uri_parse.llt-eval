@@ -1,7 +1,7 @@
-# Test URI parsing builtin
-# https://example.com/path?q=1#frag
-
-[u: [uri "https://user:pass@example.com:8080/path?q=1#frag"]]
+# uri is in "net" module; --- uses: ["net"] injects type sigs; [module "net"] for runtime access.
+--- uses: ["net"]
+[u: [call [get "uri" [module "net"]] "https://user:pass@example.com:8080/path?q=1#frag"]]
 
 u.scheme
-
+=== out
+String("https")

@@ -1,7 +1,7 @@
-# Test URL parsing builtin with port defaulting
-# url builtin requires host and defaults port to scheme default
-
-[u: [url "https://example.com/api/v1"]]
+# url is in "net" module; --- uses: ["net"] injects type sigs; [module "net"] for runtime access.
+--- uses: ["net"]
+[u: [call [get "url" [module "net"]] "https://example.com/api/v1"]]
 
 u.port
-
+=== out
+Int(443)

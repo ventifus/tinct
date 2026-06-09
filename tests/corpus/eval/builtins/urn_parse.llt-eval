@@ -1,6 +1,7 @@
-# Test URN parsing builtin per RFC 8141
-
-[u: [urn "urn:isbn:0451450523"]]
+# urn is in "net" module; --- uses: ["net"] injects type sigs; [module "net"] for runtime access.
+--- uses: ["net"]
+[u: [call [get "urn" [module "net"]] "urn:isbn:0451450523"]]
 
 u.nid
-
+=== out
+String("isbn")
