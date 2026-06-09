@@ -1,2 +1,4 @@
 # join on seq of strings
-[join "-" [take 3 [map [fn [x] [str x]] [range 1]]]]
+[join "-" [take 3 [map [fn [let x] [str x]] [range 1]]]]
+=== out
+String("1-2-3")

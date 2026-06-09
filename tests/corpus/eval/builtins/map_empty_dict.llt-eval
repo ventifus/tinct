@@ -1,2 +1,4 @@
 # map on empty dict returns empty dict
-[map [fn [x] [* x 2]] []]
+[map [fn [let x] [* x 2]] []]
+=== out
+Dict({})

@@ -1,2 +1,4 @@
 # until with list accumulation
-[until [fn [xs] [>= [length xs] 5]] [fn [xs] [append 1 xs]] []]
+[until [fn [let xs] [>= [length xs] 5]] [fn [let xs] [append 1 xs]] []]
+=== out
+Dict({0: Int(1), 1: Int(1), 2: Int(1), 3: Int(1), 4: Int(1)})

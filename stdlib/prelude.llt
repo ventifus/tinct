@@ -3874,8 +3874,10 @@ tmpl-expand: [fn [let template-str args]
       [split "$" template-str]]]]
 
 # Wrap the collected AST nodes in a [str ...] call AST Variant.
+# Uses the legacy dict form with explicit type: fields. The dict_to_surface_node
+# function requires type: when processing a plain Value::Dict value.
 tmpl-emit-call: [fn [let result]
-  [builtin-variant "Call" [fn: [builtin-variant "VarRef" [name: "str"]]  args: result.nodes  named-args: []  implied: true]]]
+  [type: "call"  fn: [type: "var"  name: "str"]  args: result.nodes  named-args: []  implied: true]]
 
 # ============================================================================
 # [do] macro helpers — AST node builders for monadic do-notation desugaring

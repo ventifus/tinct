@@ -1,2 +1,4 @@
 # update: apply a function to a key's value in a dict
-[update "x" [fn [v] [+ v 10]] [x: 1]]
+[update "x" [fn [let v] [+ v 10]] [x: 1]]
+=== out
+Dict({"x": Int(11)})
