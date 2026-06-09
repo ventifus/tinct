@@ -66,9 +66,9 @@ test: build-release
     {{container}} run {{run_flags}} -e RUSTFLAGS="-D warnings" {{rust_image}} cargo test --test integration_async -- --quiet
     {{container}} run {{test_run_flags}} -e RUST_MIN_STACK=67108864 -e RUSTFLAGS="-D warnings" {{rust_image}} cargo test --features lsp --test lsp_corpus_tests -- --test-threads=1 --quiet
 
-# Run a specific test
+# Run a specific test (same flags as CI: -D warnings, test-threads=1)
 test-one TEST:
-    {{container}} run {{run_flags}} {{rust_image}} cargo test {{TEST}}
+    {{container}} run {{run_flags}} -e RUSTFLAGS="-D warnings" {{rust_image}} cargo test {{TEST}} -- --test-threads=1
 
 
 # Run only lib unit tests (no integration tests)
@@ -131,7 +131,7 @@ update-corpus *ARGS:
     done
     for test in $TESTS; do
         echo "=== Running $test ==="
-        {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 $DRY_RUN $FILTER {{rust_image}} \
+        {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 -e RUSTFLAGS="-D warnings" $DRY_RUN $FILTER {{rust_image}} \
             cargo test --test update_corpus -- --ignored --nocapture --test-threads=1 "$test"
     done
 

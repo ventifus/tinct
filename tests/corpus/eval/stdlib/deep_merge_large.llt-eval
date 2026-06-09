@@ -5,9 +5,3 @@
 [length [deep-merge d1 d2]]
 === out
 Int(2)
-
-=== warn
-[TypeError] multi-element [let ...] pattern not yet supported — use single binding
-[TypeError] multi-element [let ...] pattern not yet supported — use single binding
-[UndefinedVariable] undefined variable: d1
-[UndefinedVariable] undefined variable: d2

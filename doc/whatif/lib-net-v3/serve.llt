@@ -14,11 +14,12 @@
 # MessageStreamHandle wraps any MessageStream implementation in a reactive cell,
 # enabling atomic rebinding without affecting in-flight senders.
 # send/recv on a handle transparently delegate to the current impl.
-[instance@[bind: [t]] [MessageStream [MessageStreamHandle t] t]
-  send: [fn [let ms@[MessageStreamHandle t] v@t]
+[instance@[bind: [t]] MessageStream
+  [let a@[MessageStreamHandle t] b@t]:
+  [send: [fn [let ms@[MessageStreamHandle t] v@t]
     [send [builtin-cell-get ms.impl] v]]
-  recv: [fn [let ms@[MessageStreamHandle t]]
-    [recv [builtin-cell-get ms.impl]]]]
+   recv: [fn [let ms@[MessageStreamHandle t]]
+    [recv [builtin-cell-get ms.impl]]]]]
 
 # ── Public API. ───────────────────────────────────────────────────────────────
 
@@ -62,7 +63,7 @@
       [step: [fn []
         [match [recv source]
           [Closed.Closed]: []
-          [Result.Ok v]:   [[send out [encode c v]] [step]]]]]
+          [Result.Ok v]:   [block [send out [encode c v]] [step]]]]]
       [step]]
     out]
 
@@ -90,16 +91,25 @@
   drain-emit: [fn@[bind: [c output]] [let c@[Codec c Any output]  s]
     [sink s [%emit | [codec c]]]]
 
-  # serve: the generic protocol server terminator. Drains a channel of request-like
-  # values, spawning a task per item that calls handler and responds via req.respond.
-  # Works for any type with a respond: field — RawRequest, DnsQuery, AppMessage, etc.
+  # serve: the generic protocol server terminator. Drains a channel of server events,
+  # each carrying a typed connection and a request. Spawns a task per event that calls
+  # handler with both, then sends the response via request.respond.
   #
-  # Subject-last — composes naturally at the end of a protocol stack pipeline:
-  #   [[tcp-listen cap port] | http1-serve | [serve handler]]
-  #   [[tcp-listen cap port] | [tls-serve cert] | http1-serve | [serve handler]]
-  #   [[dns-udp-server cap 53] | [serve [fn [let q] [dns-lookup q.name q.type]]]]
-  serve: [fn@Task [let handler ch]
-    [drain [fn [let req] [task [req.respond [handler req]]]] ch]]
+  # Every protocol serve layer emits events with [connection: t  request: m] fields:
+  #   http2/http3/http1: connection = Http2Connection/Http3Connection/Handle
+  #   dns-udp-server:    connection = SocketAddress (source IP+port)
+  #   dns-tls-server:    connection = TlsConnection
+  #
+  # Handler always receives both — use _ for connection when not needed:
+  #   handler: [fn [let connection@Http2Connection request@HttpRequest] ...]
+  #   simple:  [fn [let _ request@HttpRequest] ...]
+  #
+  # Subject-last — composes at the end of a protocol stack pipeline:
+  #   [tcp-listen %net 443] | [tls cert] | http2 | [serve handler]
+  #   [dns-udp-server %net 53] | [serve dns-handler]
+  serve: [fn@Task [fn@[bind: [t m r]] [let handler@[Fn [t m] r]
+                                           ch@[Channel [ServerEvent t m]]]
+    [drain [fn [let event] [task [event.request.respond [handler event.connection event.request]]]] ch]]
 
   # stream-drain read-fn handler source — drains a ByteStream-backed source via read-fn.
   # read-fn source → reads the next item (returns [Result.Ok item] | Closed.Closed).
@@ -109,10 +119,10 @@
   # Use for per-stream loops where each stream is a ByteStream (e.g., QuicStream):
   #   [task [stream-drain read-icmp handle-icmp stream]]
   stream-drain: [fn@Null [let read-fn handler source]
-    [let step [fn []
+    [step: [fn []
       [match [read-fn source]
         [Closed.Closed]: []
-        [Result.Ok item]: [[handler item] [step]]]]]
+        [Result.Ok item]: [block [handler item] [step]]]]]
     [step]]
 
   # serve-streams read-fn handler stream-ch — for each stream arriving on stream-ch,

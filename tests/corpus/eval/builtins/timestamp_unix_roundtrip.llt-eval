@@ -1,7 +1,2 @@
 # timestamp->unix / unix->timestamp roundtrip: convert to Unix seconds and back
 [format-timestamp [unix->timestamp [timestamp->unix [parse-timestamp "2024-01-15T10:30:00Z"]]]]
-=== error
-[E002] undefined variable: format-timestamp (did you mean the string "format-timestamp"? Use quotes.) (defined at 1:2-1:18)
-
-=== warn
-[UndefinedVariable] undefined variable: format-timestamp

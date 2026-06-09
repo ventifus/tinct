@@ -134,4 +134,32 @@
   # Render an OID [Seq Int] as dotted-decimal notation. E.g. [2 5 29 17] → "2.5.29.17".
   oid->string: [fn [let oid@[Seq Int]]
     [apply str [intersperse "." [map [fn [let n] [str n]] oid]]]]
+
+  # asn-time-to-unix: parse an AsnTime string to unix seconds (Int).
+  # Handles UTCTime (13 chars: YYMMDDHHMMSSZ) and GeneralizedTime (15+ chars: YYYYMMDDHHMMSSZ).
+  # Only UTC (Z suffix) is supported — RFC 5280 requires UTC for all validity fields.
+  # UTCTime year expansion: yy >= 50 → 19xx, yy < 50 → 20xx (RFC 5280 §4.1.2.5.1).
+  # Algorithm: Howard Hinnant's days_from_civil, constant-time civil→unix conversion.
+  asn-time-to-unix: [fn [let s@String]
+    [s15: [if [= [length s] 13]
+      # UTCTime → expand 2-digit year to 4 digits
+      [yy: [to-int [str-slice s 0 2]]]
+      [str [if [>= yy 50] "19" "20"] s]
+      # GeneralizedTime — use first 15 chars (ignore fractional seconds if present)
+      [str-slice s 0 15]]]
+    [y0: [to-int [str-slice s15 0  4]]]
+    [mo: [to-int [str-slice s15 4  6]]]
+    [d:  [to-int [str-slice s15 6  8]]]
+    [h:  [to-int [str-slice s15 8  10]]]
+    [mi: [to-int [str-slice s15 10 12]]]
+    [sc: [to-int [str-slice s15 12 14]]]
+    # Shift Jan/Feb into previous year so Mar=0 in the month cycle
+    [y:   [if [<= mo 2] [- y0 1] y0]]
+    [era: [/ y 400]]
+    [yoe: [- y [* era 400]]]                                    # year of era [0, 399]
+    [m3:  [+ mo [if [> mo 2] -3 9]]]                           # month offset Mar=0
+    [doy: [+ [/ [+ [* 153 m3] 2] 5] [- d 1]]]                  # day of year [0, 365]
+    [doe: [+ [- [+ [* yoe 365] [/ yoe 4]] [/ yoe 100]] doy]]   # day of era [0, 146096]
+    [days: [- [+ [* era 146097] doe] 719468]]                   # days since Unix epoch
+    [+ [* days 86400] [+ [* h 3600] [+ [* mi 60] sc]]]]
 ]

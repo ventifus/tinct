@@ -1,5 +1,5 @@
 // Corpus test updater — rewrites expected output sections in .llt-eval files
-// to match actual evaluator / typechecker output.
+// to match actual evaluator / typechecker output. (S-873 cycle #402)
 //
 // Usage:
 //   cargo test --test update_corpus -- --ignored [--nocapture]
@@ -157,6 +157,11 @@ fn extract_source(content: &str) -> String {
 #[test]
 #[ignore] // Only run explicitly: cargo test --test update_corpus -- --ignored
 fn update_eval_corpus() {
+    // Pre-populate the typecheck prelude cache once at startup (same as test_eval_corpus's
+    // 256MB spawn thread). This ensures update_corpus and test_eval_corpus use the same
+    // freshly-built prelude type env, preventing type error divergence between the two.
+    let _ = tinct::build_prelude_env();
+
     let dry_run = std::env::var("UPDATE_CORPUS_DRY_RUN").is_ok_and(|v| v == "1" || v == "true");
     let filter = std::env::var("UPDATE_CORPUS_FILTER").ok();
 

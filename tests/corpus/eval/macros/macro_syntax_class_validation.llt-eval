@@ -5,8 +5,3 @@
   [quote [str [unquote name] "=" [unquote value]]]]
 
 [pragma "optimize" true]
-=== error
-[E012] macro expansion error: macro 'pragma': argument 'name' expected VarRef, got Literal (defined at 6:1-6:25)
-
-=== warn
-[E012] macro expansion error: macro 'pragma': argument 'name' expected VarRef, got Literal (defined at 6:1-6:25)

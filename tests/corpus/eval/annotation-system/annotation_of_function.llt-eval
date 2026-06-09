@@ -9,7 +9,3 @@
  result-ver: [= ann.version "1.0"]]
 === out
 Dict({"result-doc": Bool(true), "result-ver": Bool(true)})
-
-=== warn
-[NotARecord] expected record type, got Top
-[NotARecord] expected record type, got Top

@@ -2,6 +2,3 @@
 [bytes-of []]
 === out
 Bytes(0 bytes)
-
-=== warn
-[UndefinedVariable] undefined variable: bytes-of

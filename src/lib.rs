@@ -1,4 +1,4 @@
-//! Parser, evaluator, type system, and builtins for the tinct language.
+//! Parser, evaluator, type system, and builtins for the tinct language. (S-873)
 //!
 //! [`parse`] takes an input string and returns a `ParseOutput` containing the full `SurfaceProgram`.
 //! [`parse_surface_expression`] parses a single expression and returns the native `Arc<SurfaceNode>` (no bridge).
@@ -292,6 +292,11 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
     // contain `[type ...]` declarations. Must run BEFORE resolve so the resolver assigns
     // correct de Bruijn slots to constructor names.
     desugar::inject_adt_constructors_surface_program(&mut program);
+    // NOTE: desugar_instance_decls_surface_program intentionally NOT called here.
+    // The type checker's Pass 0c (typecheck_dict.rs) must see InstanceDecl entries to register
+    // typeclass instances. If desugar transforms them to method dicts before typecheck, Pass 0c
+    // cannot register them, causing 493+ corpus test failures (T-1142 regression).
+    // lower.rs B-353 handles the eval-side transformation instead (InstanceDecl → method dict).
     // Variable resolution pass (Phase 1 of arena allocation strategy).
     // Keep the table for eval_surface_file (used by lower.rs to resolve VarRef → Var).
     let resolution_table = std::sync::Arc::new(resolve::resolve_surface_program(&program));
@@ -440,6 +445,7 @@ pub fn eval_source_with_cap_net(
     // contain `[type ...]` declarations. Must run BEFORE resolve so the resolver assigns
     // correct de Bruijn slots to constructor names.
     desugar::inject_adt_constructors_surface_program(&mut program);
+    // NOTE: desugar_instance_decls_surface_program NOT called here (see above).
     // Variable resolution pass (Phase 1 of arena allocation strategy).
     // Keep the table for eval_surface_file (used by lower.rs to resolve VarRef → Var).
     let resolution_table = std::sync::Arc::new(resolve::resolve_surface_program(&program));

@@ -3,7 +3,3 @@
 [length [slice 200 800 d]]
 === out
 Int(0)
-
-=== warn
-[TypeError] multi-element [let ...] pattern not yet supported — use single binding
-[UndefinedVariable] undefined variable: d

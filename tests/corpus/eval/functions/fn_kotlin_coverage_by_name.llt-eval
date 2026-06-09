@@ -5,6 +5,3 @@
 ]
 === out
 Dict({"f": Function(a, b, c), "result": Int(8)})
-
-=== warn
-[ArityMismatch] expected 3 arguments, got 2

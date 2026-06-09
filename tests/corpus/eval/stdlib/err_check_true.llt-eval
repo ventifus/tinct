@@ -2,6 +2,3 @@
 [error? [Error "bad"]]
 === out
 Bool(true)
-
-=== warn
-[UndefinedVariable] undefined variable: Error

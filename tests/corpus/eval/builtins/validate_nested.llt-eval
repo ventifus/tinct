@@ -21,6 +21,3 @@
 ].result
 === out
 Dict({"port": Int(8080), "hostname": String("localhost")})
-
-=== warn
-[UndefinedVariable] undefined variable: validate

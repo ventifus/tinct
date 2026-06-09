@@ -2,6 +2,3 @@
 [error? [Ok 123]]
 === out
 Bool(false)
-
-=== warn
-[UndefinedVariable] undefined variable: Ok

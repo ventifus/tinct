@@ -502,6 +502,7 @@ fn typecheck_surface_document(
             params: vec![(None, Type::Top)],
             ret: Box::new(Type::Top),
             variadic: false,
+            required_count: 1,
         },
     );
 
@@ -1093,10 +1094,12 @@ pub(crate) fn extract_constructor_types(alias_ty: &Type, type_name: &str) -> Vec
                     .into_iter()
                     .map(|(field_name, field_ty)| (Some(field_name.clone()), field_ty.clone()))
                     .collect();
+                let required_count = params.len();
                 Type::Function {
                     params,
                     ret: Box::new(ret_ty),
                     variadic: false,
+                    required_count,
                 }
             };
             vec![(qualified_tag, ctor_ty)]
@@ -1250,6 +1253,8 @@ fn register_type_aliases(
             // Per-param declared variance (from @X annotation); None = infer from body.
             let mut declared_variances: Vec<Option<crate::type_def::Variance>> =
                 vec![None; params.len()];
+            // Class constraints from @ClassName annotations on params (T-1101).
+            let mut alias_constraints: Vec<crate::type_class::Constraint> = Vec::new();
             // Pre-seed param names so they map to fresh TypeVars.
             for (idx, (p, ann)) in params.iter().enumerate() {
                 let n = state.subst.name_counter.get();
@@ -1268,9 +1273,17 @@ fn register_type_aliases(
                         if let Some(v) = typecheck_annot::annotation_to_variance(name) {
                             declared_variances[idx] = Some(v);
                         } else {
-                            // Not a variance annotation — check if it's a class constraint.
-                            if state.class_env.get(name).is_some() {
-                                // TODO(T-1101): populate TypeAlias.constraints from @ClassName annotation (TypeAlias.constraints field added by T-1084; enforcement in T-1101)
+                            // Not a variance annotation — check if it's a class constraint (T-1101).
+                            if let Some(class_decl) = state.class_env.get(name) {
+                                // Build Constraint::Class for this param.
+                                // Use the FRESH param name (from alias_ann_map), not the original.
+                                let constraint = crate::type_class::Constraint::Class {
+                                    class: std::sync::Arc::new(class_decl.clone()),
+                                    vars: vec![fresh.clone()],
+                                    origin_name: Some(std::sync::Arc::from(name.to_string())),
+                                    origin_span: Some(ann_spanned.span.clone()),
+                                };
+                                alias_constraints.push(constraint);
                             } else {
                                 // Unknown annotation — error
                                 let err_msg = format!(
@@ -1389,7 +1402,7 @@ fn register_type_aliases(
                     let tycon_def = Arc::new(TyConDef {
                         params: remapped_params.clone(),
                         body: alias_ty.clone(),
-                        constraints: vec![],
+                        constraints: alias_constraints.clone(),
                         variance: final_variances,
                         constructors: constructors.clone(),
                         builtin_type: None,
@@ -1938,24 +1951,25 @@ pub(crate) fn infer_surface_expr(
                             params,
                             ret,
                             variadic,
+                            required_count,
                         } => {
                             // Monomorphic recursion: the function's type is already known.
                             let variadic = *variadic;
+                            let required_count = *required_count;
                             let params = params.clone();
                             let ret = ret.clone();
 
                             let total_supplied = args.len() + named_args.len();
-                            // Default-valued params: B-333 workaround was to rewrite gensym as 0-arg
-                            // (B-348, S-855). The arity checker still treats all non-variadic params as
-                            // required. If default-valued params appear in future code, arity mismatch
-                            // will fire — fix requires tracking default-value presence in Function type.
+                            // B-349: resolved — see required_count field in Type::Function.
+                            // min_required is the number of params without default values.
+                            // For variadic functions, the last (variadic) param is never required.
                             let min_required = if variadic && !params.is_empty() {
-                                params.len() - 1
+                                required_count.saturating_sub(1)
                             } else {
-                                params.len()
+                                required_count
                             };
                             if total_supplied < min_required
-                                || (!variadic && total_supplied != params.len())
+                                || (!variadic && total_supplied > params.len())
                             {
                                 return Err(vec![TypeErrorTyped::Generic(GenericTypeError {
                                     message: format!(
@@ -3094,6 +3108,7 @@ pub(super) fn check_surface_expr(
                 params: ref expected_params,
                 ret: ref expected_ret,
                 variadic: ref expected_variadic,
+                required_count: _,
             } = resolved_expected
             {
                 // Skip lambda checking mode for the "any function" top type

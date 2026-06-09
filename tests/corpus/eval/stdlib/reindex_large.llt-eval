@@ -3,6 +3,3 @@
 [length [reindex test-dict]]
 === out
 Int(1)
-
-=== warn
-[TypeError] multi-element [let ...] pattern not yet supported — use single binding

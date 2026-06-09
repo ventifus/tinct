@@ -328,6 +328,7 @@ impl fmt::Display for Type {
                 params,
                 ret,
                 variadic,
+                required_count: _,
             } => {
                 // Parenthesize nested function types in return position for clarity
                 match **ret {

@@ -13,6 +13,3 @@
   result: [select-once [context] sources]
 ]
 .result
-=== error
-[E010] type mismatch: expected Seq or Seq.Nil, got Dict (defined at 12:11-12:42) (called at 5:1-14:8)
-  in [select-once ...] at 12:11-12:42

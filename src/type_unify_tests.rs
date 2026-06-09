@@ -339,12 +339,14 @@ fn test_unify_variadic_zero_with_concrete_arity() {
         params: vec![],
         ret: Box::new(Type::Unknown),
         variadic: true,
+        required_count: 0,
     };
 
     let concrete_fn = Type::Function {
         params: vec![(None, Type::Int)],
         ret: Box::new(Type::Bool),
         variadic: false,
+        required_count: 1,
     };
 
     let result = unify(&any_function, &concrete_fn, &mut subst, &mut state, span);
@@ -366,12 +368,14 @@ fn test_unify_variadic_zero_with_zero_non_variadic() {
         params: vec![],
         ret: Box::new(Type::Unknown),
         variadic: true,
+        required_count: 0,
     };
 
     let concrete_fn = Type::Function {
         params: vec![],
         ret: Box::new(Type::Int),
         variadic: false,
+        required_count: 0,
     };
 
     let result = unify(&any_function, &concrete_fn, &mut subst, &mut state, span);
@@ -392,12 +396,14 @@ fn test_unify_variadic_zero_with_multi_param() {
         params: vec![],
         ret: Box::new(Type::Unknown),
         variadic: true,
+        required_count: 0,
     };
 
     let concrete_fn = Type::Function {
         params: vec![(None, Type::Int), (None, Type::Str), (None, Type::Bool)],
         ret: Box::new(Type::Float),
         variadic: false,
+        required_count: 3,
     };
 
     let result = unify(&any_function, &concrete_fn, &mut subst, &mut state, span);
@@ -415,12 +421,14 @@ fn test_is_subtype_concrete_to_any_function() {
         params: vec![(None, Type::Int)],
         ret: Box::new(Type::Bool),
         variadic: false,
+        required_count: 1,
     };
 
     let any_function = Type::Function {
         params: vec![],
         ret: Box::new(Type::Unknown),
         variadic: true,
+        required_count: 0,
     };
 
     assert!(
@@ -440,11 +448,13 @@ fn test_is_subtype_any_function_reflexivity() {
         params: vec![],
         ret: Box::new(Type::Unknown),
         variadic: true,
+        required_count: 0,
     };
     let any_fn2 = Type::Function {
         params: vec![],
         ret: Box::new(Type::Unknown),
         variadic: true,
+        required_count: 0,
     };
 
     assert!(
@@ -467,12 +477,14 @@ fn test_unify_two_any_functions() {
         params: vec![],
         ret: Box::new(Type::Unknown),
         variadic: true,
+        required_count: 0,
     };
 
     let any_function_2 = Type::Function {
         params: vec![],
         ret: Box::new(Type::Unknown),
         variadic: true,
+        required_count: 0,
     };
 
     let result = unify(
@@ -500,12 +512,14 @@ fn test_unify_concrete_fn_with_any_function_symmetric() {
         params: vec![(None, Type::Int)],
         ret: Box::new(Type::Bool),
         variadic: false,
+        required_count: 1,
     };
 
     let any_function = Type::Function {
         params: vec![],
         ret: Box::new(Type::Unknown),
         variadic: true,
+        required_count: 0,
     };
 
     let result = unify(&concrete_fn, &any_function, &mut subst, &mut state, span);
@@ -527,12 +541,14 @@ fn test_is_consistent_any_function_with_concrete() {
         params: vec![],
         ret: Box::new(Type::Unknown),
         variadic: true,
+        required_count: 0,
     };
 
     let concrete_fn = Type::Function {
         params: vec![(None, Type::Int)],
         ret: Box::new(Type::Bool),
         variadic: false,
+        required_count: 1,
     };
 
     assert!(
@@ -552,6 +568,7 @@ fn test_is_consistent_any_function_with_multi_param() {
         params: vec![],
         ret: Box::new(Type::Unknown),
         variadic: true,
+        required_count: 0,
     };
 
     let multi_param_fn = Type::Function {
@@ -562,6 +579,7 @@ fn test_is_consistent_any_function_with_multi_param() {
         ],
         ret: Box::new(Type::Float),
         variadic: false,
+        required_count: 3,
     };
 
     assert!(
@@ -576,12 +594,14 @@ fn test_is_consistent_any_function_with_zero_param_non_variadic() {
         params: vec![],
         ret: Box::new(Type::Unknown),
         variadic: true,
+        required_count: 0,
     };
 
     let zero_param_fn = Type::Function {
         params: vec![],
         ret: Box::new(Type::Int),
         variadic: false,
+        required_count: 0,
     };
 
     assert!(
@@ -596,6 +616,7 @@ fn test_types_are_disjoint_function_vs_int() {
         params: vec![(None, Type::Int)],
         ret: Box::new(Type::Bool),
         variadic: false,
+        required_count: 1,
     };
 
     assert!(
@@ -614,6 +635,7 @@ fn test_types_are_disjoint_function_vs_primitives() {
         params: vec![],
         ret: Box::new(Type::Unknown),
         variadic: true,
+        required_count: 0,
     };
 
     assert!(Type::types_are_disjoint(&fn_ty, &Type::Int));
@@ -635,6 +657,7 @@ fn test_types_are_disjoint_function_vs_literals() {
         params: vec![(None, Type::Int)],
         ret: Box::new(Type::Str),
         variadic: false,
+        required_count: 1,
     };
 
     assert!(Type::types_are_disjoint(&fn_ty, &Type::IntLiteral(42)));
@@ -656,6 +679,7 @@ fn test_types_are_disjoint_function_vs_record() {
         params: vec![(None, Type::Int)],
         ret: Box::new(Type::Bool),
         variadic: false,
+        required_count: 1,
     };
 
     let mut fields = BTreeMap::new();
@@ -949,6 +973,7 @@ fn test_types_are_disjoint_function_vs_seq() {
         params: vec![],
         ret: Box::new(Type::Unknown),
         variadic: true,
+        required_count: 0,
     };
 
     let seq_ty = Type::seq(Type::Int);
@@ -969,6 +994,7 @@ fn test_types_are_disjoint_function_vs_map() {
         params: vec![(None, Type::Int)],
         ret: Box::new(Type::Str),
         variadic: false,
+        required_count: 1,
     };
 
     let map_ty = Type::map(Type::Str, Type::Int);
@@ -989,12 +1015,14 @@ fn test_types_are_not_disjoint_function_vs_function() {
         params: vec![(None, Type::Int)],
         ret: Box::new(Type::Bool),
         variadic: false,
+        required_count: 1,
     };
 
     let fn2 = Type::Function {
         params: vec![(None, Type::Str)],
         ret: Box::new(Type::Float),
         variadic: false,
+        required_count: 1,
     };
 
     assert!(

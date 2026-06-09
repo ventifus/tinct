@@ -3,6 +3,3 @@
 [@Fn 42]
 === out
 Int(42)
-
-=== warn
-[UnificationFailure] cannot unify Fn@Top [ ...] with 42

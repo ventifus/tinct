@@ -176,18 +176,18 @@
       qpack-dec:    qpack-dec
       settings:     peer-settings]]
 
-  # h3: fires the QUIC+TLS handshake (adding alpn: ["h3"]) then sets up HTTP/3 substreams.
+  # h3-connection: fires the QUIC+TLS handshake (adding alpn: ["h3"]) then sets up HTTP/3 substreams.
   # Receives QuicHandle from | quic, not a committed QuicConnection.
-  h3: [fn [let pqh@QuicHandle]
+  # Low-level building block — use http3 for the common case (flat Channel@HttpRequest).
+  # Use h3-connection when you need the Http3Connection for QUIC stream-level control.
+  h3-connection: [fn [let pqh@QuicHandle]
     [match [quic-commit [with-alpn pqh ["h3"]]]
       [QuicError e]:  e
       [Result.Ok conn]: [h3-accept conn]]]   # quic-commit then h3-accept
 
-  http3-client: [fn [let conn@QuicConnection] [h3 conn]]
-
   # RFC 9114 §4.1: open new QUIC stream, send HEADERS frame with qpack-encode headers,
   # send DATA frame if body, await response HEADERS+DATA frames.
-  request: [fn [let conn@Http3Connection req@RawRequest]
+  request: [fn [let conn@Http3Connection req@HttpRequest]
     [task
       [stream: [quic-open-stream conn.quic]]
       # Send HEADERS frame: frame-type=H3Headers.code (varint) + length (varint) + qpack-encoded headers
@@ -219,13 +219,13 @@
                 [_: [read stream flen]]
                 [accumulate-data acc]]]]]]
       [resp-body: [accumulate-data [bytes 0]]]
-      [RawResponse
+      [HttpResponse
         status:  status
         headers: resp-headers
         body:    resp-body]]]
 
-  # Drain incoming QUIC streams, parse HEADERS, emit RawRequest with respond fn.
-  http3-req-conn: [fn [let conn@Http3Connection out@[Channel RawRequest]]
+  # Drain incoming QUIC streams, parse HEADERS, emit HttpRequest with respond fn.
+  http3-req-conn: [fn [let conn@Http3Connection out@[Channel HttpRequest]]
     [task
       [step: [fn []
         [match [recv conn.quic.substreams]
@@ -238,7 +238,7 @@
                 [block
                   [headers-bytes: [read stream frame-len]]
                   [headers: [qpack-decode headers-bytes]]
-                  [send out [RawRequest
+                  [send out [HttpRequest
                     method:  [or [get? headers ":method"] "GET"]
                     path:    [or [get? headers ":path"]   "/"]
                     headers: headers
@@ -328,7 +328,7 @@
               [idx-res: [qpack-decode-int buf off 6]]
               [entry: [if t-static [get qpack-static-table idx-res.value] [error "QPACK: dynamic table not supported"]]]
               [name: [get entry 0]  value: [get entry 1]]
-              [decode-loop idx-res.next [merge headers {$name: value}]]]
+              [decode-loop idx-res.next [merge headers [$name: value]]]]
             [if [= [band b0 0x40] 0x40]
               # §4.5.4: Literal Field Line With Name Reference — bit 7=0, bit 6=1, bit 4=T (static), 4-bit index
               [block
@@ -338,13 +338,13 @@
                   [get [get qpack-static-table idx-res.value] 0]
                   [error "QPACK: dynamic name reference not supported"]]]
                 [v-res:    [qpack-decode-str buf idx-res.next]]
-                [decode-loop v-res.next [merge headers {$name: v-res.value}]]]
+                [decode-loop v-res.next [merge headers [$name: v-res.value]]]]
               # §4.5.6: Literal Field Line Without Name Reference — bit 7=0, bit 6=0, bit 5=1 (0x20 prefix)
               [block
                 [n-res: [qpack-decode-str buf [+ off 1]]]   # skip the 0x20 prefix byte
                 [v-res: [qpack-decode-str buf n-res.next]]
-                [decode-loop v-res.next [merge headers {$n-res.value: v-res.value}]]]]]]]]]
-    [decode-loop sdb-res.next {}]]
+                [decode-loop v-res.next [merge headers [$n-res.value: v-res.value]]]]]]]]]]
+    [decode-loop sdb-res.next []]]
 
   # Safe literal-only encoding: Required Insert Count=0, S=0, Delta Base=0 (3 zero bytes),
   # then each header as literal field line without name reference (RFC 9204 §4.5.3).
@@ -359,18 +359,25 @@
      headers]]]
     [concat prefix fields]]
 
+  # H3Stream: per-request stream capabilities for HTTP/3 (RFC 9114 §4.6).
+  # push:   send PUSH_PROMISE on the current stream + deliver on a new unidirectional QUIC stream.
+  #         Server must have received MAX_PUSH_ID from client before pushing.
+  # cancel: send STOP_SENDING to abort this stream.
+  H3Stream: [type
+    [push:   [Fn [HttpRequest HttpResponse] Null]
+     cancel: [Fn [] Null]]]
+
   # Serve layer: promote each incoming QUIC connection to an Http3Connection.
   h3-serve: [_ | [channel-map h3-accept]]
 
   # Request-extraction: each Http3Connection yields its request substreams.
   http3-requests: [_ | [channel-flat-map http3-req-conn]]
 
-  # Combined: Channel@QuicConnection → Channel@RawRequest.
-  # Equivalent to: | h3-serve | http3-requests
-  # Mirrors http1-serve ergonomics — use this for the common server case.
-  # Use h3-serve + http3-requests separately only when you need the Http3Connection
-  # handle (e.g. for QUIC stream-level control or h3-open-stream).
-  http3-serve: [_ | h3-serve | http3-requests]
+  # Combined: Channel@QuicConnection → Channel@[ServerEvent Http3Connection HttpRequest].
+  # Equivalent to: | h3-connection | http3-requests
+  # Handlers receive (connection@Http3Connection, request@HttpRequest) via serve.
+  # Use h3-connection directly only when you need the Channel@Http3Connection intermediate.
+  http3-serve: [_ | h3-connection | http3-requests]
 ]
 
 # H3FrameCodec: H3Frame ↔ Bytes (RFC 9114 §7 frame wire format).
@@ -402,24 +409,30 @@
        payload: [slice data len-res.next [+ len-res.next len-res.value]]]]
      next: [+ len-res.next len-res.value]]]]]]]
 
-# ── H3Layer typeclass — bidirectional h3 ─────────────────────────────────────
+# ── H3Layer typeclass — bidirectional h3-connection ──────────────────────────
 
 [class [let H3Layer input output]
-  h3: [Fn@output [input]]]
+  h3-connection: [Fn@output [input]]]
 
 # Client: QuicHandle → Http3Connection (fires QUIC+TLS with alpn:["h3"] + H3 setup)
 [instance H3Layer
-  [let a@QuicHandle b@Http3Connection]: [h3: [fn [let qh@QuicHandle] [h3 qh]]]]   # delegates to h3 function above
+  [let a@QuicHandle b@Http3Connection]: [h3-connection: [fn [let qh@QuicHandle] [h3-connection qh]]]]
 
 # Server: Channel@QuicConnection → Channel@Http3Connection
 [instance H3Layer
-  [let a@[Channel QuicConnection] b@[Channel Http3Connection]]: [h3: [fn [let ch@[Channel QuicConnection]]
+  [let a@[Channel QuicConnection] b@[Channel Http3Connection]]: [h3-connection: [fn [let ch@[Channel QuicConnection]]
     [channel-map h3-accept ch]]]]
 
-# ── HttpStream Http3Connection ────────────────────────────────────────────────
+# ── HttpStream H3Stream instance ─────────────────────────────────────────────
 
 [instance HttpStream
-  [let h@Http3Connection]: [send: [fn [let conn@Http3Connection req@RawRequest]
+  [let s@H3Stream]: [push:   s.push
+                     cancel: s.cancel]]
+
+# ── HttpStream Http3Connection (request dispatch) ────────────────────────────
+
+[instance HttpStream
+  [let h@Http3Connection]: [send: [fn [let conn@Http3Connection req@HttpRequest]
                               [request req conn]]   # delegates to request above
                             recv: [fn [let conn@Http3Connection]
                               [conn.quic.substreams]]]]  # incoming QUIC streams

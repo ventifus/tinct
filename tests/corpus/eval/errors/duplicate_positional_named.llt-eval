@@ -5,6 +5,3 @@
 [E021] parameter 'y' received both positional and named argument (defined at 3:1-3:14)
   in [f ...] at 3:1-3:14
   in [f ...] at 3:1-3:14
-
-=== warn
-[ArityMismatch] expected 2 arguments, got 3

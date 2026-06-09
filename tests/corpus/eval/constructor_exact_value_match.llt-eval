@@ -7,7 +7,3 @@
   _: "miss"]]
 === out
 Dict({"result": String("miss")})
-
-=== warn
-[TypeError] auto-indexed entries not supported in type expressions
-[UndefinedVariable] undefined variable: Ok

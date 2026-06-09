@@ -10,7 +10,7 @@
 
 [
   # Helper: convert value to raw string — str handles all Showable types, including String.
-  raw: [fn@String [let v] [str v]]
+  raw: [fn@String [let v@Any] [str v]]
 ]
 
 # 1. Drain the emit channel concurrently.

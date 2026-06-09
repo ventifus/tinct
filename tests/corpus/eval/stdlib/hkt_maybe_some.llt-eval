@@ -3,6 +3,3 @@
 
 === out
 Variant(Maybe.Some, Int(42))
-
-=== warn
-[UndefinedVariable] undefined variable: Some

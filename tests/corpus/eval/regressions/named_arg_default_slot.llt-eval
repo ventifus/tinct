@@ -5,6 +5,3 @@
 %.result
 === out
 Int(0)
-
-=== warn
-[ArityMismatch] expected 2 arguments, got 1

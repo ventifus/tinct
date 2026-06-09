@@ -1,0 +1,16 @@
+# T-1101: TypeAlias constraint enforcement at instantiation time.
+# SortKey is a parameterized type alias whose parameter carries a @Comparable constraint.
+# Using SortKey with Int is valid — Int has a Comparable instance in the prelude.
+# The constraint is checked during alias instantiation in instantiate_type_alias.
+# Absence of === warn asserts no type errors: the constraint is satisfied cleanly.
+[
+  SortKey: [type [let a@Comparable] a]
+
+  # Annotate a function parameter with SortKey instantiated at Int.
+  # Int satisfies Comparable (ComparableInt instance in prelude), so instantiation succeeds.
+  identity-key: [fn@Int [let k@[SortKey Int]] k]
+
+  result: [identity-key 42]
+]
+=== out
+Dict({"identity-key": Function(k), "result": Int(42)})

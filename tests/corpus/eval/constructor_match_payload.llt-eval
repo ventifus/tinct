@@ -10,6 +10,3 @@
 ]
 === out
 Dict({"Ok": Function(payload), "Error": Function(payload), "matched": Int(42)})
-
-=== warn
-[UndefinedVariable] undefined variable: Ok

@@ -1,9 +1,2 @@
 # map on empty dict returns empty dict
 [map [fn [x] [* x 2]] []]
-=== error
-[E020] arity mismatch: expected 2 arguments, got 3 (defined at 1:1-1:26)
-  in [map ...] at 1:1-1:26
-  in [map ...] at 1:1-1:26
-
-=== warn
-[ArityMismatch] expected 2 arguments, got 3

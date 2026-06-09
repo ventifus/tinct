@@ -5084,27 +5084,17 @@ fn surface_node_to_pattern_with_guard(
             } else if name.chars().next().is_some_and(|c| c.is_lowercase()) {
                 Pattern::Pin(name.clone())
             } else if name.chars().next().is_some_and(|c| c.is_uppercase()) {
-                // B-334: Annotated uppercase names in pattern position (e.g., `Int@[is: pred]:`)
-                // produce Pattern::Constructor (NOT Pattern::TypeTag). This is intentional post-S-845:
-                // type-based dispatch is handled by Pattern::TypeAssert (produced from TypeAssertPending
-                // via elaboration in typecheck_match.rs), not by TypeTag patterns. An annotated
-                // uppercase name like `Int@[is: positive?]:` should produce Constructor("Int") with a
-                // guard from the `is:` annotation, not a type narrowing pattern. If the annotation
-                // contains only `is:`, it is extracted as a guard expression. If the annotation contains
-                // type information (e.g., `@Int`), that is handled by the TypeAssertPending path
-                // (SurfaceExpression::Annotated with lowercase name → TypeAssertPending; uppercase →
-                // Constructor with guard). The type checker's elaboration pass qualifies the tag for
-                // nominal ADT matching via typecheck_match.rs::elaborate_pattern.
-                //
-                // T-1085: This bare uppercase annotated path produces Pattern::Constructor with an
-                // unqualified tag. The type checker (elaborate_pattern in typecheck_match.rs) will
-                // auto-qualify the tag and emit a T018 warning directing the user to use the qualified
-                // dot-access form (e.g., `Color.Red@[is: pred]:` instead of `Red@[is: pred]:`).
-                // Future work: make this a hard parser error once all corpus patterns are migrated.
-                Pattern::Constructor {
-                    tag: name.clone(),
-                    binding: None,
-                }
+                // T-1109: Bare uppercase names in pattern position are unqualified constructor
+                // patterns and are now a hard parse error. Use qualified form (e.g., `Result.Ok:`
+                // instead of `Ok:`).
+                return Err(ParseError {
+                    message: format!(
+                        "unqualified constructor pattern '{}' — use qualified form like 'TypeName.{}' \
+                         (bare uppercase names in pattern position are not allowed)",
+                        name, name
+                    ),
+                    span: Some(span),
+                });
             } else {
                 return Err(ParseError {
                     message: format!(
@@ -5227,26 +5217,26 @@ fn surface_node_to_pattern_with_guard(
                         )
                     }
                     (_, 1) if name.chars().next().is_some_and(|c| c.is_uppercase()) => {
-                        // [Constructor payload] — nominal variant payload pattern
-                        let payload_pat = surface_node_to_pattern(Arc::clone(&args[0]))?;
-                        (
-                            Pattern::Constructor {
-                                tag: name.clone(),
-                                binding: Some(Box::new(payload_pat)),
-                            },
-                            None,
-                        )
+                        // T-1109: Bare uppercase names are unqualified constructor patterns — now a hard error.
+                        return Err(ParseError {
+                            message: format!(
+                                "unqualified constructor pattern '[{}]' — use qualified form like '[TypeName.{}]' \
+                                 (bare uppercase names in pattern position are not allowed)",
+                                name, name
+                            ),
+                            span: Some(span),
+                        });
                     }
                     (_, 0) if name.chars().next().is_some_and(|c| c.is_uppercase()) => {
-                        // [Constructor] — unit variant pattern (zero-arg constructor)
-                        // Matches any variant with this tag, regardless of payload — equivalent to [Tag _]:
-                        (
-                            Pattern::Constructor {
-                                tag: name.clone(),
-                                binding: None,
-                            },
-                            None,
-                        )
+                        // T-1109: Bare uppercase names are unqualified constructor patterns — now a hard error.
+                        return Err(ParseError {
+                            message: format!(
+                                "unqualified constructor pattern '[{}]' — use qualified form like '[TypeName.{}]' \
+                                 (bare uppercase names in pattern position are not allowed)",
+                                name, name
+                            ),
+                            span: Some(span),
+                        });
                     }
                     _ if name.chars().next().is_some_and(|c| c.is_lowercase())
                         || name.chars().next().is_some_and(|c| !c.is_alphabetic()) =>
@@ -6913,6 +6903,112 @@ mod tests {
                 other => panic!("expected TypeAlias declaration, got {other:?}"),
             },
             other => panic!("expected Decl item, got {other:?}"),
+        }
+    }
+
+    /// Regression test for B-364: `[type ...]` in dict-entry-value position.
+    ///
+    /// The parser must correctly open a TypeAlias frame when `[type ...]` appears as
+    /// the value of a keyed dict entry (e.g. `Foo: [type A B]`). The resulting AST
+    /// must be `Dict([{key: Str("Foo"), value: Decl(TypeAlias { ... })}])`.
+    ///
+    /// Previously mis-labelled as a parser regression; the parser was always correct.
+    /// The `#[ignore]` annotations on the corresponding typecheck tests were caused by
+    /// T-951 enforcement (undeclared lowercase type variables) and multi-document
+    /// test-helper limitations, not by a parser bug.
+    #[test]
+    fn test_type_alias_in_dict_entry_value() {
+        // Single-entry: [Name: [type String]]
+        let output = parse("[Name: [type String]]").expect("parse failed");
+        let items = surf_items(&output.program.documents[0].node);
+        assert_eq!(items.len(), 1, "expected one expression item");
+        match &items[0].expr {
+            SurfaceExpression::Dict(entries) => {
+                assert_eq!(entries.len(), 1, "expected one dict entry");
+                // Key must be Str("Name")
+                match entries[0].node.key.as_ref().map(|k| &k.expr) {
+                    Some(SurfaceExpression::Str(s)) => assert_eq!(s, "Name"),
+                    other => panic!("expected Str key 'Name', got {other:?}"),
+                }
+                // Value must be Decl(TypeAlias)
+                match &entries[0].node.value.expr {
+                    SurfaceExpression::Decl(decl) => match decl.as_ref() {
+                        SurfaceDeclaration::TypeAlias { params, body } => {
+                            assert!(params.is_empty(), "expected no type params");
+                            assert!(
+                                matches!(&body.expr, SurfaceExpression::VarRef { name, .. } if name == "String"),
+                                "expected VarRef(\"String\") body, got {:?}",
+                                body.expr
+                            );
+                        }
+                        other => panic!("expected TypeAlias declaration, got {other:?}"),
+                    },
+                    other => panic!("expected Decl value, got {other:?}"),
+                }
+            }
+            other => panic!("expected Dict, got {other:?}"),
+        }
+
+        // Multi-entry union: [Result: [type A B C]]
+        let output = parse("[Result: [type A B C]]").expect("parse failed");
+        let items = surf_items(&output.program.documents[0].node);
+        match &items[0].expr {
+            SurfaceExpression::Dict(entries) => {
+                assert_eq!(entries.len(), 1);
+                match entries[0].node.key.as_ref().map(|k| &k.expr) {
+                    Some(SurfaceExpression::Str(s)) => assert_eq!(s, "Result"),
+                    other => panic!("expected Str key 'Result', got {other:?}"),
+                }
+                match &entries[0].node.value.expr {
+                    SurfaceExpression::Decl(decl) => match decl.as_ref() {
+                        SurfaceDeclaration::TypeAlias { params, body } => {
+                            assert!(params.is_empty());
+                            // Multi-entry body is a Dict with 3 positional entries
+                            match &body.expr {
+                                SurfaceExpression::Dict(body_entries) => {
+                                    assert_eq!(body_entries.len(), 3, "expected 3 body entries");
+                                    for entry in body_entries {
+                                        assert!(
+                                            entry.node.key.is_none(),
+                                            "body entries must be positional"
+                                        );
+                                    }
+                                }
+                                other => panic!("expected Dict body, got {other:?}"),
+                            }
+                        }
+                        other => panic!("expected TypeAlias, got {other:?}"),
+                    },
+                    other => panic!("expected Decl value, got {other:?}"),
+                }
+            }
+            other => panic!("expected Dict, got {other:?}"),
+        }
+
+        // With [let ...] params: [Pair: [type [let a b] [first: a] [second: b]]]
+        let output =
+            parse("[Pair: [type [let a b] [first: a] [second: b]]]").expect("parse failed");
+        let items = surf_items(&output.program.documents[0].node);
+        match &items[0].expr {
+            SurfaceExpression::Dict(entries) => {
+                assert_eq!(entries.len(), 1);
+                match &entries[0].node.value.expr {
+                    SurfaceExpression::Decl(decl) => match decl.as_ref() {
+                        SurfaceDeclaration::TypeAlias { params, body } => {
+                            assert_eq!(params.len(), 2, "expected 2 type params (a, b)");
+                            match &body.expr {
+                                SurfaceExpression::Dict(body_entries) => {
+                                    assert_eq!(body_entries.len(), 2, "expected 2 body entries");
+                                }
+                                other => panic!("expected Dict body, got {other:?}"),
+                            }
+                        }
+                        other => panic!("expected TypeAlias, got {other:?}"),
+                    },
+                    other => panic!("expected Decl value, got {other:?}"),
+                }
+            }
+            other => panic!("expected Dict, got {other:?}"),
         }
     }
 

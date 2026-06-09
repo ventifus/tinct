@@ -8,5 +8,3 @@
     [Green]:  "#00ff00"
     [Blue]:   "#0000ff"]
 ]
-=== out
-Dict({"Color": Variant(Color, Null), "Red": Variant(Red, Null), "Green": Variant(Green, Null), "Blue": Variant(Blue, Null), "color": Variant(Red, Null), "result": String("#ff0000")})

@@ -6,11 +6,3 @@
  error-val: [Error "oops"]
  ok-result: [match ok-val [Ok v]: v [Error _]: 0]
  error-result: [match error-val [Ok v]: v [Error _]: -1]]
-=== error
-[E071] non-exhaustive match: no pattern matched the Variant value (defined at 6:13-6:50)
-
-=== warn
-[UndefinedVariable] undefined variable: Ok
-[UndefinedVariable] undefined variable: Error
-[UndefinedVariable] undefined variable: v
-[UndefinedVariable] undefined variable: v

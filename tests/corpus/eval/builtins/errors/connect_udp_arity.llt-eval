@@ -9,6 +9,3 @@
   2720 | connect@[doc: "Open a TCP/UDP connection under a NetCap"]: builtin-connect
        |                                                            ^^^^^^^^^^^^^^^
   in [connect ...] at 2:1-2:31
-
-=== warn
-[ArityMismatch] expected 4 arguments, got 3

@@ -317,18 +317,19 @@ pub(crate) fn check_call_with_scheme(
             params,
             ret,
             variadic,
+            required_count,
         } => {
             // Arity check: named args fill remaining parameter slots by name (Kotlin model in
             // eval_call.rs), so count positional + named against total params.
             let total_supplied = args.len() + named_args.len();
-            // For variadic functions, the last param accepts arbitrary extra args.
-            // Require at least (params.len() - 1) args for variadic functions.
+            // B-349: use required_count (params without default values) as the minimum.
+            // For variadic functions, the last (variadic) param is not required.
             let min_required = if *variadic && !params.is_empty() {
-                params.len() - 1
+                required_count.saturating_sub(1)
             } else {
-                params.len()
+                *required_count
             };
-            if total_supplied < min_required || (!*variadic && total_supplied != params.len()) {
+            if total_supplied < min_required || (!*variadic && total_supplied > params.len()) {
                 return Err(vec![TypeErrorTyped::ArityMismatch(ArityMismatch {
                     expected: min_required,
                     got: total_supplied,
@@ -805,18 +806,19 @@ pub(crate) fn check_call(
             params,
             ret,
             variadic,
+            required_count,
         } => {
             // Arity check: named args fill remaining parameter slots by name (Kotlin model in
             // eval_call.rs), so count positional + named against total params.
             let total_supplied = args.len() + named_args.len();
-            // For variadic functions, the last param accepts arbitrary extra args.
-            // Require at least (params.len() - 1) args for variadic functions.
+            // B-349: use required_count (params without default values) as the minimum.
+            // For variadic functions, the last (variadic) param is not required.
             let min_required = if *variadic && !params.is_empty() {
-                params.len() - 1
+                required_count.saturating_sub(1)
             } else {
-                params.len()
+                *required_count
             };
-            if total_supplied < min_required || (!*variadic && total_supplied != params.len()) {
+            if total_supplied < min_required || (!*variadic && total_supplied > params.len()) {
                 return Err(vec![TypeErrorTyped::ArityMismatch(ArityMismatch {
                     expected: min_required,
                     got: total_supplied,
@@ -1117,6 +1119,7 @@ pub(crate) fn check_call(
                     params,
                     ret,
                     variadic: _,
+                    required_count: _,
                 } => (params, ret),
                 _ => unreachable!("instantiate_at_level preserves Function variant"),
             };

@@ -99,6 +99,7 @@ fn rename_single_type_var(ty: &Type, old_name: &str, fresh_name: &str, level: u3
             params,
             ret,
             variadic,
+            required_count,
         } => Type::Function {
             params: params
                 .iter()
@@ -111,6 +112,7 @@ fn rename_single_type_var(ty: &Type, old_name: &str, fresh_name: &str, level: u3
                 .collect(),
             ret: Box::new(rename_single_type_var(ret, old_name, fresh_name, level)),
             variadic: *variadic,
+            required_count: *required_count,
         },
         Type::App(f, a) => Type::App(
             Box::new(rename_single_type_var(f, old_name, fresh_name, level)),
@@ -1043,6 +1045,7 @@ fn format_type_pretty(ty: &Type, rename: &HashMap<String, String>) -> String {
             params,
             ret,
             variadic: _,
+            required_count: _,
         } => {
             let ret_str = format_type_pretty(ret, rename);
             let params_str = params
@@ -1842,6 +1845,7 @@ mod help_suggestion_tests {
                         params: vec![(None, Type::seq(b_var())), (None, Type::seq(b_var()))],
                         ret: Box::new(Type::seq(b_var())),
                         variadic: false,
+                        required_count: 2,
                     },
                 );
                 methods

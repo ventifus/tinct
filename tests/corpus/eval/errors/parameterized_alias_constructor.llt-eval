@@ -10,9 +10,3 @@
 success.value
 === error
 [E099] syntax error at 5:41 (cannot evaluate error node) (defined at 5:41-5:42) (materialized at 4:1-8:2)
-
-=== warn
-[TypeError] syntax error at 5:41 (cannot typecheck error node)
-[UndefinedVariable] undefined variable: Ok
-[UndefinedVariable] undefined variable: Err
-[NotARecord] expected record type, got <error>

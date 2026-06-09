@@ -1221,7 +1221,7 @@ pub(crate) fn builtin_proxy(
     })
 }
 
-// Bootstrap: loader.llt → prelude.llt (direct eval) → stdlib_env.
+// Bootstrap: loader.llt → prelude.llt (direct eval) → stdlib_env. (S-873)
 // Prelude now includes macro transformers (formerly macros.llt).
 // Fatal: stdlib failure is not recoverable — callers should propagate or panic on Err.
 
@@ -1486,6 +1486,10 @@ fn create_stdlib_env_inner(bootstrap_base_dir: cap_std::fs::Dir) -> StdlibEnvWit
     // Previously, prelude.llt had explicit `Tcp: [variant "Tcp"]` entries as a workaround.
     // Those were removed (B-296 fix) and replaced by this injection call.
     crate::desugar::inject_adt_constructors_surface_program(&mut prelude_program);
+    // Transform instance decls to method dicts (T-1142).
+    // Must run before resolve so [instance ...] entries in dict position are
+    // converted to explicit Dict values before lower.rs skips all Decl entries.
+    crate::desugar::desugar_instance_decls_surface_program(&mut prelude_program);
     let prelude_resolution_table =
         std::sync::Arc::new(crate::resolve::resolve_surface_program(&prelude_program));
     let prelude_type_table = std::sync::Arc::new(crate::ast::TypeAnnotationTable::new());
@@ -1599,6 +1603,8 @@ pub fn create_type_stage_env() -> Result<Arc<RwLock<Environment>>, Box<crate::er
     // immediately because `TypeNode` is undefined in the env. Must run after desugar, before
     // resolve (same ordering as create_stdlib_env_inner).
     crate::desugar::inject_adt_constructors_surface_program(&mut program);
+    // Transform instance decls to method dicts (T-1142).
+    crate::desugar::desugar_instance_decls_surface_program(&mut program);
     // Variable resolution pass (Phase 1 of arena allocation strategy).
     let resolution_table = std::sync::Arc::new(crate::resolve::resolve_surface_program(&program));
     let empty_types = std::sync::Arc::new(crate::ast::TypeAnnotationTable::new());

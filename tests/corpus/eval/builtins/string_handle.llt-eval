@@ -4,6 +4,3 @@
 first-line
 === out
 String("hello")
-
-=== warn
-[UndefinedVariable] undefined variable: builtin-read-line

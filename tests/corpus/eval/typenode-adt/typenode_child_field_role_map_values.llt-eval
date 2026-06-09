@@ -18,8 +18,3 @@
 [result: [and has-field-anns [and [= role "MapValues"] no-open]]]
 === out
 Dict({"result": Bool(true)})
-
-=== warn
-[TypeError] auto-indexed entries not supported in type expressions
-[UndefinedVariable] undefined variable: Record
-[UnificationFailure] cannot unify [] with <error>

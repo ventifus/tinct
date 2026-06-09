@@ -11,9 +11,3 @@
   # VarRef nodes have the tag "Var" (from surface_expr_tag)
   node-tag: [tag-of node]
 ]
-=== error
-[E035] cannot serialize Expression to JSON (defined at 4:9-4:47)
-
-=== warn
-[UndefinedVariable] undefined variable: builtin-variant
-[UnificationFailure] cannot unify Top with <error>

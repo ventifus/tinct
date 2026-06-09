@@ -2,6 +2,3 @@
 [builtin-sin 0]
 === out
 Float(0)
-
-=== warn
-[UndefinedVariable] undefined variable: builtin-sin

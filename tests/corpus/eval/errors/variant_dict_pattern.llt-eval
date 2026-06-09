@@ -7,7 +7,3 @@
 ]
 === error
 [E002] undefined variable: host (did you mean the string "host"? Use quotes.) (defined at 5:15-5:19)
-
-=== warn
-[UndefinedVariable] undefined variable: h
-[UndefinedVariable] undefined variable: p

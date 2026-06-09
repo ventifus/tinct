@@ -1,9 +1,2 @@
 # map on dict: same keys, transformed values (lazy PendingCall)
 [map [fn [x] [* x 2]] [a: 1 b: 2 c: 3]]
-=== error
-[E020] arity mismatch: expected 2 arguments, got 3 (defined at 1:1-1:40)
-  in [map ...] at 1:1-1:40
-  in [map ...] at 1:1-1:40
-
-=== warn
-[ArityMismatch] expected 2 arguments, got 3

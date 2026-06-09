@@ -16,12 +16,3 @@
 [match %.result
   [Result.Ok v]: v
   [Closed]: -1]
-=== error
-[E010] type mismatch: expected Seq or Seq.Nil, got Dict (defined at 12:27-12:58) (called at 15:8-15:16)
-  in [select-once ...] at 12:27-12:58
-  in [if ...] at 12:11-12:91
-
-=== warn
-[UndefinedVariable] undefined variable: }
-[UnificationFailure] cannot unify Top with <error>
-[UndefinedVariable] undefined variable: v

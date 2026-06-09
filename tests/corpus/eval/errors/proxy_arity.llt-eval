@@ -4,6 +4,3 @@
 [E024] missing argument for required parameter 'handler' (defined at 1:1-1:8)
   in [proxy ...] at 1:1-1:8
   in [proxy ...] at 1:1-1:8
-
-=== warn
-[ArityMismatch] expected 1 arguments, got 0

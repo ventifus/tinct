@@ -63,6 +63,60 @@
     # Replace trailing chars with = padding per RFC 4648 §4
     [replace-end: [fn [let s n] [str [slice-str s 0 [- [length s] n]] [str-repeat "=" n]]]]
     [match pad 0: chars  1: [replace-end chars 1]  _: [replace-end chars 2]]]
+
+  # ws-recv-message-impl: accumulator-based reassembly loop. Used by ws-recv-message.
+  # fragments: [Seq Bytes] — accumulated payloads from continuation frames
+  # msg-type: [or Int Null] — opcode of the starting frame (Text=0x01 or Binary=0x02)
+  ws-recv-message-impl: [fn [let conn@WebSocketConnection fragments@[Seq Bytes] msg-type@[or Int Null]]
+    [h: conn.underlying]
+    [match [try [read h 1]]
+      [Result.Error _]: WsError.ConnectionClosed
+      [Result.Ok b0-bytes]:
+        [b0:   [get b0-bytes 0]]
+        [b1:   [get [read h 1] 0]]
+        [fin:  [= [band b0 0x80] 0x80]]
+        [opcode: [band b0 0x0F]]
+        [masked: [= [band b1 0x80] 0x80]]
+        [len1:   [band b1 0x7F]]
+        [if [and conn.server-side [not masked]] [error "WebSocket: client frame must be masked"] null]
+        [if [and [not conn.server-side] masked] [error "WebSocket: server frame must not be masked"] null]
+        [payload-len: [match len1
+          126: [let lb: [read h 2]  [+ [* [get lb 0] 256] [get lb 1]]]
+          127: [error "WebSocket: 64-bit frame lengths not supported"]
+          _:   len1]]
+        [mask-key: [if masked [read h 4] []]]
+        [raw:      [read h payload-len]]
+        [payload:  [if masked [bytes-xor-mask raw mask-key] raw]]
+        [match opcode
+          0x00:
+            [if [null? msg-type]
+              WsError.ProtocolViolation reason: "Continuation frame without starting frame"
+              [if fin
+                [full-payload: [reduce concat [] [append fragments [list payload]]]]
+                [match msg-type
+                  0x01: [WsFrame.Text [bytes-str full-payload]]
+                  0x02: [WsFrame.Binary full-payload]
+                  _:    [error "WebSocket: invalid msg-type in reassembly"]]
+                [ws-recv-message-impl conn [append fragments [list payload]] msg-type]]]
+          0x01:
+            [if [null? msg-type]
+              [if fin
+                [WsFrame.Text [bytes-str payload]]
+                [ws-recv-message-impl conn [list payload] 0x01]]
+              WsError.ProtocolViolation reason: "Text frame in middle of fragmented message"]
+          0x02:
+            [if [null? msg-type]
+              [if fin
+                [WsFrame.Binary payload]
+                [ws-recv-message-impl conn [list payload] 0x02]]
+              WsError.ProtocolViolation reason: "Binary frame in middle of fragmented message"]
+          0x08:
+            [WsFrame.Close
+              [@WsCloseCode [if [>= [length payload] 2] [uint16 NetworkEndian [slice payload 0 2]] 1000]]
+              [if [> [length payload] 2] [bytes-str [slice payload 2 [length payload]]] ""]]
+          0x09: [WsFrame.Ping payload]
+          0x0A: [WsFrame.Pong payload]
+          _: [error [str "WebSocket: unknown opcode: " opcode]]]]]
 ]
 
 # ── Public API. ───────────────────────────────────────────────────────────────────────────────────
@@ -102,14 +156,14 @@
     [ws-accept-request h [parse-request h [fn [let _] null]]]]
 
   ws-accept-request: [fn@[bind: [h]  constraint: [h: ByteStream]]
-                       [let h@h req@RawRequest]
+                       [let h@h req@HttpRequest]
     [if [not [= [lower [or [get? req.headers "upgrade"] ""]] "websocket"]]
       [error "WebSocket: missing Upgrade: websocket"]]
     [key: [let raw: [get? req.headers "sec-websocket-key"]]
           [if [null? raw] [error "WebSocket: missing Sec-WebSocket-Key"] raw]]
     [accept-key: [base64-encode [sha1 [str-bytes [str key "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"]]]]]
     [write-response h
-      [RawResponse
+      [HttpResponse
         [status: 101
          headers: ["upgrade":               "websocket"
                    "connection":            "Upgrade"
@@ -174,64 +228,6 @@
   ws-recv-message: [fn@[return: [or WsFrame WsError]] [let conn@WebSocketConnection]
     [ws-recv-message-impl conn [] null]]
 
-  # ws-recv-message-impl: accumulator-based reassembly loop.
-  # fragments: [Seq Bytes] — accumulated payloads from continuation frames
-  # msg-type: [or Int Null] — opcode of the starting frame (Text=0x01 or Binary=0x02)
-  ws-recv-message-impl: [fn [let conn@WebSocketConnection fragments@[Seq Bytes] msg-type@[or Int Null]]
-    [h: conn.underlying]
-    [match [try [read h 1]]
-      [Result.Error _]: WsError.ConnectionClosed
-      [Result.Ok b0-bytes]:
-        [b0:   [get b0-bytes 0]]
-        [b1:   [get [read h 1] 0]]
-        [fin:  [= [band b0 0x80] 0x80]]
-        [opcode: [band b0 0x0F]]
-        [masked: [= [band b1 0x80] 0x80]]
-        [len1:   [band b1 0x7F]]
-        [if [and conn.server-side [not masked]] [error "WebSocket: client frame must be masked"] null]
-        [if [and [not conn.server-side] masked] [error "WebSocket: server frame must not be masked"] null]
-        [payload-len: [match len1
-          126: [let lb: [read h 2]  [+ [* [get lb 0] 256] [get lb 1]]]
-          127: [error "WebSocket: 64-bit frame lengths not supported"]
-          _:   len1]]
-        [mask-key: [if masked [read h 4] []]]
-        [raw:      [read h payload-len]]
-        [payload:  [if masked [bytes-xor-mask raw mask-key] raw]]
-        # Dispatch by opcode
-        [match opcode
-          0x00:   # Continuation frame
-            [if [null? msg-type]
-              WsError.ProtocolViolation reason: "Continuation frame without starting frame"
-              [if fin
-                # Final continuation — reassemble and return
-                [full-payload: [reduce concat [] [append fragments [list payload]]]]
-                [match msg-type
-                  0x01: [WsFrame.Text [bytes-str full-payload]]
-                  0x02: [WsFrame.Binary full-payload]
-                  _:    [error "WebSocket: invalid msg-type in reassembly"]]
-                # Non-final continuation — accumulate and recurse
-                [ws-recv-message-impl conn [append fragments [list payload]] msg-type]]]
-          0x01:   # Text frame
-            [if [null? msg-type]
-              [if fin
-                [WsFrame.Text [bytes-str payload]]   # Non-fragmented Text
-                [ws-recv-message-impl conn [list payload] 0x01]]   # Start fragmented Text
-              WsError.ProtocolViolation reason: "Text frame in middle of fragmented message"]
-          0x02:   # Binary frame
-            [if [null? msg-type]
-              [if fin
-                [WsFrame.Binary payload]   # Non-fragmented Binary
-                [ws-recv-message-impl conn [list payload] 0x02]]   # Start fragmented Binary
-              WsError.ProtocolViolation reason: "Binary frame in middle of fragmented message"]
-          0x08:   # Close (control frames cannot be fragmented)
-            [WsFrame.Close
-              [@WsCloseCode [if [>= [length payload] 2] [uint16 NetworkEndian [slice payload 0 2]] 1000]]
-              [if [> [length payload] 2] [bytes-str [slice payload 2 [length payload]]] ""]]
-          0x09:   # Ping
-            [WsFrame.Ping payload]
-          0x0A:   # Pong
-            [WsFrame.Pong payload]
-          _: [error [str "WebSocket: unknown opcode: " opcode]]]]]
 
   # Serve layer: promote each incoming Handle to a WebSocketConnection.
   ws-serve: [_ | [channel-map ws-accept]]

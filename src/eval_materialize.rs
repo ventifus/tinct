@@ -2715,11 +2715,13 @@ pub(crate) async fn apply_cont(
                                     },
                                 },
                                 "stage" => {
-                                    // stage: [Runtime] | [Type] — nominal variant
+                                    // stage: DocStage.Type | DocStage.Runtime — nominal variant
                                     // Default to Runtime when stage is None (matches ast_dict.rs behavior)
                                     let stage_tag = match &doc.stage {
-                                        Some(crate::ast::Stage::Type) => "Type",
-                                        Some(crate::ast::Stage::Runtime) | None => "Runtime",
+                                        Some(crate::ast::Stage::Type) => "DocStage.Type",
+                                        Some(crate::ast::Stage::Runtime) | None => {
+                                            "DocStage.Runtime"
+                                        }
                                     };
                                     Value::Variant {
                                         tag: stage_tag.to_string(),

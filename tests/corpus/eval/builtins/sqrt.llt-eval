@@ -2,6 +2,3 @@
 [builtin-sqrt 4]
 === out
 Float(2)
-
-=== warn
-[UndefinedVariable] undefined variable: builtin-sqrt

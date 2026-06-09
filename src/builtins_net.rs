@@ -4001,6 +4001,7 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
             ],
             ret: Box::new(Type::handle(cap_flag("readable"))),
             variadic: false,
+            required_count: 4,
         },
     );
 
@@ -4022,6 +4023,7 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
             ],
             ret: Box::new(Type::handle(cap_flag("readable"))),
             variadic: false,
+            required_count: 3,
         },
     );
 
@@ -4043,6 +4045,7 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
                 tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
+            required_count: 1,
         },
     );
 
@@ -4062,6 +4065,7 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
                 tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
+            required_count: 2,
         },
     );
 
@@ -4082,6 +4086,7 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
                 tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
+            required_count: 1,
         },
     );
 
@@ -4103,6 +4108,7 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
             ],
             ret: Box::new(Type::QuicSession),
             variadic: false,
+            required_count: 4,
         },
     );
 
@@ -4113,6 +4119,7 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::QuicSession)],
             ret: Box::new(Type::handle(cap_flag("readable"))),
             variadic: false,
+            required_count: 1,
         },
     );
 
@@ -4123,6 +4130,7 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::QuicSession)],
             ret: Box::new(Type::QuicDatagramHandle),
             variadic: false,
+            required_count: 1,
         },
     );
 
@@ -4143,6 +4151,7 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
             ],
             ret: Box::new(Type::Http2Session),
             variadic: false,
+            required_count: 3,
         },
     );
 
@@ -4153,6 +4162,7 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::QuicSession)],
             ret: Box::new(Type::Http3Session),
             variadic: false,
+            required_count: 1,
         },
     );
 
@@ -4181,6 +4191,7 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
             // Returns {ok: {status headers body}} or {err: msg} — Top since Result variant is nominal.
             ret: Box::new(Type::Top),
             variadic: false,
+            required_count: 5,
         },
     );
 
@@ -4211,6 +4222,7 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
                 }),
             ])),
             variadic: false,
+            required_count: 3,
         },
     );
 
@@ -4221,6 +4233,7 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Str)],
             ret: Box::new(Type::Uri),
             variadic: false,
+            required_count: 1,
         },
     );
 
@@ -4232,6 +4245,7 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Str)],
             ret: Box::new(Type::Uri),
             variadic: false,
+            required_count: 1,
         },
     );
 
@@ -4242,6 +4256,7 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Str)],
             ret: Box::new(Type::Uri),
             variadic: false,
+            required_count: 1,
         },
     );
 }

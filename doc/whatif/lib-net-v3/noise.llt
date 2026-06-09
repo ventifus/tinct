@@ -6,9 +6,9 @@
 [include %libdir "net.llt"]
 [include %libdir "crypto.llt"]   # for HkdfHash (used in NoiseConfig.hash field)
 
-[instance@[bind: [h]] [ByteStream [NoiseConnection h]]
-  read:  noise-read
-  write: noise-write]
+[instance@[bind: [h]] ByteStream
+  [let s@[NoiseConnection h]]: [read:  noise-read
+                                 write: noise-write]]
 
 # ── Internal. ────────────────────────────────────────────────────────────────────────────────────
 
@@ -356,12 +356,6 @@
   # Input/output are both Bytes — the codec sits at the plaintext/ciphertext boundary.
   NoiseTransportCodec: [type [h] [conn: [NoiseConnection h]]]
 
-  # Serve layer: promotes a Channel@ByteStream to Channel@NoiseConnection.
-  # Lives here (not serve.llt) because it closes over NoiseConfig.
-  noise-serve: [fn@[bind: [h]  constraint: [h: ByteStream]]
-                [let cfg@NoiseConfig in-ch@[Channel h]]
-    [channel-map [fn [let s@h] [noise-accept cfg s]] in-ch]]
-
   noise-accept: [fn@[bind: [h]  return: [NoiseConnection h]  constraint: [h: ByteStream]] [let cfg@NoiseConfig h@h]
     [match cfg.pattern
       [NoisePattern.XX]:     [noise-xx-accept h cfg]
@@ -396,8 +390,9 @@
 # encode: encrypts plaintext with send-key/send-n; prepends 2-byte length; returns framed ciphertext.
 # decode: reads 2-byte length prefix from data, decrypts with recv-key/recv-n; returns plaintext.
 # Nonce counters in conn advance atomically on each encode/decode call.
-[instance@[bind: [h]] [Codec [NoiseTransportCodec h] Bytes Bytes]
-  encode: [fn [let codec@[NoiseTransportCodec h] plaintext@Bytes]
+[instance@[bind: [h]] Codec
+  [let c@[NoiseTransportCodec h] i@Bytes o@Bytes]:
+  [encode: [fn [let codec@[NoiseTransportCodec h] plaintext@Bytes]
     [conn: codec.conn]
     [match [recv conn.send-n]
       [Closed.Closed]: [error "NoiseTransportCodec.encode: send-n channel closed"]
@@ -415,18 +410,18 @@
         [send conn.recv-n [+ n 1]]
         [match [chacha20-poly1305-open conn.recv-key [noise-nonce n] ct []]
           [Result.Ok p]:    p
-          [Result.Error _]: [error "NoiseTransportCodec.decode: decryption failed"]]]]]
+          [Result.Error _]: [error "NoiseTransportCodec.decode: decryption failed"]]]]]]
 
 # ── NoiseLayer typeclass — bidirectional noise ────────────────────────────────
 
 [class [let NoiseLayer input output]
   noise: [Fn@output [NoiseConfig input]]]
 
-[instance@[bind: [h]  constraint: [h: ByteStream]]
-    [NoiseLayer h [NoiseConnection h]]
-  noise: [fn [let cfg@NoiseConfig h@h] [noise-accept cfg h]]]
+[instance@[bind: [h]  constraint: [h: ByteStream]] NoiseLayer
+  [let a@h b@[NoiseConnection h]]:
+  [noise: [fn [let cfg@NoiseConfig h@h] [noise-accept cfg h]]]]
 
-[instance@[bind: [h]  constraint: [h: ByteStream]]
-    [NoiseLayer [Channel h] [Channel [NoiseConnection h]]]
-  noise: [fn [let cfg@NoiseConfig ch@[Channel h]]
-    [channel-map [fn [let s@h] [noise-accept cfg s]] ch]]]
+[instance@[bind: [h]  constraint: [h: ByteStream]] NoiseLayer
+  [let a@[Channel h] b@[Channel [NoiseConnection h]]]:
+  [noise: [fn [let cfg@NoiseConfig ch@[Channel h]]
+    [channel-map [fn [let s@h] [noise-accept cfg s]] ch]]]]

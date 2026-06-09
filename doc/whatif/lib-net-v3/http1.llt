@@ -3,8 +3,8 @@
 
 [include %libdir "net.llt"]
 
-[type [Http1RequestCodec]]    # zero-payload codec tag — stateless RawRequest ↔ Bytes codec
-[type [Http1ResponseCodec]]   # zero-payload codec tag — stateless RawResponse ↔ Bytes codec
+[type [Http1RequestCodec]]    # zero-payload codec tag — stateless HttpRequest ↔ Bytes codec
+[type [Http1ResponseCodec]]   # zero-payload codec tag — stateless HttpResponse ↔ Bytes codec
 
 # ── Internal. ────────────────────────────────────────────────────────────────────────────────────
 
@@ -55,7 +55,7 @@
         [headers: [parse-header-lines header-lines]]
         [cl: [get? headers "content-length"]]
         [body-len: [if [null? cl] 0 [to-int cl]]]
-        [RawResponse
+        [HttpResponse
           [status:  status
            headers: headers
            body:    [if [> body-len 0] [read h body-len] []]]]]]
@@ -77,54 +77,67 @@
 # ── Public API. ───────────────────────────────────────────────────────────────────────────────────
 
 [
-  RawRequest: [type
+  HttpRequest: [type
     [method:  String
      path:    String
      query:   String
      version: String
      headers: [Map String String]
      body:    Bytes
-     respond: [Fn [RawResponse] Null]]]
+     respond: [Fn [HttpResponse] Null]]]
+  # Server push is a connection-level capability, not a request field.
+  # Use push-promise on the Http2Connection from the server event:
+  #   [fn [let connection@Http2Connection request@HttpRequest]
+  #     [push-promise connection request promise-req push-resp]
+  #     [request.respond [ok body]]]
 
-  RawResponse: [type
+  HttpResponse: [type
     [status:  Int
      headers: [Map String String]
      body:    Bytes]]
 
-  # HttpStream: bidirectional HTTP request/response typeclass.
-  # send (client): initiate request on established connection → Task@RawResponse
-  # recv (server): pull next RawRequest from a connection or channel of connections
-  # Implemented by Http2Connection, Http3Connection, and Http1Connection.
-  [class [HttpStream c]
-    send: [Fn@[Task RawResponse] [c RawRequest]]
-    recv: [Fn@[Channel RawRequest] [c]]]
+  # HttpStream: per-request stream capabilities. Implemented by H2Stream and H3Stream.
+  # Absent for HTTP/1.1 — H1 has no stream multiplexing.
+  # push:   send PUSH_PROMISE + pushed response (RFC 7540 §8.2, RFC 9114 §4.6)
+  # cancel: abort this stream — RST_STREAM (H2) or STOP_SENDING (H3)
+  [class [let HttpStream s]
+    push:   [Fn@Null [s HttpRequest HttpResponse]]
+    cancel: [Fn@Null [s]]]
 
-  # HttpConnect: generic request dispatch across H1/H2/H3 connections.
-  # Enables [http-request req conn] to resolve by conn type.
-  [class [HttpConnect c]
-    request: [Fn@[Task RawResponse] [c RawRequest]]]
+  # HttpConnection: typeclass for HTTP connections — send requests, receive responses.
+  # Implemented by Http2Connection, Http3Connection, Handle (H1).
+  [class [let HttpConnection c]
+    request: [Fn@[Task HttpResponse] [c HttpRequest]]]
 
   # Http1RequestCodec: codec for HTTP/1.1 request wire format (RFC 7230).
-  # encode: RawRequest → Bytes (request line + headers + CRLF + body)
-  # decode: Bytes → RawRequest (respond field is a no-op; use parse-request for live connections)
+  # encode: HttpRequest → Bytes (request line + headers + CRLF + body)
+  # decode: Bytes → HttpRequest (respond field is a no-op; use parse-request for live connections)
   # Http1RequestCodec declared at top level (zero-payload type)
 
   # Http1ResponseCodec: codec for HTTP/1.1 response wire format (RFC 7230).
-  # encode: RawResponse → Bytes (status line + headers + CRLF + body)
-  # decode: Bytes → RawResponse
+  # encode: HttpResponse → Bytes (status line + headers + CRLF + body)
+  # decode: Bytes → HttpResponse
   # Http1ResponseCodec declared at top level (zero-payload type)
 
   ok:           [fn [let body@String]
-    [RawResponse [status: 200  headers: ["content-type": "text/plain; charset=utf-8"]  body: [str-bytes body]]]]
+    [HttpResponse [status: 200  headers: ["content-type": "text/plain; charset=utf-8"]  body: [str-bytes body]]]]
   json-ok:      [fn [let body@Bytes]
-    [RawResponse [status: 200  headers: ["content-type": "application/json"]  body: body]]]
+    [HttpResponse [status: 200  headers: ["content-type": "application/json"]  body: body]]]
   redirect:     [fn [let location@String]
-    [RawResponse [status: 302  headers: ["location": location]  body: []]]]
-  not-found:    [RawResponse [status: 404  headers: []  body: [str-bytes "Not Found"]]]
+    [HttpResponse [status: 302  headers: ["location": location]  body: []]]]
+  not-found:    [HttpResponse [status: 404  headers: []  body: [str-bytes "Not Found"]]]
   server-error: [fn [let msg@String]
-    [RawResponse [status: 500  headers: []  body: [str-bytes msg]]]]
+    [HttpResponse [status: 500  headers: []  body: [str-bytes msg]]]]
 
-  parse-request: [fn@[bind: [h]  constraint: [h: ByteStream]] [let h@h respond@[Fn [RawResponse] Null]]
+  # push-request: construct a synthetic GET HttpRequest for use with stream.push.
+  # Server push resources must be GET and cacheable (RFC 7540 §8.2, RFC 9114 §4.6).
+  # For custom headers (cache-control, content-type hints, etc.) construct HttpRequest directly.
+  # Usage: [stream.push [push-request "/style.css"] [ok-bytes css-content]]
+  push-request: [fn [let path@String]
+    [HttpRequest [method: "GET"  path: path  query: ""  version: "HTTP/2.0"
+                  headers: []  body: [bytes 0]  respond: identity]]]
+
+  parse-request: [fn@[bind: [h]  constraint: [h: ByteStream]] [let h@h respond@[Fn [HttpResponse] Null]]
     [header-str: [bytes-str [read-until-crlfcrlf h]]]
     [lines:      [str-split "\r\n" header-str]]
     [match lines
@@ -139,13 +152,14 @@
          query:   [if [> [length parts2] 1] [get parts2 1] ""]
          cl:      [get? headers "content-length"]
          body-len:[if [null? cl] 0 [to-int cl]]
-         [RawRequest
+         [HttpRequest
            [method:  [get parts 0]   path:    path
             query:   query           version: [get parts 2]
             headers: headers         body:    [if [> body-len 0] [read h body-len] []]
-            respond: respond]]]]]
+            respond: respond
+            push:    Absent.Absent]]]]]  # HTTP/1.1 has no server push
 
-  write-response: [fn@[bind: [h]  constraint: [h: ByteStream]] [let h@h resp@RawResponse]
+  write-response: [fn@[bind: [h]  constraint: [h: ByteStream]] [let h@h resp@HttpResponse]
     [write h
       [concat
         [str-bytes [str "HTTP/1.1 " resp.status " " [status->text resp.status] "\r\n"]]
@@ -156,14 +170,14 @@
         [str-bytes "\r\n"]
         resp.body]]]
 
-  # Serve one HTTP/1.1 connection: parse requests, emit to out channel, support keep-alive.
-  # Terminates when the client closes the connection or sends Connection: close.
-  http1-conn: [fn [let h@Handle out@[Channel RawRequest]]
+  # Serve one HTTP/1.1 connection: parse requests, emit [connection: Handle  request: HttpRequest]
+  # pairs to the out channel. connection = the raw Handle (carries client IP via TCP metadata).
+  http1-conn: [fn [let h@Handle out@[Channel [connection: Handle  request: HttpRequest]]]
     [step: [fn []
       [match [try [parse-request h [fn [let resp] [write-response h resp]]]]
-        [Result.Ok req]:
-          [send out req]
-          [if [= [get? req.headers "connection"] "close"] [] [step]]
+        [Result.Ok request]:
+          [send out [connection: h  request: request]]
+          [if [= [get? request.headers "connection"] "close"] [] [step]]
         [Result.Error _]: []]]]
     [step]]
 
@@ -187,15 +201,16 @@
         body]]
     [parse-http1-response h]]
 
-  # Serve layer: 1:N — each incoming Handle yields its HTTP/1.1 request stream.
-  http1-serve: [_ | [channel-flat-map http1-conn]]
+  # http1: 1:N serve layer — each Handle yields a stream of [connection: Handle  request: HttpRequest] pairs.
+  # Use with serve: [tcp-listen %net 80] | http1 | [serve handler]
+  http1: [_ | [channel-flat-map http1-conn]]
 ]
 
-# Http1RequestCodec: RawRequest ↔ Bytes (RFC 7230 request wire format).
+# Http1RequestCodec: HttpRequest ↔ Bytes (RFC 7230 request wire format).
 # encode: produces "METHOD path?query HTTP/version\r\nheaders\r\n\r\nbody"
 # decode: parses request line + headers + body; respond field set to no-op fn.
 [instance Codec
-  [let a@Http1RequestCodec b@RawRequest c@Bytes]: [encode: [fn [let _ req@RawRequest]
+  [let a@Http1RequestCodec b@HttpRequest c@Bytes]: [encode: [fn [let _ req@HttpRequest]
     [target: [if [= req.query ""] req.path [str req.path "?" req.query]]]
     [concat
       [str-bytes [str req.method " " target " " req.version "\r\n"]]
@@ -225,17 +240,17 @@
          body-start: [+ sep-pos 4]
          body:    [if [null? cl] [slice data body-start [length data]]
                     [slice data body-start [+ body-start [to-int cl]]]]
-         [RawRequest
+         [HttpRequest
            [method:  [get parts 0]   path:    path
             query:   query           version: [get parts 2]
             headers: headers         body:    body
             respond: [fn [let _] null]]]]]]]]
 
-# Http1ResponseCodec: RawResponse ↔ Bytes (RFC 7230 response wire format).
+# Http1ResponseCodec: HttpResponse ↔ Bytes (RFC 7230 response wire format).
 # encode: produces "HTTP/1.1 status text\r\nheaders\r\n\r\nbody"
 # decode: parses status line + headers + body.
 [instance Codec
-  [let a@Http1ResponseCodec b@RawResponse c@Bytes]: [encode: [fn [let _ resp@RawResponse]
+  [let a@Http1ResponseCodec b@HttpResponse c@Bytes]: [encode: [fn [let _ resp@HttpResponse]
     [concat
       [str-bytes [str "HTTP/1.1 " resp.status " " [status->text resp.status] "\r\n"]]
       [str-bytes [str "content-length: " [length resp.body] "\r\n"]]
@@ -259,4 +274,4 @@
         [body-start: [+ sep-pos 4]]
         [body:       [if [null? cl] [slice data body-start [length data]]
                        [slice data body-start [+ body-start [to-int cl]]]]]
-        [RawResponse [status: status  headers: headers  body: body]]]]]]
+        [HttpResponse [status: status  headers: headers  body: body]]]]]]

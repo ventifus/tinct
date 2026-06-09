@@ -9,6 +9,3 @@
 ]
 === out
 Dict({"<": Function(a, b), "+": Function(a, b), "gt-result": Bool(true), "not-result": Bool(true)})
-
-=== warn
-[UnificationFailure] cannot unify 5 with 3

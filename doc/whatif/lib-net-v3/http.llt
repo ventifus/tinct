@@ -71,7 +71,7 @@
   # Default 256 MB. Enforced by the Rust builtins (builtin-gzip-decode etc.)
   # which error if decompressed output would exceed the limit — prevents zip bombs.
   # codec-for-encoding returns a CompressedCodec whose decode field closes over the limit.
-  decompress-response: [fn [let resp@RawResponse  max-decompressed@[type: Int  default: 268435456]]
+  decompress-response: [fn [let resp@HttpResponse  max-decompressed@[type: Int  default: 268435456]]
     [ce: [get? resp.headers "content-encoding"]]
     [body:
       [match [codec-for-encoding [or ce "identity"]]
@@ -82,7 +82,7 @@
         null: resp.body]]
     [if [= body resp.body]
       resp
-      [RawResponse [status: resp.status  headers: resp.headers  body: body]]]]
+      [HttpResponse [status: resp.status  headers: resp.headers  body: body]]]]
 ]
 
 # ── Public API. ───────────────────────────────────────────────────────────────────────────────────
@@ -108,9 +108,9 @@
     [http1-serve [tcp-listen-port cap port]]]
 
   https-channel: [fn [let cap@NetCap port@Port cert@TlsServerConfig]
-    [http1-serve [[tcp-listen-port cap port] | [tls-serve cert]]]]
+    [http1-serve [[tcp-listen-port cap port] | [tls cert]]]]
 
-  resolve-svcb: [fn [let cap@NetCap host@String depth@Int]
+  svcb-lookup: [fn [let cap@NetCap host@String depth@Int]
     [if [> depth 3]
       null
       [match [try [await [task [resolve cap DnsQtype.HTTPS host]]]]
@@ -123,7 +123,7 @@
           [if [not [empty? aliases]]
             # Follow the first AliasMode redirect (depth-limited)
             [match [get aliases 0]
-              [dnsRecord.HttpsRecord target: target]: [resolve-svcb cap target [+ depth 1]]]
+              [dnsRecord.HttpsRecord target: target]: [svcb-lookup cap target [+ depth 1]]]
             # Return the highest-priority (lowest prio number) ServiceMode record
             [best: [reduce [fn [let a b]
               [match [a [b]]
@@ -150,7 +150,7 @@
         [Result.Error _]: null]]]
 
   http-connect: [fn [let cap@NetCap host@String port@Int]
-    [svcb-task: [task [resolve-svcb cap host 0]]
+    [svcb-task: [task [svcb-lookup cap host 0]]
      v6-task:   [task [lookup-ips cap DnsQtype.AAAA host]]
      v4-task:   [task [lookup-ips cap DnsQtype.A    host]]]
     [svcb: [match [async-timeout [millis 50] svcb-task]
@@ -177,23 +177,23 @@
           [match [try [await v4-task]] [Result.Ok a]: a [Result.Error _]: []]]]
         [$addrs | [happy-connect cap port] | [tls-with-sni host ["h2" "http/1.1"] [] SystemRoots] | h2]]
 
-  # fetch: high-level HTTP request. Returns [or RawResponse HttpError].
+  # fetch: high-level HTTP request. Returns [or HttpResponse HttpError].
   # Transport failures (DNS, TCP, TLS) surface as NetError or TlsError from http-connect.
-  fetch: [fn@[return: [or RawResponse HttpError]] [let cap@NetCap url@Url  max-decompressed@[type: Int  default: 268435456]]
+  fetch: [fn@[return: [or HttpResponse HttpError]] [let cap@NetCap url@Url  max-decompressed@[type: Int  default: 268435456]]
     [host: [or url.host [error "fetch: URL has no host"]]]
     [port: [or url.port [scheme-default-port url.scheme]]]
     [conn: [http-connect cap host port]]
     [decompress-response
-      [await [http-request conn [method: "GET"  path: url.path  headers: []  body: []  host: host]]]
+      [await [http-request [method: "GET"  path: url.path  headers: []  body: []  host: host] conn]]
       max-decompressed]]
 
   fetch-h1: [fn [let cap@NetCap url@Url]
     [host: [or url.host [error "fetch-h1: no host"]]]
     [port: [or url.port [scheme-default-port url.scheme]]]
-    [raw:  [connect cap [host-port [hostname host] port] Tcp]]
-    [http1-request raw "GET" url.path [] [] host]]
+    [raw:  [connect cap Tcp [host-port [hostname host] port]]]
+    [http1-request "GET" url.path [] [] host raw]]
 
-  headers-map: [fn [let req@RawRequest] req.headers]
+  headers-map: [fn [let req@HttpRequest] req.headers]
 
   # SECURITY: disable compression on endpoints that reflect user-controlled
   # input alongside secrets in the same compressed stream — CRIME/BREACH attacks
@@ -202,8 +202,8 @@
   #
   # registry: optional user codecs passed through to negotiate-encoding.
   compression: [fn [let registry@[type: [Map String CompressedCodec]  default: []]
-                        handler@[Fn [RawRequest] RawResponse]]
-    [fn [let req@RawRequest]
+                        handler@[Fn [HttpRequest] HttpResponse]]
+    [fn [let req@HttpRequest]
       [resp: [handler req]]
       [ae: [get? req.headers "accept-encoding"]]
       [if [null? ae]
@@ -212,40 +212,40 @@
           [codec: [negotiate-encoding ae registry]]
           [if [= codec.name "identity"]
             resp
-            [RawResponse
+            [HttpResponse
               [status:  resp.status
                headers: [merge resp.headers ["content-encoding": codec.name]]
                body:    [codec.encode resp.body]]]]]]]]
 
-  logging: [fn [let handler@[Fn [RawRequest] RawResponse]]
-    [fn [let req@RawRequest]
+  logging: [fn [let handler@[Fn [HttpRequest] HttpResponse]]
+    [fn [let req@HttpRequest]
       [t0:   [now %clock]]
       [resp: [handler req]]
       [log [str req.method " " req.path " → " resp.status " (" [timestamp-diff [now %clock] t0] "ms)"]]
       resp]]
 
-  timeout: [fn [let ms@Int handler@[Fn [RawRequest] RawResponse]]
-    [fn [let req@RawRequest]
+  timeout: [fn [let ms@Int handler@[Fn [HttpRequest] HttpResponse]]
+    [fn [let req@HttpRequest]
       [match [try [await [async-timeout [millis ms] [task [handler req]]]]]
         [Result.Ok resp]:    resp
-        [Result.Error _]:    [RawResponse [status: 503  headers: []  body: [str-bytes "Request timeout"]]]]]]
+        [Result.Error _]:    [HttpResponse [status: 503  headers: []  body: [str-bytes "Request timeout"]]]]]]
 
-  cors: [fn [let origins@[Seq String] handler@[Fn [RawRequest] RawResponse]]
-    [fn [let req@RawRequest]
+  cors: [fn [let origins@[Seq String] handler@[Fn [HttpRequest] HttpResponse]]
+    [fn [let req@HttpRequest]
       [origin:  [or [get? req.headers "origin"] "*"]]
       [allowed: [if [empty? origins] true [any? [fn [let o] [= o origin]] origins]]]
       [resp: [handler req]]
       [if allowed
-        [RawResponse [status: resp.status  body: resp.body
+        [HttpResponse [status: resp.status  body: resp.body
           headers: [merge resp.headers
             ["access-control-allow-origin":  origin
              "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS"
              "access-control-allow-headers": "content-type, authorization"]]]]
         resp]]]
 
-  auth: [fn [let check@[Fn [RawRequest] Bool] handler@[Fn [RawRequest] RawResponse]]
-    [fn [let req@RawRequest]
+  auth: [fn [let check@[Fn [HttpRequest] Bool] handler@[Fn [HttpRequest] HttpResponse]]
+    [fn [let req@HttpRequest]
       [if [check req]
         [handler req]
-        [RawResponse [status: 401  headers: []  body: [str-bytes "Unauthorized"]]]]]]
+        [HttpResponse [status: 401  headers: []  body: [str-bytes "Unauthorized"]]]]]]
 ]

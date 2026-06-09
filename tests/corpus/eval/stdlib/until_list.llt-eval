@@ -1,8 +1,2 @@
 # until with list accumulation
 [until [fn [xs] [>= [length xs] 5]] [fn [xs] [append 1 xs]] []]
-=== error
-[E020] arity mismatch: expected 3 arguments, got 5 (defined at 1:1-1:64)
-  in [until ...] at 1:1-1:64
-
-=== warn
-[UndefinedVariable] undefined variable: until

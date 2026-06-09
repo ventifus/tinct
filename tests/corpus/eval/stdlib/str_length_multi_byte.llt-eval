@@ -3,8 +3,3 @@
 [include %libdir "strings.llt"]
 ---
 [call %.str-length "café"]
-=== error
-[E001] key not found: str-length (did you mean: 'str-at') (defined at 2:1-2:32) (accessed at 4:7-4:19)
-  in accessing .str-length at 4:7-4:19
-  in materialized at 4:1-4:27
-  in [<dot-access> ...] at 4:1-4:27

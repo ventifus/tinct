@@ -17,8 +17,3 @@
 [result: [and has-field-anns [= role "Seq"]]]
 === out
 Dict({"result": Bool(true)})
-
-=== warn
-[TypeError] invalid type expression in annotation: Call { func: SurfaceNode { expr: VarRef { name: "Seq", escaped: false }, span: Span { start: Position { offset: 603, line: 12, column: 17 }, end: Position { offset: 606, line: 12, column: 20 }, file: None } }, args: [SurfaceNode { expr: VarRef { name: "NodeType", escaped: false }, span: Span { start: Position { offset: 607, line: 12, column: 21 }, end: Position { offset: 615, line: 12, column: 29 }, file: None } }], named_args: [], implied: true }
-[UndefinedVariable] undefined variable: Union
-[UnificationFailure] cannot unify [] with <error>

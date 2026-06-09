@@ -7,9 +7,3 @@
 [str [bytes-str chunk] "/" [= eof []]]
 === out
 String("abcd/true")
-
-=== warn
-[UndefinedVariable] undefined variable: builtin-read-chunk
-[UndefinedVariable] undefined variable: builtin-read-chunk
-[UnificationFailure] cannot unify Bytes with <error>
-[UnificationFailure] cannot unify String with Bool

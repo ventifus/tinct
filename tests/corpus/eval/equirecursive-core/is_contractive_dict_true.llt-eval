@@ -6,6 +6,3 @@
 [result: [builtin-is-contractive [head: "Int"  tail: "RecursiveRef"]]]
 === out
 Dict({"result": Bool(true)})
-
-=== warn
-[UndefinedVariable] undefined variable: builtin-is-contractive

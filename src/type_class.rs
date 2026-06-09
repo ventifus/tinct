@@ -986,6 +986,7 @@ fn count_unresolved_vars(ty: &Type, subst: &crate::types::Substitution) -> usize
             params,
             ret,
             variadic: _,
+            required_count: _,
         } => {
             let param_count: usize = params
                 .iter()

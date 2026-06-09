@@ -4,6 +4,3 @@
 ]
 === out
 Dict({"a": Bool(true)})
-
-=== warn
-[UndefinedVariable] undefined variable: builtin-lt

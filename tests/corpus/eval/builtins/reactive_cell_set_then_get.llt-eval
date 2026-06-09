@@ -7,8 +7,3 @@
 [builtin-cell-get cell]
 === out
 Int(99)
-
-=== warn
-[UndefinedVariable] undefined variable: builtin-reactive-cell
-[UndefinedVariable] undefined variable: builtin-cell-set
-[UndefinedVariable] undefined variable: builtin-cell-get

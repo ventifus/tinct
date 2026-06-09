@@ -28,7 +28,7 @@
         [step: [fn []
           [match [recv in-ch]
             [Closed.Closed]: []
-            [Result.Ok x]:   [[task [send out [f x]]] [step]]]]]
+            [Result.Ok x]:   [block [task [send out [f x]]] [step]]]]]
         [step]]
       out]]
 
@@ -41,7 +41,7 @@
         [step: [fn []
           [match [recv in-ch]
             [Closed.Closed]: []
-            [Result.Ok x]:   [[task [f x out]] [step]]]]]
+            [Result.Ok x]:   [block [task [f x out]] [step]]]]]
         [step]]
       out]]
 

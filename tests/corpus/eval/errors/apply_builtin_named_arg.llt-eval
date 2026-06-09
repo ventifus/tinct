@@ -8,6 +8,3 @@
 [E023] + does not accept named arguments (defined at 5:1-5:21)
   in apply at 5:1-5:21
   in [apply ...] at 5:1-5:21
-
-=== warn
-[UnificationFailure] cannot unify Fn@Top [Top] with Fn@_t2 [_t0 _t1]

@@ -2,6 +2,3 @@
 [tag-of [Ok 42]]
 === out
 String("Result.Ok")
-
-=== warn
-[UndefinedVariable] undefined variable: Ok

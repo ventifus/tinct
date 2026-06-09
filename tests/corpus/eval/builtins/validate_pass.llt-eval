@@ -2,6 +2,3 @@
 [validate [type: "Int" min: 1 max: 100] 42]
 === out
 Int(42)
-
-=== warn
-[UndefinedVariable] undefined variable: validate

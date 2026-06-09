@@ -1,14 +1,70 @@
-# stdlib/codecs/text.llt — TextCodec typeclass + encoding_rs backend (~38 WHATWG encodings).
+# stdlib/codecs/text.llt — UTF-8 Codec instances + encoding_rs backend (~38 WHATWG encodings).
 # Part of: lib-net-v3
 --- uses: ["text"]
 
 [include %libdir "net.llt"]
 
-[class [let TextCodec c]
-  encode:       [Fn@[Result Bytes] [c String]]
-  decode:       [Fn@[Result String] [c Bytes]]
-  decode-lossy: [Fn@String [c Bytes]]
-  codec-name:   [Fn@String [c]]]
+# ── UTF-8 byte-class predicates ──────────────────────────────────────────────
+# Defined before the instances so they're visible to both encode and decode paths.
+[
+  ascii?:   [fn [let n@Int] [< n 0x80]]               # 0xxxxxxx: ASCII codepoint or 1-byte lead byte
+  bmp1-cp?: [fn [let cp@Int] [< cp 0x800]]            # U+0080-U+07FF: 2-byte encode range
+  bmp2-cp?: [fn [let cp@Int] [< cp 0x10000]]          # U+0800-U+FFFF: 3-byte encode range
+  utf8-2?:  [fn [let b@Int] [= [band b 0xE0] 0xC0]]  # 110xxxxx: 2-byte lead byte
+  utf8-3?:  [fn [let b@Int] [= [band b 0xF0] 0xE0]]  # 1110xxxx: 3-byte lead byte
+
+  # Encode one Unicode code point (Int) to UTF-8 Bytes.
+  # Used by Utf8Graphemes.encode to re-encode each code point in a Grapheme = [Seq Int].
+  encode-cp: [fn [let cp@Int]
+    [match cp
+      [ascii?]:   [bytes NetworkEndian [@UInt8 cp]]
+      [bmp1-cp?]: [concat [bytes NetworkEndian [@UInt8 [bor 0xC0 [shr cp 6]]]]
+                           [bytes NetworkEndian [@UInt8 [bor 0x80 [band cp 0x3F]]]]]
+      [bmp2-cp?]: [concat [bytes NetworkEndian [@UInt8 [bor 0xE0 [shr cp 12]]]]
+                           [bytes NetworkEndian [@UInt8 [bor 0x80 [band [shr cp 6] 0x3F]]]]
+                           [bytes NetworkEndian [@UInt8 [bor 0x80 [band cp 0x3F]]]]]
+      _:           [concat [bytes NetworkEndian [@UInt8 [bor 0xF0 [shr cp 18]]]]
+                            [bytes NetworkEndian [@UInt8 [bor 0x80 [band [shr cp 12] 0x3F]]]]
+                            [bytes NetworkEndian [@UInt8 [bor 0x80 [band [shr cp 6]  0x3F]]]]
+                            [bytes NetworkEndian [@UInt8 [bor 0x80 [band cp          0x3F]]]]]]]
+]
+
+# ── Utf8 Codec instances ──────────────────────────────────────────────────────
+# These implement the Codec typeclass from prelude.llt for UTF-8 at three levels.
+# decode: takes (codec, bytes, offset) → {value next}; encode: (codec, value) → bytes.
+
+# Byte view: Codec Utf8Bytes UInt8 Bytes — raw byte access, every byte is valid
+[instance@[bind: []] Codec
+  [let c@Utf8Bytes input@UInt8 output@Bytes]:
+  [encode:     [fn [let _ b@UInt8] [bytes NetworkEndian [@UInt8 b]]]
+   decode:     [fn [let _ buf@Bytes offset@Int
+                    handler@[type: [or [CodecInvalidHandler UInt8 Bytes] Absent]  default: Absent.Absent]]
+     [value: [get buf offset]  next: [+ offset 1]]]   # handler never called; all bytes valid UInt8
+   codec-name: [fn [let _] "utf-8-bytes"]]]
+
+# Grapheme view: Codec Utf8Graphemes Grapheme Bytes
+# Grapheme = [Seq Int] — a sequence of Unicode code points (encoding-agnostic).
+[instance@[bind: []] Codec
+  [let c@Utf8Graphemes input@Grapheme output@Bytes]:
+  [encode:     [fn [let _ g@Grapheme]
+     [reduce [fn [let acc cp] [concat acc [encode-cp cp]]] [str-bytes ""] g]]
+   decode:     [fn [let _ buf@Bytes offset@Int
+                    handler@[type: [or [CodecInvalidHandler Grapheme Bytes] Absent]  default: Absent.Absent]]
+     [h: [if [absent? handler] utf8-graphemes-strict handler]]
+     [b0: [get buf offset]]
+     [r0: [match b0
+       [ascii?]:  [value: b0                     next: [+ offset 1]]
+       [utf8-2?]: [value: [utf8-2 buf offset b0] next: [+ offset 2]]
+       [utf8-3?]: [value: [utf8-3 buf offset b0] next: [+ offset 3]]
+       _:          [h buf offset]]]
+     [end: [gcb-cluster-end buf offset [gcb-property r0.value] gcb-initial-state]]
+     [collect-cps: [fn [let off acc]
+       [if [>= off end]
+         [reverse acc]
+         [cp-r: [utf8-decode-one buf off]]
+         [collect-cps cp-r.next [cons cp-r.value acc]]]]]
+     [value: [@Grapheme [collect-cps offset []]]  next: end]]
+   codec-name: [fn [let _] "utf-8-graphemes"]]]
 
 [type [UTF8]]       [type [UTF16LE]]   [type [UTF16BE]]
 [type [Windows1252]] [type [Latin1]]  [type [ShiftJIS]]
@@ -16,33 +72,781 @@
 [type [ISO2022JP]]
 # ... all ~38 WHATWG encodings backed by encoding_rs
 
-[instance TextCodec
-  [let h@UTF8]: [encode:       [fn [let _ s@String] [Result.Ok [builtin-utf8-encode s]]]
-                 decode:       [fn [let _ b@Bytes offset@Int]
-                                 [buf: [slice b offset [length b]]]
-                                 [value: [builtin-utf8-decode buf]  next: [length b]]]
-                 decode-lossy: [fn [let _ b@Bytes]  [builtin-utf8-decode-lossy b]]
-                 codec-name:   [fn [let _] "utf-8"]]]
+# ── Per-codec on-invalid handlers ────────────────────────────────────────────
+# Each codec defines its own handlers, named by codec. Not part of the Codec
+# protocol — just values callers pass as the on-invalid argument.
+# Instances reference their own defaults here; callers can pass any of these.
+[
+  # Utf8Graphemes handlers
+  utf8-graphemes-strict: [fn@[CodecInvalidHandler Grapheme Bytes] [let _ offset@Int]
+    [raise [str "invalid UTF-8 byte at offset " [str offset]]]]
+  utf8-graphemes-lossy:  [fn@[CodecInvalidHandler Grapheme Bytes] [let _ offset@Int]
+    [value: [@Grapheme [0xFFFD]]  next: [+ offset 1]]]    # U+FFFD as [Seq Int] with one code point
 
-[instance TextCodec
-  [let h@UTF16LE]: [encode:       [fn [let _ s@String] [builtin-encoding-encode "utf-16le" s]]
-                    decode:       [fn [let _ b@Bytes offset@Int]
-                                    [buf: [slice b offset [length b]]]
-                                    [value: [builtin-encoding-decode "utf-16le" buf]  next: [length b]]]
-                    decode-lossy: [fn [let _ b@Bytes]  [builtin-encoding-decode-lossy "utf-16le" b]]
-                    codec-name:   [fn [let _] "utf-16le"]]]
+  # String encoding handlers (UTF8, UTF16LE, Windows1252, etc.)
+  utf8-strict:        [fn@[CodecInvalidHandler String Bytes] [let _ offset@Int]
+    [raise [str "invalid encoding at byte offset " [str offset]]]]
+  utf8-lossy:         [fn@[CodecInvalidHandler String Bytes] [let _ offset@Int]
+    [value: "\u{FFFD}"  next: [+ offset 1]]]       # U+FFFD as a string
+]
 
-[instance TextCodec
-  [let h@Windows1252]: [encode:       [fn [let _ s@String] [builtin-encoding-encode "windows-1252" s]]
-                         decode:       [fn [let _ b@Bytes offset@Int]
-                                         [buf: [slice b offset [length b]]]
-                                         [value: [builtin-encoding-decode "windows-1252" buf]  next: [length b]]]
-                         decode-lossy: [fn [let _ b@Bytes]  [builtin-encoding-decode-lossy "windows-1252" b]]
-                         codec-name:   [fn [let _] "windows-1252"]]]
+# Whole-string text encoding Codec instances.
+# These encode/decode complete strings — decode returns next = [length buf] (whole-buffer).
+# on-invalid default: utf8-lossy — web content commonly has encoding errors.
+# Callers doing strict protocol work pass utf8-strict explicitly.
+
+[instance@[bind: []] Codec
+  [let c@UTF8 input@String output@Bytes]:
+  [encode:     [fn [let _ s@String] [builtin-utf8-encode s]]
+   decode:     [fn [let _ b@Bytes offset@Int
+                    handler@[type: [or [CodecInvalidHandler String Bytes] Absent]  default: Absent.Absent]]
+     [h: [if [absent? handler] utf8-lossy handler]]
+     [buf: [slice b offset [length b]]]
+     [value: [builtin-utf8-decode buf h]  next: [length b]]]
+   codec-name: [fn [let _] "utf-8"]]]
+
+[instance@[bind: []] Codec
+  [let c@UTF16LE input@String output@Bytes]:
+  [encode:     [fn [let _ s@String] [builtin-encoding-encode "utf-16le" s]]
+   decode:     [fn [let _ b@Bytes offset@Int
+                    handler@[type: [or [CodecInvalidHandler String Bytes] Absent]  default: Absent.Absent]]
+     [h: [if [absent? handler] utf8-lossy handler]]
+     [buf: [slice b offset [length b]]]
+     [value: [builtin-encoding-decode "utf-16le" buf h]  next: [length b]]]
+   codec-name: [fn [let _] "utf-16le"]]]
+
+[instance@[bind: []] Codec
+  [let c@Windows1252 input@String output@Bytes]:
+  [encode:     [fn [let _ s@String] [builtin-encoding-encode "windows-1252" s]]
+   decode:     [fn [let _ b@Bytes offset@Int
+                    handler@[type: [or [CodecInvalidHandler String Bytes] Absent]  default: Absent.Absent]]
+     [h: [if [absent? handler] utf8-lossy handler]]
+     [buf: [slice b offset [length b]]]
+     [value: [builtin-encoding-decode "windows-1252" buf h]  next: [length b]]]
+   codec-name: [fn [let _] "windows-1252"]]]
 
 # ── Internal. ────────────────────────────────────────────────────────────────────────────────────
 
 [
+  # ── Grapheme Break Property tables (UAX#29, Unicode 17.0) ────────────────────
+  # Source: GraphemeBreakProperty.txt + emoji-data.txt (Extended_Pictographic)
+  # All ranges [lo: hi:] inclusive. Hangul LV/LVT are computed algorithmically.
+
+  gcb-cr:  [[lo: 0x000D hi: 0x000D]]
+  gcb-lf:  [[lo: 0x000A hi: 0x000A]]
+  gcb-zwj: [[lo: 0x200D hi: 0x200D]]
+  gcb-ri:  [[lo: 0x1F1E6 hi: 0x1F1FF]]  # Regional Indicator (A–Z flag letters)
+
+  gcb-prepend: [
+    [lo: 0x0600  hi: 0x0605] [lo: 0x06DD  hi: 0x06DD] [lo: 0x070F  hi: 0x070F]
+    [lo: 0x0890  hi: 0x0891] [lo: 0x08E2  hi: 0x08E2] [lo: 0x0D4E  hi: 0x0D4E]
+    [lo: 0x110BD hi: 0x110BD] [lo: 0x110CD hi: 0x110CD] [lo: 0x111C2 hi: 0x111C3]
+    [lo: 0x113D1 hi: 0x113D1] [lo: 0x1193F hi: 0x1193F] [lo: 0x11941 hi: 0x11941]
+    [lo: 0x11A84 hi: 0x11A89] [lo: 0x11D46 hi: 0x11D46] [lo: 0x11F02 hi: 0x11F02]]
+
+  gcb-control: [
+    [lo: 0x0000  hi: 0x0009] [lo: 0x000B  hi: 0x000C] [lo: 0x000E  hi: 0x001F]
+    [lo: 0x007F  hi: 0x009F] [lo: 0x00AD  hi: 0x00AD] [lo: 0x061C  hi: 0x061C]
+    [lo: 0x180E  hi: 0x180E] [lo: 0x200B  hi: 0x200B] [lo: 0x200E  hi: 0x200F]
+    [lo: 0x2028  hi: 0x2028] [lo: 0x2029  hi: 0x2029] [lo: 0x202A  hi: 0x202E]
+    [lo: 0x2060  hi: 0x2065] [lo: 0x2066  hi: 0x206F] [lo: 0xFEFF  hi: 0xFEFF]
+    [lo: 0xFFF0  hi: 0xFFFB] [lo: 0x13430 hi: 0x1343F] [lo: 0x1BCA0 hi: 0x1BCA3]
+    [lo: 0x1D173 hi: 0x1D17A] [lo: 0xE0000 hi: 0xE0001] [lo: 0xE0002 hi: 0xE001F]
+    [lo: 0xE0080 hi: 0xE00FF] [lo: 0xE01F0 hi: 0xE0FFF]]
+
+  # Hangul leading jamo (L), vowel jamo (V), trailing jamo (T)
+  gcb-l: [[lo: 0x1100  hi: 0x115F] [lo: 0xA960 hi: 0xA97C]]
+  gcb-v: [[lo: 0x1160  hi: 0x11A7] [lo: 0xD7B0 hi: 0xD7C6]
+           [lo: 0x16D63 hi: 0x16D63] [lo: 0x16D67 hi: 0x16D6A]]
+  gcb-t: [[lo: 0x11A8  hi: 0x11FF] [lo: 0xD7CB hi: 0xD7FB]]
+  # Hangul LV/LVT: algorithmic — no table needed
+  # is-hangul-lv?  cp = [and [in-range? cp 0xAC00 0xD7A3] [= 0 [mod [- cp 0xAC00] 28]]]
+  # is-hangul-lvt? cp = [and [in-range? cp 0xAC00 0xD7A3] [not [= 0 [mod [- cp 0xAC00] 28]]]]
+
+  # Extend (220 ranges): combining marks, emoji modifiers, variation selectors
+  gcb-extend: [
+    [lo: 0x0300 hi: 0x036F] [lo: 0x0483 hi: 0x0489] [lo: 0x0591 hi: 0x05BD]
+    [lo: 0x05BF hi: 0x05BF] [lo: 0x05C1 hi: 0x05C2] [lo: 0x05C4 hi: 0x05C5]
+    [lo: 0x05C7 hi: 0x05C7] [lo: 0x0610 hi: 0x061A] [lo: 0x064B hi: 0x065F]
+    [lo: 0x0670 hi: 0x0670] [lo: 0x06D6 hi: 0x06DC] [lo: 0x06DF hi: 0x06E4]
+    [lo: 0x06E7 hi: 0x06E8] [lo: 0x06EA hi: 0x06ED] [lo: 0x0711 hi: 0x0711]
+    [lo: 0x0730 hi: 0x074A] [lo: 0x07A6 hi: 0x07B0] [lo: 0x07EB hi: 0x07F3]
+    [lo: 0x07FD hi: 0x07FD] [lo: 0x0816 hi: 0x0823] [lo: 0x0825 hi: 0x0827]
+    [lo: 0x0829 hi: 0x082D] [lo: 0x0859 hi: 0x085B] [lo: 0x0897 hi: 0x089F]
+    [lo: 0x08CA hi: 0x0902] [lo: 0x093A hi: 0x093A] [lo: 0x093C hi: 0x093C]
+    [lo: 0x0941 hi: 0x0948] [lo: 0x094D hi: 0x094D] [lo: 0x0951 hi: 0x0957]
+    [lo: 0x0962 hi: 0x0963] [lo: 0x0981 hi: 0x0981] [lo: 0x09BC hi: 0x09BC]
+    [lo: 0x09BE hi: 0x09BE] [lo: 0x09C1 hi: 0x09C4] [lo: 0x09CD hi: 0x09CD]
+    [lo: 0x09D7 hi: 0x09D7] [lo: 0x09E2 hi: 0x09E3] [lo: 0x09FE hi: 0x09FE]
+    [lo: 0x0A01 hi: 0x0A02] [lo: 0x0A3C hi: 0x0A3C] [lo: 0x0A41 hi: 0x0A42]
+    [lo: 0x0A47 hi: 0x0A48] [lo: 0x0A4B hi: 0x0A4D] [lo: 0x0A51 hi: 0x0A51]
+    [lo: 0x0A70 hi: 0x0A71] [lo: 0x0A75 hi: 0x0A75] [lo: 0x0A81 hi: 0x0A82]
+    [lo: 0x0ABC hi: 0x0ABC] [lo: 0x0AC1 hi: 0x0AC5] [lo: 0x0AC7 hi: 0x0AC8]
+    [lo: 0x0ACD hi: 0x0ACD] [lo: 0x0AE2 hi: 0x0AE3] [lo: 0x0AFA hi: 0x0AFF]
+    [lo: 0x0B01 hi: 0x0B01] [lo: 0x0B3C hi: 0x0B3C] [lo: 0x0B3E hi: 0x0B3F]
+    [lo: 0x0B41 hi: 0x0B44] [lo: 0x0B4D hi: 0x0B4D] [lo: 0x0B55 hi: 0x0B57]
+    [lo: 0x0B62 hi: 0x0B63] [lo: 0x0B82 hi: 0x0B82] [lo: 0x0BBE hi: 0x0BBE]
+    [lo: 0x0BC0 hi: 0x0BC0] [lo: 0x0BCD hi: 0x0BCD] [lo: 0x0BD7 hi: 0x0BD7]
+    [lo: 0x0C00 hi: 0x0C00] [lo: 0x0C04 hi: 0x0C04] [lo: 0x0C3C hi: 0x0C3C]
+    [lo: 0x0C3E hi: 0x0C40] [lo: 0x0C46 hi: 0x0C48] [lo: 0x0C4A hi: 0x0C56]
+    [lo: 0x0C62 hi: 0x0C63] [lo: 0x0C81 hi: 0x0C81] [lo: 0x0CBC hi: 0x0CBC]
+    [lo: 0x0CBF hi: 0x0CBF] [lo: 0x0CC0 hi: 0x0CC0] [lo: 0x0CC2 hi: 0x0CC2]
+    [lo: 0x0CC6 hi: 0x0CCB] [lo: 0x0CCC hi: 0x0CCD] [lo: 0x0CD5 hi: 0x0CD6]
+    [lo: 0x0CE2 hi: 0x0CE3] [lo: 0x0D00 hi: 0x0D01] [lo: 0x0D3B hi: 0x0D3C]
+    [lo: 0x0D3E hi: 0x0D3E] [lo: 0x0D41 hi: 0x0D44] [lo: 0x0D4D hi: 0x0D4D]
+    [lo: 0x0D57 hi: 0x0D57] [lo: 0x0D62 hi: 0x0D63] [lo: 0x0D81 hi: 0x0D81]
+    [lo: 0x0DCA hi: 0x0DCA] [lo: 0x0DCF hi: 0x0DCF] [lo: 0x0DD2 hi: 0x0DD4]
+    [lo: 0x0DD6 hi: 0x0DD6] [lo: 0x0DDF hi: 0x0DDF] [lo: 0x0E31 hi: 0x0E31]
+    [lo: 0x0E34 hi: 0x0E4E] [lo: 0x0EB1 hi: 0x0EB1] [lo: 0x0EB4 hi: 0x0ECE]
+    [lo: 0x0F18 hi: 0x0F19] [lo: 0x0F35 hi: 0x0F35] [lo: 0x0F37 hi: 0x0F37]
+    [lo: 0x0F39 hi: 0x0F39] [lo: 0x0F71 hi: 0x0F84] [lo: 0x0F86 hi: 0x0F87]
+    [lo: 0x0F8D hi: 0x0FBC] [lo: 0x0FC6 hi: 0x0FC6] [lo: 0x102D hi: 0x1037]
+    [lo: 0x1039 hi: 0x103E] [lo: 0x1058 hi: 0x1060] [lo: 0x1071 hi: 0x1074]
+    [lo: 0x1082 hi: 0x1082] [lo: 0x1085 hi: 0x1086] [lo: 0x108D hi: 0x108D]
+    [lo: 0x109D hi: 0x109D] [lo: 0x135D hi: 0x135F] [lo: 0x1712 hi: 0x1715]
+    [lo: 0x1732 hi: 0x1734] [lo: 0x1752 hi: 0x1753] [lo: 0x1772 hi: 0x1773]
+    [lo: 0x17B4 hi: 0x17BD] [lo: 0x17C6 hi: 0x17C6] [lo: 0x17C9 hi: 0x17DD]
+    [lo: 0x180B hi: 0x180F] [lo: 0x1885 hi: 0x1886] [lo: 0x18A9 hi: 0x18A9]
+    [lo: 0x1920 hi: 0x1922] [lo: 0x1927 hi: 0x1928] [lo: 0x1932 hi: 0x1932]
+    [lo: 0x1939 hi: 0x193B] [lo: 0x1A17 hi: 0x1A1B] [lo: 0x1A56 hi: 0x1A7F]
+    [lo: 0x1AB0 hi: 0x1AEB] [lo: 0x1AE0 hi: 0x1AEB] [lo: 0x1B00 hi: 0x1B03]
+    [lo: 0x1B34 hi: 0x1B3B] [lo: 0x1B3C hi: 0x1B44] [lo: 0x1B6B hi: 0x1B73]
+    [lo: 0x1B80 hi: 0x1B81] [lo: 0x1BA2 hi: 0x1BAD] [lo: 0x1BE6 hi: 0x1BF3]
+    [lo: 0x1C2C hi: 0x1C37] [lo: 0x1CD0 hi: 0x1CE8] [lo: 0x1CED hi: 0x1CF9]
+    [lo: 0x1DC0 hi: 0x1DFF] [lo: 0x200C hi: 0x200C] [lo: 0x20D0 hi: 0x20F0]
+    [lo: 0x2CEF hi: 0x2CF1] [lo: 0x2D7F hi: 0x2D7F] [lo: 0x2DE0 hi: 0x2DFF]
+    [lo: 0x302A hi: 0x302F] [lo: 0x3099 hi: 0x309A] [lo: 0xA66F hi: 0xA672]
+    [lo: 0xA674 hi: 0xA67D] [lo: 0xA69E hi: 0xA69F] [lo: 0xA6F0 hi: 0xA6F1]
+    [lo: 0xA802 hi: 0xA802] [lo: 0xA806 hi: 0xA806] [lo: 0xA80B hi: 0xA80B]
+    [lo: 0xA825 hi: 0xA826] [lo: 0xA82C hi: 0xA82C] [lo: 0xA8C4 hi: 0xA8C5]
+    [lo: 0xA8E0 hi: 0xA8FF] [lo: 0xA926 hi: 0xA953] [lo: 0xA980 hi: 0xA982]
+    [lo: 0xA9B3 hi: 0xA9C0] [lo: 0xA9E5 hi: 0xA9E5] [lo: 0xAA29 hi: 0xAA36]
+    [lo: 0xAA43 hi: 0xAA43] [lo: 0xAA4C hi: 0xAA4C] [lo: 0xAA7C hi: 0xAA7C]
+    [lo: 0xAAB0 hi: 0xAAB0] [lo: 0xAAB2 hi: 0xAABF] [lo: 0xAAC1 hi: 0xAAC1]
+    [lo: 0xAAEC hi: 0xAAED] [lo: 0xAAF6 hi: 0xAAF6] [lo: 0xABE5 hi: 0xABE5]
+    [lo: 0xABE8 hi: 0xABE8] [lo: 0xABED hi: 0xABED] [lo: 0xFB1E hi: 0xFB1E]
+    [lo: 0xFE00 hi: 0xFE0F] [lo: 0xFE20 hi: 0xFE2F] [lo: 0xFF9E hi: 0xFF9F]
+    [lo: 0x101FD hi: 0x101FD] [lo: 0x102E0 hi: 0x102E0] [lo: 0x10376 hi: 0x1037A]
+    [lo: 0x10A01 hi: 0x10A0F] [lo: 0x10A38 hi: 0x10A3F] [lo: 0x10AE5 hi: 0x10AE6]
+    [lo: 0x10D24 hi: 0x10D27] [lo: 0x10D69 hi: 0x10D6D] [lo: 0x10EAB hi: 0x10EFF]
+    [lo: 0x10F46 hi: 0x10F50] [lo: 0x10F82 hi: 0x10F85] [lo: 0x11001 hi: 0x11001]
+    [lo: 0x11038 hi: 0x11081] [lo: 0x110B3 hi: 0x110BA] [lo: 0x110C2 hi: 0x110C2]
+    [lo: 0x11100 hi: 0x11134] [lo: 0x11173 hi: 0x11181] [lo: 0x111B6 hi: 0x111CC]
+    [lo: 0x111CF hi: 0x111CF] [lo: 0x1122F hi: 0x11237] [lo: 0x1123E hi: 0x11241]
+    [lo: 0x112DF hi: 0x112EA] [lo: 0x11300 hi: 0x11301] [lo: 0x1133B hi: 0x11374]
+    [lo: 0x113B8 hi: 0x113E2] [lo: 0x11438 hi: 0x11446] [lo: 0x1145E hi: 0x1145E]
+    [lo: 0x114B0 hi: 0x114C3] [lo: 0x115AF hi: 0x115DD] [lo: 0x11633 hi: 0x11640]
+    [lo: 0x116AB hi: 0x116B7] [lo: 0x1171D hi: 0x1172B] [lo: 0x1182F hi: 0x1183A]
+    [lo: 0x11930 hi: 0x11943] [lo: 0x119D4 hi: 0x119E0] [lo: 0x11A01 hi: 0x11A99]
+    [lo: 0x11B60 hi: 0x11B67] [lo: 0x11C30 hi: 0x11C3F] [lo: 0x11C92 hi: 0x11CB6]
+    [lo: 0x11D31 hi: 0x11D47] [lo: 0x11D90 hi: 0x11D97] [lo: 0x11EF3 hi: 0x11EF4]
+    [lo: 0x11F00 hi: 0x11F5A] [lo: 0x13440 hi: 0x13455] [lo: 0x1611E hi: 0x1612F]
+    [lo: 0x16AF0 hi: 0x16AF4] [lo: 0x16B30 hi: 0x16B36] [lo: 0x16F4F hi: 0x16F92]
+    [lo: 0x16FE4 hi: 0x16FF1] [lo: 0x1BC9D hi: 0x1BC9E] [lo: 0x1CF00 hi: 0x1CF46]
+    [lo: 0x1D165 hi: 0x1D172] [lo: 0x1D17B hi: 0x1D1AD] [lo: 0x1D242 hi: 0x1D244]
+    [lo: 0x1DA00 hi: 0x1DAAF] [lo: 0x1E000 hi: 0x1E02A] [lo: 0x1E08F hi: 0x1E08F]
+    [lo: 0x1E130 hi: 0x1E2EF] [lo: 0x1E4EC hi: 0x1E6F5] [lo: 0x1E8D0 hi: 0x1E94A]
+    [lo: 0x1F3FB hi: 0x1F3FF] [lo: 0xE0020 hi: 0xE01EF]]
+
+  # SpacingMark (137 ranges): spacing combining marks that extend the base
+  gcb-spacing-mark: [
+    [lo: 0x0903 hi: 0x0903] [lo: 0x093B hi: 0x093B] [lo: 0x093E hi: 0x0940]
+    [lo: 0x0949 hi: 0x094C] [lo: 0x094E hi: 0x094F] [lo: 0x0982 hi: 0x0983]
+    [lo: 0x09BF hi: 0x09C0] [lo: 0x09C7 hi: 0x09C8] [lo: 0x09CB hi: 0x09CC]
+    [lo: 0x0A03 hi: 0x0A03] [lo: 0x0A3E hi: 0x0A40] [lo: 0x0A83 hi: 0x0A83]
+    [lo: 0x0ABE hi: 0x0AC0] [lo: 0x0AC9 hi: 0x0AC9] [lo: 0x0ACB hi: 0x0ACC]
+    [lo: 0x0B02 hi: 0x0B03] [lo: 0x0B40 hi: 0x0B40] [lo: 0x0B47 hi: 0x0B48]
+    [lo: 0x0B4B hi: 0x0B4C] [lo: 0x0BBF hi: 0x0BBF] [lo: 0x0BC1 hi: 0x0BC2]
+    [lo: 0x0BC6 hi: 0x0BC8] [lo: 0x0BCA hi: 0x0BCC] [lo: 0x0C01 hi: 0x0C03]
+    [lo: 0x0C41 hi: 0x0C44] [lo: 0x0C82 hi: 0x0C83] [lo: 0x0CBE hi: 0x0CBE]
+    [lo: 0x0CC1 hi: 0x0CC1] [lo: 0x0CC3 hi: 0x0CC4] [lo: 0x0CF3 hi: 0x0CF3]
+    [lo: 0x0D02 hi: 0x0D03] [lo: 0x0D3F hi: 0x0D40] [lo: 0x0D46 hi: 0x0D48]
+    [lo: 0x0D4A hi: 0x0D4C] [lo: 0x0D82 hi: 0x0D83] [lo: 0x0DD0 hi: 0x0DDE]
+    [lo: 0x0DF2 hi: 0x0DF3] [lo: 0x0E33 hi: 0x0E33] [lo: 0x0EB3 hi: 0x0EB3]
+    [lo: 0x0F3E hi: 0x0F3F] [lo: 0x0F7F hi: 0x0F7F] [lo: 0x1031 hi: 0x1031]
+    [lo: 0x103B hi: 0x103C] [lo: 0x1056 hi: 0x1057] [lo: 0x1084 hi: 0x1084]
+    [lo: 0x17B6 hi: 0x17B6] [lo: 0x17BE hi: 0x17C8] [lo: 0x1923 hi: 0x1931]
+    [lo: 0x1933 hi: 0x1938] [lo: 0x1A19 hi: 0x1A1A] [lo: 0x1A55 hi: 0x1A57]
+    [lo: 0x1A6D hi: 0x1A72] [lo: 0x1B04 hi: 0x1B04] [lo: 0x1B3E hi: 0x1B41]
+    [lo: 0x1B82 hi: 0x1B82] [lo: 0x1BA1 hi: 0x1BA7] [lo: 0x1BE7 hi: 0x1BEE]
+    [lo: 0x1C24 hi: 0x1C35] [lo: 0x1CE1 hi: 0x1CF7] [lo: 0xA823 hi: 0xA827]
+    [lo: 0xA880 hi: 0xA881] [lo: 0xA8B4 hi: 0xA8C3] [lo: 0xA952 hi: 0xA952]
+    [lo: 0xA983 hi: 0xA983] [lo: 0xA9B4 hi: 0xA9BB] [lo: 0xA9BE hi: 0xA9BF]
+    [lo: 0xAA2F hi: 0xAA34] [lo: 0xAA4D hi: 0xAA4D] [lo: 0xAAEB hi: 0xAAEF]
+    [lo: 0xAAF5 hi: 0xAAF5] [lo: 0xABE3 hi: 0xABEC] [lo: 0x11000 hi: 0x11000]
+    [lo: 0x11002 hi: 0x11002] [lo: 0x11082 hi: 0x11082] [lo: 0x110B0 hi: 0x110B2]
+    [lo: 0x110B7 hi: 0x110B8] [lo: 0x1112C hi: 0x1112C] [lo: 0x11145 hi: 0x11146]
+    [lo: 0x11182 hi: 0x11182] [lo: 0x111B3 hi: 0x111B5] [lo: 0x111BF hi: 0x111CE]
+    [lo: 0x1122C hi: 0x11233] [lo: 0x112E0 hi: 0x112E2] [lo: 0x11302 hi: 0x11303]
+    [lo: 0x1133F hi: 0x11344] [lo: 0x11347 hi: 0x11348] [lo: 0x1134B hi: 0x1134C]
+    [lo: 0x11362 hi: 0x11363] [lo: 0x113B9 hi: 0x113CD] [lo: 0x11435 hi: 0x11445]
+    [lo: 0x114B1 hi: 0x114C1] [lo: 0x115B0 hi: 0x115BE] [lo: 0x11630 hi: 0x11632]
+    [lo: 0x1163B hi: 0x1163E] [lo: 0x116AC hi: 0x116AF] [lo: 0x1171E hi: 0x11726]
+    [lo: 0x1182C hi: 0x11838] [lo: 0x11931 hi: 0x11942] [lo: 0x119D1 hi: 0x119E4]
+    [lo: 0x11A39 hi: 0x11A97] [lo: 0x11B61 hi: 0x11B67] [lo: 0x11C2F hi: 0x11C3E]
+    [lo: 0x11CA9 hi: 0x11CB4] [lo: 0x11D8A hi: 0x11D96] [lo: 0x11EF5 hi: 0x11EF6]
+    [lo: 0x11F03 hi: 0x11F3F] [lo: 0x1612A hi: 0x1612C] [lo: 0x16F51 hi: 0x16F87]]
+
+  # Extended_Pictographic (583 ranges, complete — from Unicode 17.0 emoji-data.txt)
+  gcb-extended-pictographic: [
+    [lo: 0x00A9 hi: 0x00A9] [lo: 0x00AE hi: 0x00AE] [lo: 0x203C hi: 0x203C]
+    [lo: 0x2049 hi: 0x2049] [lo: 0x2122 hi: 0x2122] [lo: 0x2139 hi: 0x2139]
+    [lo: 0x2194 hi: 0x2199] [lo: 0x21A9 hi: 0x21AA] [lo: 0x231A hi: 0x231B]
+    [lo: 0x2328 hi: 0x2328] [lo: 0x23CF hi: 0x23CF] [lo: 0x23E9 hi: 0x23EC]
+    [lo: 0x23ED hi: 0x23EE] [lo: 0x23EF hi: 0x23EF] [lo: 0x23F0 hi: 0x23F0]
+    [lo: 0x23F1 hi: 0x23F2] [lo: 0x23F3 hi: 0x23F3] [lo: 0x23F8 hi: 0x23FA]
+    [lo: 0x24C2 hi: 0x24C2] [lo: 0x25AA hi: 0x25AB] [lo: 0x25B6 hi: 0x25B6]
+    [lo: 0x25C0 hi: 0x25C0] [lo: 0x25FB hi: 0x25FE] [lo: 0x2600 hi: 0x2601]
+    [lo: 0x2602 hi: 0x2603] [lo: 0x2604 hi: 0x2604] [lo: 0x260E hi: 0x260E]
+    [lo: 0x2611 hi: 0x2611] [lo: 0x2614 hi: 0x2615] [lo: 0x2618 hi: 0x2618]
+    [lo: 0x261D hi: 0x261D] [lo: 0x2620 hi: 0x2620] [lo: 0x2622 hi: 0x2623]
+    [lo: 0x2626 hi: 0x2626] [lo: 0x262A hi: 0x262A] [lo: 0x262E hi: 0x262E]
+    [lo: 0x262F hi: 0x262F] [lo: 0x2638 hi: 0x2639] [lo: 0x263A hi: 0x263A]
+    [lo: 0x2640 hi: 0x2640] [lo: 0x2642 hi: 0x2642] [lo: 0x2648 hi: 0x2653]
+    [lo: 0x265F hi: 0x265F] [lo: 0x2660 hi: 0x2660] [lo: 0x2663 hi: 0x2663]
+    [lo: 0x2665 hi: 0x2666] [lo: 0x2668 hi: 0x2668] [lo: 0x267B hi: 0x267B]
+    [lo: 0x267E hi: 0x267E] [lo: 0x267F hi: 0x267F] [lo: 0x2692 hi: 0x2692]
+    [lo: 0x2693 hi: 0x2693] [lo: 0x2694 hi: 0x2694] [lo: 0x2695 hi: 0x2695]
+    [lo: 0x2696 hi: 0x2697] [lo: 0x2699 hi: 0x2699] [lo: 0x269B hi: 0x269C]
+    [lo: 0x26A0 hi: 0x26A1] [lo: 0x26A7 hi: 0x26A7] [lo: 0x26AA hi: 0x26AB]
+    [lo: 0x26B0 hi: 0x26B1] [lo: 0x26BD hi: 0x26BE] [lo: 0x26C4 hi: 0x26C5]
+    [lo: 0x26C8 hi: 0x26C8] [lo: 0x26CE hi: 0x26CE] [lo: 0x26CF hi: 0x26CF]
+    [lo: 0x26D1 hi: 0x26D1] [lo: 0x26D3 hi: 0x26D3] [lo: 0x26D4 hi: 0x26D4]
+    [lo: 0x26E9 hi: 0x26E9] [lo: 0x26EA hi: 0x26EA] [lo: 0x26F0 hi: 0x26F1]
+    [lo: 0x26F2 hi: 0x26F3] [lo: 0x26F4 hi: 0x26F4] [lo: 0x26F5 hi: 0x26F5]
+    [lo: 0x26F7 hi: 0x26F9] [lo: 0x26FA hi: 0x26FA] [lo: 0x26FD hi: 0x26FD]
+    [lo: 0x2702 hi: 0x2702] [lo: 0x2705 hi: 0x2705] [lo: 0x2708 hi: 0x270C]
+    [lo: 0x270D hi: 0x270D] [lo: 0x270F hi: 0x270F] [lo: 0x2712 hi: 0x2712]
+    [lo: 0x2714 hi: 0x2714] [lo: 0x2716 hi: 0x2716] [lo: 0x271D hi: 0x271D]
+    [lo: 0x2721 hi: 0x2721] [lo: 0x2728 hi: 0x2728] [lo: 0x2733 hi: 0x2734]
+    [lo: 0x2744 hi: 0x2744] [lo: 0x2747 hi: 0x2747] [lo: 0x274C hi: 0x274C]
+    [lo: 0x274E hi: 0x274E] [lo: 0x2753 hi: 0x2755] [lo: 0x2757 hi: 0x2757]
+    [lo: 0x2763 hi: 0x2763] [lo: 0x2764 hi: 0x2764] [lo: 0x2795 hi: 0x2797]
+    [lo: 0x27A1 hi: 0x27A1] [lo: 0x27B0 hi: 0x27B0] [lo: 0x27BF hi: 0x27BF]
+    [lo: 0x2934 hi: 0x2935] [lo: 0x2B05 hi: 0x2B07] [lo: 0x2B1B hi: 0x2B1C]
+    [lo: 0x2B50 hi: 0x2B50] [lo: 0x2B55 hi: 0x2B55] [lo: 0x3030 hi: 0x3030]
+    [lo: 0x303D hi: 0x303D] [lo: 0x3297 hi: 0x3297] [lo: 0x3299 hi: 0x3299]
+    [lo: 0x1F004 hi: 0x1F004] [lo: 0x1F02C hi: 0x1F02F] [lo: 0x1F094 hi: 0x1F09F]
+    [lo: 0x1F0AF hi: 0x1F0B0] [lo: 0x1F0C0 hi: 0x1F0C0] [lo: 0x1F0CF hi: 0x1F0CF]
+    [lo: 0x1F0D0 hi: 0x1F0D0] [lo: 0x1F0F6 hi: 0x1F0FF] [lo: 0x1F170 hi: 0x1F171]
+    [lo: 0x1F17E hi: 0x1F17F] [lo: 0x1F18E hi: 0x1F18E] [lo: 0x1F191 hi: 0x1F19A]
+    [lo: 0x1F1AE hi: 0x1F1E5] [lo: 0x1F201 hi: 0x1F202] [lo: 0x1F203 hi: 0x1F20F]
+    [lo: 0x1F21A hi: 0x1F21A] [lo: 0x1F22F hi: 0x1F22F] [lo: 0x1F232 hi: 0x1F23A]
+    [lo: 0x1F23C hi: 0x1F23F] [lo: 0x1F249 hi: 0x1F24F] [lo: 0x1F250 hi: 0x1F251]
+    [lo: 0x1F252 hi: 0x1F25F] [lo: 0x1F266 hi: 0x1F2FF] [lo: 0x1F300 hi: 0x1F30C]
+    [lo: 0x1F30D hi: 0x1F30E] [lo: 0x1F30F hi: 0x1F30F] [lo: 0x1F310 hi: 0x1F310]
+    [lo: 0x1F311 hi: 0x1F311] [lo: 0x1F312 hi: 0x1F312] [lo: 0x1F313 hi: 0x1F315]
+    [lo: 0x1F316 hi: 0x1F318] [lo: 0x1F319 hi: 0x1F319] [lo: 0x1F31A hi: 0x1F31A]
+    [lo: 0x1F31B hi: 0x1F31B] [lo: 0x1F31C hi: 0x1F31C] [lo: 0x1F31D hi: 0x1F31E]
+    [lo: 0x1F31F hi: 0x1F320] [lo: 0x1F321 hi: 0x1F321] [lo: 0x1F324 hi: 0x1F32C]
+    [lo: 0x1F32D hi: 0x1F32F] [lo: 0x1F330 hi: 0x1F331] [lo: 0x1F332 hi: 0x1F333]
+    [lo: 0x1F334 hi: 0x1F335] [lo: 0x1F336 hi: 0x1F336] [lo: 0x1F337 hi: 0x1F34A]
+    [lo: 0x1F34B hi: 0x1F34B] [lo: 0x1F34C hi: 0x1F34F] [lo: 0x1F350 hi: 0x1F350]
+    [lo: 0x1F351 hi: 0x1F37B] [lo: 0x1F37C hi: 0x1F37C] [lo: 0x1F37D hi: 0x1F37D]
+    [lo: 0x1F37E hi: 0x1F37F] [lo: 0x1F380 hi: 0x1F393] [lo: 0x1F396 hi: 0x1F397]
+    [lo: 0x1F399 hi: 0x1F39B] [lo: 0x1F39E hi: 0x1F39F] [lo: 0x1F3A0 hi: 0x1F3C4]
+    [lo: 0x1F3C5 hi: 0x1F3C5] [lo: 0x1F3C6 hi: 0x1F3C6] [lo: 0x1F3C7 hi: 0x1F3C7]
+    [lo: 0x1F3C8 hi: 0x1F3C8] [lo: 0x1F3C9 hi: 0x1F3C9] [lo: 0x1F3CA hi: 0x1F3CA]
+    [lo: 0x1F3CB hi: 0x1F3CE] [lo: 0x1F3CF hi: 0x1F3D3] [lo: 0x1F3D4 hi: 0x1F3DF]
+    [lo: 0x1F3E0 hi: 0x1F3E3] [lo: 0x1F3E4 hi: 0x1F3E4] [lo: 0x1F3E5 hi: 0x1F3F0]
+    [lo: 0x1F3F3 hi: 0x1F3F3] [lo: 0x1F3F4 hi: 0x1F3F4] [lo: 0x1F3F5 hi: 0x1F3F5]
+    [lo: 0x1F3F7 hi: 0x1F3F7] [lo: 0x1F3F8 hi: 0x1F3FA] [lo: 0x1F400 hi: 0x1F407]
+    [lo: 0x1F408 hi: 0x1F408] [lo: 0x1F409 hi: 0x1F40B] [lo: 0x1F40C hi: 0x1F40E]
+    [lo: 0x1F40F hi: 0x1F410] [lo: 0x1F411 hi: 0x1F412] [lo: 0x1F413 hi: 0x1F413]
+    [lo: 0x1F414 hi: 0x1F414] [lo: 0x1F415 hi: 0x1F415] [lo: 0x1F416 hi: 0x1F416]
+    [lo: 0x1F417 hi: 0x1F429] [lo: 0x1F42A hi: 0x1F42A] [lo: 0x1F42B hi: 0x1F43E]
+    [lo: 0x1F43F hi: 0x1F43F] [lo: 0x1F440 hi: 0x1F440] [lo: 0x1F441 hi: 0x1F441]
+    [lo: 0x1F442 hi: 0x1F464] [lo: 0x1F465 hi: 0x1F465] [lo: 0x1F466 hi: 0x1F46B]
+    [lo: 0x1F46C hi: 0x1F46D] [lo: 0x1F46E hi: 0x1F4AC] [lo: 0x1F4AD hi: 0x1F4AD]
+    [lo: 0x1F4AE hi: 0x1F4B5] [lo: 0x1F4B6 hi: 0x1F4B7] [lo: 0x1F4B8 hi: 0x1F4EB]
+    [lo: 0x1F4EC hi: 0x1F4ED] [lo: 0x1F4EE hi: 0x1F4EE] [lo: 0x1F4EF hi: 0x1F4EF]
+    [lo: 0x1F4F0 hi: 0x1F4F4] [lo: 0x1F4F5 hi: 0x1F4F5] [lo: 0x1F4F6 hi: 0x1F4F7]
+    [lo: 0x1F4F8 hi: 0x1F4F8] [lo: 0x1F4F9 hi: 0x1F4FC] [lo: 0x1F4FD hi: 0x1F4FD]
+    [lo: 0x1F4FF hi: 0x1F502] [lo: 0x1F503 hi: 0x1F503] [lo: 0x1F504 hi: 0x1F507]
+    [lo: 0x1F508 hi: 0x1F508] [lo: 0x1F509 hi: 0x1F509] [lo: 0x1F50A hi: 0x1F514]
+    [lo: 0x1F515 hi: 0x1F515] [lo: 0x1F516 hi: 0x1F52B] [lo: 0x1F52C hi: 0x1F52D]
+    [lo: 0x1F52E hi: 0x1F53D] [lo: 0x1F549 hi: 0x1F54A] [lo: 0x1F54B hi: 0x1F54E]
+    [lo: 0x1F550 hi: 0x1F55B] [lo: 0x1F55C hi: 0x1F567] [lo: 0x1F56F hi: 0x1F570]
+    [lo: 0x1F573 hi: 0x1F579] [lo: 0x1F57A hi: 0x1F57A] [lo: 0x1F587 hi: 0x1F587]
+    [lo: 0x1F58A hi: 0x1F58D] [lo: 0x1F590 hi: 0x1F590] [lo: 0x1F595 hi: 0x1F596]
+    [lo: 0x1F5A4 hi: 0x1F5A4] [lo: 0x1F5A5 hi: 0x1F5A5] [lo: 0x1F5A8 hi: 0x1F5A8]
+    [lo: 0x1F5B1 hi: 0x1F5B2] [lo: 0x1F5BC hi: 0x1F5BC] [lo: 0x1F5C2 hi: 0x1F5C4]
+    [lo: 0x1F5D1 hi: 0x1F5D3] [lo: 0x1F5DC hi: 0x1F5DE] [lo: 0x1F5E1 hi: 0x1F5E1]
+    [lo: 0x1F5E3 hi: 0x1F5E3] [lo: 0x1F5E8 hi: 0x1F5E8] [lo: 0x1F5EF hi: 0x1F5EF]
+    [lo: 0x1F5F3 hi: 0x1F5F3] [lo: 0x1F5FA hi: 0x1F5FA] [lo: 0x1F5FB hi: 0x1F5FF]
+    [lo: 0x1F600 hi: 0x1F600] [lo: 0x1F601 hi: 0x1F606] [lo: 0x1F607 hi: 0x1F608]
+    [lo: 0x1F609 hi: 0x1F60D] [lo: 0x1F60E hi: 0x1F60E] [lo: 0x1F60F hi: 0x1F60F]
+    [lo: 0x1F610 hi: 0x1F610] [lo: 0x1F611 hi: 0x1F611] [lo: 0x1F612 hi: 0x1F614]
+    [lo: 0x1F615 hi: 0x1F615] [lo: 0x1F616 hi: 0x1F616] [lo: 0x1F617 hi: 0x1F617]
+    [lo: 0x1F618 hi: 0x1F618] [lo: 0x1F619 hi: 0x1F619] [lo: 0x1F61A hi: 0x1F61A]
+    [lo: 0x1F61B hi: 0x1F61B] [lo: 0x1F61C hi: 0x1F61E] [lo: 0x1F61F hi: 0x1F61F]
+    [lo: 0x1F620 hi: 0x1F625] [lo: 0x1F626 hi: 0x1F627] [lo: 0x1F628 hi: 0x1F62B]
+    [lo: 0x1F62C hi: 0x1F62C] [lo: 0x1F62D hi: 0x1F62D] [lo: 0x1F62E hi: 0x1F62F]
+    [lo: 0x1F630 hi: 0x1F633] [lo: 0x1F634 hi: 0x1F634] [lo: 0x1F635 hi: 0x1F635]
+    [lo: 0x1F636 hi: 0x1F636] [lo: 0x1F637 hi: 0x1F640] [lo: 0x1F641 hi: 0x1F644]
+    [lo: 0x1F645 hi: 0x1F64F] [lo: 0x1F680 hi: 0x1F680] [lo: 0x1F681 hi: 0x1F682]
+    [lo: 0x1F683 hi: 0x1F685] [lo: 0x1F686 hi: 0x1F686] [lo: 0x1F687 hi: 0x1F687]
+    [lo: 0x1F688 hi: 0x1F688] [lo: 0x1F689 hi: 0x1F689] [lo: 0x1F68A hi: 0x1F68B]
+    [lo: 0x1F68C hi: 0x1F68C] [lo: 0x1F68D hi: 0x1F68D] [lo: 0x1F68E hi: 0x1F68E]
+    [lo: 0x1F68F hi: 0x1F68F] [lo: 0x1F690 hi: 0x1F690] [lo: 0x1F691 hi: 0x1F693]
+    [lo: 0x1F694 hi: 0x1F694] [lo: 0x1F695 hi: 0x1F695] [lo: 0x1F696 hi: 0x1F696]
+    [lo: 0x1F697 hi: 0x1F697] [lo: 0x1F698 hi: 0x1F698] [lo: 0x1F699 hi: 0x1F69A]
+    [lo: 0x1F69B hi: 0x1F6A1] [lo: 0x1F6A2 hi: 0x1F6A2] [lo: 0x1F6A3 hi: 0x1F6A3]
+    [lo: 0x1F6A4 hi: 0x1F6A5] [lo: 0x1F6A6 hi: 0x1F6A6] [lo: 0x1F6A7 hi: 0x1F6AD]
+    [lo: 0x1F6AE hi: 0x1F6B1] [lo: 0x1F6B2 hi: 0x1F6B2] [lo: 0x1F6B3 hi: 0x1F6B5]
+    [lo: 0x1F6B6 hi: 0x1F6B6] [lo: 0x1F6B7 hi: 0x1F6B8] [lo: 0x1F6B9 hi: 0x1F6BE]
+    [lo: 0x1F6BF hi: 0x1F6BF] [lo: 0x1F6C0 hi: 0x1F6C0] [lo: 0x1F6C1 hi: 0x1F6C5]
+    [lo: 0x1F6CB hi: 0x1F6CB] [lo: 0x1F6CC hi: 0x1F6CC] [lo: 0x1F6CD hi: 0x1F6CF]
+    [lo: 0x1F6D0 hi: 0x1F6D0] [lo: 0x1F6D1 hi: 0x1F6D2] [lo: 0x1F6D5 hi: 0x1F6D5]
+    [lo: 0x1F6D6 hi: 0x1F6D7] [lo: 0x1F6D8 hi: 0x1F6D8] [lo: 0x1F6D9 hi: 0x1F6DB]
+    [lo: 0x1F6DC hi: 0x1F6DC] [lo: 0x1F6DD hi: 0x1F6DF] [lo: 0x1F6E0 hi: 0x1F6E5]
+    [lo: 0x1F6E9 hi: 0x1F6E9] [lo: 0x1F6EB hi: 0x1F6EC] [lo: 0x1F6ED hi: 0x1F6EF]
+    [lo: 0x1F6F0 hi: 0x1F6F0] [lo: 0x1F6F3 hi: 0x1F6F3] [lo: 0x1F6F4 hi: 0x1F6F6]
+    [lo: 0x1F6F7 hi: 0x1F6F8] [lo: 0x1F6F9 hi: 0x1F6F9] [lo: 0x1F6FA hi: 0x1F6FA]
+    [lo: 0x1F6FB hi: 0x1F6FC] [lo: 0x1F6FD hi: 0x1F6FF] [lo: 0x1F7DA hi: 0x1F7DF]
+    [lo: 0x1F7E0 hi: 0x1F7EB] [lo: 0x1F7EC hi: 0x1F7EF] [lo: 0x1F7F0 hi: 0x1F7F0]
+    [lo: 0x1F7F1 hi: 0x1F7FF] [lo: 0x1F80C hi: 0x1F80F] [lo: 0x1F848 hi: 0x1F84F]
+    [lo: 0x1F85A hi: 0x1F85F] [lo: 0x1F888 hi: 0x1F88F] [lo: 0x1F8AE hi: 0x1F8AF]
+    [lo: 0x1F8BC hi: 0x1F8BF] [lo: 0x1F8C2 hi: 0x1F8CF] [lo: 0x1F8D9 hi: 0x1F8FF]
+    [lo: 0x1F90C hi: 0x1F90C] [lo: 0x1F90D hi: 0x1F90F] [lo: 0x1F910 hi: 0x1F918]
+    [lo: 0x1F919 hi: 0x1F91E] [lo: 0x1F91F hi: 0x1F91F] [lo: 0x1F920 hi: 0x1F927]
+    [lo: 0x1F928 hi: 0x1F92F] [lo: 0x1F930 hi: 0x1F930] [lo: 0x1F931 hi: 0x1F932]
+    [lo: 0x1F933 hi: 0x1F93A] [lo: 0x1F93C hi: 0x1F93E] [lo: 0x1F93F hi: 0x1F93F]
+    [lo: 0x1F940 hi: 0x1F945] [lo: 0x1F947 hi: 0x1F94B] [lo: 0x1F94C hi: 0x1F94C]
+    [lo: 0x1F94D hi: 0x1F94F] [lo: 0x1F950 hi: 0x1F95E] [lo: 0x1F95F hi: 0x1F96B]
+    [lo: 0x1F96C hi: 0x1F970] [lo: 0x1F971 hi: 0x1F971] [lo: 0x1F972 hi: 0x1F972]
+    [lo: 0x1F973 hi: 0x1F976] [lo: 0x1F977 hi: 0x1F978] [lo: 0x1F979 hi: 0x1F979]
+    [lo: 0x1F97A hi: 0x1F97A] [lo: 0x1F97B hi: 0x1F97B] [lo: 0x1F97C hi: 0x1F97F]
+    [lo: 0x1F980 hi: 0x1F984] [lo: 0x1F985 hi: 0x1F991] [lo: 0x1F992 hi: 0x1F997]
+    [lo: 0x1F998 hi: 0x1F9A2] [lo: 0x1F9A3 hi: 0x1F9A4] [lo: 0x1F9A5 hi: 0x1F9AA]
+    [lo: 0x1F9AB hi: 0x1F9AD] [lo: 0x1F9AE hi: 0x1F9AF] [lo: 0x1F9B0 hi: 0x1F9B9]
+    [lo: 0x1F9BA hi: 0x1F9BF] [lo: 0x1F9C0 hi: 0x1F9C0] [lo: 0x1F9C1 hi: 0x1F9C2]
+    [lo: 0x1F9C3 hi: 0x1F9CA] [lo: 0x1F9CB hi: 0x1F9CB] [lo: 0x1F9CC hi: 0x1F9CC]
+    [lo: 0x1F9CD hi: 0x1F9CF] [lo: 0x1F9D0 hi: 0x1F9E6] [lo: 0x1F9E7 hi: 0x1F9FF]
+    [lo: 0x1FA58 hi: 0x1FA5F] [lo: 0x1FA6E hi: 0x1FA6F] [lo: 0x1FA70 hi: 0x1FA73]
+    [lo: 0x1FA74 hi: 0x1FA74] [lo: 0x1FA75 hi: 0x1FA77] [lo: 0x1FA78 hi: 0x1FA7A]
+    [lo: 0x1FA7B hi: 0x1FA7C] [lo: 0x1FA7D hi: 0x1FA7F] [lo: 0x1FA80 hi: 0x1FA82]
+    [lo: 0x1FA83 hi: 0x1FA86] [lo: 0x1FA87 hi: 0x1FA88] [lo: 0x1FA89 hi: 0x1FA89]
+    [lo: 0x1FA8A hi: 0x1FA8A] [lo: 0x1FA8B hi: 0x1FA8D] [lo: 0x1FA8E hi: 0x1FA8E]
+    [lo: 0x1FA8F hi: 0x1FA8F] [lo: 0x1FA90 hi: 0x1FA95] [lo: 0x1FA96 hi: 0x1FAA8]
+    [lo: 0x1FAA9 hi: 0x1FAAC] [lo: 0x1FAAD hi: 0x1FAAF] [lo: 0x1FAB0 hi: 0x1FAB6]
+    [lo: 0x1FAB7 hi: 0x1FABA] [lo: 0x1FABB hi: 0x1FABD] [lo: 0x1FABE hi: 0x1FABE]
+    [lo: 0x1FABF hi: 0x1FABF] [lo: 0x1FAC0 hi: 0x1FAC2] [lo: 0x1FAC3 hi: 0x1FAC5]
+    [lo: 0x1FAC6 hi: 0x1FAC6] [lo: 0x1FAC8 hi: 0x1FAC8] [lo: 0x1FACD hi: 0x1FACD]
+    [lo: 0x1FACE hi: 0x1FACF] [lo: 0x1FAD0 hi: 0x1FAD6] [lo: 0x1FAD7 hi: 0x1FAD9]
+    [lo: 0x1FADA hi: 0x1FADB] [lo: 0x1FADC hi: 0x1FADC] [lo: 0x1FADD hi: 0x1FADF]
+    [lo: 0x1FAE0 hi: 0x1FAE7] [lo: 0x1FAE8 hi: 0x1FAE8] [lo: 0x1FAE9 hi: 0x1FAE9]
+    [lo: 0x1FAEA hi: 0x1FAEA] [lo: 0x1FAEB hi: 0x1FAEF] [lo: 0x1FAF0 hi: 0x1FAF6]
+    [lo: 0x1FAF7 hi: 0x1FAF8]]
+
+  # ── Grapheme break property classification ────────────────────────────────────
+
+  in-range?: [fn [let cp@Int lo@Int hi@Int] [and [>= cp lo] [<= cp hi]]]
+
+  # Predicate patterns (T-1140): lowercase-head in pattern position evaluates with
+  # subject appended last. [match cp [in-ranges? gcb-cr]: ...] → [in-ranges? gcb-cr cp]
+  gcb-property: [fn [let cp@Int]
+    [match cp
+      [in-ranges? gcb-cr]:                                       "CR"
+      [in-ranges? gcb-lf]:                                       "LF"
+      [in-ranges? gcb-control]:                                  "Control"
+      [in-ranges? gcb-extend]:                                   "Extend"
+      [in-ranges? gcb-zwj]:                                      "ZWJ"
+      [in-ranges? gcb-ri]:                                       "RI"
+      [in-ranges? gcb-prepend]:                                  "Prepend"
+      [in-ranges? gcb-spacing-mark]:                             "SpacingMark"
+      [in-ranges? gcb-l]:                                        "L"
+      [in-ranges? gcb-v]:                                        "V"
+      [in-ranges? gcb-t]:                                        "T"
+      [[and [in-range? _ 0xAC00 0xD7A3] [= 0 [mod [- _ 0xAC00] 28]]]]: "LV"
+      [in-range? _ 0xAC00 0xD7A3]:                               "LVT"
+      [in-ranges? gcb-extended-pictographic]:                    "ExtPic"
+      _:                                                         "Other"]]
+
+  # ── UAX#29 grapheme cluster boundary algorithm ────────────────────────────────
+  # Returns true if there is a grapheme cluster boundary BEFORE cp2.
+  # Structural dict patterns — priority order matches UAX#29 §3.1.1 rule numbering.
+  # Dict patterns are always open (extra keys silently ignored), so [p1: "CR"] matches
+  # the full scrutinee dict regardless of p2/st. Nested [st: [...]] matches state fields.
+  gcb-boundary?: [fn [let prop1@String prop2@String state]
+    [match [p1: prop1  p2: prop2  st: state]
+      # GB3: CR × LF — never break
+      [p1: "CR"   p2: "LF"]:                                                        false
+      # GB4: break after Control|CR|LF
+      [p1: "Control"]:                                                               true
+      [p1: "CR"]:                                                                    true
+      [p1: "LF"]:                                                                    true
+      # GB5: break before Control|CR|LF
+      [p2: "Control"]:                                                               true
+      [p2: "CR"]:                                                                    true
+      [p2: "LF"]:                                                                    true
+      # GB6: L × (L|V|LV|LVT)
+      [p1: "L"    p2: "L"]:                                                         false
+      [p1: "L"    p2: "V"]:                                                         false
+      [p1: "L"    p2: "LV"]:                                                        false
+      [p1: "L"    p2: "LVT"]:                                                       false
+      # GB7: (LV|V) × (V|T)
+      [p1: "LV"   p2: "V"]:                                                         false
+      [p1: "LV"   p2: "T"]:                                                         false
+      [p1: "V"    p2: "V"]:                                                         false
+      [p1: "V"    p2: "T"]:                                                         false
+      # GB8: (LVT|T) × T
+      [p1: "LVT"  p2: "T"]:                                                         false
+      [p1: "T"    p2: "T"]:                                                         false
+      # GB9: × (Extend|ZWJ)
+      [p2: "Extend"]:                                                                false
+      [p2: "ZWJ"]:                                                                   false
+      # GB9a: × SpacingMark
+      [p2: "SpacingMark"]:                                                           false
+      # GB9b: Prepend ×
+      [p1: "Prepend"]:                                                               false
+      # GB11: ExtPic Extend* ZWJ × ExtPic — state tracks the ZWJ-after-pictographic sequence
+      [p1: "ZWJ"  p2: "ExtPic"  st: [ep-seen?: true  extend-after-ep?: true]]:     false
+      # GB12/13: RI × RI — break between each pair (state counts RIs seen)
+      [p1: "RI"   p2: "RI"]:                                                        [= [mod state.ri-count 2] 1]
+      # GB999: break everywhere else
+      _: true]]
+
+  # Advance grapheme state after processing a code point with given property.
+  gcb-next-state: [fn [let prop@String prev-state]
+    [match prop
+      "ExtPic":    [ep-seen?: true   extend-after-ep?: true  ri-count: 0]
+      "Extend":    [ep-seen?: prev-state.ep-seen?
+                    extend-after-ep?: prev-state.extend-after-ep?
+                    ri-count: 0]
+      "ZWJ":       [ep-seen?: prev-state.ep-seen?
+                    extend-after-ep?: prev-state.extend-after-ep?
+                    ri-count: 0]
+      "RI":        [ep-seen?: false  extend-after-ep?: false
+                    ri-count: [+ prev-state.ri-count 1]]
+      _:           [ep-seen?: false  extend-after-ep?: false  ri-count: 0]]]
+
+  gcb-initial-state: [ep-seen?: false  extend-after-ep?: false  ri-count: 0]
+
+  # ── Core grapheme segmentation: bytes → lazy [Seq String] of clusters ─────────
+
+  # Decode one UTF-8 code point from bytes at offset.
+  # Returns {value: Int  next: Int}.
+  utf8-decode-one: [fn [let b@Bytes offset@Int]
+    [b0: [get b offset]]
+    [match b0
+      [ascii?]:  [value: b0                next: [+ offset 1]]
+      [utf8-2?]: [value: [utf8-2 b offset b0]  next: [+ offset 2]]
+      [utf8-3?]: [value: [utf8-3 b offset b0]  next: [+ offset 3]]
+      _:          [value: [utf8-4 b offset b0]  next: [+ offset 4]]]]
+
+  # Scan forward from `cluster-start`, collecting code points belonging to one grapheme cluster.
+  # Returns {end: Int} — the byte offset just after the cluster.
+  # `prev-prop` and `state` are the property/state of the last seen code point.
+  gcb-cluster-end: [fn [let b@Bytes cluster-start@Int prev-prop@String state]
+    [n: [length b]]
+    [scan: [fn [let offset prev-prop state]
+      [if [>= offset n]
+        offset
+        [block
+          [r:    [utf8-decode-one b offset]]
+          [prop: [gcb-property r.value]]
+          [if [gcb-boundary? prev-prop prop state]
+            offset    # boundary found — cluster ends here
+            [scan r.next prop [gcb-next-state prop state]]]]]]]
+    [r0: [utf8-decode-one b cluster-start]]
+    [scan r0.next [gcb-property r0.value] [gcb-next-state [gcb-property r0.value] gcb-initial-state]]]
+
+  # ── UTF-8 decoder (refactored using cont-bits / utf8-2/3/4) ─────────────────
+
+  # Decode UTF-8 bytes to a list of Unicode code points (Characters).
+  # Now readable because the bit-twiddling is named in utf8-2/3/4.
+  utf8-decode: [fn [let b@Bytes]
+    [step: [fn [let i acc]
+      [if [>= i [length b]]
+        [reverse acc]
+        [block
+          [b0: [get b i]]
+          [match b0
+            [ascii?]:  [step [+ i 1] [cons b0 acc]]
+            [utf8-2?]: [step [+ i 2] [cons [utf8-2 b i b0] acc]]
+            [utf8-3?]: [step [+ i 3] [cons [utf8-3 b i b0] acc]]
+            _:          [step [+ i 4] [cons [utf8-4 b i b0] acc]]]]]
+    [step 0 []]]
+
+  # ── IDNA2008 Unicode property tables ─────────────────────────────────────────
+  # Source: Unicode 17.0 DerivedBidiClass.txt and DerivedJoiningType.txt
+  # Range format: [lo: 0x... hi: 0x...] — inclusive on both ends.
+
+  # Bidi class R (Right-to-Left): Hebrew, Samaritan, and other RTL scripts.
+  bidi-r-ranges: [
+    [lo: 0x05BE  hi: 0x05BE] [lo: 0x05C0  hi: 0x05C0] [lo: 0x05C3  hi: 0x05C3]
+    [lo: 0x05C6  hi: 0x05C6] [lo: 0x05D0  hi: 0x05EA] [lo: 0x05EF  hi: 0x05F4]
+    [lo: 0x07C0  hi: 0x07EA] [lo: 0x07F4  hi: 0x07F5] [lo: 0x07FA  hi: 0x07FA]
+    [lo: 0x07FE  hi: 0x0815] [lo: 0x081A  hi: 0x081A] [lo: 0x0824  hi: 0x0824]
+    [lo: 0x0828  hi: 0x0828] [lo: 0x0830  hi: 0x083E] [lo: 0x0840  hi: 0x0858]
+    [lo: 0x085E  hi: 0x085E] [lo: 0x200F  hi: 0x200F] [lo: 0xFB1D  hi: 0xFB1D]
+    [lo: 0xFB1F  hi: 0xFB36] [lo: 0xFB38  hi: 0xFB3C] [lo: 0xFB3E  hi: 0xFB3E]
+    [lo: 0xFB40  hi: 0xFB41] [lo: 0xFB43  hi: 0xFB44] [lo: 0xFB46  hi: 0xFB4F]
+    [lo: 0x10800 hi: 0x10805] [lo: 0x10808 hi: 0x10808] [lo: 0x1080A hi: 0x10835]
+    [lo: 0x10837 hi: 0x10838] [lo: 0x1083C hi: 0x1083C] [lo: 0x1083F hi: 0x10855]
+    [lo: 0x10857 hi: 0x1085F] [lo: 0x10860 hi: 0x10878] [lo: 0x10879 hi: 0x1087F]
+    [lo: 0x10880 hi: 0x1089E] [lo: 0x108A7 hi: 0x108AF] [lo: 0x108E0 hi: 0x108F5]
+    [lo: 0x108FB hi: 0x10915] [lo: 0x10916 hi: 0x1091B] [lo: 0x10920 hi: 0x1093F]
+    [lo: 0x10940 hi: 0x10959] [lo: 0x10980 hi: 0x109BD] [lo: 0x109BE hi: 0x109FF]
+    [lo: 0x10A00 hi: 0x10A00] [lo: 0x10A10 hi: 0x10A48] [lo: 0x10A50 hi: 0x10A9F]
+    [lo: 0x10AC0 hi: 0x10AEF] [lo: 0x10AF0 hi: 0x10AF6] [lo: 0x10B00 hi: 0x10B91]
+    [lo: 0x10B99 hi: 0x10BAF] [lo: 0x10C00 hi: 0x10CF2] [lo: 0x10CFA hi: 0x10D65]
+    [lo: 0x10D6F hi: 0x10D8F] [lo: 0x10E80 hi: 0x10EAD] [lo: 0x10EB0 hi: 0x10EB1]
+    [lo: 0x10F00 hi: 0x10F89] [lo: 0x10FB0 hi: 0x10FCB] [lo: 0x10FE0 hi: 0x10FF6]
+    [lo: 0x1E800 hi: 0x1E95F]]
+
+  # Bidi class AL (Arabic Letter): Arabic and other Arabic-script languages.
+  # Source: @missing directives in DerivedBidiClass.txt — these ranges default to AL.
+  bidi-al-ranges: [
+    [lo: 0x0600  hi: 0x07BF]
+    [lo: 0x0860  hi: 0x08FF]
+    [lo: 0x10D00 hi: 0x10D3F]
+    [lo: 0x10EC0 hi: 0x10EFF]
+    [lo: 0x10F30 hi: 0x10F6F]
+    [lo: 0x1EC70 hi: 0x1ECBF]
+    [lo: 0x1ED00 hi: 0x1ED4F]
+    [lo: 0x1EE00 hi: 0x1EEFF]]
+
+  # Bidi class AN (Arabic Number): Arabic-Indic and extended Arabic-Indic digits.
+  bidi-an-ranges: [
+    [lo: 0x0600  hi: 0x0605] [lo: 0x0660  hi: 0x0669] [lo: 0x066B  hi: 0x066C]
+    [lo: 0x06DD  hi: 0x06DD] [lo: 0x0890  hi: 0x0891] [lo: 0x08E2  hi: 0x08E2]
+    [lo: 0x10D30 hi: 0x10D39] [lo: 0x10D40 hi: 0x10D49] [lo: 0x10E60 hi: 0x10E7E]]
+
+  # Joining types D (Dual), L (Left), R (Right) — for ZWNJ/ZWJ ContextJ rules (RFC 5892 §A.1–A.2).
+  # A ZWNJ is valid after a Virama, or between joining characters (D/L/R with T characters in between).
+  # T (Transparent) ranges — needed to skip over when checking ZWNJ context.
+  # 225 T ranges omitted for brevity; use unicode-normalization crate's joining-type lookup
+  # for the T check. The D/L/R check (has-joining-char? below) does not need T ranges.
+  joining-dlr-ranges: [
+    # Dual_Joining (D): Arabic, Syriac, N'Ko, Mongolian, Old Sogdian, etc.
+    [lo: 0x0620  hi: 0x0620  type: "D"] [lo: 0x0626  hi: 0x0626  type: "D"]
+    [lo: 0x0628  hi: 0x0628  type: "D"] [lo: 0x062A  hi: 0x062E  type: "D"]
+    [lo: 0x0633  hi: 0x063F  type: "D"] [lo: 0x0641  hi: 0x0647  type: "D"]
+    [lo: 0x0649  hi: 0x064A  type: "D"] [lo: 0x066E  hi: 0x066F  type: "D"]
+    [lo: 0x0678  hi: 0x0687  type: "D"] [lo: 0x069A  hi: 0x06BF  type: "D"]
+    [lo: 0x06C1  hi: 0x06C2  type: "D"] [lo: 0x06CC  hi: 0x06CC  type: "D"]
+    [lo: 0x06CE  hi: 0x06CE  type: "D"] [lo: 0x06D0  hi: 0x06D1  type: "D"]
+    [lo: 0x06FA  hi: 0x06FC  type: "D"] [lo: 0x06FF  hi: 0x06FF  type: "D"]
+    [lo: 0x0712  hi: 0x0714  type: "D"] [lo: 0x071A  hi: 0x071D  type: "D"]
+    [lo: 0x071F  hi: 0x0727  type: "D"] [lo: 0x0729  hi: 0x0729  type: "D"]
+    [lo: 0x072B  hi: 0x072B  type: "D"] [lo: 0x072D  hi: 0x072E  type: "D"]
+    [lo: 0x074E  hi: 0x0758  type: "D"] [lo: 0x075C  hi: 0x076A  type: "D"]
+    [lo: 0x076D  hi: 0x0770  type: "D"] [lo: 0x0772  hi: 0x0772  type: "D"]
+    [lo: 0x0775  hi: 0x0777  type: "D"] [lo: 0x077A  hi: 0x077F  type: "D"]
+    [lo: 0x07CA  hi: 0x07EA  type: "D"] [lo: 0x0841  hi: 0x0845  type: "D"]
+    [lo: 0x0848  hi: 0x0848  type: "D"] [lo: 0x084A  hi: 0x0853  type: "D"]
+    [lo: 0x0855  hi: 0x0855  type: "D"] [lo: 0x0860  hi: 0x0860  type: "D"]
+    [lo: 0x0862  hi: 0x0865  type: "D"] [lo: 0x0868  hi: 0x0868  type: "D"]
+    [lo: 0x0886  hi: 0x0886  type: "D"] [lo: 0x0889  hi: 0x088D  type: "D"]
+    [lo: 0x088F  hi: 0x088F  type: "D"] [lo: 0x08A0  hi: 0x08C8  type: "D"]
+    [lo: 0x1807  hi: 0x1807  type: "D"] [lo: 0x1820  hi: 0x1878  type: "D"]
+    [lo: 0x1887  hi: 0x18AA  type: "D"] [lo: 0xA840  hi: 0xA871  type: "D"]
+    [lo: 0x10AC0 hi: 0x10AE0 type: "D"] [lo: 0x10AEB hi: 0x10AEE type: "D"]
+    [lo: 0x10B80 hi: 0x10B91 type: "D"] [lo: 0x10BAD hi: 0x10BAE type: "D"]
+    [lo: 0x10D01 hi: 0x10D23 type: "D"] [lo: 0x10EC3 hi: 0x10EC7 type: "D"]
+    [lo: 0x10F30 hi: 0x10F81 type: "D"] [lo: 0x10FB0 hi: 0x10FCB type: "D"]
+    [lo: 0x1E900 hi: 0x1E943 type: "D"]
+    # Right_Joining (R): Arabic letters that only join on the right
+    [lo: 0x0622  hi: 0x0625  type: "R"] [lo: 0x0627  hi: 0x0627  type: "R"]
+    [lo: 0x0629  hi: 0x0629  type: "R"] [lo: 0x062F  hi: 0x0632  type: "R"]
+    [lo: 0x0648  hi: 0x0648  type: "R"] [lo: 0x0671  hi: 0x0677  type: "R"]
+    [lo: 0x0688  hi: 0x0699  type: "R"] [lo: 0x06C0  hi: 0x06D5  type: "R"]
+    [lo: 0x06EE  hi: 0x06EF  type: "R"] [lo: 0x0710  hi: 0x0710  type: "R"]
+    [lo: 0x0715  hi: 0x071E  type: "R"] [lo: 0x0728  hi: 0x072C  type: "R"]
+    [lo: 0x072F  hi: 0x072F  type: "R"] [lo: 0x074D  hi: 0x074D  type: "R"]
+    [lo: 0x0759  hi: 0x075B  type: "R"] [lo: 0x076B  hi: 0x076C  type: "R"]
+    [lo: 0x0771  hi: 0x0774  type: "R"] [lo: 0x0778  hi: 0x0779  type: "R"]
+    [lo: 0x0840  hi: 0x0858  type: "R"] [lo: 0x0867  hi: 0x086A  type: "R"]
+    [lo: 0x0870  hi: 0x088E  type: "R"] [lo: 0x08AA  hi: 0x08B2  type: "R"]
+    [lo: 0x08B9  hi: 0x08C8  type: "R"] [lo: 0x10AC5 hi: 0x10ACE type: "R"]
+    [lo: 0x10ADD hi: 0x10AE4 type: "R"] [lo: 0x10AEF hi: 0x10AEF type: "R"]
+    [lo: 0x10B81 hi: 0x10B91 type: "R"] [lo: 0x10BA9 hi: 0x10BAC type: "R"]
+    [lo: 0x10D22 hi: 0x10D22 type: "R"] [lo: 0x10EC2 hi: 0x10EC2 type: "R"]
+    [lo: 0x10F33 hi: 0x10F54 type: "R"] [lo: 0x10FB4 hi: 0x10FCB type: "R"]
+    # Left_Joining (L): a handful of characters
+    [lo: 0xA872   hi: 0xA872   type: "L"] [lo: 0x10ACD hi: 0x10ACD type: "L"]
+    [lo: 0x10AD7  hi: 0x10AD7  type: "L"] [lo: 0x10D00 hi: 0x10D00 type: "L"]
+    [lo: 0x10FCB  hi: 0x10FCB  type: "L"]]
+
+  # Virama characters (Canonical_Combining_Class = 9): used in ContextJ ZWNJ rule (RFC 5892 §A.1).
+  # A ZWNJ is always valid immediately after a Virama regardless of surrounding joining context.
+  virama-codepoints: [
+    # Devanagari, Bengali, Gurmukhi, Gujarati, Oriya, Tamil, Telugu, Kannada, Malayalam:
+    0x094D  0x09CD  0x0A4D  0x0ACD  0x0B4D  0x0BCD  0x0C4D  0x0CCD  0x0D4D
+    # Sinhala, Thai, Lao, Tibetan, Myanmar, Khmer, Limbu, Buginese, New Tai Lue:
+    0x0DCA  0x0E3A  0x0EBA  0x0F84  0x1039  0x103A  0x1714  0x1734  0x17D2  0x1A60  0x1B44
+    # Sundanese, Batak, Lepcha, Rejang, Javanese, Cham, Mongolian, Meetei Mayek:
+    0x1BAA  0x1BAB  0x1BF2  0x1BF3  0x1C37  0x A8C4  0x1A7F  0xA953  0xABED
+    # Syloti Nagri, Phags-pa, Saurashtra, Kayah Li, Rejang, Cham:
+    0xA8C4  0xA9C0  0xAA70  0xAAF6  0xABED
+    # Kaithi, Chakma, Sharada, Khojki, Khudawadi, Tirhuta, Siddham, Modi, Takri:
+    0x11046 0x11070 0x110B9 0x11133 0x11134 0x111C0 0x11235 0x112EA 0x1134D
+    # Grantha, Newa, Tirhuta, Ahom, Zanabazar, Soyombo, Masaram Gondi, Nandinagari:
+    0x1163F 0x114C2 0x115BF 0x116B6 0x1172B 0x11839 0x119E0 0x11A3A 0x11A99
+    # Dogra, Gunjala Gondi, Makasar, Lisu, Hanifi Rohingya, Old Sogdian:
+    0x11C3F 0x11D3A 0x11D44 0x11D45 0x11D97 0x11EF7]
+
+  # ContextO rules (RFC 5892 §A.3–A.8): specific characters allowed only in certain contexts.
+  # Each entry: code point + the rule name (for error reporting).
+  contexto-rules: [
+    [cp: 0x00B7  rule: "middle-dot"]         # MIDDLE DOT: only between two 'l' (Catalan)
+    [cp: 0x0375  rule: "greek-lower-numeral"] # GREEK LOWER NUMERAL SIGN: before Greek only
+    [cp: 0x05F3  rule: "hebrew-geresh"]       # HEBREW PUNCTUATION GERESH: after Hebrew only
+    [cp: 0x05F4  rule: "hebrew-gershayim"]    # HEBREW PUNCTUATION GERSHAYIM: after Hebrew only
+    [cp: 0x30FB  rule: "katakana-middle-dot"] # KATAKANA MIDDLE DOT: with CJK scripts only
+    [cp: 0xFF65  rule: "halfwidth-katakana-middle-dot"]]
+
+  # ── Unicode property lookup helpers ──────────────────────────────────────────
+
+  # Test if a code point falls in any of a list of [lo: hi:] ranges.
+  in-ranges?: [fn [let cp@Int ranges@[Seq [lo: Int  hi: Int]]]
+    [any? [fn [let r] [and [>= cp r.lo] [<= cp r.hi]]] ranges]]
+
+  # Test if cp has Bidi class R, AL, or AN (i.e. is right-to-left in IDNA sense).
+  bidi-rtl?: [fn [let cp@Int]
+    [or [in-ranges? cp bidi-r-ranges]
+        [in-ranges? cp bidi-al-ranges]
+        [in-ranges? cp bidi-an-ranges]]]
+
+  # Test if cp has joining type D, L, or R (not Transparent, not Non-joining).
+  has-joining-type-dlr?: [fn [let cp@Int]
+    [any? [fn [let r] [and [>= cp r.lo] [<= cp r.hi]]] joining-dlr-ranges]]
+
+  # Test if cp is a Virama.
+  virama?: [fn [let cp@Int]
+    [any? [fn [let v] [= cp v]] virama-codepoints]]
+
+  # ── IDNA2008 label validation ─────────────────────────────────────────────────
+
+  # Validate ZWNJ (U+200C) context per RFC 5892 §A.1.
+  # Valid after a Virama, or between joining characters (D/L/R) with at most
+  # transparent characters in between.
+  valid-zwnj?: [fn [let cps@[Seq Int] pos@Int]
+    # Rule 1: preceded by a Virama
+    [prev: [if [> pos 0] [get cps [- pos 1]] 0]]
+    [if [virama? prev]
+      true
+      # Rule 2: preceded by a joining char (D/L), followed by joining char (D/R)
+      # (skipping over Transparent characters in each direction — simplified here)
+      [before?: [any? [fn [let cp] [has-joining-type-dlr? cp]]
+                  [collect [take pos cps]]]]
+      [after?: [any? [fn [let cp] [has-joining-type-dlr? cp]]
+                 [collect [drop [+ pos 1] cps]]]]
+      [and before? after?]]]
+
+  # Validate IDNA2008 Bidi rule (RFC 5893 §2) for a single label's code points.
+  valid-bidi?: [fn [let cps@[Seq Int]]
+    [is-rtl?: [any? bidi-rtl? cps]]
+    [if [not is-rtl?]
+      true  # LTR label: first and last must be LTR — simplified (non-RTL passes)
+      # RTL label: first char must be R or AL; last must be R, AL, EN, or AN.
+      [first-cp: [head cps]]
+      [last-cp:  [get cps [- [length cps] 1]]]
+      [first-ok?: [or [in-ranges? first-cp bidi-r-ranges] [in-ranges? first-cp bidi-al-ranges]]]
+      [last-ok?:  [or [bidi-rtl? last-cp] [in-ranges? last-cp bidi-an-ranges]]]
+      [and first-ok? last-ok?]]]
+
+  # Validate a single IDNA2008 label's code points.
+  # Returns true if valid, false if the label should be rejected.
+  valid-idna-label-cps?: [fn [let cps@[Seq Int] label@String]
+    [n: [length cps]]
+    [and
+      [> n 0]                              # non-empty
+      [<= n 63]                            # label length limit (RFC 5891 §5.2)
+      [not [= [head cps] 0x2D]]           # no leading hyphen
+      [not [= [get cps [- n 1]] 0x2D]]    # no trailing hyphen
+      # No hyphens in positions 3 and 4 together (would look like xn--)
+      [not [and [>= n 4] [= [get cps 2] 0x2D] [= [get cps 3] 0x2D]]]
+      [valid-bidi? cps]
+      # Validate ZWNJ/ZWJ context
+      [all? [fn [let e]
+        [i: e.0  cp: e.1]
+        [match cp
+          0x200C: [valid-zwnj? cps i]                                # ZWNJ
+          0x200D: [virama? [if [> i 0] [get cps [- i 1]] 0]]        # ZWJ — only valid after Virama
+          _:      true]]                                              # other code points: always OK
+       [entries cps]]]]
+
+  # ── Punycode / IDNA2008 ───────────────────────────────────────────────────────
+  # RFC 3492 Bootstring constants
+  punycode-base:         36
+  punycode-tmin:         1
+  punycode-tmax:         26
+  punycode-skew:         38
+  punycode-damp:         700
+  punycode-initial-bias: 72
+  punycode-initial-n:    128
+
+  # Digit table: 0-25 → 'a'-'z', 26-35 → '0'-'9'
+  punycode-digits: "abcdefghijklmnopqrstuvwxyz0123456789"
+
+  punycode-digit->char: [fn [let d@Int]
+    [str-slice punycode-digits d [+ d 1]]]
+
+  # Bias adaptation function (RFC 3492 §6.1)
+  punycode-adapt: [fn [let delta@Int numpoints@Int firsttime@Bool]
+    [d: [if firsttime [/ delta punycode-damp] [/ delta 2]]]
+    [d: [+ d [/ d numpoints]]]
+    # Find k: reduce d until small enough
+    [find-k: [fn [let d k]
+      [if [<= d [/ [* [- punycode-base punycode-tmin] punycode-tmax] 2]]
+        k
+        [find-k [/ d [- punycode-base punycode-tmin]] [+ k punycode-base]]]]]
+    [k: [find-k d 0]]
+    [+ k [/ [* [+ [- punycode-base punycode-tmin] 1] d] [+ d punycode-skew]]]]
+
+  # Encode one delta value as a variable-length generalized integer (RFC 3492 §6.3)
+  punycode-encode-int: [fn [let q@Int bias@Int]
+    [step: [fn [let q k out]
+      [t: [max punycode-tmin [min punycode-tmax [- k bias]]]]
+      [if [< q t]
+        [str out [punycode-digit->char q]]
+        [step [/ [- q t] [- punycode-base t]]
+              [+ k punycode-base]
+              [str out [punycode-digit->char [+ t [mod [- q t] [- punycode-base t]]]]]]]]
+    [step q punycode-base ""]]
+
+  # Core Punycode encoding algorithm (RFC 3492 §6.3).
+  # Takes [Seq Int] of Unicode code points, returns encoded ASCII String (no "xn--" prefix).
+  punycode-encode: [fn [let cps@[Seq Int]]
+    [total: [length cps]]
+    [basic: [filter [fn [let cp] [< cp 128]] cps]]
+    [b: [length basic]]
+    # Output basic code points as ASCII characters
+    [basic-str: [reduce [fn [let acc cp] [str acc [str-char cp]]] "" basic]]
+    # Append delimiter '-' only if there are both basic AND non-basic code points
+    [out0: [if [and [> b 0] [> [- total b] 0]] [str basic-str "-"] basic-str]]
+
+    # Outer loop: one iteration per non-basic code point to encode.
+    # State: h=handled count, delta=insertion delta, bias, n=current code point threshold, out
+    [outer: [fn [let h delta bias n out]
+      [if [>= h total]
+        out
+        [block
+          # m = smallest code point >= n that appears in input
+          [ge-n: [filter [fn [let cp] [>= cp n]] cps]]
+          [m: [reduce [fn [let a b] [min a b]] [head ge-n] ge-n]]
+          # Accumulate delta for the jump from n to m
+          [delta: [+ delta [* [- m n] [+ h 1]]]]
+          [n: m]
+          # Inner loop: scan all code points, emit when we find n
+          [inner: [fn [let cps-left h delta bias out]
+            [match cps-left
+              []: [outer h [+ delta 1] bias [+ n 1] out]
+              [let [cp ...rest]]:
+                [block
+                  [delta: [if [< cp n] [+ delta 1] delta]]
+                  [if [= cp n]
+                    [block
+                      [encoded: [punycode-encode-int delta bias]]
+                      [new-bias: [punycode-adapt delta [+ h 1] [= h b]]]
+                      [inner rest [+ h 1] 0 new-bias [str out encoded]]]
+                    [inner rest h delta bias out]]]]]]
+          [inner [collect cps] h delta bias out]]]]]
+    [outer b 0 punycode-initial-bias punycode-initial-n out0]]
+
   # Returns the charset name as a bare String, or null if not found.
   extract-charset: [fn [let content-type@String]
     [charset-parts: [filter [fn [let p] [str-contains? "charset=" [lower p]]]
@@ -57,23 +861,51 @@
 # ── Public API. ───────────────────────────────────────────────────────────────────────────────────
 
 [
+  # ── Core string types ─────────────────────────────────────────────────────────
+  # grapheme?: predicate — true iff a [Seq Int] forms exactly one UAX#29 grapheme cluster
+  grapheme?:     grapheme?
+
+  # Grapheme: one UAX#29 grapheme cluster; a constrained [Seq Int] of Unicode code points.
+  # Encoding-agnostic — UTF-8 is just one representation.
+  Grapheme:      Grapheme
+
+  # String = [Seq Grapheme]: the fundamental change this whatif proposes.
+  # The current runtime stores String as opaque UTF-8 bytes; this declaration specifies
+  # what it SHOULD be. The implementation sprint makes String a lazy [Seq Grapheme].
+  String: [type [Seq Grapheme]]
+
+  # Codec type tags for UTF-8
+  Utf8Bytes:     Utf8Bytes
+  Utf8Graphemes: Utf8Graphemes
+
+  # str-graphemes: decode a String into a lazy [Seq Grapheme] (each Grapheme = [Seq Int])
+  str-graphemes:  str-graphemes
+  grapheme-count: grapheme-count   # O(n) count of grapheme clusters in a String
+
+  # ── Per-codec on-invalid handlers ─────────────────────────────────────────────
+  # Use these as the on-invalid argument to decode. Not part of the Codec protocol.
+  utf8-graphemes-strict: utf8-graphemes-strict  # Utf8Graphemes default: raise on bad UTF-8
+  utf8-graphemes-lossy:  utf8-graphemes-lossy   # Utf8Graphemes alternative: U+FFFD grapheme
+  utf8-strict:           utf8-strict            # String codecs (UTF8/UTF16LE/etc.): raise
+  utf8-lossy:            utf8-lossy             # String codecs alternative: U+FFFD string
+
   # TextEncoding: a runtime record for dynamic dispatch (e.g. from HTTP Content-Type header).
-  # Named TextEncoding to avoid collision with the Codec typeclass from net.llt.
-  # For static dispatch, use the TextCodec typeclass instances directly.
+  # Used when the codec is determined at runtime from a Content-Type charset= value.
+  # For static dispatch, use the Codec typeclass instances directly: [decode UTF8 buf 0].
   TextEncoding: [type
-    [name:         String
-     encode:       [Fn [String] [Result Bytes]]
-     decode:       [Fn [Bytes] [Result String]]
-     decode-lossy: [Fn [Bytes] String]]]
+    [name:   String
+     encode: [Fn@Bytes [String]]
+     decode: [Fn@String [Bytes [or [CodecInvalidHandler String Bytes] Absent]]]]]
+     # Pass Absent (or omit) to use the codec's own default; pass a handler to override.
 
   TextBytes: [type [data: Bytes  encoding: TextEncoding]]
 
-  to-encoding: [fn@[bind: [c]  return: TextEncoding  constraint: [c: TextCodec]] [let c@c]
+  to-encoding: [fn@[bind: [c]  return: TextEncoding  constraint: [c: [Codec c String Bytes]]] [let c@c]
     [TextEncoding
-      [name:         [codec-name c]
-       encode:       [fn [let s] [encode c s]]
-       decode:       [fn [let b] [decode c b 0].value]   # TextEncoding.decode: whole-buffer; offset=0, extract value
-       decode-lossy: [fn [let b] [decode-lossy c b]]]]]
+      [name:   [codec-name c]
+       encode: [fn [let s] [encode c s]]
+       decode: [fn [let b handler@[type: [or [CodecInvalidHandler String Bytes] Absent]  default: Absent.Absent]]
+                 [decode c b 0 handler].value]]]]
 
   # builtin-encoding-for-name returns the canonical WHATWG encoding name (bare String) or null.
   encoding-for-name: [fn [let name@String]
@@ -81,31 +913,174 @@
     [if [null? internal]
       [Result.Error [str "Unknown charset: " name]]
       [Result.Ok [TextEncoding
-        [name:         internal
-         encode:       [fn [let s] [builtin-encoding-encode internal s]]
-         decode:       [fn [let b] [builtin-encoding-decode internal b]]
-         decode-lossy: [fn [let b] [builtin-encoding-decode-lossy internal b]]]]]]]
+        [name:   internal
+         encode: [fn [let s] [builtin-encoding-encode internal s]]
+         decode: [fn [let b handler@[type: [or [CodecInvalidHandler String Bytes] Absent]  default: Absent.Absent]]
+                   [builtin-encoding-decode internal b handler]]]]]]]
 
-  text-encode: [fn@[bind: [c]  return: TextBytes  constraint: [c: TextCodec]] [let c@c s@String]
-    [match [encode c s]
-      [Result.Ok b]:    [TextBytes [data: b  encoding: [to-encoding c]]]
-      [Result.Error e]: [error e]]]
+  text-encode: [fn@[bind: [c]  return: TextBytes  constraint: [c: [Codec c String Bytes]]] [let c@c s@String]
+    [TextBytes [data: [encode c s]  encoding: [to-encoding c]]]]
 
-  text-decode: [fn [let tb@TextBytes] [tb.encoding.decode tb.data]]
+  text-decode: [fn [let tb@TextBytes
+                    handler@[type: [or [CodecInvalidHandler String Bytes] Absent]  default: Absent.Absent]]
+    [tb.encoding.decode tb.data handler]]
 
-  encode: [fn@[bind: [c]  return: [Result Bytes]  constraint: [c: TextCodec]] [let c@c s@String]
+  encode: [fn@[bind: [c]  return: Bytes  constraint: [c: [Codec c String Bytes]]] [let c@c s@String]
     [encode c s]]
 
-  decode: [fn@[bind: [c]  return: [Result String]  constraint: [c: TextCodec]] [let c@c b@Bytes]
-    [decode c b 0].value]   # whole-buffer convenience wrapper; offset=0, extract value
+  # decode: whole-buffer convenience. Omit handler to use the codec's own default.
+  decode: [fn@[bind: [c]  return: String  constraint: [c: [Codec c String Bytes]]]
+           [let c@c b@Bytes
+                handler@[type: [or [CodecInvalidHandler String Bytes] Absent]  default: Absent.Absent]]
+    [decode c b 0 handler].value]
 
-  decode-lossy: [fn@[bind: [c]  return: String  constraint: [c: TextCodec]] [let c@c b@Bytes]
-    [decode-lossy c b]]
+  # decode-lossy: explicit lossy regardless of the codec's own default.
+  decode-lossy: [fn@[bind: [c]  return: String  constraint: [c: [Codec c String Bytes]]] [let c@c b@Bytes]
+    [decode c b 0 utf8-lossy].value]
+
+  # ── Punycode / IDNA ───────────────────────────────────────────────────────────
+
+  # str-to-code-points: decode a UTF-8 String to a list of Unicode code points.
+  str-to-code-points: [fn [let s@String] [utf8-decode [str-bytes s]]]
+
+  # ── String = [Seq Grapheme]: the fundamental string model ───────────────────
+  #
+  # Grapheme: one Unicode grapheme cluster — what a user perceives as a "character".
+  # May consist of one or more code points (e.g. "👋🏽" = base + skin tone modifier).
+  # String IS a [Seq Grapheme]: head, tail, length, map, filter, take, drop all work.
+  # Indexing is O(n) — Unicode requires scanning from the start. This is honest.
+  # For O(1) byte access: use str-bytes → Bytes.
+  # Code points (Unicode scalar values) are plain Int in internal algorithms (IDNA, Punycode).
+  #
+  # grapheme?: true if cps is a non-empty [Seq Int] forming exactly one UAX#29 grapheme cluster.
+  # Operates on code points (Ints) directly — encoding-agnostic, as UAX#29 requires.
+  grapheme?: [fn@Bool [let cps@[Seq Int]]
+    [if [empty? cps] false
+      [block
+        [check: [fn [let remaining prev-prop state]
+          [if [empty? remaining]
+            true    # exhausted with no internal boundary — exactly one cluster
+            [block
+              [cp:   [head remaining]]
+              [prop: [gcb-property cp]]
+              [if [gcb-boundary? prev-prop prop state]
+                false  # internal boundary found — more than one cluster
+                [check [tail remaining] prop [gcb-next-state prop state]]]]]]]
+        [first: [head cps]]
+        [check [tail cps] [gcb-property first] [gcb-next-state [gcb-property first] gcb-initial-state]]]]]
+
+  # Grapheme: one UAX#29 grapheme cluster — a non-empty [Seq Int] of Unicode code points
+  # satisfying the grapheme break rules. Encoding-agnostic: UTF-8 is just one representation.
+  #
+  # EQUALITY IS STRUCTURAL (code-point-by-code-point). This is a deliberate design decision:
+  # silent normalization would discard information the user may have intentionally encoded.
+  # The same visual character in different normalization forms — e.g. U+00E9 (precomposed)
+  # vs [U+0065, U+0301] (e + combining accent) — compares unequal. This is correct.
+  # Use [unicode-nfc s] before comparing if canonical (visual) equality is needed.
+  #
+  # DICT KEYS follow the same rule: a String key is looked up structurally. If external
+  # data arrives in mixed normalization forms, normalize at the ingestion boundary:
+  #   [set dict [unicode-nfc raw-key] value]    # insert
+  #   [get [unicode-nfc lookup-key] dict]        # lookup
+  # Custom comparators or a "canonical dict" variant would violate Leibniz's law
+  # ([= k1 k2] false but dict treats them as equal) and are not provided.
+  Grapheme: [type [Seq Int]@[is: grapheme?]]
+
+  # grapheme-count: count the grapheme clusters in a string. O(n).
+  # This is what str-length SHOULD be — user-perceived character count.
+  grapheme-count: [fn [let s@String]
+    [b: [str-bytes s]]
+    [n: [length b]]
+    [count: [fn [let offset c]
+      [if [>= offset n]
+        c
+        [block
+          [r0: [utf8-decode-one b offset]]
+          [end: [gcb-cluster-end b offset [gcb-property r0.value] gcb-initial-state]]
+          [count end [+ c 1]]]]]]
+    [count 0 0]]
+
+  # str-graphemes: lazy [Seq Grapheme] from a String.
+  # Each Grapheme = [Seq Int] — the code points forming that cluster (encoding-agnostic).
+  # Equivalent to [decode Utf8Graphemes [str-bytes s]].
+  str-graphemes: [fn [let s@String]
+    [b: [str-bytes s]]
+    [n: [length b]]
+    [step: [fn [let offset]
+      [if [>= offset n]
+        []
+        [block
+          [r0:  [utf8-decode-one b offset]]
+          [end: [gcb-cluster-end b offset [gcb-property r0.value] gcb-initial-state]]
+          # Collect all code points in this cluster as [Seq Int]
+          [cps: [fn [let off acc]
+            [if [>= off end]
+              [reverse acc]
+              [r: [utf8-decode-one b off]]
+              [cps r.next [cons r.value acc]]]]]
+          [seq [@Grapheme [cps offset []]] [step end]]]]]]  # lazy — [step end] is a thunk
+    [step 0]]
+
+  # ── Codec type tags for UTF-8 ────────────────────────────────────────────────
+  #   Utf8Bytes:     Codec UInt8    Bytes  — byte view
+  #   Utf8Graphemes: Codec Grapheme Bytes  — grapheme cluster view (String's native element)
+
+  Utf8Bytes:     [type Utf8Bytes]
+  Utf8Graphemes: [type Utf8Graphemes]
+
+  # ── Unicode normalization ─────────────────────────────────────────────────────
+  # Per UAX#15 (https://www.unicode.org/reports/tr15/).
+  # Backed by the `unicode-normalization` Rust crate.
+  #
+  # NFC — canonical form for storage and comparison. Most applications should
+  #   normalize to NFC before storing or comparing multilingual text. Without it,
+  #   "café" from two keyboards (precomposed vs decomposed é) compares unequal.
+  unicode-nfc:  [fn [let s@String] [builtin-unicode-nfc  s]]
+
+  # NFD — canonical decomposition only. Useful for accent stripping:
+  #   [filter [fn [let cp] [< cp 0x0300]] [str-to-code-points [unicode-nfd s]]]
+  #   removes all combining diacritical marks (U+0300–U+036F and others).
+  unicode-nfd:  [fn [let s@String] [builtin-unicode-nfd  s]]
+
+  # NFKC — compatibility folding + recomposition. Folds typographic variants:
+  #   "ﬁ"→"fi", "①"→"1", "Ａ"(fullwidth)→"A", "²"→"2".
+  #   Use for search normalization, fuzzy matching, Unicode case-folding.
+  unicode-nfkc: [fn [let s@String] [builtin-unicode-nfkc s]]
+
+  # NFKD — compatibility decomposition without recomposition.
+  #   Same decompositions as NFKC but leaves combining marks unsorted.
+  unicode-nfkd: [fn [let s@String] [builtin-unicode-nfkd s]]
+
+  # to-a-label: convert and validate a single DNS label per IDNA2008 (RFC 5891).
+  # 1. NFC normalize  2. validate  3. Punycode-encode if non-ASCII  4. lowercase
+  # Returns [Result.Ok encoded] or [Result.Error reason].
+  to-a-label: [fn [let label@String]
+    [normalized: [unicode-nfc label]]
+    [cps: [str-to-code-points normalized]]
+    [if [not [valid-idna-label-cps? cps normalized]]
+      [Result.Error [str "invalid IDNA label: " label]]
+      [match cps
+        [[all? ascii?]]: [Result.Ok [lower normalized]]              # ASCII-only: just lowercase
+        _:               [Result.Ok [str "xn--" [punycode-encode cps]]]]]]  # non-ASCII: Punycode
+
+  # to-a-label-hostname: apply to-a-label to each dot-separated label.
+  # "münchen.example.com" → "xn--mnchen-3ya.example.com"
+  # "EXAMPLE.COM" → "example.com"
+  # On validation failure returns original (cert matching will simply not match).
+  to-a-label-hostname: [fn [let hostname@String]
+    [labels: [str-split "." hostname]]
+    [results: [map to-a-label labels]]
+    [if [any? [fn [let r] [match r [Result.Error _]: true _: false]] results]
+      hostname   # any label invalid — return original (matching will fail)
+      [join "." [map [fn [let r] [match r [Result.Ok s]: s]] results]]]]
+
+  # punycode-encode: exported for non-IDNA uses (testing, custom protocols, etc.).
+  punycode-encode: punycode-encode
 
   decode-http-body: [fn [let body@Bytes content-type@String]
     [cs: [extract-charset content-type]]   # bare String or null
     [enc: [if [null? cs]
       [to-encoding UTF8]
       [match [encoding-for-name cs] [Result.Ok e]: e [Result.Error _]: [to-encoding UTF8]]]]
-    [enc.decode-lossy body]]
+    [enc.decode-with body utf8-lossy]]
 ]

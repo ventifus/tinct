@@ -2,6 +2,3 @@
 [to-tinct [Ok 42]]
 === out
 String("[Result.Ok 42]")
-
-=== warn
-[UndefinedVariable] undefined variable: Ok

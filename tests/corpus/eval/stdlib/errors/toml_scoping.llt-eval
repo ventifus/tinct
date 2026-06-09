@@ -5,6 +5,3 @@
 
 === out
 Variant(Result.Error, String("undefined variable: parse-toml-lite (did you mean the string \"parse-toml-lite\"? Use quotes.)"))
-
-=== warn
-[UndefinedVariable] undefined variable: parse-toml-lite

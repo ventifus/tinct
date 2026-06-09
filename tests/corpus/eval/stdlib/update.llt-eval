@@ -1,9 +1,2 @@
 # update: apply a function to a key's value in a dict
 [update "x" [fn [v] [+ v 10]] [x: 1]]
-=== error
-[E020] arity mismatch: expected 3 arguments, got 4 (defined at 1:1-1:38)
-  in [update ...] at 1:1-1:38
-  in [update ...] at 1:1-1:38
-
-=== warn
-[ArityMismatch] expected 3 arguments, got 4

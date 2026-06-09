@@ -3,6 +3,3 @@
 [do result [Ok 99]]
 === out
 Variant(Result.Ok, Int(99))
-
-=== warn
-[UndefinedVariable] undefined variable: Ok

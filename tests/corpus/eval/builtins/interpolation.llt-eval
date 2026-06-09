@@ -33,8 +33,3 @@
     Welcome to the system.
     """
 ]
-=== error
-[E080] macro 'tmpl' returned invalid AST: missing required field: type (defined at 6:10-6:24)
-
-=== warn
-[E080] macro 'tmpl' returned invalid AST: missing required field: type (defined at 6:10-6:24)

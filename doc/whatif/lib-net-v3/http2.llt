@@ -68,6 +68,104 @@
       entries:  [cons [HpackEntry name: name  value: value] evicted]
       size:     [+ evicted-size entry-size]
       max-size: table.max-size]]
+
+  # ── HPACK implementation internals ───────────────────────────────────────────
+
+  hpack-decode-int: [fn [let data@Bytes offset@Int prefix-bits@Int]
+    [mask:    [- [shl 1 prefix-bits] 1]]
+    [first:   [band [get data offset] mask]]
+    [if [< first mask]
+      [value: first  next: [+ offset 1]]
+      [block
+        [read-multi: [fn [let i acc]
+          [b:       [get data [+ offset 1 i]]]
+          [new-acc: [+ acc [shl [band b 0x7F] [* i 7]]]]
+          [if [= [band b 0x80] 0]
+            [value: [+ mask new-acc]  next: [+ offset 2 i]]
+            [read-multi [+ i 1] new-acc]]]]
+        [read-multi 0 0]]]]
+
+  hpack-decode-str: [fn [let data@Bytes offset@Int]
+    [b0:       [get data offset]]
+    [huffman:  [= [band b0 0x80] 0x80]]
+    [len-res:  [hpack-decode-int data offset 7]]
+    [raw:      [slice data len-res.next [+ len-res.next len-res.value]]]
+    [next:     [+ len-res.next len-res.value]]
+    [str:      [if huffman [hpack-huffman-decode raw] [bytes-str raw]]]
+    [value: str  next: next]]
+
+  hpack-huffman-decode: [fn [let data@Bytes]
+    [n-bits: [* [length data] 8]]
+    [bits: [reduce [fn [let acc b] [bor [shl acc 8] b]] 0 [collect data]]]
+    [decode-loop: [fn [let bit-pos acc]
+      [if [>= bit-pos n-bits]
+        [bytes-str [reduce concat [] acc]]
+        [block
+          [remaining: [- n-bits bit-pos]]
+          [try-len: [fn [let len]
+            [if [> len remaining]
+              [bytes-str [reduce concat [] acc]]
+              [block
+                [shift:     [- n-bits [+ bit-pos len]]
+                 candidate: [band [shr bits [max shift 0]] [- [shl 1 len] 1]]]
+                [try-sym: [fn [let sym]
+                  [if [>= sym [length hpack-huffman-table]]
+                    [if [< len 30] [try-len [+ len 1]] [error "HPACK Huffman: invalid code"]]
+                    [block
+                      [entry: [get hpack-huffman-table sym]]
+                      [if [and [= [get entry 0] candidate] [= [get entry 1] len]]
+                        [decode-loop [+ bit-pos len] [append acc [list [str-char sym]]]]
+                        [try-sym [+ sym 1]]]]]]]
+                [try-sym 0]]]]]]
+      [try-len 5]]]
+    [decode-loop 0 []]]
+
+  # ── HTTP/2 request extraction (internal — used by http2-requests) ─────────────
+
+  # Emits [connection: Http2Connection  request: HttpRequest  stream: H2Stream] events.
+  # stream carries push and cancel, pre-wired to this frame's stream context.
+  # stream-id is captured in each closure — never exposed to the handler.
+  http2-req-conn: [fn [let connection@Http2Connection
+                         out@[Channel [connection: Http2Connection  request: HttpRequest  stream: H2Stream]]]
+    [task
+      [step: [fn []
+        [match [try [read-h2-frame connection.handle]]
+          [Result.Error _]: []
+          [Result.Ok frame]:
+            [match frame.type
+              [H2FrameType.H2Headers]:
+                [headers: [hpack-decode connection.hpack-recv frame.payload]]
+                [method:  [or [get? headers ":method"]    "GET"]]
+                [path:    [or [get? headers ":path"]      "/"]]
+                [request: [HttpRequest
+                  method: method  path: path  headers: headers  body: [bytes 0]
+                  respond: [fn [let resp]
+                    [status-hdrs: [merge [":status": [str resp.status]] resp.headers]]
+                    [resp-hpack: [hpack-encode connection.hpack-send status-hdrs]]
+                    [write connection.handle [h2-frame-serialize null
+                      [H2Frame type: H2FrameType.H2Headers
+                               flags: [@UInt8 [if [= [length resp.body] 0] 0x05 0x04]]
+                               stream-id: frame.stream-id  payload: resp-hpack]]]
+                    [if [> [length resp.body] 0]
+                      [write connection.handle [h2-frame-serialize null
+                        [H2Frame type: H2FrameType.H2Data
+                                 flags: [@UInt8 0x01]
+                                 stream-id: frame.stream-id  payload: resp.body]]]
+                      null]]]]
+                # H2Stream: pre-wired to frame.stream-id. Handler never sees stream-id directly.
+                [stream: [H2Stream
+                  push:   [fn [let promise@HttpRequest push-resp@HttpResponse]
+                             [h2-push connection frame.stream-id promise push-resp]]
+                  cancel: [fn []
+                             [write connection.handle [h2-frame-serialize null
+                               [H2Frame type: H2FrameType.H2RstStream
+                                        flags: [@UInt8 0]
+                                        stream-id: frame.stream-id
+                                        payload: [bytes NetworkEndian [@H2ErrorCode 8]]]]]]]]  # CANCEL=8
+                [send out [connection: connection  request: request  stream: stream]]
+              _: null]
+            [step]]]]
+      [step]]]
 ]
 
 # HttpConnect instance for Http2Connection.
@@ -147,32 +245,6 @@
      recv-window: [Channel Int]
      settings:    Http2Settings]]
 
-  # RFC 7541 §5.1: decode HPACK integer with given prefix-bit count.
-  # prefix-bits: 1-8, the number of low bits in the first byte used for the integer.
-  hpack-decode-int: [fn [let data@Bytes offset@Int prefix-bits@Int]
-    [mask:    [- [shl 1 prefix-bits] 1]]
-    [first:   [band [get data offset] mask]]
-    [if [< first mask]
-      [value: first  next: [+ offset 1]]
-      # Multi-byte integer: read M bytes with bit 7 as continuation flag (RFC 7541 §5.1)
-      [block
-        [read-multi: [fn [let i acc]
-          [b:       [get data [+ offset 1 i]]]
-          [new-acc: [+ acc [shl [band b 0x7F] [* i 7]]]]
-          [if [= [band b 0x80] 0]
-            [value: [+ mask new-acc]  next: [+ offset 2 i]]
-            [read-multi [+ i 1] new-acc]]]]
-        [read-multi 0 0]]]]
-
-  # RFC 7541 §5.2: decode HPACK string (literal or Huffman-encoded).
-  hpack-decode-str: [fn [let data@Bytes offset@Int]
-    [b0:       [get data offset]]
-    [huffman:  [= [band b0 0x80] 0x80]]
-    [len-res:  [hpack-decode-int data offset 7]]
-    [raw:      [slice data len-res.next [+ len-res.next len-res.value]]]
-    [next:     [+ len-res.next len-res.value]]
-    [str:      [if huffman [hpack-huffman-decode raw] [bytes-str raw]]]
-    [value: str  next: next]]
 
   # RFC 7541 §6.1: indexed header field — 0x80 bit set, 7-bit index.
   # RFC 7541 §6.2.1: literal with incremental indexing — 0x40 bit set, 6-bit name index (0=literal name).
@@ -196,7 +268,7 @@
               [all-entries: [concat hpack-static-table dyn-table.entries]]
               [entry: [get all-entries [- idx-res.value 1]]]   # 1-indexed
               [name:  [get entry 0]   value: [or [get entry 1] ""]]
-              [decode-loop idx-res.next [merge headers {$name: value}] dyn-table]]
+              [decode-loop idx-res.next [merge headers [$name: value]] dyn-table]]
             [if [= [band b0 0xC0] 0x40]
               # §6.2.1: literal with incremental indexing — 2-bit prefix 01, 6-bit name index
               [block
@@ -215,7 +287,7 @@
                     [v-res: [hpack-decode-str buf idx-res.next]]
                     [name: name  value: v-res.value  next: v-res.next]]]]
                 [new-table: [hpack-add-to-table dyn-table name-value.name name-value.value]]
-                [decode-loop name-value.next [merge headers {$name-value.name: name-value.value}] new-table]]
+                [decode-loop name-value.next [merge headers [$name-value.name: name-value.value]] new-table]]
               [if [= [band b0 0xE0] 0x20]
                 # §6.3: dynamic table size update — 3-bit prefix 001, 5-bit new max-size
                 [block
@@ -237,8 +309,8 @@
                       [v-res: [hpack-decode-str buf idx-res.next]]
                       [name: name  value: v-res.value  next: v-res.next]]]]
                   # §6.2.2: never add to dynamic table
-                  [decode-loop name-value.next [merge headers {$name-value.name: name-value.value}] dyn-table]]]]]]]]
-    [decode-loop 0 {} table]]
+                  [decode-loop name-value.next [merge headers [$name-value.name: name-value.value]] dyn-table]]]]]]]]
+    [decode-loop 0 [] table]]
 
   # Encode headers as HPACK bytes using literal-without-indexing for safety.
   # Safe default: never update dynamic table; always emit literal representation.
@@ -252,8 +324,6 @@
      headers]]]
 
   # RFC 7541 Appendix B: HPACK Huffman code table — [code, length] pairs for symbols 0..255 + EOS.
-  # Each entry is [code-bits, bit-length]. Codes are MSB-first per RFC 7541 §5.2.
-  # Full 257-entry table (256 symbols + EOS at index 256) per RFC 7541 Appendix B.
   hpack-huffman-table: [
     # sym 0–7  (control chars)
     [0x1ff8 13] [0x7fffd8 23] [0xfffffe2 28] [0xfffffe3 28] [0xfffffe4 28] [0xfffffe5 28] [0xfffffe6 28] [0xfffffe7 28]
@@ -322,40 +392,6 @@
     # EOS (symbol 256) — 0x3fffffff 30 bits
     [0x3fffffff 30]]
 
-  # RFC 7541 §5.2: Huffman decode via bit-by-bit traversal against the code table.
-  # Build a reverse lookup: for each entry [code len] in the table, extract 'len' bits from
-  # the input stream and compare. Practical decode: scan input bits, match against table.
-  # Algorithm: accumulate bits, check each possible code length (5..30) for a match.
-  hpack-huffman-decode: [fn [let data@Bytes]
-    # Extract all bits from data into a large integer for easy bit extraction.
-    [n-bits: [* [length data] 8]]
-    [bits: [reduce [fn [let acc b] [bor [shl acc 8] b]] 0 [collect data]]]
-    [decode-loop: [fn [let bit-pos acc]
-      [if [>= bit-pos n-bits]
-        [bytes-str [reduce concat [] acc]]   # join accumulated char-bytes
-        # Try each possible code length from 5 to 30 (min HPACK Huffman code length is 5)
-        [block
-          [remaining: [- n-bits bit-pos]]
-          [try-len: [fn [let len]
-            [if [> len remaining]
-              [bytes-str [reduce concat [] acc]]   # EOS padding — done
-              [block
-                [shift:    [- n-bits [+ bit-pos len]]
-                 candidate: [band [shr bits [max shift 0]] [- [shl 1 len] 1]]]
-                # Search for matching code in table
-                [try-sym: [fn [let sym]
-                  [if [>= sym [length hpack-huffman-table]]
-                    [if [< len 30] [try-len [+ len 1]] [error "HPACK Huffman: invalid code"]]
-                    [block
-                      [entry: [get hpack-huffman-table sym]]
-                      [code:  [get entry 0]  code-len: [get entry 1]]
-                      [if [and [= code-len len] [= code candidate]]
-                        [if [= sym 256] [bytes-str [reduce concat [] acc]]   # EOS
-                          [decode-loop [+ bit-pos len] [append acc [list [bytes sym]]]]]
-                        [try-sym [+ sym 1]]]]]]]
-                [try-sym 0]]]]]
-          [try-len 5]]]]]
-    [decode-loop 0 []]]
 
   # Codec instance methods for H2FrameCodec (serialize/parse H2Frame ↔ Bytes).
   # These wrap the internal read-h2-frame/write-h2-frame helpers for use as Codec instances.
@@ -420,7 +456,7 @@
 
   # RFC 7540 §3: client sends connection preface, then SETTINGS, then requests.
   # PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n (24 bytes) + SETTINGS frame.
-  h2: [fn [let pth@TlsHandle]
+  h2-connection: [fn [let pth@TlsHandle]
     [match [tls-commit [with-alpn pth ["h2"]]]
       [TlsError e]:  e   # propagate TLS error
       [Result.Ok conn]:
@@ -458,8 +494,8 @@
                 max-concurrent-streams: Absent.Absent  initial-window-size: Absent.Absent
                 max-frame-size: Absent.Absent  max-header-list-size: Absent.Absent]]]]]]
 
-  # Send an HTTP/2 request on a new stream. Returns Task@RawResponse.
-  request: [fn [let req@RawRequest conn@Http2Connection]
+  # Send an HTTP/2 request on a new stream. Returns Task@HttpResponse.
+  request: [fn [let req@HttpRequest conn@Http2Connection]
     [task
       [stream-id: [match [recv conn.next-stream] [Result.Ok n]: n  [Closed.Closed]: [error "H2: connection closed"]]]
       [send conn.next-stream [+ stream-id 2]]   # next client stream is +2
@@ -482,7 +518,7 @@
               [new-hdrs: [hpack-decode conn.hpack-recv frame.payload]]
               [end-stream: [= [band frame.flags 0x01] 0x01]]
               [if end-stream
-                [RawResponse
+                [HttpResponse
                   status:  [int-of-str [or [get? new-hdrs ":status"] "200"]]
                   headers: new-hdrs
                   body:    resp-body]
@@ -491,7 +527,7 @@
               [new-body: [concat resp-body frame.payload]]
               [end-stream: [= [band frame.flags 0x01] 0x01]]
               [if end-stream
-                [RawResponse
+                [HttpResponse
                   status:  [int-of-str [or [get? resp-headers ":status"] "200"]]
                   headers: resp-headers
                   body:    new-body]
@@ -499,7 +535,7 @@
             _: [collect-response resp-headers resp-body]]
           # Frame for a different stream — skip and continue
           [collect-response resp-headers resp-body]]]]
-      [collect-response {} [bytes 0]]]]
+      [collect-response [] [bytes 0]]]]
 
   # RFC 7540 §5.1: client-initiated bidi streams are odd (1, 3, 5, ...).
   # Allocate next odd stream ID from next-stream channel.
@@ -514,46 +550,11 @@
   h2-incoming: [fn [let conn@Http2Connection]
     [recv conn.substreams]]
 
-  # Drain HEADERS frames from conn, hpack-decode headers, emit RawRequest per stream.
-  http2-req-conn: [fn [let conn@Http2Connection out@[Channel RawRequest]]
-    [task
-      [step: [fn []
-        [match [try [read-h2-frame conn.handle]]
-          [Result.Error _]: []
-          [Result.Ok frame]:
-            [match frame.type
-              [H2FrameType.H2Headers]:
-                [headers: [hpack-decode conn.hpack-recv frame.payload]]
-                [method:  [or [get? headers ":method"]    "GET"]]
-                [path:    [or [get? headers ":path"]      "/"]]
-                [send out [RawRequest
-                  method: method  path: path  headers: headers  body: [bytes 0]
-                  respond: [fn [let resp]
-                    # RFC 7540 §8.1: send HEADERS frame with END_HEADERS (0x04), then DATA with END_STREAM (0x01)
-                    [status-hdrs: [merge {":status": [str resp.status]} resp.headers]]
-                    [resp-hpack: [hpack-encode conn.hpack-send status-hdrs]]
-                    [write conn.handle [h2-frame-serialize null
-                      [H2Frame type: H2FrameType.H2Headers
-                               flags: [@UInt8 [if [= [length resp.body] 0] 0x05 0x04]]
-                               stream-id: frame.stream-id  payload: resp-hpack]]]
-                    [if [> [length resp.body] 0]
-                      [write conn.handle [h2-frame-serialize null
-                        [H2Frame type: H2FrameType.H2Data
-                                 flags: [@UInt8 0x01]
-                                 stream-id: frame.stream-id  payload: resp.body]]]
-                      null]]]]
-              _: null]
-            [step]]]]
-      [step]]]
-
-  http2-client: [fn@[bind: [h]  constraint: [h: ByteStream]] [let h@h]
-    [h2 h]]
-
   h2-stream-ch: [fn [let ch@[Channel Http2Connection]]
     [channel-map [fn [let conn] [h2-open-stream conn]] ch]]
 
   # RFC 7540 §8.2: server push — send PUSH_PROMISE on existing stream, then HEADERS+DATA on new even stream.
-  h2-push: [fn [let conn@Http2Connection stream-id@Int req@RawRequest resp@RawResponse]
+  h2-push: [fn [let conn@Http2Connection stream-id@Int req@HttpRequest resp@HttpResponse]
     [push-id: [match [recv conn.next-stream] [Result.Ok n]: n  [Closed.Closed]: [error "H2: closed"]]]
     [send conn.next-stream [+ push-id 2]]
     # PUSH_PROMISE: reference stream-id + promised-stream-id + HPACK headers
@@ -564,43 +565,60 @@
     [write conn.handle [h2-frame-serialize null [H2Frame type: H2FrameType.H2Headers  flags: [@UInt8 0x04]  stream-id: push-id  payload: resp-headers]]]
     [write conn.handle [h2-frame-serialize null [H2Frame type: H2FrameType.H2Data  flags: [@UInt8 0x01]  stream-id: push-id  payload: resp.body]]]]
 
+  # H2Stream: per-request stream capabilities for HTTP/2. Carries push and cancel.
+  # Constructed by http2-req-conn with frame.stream-id captured in each closure.
+  # push:   send PUSH_PROMISE + pushed response (takes full HttpRequest for the promise)
+  # cancel: send RST_STREAM to abort this stream
+  H2Stream: [type
+    [push:   [Fn [HttpRequest HttpResponse] Null]
+     cancel: [Fn [] Null]]]
+
   # Serve layer kept for explicit use; H2Layer server instance uses it internally.
   h2-serve: [_ | [channel-map h2-accept]]
 
   # Request-extraction: each Http2Connection yields its request substreams.
   http2-requests: [_ | [channel-flat-map http2-req-conn]]
 
-  # Combined: Channel@TlsConnection → Channel@RawRequest.
-  # Equivalent to: | h2-serve | http2-requests
-  # Mirrors http1-serve ergonomics — use this for the common server case.
-  # Use h2-serve + http2-requests separately only when you need the Http2Connection
-  # handle (e.g. for server push via h2-push).
-  http2-serve: [_ | h2-serve | http2-requests]
+  # Combined: Channel@TlsConnection → Channel@[ServerEvent Http2Connection HttpRequest].
+  # Equivalent to: | h2-connection | http2-requests
+  # Handlers receive (connection@Http2Connection, request@HttpRequest) via serve.
+  # Use h2-connection directly only when you need the Channel@Http2Connection intermediate.
+  http2-serve: [_ | h2-connection | http2-requests]
 ]
 
-# ── H2Layer typeclass — bidirectional h2 ─────────────────────────────────────
+# ── H2Layer typeclass — bidirectional h2-connection ──────────────────────────
+# h2-connection: low-level building block giving access to the Http2Connection object.
+# Use http2 for the common case (flat Channel@HttpRequest).
+# Use h2-connection when you need the connection for server push or stream-level control.
 
 [class [let H2Layer input output]
-  h2: [Fn@output [input]]]
+  h2-connection: [Fn@output [input]]]
 
 # Client: TlsHandle → Http2Connection (fires TLS with alpn:["h2"] + H2 preface)
 [instance H2Layer
-  [let a@TlsHandle b@Http2Connection]: [h2: [fn [let th@TlsHandle] [h2 th]]]]   # delegates to h2 function above
+  [let a@TlsHandle b@Http2Connection]: [h2-connection: [fn [let th@TlsHandle] [h2-connection th]]]]
 
 # Server: Channel@TlsConnection → Channel@Http2Connection
-[instance@[bind: [h]] [H2Layer [Channel [TlsConnection h]] [Channel Http2Connection]]
-  h2: [fn [let ch@[Channel [TlsConnection h]]]
-    [channel-map h2-accept ch]]]
+[instance@[bind: [h]] H2Layer
+  [let a@[Channel [TlsConnection h]] b@[Channel Http2Connection]]:
+  [h2-connection: [fn [let ch@[Channel [TlsConnection h]]]
+    [channel-map h2-accept ch]]]]
 
-# ── HttpStream Http2Connection ────────────────────────────────────────────────
+# ── HttpStream H2Stream instance ─────────────────────────────────────────────
 
 [instance HttpStream
-  [let h@Http2Connection]: [send: [fn [let conn@Http2Connection req@RawRequest]
+  [let s@H2Stream]: [push:   s.push
+                     cancel: s.cancel]]
+
+# ── HttpStream Http2Connection (old — request dispatch) ──────────────────────
+
+[instance HttpStream
+  [let h@Http2Connection]: [send: [fn [let conn@Http2Connection req@HttpRequest]
                               [request req conn]]  # delegates to request function above
                             recv: [fn [let conn@Http2Connection]
                               [conn.substreams]]]]  # Channel of substream channels (multiplexed)
 
-# Channel variant: Channel@Http2Connection → Channel@RawRequest (all connections flattened)
+# Channel variant: Channel@Http2Connection → Channel@HttpRequest (all connections flattened)
 [instance HttpStream
   [let h@[Channel Http2Connection]]: [send: [error "not applicable: Channel@Http2Connection is receive-only (server accept loop)"]
                                       recv: [fn [let ch@[Channel Http2Connection]]

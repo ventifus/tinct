@@ -6,6 +6,3 @@
 [result: [builtin-is-contractive 42]]
 === out
 Dict({"result": Bool(true)})
-
-=== warn
-[UndefinedVariable] undefined variable: builtin-is-contractive

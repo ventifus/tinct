@@ -2,6 +2,3 @@
 [until [fn [let x] [>= x 5]] [fn [let x] [* x 2]] 10]
 === out
 Int(10)
-
-=== warn
-[UndefinedVariable] undefined variable: until

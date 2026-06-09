@@ -1018,11 +1018,15 @@ pub fn ground_type_of(v: &Value) -> Type {
         }
         // Param/return types erased — consistent subtyping accepts Function([Unknown..], Unknown)
         // against any function annotation with matching arity.
-        Value::Function { params, .. } => Type::Function {
-            params: params.iter().map(|_| (None, Type::Unknown)).collect(),
-            ret: Box::new(Type::Unknown),
-            variadic: false,
-        },
+        Value::Function { params, .. } => {
+            let n = params.len();
+            Type::Function {
+                params: params.iter().map(|_| (None, Type::Unknown)).collect(),
+                ret: Box::new(Type::Unknown),
+                variadic: false,
+                required_count: n,
+            }
+        }
         // Capability types: Unknown → is_consistent_subtype accepts against any annotation.
         // Preserves current accept-all behavior while capability-runtime-validation sprint is pending.
         Value::Handle { .. } | Value::WriteHandle { .. } => Type::Unknown,
@@ -9530,6 +9534,7 @@ mod tests {
         // Desugar (no macros in this source, but maintain pipeline invariant).
         crate::desugar::desugar_surface_program(&mut program);
         crate::desugar::inject_adt_constructors_surface_program(&mut program);
+        crate::desugar::desugar_instance_decls_surface_program(&mut program);
 
         // Resolve variable references.
         let res = std::sync::Arc::new(crate::resolve::resolve_surface_program(&program));

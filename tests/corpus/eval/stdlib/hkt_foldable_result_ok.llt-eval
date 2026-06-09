@@ -3,6 +3,3 @@
 
 === out
 Dict({0: Int(42)})
-
-=== warn
-[NotARecord] expected record type, got <error>

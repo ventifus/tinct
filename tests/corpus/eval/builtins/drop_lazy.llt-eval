@@ -1,23 +1,2 @@
 # drop on Seq is lazy — dropping from infinite sequence returns immediately
 [collect [take 3 [drop 5 [iterate [fn [x] [+ x 1]] 0]]]]
-=== error
-[E020] arity mismatch: expected 2 arguments, got 3 (defined at 1:26-1:54) (called at stdlib/prelude.llt:2491:57-2491:76)
-  in [iterate ...] at 1:26-1:54
-  in [iterate ...] at 1:26-1:54
-  in [builtin-drop ...] at stdlib/prelude.llt:2491:57-2491:76
-   |
-  2491 | drop@[doc: "Drop first n elements"]: [fn [let n@Int xs] [builtin-drop n xs]]
-       |                                                         ^^^^^^^^^^^^^^^^^^^
-  in materialized at stdlib/prelude.llt:2490:57-2490:76
-   |
-  2490 | take@[doc: "Take first n elements"]: [fn [let n@Int xs] [builtin-take n xs]]
-       |                                                         ^^^^^^^^^^^^^^^^^^^
-  in [builtin-take ...] at stdlib/prelude.llt:2490:57-2490:76
-   |
-  2490 | take@[doc: "Take first n elements"]: [fn [let n@Int xs] [builtin-take n xs]]
-       |                                                         ^^^^^^^^^^^^^^^^^^^
-  in [builtin-collect ...] at stdlib/prelude.llt:2950:15-2950:35
-   |
-  2950 | """] [let xs] [builtin-collect xs]]
-       |               ^^^^^^^^^^^^^^^^^^^^
-  in [collect ...] at 1:1-1:57

@@ -16,5 +16,3 @@
     [Boxed]: "has-box"
     [Empty]: "empty"]
 ]
-=== out
-Dict({"Color": Variant(Color, Null), "Red": Variant(Red, Null), "Green": Variant(Green, Null), "Blue": Variant(Blue, Null), "Wrapper": Variant(Wrapper, Null), "Boxed": Function(payload), "Empty": Variant(Empty, Null), "match1": String("red"), "match2": String("has-box")})

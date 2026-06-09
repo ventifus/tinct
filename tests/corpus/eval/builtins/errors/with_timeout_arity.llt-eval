@@ -4,6 +4,3 @@
 === error
 [E080] with-timeout expects 3 arguments, got 2 (defined at 2:1-2:46)
   in [builtin-with-timeout ...] at 2:1-2:46
-
-=== warn
-[UndefinedVariable] undefined variable: builtin-with-timeout

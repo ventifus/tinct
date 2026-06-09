@@ -40,8 +40,8 @@ use crate::builtins_string::{
     builtin_bytes_str, builtin_char_code, builtin_chr, builtin_float_to_string,
     builtin_int_to_string, builtin_regex_match, builtin_replace, builtin_split, builtin_str,
     builtin_str_bytes, builtin_str_chars, builtin_str_index_of, builtin_str_length,
-    builtin_str_map_chars, builtin_str_slice, builtin_string_concat, builtin_str_to_lower_char,
-    builtin_str_to_upper_char, builtin_trim, builtin_trim_end, builtin_trim_start,
+    builtin_str_map_chars, builtin_str_slice, builtin_str_to_lower_char, builtin_str_to_upper_char,
+    builtin_string_concat, builtin_trim, builtin_trim_end, builtin_trim_start,
 };
 // Bytes implementations.
 use crate::builtins_bytes::{
@@ -1023,6 +1023,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 ],
                 ret: Box::new(Type::TypeVar("c".to_string(), 0)),
                 variadic: false,
+                required_count: 2,
             },
             label_vars: vec![],
             kind_vars: Vec::new(),
@@ -1049,6 +1050,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 ],
                 ret: Box::new(Type::TypeVar("c".to_string(), 0)),
                 variadic: false,
+                required_count: 2,
             },
             label_vars: vec![],
             kind_vars: Vec::new(),
@@ -1075,6 +1077,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 ],
                 ret: Box::new(Type::TypeVar("c".to_string(), 0)),
                 variadic: false,
+                required_count: 2,
             },
             label_vars: vec![],
             kind_vars: Vec::new(),
@@ -1101,6 +1104,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 ],
                 ret: Box::new(Type::TypeVar("c".to_string(), 0)),
                 variadic: false,
+                required_count: 2,
             },
             label_vars: vec![],
             kind_vars: Vec::new(),
@@ -1122,6 +1126,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 ],
                 ret: Box::new(Type::Bool),
                 variadic: false,
+                required_count: 2,
             },
             label_vars: vec![],
             kind_vars: Vec::new(),
@@ -1143,6 +1148,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 ],
                 ret: Box::new(Type::Bool),
                 variadic: false,
+                required_count: 2,
             },
             label_vars: vec![],
             kind_vars: Vec::new(),
@@ -1164,6 +1170,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 ],
                 ret: Box::new(Type::Bool),
                 variadic: false,
+                required_count: 2,
             },
             label_vars: vec![],
             kind_vars: Vec::new(),
@@ -1185,6 +1192,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 ],
                 ret: Box::new(Type::Bool),
                 variadic: false,
+                required_count: 2,
             },
             label_vars: vec![],
             kind_vars: Vec::new(),
@@ -1206,6 +1214,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 ],
                 ret: Box::new(Type::Bool),
                 variadic: false,
+                required_count: 2,
             },
             label_vars: vec![],
             kind_vars: Vec::new(),
@@ -1218,15 +1227,15 @@ pub fn core_type_env(env: &mut TypeEnv) {
     // if takes Bool and two branches, returns Top (type depends on branches)
     env.insert(
         "if".to_string(),
-        Type::Function {
-            params: vec![
+        Type::fn_type(
+            vec![
                 (Some("condition".to_string()), Type::Bool),
                 (Some("then_".to_string()), Type::Top),
                 (Some("else_".to_string()), Type::Top),
             ],
-            ret: Box::new(Type::Top),
-            variadic: false,
-        },
+            Type::Top,
+            false,
+        ),
     );
 
     // ── Dict primitives ───────────────────────────────────────────────────────
@@ -1245,6 +1254,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             )],
             ret: Box::new(Type::seq(Type::Union(vec![Type::Int, Type::Str]))),
             variadic: false,
+            required_count: 1,
         },
     );
     env.insert(
@@ -1266,6 +1276,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             )],
             ret: Box::new(Type::Int),
             variadic: false,
+            required_count: 1,
         },
     );
     // merge: Dict → Dict → Dict
@@ -1293,6 +1304,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
+            required_count: 2,
         },
     );
     env.insert(
@@ -1313,6 +1325,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
+            required_count: 2,
         },
     );
 
@@ -1326,6 +1339,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![],
             ret: Box::new(Type::Unknown), // Builder — opaque mutable container
             variadic: false,
+            required_count: 0,
         },
     );
     // builder-set: (key, value, builder) → Top
@@ -1340,6 +1354,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             ],
             ret: Box::new(Type::Top), // builder (mutated in-place)
             variadic: false,
+            required_count: 3,
         },
     );
     // builder-delete: (key, builder) → Top
@@ -1352,6 +1367,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             ],
             ret: Box::new(Type::Top), // builder
             variadic: false,
+            required_count: 2,
         },
     );
     // builder-has?: (key, builder) → Bool
@@ -1364,6 +1380,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             ],
             ret: Box::new(Type::Bool),
             variadic: false,
+            required_count: 2,
         },
     );
     // builder-get: (key, builder) → Top
@@ -1376,6 +1393,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             ],
             ret: Box::new(Type::Top), // value — opaque
             variadic: false,
+            required_count: 2,
         },
     );
     // builder-get-or: (key, default, builder) → Top
@@ -1389,6 +1407,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             ],
             ret: Box::new(Type::Top), // value or default
             variadic: false,
+            required_count: 3,
         },
     );
     // builder-finish: (builder) → Top
@@ -1398,6 +1417,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Top)], // builder
             ret: Box::new(Type::Top),        // Dict — shape unknown statically
             variadic: false,
+            required_count: 1,
         },
     );
     // builder-snapshot: (builder) → Top
@@ -1407,6 +1427,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Top)], // builder
             ret: Box::new(Type::Top),        // Dict snapshot
             variadic: false,
+            required_count: 1,
         },
     );
 
@@ -1420,6 +1441,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Top)], // initial value
             ret: Box::new(Type::Top),        // ReactiveCell — opaque
             variadic: false,
+            required_count: 1,
         },
     );
     // cell-get: ReactiveCell@T → T
@@ -1429,6 +1451,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Top)], // ReactiveCell
             ret: Box::new(Type::Top),        // current value — opaque
             variadic: false,
+            required_count: 1,
         },
     );
     // cell-set: T → ReactiveCell@T → Null
@@ -1441,6 +1464,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 tail: crate::type_def::RowTail::Empty,
             })), // Null = empty record
             variadic: false,
+            required_count: 2,
         },
     );
 
@@ -1451,11 +1475,11 @@ pub fn core_type_env(env: &mut TypeEnv) {
         TypeScheme {
             type_vars: vec!["a".to_string()],
             constraints: vec![Constraint::new_by_name("Showable", "a")],
-            body: Type::Function {
-                params: vec![(None, Type::TypeVar("a".to_string(), 0))],
-                ret: Box::new(Type::Str),
-                variadic: true,
-            },
+            body: Type::fn_type(
+                vec![(None, Type::TypeVar("a".to_string(), 0))],
+                Type::Str,
+                true,
+            ),
             label_vars: vec![],
             kind_vars: Vec::new(),
             doc: None,
@@ -1470,6 +1494,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 params: vec![(None, Type::Int)],
                 ret: Box::new(Type::Str),
                 variadic: false,
+                required_count: 1,
             },
         );
     }
@@ -1481,6 +1506,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 params: vec![(None, Type::Float)],
                 ret: Box::new(Type::Str),
                 variadic: false,
+                required_count: 1,
             },
         );
     }
@@ -1491,6 +1517,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Str), (None, Type::Str)],
             ret: Box::new(Type::Str),
             variadic: false,
+            required_count: 2,
         },
     );
     env.insert(
@@ -1501,6 +1528,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             // that `[get N [split sep s]]` returns Str via Indexable MPTC FD (Seq[T], Int → T).
             ret: Box::new(Type::seq(Type::Str)),
             variadic: false,
+            required_count: 2,
         },
     );
     env.insert(
@@ -1509,6 +1537,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Str), (None, Type::Str), (None, Type::Str)],
             ret: Box::new(Type::Str),
             variadic: false,
+            required_count: 3,
         },
     );
     for name in ["trim", "trim-start", "trim-end"] {
@@ -1518,6 +1547,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 params: vec![(None, Type::Str)],
                 ret: Box::new(Type::Str),
                 variadic: false,
+                required_count: 1,
             },
         );
     }
@@ -1529,6 +1559,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 params: vec![(None, Type::Str)],
                 ret: Box::new(Type::Str),
                 variadic: false,
+                required_count: 1,
             },
         );
     }
@@ -1543,12 +1574,14 @@ pub fn core_type_env(env: &mut TypeEnv) {
                         params: vec![(None, Type::Str)],
                         ret: Box::new(Type::Str),
                         variadic: false,
+                        required_count: 1,
                     },
                 ),
                 (None, Type::Str),
             ],
             ret: Box::new(Type::Str),
             variadic: false,
+            required_count: 2,
         },
     );
     // str-index-of: String → String → Int
@@ -1558,6 +1591,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Str), (None, Type::Str)],
             ret: Box::new(Type::Int),
             variadic: false,
+            required_count: 2,
         },
     );
     // regex-match?: String → String → Bool
@@ -1567,6 +1601,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Str), (None, Type::Str)],
             ret: Box::new(Type::Bool),
             variadic: false,
+            required_count: 2,
         },
     );
     // builtin-json-parse: String → Top (parsed JSON value, type is dynamic)
@@ -1576,6 +1611,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Str)],
             ret: Box::new(Type::Top),
             variadic: false,
+            required_count: 1,
         },
     );
     // String operations returning Bool
@@ -1586,6 +1622,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 params: vec![(None, Type::Str), (None, Type::Str)],
                 ret: Box::new(Type::Bool),
                 variadic: false,
+                required_count: 2,
             },
         );
     }
@@ -1596,6 +1633,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Str)],
             ret: Box::new(Type::seq(Type::Str)),
             variadic: false,
+            required_count: 1,
         },
     );
     // char-code: String → Int
@@ -1605,6 +1643,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Str)],
             ret: Box::new(Type::Int),
             variadic: false,
+            required_count: 1,
         },
     );
     // chr: Int → String
@@ -1614,6 +1653,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Int)],
             ret: Box::new(Type::Str),
             variadic: false,
+            required_count: 1,
         },
     );
     // str-bytes: String → Bytes
@@ -1623,6 +1663,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Str)],
             ret: Box::new(Type::Bytes),
             variadic: false,
+            required_count: 1,
         },
     );
     // bytes-str: Bytes → String
@@ -1632,6 +1673,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Bytes)],
             ret: Box::new(Type::Str),
             variadic: false,
+            required_count: 1,
         },
     );
     // str-slice: Int → Int → String → String
@@ -1641,6 +1683,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Int), (None, Type::Int), (None, Type::Str)],
             ret: Box::new(Type::Str),
             variadic: false,
+            required_count: 3,
         },
     );
     // str-length: String → Int
@@ -1650,6 +1693,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Str)],
             ret: Box::new(Type::Int),
             variadic: false,
+            required_count: 1,
         },
     );
 
@@ -1661,6 +1705,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![],
             ret: Box::new(Type::Bytes),
             variadic: true,
+            required_count: 0,
         },
     );
     // bytes-find: Bytes → Bytes → Int
@@ -1670,6 +1715,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Bytes), (None, Type::Bytes)],
             ret: Box::new(Type::Int),
             variadic: false,
+            required_count: 2,
         },
     );
     // bytes-of: Seq → Bytes (or Dict → Bytes)
@@ -1679,6 +1725,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Top)], // Accepts Seq or Dict
             ret: Box::new(Type::Bytes),
             variadic: false,
+            required_count: 1,
         },
     );
     // bytes-equal?: Bytes → Bytes → Bool
@@ -1688,6 +1735,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Bytes), (None, Type::Bytes)],
             ret: Box::new(Type::Bool),
             variadic: false,
+            required_count: 2,
         },
     );
     // ct-equal?: Bytes → Bytes → Bool
@@ -1697,6 +1745,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Bytes), (None, Type::Bytes)],
             ret: Box::new(Type::Bool),
             variadic: false,
+            required_count: 2,
         },
     );
 
@@ -1708,6 +1757,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 params: vec![(None, Type::Number)],
                 ret: Box::new(Type::Int),
                 variadic: false,
+                required_count: 1,
             },
         );
     }
@@ -1721,6 +1771,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 params: vec![(None, Type::Number)],
                 ret: Box::new(Type::Float),
                 variadic: false,
+                required_count: 1,
             },
         );
     }
@@ -1732,6 +1783,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 params: vec![(None, Type::Number), (None, Type::Number)],
                 ret: Box::new(Type::Float),
                 variadic: false,
+                required_count: 2,
             },
         );
     }
@@ -1743,6 +1795,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 params: vec![(None, Type::Float)],
                 ret: Box::new(Type::Bool),
                 variadic: false,
+                required_count: 1,
             },
         );
     }
@@ -1754,6 +1807,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 params: vec![(None, Type::Int), (None, Type::Int)],
                 ret: Box::new(Type::Int),
                 variadic: false,
+                required_count: 2,
             },
         );
     }
@@ -1764,6 +1818,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Str)],
             ret: Box::new(Type::Int),
             variadic: false,
+            required_count: 1,
         },
     );
     env.insert(
@@ -1772,6 +1827,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Str)],
             ret: Box::new(Type::Float),
             variadic: false,
+            required_count: 1,
         },
     );
     // float: Number → Float (converts Int or Float to Float)
@@ -1781,6 +1837,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Number)],
             ret: Box::new(Type::Float),
             variadic: false,
+            required_count: 1,
         },
     );
 
@@ -1791,6 +1848,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Top)],
             ret: Box::new(Type::Top),
             variadic: false,
+            required_count: 1,
         },
     );
     env.insert(
@@ -1799,6 +1857,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Str)],
             ret: Box::new(Type::Never),
             variadic: false,
+            required_count: 1,
         },
     );
     // try: takes 1 arg — a zero-argument function. Returns Ok(v) or Error(String).
@@ -1813,10 +1872,12 @@ pub fn core_type_env(env: &mut TypeEnv) {
                     params: vec![],
                     ret: Box::new(Type::Top),
                     variadic: false,
+                    required_count: 0,
                 },
             )],
             ret: Box::new(Type::Top),
             variadic: false,
+            required_count: 1,
         },
     );
     env.insert(
@@ -1829,6 +1890,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                         params: vec![(None, Type::Top)],
                         ret: Box::new(Type::Top),
                         variadic: false,
+                        required_count: 1,
                     },
                 ),
                 (
@@ -1841,6 +1903,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             ],
             ret: Box::new(Type::Top),
             variadic: false,
+            required_count: 2,
         },
     );
     // Convergence loop: until(pred, f, init) applies f until pred holds
@@ -1858,6 +1921,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                             params: vec![(None, Type::TypeVar("T".to_string(), 0))],
                             ret: Box::new(Type::Bool),
                             variadic: false,
+                            required_count: 1,
                         },
                     ),
                     (
@@ -1866,12 +1930,14 @@ pub fn core_type_env(env: &mut TypeEnv) {
                             params: vec![(None, Type::TypeVar("T".to_string(), 0))],
                             ret: Box::new(Type::TypeVar("T".to_string(), 0)),
                             variadic: false,
+                            required_count: 1,
                         },
                     ),
                     (None, Type::TypeVar("T".to_string(), 0)),
                 ],
                 ret: Box::new(Type::TypeVar("T".to_string(), 0)),
                 variadic: false,
+                required_count: 3,
             },
             label_vars: vec![],
             kind_vars: Vec::new(),
@@ -1899,6 +1965,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             ],
             ret: Box::new(Type::Top),
             variadic: false,
+            required_count: 2,
         },
     );
 
@@ -1920,6 +1987,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             ],
             ret: Box::new(Type::Never),
             variadic: false,
+            required_count: 2,
         },
     );
     // builtin-macro-injects: takes a macro name (any value, looked up at
@@ -1930,6 +1998,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Top)],
             ret: Box::new(Type::seq(Type::Top)),
             variadic: false,
+            required_count: 1,
         },
     );
 
@@ -1941,6 +2010,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Top)],
             ret: Box::new(Type::Str),
             variadic: false,
+            required_count: 1,
         },
     );
     env.insert(
@@ -1949,6 +2019,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Top)],
             ret: Box::new(Type::Str),
             variadic: false,
+            required_count: 1,
         },
     );
     env.insert(
@@ -1957,6 +2028,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Top)],
             ret: Box::new(Type::Str),
             variadic: false,
+            required_count: 1,
         },
     );
     env.insert(
@@ -1965,6 +2037,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Top)],
             ret: Box::new(Type::Str),
             variadic: false,
+            required_count: 1,
         },
     );
     // variant: variadic (1 arg: tag, or 2+ args: tag + payload fields)
@@ -1975,6 +2048,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![],
             ret: Box::new(Type::Top),
             variadic: true,
+            required_count: 0,
         },
     );
     // annotation-of: takes any value, returns its annotation dict (or {} if none).
@@ -1984,6 +2058,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Top)],
             ret: Box::new(Type::Top),
             variadic: false,
+            required_count: 1,
         },
     );
     // make-annotated: wraps a value in Value::Annotated with the given annotation dict.
@@ -1994,6 +2069,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Top), (None, Type::Top)],
             ret: Box::new(Type::Top),
             variadic: false,
+            required_count: 2,
         },
     );
     env.insert(
@@ -2002,6 +2078,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Top)],
             ret: Box::new(Type::Top),
             variadic: false,
+            required_count: 1,
         },
     );
     // builtin-module: returns a dict of builtins for the named module.
@@ -2011,6 +2088,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Str)],
             ret: Box::new(Type::Top), // Returns a Dict of builtins
             variadic: false,
+            required_count: 1,
         },
     );
     // builtin-eval: evaluate a Document/Program/Seq of expressions with optional env/input.
@@ -2021,6 +2099,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Top)],
             ret: Box::new(Type::Top),
             variadic: true,
+            required_count: 1,
         },
     );
     // eval-types: evaluate the type-stage of a Document/Program.
@@ -2030,6 +2109,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Top)],
             ret: Box::new(Type::Top),
             variadic: true,
+            required_count: 1,
         },
     );
     // builtin-load: parse tinct source text into a Program value.
@@ -2040,6 +2120,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Str)],
             ret: Box::new(Type::Top), // Returns a Program (AST value)
             variadic: true,
+            required_count: 1,
         },
     );
     // builtin-expand: macro-expand and desugar a Program value.
@@ -2049,6 +2130,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Top)],
             ret: Box::new(Type::Top), // Returns expanded Program
             variadic: false,
+            required_count: 1,
         },
     );
     // builtin-blake3: compute blake3 hash of a string. Returns a hex string.
@@ -2058,6 +2140,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Str)],
             ret: Box::new(Type::Str),
             variadic: false,
+            required_count: 1,
         },
     );
     // builtin-cap-identity: return a stable string identity for a DirCap (for cache keys).
@@ -2067,6 +2150,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::DirCap)],
             ret: Box::new(Type::Str),
             variadic: false,
+            required_count: 1,
         },
     );
     // builtin-include-cache-get: look up a content-addressed include result.
@@ -2076,6 +2160,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Str)],
             ret: Box::new(Type::Top),
             variadic: false,
+            required_count: 1,
         },
     );
     // builtin-include-cache-put: store/update a content-addressed include result.
@@ -2085,6 +2170,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Str), (None, Type::Top)],
             ret: Box::new(Type::Top),
             variadic: false,
+            required_count: 2,
         },
     );
     env.insert(
@@ -2093,6 +2179,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Str)],
             ret: Box::new(Type::Str),
             variadic: true, // 0 or 1 args (optional prefix)
+            required_count: 1,
         },
     );
     env.insert(
@@ -2102,6 +2189,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             // Genuinely unknown: Returns Decimal type (not yet in Type enum)
             ret: Box::new(Type::Unknown),
             variadic: false,
+            required_count: 1,
         },
     );
     env.insert(
@@ -2111,6 +2199,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             // Genuinely unknown: Returns BigInt type (not yet in Type enum)
             ret: Box::new(Type::Unknown),
             variadic: false,
+            required_count: 1,
         },
     );
 
@@ -2126,6 +2215,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 params: vec![(None, Type::Top)],
                 ret: Box::new(Type::Bool),
                 variadic: false,
+                required_count: 1,
             },
         );
     }
@@ -2157,6 +2247,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
+            required_count: 1,
         },
     );
     env.insert(
@@ -2172,6 +2263,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 }),
             ])),
             variadic: false,
+            required_count: 1,
         },
     );
     // `open` is SPECIAL-CASED in the type checker (typecheck.rs `check_open`).
@@ -2186,6 +2278,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             ],
             ret: Box::new(Type::handle(Type::Unknown)),
             variadic: true,
+            required_count: 3,
         },
     );
     env.insert(
@@ -2194,6 +2287,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Str)],
             ret: Box::new(Type::handle(cap_flag("readable"))),
             variadic: false,
+            required_count: 1,
         },
     );
     env.insert(
@@ -2209,6 +2303,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 }),
             ])),
             variadic: false,
+            required_count: 1,
         },
     );
     env.insert(
@@ -2227,6 +2322,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 }),
             ])),
             variadic: false,
+            required_count: 2,
         },
     );
     env.insert(
@@ -2236,6 +2332,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             // Returns String: reads all bytes to EOF as UTF-8 text
             ret: Box::new(Type::Str),
             variadic: false,
+            required_count: 1,
         },
     );
     env.insert(
@@ -2244,6 +2341,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::DirCap), (None, Type::Str)],
             ret: Box::new(Type::DirCap),
             variadic: false,
+            required_count: 2,
         },
     );
     env.insert(
@@ -2256,6 +2354,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
+            required_count: 3,
         },
     );
     env.insert(
@@ -2268,6 +2367,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
+            required_count: 3,
         },
     );
     env.insert(
@@ -2286,12 +2386,14 @@ pub fn core_type_env(env: &mut TypeEnv) {
                                 tail: crate::type_def::RowTail::Empty,
                             })), // Null
                             variadic: false,
+                            required_count: 0,
                         },
                     ),
                 ]),
                 tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
+            required_count: 1,
         },
     );
     env.insert(
@@ -2304,6 +2406,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
+            required_count: 1,
         },
     );
     env.insert(
@@ -2318,6 +2421,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             // capability map, which can be any type (cap name is a dynamic string key).
             ret: Box::new(Type::Unknown),
             variadic: false,
+            required_count: 2,
         },
     );
     env.insert(
@@ -2329,6 +2433,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             ],
             ret: Box::new(Type::handle(cap_flag("writable"))),
             variadic: false,
+            required_count: 2,
         },
     );
     env.insert(
@@ -2340,6 +2445,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::handle(Type::Top))],
             ret: Box::new(Type::handle(Type::Top)),
             variadic: false,
+            required_count: 1,
         },
     );
     env.insert(
@@ -2353,6 +2459,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
+            required_count: 1,
         },
     );
     env.insert(
@@ -2362,6 +2469,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             // raw-create always creates a write-only handle
             ret: Box::new(Type::handle(cap_flag("writable"))),
             variadic: false,
+            required_count: 2,
         },
     );
     env.insert(
@@ -2373,6 +2481,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             // approximation.
             ret: Box::new(Type::handle(Type::Unknown)),
             variadic: false,
+            required_count: 2,
         },
     );
     env.insert(
@@ -2382,6 +2491,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             // Legitimately Unknown: seek-end preserves input handle's capabilities.
             ret: Box::new(Type::handle(Type::Unknown)),
             variadic: false,
+            required_count: 1,
         },
     );
     env.insert(
@@ -2391,6 +2501,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::handle(Type::Unknown))],
             ret: Box::new(Type::Int),
             variadic: false,
+            required_count: 1,
         },
     );
     env.insert(
@@ -2406,6 +2517,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 tail: crate::type_def::RowTail::Empty,
             }))),
             variadic: false,
+            required_count: 2,
         },
     );
     env.insert(
@@ -2421,6 +2533,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
+            required_count: 2,
         },
     );
     // builtin-exists: check whether a path exists under a capability.
@@ -2430,6 +2543,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::DirCap), (None, Type::Str)],
             ret: Box::new(Type::Bool),
             variadic: false,
+            required_count: 2,
         },
     );
     // builtin-stat-symlink: stat a path without following symlinks.
@@ -2447,6 +2561,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
+            required_count: 2,
         },
     );
     // builtin-copy-file: copy src-cap/src-path to dst-cap/dst-path.
@@ -2466,6 +2581,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
+            required_count: 4,
         },
     );
     // builtin-symlink: create a symlink at cap/path pointing to target.
@@ -2480,6 +2596,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
+            required_count: 3,
         },
     );
     // builtin-set-permissions: set file mode bits at cap/path.
@@ -2494,6 +2611,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
+            required_count: 3,
         },
     );
     // builtin-get-xattr: read an extended attribute (xattr) by name.
@@ -2504,6 +2622,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Str)],
             ret: Box::new(Type::Str),
             variadic: false,
+            required_count: 3,
         },
     );
     // builtin-set-xattr: write an extended attribute (xattr) by name.
@@ -2523,6 +2642,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
+            required_count: 4,
         },
     );
     // builtin-remove-xattr: delete an extended attribute (xattr) by name.
@@ -2537,6 +2657,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
+            required_count: 3,
         },
     );
     // builtin-list-xattrs: list all extended attribute names at cap/path.
@@ -2547,6 +2668,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::DirCap), (None, Type::Str)],
             ret: Box::new(Type::seq(Type::Str)),
             variadic: false,
+            required_count: 2,
         },
     );
     env.insert(
@@ -2559,6 +2681,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
+            required_count: 2,
         },
     );
     env.insert(
@@ -2571,6 +2694,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
+            required_count: 2,
         },
     );
     env.insert(
@@ -2583,6 +2707,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
+            required_count: 3,
         },
     );
     env.insert(
@@ -2595,6 +2720,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
+            required_count: 3,
         },
     );
     env.insert(
@@ -2603,6 +2729,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::DirCap), (None, Type::Str)],
             ret: Box::new(Type::Str), // Returns target path as String
             variadic: false,
+            required_count: 2,
         },
     );
     env.insert(
@@ -2616,6 +2743,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             // string, number, bool, null). A precise type requires schema information.
             ret: Box::new(Type::Top),
             variadic: false,
+            required_count: 1,
         },
     );
 
@@ -2633,6 +2761,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 ],
                 ret: Box::new(Type::seq(Type::TypeVar("T".to_string(), 0))),
                 variadic: false,
+                required_count: 2,
             },
             label_vars: vec![],
             kind_vars: Vec::new(),
@@ -2650,6 +2779,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 params: vec![(None, Type::seq(Type::TypeVar("T".to_string(), 0)))],
                 ret: Box::new(Type::TypeVar("T".to_string(), 0)),
                 variadic: false,
+                required_count: 1,
             },
             label_vars: vec![],
             kind_vars: Vec::new(),
@@ -2667,6 +2797,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 params: vec![(None, Type::seq(Type::TypeVar("T".to_string(), 0)))],
                 ret: Box::new(Type::seq(Type::TypeVar("T".to_string(), 0))),
                 variadic: false,
+                required_count: 1,
             },
             label_vars: vec![],
             kind_vars: Vec::new(),
@@ -2686,6 +2817,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 params: vec![(None, Type::seq(Type::TypeVar("T".to_string(), 0)))],
                 ret: Box::new(Type::seq(Type::TypeVar("T".to_string(), 0))),
                 variadic: false,
+                required_count: 1,
             },
             label_vars: vec![],
             kind_vars: Vec::new(),
@@ -2703,6 +2835,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
+            required_count: 1,
         },
     );
     env.insert(
@@ -2711,6 +2844,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Top)],
             ret: Box::new(Type::Bool),
             variadic: false,
+            required_count: 1,
         },
     );
 
@@ -2725,6 +2859,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             ],
             ret: Box::new(Type::seq(Type::Int)),
             variadic: true,
+            required_count: 1,
         },
     );
     // builtin-repeat: ∀T. T → Seq(T)
@@ -2737,6 +2872,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 params: vec![(None, Type::TypeVar("T".to_string(), 0))],
                 ret: Box::new(Type::seq(Type::TypeVar("T".to_string(), 0))),
                 variadic: false,
+                required_count: 1,
             },
             label_vars: vec![],
             kind_vars: Vec::new(),
@@ -2754,6 +2890,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 params: vec![(None, Type::seq(Type::TypeVar("T".to_string(), 0)))],
                 ret: Box::new(Type::seq(Type::TypeVar("T".to_string(), 0))),
                 variadic: false,
+                required_count: 1,
             },
             label_vars: vec![],
             kind_vars: Vec::new(),
@@ -2775,12 +2912,14 @@ pub fn core_type_env(env: &mut TypeEnv) {
                             params: vec![(None, Type::TypeVar("T".to_string(), 0))],
                             ret: Box::new(Type::TypeVar("T".to_string(), 0)),
                             variadic: false,
+                            required_count: 1,
                         },
                     ),
                     (None, Type::TypeVar("T".to_string(), 0)),
                 ],
                 ret: Box::new(Type::seq(Type::TypeVar("T".to_string(), 0))),
                 variadic: false,
+                required_count: 2,
             },
             label_vars: vec![],
             kind_vars: Vec::new(),
@@ -2798,12 +2937,14 @@ pub fn core_type_env(env: &mut TypeEnv) {
                         params: vec![(None, Type::Top)],
                         ret: Box::new(Type::Top),
                         variadic: false,
+                        required_count: 1,
                     },
                 ),
                 (None, Type::Top),
             ],
             ret: Box::new(Type::seq(Type::Top)),
             variadic: false,
+            required_count: 2,
         },
     );
 
@@ -2826,6 +2967,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                             params: vec![(None, Type::TypeVar("a".to_string(), 0))],
                             ret: Box::new(Type::TypeVar("b".to_string(), 0)),
                             variadic: false,
+                            required_count: 1,
                         },
                     ),
                     (
@@ -2841,6 +2983,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                     Box::new(Type::TypeVar("b".to_string(), 0)),
                 )),
                 variadic: false,
+                required_count: 2,
             },
             label_vars: vec![],
             doc: None,
@@ -2861,6 +3004,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                             params: vec![(None, Type::TypeVar("a".to_string(), 0))],
                             ret: Box::new(Type::Bool),
                             variadic: false,
+                            required_count: 1,
                         },
                     ),
                     (
@@ -2870,6 +3014,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 ],
                 ret: Box::new(Type::seq(Type::TypeVar("a".to_string(), 0))),
                 variadic: false,
+                required_count: 2,
             },
             label_vars: vec![],
             kind_vars: Vec::new(),
@@ -2890,6 +3035,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 ],
                 ret: Box::new(Type::seq(Type::TypeVar("T".to_string(), 0))),
                 variadic: false,
+                required_count: 2,
             },
             label_vars: vec![],
             kind_vars: Vec::new(),
@@ -2910,6 +3056,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 ],
                 ret: Box::new(Type::seq(Type::TypeVar("T".to_string(), 0))),
                 variadic: false,
+                required_count: 2,
             },
             label_vars: vec![],
             kind_vars: Vec::new(),
@@ -2930,6 +3077,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 ],
                 ret: Box::new(Type::seq(Type::TypeVar("T".to_string(), 0))),
                 variadic: false,
+                required_count: 2,
             },
             label_vars: vec![],
             kind_vars: Vec::new(),
@@ -2956,6 +3104,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                             ],
                             ret: Box::new(Type::TypeVar("b".to_string(), 0)),
                             variadic: false,
+                            required_count: 2,
                         },
                     ),
                     (Some("init".to_string()), Type::TypeVar("b".to_string(), 0)),
@@ -2966,6 +3115,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 ],
                 ret: Box::new(Type::TypeVar("b".to_string(), 0)),
                 variadic: false,
+                required_count: 3,
             },
             label_vars: vec![],
             kind_vars: Vec::new(),
@@ -2983,6 +3133,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             ],
             ret: Box::new(Type::Str),
             variadic: false,
+            required_count: 2,
         },
     );
     // builtin-concat: Concatable a b c => a -> b -> c
@@ -3005,6 +3156,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 ],
                 ret: Box::new(Type::TypeVar("c".to_string(), 0)),
                 variadic: false,
+                required_count: 2,
             },
             label_vars: vec![],
             kind_vars: Vec::new(),
@@ -3041,6 +3193,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                     }),
                 ])),
                 variadic: false,
+                required_count: 1,
             },
             label_vars: vec![],
             kind_vars: Vec::new(),
@@ -3061,6 +3214,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 ],
                 ret: Box::new(Type::seq(Type::TypeVar("T".to_string(), 0))),
                 variadic: false,
+                required_count: 2,
             },
             label_vars: vec![],
             kind_vars: Vec::new(),
@@ -3084,6 +3238,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
+            required_count: 1,
         },
     );
     // builtin-sort: ∀T. Seq(T) → Seq(T)
@@ -3100,6 +3255,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 params: vec![(None, Type::seq(Type::TypeVar("T".to_string(), 0)))],
                 ret: Box::new(Type::seq(Type::TypeVar("T".to_string(), 0))),
                 variadic: false,
+                required_count: 1,
             },
             label_vars: vec![],
             kind_vars: Vec::new(),
@@ -3117,10 +3273,12 @@ pub fn core_type_env(env: &mut TypeEnv) {
                     params: vec![(None, Type::Str)],
                     ret: Box::new(Type::Top),
                     variadic: false,
+                    required_count: 1,
                 },
             )],
             ret: Box::new(Type::Proxy),
             variadic: false,
+            required_count: 1,
         },
     );
 
@@ -3143,6 +3301,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                     ],
                     ret: Box::new(Type::TypeVar("v".to_string(), 0)),
                     variadic: false,
+                    required_count: 2,
                 },
                 label_vars: vec![],
                 kind_vars: Vec::new(),
@@ -3176,6 +3335,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                     }),
                 ])),
                 variadic: false,
+                required_count: 2,
             },
             label_vars: vec![],
             kind_vars: Vec::new(),
@@ -3201,6 +3361,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 )],
                 ret: Box::new(Type::seq(Type::Top)),
                 variadic: false,
+                required_count: 1,
             },
             label_vars: vec![],
             kind_vars: Vec::new(),
@@ -3224,6 +3385,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 )],
                 ret: Box::new(Type::seq(Type::normalize_union(vec![Type::Int, Type::Str]))),
                 variadic: false,
+                required_count: 1,
             },
             label_vars: vec![],
             kind_vars: Vec::new(),
@@ -3258,6 +3420,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                     })
                 })),
                 variadic: false,
+                required_count: 1,
             },
             label_vars: vec![],
             kind_vars: Vec::new(),
@@ -3279,6 +3442,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 params: vec![(None, Type::seq(Type::TypeVar("T".to_string(), 0)))],
                 ret: Box::new(Type::TypeVar("T".to_string(), 0)),
                 variadic: false,
+                required_count: 1,
             },
             label_vars: vec![],
             kind_vars: Vec::new(),
@@ -3297,6 +3461,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 params: vec![(None, Type::seq(Type::TypeVar("T".to_string(), 0)))],
                 ret: Box::new(Type::TypeVar("T".to_string(), 0)),
                 variadic: false,
+                required_count: 1,
             },
             label_vars: vec![],
             kind_vars: Vec::new(),
@@ -3319,6 +3484,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Top)],
             ret: Box::new(Type::Top), // Task — opaque async handle
             variadic: false,
+            required_count: 1,
         },
     );
     // builtin-await: Top → Top
@@ -3329,6 +3495,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Top)],
             ret: Box::new(Type::Top), // Task result — genuinely opaque
             variadic: false,
+            required_count: 1,
         },
     );
     // builtin-channel: Int → Top
@@ -3339,6 +3506,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Int)],
             ret: Box::new(Type::Top), // Channel — opaque
             variadic: false,
+            required_count: 1,
         },
     );
     // builtin-send: Top → Top → Top
@@ -3349,6 +3517,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Top), (None, Type::Top)],
             ret: Box::new(Type::Top),
             variadic: false,
+            required_count: 2,
         },
     );
     // builtin-recv: Top → Top
@@ -3359,6 +3528,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Top)],
             ret: Box::new(Type::Top), // Received value — genuinely opaque
             variadic: false,
+            required_count: 1,
         },
     );
     // builtin-select-once: Top → Top → Top
@@ -3370,6 +3540,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Top), (None, Type::Top)],
             ret: Box::new(Type::Top),
             variadic: false,
+            required_count: 2,
         },
     );
     // builtin-broadcast-channel: Int → Top
@@ -3381,6 +3552,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Int)],
             ret: Box::new(Type::Top), // BroadcastChannel — opaque
             variadic: false,
+            required_count: 1,
         },
     );
     // builtin-oneshot-channel: () → Top
@@ -3392,6 +3564,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![],
             ret: Box::new(Type::Top), // {sender, receiver} dict — opaque
             variadic: false,
+            required_count: 0,
         },
     );
     // builtin-try-send: Top → Top → Top
@@ -3402,6 +3575,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Top), (None, Type::Top)],
             ret: Box::new(Type::Top),
             variadic: false,
+            required_count: 2,
         },
     );
     // builtin-par: Top → Top → Top
@@ -3412,6 +3586,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Top), (None, Type::Top)],
             ret: Box::new(Type::Top),
             variadic: false,
+            required_count: 2,
         },
     );
     // builtin-par-map: ∀a b. (a → b) → Seq(a) → Seq(b)
@@ -3428,12 +3603,14 @@ pub fn core_type_env(env: &mut TypeEnv) {
                             params: vec![(None, Type::TypeVar("a".to_string(), 0))],
                             ret: Box::new(Type::TypeVar("b".to_string(), 0)),
                             variadic: false,
+                            required_count: 1,
                         },
                     ),
                     (None, Type::seq(Type::TypeVar("a".to_string(), 0))),
                 ],
                 ret: Box::new(Type::seq(Type::TypeVar("b".to_string(), 0))),
                 variadic: false,
+                required_count: 2,
             },
             label_vars: vec![],
             kind_vars: Vec::new(),
@@ -3455,12 +3632,14 @@ pub fn core_type_env(env: &mut TypeEnv) {
                             params: vec![(None, Type::TypeVar("a".to_string(), 0))],
                             ret: Box::new(Type::Bool),
                             variadic: false,
+                            required_count: 1,
                         },
                     ),
                     (None, Type::seq(Type::TypeVar("a".to_string(), 0))),
                 ],
                 ret: Box::new(Type::seq(Type::TypeVar("a".to_string(), 0))),
                 variadic: false,
+                required_count: 2,
             },
             label_vars: vec![],
             kind_vars: Vec::new(),
@@ -3476,6 +3655,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Top)],
             ret: Box::new(Type::Top), // Channel — opaque
             variadic: false,
+            required_count: 1,
         },
     );
     // builtin-timer-channel: ClockCap → (Duration | Int) → Channel (opaque)
@@ -3490,6 +3670,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             ],
             ret: Box::new(Type::Top), // Channel — opaque, no Channel type variant
             variadic: false,
+            required_count: 2,
         },
     );
     // builtin-watch-channel: DirCap → String → Channel (opaque)
@@ -3501,6 +3682,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::DirCap), (None, Type::Str)],
             ret: Box::new(Type::Top), // Channel@Null — opaque, no Channel type variant
             variadic: false,
+            required_count: 2,
         },
     );
     // builtin-context: Top → Top
@@ -3512,6 +3694,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![],
             ret: Box::new(Type::Top), // Context — opaque
             variadic: true,
+            required_count: 0,
         },
     );
     // builtin-with-cancel: Top → Top
@@ -3522,6 +3705,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Top)],
             ret: Box::new(Type::Top), // (Context, cancel-fn) pair — opaque
             variadic: false,
+            required_count: 1,
         },
     );
     // builtin-with-timeout: ClockCap → Top → Duration → Top
@@ -3536,6 +3720,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             ],
             ret: Box::new(Type::Top), // Context — opaque
             variadic: false,
+            required_count: 3,
         },
     );
     // builtin-with-deadline: ClockCap → Top → Timestamp → Top
@@ -3550,6 +3735,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             ],
             ret: Box::new(Type::Top), // Context — opaque
             variadic: false,
+            required_count: 3,
         },
     );
     // builtin-cancelled?: Top → Bool
@@ -3560,6 +3746,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Top)],
             ret: Box::new(Type::Bool),
             variadic: false,
+            required_count: 1,
         },
     );
     // builtin-cancel-task: Top → Top
@@ -3570,6 +3757,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Top)],
             ret: Box::new(Type::Top),
             variadic: false,
+            required_count: 1,
         },
     );
     // builtin-non-cancellable: Top → Top
@@ -3580,6 +3768,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Top)],
             ret: Box::new(Type::Top),
             variadic: false,
+            required_count: 1,
         },
     );
     // builtin-with-context: Top → Top → Top
@@ -3590,6 +3779,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Top), (None, Type::Top)],
             ret: Box::new(Type::Top),
             variadic: false,
+            required_count: 2,
         },
     );
     // builtin-cancel-root: Top → Top
@@ -3600,6 +3790,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![],
             ret: Box::new(Type::Top),
             variadic: true,
+            required_count: 0,
         },
     );
     // builtin-drain: Top → Top
@@ -3610,6 +3801,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Top)],
             ret: Box::new(Type::Top),
             variadic: false,
+            required_count: 1,
         },
     );
     // builtin-exit-now: Int → Unknown
@@ -3620,6 +3812,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Int)],
             ret: Box::new(Type::Never), // process terminates — logically Never
             variadic: false,
+            required_count: 1,
         },
     );
 
@@ -3634,6 +3827,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Top)], // any expression — not materialized
             ret: Box::new(Type::Top),        // metadata Dict — shape runtime-dependent
             variadic: false,
+            required_count: 1,
         },
     );
 

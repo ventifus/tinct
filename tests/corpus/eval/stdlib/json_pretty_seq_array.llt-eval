@@ -5,11 +5,3 @@
 
 [tags: [seq "admin" "editor" "user"]]
 [to-json-pretty tags]
-=== error
-[E020] arity mismatch: expected 2 arguments, got 3 (defined at 5:8-5:37) (called at 5:1-5:38)
-  in [seq ...] at 5:8-5:37
-  in [seq ...] at 5:8-5:37
-
-=== warn
-[ArityMismatch] expected 2 arguments, got 3
-[UndefinedVariable] undefined variable: to-json-pretty

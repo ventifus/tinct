@@ -535,6 +535,7 @@ fn build_prelude_env_inner() -> Rc<TypeEnv> {
             params: vec![(None, Type::Str)],
             ret: Box::new(Type::Str),
             variadic: false,
+            required_count: 1,
         },
     );
 
@@ -547,6 +548,7 @@ fn build_prelude_env_inner() -> Rc<TypeEnv> {
             params: vec![(None, Type::DirCap), (None, Type::Str)],
             ret: Box::new(Type::Unknown),
             variadic: true,
+            required_count: 2,
         },
     );
 
@@ -798,6 +800,7 @@ fn erase_type_vars(ty: &crate::types::Type) -> crate::types::Type {
             params,
             ret,
             variadic,
+            required_count,
         } => Type::Function {
             params: params
                 .iter()
@@ -805,6 +808,7 @@ fn erase_type_vars(ty: &crate::types::Type) -> crate::types::Type {
                 .collect(),
             ret: Box::new(erase_type_vars(ret)),
             variadic: *variadic,
+            required_count: *required_count,
         },
         Type::Record(row) => Type::Record(Row {
             fields: row

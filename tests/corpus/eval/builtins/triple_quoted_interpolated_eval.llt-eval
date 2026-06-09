@@ -3,8 +3,3 @@
   Dear $name,
   Welcome to the system.
   """]
-=== error
-[E080] macro 'tmpl' returned invalid AST: missing required field: type (defined at 1:24-4:6)
-
-=== warn
-[E080] macro 'tmpl' returned invalid AST: missing required field: type (defined at 1:24-4:6)

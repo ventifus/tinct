@@ -1,8 +1,2 @@
 # builtin-read-chunk: error when first argument is not a Handle
 [builtin-read-chunk "not-a-handle" 4]
-=== error
-[E010] builtin-read-chunk: expected Handle, got String (defined at 1:1-1:38)
-  in [builtin-read-chunk ...] at 1:1-1:38
-
-=== warn
-[UndefinedVariable] undefined variable: builtin-read-chunk

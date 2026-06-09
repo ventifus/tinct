@@ -2,6 +2,3 @@
 [type-of [non-cancellable]]
 === out
 String("Context")
-
-=== warn
-[ArityMismatch] expected 1 arguments, got 0

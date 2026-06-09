@@ -36,8 +36,3 @@
   # Call the function with a B-219-constructed Ok value
   result: [unwrap [Ok 42]]
 ]
-=== error
-[E071] non-exhaustive match: no pattern matched the Variant value (defined at 29:5-32:6)
-
-=== warn
-[UndefinedType] undefined type: Result

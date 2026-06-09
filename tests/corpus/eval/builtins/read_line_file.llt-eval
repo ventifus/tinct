@@ -8,10 +8,3 @@
 [str a "|" b "|" c "|" [str? d]]
 === out
 String("line1|line2|line3|false")
-
-=== warn
-[UndefinedVariable] undefined variable: builtin-read-line
-[UndefinedVariable] undefined variable: builtin-read-line
-[UndefinedVariable] undefined variable: builtin-read-line
-[UndefinedVariable] undefined variable: builtin-read-line
-[UnificationFailure] cannot unify String with Bool

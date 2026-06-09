@@ -14,8 +14,3 @@
 [result:     [builtin-is-contractive union-node]]
 === out
 Dict({"result": Bool(false)})
-
-=== warn
-[UndefinedVariable] undefined variable: builtin-variant
-[UndefinedVariable] undefined variable: builtin-variant
-[UndefinedVariable] undefined variable: builtin-is-contractive

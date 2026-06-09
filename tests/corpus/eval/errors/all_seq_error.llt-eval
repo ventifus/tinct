@@ -17,6 +17,3 @@
   1010 |         [all?-impl pred xs [keys xs] 0 [length xs]]]]
        | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   in [all? ...] at 1:1-1:37
-
-=== warn
-[UnificationFailure] cannot unify [] with Seq[_]

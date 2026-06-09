@@ -6,9 +6,3 @@
 [str [bytes-str chunk] "/" [bytes-str rest]]
 === out
 String("hel/lo")
-
-=== warn
-[UndefinedVariable] undefined variable: builtin-read-chunk
-[UndefinedVariable] undefined variable: builtin-read-chunk
-[UnificationFailure] cannot unify Bytes with <error>
-[UnificationFailure] cannot unify Bytes with <error>

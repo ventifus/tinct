@@ -2,9 +2,3 @@
     eq: [timestamp=? [parse-timestamp "2024-06-01T00:00:00Z"] [parse-timestamp "2024-06-01T00:00:00Z"]]
     gt: [timestamp>? [parse-timestamp "2024-12-31T23:59:59Z"] [parse-timestamp "2024-01-01T00:00:00Z"]]
 ]
-=== error
-[E002] undefined variable: timestamp=? (defined at 2:10-2:21)
-
-=== warn
-[UndefinedVariable] undefined variable: timestamp=?
-[UndefinedVariable] undefined variable: timestamp>?

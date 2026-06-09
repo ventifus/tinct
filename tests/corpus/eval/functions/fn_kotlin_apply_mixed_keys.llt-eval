@@ -6,6 +6,3 @@
 ]
 === out
 Dict({"f": Function(a, b, c), "args": Dict({0: String("x"), "c": String("z")}), "result": String("x99z")})
-
-=== warn
-[UnificationFailure] cannot unify Fn@Top [Top] with Fn@String [a: _ b: _ c: _]

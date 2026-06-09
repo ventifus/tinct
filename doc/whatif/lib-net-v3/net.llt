@@ -242,9 +242,23 @@
   udp-listen: [fn [let cap@NetCap port@Port]
     [udp-socket cap BindTarget.IpBind [addr: IpAddress.Ipv4 [0 0 0 0]  port: port]]]
 
+  # ServerEvent: the universal server event shape — a typed connection paired with a request.
+  # All protocol serve layers emit Channel@[ServerEvent connection request]:
+  #   http2:          ServerEvent Http2Connection HttpRequest
+  #   http3:          ServerEvent Http3Connection HttpRequest
+  #   http1:          ServerEvent Handle HttpRequest
+  #   dns-udp-server: ServerEvent SocketAddress DnsQuery  (src address is the "connection")
+  #   dns-tls-server: ServerEvent TlsConnection DnsQuery
+  #
+  # Structural: any dict with connection: and request: fields satisfies this.
+  # No explicit constructor needed — [connection: conn  request: req] is compatible.
+  ServerEvent: [type [t m]
+    [connection: t    # typed connection (Http2Connection, Handle, SocketAddress, etc.)
+     request:    m]]  # typed request with respond: field (HttpRequest, DnsQuery, etc.)
+
   # Multiplexed: connection types that expose subsubstreams as a Channel.
   # substreams: Channel@c → Channel@s — opens one stream per incoming connection.
-  [class [Multiplexed c s]
+  [class [let Multiplexed c s]
     substreams: [Fn@[Channel s] [[Channel c]]]]
 
   # Transport typeclass: protocol type p determines connection type c.
@@ -264,7 +278,7 @@
   # interleaved addresses. Tcp races connections (250ms stagger, first success wins).
   # Udp picks the first from the interleaved list (no connection to race).
   # Transport.connect returns [or c NetError] — callers pattern-match on connection failures.
-  [class [Transport p] determines: [p → c]
+  [class [let Transport p] determines: [p → c]
     connect: [Fn@[or c NetError] [NetCap p HostPort]]]
 
   [type [Tcp]]
@@ -311,6 +325,12 @@
      path:     String
      query:    [or String Null]
      fragment: [or String Null]]]
+
+  # parse-ip: try to parse a string as an IP address.
+  # Returns [Result.Ok IpAddress] if the string is a valid IPv4 or IPv6 address.
+  # Returns [Result.Error ...] if it's a hostname or invalid.
+  # Used by cert-valid-for-host? to route to IP-ID vs DNS-ID matching (RFC 9525 §6.4 vs §6.3).
+  parse-ip: builtin-parse-ip   # Rust: tries dotted-decimal IPv4 then compressed IPv6 notation
 
   parse-url: url   # delegates to the url builtin from url-type sprint (RFC 3986 §3 hierarchical URL)
 

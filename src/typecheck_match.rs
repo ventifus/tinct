@@ -140,30 +140,26 @@ pub(crate) fn elaborate_pattern(
                 }
                 if !def.constructors.is_empty() {
                     // Case a: nominal user-defined type.
-                    // If the tag is unqualified (no '.'), emit a T018 warning: bare constructor
-                    // pattern tags silently misbehave at runtime because the evaluator matches
-                    // against qualified runtime variant tags. Auto-qualify for backwards
-                    // compatibility, but warn the user to migrate to qualified form.
-                    // T-1085: future work will make this a hard error once corpus is migrated.
-                    let qualified_tag = if !tag.contains('.') {
+                    // If the tag is unqualified (no '.'), this is a hard error (T-1109).
+                    // Bare constructor pattern tags silently misbehave at runtime because the
+                    // evaluator matches against qualified runtime variant tags.
+                    if !tag.contains('.') {
                         let qualified = env
                             .resolve_constructor_tag(tag)
                             .unwrap_or_else(|| tag.clone());
-                        state.diagnostics.push(crate::error::TypeDiagnostic {
-                            message: format!(
-                                "unqualified constructor pattern tag '{tag}' — use qualified form '{qualified}'"
-                            ),
-                            span: span.clone(),
-                            code: super::typecheck_diag::T018_MATCH_PATTERN_MISMATCH,
-                            level: crate::error::DiagnosticLevel::Warn,
-                        });
-                        qualified
-                    } else {
-                        tag.clone()
-                    };
+                        return Err(vec![crate::type_errors::TypeErrorTyped::Generic(
+                            crate::type_errors::GenericTypeError {
+                                message: format!(
+                                    "unqualified constructor pattern tag '{tag}' — use qualified form '{qualified}'"
+                                ),
+                                span: span.clone(),
+                                notes: vec![],
+                            },
+                        )]);
+                    }
                     let elaborated_inner = elaborate_binding(binding, env, state, span)?;
                     return Ok(Pattern::Constructor {
-                        tag: qualified_tag,
+                        tag: tag.clone(),
                         binding: elaborated_inner,
                     });
                 }
@@ -731,9 +727,24 @@ pub(crate) fn infer_fn(
     // Check if any parameter is variadic
     let has_variadic = params.iter().any(|p| p.node.variadic);
 
+    // Compute required_count: params that have no `default:` annotation are required.
+    // A param with `@[type: T  default: expr]` annotation is optional — callers may omit it.
+    // B-349: this is the fix for spurious arity-mismatch errors on calls that omit optional params.
+    let required_count = params
+        .iter()
+        .filter(|p| {
+            p.node
+                .annotation
+                .as_ref()
+                .and_then(|ann| ann.node.get_property("default"))
+                .is_none()
+        })
+        .count();
+
     Ok(Type::Function {
         params: param_types,
         ret: Box::new(ret_type),
         variadic: has_variadic,
+        required_count,
     })
 }

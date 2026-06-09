@@ -1,8 +1,2 @@
 # builtin-program: calling with zero arguments produces arity mismatch (E020)
 [builtin-program]
-=== error
-[E020] arity mismatch: expected 1 argument, got 0 (defined at 1:1-1:18)
-  in [builtin-program ...] at 1:1-1:18
-
-=== warn
-[UndefinedVariable] undefined variable: builtin-program

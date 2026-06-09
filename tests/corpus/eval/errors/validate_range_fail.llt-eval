@@ -5,6 +5,3 @@
   : must be <= 65535
  (defined at 1:1-1:50)
   in [validate ...] at 1:1-1:50
-
-=== warn
-[UndefinedVariable] undefined variable: validate

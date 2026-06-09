@@ -8,7 +8,3 @@
  param_seq: [f [seq "a" [seq "b" [builtin-variant "Seq.Nil"]]]]]
 === out
 Dict({"f": Function(xs), "seq_assert": Seq(Int(1), ...), "param_seq": Seq(String("a"), ...)})
-
-=== warn
-[UndefinedVariable] undefined variable: builtin-variant
-[UndefinedVariable] undefined variable: builtin-variant

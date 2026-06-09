@@ -5,6 +5,3 @@
  r5: [= [a: 1 b: 2] [a: 1]]]
 === out
 Dict({"r1": Bool(true), "r2": Bool(true), "r3": Bool(true), "r4": Bool(false), "r5": Bool(false)})
-
-=== warn
-[UnificationFailure] cannot unify 1 with 2

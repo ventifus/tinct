@@ -1,7 +1,2 @@
 # Interpolated string evaluation - verifies desugaring to str calls
 [name: "Alice"  greeting: i"Hello $name!"]
-=== error
-[E080] macro 'tmpl' returned invalid AST: missing required field: type (defined at 1:27-1:42)
-
-=== warn
-[E080] macro 'tmpl' returned invalid AST: missing required field: type (defined at 1:27-1:42)

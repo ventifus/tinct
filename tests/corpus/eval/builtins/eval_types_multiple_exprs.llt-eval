@@ -5,8 +5,3 @@
   results: [collect [eval-types exprs]]
   [length results]
 ]
-=== error
-[E035] cannot serialize Program to JSON (defined at 2:8-2:30)
-
-=== warn
-[NotARecord] expected record type, got Top

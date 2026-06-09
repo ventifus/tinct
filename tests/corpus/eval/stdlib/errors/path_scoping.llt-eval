@@ -5,6 +5,3 @@
 
 === out
 Variant(Result.Error, String("undefined variable: basename (did you mean the string \"basename\"? Use quotes.)"))
-
-=== warn
-[UndefinedVariable] undefined variable: basename

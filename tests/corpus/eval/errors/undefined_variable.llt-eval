@@ -1,6 +1,3 @@
 nonexistent
 === error
 [E002] undefined variable: nonexistent (did you mean the string "nonexistent"? Use quotes.) (defined at 1:1-1:12)
-
-=== warn
-[UndefinedVariable] undefined variable: nonexistent

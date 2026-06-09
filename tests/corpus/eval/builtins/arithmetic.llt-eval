@@ -44,10 +44,3 @@
 ]
 === out
 Dict({"add_int": Int(7), "sub_int": Int(7), "mul_int": Int(42), "div_float": Float(5), "add_promotion": Float(3.5), "floor_test": Int(3), "round_test": Int(4), "pow_test": Float(256), "sqrt_test": Float(4), "sin_test": Float(0), "lt_int": Bool(true), "lt_bool": Bool(false), "gt_bool": Bool(false), "le_bool": Bool(true), "ge_bool": Bool(true), "eq_test": Bool(true), "band_test": Int(8), "bor_test": Int(12), "bxor_test": Int(5), "shl_test": Int(8), "shr_test": Int(4)})
-
-=== warn
-[UndefinedVariable] undefined variable: builtin-pow
-[UndefinedVariable] undefined variable: builtin-sqrt
-[UndefinedVariable] undefined variable: builtin-sin
-[TypeError] type Bool does not satisfy constraint Comparable
-[TypeError] type Bool does not satisfy constraint Comparable

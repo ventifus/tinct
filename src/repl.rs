@@ -217,6 +217,8 @@ impl ReplSession {
         crate::desugar::desugar_surface_program(&mut program);
         // Inject ADT constructor bindings (must run after desugar, before resolve).
         crate::desugar::inject_adt_constructors_surface_program(&mut program);
+        // Transform instance decls to method dicts (T-1142).
+        crate::desugar::desugar_instance_decls_surface_program(&mut program);
         // Variable resolution pass (Phase 1 of arena allocation strategy).
         let resolution_table =
             std::sync::Arc::new(crate::resolve::resolve_surface_program(&program));

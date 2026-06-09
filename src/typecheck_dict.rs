@@ -103,10 +103,12 @@ fn inject_single_constructor(
             fields: fields.clone(),
         };
 
+        let required_count = params.len();
         Type::Function {
             params,
             ret: Box::new(ret),
             variadic: false,
+            required_count,
         }
     };
 

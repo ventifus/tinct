@@ -9,7 +9,3 @@
 ]
 === out
 Dict({"Ok": Variant(Result.Ok, Null), "Error": Variant(Result.Error, Null), "ok1": Variant(Result.Ok, Int(42)), "ok2": Variant(Result.Ok, String("hello")), "result": Variant(Result.Ok, Int(42))})
-
-=== warn
-[UndefinedVariable] undefined variable: Ok
-[UndefinedVariable] undefined variable: Ok

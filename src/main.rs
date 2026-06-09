@@ -2135,6 +2135,8 @@ fn run_eval(
             tinct::desugar::desugar_surface_program(&mut program);
             // Inject ADT constructor bindings (must run after desugar, before resolve).
             tinct::desugar::inject_adt_constructors_surface_program(&mut program);
+            // Transform instance decls to method dicts (T-1142).
+            tinct::desugar::desugar_instance_decls_surface_program(&mut program);
             // Variable resolution pass (Phase 1 of arena allocation strategy).
             let resolution_table =
                 std::sync::Arc::new(tinct::resolve::resolve_surface_program(&program));
@@ -2927,6 +2929,8 @@ fn run_literate_eval(tangled: &str, config: &LiterateConfig) -> Result<(), Strin
     tinct::desugar::desugar_surface_program(&mut program);
     // Inject ADT constructor bindings (must run after desugar, before resolve).
     tinct::desugar::inject_adt_constructors_surface_program(&mut program);
+    // Transform instance decls to method dicts (T-1142).
+    tinct::desugar::desugar_instance_decls_surface_program(&mut program);
     // Variable resolution pass (Phase 1 of arena allocation strategy).
     let resolution_table = std::sync::Arc::new(tinct::resolve::resolve_surface_program(&program));
     let (type_errors, type_annotation_table, expects_resolved) =
@@ -3208,6 +3212,8 @@ fn run_literate_lint(tangled: &str, config: &LiterateConfig) -> Result<(), Strin
     // AST before resolve; lib.rs typecheck-only paths skip this because they run
     // typecheck_surface_program_with_env which already seeds from the prelude env. B-342
     tinct::desugar::inject_adt_constructors_surface_program(&mut program);
+    // Transform instance decls to method dicts (T-1142).
+    tinct::desugar::desugar_instance_decls_surface_program(&mut program);
     // Type check with prelude environment
     let env = tinct::build_prelude_env();
     let (type_errors, _type_map, _doc_map, _scheme_map, diagnostics) =
@@ -3545,6 +3551,8 @@ fn run_literate_weave(
         tinct::desugar::desugar_surface_program(&mut program);
         // Inject ADT constructor bindings (must run after desugar, before resolve).
         tinct::desugar::inject_adt_constructors_surface_program(&mut program);
+        // Transform instance decls to method dicts (T-1142).
+        tinct::desugar::desugar_instance_decls_surface_program(&mut program);
         // Variable resolution pass (Phase 1 of arena allocation strategy).
         let resolution_table =
             std::sync::Arc::new(tinct::resolve::resolve_surface_program(&program));

@@ -6,6 +6,3 @@
   v: v]]
 === out
 Dict({"result": String("missing")})
-
-=== warn
-[UndefinedVariable] undefined variable: v

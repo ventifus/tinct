@@ -3,8 +3,3 @@
   amount: 42
   price: i"Price: $$$amount"
 ]
-=== error
-[E080] macro 'tmpl' returned invalid AST: missing required field: type (defined at 3:10-3:29)
-
-=== warn
-[E080] macro 'tmpl' returned invalid AST: missing required field: type (defined at 3:10-3:29)

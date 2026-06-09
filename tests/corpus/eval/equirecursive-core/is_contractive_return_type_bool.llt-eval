@@ -15,8 +15,3 @@
 both
 === out
 Bool(true)
-
-=== warn
-[UndefinedVariable] undefined variable: builtin-variant
-[UndefinedVariable] undefined variable: builtin-is-contractive
-[UndefinedVariable] undefined variable: builtin-is-contractive

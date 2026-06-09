@@ -3339,7 +3339,7 @@ Returns: updated state {prev: result, named: updated-named-sections}
 # docs:        positional dict of document AST dicts (ast.documents from load/expand)
 # include-dir: DirCap injected as %include-dir into each doc's env
 #
-# Type-stage documents (doc.stage = [Type]) are skipped — they are evaluated
+# Type-stage documents (doc.stage tag = "DocStage.Type") are skipped — they are evaluated
 # separately by the type checker via eval-types.
 # Named sections accumulate across documents and become %name bindings.
 eval-document-pipeline: [fn@[return: Any  doc: """
@@ -3349,14 +3349,14 @@ initial: initial % value ([] for included files, caller % for CLI pipeline)
 docs: Seq of Document values from Program.documents
 include-dir: DirCap — injected as %include-dir so sub-includes work
 
-Skips [Type] stage documents. Returns the final document's result.
+Skips type-stage documents (doc.stage tag = "DocStage.Type"). Returns the final document's result.
 """] [let initial docs include-dir]
   [get "prev"
     [reduce
       [fn@[return: Dict] [let state doc@Document]
-        [match doc.stage
-          [Type]:    state
-          [Runtime]: [eval-document-runtime state doc include-dir]]]
+        [if [= [tag-of doc.stage] "DocStage.Type"]
+          state
+          [eval-document-runtime state doc include-dir]]]
       [prev: initial  named: []]
       docs]]]
 

@@ -5,5 +5,3 @@
 [$k: 1  x: 2]
 ---
 $x
-=== error
-[E002] undefined variable: k (did you mean the string "k"? Use quotes.) (defined at 4:2-4:4)

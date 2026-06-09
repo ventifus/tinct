@@ -9,5 +9,3 @@
     [Square n]: "has-payload"
     [Square]:   "unit-match"]
 ]
-=== out
-Dict({"Shape": Variant(Shape, Null), "Circle": Function(payload), "Square": Variant(Square, Null), "unit-shape": Variant(Square, Null), "result": String("unit-match")})

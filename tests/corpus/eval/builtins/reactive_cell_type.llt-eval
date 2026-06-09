@@ -3,6 +3,3 @@
 [type-of [builtin-reactive-cell 0]]
 === out
 String("ReactiveCell")
-
-=== warn
-[UndefinedVariable] undefined variable: builtin-reactive-cell

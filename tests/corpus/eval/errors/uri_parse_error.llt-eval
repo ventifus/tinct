@@ -2,6 +2,3 @@
 [uri "not-a-valid-uri-no-colon"]
 === error
 [E002] undefined variable: uri (did you mean the string "uri"? Use quotes.) (defined at 1:2-1:5)
-
-=== warn
-[UndefinedVariable] undefined variable: uri

@@ -2,6 +2,3 @@
 [builtin-inf? [builtin-log 0]]
 === out
 Bool(true)
-
-=== warn
-[UndefinedVariable] undefined variable: builtin-inf?

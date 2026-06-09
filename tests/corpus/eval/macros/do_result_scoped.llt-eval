@@ -6,8 +6,3 @@
 [do result [x: [Ok 1]] [y: [Ok 2]] [Ok [+ x y]]]
 === out
 Variant(Result.Ok, Int(3))
-
-=== warn
-[UndefinedVariable] undefined variable: Ok
-[UndefinedVariable] undefined variable: Ok
-[UndefinedVariable] undefined variable: Ok

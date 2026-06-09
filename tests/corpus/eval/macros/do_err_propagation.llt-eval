@@ -5,8 +5,3 @@
   [Ok [+ x y]]]
 === out
 Variant(Result.Error, String("fail"))
-
-=== warn
-[UndefinedVariable] undefined variable: Ok
-[UndefinedVariable] undefined variable: Error
-[UndefinedVariable] undefined variable: Ok

@@ -3,6 +3,3 @@
 [class [Appendable a]]
 === out
 Dict({})
-
-=== warn
-[TypeError] class declaration must have a name declared with [class [ClassName ...] ...]

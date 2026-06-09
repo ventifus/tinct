@@ -1567,6 +1567,7 @@ pub fn datetime_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Str)],
             ret: Box::new(Type::Timestamp),
             variadic: false,
+            required_count: 1,
         },
     );
     // format-timestamp: Timestamp → String
@@ -1576,6 +1577,7 @@ pub fn datetime_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Timestamp)],
             ret: Box::new(Type::Str),
             variadic: false,
+            required_count: 1,
         },
     );
     // timestamp->unix: Timestamp → Int
@@ -1585,6 +1587,7 @@ pub fn datetime_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Timestamp)],
             ret: Box::new(Type::Int),
             variadic: false,
+            required_count: 1,
         },
     );
     // unix->timestamp: Int → Timestamp
@@ -1594,6 +1597,7 @@ pub fn datetime_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Int)],
             ret: Box::new(Type::Timestamp),
             variadic: false,
+            required_count: 1,
         },
     );
     // timestamp-nanos: Int → Timestamp
@@ -1603,6 +1607,7 @@ pub fn datetime_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Int)],
             ret: Box::new(Type::Timestamp),
             variadic: false,
+            required_count: 1,
         },
     );
     // now: ClockCap → Timestamp
@@ -1612,6 +1617,7 @@ pub fn datetime_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::ClockCap)],
             ret: Box::new(Type::Timestamp),
             variadic: false,
+            required_count: 1,
         },
     );
     // fixed-clock: Timestamp → ClockCap
@@ -1621,6 +1627,7 @@ pub fn datetime_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Timestamp)],
             ret: Box::new(Type::ClockCap),
             variadic: false,
+            required_count: 1,
         },
     );
     // timestamp-add: Timestamp → Duration → Timestamp
@@ -1630,6 +1637,7 @@ pub fn datetime_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Timestamp), (None, Type::Duration)],
             ret: Box::new(Type::Timestamp),
             variadic: false,
+            required_count: 2,
         },
     );
     // timestamp-diff: Timestamp → Timestamp → Duration
@@ -1639,6 +1647,7 @@ pub fn datetime_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::Timestamp), (None, Type::Timestamp)],
             ret: Box::new(Type::Duration),
             variadic: false,
+            required_count: 2,
         },
     );
     // timestamp<?, timestamp>?, timestamp=?: Timestamp → Timestamp → Bool
@@ -1649,6 +1658,7 @@ pub fn datetime_type_env(env: &mut TypeEnv) {
                 params: vec![(None, Type::Timestamp), (None, Type::Timestamp)],
                 ret: Box::new(Type::Bool),
                 variadic: false,
+                required_count: 2,
             },
         );
     }
@@ -1667,6 +1677,7 @@ pub fn datetime_type_env(env: &mut TypeEnv) {
                 params: vec![(None, Type::Timestamp)],
                 ret: Box::new(Type::Int),
                 variadic: false,
+                required_count: 1,
             },
         );
     }
@@ -1687,6 +1698,7 @@ pub fn datetime_type_env(env: &mut TypeEnv) {
                 tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
+            required_count: 1,
         },
     );
     // duration-nanos, -seconds, -minutes, -hours, -days: Int → Duration
@@ -1703,6 +1715,7 @@ pub fn datetime_type_env(env: &mut TypeEnv) {
                 params: vec![(None, Type::Int)],
                 ret: Box::new(Type::Duration),
                 variadic: false,
+                required_count: 1,
             },
         );
     }
@@ -1714,6 +1727,7 @@ pub fn datetime_type_env(env: &mut TypeEnv) {
                 params: vec![(None, Type::Duration)],
                 ret: Box::new(Type::Int),
                 variadic: false,
+                required_count: 1,
             },
         );
     }
@@ -1724,6 +1738,7 @@ pub fn datetime_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::DirCap), (None, Type::Str)],
             ret: Box::new(Type::Timezone),
             variadic: false,
+            required_count: 2,
         },
     );
     // timestamp-in-tz: Timestamp → Timezone → {year, month, day, hour, minute, second, offset-seconds, tz-name}
@@ -1745,6 +1760,7 @@ pub fn datetime_type_env(env: &mut TypeEnv) {
                 tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
+            required_count: 2,
         },
     );
     // local->timestamp: Int Int Int Int Int Int Timezone → Timestamp
@@ -1762,6 +1778,7 @@ pub fn datetime_type_env(env: &mut TypeEnv) {
             ],
             ret: Box::new(Type::Timestamp),
             variadic: false,
+            required_count: 7,
         },
     );
     // local-tz-name: DirCap → String
@@ -1771,6 +1788,7 @@ pub fn datetime_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::DirCap)],
             ret: Box::new(Type::Str),
             variadic: false,
+            required_count: 1,
         },
     );
 }

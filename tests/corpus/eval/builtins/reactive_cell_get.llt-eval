@@ -3,6 +3,3 @@
 [builtin-cell-get [builtin-reactive-cell 42]]
 === out
 Int(42)
-
-=== warn
-[UndefinedVariable] undefined variable: builtin-cell-get

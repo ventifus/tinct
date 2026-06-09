@@ -5,6 +5,3 @@
 [eq-same: [= Red Red]  eq-diff: [= Red Green]]
 === out
 Dict({"eq-same": Bool(true), "eq-diff": Bool(false)})
-
-=== warn
-[TypeError] cannot unify nominal variants with different tags: Red and Green

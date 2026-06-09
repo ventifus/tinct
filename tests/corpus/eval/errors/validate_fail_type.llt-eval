@@ -5,6 +5,3 @@
   : expected type Int, got String
  (defined at 1:1-1:38)
   in [validate ...] at 1:1-1:38
-
-=== warn
-[UndefinedVariable] undefined variable: validate

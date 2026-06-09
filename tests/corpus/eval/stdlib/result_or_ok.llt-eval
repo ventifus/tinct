@@ -2,6 +2,3 @@
 [result-or 99 [Ok 42]]
 === out
 Int(42)
-
-=== warn
-[UndefinedVariable] undefined variable: Ok

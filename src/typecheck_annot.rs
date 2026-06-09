@@ -1252,6 +1252,7 @@ fn resolve_fn_type(
                     params: vec![],
                     ret: Box::new(ret),
                     variadic: false,
+                    required_count: 0,
                 };
                 crate::types::check_kind_wellformed(&ty, &state.kind_env, span)?;
                 Ok(ty)
@@ -1283,6 +1284,7 @@ fn resolve_fn_type(
                 params: vec![],
                 ret: Box::new(ret),
                 variadic: false,
+                required_count: 0,
             };
             crate::types::check_kind_wellformed(&ty, &state.kind_env, span)?;
             Ok(ty)
@@ -1752,6 +1754,61 @@ fn instantiate_type_alias(
         type_subst.insert(param.clone(), arg.clone());
     }
 
+    // Check constraints: each @ClassName annotation on params must have a satisfying instance (T-1101).
+    // Iterate constraints and verify that the type argument for each constrained param has an instance.
+    for constraint in &alias.constraints {
+        if let crate::type_class::Constraint::Class {
+            class,
+            vars,
+            origin_name,
+            origin_span,
+        } = constraint
+        {
+            // For single-parameter constraints (the common case), vars[0] is the param name.
+            // Look up the type argument for that param in type_subst.
+            if let Some(param_name) = vars.first() {
+                if let Some(arg_type) = type_subst.get(param_name) {
+                    // Clone instance_env to avoid borrow conflict: resolve_instance takes &self
+                    // on instance_env AND &mut state simultaneously, which Rust's borrow checker
+                    // rejects when both are fields of InferState.
+                    let instance_env = state.instance_env.clone();
+                    let error_span = origin_span.clone().unwrap_or_else(crate::ast::Span::origin);
+                    match instance_env.resolve_instance(&class.name, arg_type, state) {
+                        Ok(Some(_)) => {
+                            // Constraint satisfied — continue.
+                        }
+                        Ok(None) => {
+                            let constraint_label = origin_name.as_deref().unwrap_or(&class.name);
+                            return Err(TypeErrorTyped::Generic(GenericTypeError {
+                                message: format!(
+                                    "type argument `{arg_type}` does not satisfy constraint \
+                                     `{constraint_label}` — no instance found for class `{}`",
+                                    class.name
+                                ),
+                                span: error_span,
+                                notes: vec![],
+                            }));
+                        }
+                        Err(ambiguity_msg) => {
+                            return Err(TypeErrorTyped::Generic(GenericTypeError {
+                                message: format!(
+                                    "ambiguous instances for constraint `{}` with type \
+                                     argument `{arg_type}`: {ambiguity_msg}",
+                                    class.name
+                                ),
+                                span: error_span,
+                                notes: vec![],
+                            }));
+                        }
+                    }
+                }
+                // If param_name is not in type_subst, it's a bug (params and constraints were
+                // built together in register_type_aliases). We silently skip for robustness.
+            }
+        }
+        // HasField constraints (if any) are not relevant to type alias instantiation — skip.
+    }
+
     // Apply substitution to the alias body
     Ok(apply_type_alias_substitution(
         &alias.body,
@@ -1806,6 +1863,7 @@ fn apply_type_alias_substitution(
             params,
             ret,
             variadic,
+            required_count,
         } => Type::Function {
             params: params
                 .iter()
@@ -1818,6 +1876,7 @@ fn apply_type_alias_substitution(
                 .collect(),
             ret: Box::new(apply_type_alias_substitution(ret, subst, state)),
             variadic: *variadic,
+            required_count: *required_count,
         },
         Type::Union(members) => Type::Union(
             members
@@ -1967,47 +2026,6 @@ pub(crate) fn resolve_type_name_with_guard(
     }
 }
 
-/// Returns true if `name` is a builtin type name that should NOT be treated as a
-/// NominalVariant constructor even though it starts with an uppercase letter.
-/// Used in `resolve_type_dict` and VarRef handling to distinguish `Int`, `Float`, etc.
-/// from user-defined ADT constructor names like `Ok`, `None`, `Circle`.
-/// Also guards against treating builtin names as positional ADT type tags in the
-/// single-entry positional path of resolve_type_dict.
-///
-/// NOTE (T-1087): The original plan was to delete this function once resolve_type_dict was
-/// refactored to use TyConDef lookup first. `apply_builtin_constructor` (the other deletion
-/// target) has already been removed — its logic was absorbed into the TyConDef-first path
-/// at lines 2702–2724. However, `is_builtin_type_name` is still needed at two call sites
-/// (nominal constructor disambiguation in resolve_type_dict and VarRef handling) to prevent
-/// builtin type names from being parsed as ADT constructor names. Removing this guard requires
-/// replacing it with a dynamic check (e.g., `env.lookup_tycon_def(name).is_some()` for registered
-/// types, plus `resolve_type_name` fallback for unregistered builtins). That refactor is
-/// deferred to a future sprint as it requires careful coordination with `resolve_type_dict`.
-fn is_builtin_type_name(name: &str) -> bool {
-    matches!(
-        name,
-        "Int"
-            | "Float"
-            | "String"
-            | "Bool"
-            | "Number"
-            | "Any"
-            | "Seq"
-            | "Handle"
-            | "Null"
-            | "Dict"
-            | "Map"
-            | "Record"
-            | "Fn"
-            | "Never"
-            | "Top"
-            | "Unknown"
-            | "Operator"
-            | "Label"
-            | "Str"
-    )
-}
-
 pub(crate) fn resolve_type_name(
     name: &str,
     env: &TypeEnv,
@@ -2096,6 +2114,7 @@ pub(crate) fn resolve_type_name(
                 params: vec![],
                 ret: Box::new(Type::Top),
                 variadic: true,
+                required_count: 0,
             })
         }
         _ => {
@@ -2278,6 +2297,7 @@ fn expand_alias_body_guarded(
             params,
             ret,
             variadic,
+            required_count,
         } => {
             let new_params = params
                 .iter()
@@ -2313,6 +2333,7 @@ fn expand_alias_body_guarded(
                 params: new_params,
                 ret: new_ret,
                 variadic: *variadic,
+                required_count: *required_count,
             })
         }
         Type::Union(members) => {
@@ -2836,10 +2857,12 @@ pub(crate) fn resolve_type_expr(
                             notes: vec![],
                         }));
                     }
+                    let required_count = params.len();
                     return Ok(Type::Function {
                         params,
                         ret: Box::new(ret),
                         variadic: false,
+                        required_count,
                     });
                 }
             }
@@ -2960,7 +2983,11 @@ pub(crate) fn resolve_type_expr(
             // Check if func is an uppercase VarRef (nominal constructor name).
             // Builtin type names (Int, Float, etc.) must NOT be treated as NominalVariant.
             if let SurfaceExpression::VarRef { name, .. } = &func.expr {
-                if crate::eval::is_constructor_name(name) && !is_builtin_type_name(name) {
+                let is_builtin = state
+                    .tycon_env
+                    .get(name)
+                    .map_or(false, |def| def.builtin_type.is_some());
+                if crate::eval::is_constructor_name(name) && !is_builtin {
                     // This is a nominal variant constructor with named fields.
                     // args is empty, named_args contains the field types.
                     // We need to resolve each field type and build a NominalVariant.
@@ -3381,7 +3408,10 @@ pub(crate) fn resolve_type_dict(
                     // BUT: builtin type names (Int, Float, String, Bool, Number, etc.) also
                     // start with uppercase and must NOT be treated as NominalVariant.
                     // Resolve builtin type names through resolve_type_name first.
-                    let is_builtin_type = is_builtin_type_name(&tag);
+                    let is_builtin_type = state
+                        .tycon_env
+                        .get(&tag)
+                        .map_or(false, |def| def.builtin_type.is_some());
                     if is_builtin_type && entries.len() == 1 && first.node.key.is_none() {
                         // Single positional entry that is a builtin type name: [Int] → Type::Int.
                         // This handles annotations like @[Int] which should resolve to Int,
@@ -4062,10 +4092,12 @@ fn typenode_value_to_type(val: &Value, ctx: &Arc<crate::eval::EvalContext>) -> O
                     let params: Vec<(Option<String>, Type)> =
                         param_types.into_iter().map(|t| (None, t)).collect();
 
+                    let required_count = params.len();
                     Some(Type::Function {
                         params,
                         ret: Box::new(ret_type),
                         variadic: false,
+                        required_count,
                     })
                 }
 
@@ -4880,6 +4912,7 @@ pub(crate) fn expand_all_tycon_apps(
             params,
             ret,
             variadic,
+            required_count,
         } => Type::Function {
             params: params
                 .iter()
@@ -4887,6 +4920,7 @@ pub(crate) fn expand_all_tycon_apps(
                 .collect(),
             ret: Box::new(expand_all_tycon_apps(ret, stack, env, state)),
             variadic: *variadic,
+            required_count: *required_count,
         },
 
         Type::Union(members) => Type::normalize_union(
@@ -5063,10 +5097,12 @@ fn try_resolve_fn_type_expr(
         }
     }
 
+    let required_count = params.len();
     Ok(Some(Type::Function {
         params,
         ret: Box::new(ret),
         variadic: false,
+        required_count,
     }))
 }
 

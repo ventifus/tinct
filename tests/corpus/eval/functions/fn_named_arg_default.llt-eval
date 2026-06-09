@@ -3,6 +3,3 @@
 [f 1]
 === out
 Int(99)
-
-=== warn
-[ArityMismatch] expected 2 arguments, got 1

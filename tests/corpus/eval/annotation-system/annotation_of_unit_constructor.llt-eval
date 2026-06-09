@@ -10,7 +10,3 @@
 [result: [= [get "category" ann] "primary"]]
 === out
 Dict({"result": Bool(true)})
-
-=== warn
-[TypeError] unknown parameterized type: Red
-[UndefinedVariable] undefined variable: Red

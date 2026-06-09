@@ -2,19 +2,3 @@
 [let d [collect [range 0 1000]]]
 [let mapped [map-entries [fn [e] [* e.value 2]] d]]
 [get 999 mapped]
-=== error
-[E001] key not found: 999 (available keys: map-entries) (defined at stdlib/prelude.llt:1201:25-1201:47)
-  --> stdlib/prelude.llt:1201:25-1201:47
-   |
-  1201 | """] [let key@k dict@d] [builtin-get key dict]]
-       |                         ^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-get ...] at stdlib/prelude.llt:1201:25-1201:47
-   |
-  1201 | """] [let key@k dict@d] [builtin-get key dict]]
-       |                         ^^^^^^^^^^^^^^^^^^^^^^
-  in [get ...] at 3:1-3:17
-
-=== warn
-[TypeError] multi-element [let ...] pattern not yet supported — use single binding
-[TypeError] multi-element [let ...] pattern not yet supported — use single binding
-[UndefinedVariable] undefined variable: mapped

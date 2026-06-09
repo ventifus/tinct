@@ -3,7 +3,3 @@
 [length [remove 500 d]]
 === out
 Int(1)
-
-=== warn
-[TypeError] multi-element [let ...] pattern not yet supported — use single binding
-[UndefinedVariable] undefined variable: d

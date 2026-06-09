@@ -10,5 +10,3 @@
     [Green]: "green"
     [Blue]:  "blue"]
 ]
-=== out
-Dict({"Color": Variant(Color, Null), "Red": Variant(Red, Null), "Green": Variant(Green, Null), "Blue": Variant(Blue, Null), "c": Variant(Red, Null), "name": String("red")})

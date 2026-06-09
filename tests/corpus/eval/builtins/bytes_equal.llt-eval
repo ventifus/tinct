@@ -2,6 +2,3 @@
 [bytes-equal? [bytes-of [1 2 3]] [bytes-of [1 2 3]]]
 === out
 Bool(true)
-
-=== warn
-[UndefinedVariable] undefined variable: bytes-equal?

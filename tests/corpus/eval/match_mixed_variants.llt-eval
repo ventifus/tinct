@@ -18,5 +18,3 @@
 
   both: [seq result1 result2]
 ]
-=== out
-Dict({"Option": Variant(Option, Null), "Some": Function(payload), "None": Variant(None, Null), "x": Variant(Some, Seq(Int(10), ...)), "y": Variant(None, Null), "result1": Seq(Int(10), ...), "result2": Int(0), "both": Seq(Seq(Int(10), ...), ...)})

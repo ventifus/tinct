@@ -2,6 +2,3 @@
 [builtin-pow 2 3]
 === out
 Float(8)
-
-=== warn
-[UndefinedVariable] undefined variable: builtin-pow

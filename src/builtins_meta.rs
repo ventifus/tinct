@@ -1789,6 +1789,8 @@ pub(crate) fn builtin_expand(
                 crate::desugar::desugar_surface_program(&mut new_surface_program);
                 // Inject ADT constructor bindings (must run after desugar, before resolve).
                 crate::desugar::inject_adt_constructors_surface_program(&mut new_surface_program);
+                // Transform instance decls to method dicts (T-1142).
+                crate::desugar::desugar_instance_decls_surface_program(&mut new_surface_program);
 
                 // Re-compute resolution table for the expanded and desugared program
                 let new_resolutions = crate::resolve::resolve_surface_program(&new_surface_program);

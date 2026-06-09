@@ -3,6 +3,3 @@ None
 
 === out
 Variant(Maybe.None, Null)
-
-=== warn
-[UndefinedVariable] undefined variable: None

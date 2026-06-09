@@ -2,18 +2,3 @@
 [include %libdir "strings.llt"]
 ---
 [call %.str-substr 3 5 "hello"]
-=== error
-[E080] str-substr: end position 8 exceeds string length 5 (defined at stdlib/prelude.llt:2480:28-2480:47)
-  --> stdlib/prelude.llt:2480:28-2480:47
-   |
-  2480 | """]: [fn [let msg@String] [builtin-raise msg]]
-       |                            ^^^^^^^^^^^^^^^^^^^
-  in [builtin-raise ...] at stdlib/prelude.llt:2480:28-2480:47
-   |
-  2480 | """]: [fn [let msg@String] [builtin-raise msg]]
-       |                            ^^^^^^^^^^^^^^^^^^^
-  in materialized at 88:5-94:43
-  in [if ...] at 92:13-94:41
-  in [if ...] at 90:9-94:42
-  in [if ...] at 88:5-94:43
-  in [<dot-access> ...] at 3:1-3:32

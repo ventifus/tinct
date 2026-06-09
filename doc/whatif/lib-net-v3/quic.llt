@@ -238,7 +238,7 @@
   quic-init-loss-state: [fn []
     [QuicLossState
       largest-acked: -1
-      sent-packets:  {}
+      sent-packets:  []
       loss-time:     Absent.Absent
       pto-count:     0]]
 
@@ -283,6 +283,19 @@
      trust-roots: [or [Seq Bytes] Symbol]]]
 
   QuicPacketType: [type [Initial] [ZeroRTT] [Handshake] [Retry] [OneRTT]]
+
+  # DNS-over-QUIC application error codes — RFC 9250 §4.3.
+  # These are QUIC application-level errors specific to the DoQ protocol layer.
+  # Used in QUIC STOP_SENDING / RESET_STREAM / CONNECTION_CLOSE frames.
+  # https://www.iana.org/assignments/dns-parameters/dns-quic-error-codes.csv
+  DnsDoqError: [type
+    [NoError          code: 0x0  description: "No error — graceful shutdown"                doc: "RFC 9250"]
+    [InternalError    code: 0x1  description: "DoQ implementation error"                    doc: "RFC 9250"]
+    [ProtocolError    code: 0x2  description: "Generic DoQ protocol violation"              doc: "RFC 9250"]
+    [RequestCancelled code: 0x3  description: "Request cancelled by client"                 doc: "RFC 9250"]
+    [ExcessiveLoad    code: 0x4  description: "Closing connection due to excessive load"    doc: "RFC 9250"]
+    [UnspecifiedError code: 0x5  description: "Closing without specific error reason"       doc: "RFC 9250"]
+    [ErrorReserved    code: 0xd098ea5e  description: "Reserved error code for testing"     doc: "RFC 9250"]]
 
   # QUIC error type — RFC 9000 §20 transport error codes as named variants.
   QuicError: [type
@@ -365,7 +378,7 @@
   # quic — QUIC pending layer. Subject-last: sock last.
   # Creates QuicHandle — sni inferred from [Hostname h], ALPN open.
   # The downstream layer (h3, dns-quic-resolver, etc.) adds alpn before commit fires.
-  # Usage: [connect %net [Hostname h] Udp 443] | quic | h3 | [request req]
+  # Usage: [connect %net [Hostname h] Udp 443] | quic | h3-connection | [request req]
   quic: [fn@[bind: [d]  constraint: [d: Datagram]  return: QuicHandle]
           [let sock@d]
     [QuicHandle
@@ -470,7 +483,7 @@
 
     # Step 4: receive Server Initial packet (ServerHello in CRYPTO frame)
     [server-init-dg: [match [recv sock]
-      [Closed.Closed]: [return QuicError.InternalError "QUIC: socket closed during handshake"]
+      [Closed.Closed]: [raise "QUIC: socket closed during handshake"]
       [Result.Ok dg]:  dg]]
     [srv-pkt: server-init-dg.data]
     # Parse server Initial packet header to extract payload
@@ -487,7 +500,7 @@
     [srv-nonce: [bytes-xor initial-keys.server.send-iv [concat [0 0 0 0 0 0 0 0 0 0 0] [bytes NetworkEndian [@UInt8 0]]]]]
     [srv-plain: [match [aes-128-gcm-open initial-keys.server.send-key srv-nonce srv-ct srv-aad]
       [Result.Ok p]:    p
-      [Result.Error _]: [return QuicError.InternalError "QUIC: server Initial packet decryption failed"]]]
+      [Result.Error _]: [raise "QUIC: server Initial packet decryption failed"]]]
     [sh-bytes: [extract-crypto-data srv-plain]]   # ServerHello TLS message
 
     # Step 5: parse ServerHello, derive handshake keys
@@ -507,7 +520,7 @@
       0x1301: CipherSuite.Aes128GcmSha256
       0x1302: CipherSuite.Aes256GcmSha384
       0x1303: CipherSuite.Chacha20Poly1305Sha256
-      _: [return QuicError.VersionNegotiationFailed]]]
+      _: [raise "QUIC: version negotiation failed — no supported cipher suite"]]]
     [ks: [tls13-key-schedule dh-shared ch-bytes sh-bytes cipher]]
 
     # Step 6: receive Handshake packets (EncryptedExtensions, Certificate, CertificateVerify, Finished)
@@ -525,7 +538,7 @@
 
     # Receive Handshake packet with TLS Finished
     [hs-dg: [match [recv sock]
-      [Closed.Closed]: [return QuicError.InternalError "QUIC: socket closed before Handshake packet"]
+      [Closed.Closed]: [raise "QUIC: socket closed before Handshake packet"]
       [Result.Ok dg]:  dg]]
     # (Simplified: assume Handshake packet follows immediately; real impl handles packet reordering)
     # Decrypt and verify server Finished to authenticate TLS session
@@ -558,7 +571,7 @@
                         ech: pqh.ech  trust-roots: pqh.trust-roots]]]
 
   # quic-connect: sugar for a resolved SocketAddress (skips DNS + HostPort).
-  # For hostname-based connections prefer: [connect %net Udp [HostPort [Hostname h] port]] | quic | h3
+  # For hostname-based connections prefer: [connect %net Udp [HostPort [Hostname h] port]] | quic | h3-connection
   quic-connect: [fn [let cap@NetCap addr@SocketAddress cfg@TlsClientConfig]
     [quic-commit
       [QuicHandle
@@ -773,7 +786,7 @@
     [QuicHandle [pending: sock  sni: Absent.Absent  alpn: []  ech: []  trust-roots: SystemRoots]]]]]
 
 # Server: UdpSocket → Channel@QuicConnection (starts the QUIC accept loop)
-# Usage: [udp-listen cap 443] | quic | h3 | recv
+# Usage: [udp-listen cap 443] | quic | h3-connection | recv
 [instance QuicLayer
   [let a@UdpSocket b@[Channel QuicConnection]]: [quic: [fn [let sock@UdpSocket]
     [out: [channel 64]]

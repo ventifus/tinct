@@ -2,6 +2,3 @@
 [validate [type: "String" pattern: "^[a-z0-9.-]+$"] "example.com"]
 === out
 String("example.com")
-
-=== warn
-[UndefinedVariable] undefined variable: validate

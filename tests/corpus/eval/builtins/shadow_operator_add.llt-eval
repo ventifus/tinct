@@ -6,6 +6,3 @@
 ]
 === out
 Dict({"+": Function(a, b), "result": Int(12)})
-
-=== warn
-[UndefinedVariable] undefined variable: builtin-mul

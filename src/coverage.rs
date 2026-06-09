@@ -1656,6 +1656,7 @@ mod tests {
                 params: vec![],
                 ret: Box::new(Type::Int),
                 variadic: false,
+                required_count: 0,
             },
         ];
         let sig =

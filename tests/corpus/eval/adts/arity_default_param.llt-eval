@@ -1,0 +1,15 @@
+# B-349: arity checker respects default-valued parameters as optional.
+# A function with a default-valued param must be callable with and without that param.
+# Before fix: calling without the optional param produced a spurious arity-mismatch error.
+[
+  greet: [fn@String [let name@String n@[type: Int  default: 3]]
+    [str name "!" [str n]]]
+
+  # Omitting the optional param — was previously an arity-mismatch error.
+  r1: [greet "Alice"]
+
+  # Supplying both params — must work as before.
+  r2: [greet "Bob" 5]
+]
+=== out
+Dict({"greet": Function(name, n), "r1": String("Alice!3"), "r2": String("Bob!5")})

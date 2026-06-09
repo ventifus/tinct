@@ -5,6 +5,3 @@
   [Result.Error _]: -1]
 === out
 Int(-1)
-
-=== warn
-[UndefinedVariable] undefined variable: v

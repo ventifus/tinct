@@ -10,8 +10,3 @@
     active: true
   ]
 ]]
-=== error
-[E002] undefined variable: to-json-pretty (did you mean the string "to-json-pretty"? Use quotes.) (defined at 5:2-5:16)
-
-=== warn
-[UndefinedVariable] undefined variable: to-json-pretty

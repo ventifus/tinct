@@ -3,6 +3,3 @@
 [lower "HELLO"]
 === out
 String("hello")
-
-=== warn
-[UndefinedVariable] undefined variable: lower

@@ -137,7 +137,7 @@ pub enum Variance { Covariant, Contravariant, Invariant, Phantom }
 - `Some(params)` — inside a type alias body. Only names in `params` become TypeVars; all other lowercase names are scope references. If a name is not in params and not found in scope, it is a type error.
 - `None` — outside a type alias body (function annotations, constraints, etc.). Existing behavior: lowercase names become TypeVars.
 
-`apply_builtin_constructor` has been deleted; `is_builtin_type_name` remains at two call sites pending T-1113. The general lookup path — look up the name in `TyConEnv`, retrieve arity, collect arguments, produce `App(TyCon(name), args...)` or expand the alias body — is implemented.
+`apply_builtin_constructor` has been deleted; `is_builtin_type_name` was deleted in T-1113 and both call sites now use `TyConEnv` lookup (`state.tycon_env.get(name).map_or(false, |def| def.builtin_type.is_some())`). The general lookup path — look up the name in `TyConEnv`, retrieve arity, collect arguments, produce `App(TyCon(name), args...)` or expand the alias body — is implemented.
 
 **`{_ : V}` recognition (implemented in S-843).** When parsing a type dict expression in `resolve_type_dict` (`src/typecheck_annot.rs`), the `_` key (optionally annotated `_@K`) is recognized as a uniform tail rather than a named field. The recognizer is a single pass: accumulate named fields; when a key is `_` (plain) or an annotated `_@K` form, set `RowTail::Uniform { key: None, value: V }` or `RowTail::Uniform { key: Some(K), value: V }` respectively. At most one `_` per row type — a duplicate raises "duplicate uniform-field sentinel `_` in row type annotation".
 

@@ -1,5 +1,6 @@
 // Test infrastructure uses std::fs for corpus file reading — no cap_std available in test harness.
 // Clippy lint suppression: disallowed_methods, useless_format, manual_ok_err are benign in test code.
+// S-873 build gate (S-873 v2)
 #![allow(
     clippy::disallowed_methods,
     clippy::useless_format,

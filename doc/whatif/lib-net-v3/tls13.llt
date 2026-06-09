@@ -2,15 +2,15 @@
 # Part of: lib-net-v3
 # Rust primitives: chacha20-poly1305-seal/open, aes-128/256-gcm-seal/open,
 #   x25519-keypair, x25519-dh, p256-keypair, hkdf-extract, hkdf-expand,
-#   hmac-sha256, sha256, crypto-random, bytes-xor, rsa-pss-sign, p256-sign, ed25519-sign
+#   hmac-sha256, hmac-sha384, sha256, crypto-random, bytes-xor, rsa-pss-sign, p256-sign, ed25519-sign
 --- uses: ["crypto"]
 
 [include %libdir "net.llt"]
 [include %libdir "crypto.llt"]   # provides HkdfHash, Sha256, Sha384, Sha512, Blake2s
 
-[instance@[bind: [h]] [ByteStream [TlsConnection h]]
-  read:  tls-read-bytes
-  write: tls-write-bytes]
+[instance@[bind: [h]] ByteStream
+  [let s@[TlsConnection h]]: [read:  tls-read-bytes
+                               write: tls-write-bytes]]
 
 # ── Internal. ────────────────────────────────────────────────────────────────────────────────────
 
@@ -247,14 +247,73 @@
     [reduce [fn [let acc _] [concat acc [bytes val]]] [] [range 0 n]]]
 
   # HMAC dispatch per cipher suite hash (RFC 2104).
-  # Rust primitive: hmac-sha256 key data → [Bytes 32]
-  # hmac-sha384 is not listed; use hkdf-extract with appropriate IKM to approximate HMAC-SHA384.
+  # Rust primitives: hmac-sha256 key data → [Bytes 32], hmac-sha384 key data → [Bytes 48]
   # For TLS 1.3 Finished: HMAC(finished_key, transcript_hash) per RFC 8446 §4.4.4.
   hmac: [fn [let hash@HkdfHash key@Bytes data@Bytes]
     [match hash
       [Sha256.Sha256]: [hmac-sha256 key data]
       [Sha384.Sha384]: [hmac-sha384 key data]
       _:               [hmac-sha256 key data]]]
+
+  # ── TLS record helpers (internal — called via ByteStream dispatch, never directly) ──
+
+  tls-send-record: [fn [let conn@TlsConnection record@TlsRecord]
+    [tls-write-record conn record.content-type record.payload]]
+
+  tls-recv-record: [fn [let conn@TlsConnection]
+    [match [try [read-tls-record conn.underlying]]
+      [Result.Ok record]: [Result.Ok TlsRecord content-type: record.content-type
+                                              payload: [tls-decrypt-conn-record conn record]]
+      [Result.Error _]:   Closed.Closed]]
+
+  tls-read-bytes: [fn [let conn@TlsConnection n@Int]
+    [tls-read-acc conn n []]]
+
+  tls-write-bytes: [fn [let conn@TlsConnection data@Bytes]
+    [if [<= [length data] 16384]
+      [tls-write-record conn [ApplicationData] data]
+      [block
+        [tls-write-record conn [ApplicationData] [slice 0 16384 data]]
+        [tls-write-bytes conn [slice 16384 [length data] data]]]]]
+
+  # ── TLS 1.3 key schedule (internal — RFC 8446 §7.1) ──
+
+  hkdf-expand-label: [fn [let secret@Bytes label@String context@Bytes len@Int hash@HkdfHash]
+    [label-str: [str "tls13 " label]]
+    [info: [concat [bytes NetworkEndian [@UInt16 len]]
+                   [bytes NetworkEndian [@UInt8 [length [str-bytes label-str]]]] [str-bytes label-str]
+                   [bytes NetworkEndian [@UInt8 [length context]]] context]]
+    [hkdf-expand hash secret info len]]
+
+  derive-secret: [fn [let secret@Bytes label@String transcript@Bytes hash@HkdfHash]
+    [transcript-hash: [match hash
+      [Sha256.Sha256]: [sha256 transcript]
+      [Sha384.Sha384]: [sha384 transcript]
+      [Sha512.Sha512]: [sha512 transcript]
+      _:               [sha256 transcript]]]
+    [hkdf-expand-label secret label transcript-hash [length transcript-hash] hash]]
+
+  tls13-key-schedule: [fn [let dh-shared@[Bytes 32] ch-bytes@Bytes sh-bytes@Bytes cipher@CipherSuite]
+    [p:          [cipher-params cipher]]
+    [zero:       [bytes-repeat 0 p.key-len]]
+    [early-secret:  [hkdf-extract p.hash zero zero]]
+    [hs-secret:     [hkdf-extract p.hash [derive-secret early-secret "derived" [] p.hash] dh-shared]]
+    [transcript-sh: [concat ch-bytes sh-bytes]]
+    [c-hs:          [derive-secret hs-secret "c hs traffic" transcript-sh p.hash]]
+    [s-hs:          [derive-secret hs-secret "s hs traffic" transcript-sh p.hash]]
+    [master-secret: [hkdf-extract p.hash [derive-secret hs-secret "derived" [] p.hash] zero]]
+    [c-ap:          [derive-secret master-secret "c ap traffic" [] p.hash]]
+    [s-ap:          [derive-secret master-secret "s ap traffic" [] p.hash]]
+    [hs-client-key:  [hkdf-expand-label c-hs "key"      [] p.key-len p.hash]
+     hs-client-iv:   [hkdf-expand-label c-hs "iv"       [] p.iv-len  p.hash]
+     hs-server-key:  [hkdf-expand-label s-hs "key"      [] p.key-len p.hash]
+     hs-server-iv:   [hkdf-expand-label s-hs "iv"       [] p.iv-len  p.hash]
+     fin-client-key: [hkdf-expand-label c-hs "finished" [] p.key-len p.hash]
+     fin-server-key: [hkdf-expand-label s-hs "finished" [] p.key-len p.hash]
+     app-client-key: [hkdf-expand-label c-ap "key"      [] p.key-len p.hash]
+     app-client-iv:  [hkdf-expand-label c-ap "iv"       [] p.iv-len  p.hash]
+     app-server-key: [hkdf-expand-label s-ap "key"      [] p.key-len p.hash]
+     app-server-iv:  [hkdf-expand-label s-ap "iv"       [] p.iv-len  p.hash]]]
 ]
 
 # ── Public API. ───────────────────────────────────────────────────────────────────────────────────
@@ -337,76 +396,12 @@
     [UnexpectedMessage       content-type@ContentType]  # wrong record type for current state
     [VersionNegotiationFailed]]                   # no supported TLS version in common
 
-  # MessageStream instance helpers for TlsConnection.
-  # tls-send-record sends a TlsRecord to the peer.
-  # tls-recv-record reads a TlsRecord from the peer, returns [Result.Ok TlsRecord] | Closed.Closed.
-  tls-send-record: [fn [let conn@TlsConnection record@TlsRecord]
-    [tls-write-record conn record.content-type record.payload]]
-
-  tls-recv-record: [fn [let conn@TlsConnection]
-    [match [try [read-tls-record conn.underlying]]
-      [Result.Ok record]: [Result.Ok TlsRecord content-type: record.content-type
-                                              payload: [tls-decrypt-conn-record conn record]]
-      [Result.Error _]:   Closed.Closed]]
-
-  tls-read-bytes: [fn [let conn@TlsConnection n@Int]
-    [tls-read-acc conn n []]]
-
-  tls-write-bytes: [fn [let conn@TlsConnection data@Bytes]
-    [if [<= [length data] 16384]
-      [tls-write-record conn [ApplicationData] data]
-      [block
-        [tls-write-record conn [ApplicationData] [slice 0 16384 data]]
-        [tls-write-bytes conn [slice 16384 [length data] data]]]]]
-
-  # hash: the PRF hash for this cipher suite — passed from cipher-params.
-  hkdf-expand-label: [fn [let secret@Bytes label@String context@Bytes len@Int hash@HkdfHash]
-    [label-str: [str "tls13 " label]]
-    [info: [concat [bytes NetworkEndian [@UInt16 len]]
-                   [bytes NetworkEndian [@UInt8 [length [str-bytes label-str]]]] [str-bytes label-str]
-                   [bytes NetworkEndian [@UInt8 [length context]]] context]]
-    [hkdf-expand hash secret info len]]
-
-  derive-secret: [fn [let secret@Bytes label@String transcript@Bytes hash@HkdfHash]
-    # hash-fn selects the right SHA variant for the transcript hash itself.
-    [transcript-hash: [match hash
-      [Sha256.Sha256]: [sha256 transcript]
-      [Sha384.Sha384]: [sha384 transcript]
-      [Sha512.Sha512]: [sha512 transcript]
-      _:               [sha256 transcript]]]
-    [hkdf-expand-label secret label transcript-hash [length transcript-hash] hash]]
-
-  # Takes cipher: CipherSuite so hash and key lengths are derived correctly per RFC 8446 §7.1.
-  tls13-key-schedule: [fn [let dh-shared@[Bytes 32] ch-bytes@Bytes sh-bytes@Bytes cipher@CipherSuite]
-    [p:          [cipher-params cipher]]
-    [zero:       [bytes-repeat 0 p.key-len]]
-
-    [early-secret:  [hkdf-extract p.hash zero zero]]
-    [hs-secret:     [hkdf-extract p.hash [derive-secret early-secret "derived" [] p.hash] dh-shared]]
-    [transcript-sh: [concat ch-bytes sh-bytes]]
-    [c-hs:          [derive-secret hs-secret "c hs traffic" transcript-sh p.hash]]
-    [s-hs:          [derive-secret hs-secret "s hs traffic" transcript-sh p.hash]]
-    [master-secret: [hkdf-extract p.hash [derive-secret hs-secret "derived" [] p.hash] zero]]
-    [c-ap:          [derive-secret master-secret "c ap traffic" [] p.hash]]
-    [s-ap:          [derive-secret master-secret "s ap traffic" [] p.hash]]
-
-    [hs-client-key:  [hkdf-expand-label c-hs "key"      [] p.key-len p.hash]
-     hs-client-iv:   [hkdf-expand-label c-hs "iv"       [] p.iv-len  p.hash]
-     hs-server-key:  [hkdf-expand-label s-hs "key"      [] p.key-len p.hash]
-     hs-server-iv:   [hkdf-expand-label s-hs "iv"       [] p.iv-len  p.hash]
-     fin-client-key: [hkdf-expand-label c-hs "finished" [] p.key-len p.hash]
-     fin-server-key: [hkdf-expand-label s-hs "finished" [] p.key-len p.hash]
-     app-client-key: [hkdf-expand-label c-ap "key"      [] p.key-len p.hash]
-     app-client-iv:  [hkdf-expand-label c-ap "iv"       [] p.iv-len  p.hash]
-     app-server-key: [hkdf-expand-label s-ap "key"      [] p.key-len p.hash]
-     app-server-iv:  [hkdf-expand-label s-ap "iv"       [] p.iv-len  p.hash]]]
-
   # ── TlsLayer typeclass ────────────────────────────────────────────────────────
   #
   # tls is bidirectional — same name for client and server, dispatched by input type:
   #
-  #   Client: [connect ... Tcp ep] | tls | h2 | [send req]
-  #   Server: [tcp-listen cap 443] | [tls cert] | h2 | recv
+  #   Client: [connect ... Tcp ep] | tls | h2-connection | [send req]
+  #   Server: [tcp-listen cap 443] | [tls cert] | h2-connection | recv
   #
   # Client takes TcpHandle (no config — sni inferred from addr, ALPN left open for h2/h3).
   # Server takes TlsServerConfig (cert + key) and returns a fn Channel@h → Channel@TlsConnection h,
@@ -423,12 +418,6 @@
      ech:         Bytes
      trust-roots: [or [Seq Bytes] Symbol]]]
 
-  # tls — client pending layer. Takes TcpHandle (from | connect ... Tcp ...), returns
-  # TlsHandle with sni open (inferred on commit) and ALPN open (set by h2/grpc/etc.).
-  tls: [fn [let h@TcpHandle]
-    [TlsHandle
-      [handle: h  sni: null  alpn: []  ech: []  trust-roots: SystemRoots]]]
-
   # with-alpn: accumulate ALPN into a TlsHandle before commit.
   with-alpn: [fn [let th@TlsHandle alpn@[Seq String]]
     [TlsHandle [handle: th.handle  sni: th.sni  alpn: alpn
@@ -440,9 +429,11 @@
     [sni: [or th.sni
       [match th.handle.addr
         [Hostname.Hostname h]: h
-        _: [return TlsError.HandshakeFailed "no hostname for SNI — use [Hostname.Hostname h] or set sni explicitly"]]]]
-    [tls-handshake th.handle.stream
-      [TlsClientConfig [sni: sni  alpn: th.alpn  ech: th.ech  trust-roots: th.trust-roots]]]]
+        _: Absent.Absent]]]
+    [if [absent? sni]
+      [TlsError.HandshakeFailed reason: "no hostname for SNI — use [Hostname.Hostname h] or set sni explicitly"]
+      [tls-handshake th.handle.stream
+        [TlsClientConfig [sni: sni  alpn: th.alpn  ech: th.ech  trust-roots: th.trust-roots]]]]]
 
   # TLS 1.3 client handshake per RFC 8446 §4.
   # Message sequence (all wrapped in TLSPlaintext records until keys installed):
@@ -544,7 +535,7 @@
               [find-ks exts [+ pos 4 ext-len]]]]]]]
       [server-pub: [find-ks sh.extensions 0]]
       [dh-shared: [x25519-dh eph.private server-pub]]
-      [cipher: [or [get code: sh.cipher-suite CipherSuite] [return TlsError.NoMutualCipherSuite]]]
+      [cipher: [or [get code: sh.cipher-suite CipherSuite] [raise "TLS: no mutual cipher suite"]]]
       [ks: [tls13-key-schedule dh-shared ch-bytes sh-bytes cipher]]
 
       # Step 6: read EncryptedExtensions, Certificate, CertificateVerify, Finished
@@ -584,7 +575,7 @@
       # Step 7: verify cert chain (RFC 5280) + CertificateVerify + Finished
       [if [not [empty? certs]]
         [if [not [verify-cert-chain certs cfg.trust-roots cfg.sni]]
-          [return TlsError.CertificateUntrusted cfg.sni]
+          [raise [str "TLS: certificate untrusted for " cfg.sni]]
           null]
         null]
       # Verify server Finished MAC: HMAC(server_finished_key, transcript_hash)
@@ -594,7 +585,7 @@
         [Sha384.Sha384]: [sha384 [concat ch-bytes sh-bytes ee-record cert-record cv-record]]
         _:               [sha256 [concat ch-bytes sh-bytes ee-record cert-record cv-record]]]]]
       [if [not [= expected-fin server-fin-mac]]
-        [return TlsError.HandshakeFailed "server Finished MAC mismatch"]
+        [raise "TLS: server Finished MAC mismatch"]
         null]
 
       # Step 8: send client Finished
@@ -776,18 +767,15 @@
              sni:             Absent.Absent
              negotiated-alpn: negotiated-alpn]]]]]]]]]
 
-  # Serve layer kept for explicit use; TlsLayer server instance uses it internally.
-  tls-serve: [fn@[bind: [h]  constraint: [h: ByteStream]]
-               [let cfg@TlsServerConfig in-ch@[Channel h]]
-    [channel-map [fn [let s@h] [tls-accept cfg s]] in-ch]]
 ]
 
 # TlsRecordCodec: TlsRecord ↔ encrypted Bytes (RFC 8446 §5.2 TLSCiphertext wire format).
 # encode: seals plaintext record using conn write-key/write-iv/write-seq; emits TLSCiphertext bytes.
 # decode: opens TLSCiphertext bytes using conn read-key/read-iv/read-seq; returns decrypted TlsRecord.
 # Sequence counters in conn advance atomically on each call (via write-seq / read-seq channels).
-[instance@[bind: [h]] [Codec [TlsRecordCodec h] TlsRecord Bytes]
-  encode: [fn [let codec@[TlsRecordCodec h] record@TlsRecord]
+[instance@[bind: [h]] Codec
+  [let c@[TlsRecordCodec h] i@TlsRecord o@Bytes]:
+  [encode: [fn [let codec@[TlsRecordCodec h] record@TlsRecord]
     # Seal: inner = payload || content-type byte; ciphertext = AEAD(write-key, nonce, inner, aad)
     # aad = 0x17 0x03 0x03 || ciphertext-length(2) per RFC 8446 §5.2
     [conn: codec.conn]
@@ -819,7 +807,7 @@
             [if [= [get plain i] 0] [find-ct-idx [- i 1]] i]]]]
         [ct-idx:  [find-ct-idx [- [length plain] 1]]]
         [TlsRecord content-type: [or [get code: [get plain ct-idx] ContentType] [error "TlsRecordCodec.decode: unknown content type"]]
-                   payload:      [slice plain 0 ct-idx]]]]]
+                   payload:      [slice plain 0 ct-idx]]]]]]
 
 # ── TlsLayer typeclass — bidirectional tls ────────────────────────────────────
 
@@ -829,12 +817,12 @@
 # Client: TcpHandle → TlsHandle (sni inferred from addr, ALPN open for downstream layer)
 [instance TlsLayer
   [let a@TcpHandle b@TlsHandle]: [tls: [fn [let h@TcpHandle]
-    [TlsHandle [handle: h  sni: null  alpn: []  ech: []  trust-roots: SystemRoots]]]]]
+    [TlsHandle [handle: h  sni: Absent.Absent  alpn: []  ech: []  trust-roots: SystemRoots]]]]]
 
 # Server: TlsServerConfig → (Channel@h → Channel@TlsConnection h)
-# Usage: [tcp-listen cap 443] | [tls cert] | h2 | recv
-[instance@[bind: [h]  constraint: [h: ByteStream]] [TlsLayer TlsServerConfig
-    [Fn@[Channel [TlsConnection h]] [[Channel h]]]]
-  tls: [fn [let cfg@TlsServerConfig]
+# Usage: [tcp-listen cap 443] | [tls cert] | h2-connection | recv
+[instance@[bind: [h]  constraint: [h: ByteStream]] TlsLayer
+  [let a@TlsServerConfig b@[Fn@[Channel [TlsConnection h]] [[Channel h]]]]:
+  [tls: [fn [let cfg@TlsServerConfig]
     [fn [let ch@[Channel h]]
-      [channel-map [fn [let s@h] [tls-accept cfg s]] ch]]]]
+      [channel-map [fn [let s@h] [tls-accept cfg s]] ch]]]]]

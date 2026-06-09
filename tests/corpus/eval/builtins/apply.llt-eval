@@ -4,6 +4,3 @@
 [apply f [0: 3  1: 4]]
 === out
 Int(7)
-
-=== warn
-[UnificationFailure] cannot unify Fn@Top [Top] with Fn@_t0 [x: _ y: _]

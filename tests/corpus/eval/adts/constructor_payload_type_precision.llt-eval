@@ -22,6 +22,3 @@
 ]
 === out
 Dict({"MyOk": Function(payload), "MyErr": Function(payload), "unwrap-ok": Function(r), "result": Int(42)})
-
-=== warn
-[UndefinedVariable] undefined variable: p

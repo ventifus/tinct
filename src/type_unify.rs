@@ -1528,6 +1528,7 @@ impl Substitution {
                 params,
                 ret,
                 variadic,
+                required_count,
             } => Cow::Owned(Type::Function {
                 params: params
                     .iter()
@@ -1540,6 +1541,7 @@ impl Substitution {
                     .collect(),
                 ret: Box::new(self.apply_type(ret, depth + 1, visited_types).into_owned()),
                 variadic: *variadic,
+                required_count: *required_count,
             }),
             Type::Union(members) => {
                 let applied_members: Vec<Type> = members
@@ -2016,6 +2018,7 @@ fn lower_levels_check_occurs(
             params,
             ret,
             variadic: _,
+            required_count: _,
         } => {
             let mut found = false;
             for (_name, p_ty) in params {
@@ -2553,11 +2556,13 @@ pub fn unify(
                 params: p1,
                 ret: r1,
                 variadic: v1,
+                required_count: _,
             },
             Type::Function {
                 params: p2,
                 ret: r2,
                 variadic: v2,
+                required_count: _,
             },
         ) => {
             // Special case: zero-param variadic is the "any function" type.

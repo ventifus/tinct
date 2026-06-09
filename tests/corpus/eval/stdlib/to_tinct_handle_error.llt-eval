@@ -4,6 +4,3 @@
 === error
 [E080] to-tinct: no tinct representation for Task (defined at 2:1-2:21)
   in [to-tinct ...] at 2:1-2:21
-
-=== warn
-[UndefinedVariable] undefined variable: builtin-task

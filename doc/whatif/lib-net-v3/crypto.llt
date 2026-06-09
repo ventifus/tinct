@@ -6,7 +6,8 @@
 --- uses: ["crypto"]
 
 [include %libdir "net.llt"]
-[include %libdir "asn1.llt"]   # AsnValue, parse-der, parse-der-seq, oid->string
+[include %libdir "asn1.llt"]   # AsnValue, parse-der, parse-der-seq, oid->string, asn-time-to-unix
+[include %libdir "text.llt"]   # to-a-label-hostname (pure-tinct IDNA2008), str-to-code-points, unicode-nfc/nfd/nfkc/nfkd
 
 # Hash algorithm selectors for HKDF (used by TLS, WireGuard, Noise, etc.)
 # Defined here — not in tls.llt — because they are crypto primitives, not TLS-specific.
@@ -44,25 +45,73 @@
           _: [error "extract-tbs: TBSCertificate not an AsnSeq"]]
       _: [error "extract-tbs: Certificate not an AsnSeq"]]]
 
-  # Validate cert is currently valid and issued for hostname.
-  # Per RFC 5280 §4.1.2.5 (validity) and RFC 6125 §6 (hostname matching with wildcards).
-  cert-valid-for-host?: [fn [let cert-der@Bytes hostname@String]
+  # asn-time-to-unix is defined in asn1.llt (public) — available here via include.
+
+  # match-hostname?: RFC 9525 §6.3 DNS-ID wildcard hostname matching.
+  # Wildcard rules per RFC 9525 §6.3.2:
+  #   - `*` must be the COMPLETE left-most label (not foo*, *bar, f*o)
+  #   - Only one `*` per pattern
+  #   - Matched portion must contain no dots (single label only)
+  #   - Invalid wildcard patterns are IGNORED (treated as no match), not errored
+  # Comparison is case-insensitive per RFC 4343.
+  # IDN: both hostname and SAN names are converted to A-labels (Punycode) via
+  # to-a-label-hostname (from text.llt). NFC normalization is not applied since
+  # real TLS certs use ASCII labels.
+  match-hostname?: [fn [let hostname@String names@[Seq String]]
+    [lower-host: [lower [to-a-label-hostname hostname]]]
+    [any? [fn [let name]
+      [lower-name: [lower name]]
+      [if [str-contains? lower-name "*"]
+        # Contains wildcard — validate per RFC 9525 §6.3.2
+        [parts: [str-split "." lower-name]]
+        [left-label: [get parts 0]]
+        [valid-wildcard?: [and
+          [= left-label "*"]           # must be exactly `*`, not `foo*` or `*bar`
+          [= [length [filter [fn [let c] [= c "*"]] [str-chars lower-name]]] 1]]]  # only one *
+        [if [not valid-wildcard?]
+          false  # invalid pattern — ignore per RFC 9525
+          [suffix: [str-slice lower-name 1 [length lower-name]]]  # ".example.com"
+          [if [ends-with? lower-host suffix]
+            [matched: [str-slice lower-host 0 [- [length lower-host] [length suffix]]]]
+            [and [not [str-contains? matched "."]]  # single label only
+                 [> [length matched] 0]]             # must match at least one char
+            false]]
+        # Exact match (case-insensitive per RFC 4343)
+        [= lower-host lower-name]]]
+     names]]
+
+  # cert-valid-for-host?: validate cert validity period and hostname.
+  # now-secs: current unix timestamp in seconds (pass [duration-seconds [now %clock]]).
+  # Checks (in order):
+  #   1. notBefore <= now <= notAfter (RFC 5280 §4.1.2.5)
+  #   2. Hostname matches a SAN dNSName entry (RFC 9525 §4.2 — CN fallback prohibited)
+  # A cert with no SAN extension is rejected outright — all public CAs have required SANs
+  # since 2012 (CA/Browser Forum Baseline Requirements). RFC 9525 (2023) explicitly
+  # prohibits CN fallback even when no SAN is present.
+  cert-valid-for-host?: [fn [let cert-der@Bytes hostname@String now-secs@Int]
     [cert: [parse-cert cert-der]]
     [tbs: [extract-tbs cert]]
-    # 1. Check validity period: notBefore <= now <= notAfter
-    [now: [timestamp %clock]]
-    [validity: tbs.validity]   # AsnSeq with two AsnTime children
-    # 2. Check SAN dNSName entries (OID 2.5.29.17)
-    [san-names: [cert-san cert-der]]
-    # 3. Match hostname against SAN names (wildcards: *.example.com matches sub.example.com)
-    [any? [fn [let name]
-      [if [starts-with? name "*."]
-        [block
-          [suffix: [slice-str name 1 [length name]]]
-          [and [ends-with? hostname suffix]
-               [not [contains? [slice-str hostname 0 [- [length hostname] [length suffix]]] "."]]]]
-        [= hostname name]]]
-     san-names]]
+    # 1. Validity period (RFC 5280 §4.1.2.5)
+    [validity-ok?: [match tbs.validity
+      [asnValue.AsnSeq items]:
+        [nb: [match [get items 0]
+          [asnValue.AsnTime s]: [asn-time-to-unix s]
+          _: 0]]
+        [na: [match [get items 1]
+          [asnValue.AsnTime s]: [asn-time-to-unix s]
+          _: 0]]
+        [and [>= now-secs nb] [<= now-secs na]]
+      _: false]]
+    [if [not validity-ok?]
+      false
+      # 2. Identity matching per RFC 9525 — SAN only, no CN fallback
+      [san: [cert-san cert-der]]
+      # Route by whether hostname is an IP address or a DNS name (RFC 9525 §6.4 vs §6.3)
+      [match [try [parse-ip hostname]]
+        # IP-ID: exact octet comparison against iPAddress SANs (RFC 9525 §6.4)
+        [Result.Ok ip]: [any? [fn [let san-ip] [= ip san-ip]] san.ips]
+        # DNS-ID: wildcard-aware case-insensitive match against dNSName SANs (RFC 9525 §6.3)
+        [Result.Error _]: [match-hostname? hostname san.dns]]]]
 
   chain-sigs-valid?: [fn [let chain@[Seq Bytes]]
     [if [<= [length chain] 1]
@@ -130,33 +179,54 @@
     [result: [der-parse-one der 0]]
     [extract-tbs result.value]]
 
-  # Extract SAN dNSName entries from the Subject Alternative Name extension (OID 2.5.29.17).
-  # Returns [Seq String] of DNS names. Falls back to CN if no SAN extension.
+  # cert-san: extract SAN entries from the Subject Alternative Name extension (OID 2.5.29.17).
+  # Returns {dns: [Seq String]  ips: [Seq IpAddress]} per RFC 9525 §4.1.
+  # DNS names: dNSName context tag [2] (0x82). IP addresses: iPAddress context tag [7] (0x87).
+  # No CN fallback — RFC 9525 §6.2.1 prohibits CN-ID entirely.
   cert-san: [fn [let cert-der@Bytes]
     [cert: [parse-cert cert-der]]
     [tbs: [extract-tbs cert]]
     # Extensions are an AsnSeq of AsnSeq(OID, critical?, value) triples.
-    # SAN OID = 2.5.29.17 → byte sequence [55 29 17] in DER
+    # SAN OID = 2.5.29.17 → [2 5 29 17]
     [match tbs.extensions
-      [Absent.Absent]: []   # no extensions → no SAN
+      [Absent.Absent]: [dns: []  ips: []]   # no SAN extension
       [let ext-seq]:
-        [san-bytes: [first [filter-map [fn [let ext]
+        # Find the SAN extension bytes using flat-map (the tinct idiom for filter-map).
+        # flat-map returns [list x] to keep, [] to skip.
+        [san-bytes-list: [flat-map [fn [let ext]
           [match ext
             [asnValue.AsnSeq items]:
               [match [get items 0]
                 [asnValue.AsnOid oid]: [if [= oid [2 5 29 17]]
-                  [match [last items] [asnValue.AsnOctetStr b]: [just b]  _: Absent.Absent]
-                  Absent.Absent]
-                _: Absent.Absent]
-            _: Absent.Absent]]
-          [match ext-seq [asnValue.AsnSeq items]: items  _: []]]]]
-        [match san-bytes
-          [Absent.Absent]: []
+                  [match [last items]
+                    [asnValue.AsnOctetStr b]: [list b]   # found SAN bytes
+                    _: []]
+                  []]
+                _: []]
+            _: []]]
+          [match ext-seq [asnValue.AsnSeq items]: items  _: []]]]
+        [match [head san-bytes-list]
+          [Absent.Absent]: [dns: []  ips: []]   # head of [] is Absent
           [let b]:
-            # GeneralNames SEQUENCE: each GeneralName is [2] dNSName IA5String (tag 0x82)
-            [der-parse-seq b 0 [] |> map [fn [let asn]
-              [match asn [asnValue.AsnStr s]: s  _: null]]
-            |> filter [fn [let s] [not [null? s]]]]]]
+            # GeneralNames: each entry is a context-tagged value.
+            # Tag 0x82 = [2] dNSName (IA5String, RFC 9525 §4.1)
+            # Tag 0x87 = [7] iPAddress (raw bytes: 4=IPv4, 16=IPv6, RFC 9525 §4.1)
+            # Other tags (SRV-ID 0x88, URI-ID 0x86, etc.) ignored.
+            [general-names: [der-parse-seq b 0 []]]
+            [dns: [flat-map [fn [let asn]
+              [match asn
+                [asnValue.AsnStr s]: [list s]   # dNSName (tag 0x82)
+                _: []]]
+             general-names]]
+            [ips: [flat-map [fn [let asn]
+              [match asn
+                [asnValue.AsnRaw tag: 0x87  data: b]:
+                  [if [= [length b] 4]   [list [IpAddress.Ipv4 b]]
+                    [if [= [length b] 16] [list [IpAddress.Ipv6 b]]
+                      []]]               # invalid length — skip
+                _: []]]
+             general-names]]
+            [dns: dns  ips: ips]]]
 
   # Extract raw public key bytes from subjectPublicKeyInfo.
   cert-public-key: [fn [let cert-der@Bytes]
@@ -172,8 +242,11 @@
   verify-cert-chain: [fn [let chain@[Seq Bytes] trust-roots@[or [Seq Bytes] Symbol] sni@String]
     [if [empty? chain]
       [error "verify-cert-chain: empty chain"]
+      # duration-seconds: prelude function that converts Duration to integer seconds.
+      # [now %clock] returns the current time as a Duration (milliseconds since epoch).
+      [now-secs: [duration-seconds [now %clock]]]
       [and
-        [cert-valid-for-host? [get chain 0] sni]
+        [cert-valid-for-host? [get chain 0] sni now-secs]
         [chain-sigs-valid? chain]
         [root-trusted? [get chain [- [length chain] 1]] trust-roots]]]]
 ]

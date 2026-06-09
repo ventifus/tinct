@@ -150,7 +150,83 @@
     [HttpsRecord  prio@Int  target@dnsName  params@svcParams  ttl@Duration]      # HTTPS TargetName
     [SoaRecord    mname@dnsName  rname@dnsName  serial@UInt32   # rname = email as DNS name
                   refresh@Duration  retry@Duration  expire@Duration  minimum@Duration  ttl@Duration]
+    [OptRecord    payload-size@Int          # EDNS UDP payload size (from OPT CLASS field)
+                  edns-rcode@Int            # extended RCODE upper 8 bits (from OPT TTL bits 31-24)
+                  version@Int               # EDNS version (from OPT TTL bits 23-16; must be 0)
+                  do@Bool                   # DNSSEC OK bit (from OPT TTL bit 15)
+                  options@[Map Int Bytes]]  # EDNS option code → data; use EdnsOption.Cookie.code etc.
     [UnknownRecord  qtype@Int  data@Bytes  ttl@Duration]]
+
+  # DSO (DNS Stateless Operations) TLV Type Codes — RFC 8490 + RFC 8765.
+  # Used in DSO messages; EdnsOption.Llq (code 1) negotiates the DSO session.
+  # https://www.iana.org/assignments/dns-parameters/dns-dso-type-codes.csv
+  dnsDsoType: [type
+    [KeepAlive          code: 0x0001  description: "Session keepalive"                    doc: "RFC 8490"]
+    [RetryDelay         code: 0x0002  description: "Delay before reconnect after close"    doc: "RFC 8490"]
+    [EncryptionPadding  code: 0x0003  description: "Padding for encrypted sessions"        doc: "RFC 8490"]
+    [Subscribe          code: 0x0040  description: "Subscribe to a DNS name"               doc: "RFC 8765"]
+    [Push               code: 0x0041  description: "Push subscription update to client"    doc: "RFC 8765"]
+    [Unsubscribe        code: 0x0042  description: "Cancel a subscription"                 doc: "RFC 8765"]
+    [Reconfirm          code: 0x0043  description: "Request re-validation of pushed RRset" doc: "RFC 8765"]]
+
+  # ZONEMD Hash Algorithms — RFC 8976.
+  # Used in ZONEMD resource records to identify the hash function for zone digests.
+  # https://www.iana.org/assignments/dns-parameters/zonemd-hash-algorithms.csv
+  zonemdHash: [type
+    [Sha384  code: 1  description: "SHA-384"  doc: "RFC 8976"]
+    [Sha512  code: 2  description: "SHA-512"  doc: "RFC 8976"]]
+
+  # ZONEMD Schemes — RFC 8976.
+  # Describes how zone records are collated before hashing.
+  # https://www.iana.org/assignments/dns-parameters/zonemd-schemes.csv
+  zonemdScheme: [type
+    [Simple  code: 1  description: "Simple ZONEMD collation — all RRs in canonical order"  doc: "RFC 8976"]]
+
+  # CSYNC Record Flags — RFC 7477.
+  # Flags in the CSYNC resource record controlling parent-zone synchronization behaviour.
+  # https://www.iana.org/assignments/dns-parameters/csync-flags.csv
+  csyncFlags: [type
+    [Immediate   bit: 0  description: "Parent should immediately process this CSYNC record"       doc: "RFC 7477"]
+    [SoaMinimum  bit: 1  description: "Require SOA serial > value specified in CSYNC record"      doc: "RFC 7477"]]
+
+  # EDNS Option Codes — IANA registry (https://www.iana.org/assignments/dns-parameters/dns-parameters-11.csv)
+  # Type-level lookup table: use EdnsOption.Cookie.code for integer value, or
+  # [get code: 10 EdnsOption] for reverse lookup. Unassigned/reserved ranges omitted.
+  ednsOption: [type
+    [Llq                   code: 1      status: "Optional"  description: "Long-Lived Queries"               doc: "RFC 8764"]
+    [UpdateLease           code: 2      status: "Standard"  description: "DNS Update Lease"                  doc: "RFC 9664"]
+    [Nsid                  code: 3      status: "Standard"  description: "Name Server Identifier"            doc: "RFC 5001"]
+    [Dau                   code: 5      status: "Standard"  description: "DNSSEC Algorithm Understood"       doc: "RFC 6975"]
+    [Dhu                   code: 6      status: "Standard"  description: "DS Hash Understood"                doc: "RFC 6975"]
+    [N3u                   code: 7      status: "Standard"  description: "NSEC3 Hash Understood"             doc: "RFC 6975"]
+    [Ecs                   code: 8      status: "Optional"  description: "EDNS Client Subnet"                doc: "RFC 7871"]
+    [Expire                code: 9      status: "Optional"  description: "EDNS Expire"                       doc: "RFC 7314"]
+    [Cookie                code: 10     status: "Standard"  description: "DNS Cookie"                        doc: "RFC 7873"]
+    [TcpKeepalive          code: 11     status: "Standard"  description: "EDNS TCP Keepalive"                doc: "RFC 7828"]
+    [Padding               code: 12     status: "Standard"  description: "Padding"                           doc: "RFC 7830"]
+    [Chain                 code: 13     status: "Standard"  description: "CHAIN Query Requests"              doc: "RFC 7901"]
+    [KeyTag                code: 14     status: "Optional"  description: "EDNS Key Tag"                      doc: "RFC 8145"]
+    [ExtendedError         code: 15     status: "Standard"  description: "Extended DNS Error"                doc: "RFC 8914"]
+    [ClientTag             code: 16     status: "Optional"  description: "EDNS Client Tag"                   doc: "draft-bellis-dnsop-edns-tags"]
+    [ServerTag             code: 17     status: "Optional"  description: "EDNS Server Tag"                   doc: "draft-bellis-dnsop-edns-tags"]
+    [ReportChannel         code: 18     status: "Standard"  description: "Report Channel"                    doc: "RFC 9567"]
+    [ZoneVersion           code: 19     status: "Standard"  description: "Zone Version"                      doc: "RFC 9660"]
+    [MqtypeQuery           code: 20     status: "Optional"  description: "Multi-QTYPE Query"                 doc: "RFC-ietf-dnssd-multi-qtypes"]
+    [MqtypeResponse        code: 21     status: "Optional"  description: "Multi-QTYPE Response"              doc: "RFC-ietf-dnssd-multi-qtypes"]
+    [EdeExtraTextLanguage  code: 22     status: "Optional"  description: "EDE Extra Text Language"           doc: "draft-muks-dns-filtering"]
+    [FilteringContact      code: 23     status: "Optional"  description: "Filtering Contact"                 doc: "draft-muks-dns-filtering"]
+    [FilteringOrganization code: 24     status: "Optional"  description: "Filtering Organization"            doc: "draft-muks-dns-filtering"]
+    [FilteringDb           code: 25     status: "Optional"  description: "Filtering Database"                doc: "draft-muks-dns-filtering"]
+    [UmbrellaIdent         code: 20292  status: "Optional"  description: "Umbrella Identifier"               doc: "Cisco"]
+    [DeviceId              code: 26946  status: "Optional"  description: "Device Identifier"                 doc: "Cisco"]]
+
+  # EDNS Client Subnet (RFC 7871, option code 8).
+  # prefix-len: 0 is the standardized privacy signal (RFC 7871 §11.1) — tells the resolver
+  # not to use the client's IP for geo-routing; address is ignored when prefix-len is 0.
+  # Valid range: 0–32 for IPv4, 0–128 for IPv6.
+  clientSubnet: [type
+    [addr:       IpAddress
+     prefix-len: Int@[is: [between 0 128]]]]
 
   dnsRcode: [type
     [NoError    rcode: 0   description: "No Error"                                doc: "RFC 1035"]
@@ -235,8 +311,13 @@
      tc:         Bool              # Truncated — response was cut short (retry over TCP)
      rd:         Bool              # Recursion Desired — echoed from the query
      ra:         Bool              # Recursion Available — resolver supports recursion
-     ad:         Bool              # Authentic Data — DNSSEC validation was performed
-     cd:         Bool]]            # Checking Disabled — echoed from the query
+     ad:         Bool                    # Authentic Data — DNSSEC validation was performed
+     cd:         Bool                    # Checking Disabled — echoed from the query
+     # EDNS fields (from OPT pseudorecord in additional section; defaults if no OPT present):
+     edns-rcode:          Int                  # upper 8 bits of extended RCODE (0 = no extension)
+     server-cookie:       [or Bytes Absent]    # EDNS option 10: server cookie (Absent if not returned)
+     nsid:                [or Bytes Absent]    # EDNS option 3: Name Server Identifier (Absent if not returned)
+     client-subnet-scope: [or Int Absent]]]    # EDNS option 8: scope prefix-len from server (how many bits it used)
 
   dnsQuery: [type
     [id:        Int               # 16-bit message ID (matches in the response)
@@ -253,6 +334,12 @@
      edns:      Bool              # include EDNS0 OPT record (set false for old resolvers)
      bufsize:   Int@[is: [between 512 65535]]  # EDNS UDP payload size; RFC 6891 §6.2.3: min 512, max 65535
      ignore-tc: Bool              # accept truncated UDP response; skip TCP retry (dig +ignore)
+     co:        Bool              # EDNS CO bit (RFC 9824): Compact Answers OK (compact denial-of-existence)
+     # EDNS options — injected/resolved by dns-try-servers:
+     client-cookie:  [or [Bytes 8] Absent]    # RFC 7873 option 10: injected from nameserver's cookie state
+     server-cookie:  [or Bytes Absent]         # RFC 7873 option 10: cached server cookie
+     nsid:           Bool                      # RFC 5001 option 3: request Name Server Identifier
+     client-subnet:  [or clientSubnet Absent]  # RFC 7871 option 8: effective ECS (query override or ns default)
      respond:   [or [Fn [dnsResponse] Null] Null]]]  # server-side response callback
 
   # dnsQueryOpts: the full set of options that control how a DNS query is constructed
@@ -266,15 +353,37 @@
      ad:        Bool       # Authentic Data (request DNSSEC-validated result)
      tcp:       Bool       # force TCP transport (port 53, no TLS); required for AXFR
      edns:      Bool       # include EDNS0 OPT record (false = RFC 1035 plain query)
-     bufsize:   Int@[is: [between 512 65535]]  # EDNS UDP payload size; RFC 6891 §6.2.3: min 512, max 65535
-     ignore-tc: Bool]]     # accept truncated UDP; skip TCP retry (maps to dig +ignore)
+     bufsize:       Int@[is: [between 512 65535]]  # EDNS UDP payload size; RFC 6891 §6.2.3: min 512, max 65535
+     ignore-tc:     Bool                           # accept truncated UDP; skip TCP retry (maps to dig +ignore)
+     co:            Bool                           # EDNS CO bit: Compact Answers OK (RFC 9824)
+     nsid:          Bool                           # request NSID from server (RFC 5001, option 3)
+     client-subnet: [or clientSubnet Absent]]]     # ECS override; Absent = use nameserver default
 
+  # Cookie state uses two separate fields rather than a DnsCookies record-in-a-channel:
+  # - client-cookie: immutable [Bytes 8], generated once at nameserver construction (RFC 7873 §5.2)
+  # - server-cookie: ReactiveCell — multiple concurrent reads OK (stale is fine),
+  #   last-write-wins updates (both cookies from concurrent exchanges are valid server-side)
   nameserver: [type
-    [UdpNameserver  addr@SocketAddress]                          # UDP/53 — standard
-    [TcpNameserver  addr@SocketAddress]                          # raw TCP/53 (no TLS); for AXFR and tcp: true
-    [DotNameserver  addr@SocketAddress  sni@String]              # DNS-over-TLS (port 853)
-    [DohNameserver  addr@SocketAddress  sni@String  path@String] # DNS-over-HTTPS
-    [DoqNameserver  addr@SocketAddress  sni@String]]             # DNS-over-QUIC (port 853)
+    [UdpNameserver  addr@SocketAddress
+                    client-cookie@[Bytes 8]
+                    server-cookie@[ReactiveCell [or Bytes Absent]]
+                    default-client-subnet@[or clientSubnet Absent]]  # Absent = no ECS by default
+    [TcpNameserver  addr@SocketAddress
+                    client-cookie@[Bytes 8]
+                    server-cookie@[ReactiveCell [or Bytes Absent]]
+                    default-client-subnet@[or clientSubnet Absent]]
+    [DotNameserver  addr@SocketAddress  sni@String
+                    client-cookie@[Bytes 8]
+                    server-cookie@[ReactiveCell [or Bytes Absent]]
+                    default-client-subnet@[or clientSubnet Absent]]
+    [DohNameserver  addr@SocketAddress  sni@String  path@String
+                    client-cookie@[Bytes 8]
+                    server-cookie@[ReactiveCell [or Bytes Absent]]
+                    default-client-subnet@[or clientSubnet Absent]]
+    [DoqNameserver  addr@SocketAddress  sni@String
+                    client-cookie@[Bytes 8]
+                    server-cookie@[ReactiveCell [or Bytes Absent]]
+                    default-client-subnet@[or clientSubnet Absent]]]
 
   dnsConfig: [type
     [nameservers:    [Seq nameserver]
@@ -337,10 +446,64 @@
   rotate-list: [fn [let xs]
     [match xs [] [] [let [h ...t]]: [append [list h] t]]]
 
+  # Construct a fresh server-cookie reactive cell (Absent = no exchange yet).
+  fresh-server-cookie: [fn []
+    [builtin-reactive-cell Absent.Absent]]
+
+  # Nameserver constructors — always initialize cookie state. Called when building %dns from
+  # /etc/resolv.conf or --nameservers flags. client-cookie is random 8 bytes per RFC 7873 §5.2.
+  # Nameserver constructors with optional default-client-subnet.
+  # default-client-subnet: Absent = no ECS sent by default.
+  # Set to [clientSubnet [addr: IpAddress.Ipv4 [0 0 0 0]  prefix-len: 0]] for privacy mode.
+  udp-nameserver: [fn [let addr@SocketAddress  default-client-subnet@[type: [or clientSubnet Absent]  default: Absent.Absent]]
+    [nameserver.UdpNameserver [addr: addr  client-cookie: [crypto-random 8]  server-cookie: [fresh-server-cookie]  default-client-subnet: default-client-subnet]]]
+
+  tcp-nameserver: [fn [let addr@SocketAddress  default-client-subnet@[type: [or clientSubnet Absent]  default: Absent.Absent]]
+    [nameserver.TcpNameserver [addr: addr  client-cookie: [crypto-random 8]  server-cookie: [fresh-server-cookie]  default-client-subnet: default-client-subnet]]]
+
+  dot-nameserver: [fn [let addr@SocketAddress  sni@String  default-client-subnet@[type: [or clientSubnet Absent]  default: Absent.Absent]]
+    [nameserver.DotNameserver [addr: addr  sni: sni  client-cookie: [crypto-random 8]  server-cookie: [fresh-server-cookie]  default-client-subnet: default-client-subnet]]]
+
+  doh-nameserver: [fn [let addr@SocketAddress  sni@String  path@String  default-client-subnet@[type: [or clientSubnet Absent]  default: Absent.Absent]]
+    [nameserver.DohNameserver [addr: addr  sni: sni  path: path  client-cookie: [crypto-random 8]  server-cookie: [fresh-server-cookie]  default-client-subnet: default-client-subnet]]]
+
+  doq-nameserver: [fn [let addr@SocketAddress  sni@String  default-client-subnet@[type: [or clientSubnet Absent]  default: Absent.Absent]]
+    [nameserver.DoqNameserver [addr: addr  sni: sni  client-cookie: [crypto-random 8]  server-cookie: [fresh-server-cookie]  default-client-subnet: default-client-subnet]]]
+
+  # edns-opt-bytes: generic EDNS option encoder. Produces the 4-byte header + data.
+  # Used by all EDNS option encoders (cookie, NSID, ECS, etc.).
+  edns-opt-bytes: [fn [let code@Int data@Bytes]
+    [concat
+      [bytes NetworkEndian [@UInt16 code]]
+      [bytes NetworkEndian [@UInt16 [length data]]]
+      data]]
+
+  # ecs-opt-bytes: encode EDNS Client Subnet option (EdnsOption.Ecs, code 8, RFC 7871).
+  # family: 1=IPv4, 2=IPv6. Address truncated to ceil(prefix-len/8) bytes.
+  # prefix-len=0 is the privacy signal — address bytes are empty.
+  ecs-opt-bytes: [fn [let cs@clientSubnet]
+    [family:     [match cs.addr [IpAddress.Ipv4 _]: 1 _: 2]]
+    [addr-bytes: [match cs.addr [IpAddress.Ipv4 b]: b [IpAddress.Ipv6 b]: b [IpAddress.Ipv6Zone b _]: b]]
+    [n-bytes:    [/ [+ cs.prefix-len 7] 8]]    # ceil(prefix-len / 8)
+    [truncated:  [slice addr-bytes 0 n-bytes]]
+    [edns-opt-bytes ednsOption.Ecs.code [concat
+      [bytes NetworkEndian [@UInt16 family]]    # FAMILY
+      [bytes NetworkEndian [@UInt8 cs.prefix-len]]  # SOURCE PREFIX-LEN
+      [bytes NetworkEndian [@UInt8 0]]          # SCOPE PREFIX-LEN (0 in queries)
+      truncated]]]
+
+  # cookie-opt-bytes: encode EDNS Cookie option (EdnsOption.Cookie, code 10, RFC 7873).
+  # Sends client-cookie always; appends server-cookie only when cached.
+  cookie-opt-bytes: [fn [let client@[Bytes 8] server@[or Bytes Absent]]
+    [data: [match server
+      [Absent.Absent]: client
+      [let sc]:        [concat client sc]]]
+    [edns-opt-bytes ednsOption.Cookie.code data]]
+
   # dns-try-servers: try each nameserver in turn, retrying on SERVFAIL or error.
-  # q: a fully-constructed dnsQuery (id, name, qtype, qclass, flags, transport hints).
-  # When q.tcp: true, uses dns-tcp-resolver regardless of the nameserver's protocol.
-  # When TC=1 and q.ignore-tc: false, retries the same server over TCP automatically.
+  # q: base dnsQuery (client-cookie/server-cookie are Absent — injected here per nameserver).
+  # Cookie flow: read ns cookie state → inject into q → send → update state from response.
+  # BADCOOKIE (rcode 23): clear server cookie, retry once with fresh client+no-server cookie.
   dns-try-servers: [fn [let cap@NetCap servers@[Seq nameserver]
                          q@dnsQuery remaining@Int timeout@Duration]
     [if [= remaining 0]
@@ -348,22 +511,47 @@
       [match servers
         []: dnsError.ServerFailure
         [let [ns ...rest]]:
-          # If q.tcp forced, use TCP resolver regardless of nameserver protocol;
-          # for UDP nameservers only — TcpNameserver/DoT/DoH/DoQ already use reliable transports.
-          [resolver: [match [if q.tcp [nameserver.TcpNameserver [addr: ns.addr]] ns]
-            [nameserver.UdpNameserver _]: [dns-tcp-resolver cap ns.addr]  # TCP override
-            _:                           [ns-to-resolver cap ns]]]        # keep native transport
-          [match [try [await [timeout timeout [resolver q]]]]
+          # Resolve effective ECS: query override takes priority over nameserver default.
+          [effective-subnet: [match q.client-subnet
+            [Absent.Absent]: ns.default-client-subnet   # use nameserver default (may also be Absent)
+            [let cs]:        cs]]                        # query-level override
+          # Inject cookie state and effective ECS into the query.
+          [sc:     [builtin-cell-get ns.server-cookie]]
+          [q-full: [merge q [client-cookie:  ns.client-cookie
+                             server-cookie:  sc
+                             client-subnet:  effective-subnet]]]
+          # If q.tcp forced, use TCP resolver for UDP nameservers; others keep native transport.
+          [resolver: [match [if q.tcp ns ns]
+            [nameserver.UdpNameserver addr: addr _]: [dns-tcp-resolver cap addr]
+            _:                                       [ns-to-resolver cap ns]]]
+          [send-and-recv: [fn [let qr]
+            [match [try [await [timeout timeout [resolver qr]]]]
+              [Result.Ok resp]:
+                # Update cached server cookie from response (non-blocking, last-write-wins).
+                [if [not [absent? resp.server-cookie]]
+                  [builtin-cell-set ns.server-cookie resp.server-cookie]
+                  null]
+                [Result.Ok resp]
+              [Result.Error e]: [Result.Error e]]]]
+          [match [send-and-recv q-full]
             [Result.Ok resp]:
               [match resp.rcode
-                [dnsRcode.ServFail]: [dns-try-servers cap rest q [- remaining 1] timeout]
-                [dnsRcode.NotImpl]:  dnsError.NotImplemented
+                [dnsRcode.ServFail]:   [dns-try-servers cap rest q [- remaining 1] timeout]
+                [dnsRcode.NotImpl]:    dnsError.NotImplemented
+                [dnsRcode.BadCookie]:
+                  # BADCOOKIE: discard stale server cookie, retry once with client-only cookie.
+                  [builtin-cell-set ns.server-cookie Absent.Absent]
+                  [q-retry: [merge q [client-cookie: ns.client-cookie  server-cookie: Absent.Absent]]]
+                  [match [send-and-recv q-retry]
+                    [Result.Ok r2]: r2
+                    [Result.Error _]: [dns-try-servers cap rest q [- remaining 1] timeout]]
                 _:
-                  # TC=1: truncated UDP response — retry over TCP unless q.ignore-tc
-                  [if [and resp.tc [not q.ignore-tc] [match ns [nameserver.UdpNameserver _]: true _: false]]
-                    [match [try [await [timeout timeout [[dns-tcp-resolver cap ns.addr] q]]]]
+                  # TC=1: truncated UDP response — retry over TCP unless q.ignore-tc.
+                  [if [and resp.tc [not q.ignore-tc]
+                           [match ns [nameserver.UdpNameserver _]: true _: false]]
+                    [match [try [await [timeout timeout [[dns-tcp-resolver cap ns.addr] q-full]]]]
                       [Result.Ok tcp-resp]: tcp-resp
-                      [Result.Error _]:     resp]   # TCP retry failed — return truncated response
+                      [Result.Error _]:     resp]
                     resp]]
             [Result.Error _]: [dns-try-servers cap rest q [- remaining 1] timeout]]]]]
 
@@ -401,11 +589,18 @@
       do:        opts.do
       cd:        opts.cd
       ad:        opts.ad
-      tcp:       opts.tcp
-      edns:      opts.edns
-      bufsize:   opts.bufsize
-      ignore-tc: opts.ignore-tc
-      respond:   null]]
+      tcp:           opts.tcp
+      edns:          opts.edns
+      bufsize:       opts.bufsize
+      ignore-tc:     opts.ignore-tc
+      co:            opts.co
+      nsid:          opts.nsid
+      # client-subnet carries the query-level override (Absent = use nameserver default).
+      # Cookies injected later by dns-try-servers from the specific nameserver's state.
+      client-subnet:  opts.client-subnet
+      client-cookie:  Absent.Absent
+      server-cookie:  Absent.Absent
+      respond:        null]]
 
   # try-records: run the ndots+search candidate loop; return the full DnsResponse
   # from the first name that resolves. No CNAME following, no IP extraction.
@@ -431,7 +626,8 @@
   try-ips: [fn [let cap@NetCap config@dnsConfig names@[Seq String] qtype@dnsQtype]
     [std-opts: [@dnsQueryOpts
                [qclass: dnsClass.IN  rd: true  do: false  cd: false  ad: false
-                tcp: false  edns: true  bufsize: 1232  ignore-tc: false]]]
+                tcp: false  edns: true  bufsize: 1232  ignore-tc: false
+                co: false  nsid: false  client-subnet: Absent.Absent]]]
     [match names
       []: dnsError.ServerFailure
       [let [name ...rest]]:
@@ -652,9 +848,23 @@
   DnsRecordCodec: [type [msg: Bytes]]
   DnsQuery:     dnsQuery
   DnsResponse:  dnsResponse
-  DnsQueryOpts: dnsQueryOpts   # options for resolve: class, rd, do, cd, ad, tcp, edns, bufsize, ignore-tc
+  DnsQueryOpts: dnsQueryOpts   # options for resolve: class, rd, do, cd, ad, tcp, edns, bufsize, ignore-tc, nsid, client-subnet
+  ClientSubnet: clientSubnet   # ECS subnet: addr@IpAddress + prefix-len@Int (0=privacy)
+  EdnsOption:   ednsOption    # EDNS option codes (IANA registry); use .code, .description, .doc
+  DnsDsoType:   dnsDsoType   # DSO TLV type codes (RFC 8490 + RFC 8765)
+  ZonemdHash:   zonemdHash   # ZONEMD hash algorithm codes (RFC 8976): Sha384=1, Sha512=2
+  ZonemdScheme: zonemdScheme # ZONEMD collation schemes (RFC 8976): Simple=1
+  CsyncFlags:   csyncFlags   # CSYNC record flags (RFC 7477): Immediate, SoaMinimum
+  # DnsDoqError is exported from quic.llt (DoQ application error codes, RFC 9250)
   Nameserver:   nameserver
   DnsConfig:    dnsConfig
+  # Nameserver constructors — always initialize cookie state correctly.
+  # Use these instead of constructing Nameserver variants directly.
+  udp-nameserver: udp-nameserver
+  tcp-nameserver: tcp-nameserver
+  dot-nameserver: dot-nameserver
+  doh-nameserver: doh-nameserver
+  doq-nameserver: doq-nameserver
 
   # Encode a DnsQuery to DNS wire format (RFC 1035 §4, RFC 6891 EDNS0).
   # Always includes an EDNS0 OPT record (arcount=1) — signals EDNS0 support,
@@ -680,7 +890,21 @@
     [if q.edns
       # With EDNS0 OPT record (RFC 6891 §6):
       [block
-        [edns-flags: [if q.do 0x8000 0x0000]]   # bit 15 of extended TTL = DO
+        [edns-flags: [bor [if q.do 0x8000 0x0000]    # bit 15: DO (DNSSEC OK, RFC 4035)
+                          [if q.co 0x4000 0x0000]]]  # bit 14: CO (Compact Answers OK, RFC 9824)
+        # Collect all EDNS options into OPT RDATA. Options are independently optional;
+        # absent ones contribute zero bytes. Order: cookie (10), NSID (3), ECS (8).
+        [opt-options: [concat
+          [match q.client-cookie                             # EdnsOption.Cookie (code 10, RFC 7873)
+            [Absent.Absent]: [bytes 0]
+            [let cc]:        [cookie-opt-bytes cc q.server-cookie]]
+          [if q.nsid                                         # EdnsOption.Nsid (code 3, RFC 5001)
+            [edns-opt-bytes ednsOption.Nsid.code [bytes 0]]
+            [bytes 0]]
+          [match q.client-subnet                             # EdnsOption.Ecs (code 8, RFC 7871)
+            [Absent.Absent]: [bytes 0]
+            [let cs]:        [ecs-opt-bytes cs]]]]
+        [opt-rdata-len: [length opt-options]]
         [opt-rr: [concat
           [bytes NetworkEndian [@UInt8  0x00]]                   # root label (.)
           [bytes NetworkEndian [@UInt16 41]]                     # type OPT
@@ -688,7 +912,8 @@
           [bytes NetworkEndian [@UInt8  0]]                      # extended RCODE = 0
           [bytes NetworkEndian [@UInt8  0]]                      # EDNS version = 0
           [bytes NetworkEndian [@UInt16 edns-flags]]             # extended flags (DO bit)
-          [bytes NetworkEndian [@UInt16 0]]]]                    # RDLENGTH = 0
+          [bytes NetworkEndian [@UInt16 opt-rdata-len]]          # RDLENGTH
+          opt-options]]                                          # all EDNS options (cookie, NSID, ECS)
         [concat
           [bytes NetworkEndian [@UInt16 q.id]]
           [bytes NetworkEndian [@UInt16 flags]]
@@ -807,7 +1032,7 @@
               [vlen:    [uint16 NetworkEndian [slice b [+ pos 2] [+ pos 4]]]]
               [vdata:   [slice b [+ pos 4] [+ pos 4 vlen]]]
               [new-params: [match key
-                0:  [merge params {mandatory: [collect [map [fn [let i] [uint16 NetworkEndian [slice vdata [* i 2] [+ [* i 2] 2]]]] [range 0 [/ vlen 2]]]]}]
+                0:  [merge params [mandatory: [collect [map [fn [let i] [uint16 NetworkEndian [slice vdata [* i 2] [+ [* i 2] 2]]]] [range 0 [/ vlen 2]]]]]]
                 1:  # alpn: comma-separated protocol strings
                     [block
                       [parse-alpn: [fn [let p acc]
@@ -817,12 +1042,12 @@
                             [alen: [get vdata p]]
                             [proto: [bytes-str [slice vdata [+ p 1] [+ p 1 alen]]]]
                             [parse-alpn [+ p 1 alen] [append acc [list proto]]]]]]]
-                      [merge params {alpn: [parse-alpn 0 []]}]]
-                3:  [merge params {port: [uint16 NetworkEndian vdata]}]
-                5:  [merge params {ech: vdata}]
+                      [merge params [alpn: [parse-alpn 0 []]]]]
+                3:  [merge params [port: [uint16 NetworkEndian vdata]]]
+                5:  [merge params [ech: vdata]]
                 _:  params]]
               [parse-svcparams [+ pos 4 vlen] new-params]]]]]
-        [raw-params: [parse-svcparams target-res.next {}]]
+        [raw-params: [parse-svcparams target-res.next []]]
         [params: [svcParams
           alpn:            [or [get? raw-params alpn] Absent.Absent]
           no-default-alpn: false
@@ -831,25 +1056,47 @@
           ipv6-hint:       Absent.Absent
           ech:             [or [get? raw-params ech] Absent.Absent]
           mandatory:       [or [get? raw-params mandatory] Absent.Absent]
-          other:           {}]]
+          other:           []]]
         [dnsRecord.HttpsRecord  prio: prio  target: target-res.name  params: params  ttl: ttl]
       _:  # Unknown record type
         [dnsRecord.UnknownRecord  qtype: qtype  data: [slice b offset data-end]  ttl: ttl]]]
 
   # Parse N resource records starting at offset in b. Returns [records: [Seq dnsRecord] next: Int].
+  # OPT pseudorecords (type 41, RFC 6891) are parsed here rather than in parse-dns-rdata
+  # because they need rclass (UDP payload size) and the raw TTL (extended RCODE + flags).
   parse-rrs: [fn [let b@Bytes offset@Int n@Int acc@[Seq dnsRecord]]
     [if [= n 0]
       [records: acc  next: offset]
       [block
-        [name-res: [parse-dns-name b offset 5]]
-        [p:        name-res.next]
-        [rtype:    [uint16 NetworkEndian [slice b p          [+ p 2]]]]
-        [rclass:   [uint16 NetworkEndian [slice b [+ p 2]    [+ p 4]]]]
-        [ttl:      [seconds [uint32 NetworkEndian [slice b [+ p 4] [+ p 8]]]]]  # RFC 1035: TTL in seconds
-        [rdlen:    [uint16 NetworkEndian [slice b [+ p 8]    [+ p 10]]]]
+        [name-res:  [parse-dns-name b offset 5]]
+        [p:         name-res.next]
+        [rtype:     [uint16 NetworkEndian [slice b p          [+ p 2]]]]
+        [rclass:    [uint16 NetworkEndian [slice b [+ p 2]    [+ p 4]]]]
+        [ttl-raw:   [uint32 NetworkEndian [slice b [+ p 4]    [+ p 8]]]]
+        [ttl:       [seconds ttl-raw]]
+        [rdlen:     [uint16 NetworkEndian [slice b [+ p 8]    [+ p 10]]]]
         [rdata-off: [+ p 10]]
-        [rr:       [parse-dns-rdata b rdata-off rdlen rtype ttl]]
-        [parse-rrs b [+ rdata-off rdlen] [- n 1] [append acc [list rr]]]]]]
+        [rdata-end: [+ rdata-off rdlen]]
+        [rr: [if [= rtype 41]
+          # OPT pseudorecord (RFC 6891): class = UDP payload size, TTL = extended RCODE/flags.
+          # Parse options bytes into a Map of option-code → option-data.
+          [opt-bytes: [slice b rdata-off rdata-end]]
+          [opts: [fn [let offset acc]
+            [if [>= offset [length opt-bytes]]
+              acc
+              [block
+                [code: [uint16 NetworkEndian [slice opt-bytes offset        [+ offset 2]]]]
+                [olen: [uint16 NetworkEndian [slice opt-bytes [+ offset 2]  [+ offset 4]]]]
+                [data: [slice opt-bytes [+ offset 4] [+ offset 4 olen]]]
+                [opts [+ offset 4 olen] [set acc code data]]]]]]]
+          [dnsRecord.OptRecord
+            payload-size: rclass
+            edns-rcode:   [shr ttl-raw 24]                      # bits 31-24
+            version:      [band [shr ttl-raw 16] 0xFF]           # bits 23-16
+            do:           [= [band [shr ttl-raw 15] 1] 1]        # bit 15
+            options:      [opts 0 []]]
+          [parse-dns-rdata b rdata-off rdlen rtype ttl]]]
+        [parse-rrs b rdata-end [- n 1] [append acc [list rr]]]]]]
 
   decode-dns-wire: [fn@[return: [or dnsResponse dnsError]] [let b@Bytes]
     [if [< [length b] 12]
@@ -868,7 +1115,6 @@
          ra:        [= [band [shr flags  7] 1] 1]   # bit 7:  Recursion Available
          ad:        [= [band [shr flags  5] 1] 1]   # bit 5:  Authentic Data (DNSSEC)
          cd:        [= [band [shr flags  4] 1] 1]]  # bit 4:  Checking Disabled (echoed)
-        [rcode: [or [get rcode: rcode-int dnsRcode] dnsRcode.ServFail]]
         # §4.1.2: Skip question section — each question is: name + qtype(2) + qclass(2)
         [skip-questions: [fn [let offset n]
           [if [= n 0]
@@ -881,18 +1127,46 @@
         [an-result: [parse-rrs b after-q ancount []]]
         [ns-result: [parse-rrs b an-result.next nscount []]]
         [ar-result: [parse-rrs b ns-result.next arcount []]]
+        # Extract OPT record from additional section (if present).
+        # The OPT pseudorecord carries EDNS extended RCODE and the server cookie option.
+        [opt: [find [fn [let r] [match r [dnsRecord.OptRecord _]: true _: false]] ar-result.records]]
+        [edns-rcode: [match opt
+          null:                  0
+          [dnsRecord.OptRecord o]: o.edns-rcode]]
+        # Full 12-bit RCODE = (extended upper 8 bits << 4) | base lower 4 bits (RFC 6891 §4.6)
+        [full-rcode-int: [bor [shl edns-rcode 4] rcode-int]]
+        [rcode: [or [get rcode: full-rcode-int dnsRcode] dnsRcode.ServFail]]
+        # Extract EDNS options from OPT record (all use [get? "code" o.options] pattern).
+        [opt-options: [match opt null: []  [dnsRecord.OptRecord o]: o.options]]
+        [server-cookie: [match [get? ednsOption.Cookie.code opt-options]
+          [Absent.Absent]: Absent.Absent
+          [let raw]:       [if [> [length raw] 8]
+            [slice raw 8 [length raw]]    # server cookie follows 8-byte client echo
+            Absent.Absent]]]
+        [nsid: [match [get? ednsOption.Nsid.code opt-options]
+          [Absent.Absent]: Absent.Absent
+          [let raw]:       raw]]          # raw bytes — typically ASCII hostname or datacenter name
+        [client-subnet-scope: [match [get? ednsOption.Ecs.code opt-options]
+          [Absent.Absent]: Absent.Absent
+          [let raw]:       [if [>= [length raw] 4]
+            [get raw 3]                   # scope-prefix-len is byte index 3 of ECS option data
+            Absent.Absent]]]
         [dnsResponse.dnsResponse
-          id:         id
-          rcode:      rcode
-          answers:    an-result.records
-          authority:  ns-result.records
-          additional: ar-result.records
-          aa:         aa
-          tc:         tc
-          rd:         rd
-          ra:         ra
-          ad:         ad
-          cd:         cd]]]]]
+          id:                  id
+          rcode:               rcode
+          answers:             an-result.records
+          authority:           ns-result.records
+          additional:          ar-result.records
+          aa:                  aa
+          tc:                  tc
+          rd:                  rd
+          ra:                  ra
+          ad:                  ad
+          cd:                  cd
+          edns-rcode:          edns-rcode
+          server-cookie:       server-cookie
+          nsid:                nsid
+          client-subnet-scope: client-subnet-scope]]]]]
 
   # Encode all records in one section, threading the compression table and offset.
   # Returns {bytes: Bytes  offset: Int  table: [Map DnsName Int]}.
@@ -965,13 +1239,16 @@
       [th: [TcpHandle [addr: addr.addr  port: addr.port  stream: [tcp-connect cap addr]]]]
       [dns-framed-send th q]]]]
 
+  # ns-to-resolver: get the resolver function for a nameserver.
+  # Cookie injection is handled by dns-try-servers before calling the resolver;
+  # the resolver factories here only need addr/sni/path for transport setup.
   ns-to-resolver: [fn [let cap@NetCap ns@Nameserver]
     [match ns
-      [nameserver.UdpNameserver addr: addr]:                [dns-udp-resolver   cap addr]
-      [nameserver.TcpNameserver addr: addr]:                [dns-tcp-resolver   cap addr]
-      [nameserver.DotNameserver addr: addr  sni: sni]:      [dns-tls-resolver   cap addr sni]
-      [nameserver.DohNameserver addr: addr  sni: sni  path: path]: [dns-https-resolver cap addr sni path]
-      [nameserver.DoqNameserver addr: addr  sni: sni]:      [dns-quic-resolver  cap addr sni]]]
+      [nameserver.UdpNameserver addr: addr _]:               [dns-udp-resolver   cap addr]
+      [nameserver.TcpNameserver addr: addr _]:               [dns-tcp-resolver   cap addr]
+      [nameserver.DotNameserver addr: addr  sni: sni _]:     [dns-tls-resolver   cap addr sni]
+      [nameserver.DohNameserver addr: addr  sni: sni  path: path _]: [dns-https-resolver cap addr sni path]
+      [nameserver.DoqNameserver addr: addr  sni: sni _]:     [dns-quic-resolver  cap addr sni]]]
 
   # Re-exported from internal dict so callers have one import point.
   dns-query-with-retry: dns-query-with-retry
@@ -1027,13 +1304,17 @@
                   tcp@[type: Bool        default: false]                 # force TCP transport
                   edns@[type: Bool       default: true]                  # include EDNS0 OPT record
                   bufsize@[type: Int@[is: [between 512 65535]]  default: 1232]  # EDNS UDP payload size (RFC 6891 §6.2.3)
-                  ignore-tc@[type: Bool  default: false]]                # skip TCP retry on TC=1
+                  ignore-tc@[type: Bool  default: false]                  # skip TCP retry on TC=1
+                  co@[type: Bool  default: false]                          # EDNS CO: Compact Answers OK (RFC 9824)
+                  nsid@[type: Bool  default: false]                        # request NSID (RFC 5001)
+                  client-subnet@[type: [or ClientSubnet Absent]  default: Absent.Absent]]  # ECS override
     [config: %dns]
     [if [empty? config.nameservers]
       dnsError.ServerFailure
       [opts: [@dnsQueryOpts
              [qclass: class  rd: rd  do: do  cd: cd  ad: ad
-              tcp: tcp  edns: edns  bufsize: bufsize  ignore-tc: ignore-tc]]]
+              tcp: tcp  edns: edns  bufsize: bufsize  ignore-tc: ignore-tc
+              co: co  nsid: nsid  client-subnet: client-subnet]]]
       [try-records cap config [candidate-names name config.search config.ndots] qtype opts]]]
 
   # lookup-ips: resolve a hostname to IP addresses. No flags exposed — always class=IN,
@@ -1052,10 +1333,15 @@
       dnsError.ServerFailure
       [try-ips cap config [candidate-names name config.search config.ndots] qtype]]]
 
-  dns-server-loop: [fn@Task [let query-ch@[Channel DnsQuery]
-                              handler@[Fn [DnsQuery] DnsResponse]]
-    [drain [fn [let q] [task [q.respond [handler q]]]] query-ch]]
+  # dns-server-loop: drain a Channel@ServerEvent, calling handler with (connection, query).
+  # Works for any DNS transport — connection type t varies (SocketAddress for UDP, TlsConnection for DoT, etc.).
+  dns-server-loop: [fn@Task [fn@[bind: [t]] [let handler@[Fn [t DnsQuery] DnsResponse]
+                                                  query-ch@[Channel [ServerEvent t DnsQuery]]]
+    [drain [fn [let event] [task [event.request.respond [handler event.connection event.request]]]] query-ch]]
 
+  # dns-udp-server: emit ServerEvent SocketAddress DnsQuery pairs.
+  # connection = dg.src (source SocketAddress) — the "connection" for stateless UDP.
+  # Handlers receive the source address directly: [fn [let connection@SocketAddress query@DnsQuery] ...]
   dns-udp-server: [fn [let cap@NetCap port@Port]
     [sock: [udp-socket cap BindTarget.IpBind [addr: IpAddress.Ipv4 [0 0 0 0]  port: port]]]
     [out:  [channel 256]]
@@ -1064,18 +1350,17 @@
         [dg: [recv sock]]
         [match [decode-dns-wire dg.data]
           [Result.Ok q]:
-            # Reconstruct the incoming query as a dnsQuery for the server handler.
-            # Transport hints (tcp, edns, bufsize, ignore-tc) are not in the wire query —
-            # set to server-appropriate defaults: tcp=false (we received via UDP), edns=true.
-            [send out [dnsQuery
-              id:        q.id     name:      q.name
-              qtype:     q.qtype  qclass:    q.qclass
-              rd:        q.rd     do:        false
-              cd:        false    ad:        false
-              tcp:       false    edns:      true
-              bufsize:   1232     ignore-tc: false
-              respond:   [fn [let resp@DnsResponse]
-                [send sock dg.src [encode-dns-response resp]]]]]]
+            [send out [ServerEvent
+              connection: dg.src
+              request:    [dnsQuery
+                id:        q.id     name:      q.name
+                qtype:     q.qtype  qclass:    q.qclass
+                rd:        q.rd     do:        false
+                cd:        false    ad:        false
+                tcp:       false    edns:      true
+                bufsize:   1232     ignore-tc: false
+                respond:   [fn [let resp@DnsResponse]
+                  [send sock dg.src [encode-dns-response resp]]]]]]
           [Result.Error _]: null]
         [step]]]
       [step]]
@@ -1149,7 +1434,7 @@
            [i: e.0  ip: e.1]
            [task
              [recv [timer-channel %clock [millis [* i attempt-ms]]]]
-             [match [try [tcp-connect cap {addr: ip  port: [@Port port]}]]
+             [match [try [tcp-connect cap [addr: ip  port: [@Port port]]]]
                [Result.Ok h]:    [try [send result-ch h]]
                [Result.Error _]: null]]]
            [entries addrs]]]]
@@ -1164,7 +1449,7 @@
     [addr: ep.host  port: ep.port]
     [addrs: [resolve-address cap addr]]
     [if [empty? addrs] [error "connect: no addresses resolved"] null]
-    [peer: {addr: [get addrs 0]  port: [@Port port]}]
+    [peer: [addr: [get addrs 0]  port: [@Port port]]]
     ConnectedUdp
-      sock: [udp-socket cap BindTarget.IpBind {addr: IpAddress.Ipv4 [0 0 0 0]  port: 0}]
+      sock: [udp-socket cap BindTarget.IpBind [addr: IpAddress.Ipv4 [0 0 0 0]  port: 0]]
       peer: peer]]]

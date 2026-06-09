@@ -14,8 +14,3 @@
 
 [add-fn: [wrap-fn [x y] [+ x y]]]
 [add-fn 3 4]
-=== error
-[E002] undefined variable: fn (did you mean the string "fn"? Use quotes.) (defined at 1:1-1:1) (materialized at 14:1-14:34)
-
-=== warn
-[UndefinedVariable] undefined variable: fn

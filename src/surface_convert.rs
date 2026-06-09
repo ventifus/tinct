@@ -1823,10 +1823,10 @@ fn surface_document_to_thunk_id(
         },
     );
 
-    // stage: [Runtime] | [Type] — nominal variant based on document stage annotation
+    // stage: DocStage.Type | DocStage.Runtime — nominal variant based on document stage annotation
     let stage_tag = match &doc.stage {
-        Some(Stage::Type) => "Type",
-        Some(Stage::Runtime) | None => "Runtime",
+        Some(Stage::Type) => "DocStage.Type",
+        Some(Stage::Runtime) | None => "DocStage.Runtime",
     };
     dict.insert(
         Key::String("stage".into()),

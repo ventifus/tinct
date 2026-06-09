@@ -205,6 +205,12 @@ pub enum Type {
         params: Vec<(Option<String>, Type)>, // (param_name, param_type) — None = positional-only
         ret: Box<Type>,
         variadic: bool,
+        /// Number of parameters that must be supplied — params without a `default:` annotation.
+        /// Callers may omit the trailing `params.len() - required_count` parameters.
+        /// For all builtin functions, `required_count == params.len()` (no optional params).
+        /// Excluded from PartialEq and Hash so two function types with the same structure but
+        /// different optionality still compare equal (structural type identity is unchanged).
+        required_count: usize,
     },
     Proxy,
     #[allow(clippy::enum_variant_names)]
@@ -347,11 +353,13 @@ impl PartialEq for Type {
                     params: p1,
                     ret: r1,
                     variadic: v1,
+                    required_count: _,
                 },
                 Type::Function {
                     params: p2,
                     ret: r2,
                     variadic: v2,
+                    required_count: _,
                 },
             ) => {
                 p1.len() == p2.len()
@@ -458,8 +466,10 @@ impl std::hash::Hash for Type {
                 params,
                 ret,
                 variadic,
+                required_count: _,
             } => {
-                // Hash parameter types (ignore names for equality)
+                // Hash parameter types (ignore names for equality).
+                // required_count is intentionally excluded to match PartialEq semantics.
                 for (_, ty) in params {
                     ty.hash(state);
                 }
@@ -544,6 +554,7 @@ pub(crate) fn substitute_recvar(ty: &Type, var_name: &str, replacement: &Type) -
             params,
             ret,
             variadic,
+            required_count,
         } => Type::Function {
             params: params
                 .iter()
@@ -551,6 +562,7 @@ pub(crate) fn substitute_recvar(ty: &Type, var_name: &str, replacement: &Type) -
                 .collect(),
             ret: Box::new(substitute_recvar(ret, var_name, replacement)),
             variadic: *variadic,
+            required_count: *required_count,
         },
         Type::Union(members) => Type::Union(
             members
@@ -858,10 +870,6 @@ impl Type {
             (Type::IntLiteral(_), Type::Int | Type::Number) => true,
             (Type::StringLiteral(_), Type::Str) => true,
             (Type::Int | Type::Float, Type::Number) => true,
-            // [UNION-INJ-L] and [UNION-INJ-R]: any member is a subtype of the union
-            (sub_ty, Type::Union(sup_members)) => sup_members
-                .iter()
-                .any(|member| Self::is_subtype_inner(sub_ty, member, tycon_env, depth + 1, sigma)),
             // [S-RcdTop] (BAS width subtyping): A union of closed single-field records with
             // disjoint field names is equivalent to Top in the BAS lattice.  The union
             // `{x: τ} | {y: π}` cannot be refined further by structural subtyping — together
@@ -869,16 +877,31 @@ impl Type {
             // Since Top <: T holds only when T = Top (already handled by the S-TOP guard
             // above), this fires as a pass-through to the S-TOP result when sup is Top, and
             // correctly returns false for any non-Top supertype.
+            //
+            // ORDER: this arm and [UNION-ELIM] must come BEFORE [UNION-INJ-L/R].
+            // When both sub and sup are Union types, [UNION-ELIM] must fire (all members of
+            // sub must be subtypes of sup), NOT [UNION-INJ-L/R] (sub as a whole would need
+            // to be a subtype of a single member of sup, which is far too strict).
+            // Rust match arms are ordered, so [UNION-ELIM] must precede the wildcard
+            // `(sub_ty, Type::Union(...))` arm.
             (Type::Union(sub_members), sup_ty) if Self::check_s_rcd_top(sub_members).is_some() => {
                 // The union is semantically Top; delegate to is_subtype(Top, sup_ty).
                 // S-TOP (sup == Top) is already handled before the match, so we only
                 // reach here when sup is NOT Top — meaning Top is not a subtype of it.
                 matches!(sup_ty, Type::Top)
             }
-            // [UNION-ELIM]: union is a subtype iff ALL members are subtypes
+            // [UNION-ELIM]: union is a subtype iff ALL members are subtypes.
+            // This arm also handles (Union, Union): each member of sub must be a subtype of
+            // sup-as-a-whole, which then recurses into [UNION-INJ-L/R] for each member.
             (Type::Union(sub_members), sup_ty) => sub_members
                 .iter()
                 .all(|member| Self::is_subtype_inner(member, sup_ty, tycon_env, depth + 1, sigma)),
+            // [UNION-INJ-L] and [UNION-INJ-R]: any member is a subtype of the union.
+            // This arm only fires when sub is NOT a Union (the Union-sub cases are handled
+            // by [UNION-ELIM] above, which comes first in match order).
+            (sub_ty, Type::Union(sup_members)) => sup_members
+                .iter()
+                .any(|member| Self::is_subtype_inner(sub_ty, member, tycon_env, depth + 1, sigma)),
             // [S-ClsBot] (nominal disjointness / structural annihilation): An intersection of
             // two or more closed single-field records with DIFFERENT field names is uninhabited
             // — no value can simultaneously be `{x: τ}` (exactly field x) and `{y: π}`
@@ -1021,11 +1044,13 @@ impl Type {
                     params: sub_p,
                     ret: sub_r,
                     variadic: sv,
+                    required_count: _,
                 },
                 Type::Function {
                     params: sup_p,
                     ret: sup_r,
                     variadic: pv,
+                    required_count: _,
                 },
             ) => {
                 // Special case: zero-param variadic is the "any function" type.
@@ -1176,11 +1201,13 @@ impl Type {
                     params: sub_p,
                     ret: sub_r,
                     variadic: sub_v,
+                    required_count: _,
                 },
                 Type::Function {
                     params: sup_p,
                     ret: sup_r,
                     variadic: sup_v,
+                    required_count: _,
                 },
             ) => {
                 // Mirror the is_subtype "any function" special case: a zero-param variadic
@@ -1404,11 +1431,13 @@ impl Type {
                     params: p1,
                     ret: r1,
                     variadic: v1,
+                    required_count: _,
                 },
                 Type::Function {
                     params: p2,
                     ret: r2,
                     variadic: v2,
+                    required_count: _,
                 },
             ) => {
                 // Special case: any-function (Function{params:[], variadic:true}) is consistent
@@ -1647,6 +1676,7 @@ impl Type {
                 params,
                 ret,
                 variadic: _,
+                required_count: _,
             } => {
                 for (_name, p_ty) in params {
                     p_ty.collect_type_vars(vars);
@@ -1700,6 +1730,7 @@ impl Type {
                 params,
                 ret,
                 variadic: _,
+                required_count: _,
             } => {
                 params.iter().any(|(_name, p_ty)| p_ty.has_inference_vars())
                     || ret.has_inference_vars()
@@ -1743,6 +1774,7 @@ impl Type {
                 params,
                 ret,
                 variadic: _,
+                required_count: _,
             } => {
                 params.iter().any(|(_name, p_ty)| p_ty.has_type_stage_app())
                     || ret.has_type_stage_app()
@@ -1785,6 +1817,7 @@ impl Type {
                 params,
                 ret,
                 variadic: _,
+                required_count: _,
             } => {
                 for (_name, p_ty) in params {
                     p_ty.collect_all_vars(type_vars);
@@ -1865,6 +1898,7 @@ impl Type {
                 params,
                 ret,
                 variadic: _,
+                required_count: _,
             } => {
                 let mut found = false;
                 for (_name, p_ty) in params {
@@ -1950,6 +1984,7 @@ impl Type {
                 params,
                 ret,
                 variadic: _,
+                required_count: _,
             } => {
                 for (_name, p_ty) in params {
                     p_ty.collect_all_vars_vec(type_vars);
@@ -2047,6 +2082,7 @@ impl Type {
                 params,
                 ret,
                 variadic: _,
+                required_count: _,
             } => {
                 for (_name, p_ty) in params {
                     p_ty.collect_operator_names(operator_names);
@@ -2404,6 +2440,7 @@ impl Type {
                 params,
                 ret,
                 variadic,
+                required_count,
             } => {
                 let params = params
                     .into_iter()
@@ -2414,6 +2451,7 @@ impl Type {
                     params,
                     ret,
                     variadic,
+                    required_count,
                 }
             }
             Type::App(f, a) => Type::App(
@@ -2444,6 +2482,22 @@ impl Type {
                 body: Box::new(Type::simplify_type(*body)),
             },
             _ => ty,
+        }
+    }
+
+    /// Construct a `Function` type, computing `required_count` from `params.len()`.
+    ///
+    /// Use this constructor for functions with no optional parameters (all params required).
+    /// All builtin functions use this constructor. For user-defined functions with `default:`
+    /// annotations, `infer_fn` in `typecheck_match.rs` computes `required_count` directly
+    /// (B-349: the fix for spurious arity errors on calls omitting optional params).
+    pub fn fn_type(params: Vec<(Option<String>, Type)>, ret: Type, variadic: bool) -> Self {
+        let required_count = params.len();
+        Type::Function {
+            params,
+            ret: Box::new(ret),
+            variadic,
+            required_count,
         }
     }
 

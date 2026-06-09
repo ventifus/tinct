@@ -4,8 +4,3 @@
 ---
 
 [to-json [fn [let x] x]]
-=== error
-[E002] undefined variable: to-json (did you mean the string "to-json"? Use quotes.) (defined at 5:2-5:9)
-
-=== warn
-[UndefinedVariable] undefined variable: to-json

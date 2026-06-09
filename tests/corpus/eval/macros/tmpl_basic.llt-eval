@@ -4,8 +4,3 @@
   name: "Alice"
   greeting: i"Hello $name"
 ]
-=== error
-[E080] macro 'tmpl' returned invalid AST: missing required field: type (defined at 4:13-4:27)
-
-=== warn
-[E080] macro 'tmpl' returned invalid AST: missing required field: type (defined at 4:13-4:27)

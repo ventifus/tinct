@@ -8,6 +8,3 @@
   [case [let _] _              "other"]]
 === out
 String("ok")
-
-=== warn
-[UndefinedVariable] undefined variable: Ok

@@ -2,6 +2,3 @@
 [tail [seq 1 [builtin-variant "Seq.Nil"]]]
 === out
 Dict({})
-
-=== warn
-[UndefinedVariable] undefined variable: builtin-variant

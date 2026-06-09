@@ -7,7 +7,3 @@
 ]
 === out
 Dict({"when_true": Int(42), "when_false": Dict({}), "unless_true": Dict({}), "unless_false": Int(42)})
-
-=== warn
-[UnificationFailure] cannot unify Bool with 42
-[UnificationFailure] cannot unify Bool with 42

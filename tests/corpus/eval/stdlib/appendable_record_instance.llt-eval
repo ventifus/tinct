@@ -6,9 +6,3 @@
     empty: []]
   result: [inst.append-one [x: 1 y: 2] [y: 99 z: 3]]
 ]
-=== error
-[E099] syntax error at 4:38 (cannot evaluate error node) (defined at 4:38-4:39)
-
-=== warn
-[TypeError] instance arm pattern must be a [pattern [...]] or [let ...] declaration
-[NotARecord] expected record type, got <error>

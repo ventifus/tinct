@@ -78,6 +78,286 @@ pub fn inject_adt_constructors_surface_program(program: &mut SurfaceProgram) {
     }
 }
 
+/// Transform InstanceDecl in dict-entry position into runtime method dicts (T-1142).
+///
+/// For each dict entry whose value is a `SurfaceExpression::Decl(InstanceDecl)`, this pass
+/// extracts the instance methods from the first arm and replaces the Decl with an explicit
+/// `SurfaceExpression::Dict` containing those methods. This enables runtime method access
+/// (e.g., `MonadResult.bind`) without special-casing InstanceDecl in the lowering pass.
+///
+/// **Single-arm assumption:** InstanceDecl lowering here only fires for instances that appear
+/// as dict entry VALUES (expression position), e.g.:
+///   `MonadResult: [instance Monad [let m@Result]: [bind: ...]]`
+/// All such instances in the prelude have exactly one `[let ...]` arm, so arms[0] is always
+/// the correct and only arm.
+///
+/// Multi-arm instances (e.g., `Addable` with four `[let a@T b@U c]` arms) are declared at
+/// the top level as `SurfaceItem::Decl`, not as dict entry values, and therefore never reach
+/// this code path. They remain as Decl nodes and lower to `CoreExpr::Placeholder`.
+///
+/// Runs AFTER `inject_adt_constructors_surface_program` (which also transforms dict entries)
+/// and BEFORE `desugar_surface_program` (`$_` desugaring and pipe lowering).
+pub fn desugar_instance_decls_surface_program(program: &mut SurfaceProgram) {
+    for doc_spanned in &mut program.documents {
+        desugar_instance_decls_document(&mut doc_spanned.node);
+    }
+}
+
+fn desugar_instance_decls_document(doc: &mut SurfaceDocument) {
+    for item in &mut doc.items {
+        if let SurfaceItem::Expr(node_arc) = item {
+            let new_node = desugar_instance_decls_node(Arc::clone(node_arc));
+            *node_arc = new_node;
+        }
+    }
+}
+
+fn desugar_instance_decls_node(node: Arc<SurfaceNode>) -> Arc<SurfaceNode> {
+    let span = node.span.clone();
+    let new_expr = desugar_instance_decls_expr(&node.expr, span.clone());
+    if std::ptr::eq(&new_expr as *const _, &node.expr as *const _) {
+        // No change — return original Arc (avoids clone)
+        return node;
+    }
+    Arc::new(SurfaceNode {
+        expr: new_expr,
+        span,
+    })
+}
+
+fn desugar_instance_decls_expr(expr: &SurfaceExpression, _span: Span) -> SurfaceExpression {
+    match expr {
+        SurfaceExpression::Dict(entries) => {
+            let mut new_entries: Vec<Spanned<SurfaceEntry>> = Vec::new();
+            let mut has_transformation = false;
+
+            for se in entries {
+                // Check if this entry's value is an InstanceDecl
+                let transformed_value = if let SurfaceExpression::Decl(decl) = &se.node.value.expr {
+                    if let SurfaceDeclaration::InstanceDecl { arms, .. } = decl.as_ref() {
+                        if !arms.is_empty() {
+                            // Transform: extract methods from arms[0].1 and build a Dict
+                            has_transformation = true;
+                            let method_entries = &arms[0].1;
+                            // Recurse into method entries to handle nested instances
+                            let desugared_methods: Vec<Spanned<SurfaceEntry>> = method_entries
+                                .iter()
+                                .map(|me| {
+                                    let new_key = me
+                                        .node
+                                        .key
+                                        .as_ref()
+                                        .map(|k| desugar_instance_decls_node(Arc::clone(k)));
+                                    let new_value =
+                                        desugar_instance_decls_node(Arc::clone(&me.node.value));
+                                    Spanned::new(
+                                        SurfaceEntry {
+                                            key: new_key,
+                                            value: new_value,
+                                        },
+                                        me.span.clone(),
+                                    )
+                                })
+                                .collect();
+                            Some(Arc::new(SurfaceNode {
+                                expr: SurfaceExpression::Dict(desugared_methods),
+                                span: se.node.value.span.clone(),
+                            }))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                if let Some(new_value) = transformed_value {
+                    // Entry was transformed: use new method dict
+                    let new_key = se
+                        .node
+                        .key
+                        .as_ref()
+                        .map(|k| desugar_instance_decls_node(Arc::clone(k)));
+                    new_entries.push(Spanned::new(
+                        SurfaceEntry {
+                            key: new_key,
+                            value: new_value,
+                        },
+                        se.span.clone(),
+                    ));
+                } else {
+                    // Entry not transformed: recurse into key and value
+                    let new_value = desugar_instance_decls_node(Arc::clone(&se.node.value));
+                    let new_key = se
+                        .node
+                        .key
+                        .as_ref()
+                        .map(|k| desugar_instance_decls_node(Arc::clone(k)));
+                    new_entries.push(Spanned::new(
+                        SurfaceEntry {
+                            key: new_key,
+                            value: new_value,
+                        },
+                        se.span.clone(),
+                    ));
+                }
+            }
+
+            if has_transformation {
+                SurfaceExpression::Dict(new_entries)
+            } else {
+                // No transformations: check if recursion changed anything
+                let changed = new_entries.iter().zip(entries.iter()).any(|(new, old)| {
+                    !Arc::ptr_eq(&new.node.value, &old.node.value)
+                        || new
+                            .node
+                            .key
+                            .as_ref()
+                            .zip(old.node.key.as_ref())
+                            .is_some_and(|(a, b)| !Arc::ptr_eq(a, b))
+                });
+                if changed {
+                    SurfaceExpression::Dict(new_entries)
+                } else {
+                    expr.clone()
+                }
+            }
+        }
+        // Recurse into other expression types that can contain dicts
+        SurfaceExpression::Sequential(exprs) => {
+            let new_exprs: Vec<Arc<SurfaceNode>> = exprs
+                .iter()
+                .map(|e| desugar_instance_decls_node(Arc::clone(e)))
+                .collect();
+            let changed = new_exprs
+                .iter()
+                .zip(exprs.iter())
+                .any(|(a, b)| !Arc::ptr_eq(a, b));
+            if changed {
+                SurfaceExpression::Sequential(new_exprs)
+            } else {
+                expr.clone()
+            }
+        }
+        SurfaceExpression::Call {
+            func,
+            args,
+            named_args,
+            implied,
+        } => {
+            let new_func = desugar_instance_decls_node(Arc::clone(func));
+            let new_args: Vec<Arc<SurfaceNode>> = args
+                .iter()
+                .map(|a| desugar_instance_decls_node(Arc::clone(a)))
+                .collect();
+            let new_named: Vec<Spanned<SurfaceNamedArg>> = named_args
+                .iter()
+                .map(|na| {
+                    let new_val = desugar_instance_decls_node(Arc::clone(&na.node.value));
+                    Spanned::new(
+                        SurfaceNamedArg {
+                            name: na.node.name.clone(),
+                            value: new_val,
+                            annotation: na.node.annotation.clone(),
+                        },
+                        na.span.clone(),
+                    )
+                })
+                .collect();
+            let changed = !Arc::ptr_eq(&new_func, func)
+                || new_args
+                    .iter()
+                    .zip(args.iter())
+                    .any(|(a, b)| !Arc::ptr_eq(a, b))
+                || new_named
+                    .iter()
+                    .zip(named_args.iter())
+                    .any(|(a, b)| !Arc::ptr_eq(&a.node.value, &b.node.value));
+            if changed {
+                SurfaceExpression::Call {
+                    func: new_func,
+                    args: new_args,
+                    named_args: new_named,
+                    implied: *implied,
+                }
+            } else {
+                expr.clone()
+            }
+        }
+        SurfaceExpression::Fn {
+            return_ann,
+            params,
+            body,
+            desugared,
+        } => {
+            let new_body = desugar_instance_decls_node(Arc::clone(body));
+            if Arc::ptr_eq(&new_body, body) {
+                expr.clone()
+            } else {
+                SurfaceExpression::Fn {
+                    return_ann: return_ann.clone(),
+                    params: params.clone(),
+                    body: new_body,
+                    desugared: *desugared,
+                }
+            }
+        }
+        SurfaceExpression::Match { scrutinee, arms } => {
+            let new_scrutinee = desugar_instance_decls_node(Arc::clone(scrutinee));
+            let new_arms: Vec<SurfaceMatchArm> = arms
+                .iter()
+                .map(|arm| {
+                    let new_guard = arm
+                        .guard
+                        .as_ref()
+                        .map(|g| desugar_instance_decls_node(Arc::clone(g)));
+                    let new_body = desugar_instance_decls_node(Arc::clone(&arm.body));
+                    SurfaceMatchArm {
+                        pattern: arm.pattern.clone(),
+                        guard: new_guard,
+                        body: new_body,
+                    }
+                })
+                .collect();
+            let changed = !Arc::ptr_eq(&new_scrutinee, scrutinee)
+                || new_arms.iter().zip(arms.iter()).any(|(a, b)| {
+                    !Arc::ptr_eq(&a.body, &b.body)
+                        || match (&a.guard, &b.guard) {
+                            (Some(ag), Some(bg)) => !Arc::ptr_eq(ag, bg),
+                            (None, None) => false,
+                            _ => true,
+                        }
+                });
+            if changed {
+                SurfaceExpression::Match {
+                    scrutinee: new_scrutinee,
+                    arms: new_arms,
+                }
+            } else {
+                expr.clone()
+            }
+        }
+        SurfaceExpression::TypeAssert {
+            annotation,
+            expr: inner,
+        } => {
+            let new_inner = desugar_instance_decls_node(Arc::clone(inner));
+            if Arc::ptr_eq(&new_inner, inner) {
+                expr.clone()
+            } else {
+                SurfaceExpression::TypeAssert {
+                    annotation: annotation.clone(),
+                    expr: new_inner,
+                }
+            }
+        }
+        // Leaf / non-recursive forms: return unchanged
+        _ => expr.clone(),
+    }
+}
+
 fn inject_adt_constructors_document(doc: &mut SurfaceDocument) {
     for item in &mut doc.items {
         if let SurfaceItem::Expr(node_arc) = item {

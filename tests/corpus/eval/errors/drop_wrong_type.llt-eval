@@ -11,6 +11,3 @@
   2491 | drop@[doc: "Drop first n elements"]: [fn [let n@Int xs] [builtin-drop n xs]]
        |                                                         ^^^^^^^^^^^^^^^^^^^
   in [drop ...] at 1:1-1:35
-
-=== warn
-[UnificationFailure] cannot unify Int with "not-a-number"

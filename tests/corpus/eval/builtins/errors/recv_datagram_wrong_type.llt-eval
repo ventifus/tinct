@@ -9,6 +9,3 @@
   2724 | recv-datagram@[doc: "Receive a datagram packet"]: builtin-recv-datagram
        |                                                   ^^^^^^^^^^^^^^^^^^^^^
   in [recv-datagram ...] at 2:1-2:31
-
-=== warn
-[UnificationFailure] cannot unify QuicDatagramHandle | DatagramHandle with "not-a-socket"

@@ -3788,6 +3788,7 @@ pub fn signature_help_at(doc: &DocumentState, offset: usize) -> Option<lsp_types
             params,
             ret,
             variadic,
+            required_count: _,
         } => (params, ret, variadic),
         _ => return None,
     };

@@ -6,8 +6,3 @@
 [eq: [= [Ok value: 1] [Ok value: 1]]]
 === out
 Dict({"eq": Bool(true)})
-
-=== warn
-[TypeError] auto-indexed entries not supported in type expressions
-[UndefinedVariable] undefined variable: Ok
-[UndefinedVariable] undefined variable: Ok

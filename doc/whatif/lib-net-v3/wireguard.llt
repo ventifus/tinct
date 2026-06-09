@@ -10,9 +10,9 @@
 [include %libdir "crypto.llt"]      # for HkdfHash ([Blake2s] etc.)
 [include %include-dir "noise.llt"]  # for NoiseConfig, NoiseConnection, noise-accept, noise-layer
 
-[instance@[bind: [h]] [ByteStream [WireguardConnection h]]
-  read:  wg-read-bytes
-  write: wg-write-bytes]
+[instance@[bind: [h]] ByteStream
+  [let s@[WireguardConnection h]]: [read:  wg-read-bytes
+                                    write: wg-write-bytes]]
 
 # ── Internal. ────────────────────────────────────────────────────────────────────────────────────
 
@@ -109,12 +109,6 @@
   # encode: plaintext Bytes → WireGuard type-4 data message Bytes
   # decode: WireGuard type-4 data message Bytes → plaintext Bytes
   WgDataCodec: [type [h] [conn: [WireguardConnection h]]]
-
-  # Serve layer: promotes a Channel@ByteStream to Channel@WireguardConnection.
-  # Lives here (not serve.llt) because it closes over WireguardConfig.
-  wireguard-serve: [fn@[bind: [h]  constraint: [h: ByteStream]]
-                    [let cfg@WireguardConfig in-ch@[Channel h]]
-    [channel-map [fn [let s@h] [wireguard-accept cfg s]] in-ch]]
 
   # wireguard-accept — responder side (server).
   # Cannot delegate to noise-accept because WireGuard message framing is different from raw
@@ -377,8 +371,9 @@
 #   Wire format: type(1)=4 reserved(3) receiver-index(4) nonce(8) ciphertext
 # decode: validates type byte; extracts nonce from header; decrypts ciphertext with rx-key.
 # Single-writer invariant on tx-nonce: do not encode concurrently (see WireguardConnection docstring).
-[instance@[bind: [h]] [Codec [WgDataCodec h] Bytes Bytes]
-  encode: [fn [let codec@[WgDataCodec h] plaintext@Bytes]
+[instance@[bind: [h]] Codec
+  [let c@[WgDataCodec h] i@Bytes o@Bytes]:
+  [encode: [fn [let codec@[WgDataCodec h] plaintext@Bytes]
     [conn: codec.conn]
     [match [recv conn.tx-nonce]
       [Closed.Closed]: [error "WgDataCodec.encode: tx-nonce channel closed"]
@@ -399,7 +394,7 @@
     [ct:      [slice data 16 [length data]]]
     [match [chacha20-poly1305-open conn.rx-key nonce12 ct []]
       [Result.Ok plain]:    plain
-      [Result.Error _]:     [error "WgDataCodec.decode: decryption failed"]]]]
+      [Result.Error _]:     [error "WgDataCodec.decode: decryption failed"]]]]]
 
 # ── WireguardLayer typeclass — bidirectional wireguard ────────────────────────
 #
@@ -411,13 +406,13 @@
   wireguard: [Fn@output [WireguardConfig input]]]
 
 # Client/Server single connection
-[instance@[bind: [h]  constraint: [h: ByteStream]]
-    [WireguardLayer h [WireguardConnection h]]
-  wireguard: [fn [let cfg@WireguardConfig h@h]
-    [wireguard h cfg]]]   # delegates to wireguard function (initiator, defined above)
+[instance@[bind: [h]  constraint: [h: ByteStream]] WireguardLayer
+  [let a@h b@[WireguardConnection h]]:
+  [wireguard: [fn [let cfg@WireguardConfig h@h]
+    [wireguard h cfg]]]]   # delegates to wireguard function (initiator, defined above)
 
 # Channel of connections (server pipeline)
-[instance@[bind: [h]  constraint: [h: ByteStream]]
-    [WireguardLayer [Channel h] [Channel [WireguardConnection h]]]
-  wireguard: [fn [let cfg@WireguardConfig ch@[Channel h]]
-    [channel-map [fn [let s@h] [wireguard-accept cfg s]] ch]]]
+[instance@[bind: [h]  constraint: [h: ByteStream]] WireguardLayer
+  [let a@[Channel h] b@[Channel [WireguardConnection h]]]:
+  [wireguard: [fn [let cfg@WireguardConfig ch@[Channel h]]
+    [channel-map [fn [let s@h] [wireguard-accept cfg s]] ch]]]]

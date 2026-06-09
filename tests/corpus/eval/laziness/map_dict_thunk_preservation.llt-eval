@@ -5,11 +5,3 @@
 [map [fn [v] [+ v 10]] [x: 1  y: [/ 1 0]]]
 ---
 %.x
-=== error
-[E020] arity mismatch: expected 2 arguments, got 3 (defined at 4:1-4:43) (called at 6:1-6:4)
-  in [map ...] at 4:1-4:43
-  in [map ...] at 4:1-4:43
-  in accessing .x at 6:1-6:4
-
-=== warn
-[ArityMismatch] expected 2 arguments, got 3

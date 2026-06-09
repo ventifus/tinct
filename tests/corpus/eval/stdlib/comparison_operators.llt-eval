@@ -12,11 +12,3 @@
 ]
 === out
 Dict({"gt_true": Bool(true), "gt_false": Bool(false), "gte_greater": Bool(true), "gte_equal": Bool(true), "gte_less": Bool(false), "lte_less": Bool(true), "lte_equal": Bool(true), "lte_greater": Bool(false)})
-
-=== warn
-[UnificationFailure] cannot unify 5 with 3
-[UnificationFailure] cannot unify 3 with 5
-[UnificationFailure] cannot unify 5 with 3
-[UnificationFailure] cannot unify 3 with 5
-[UnificationFailure] cannot unify 3 with 5
-[UnificationFailure] cannot unify 5 with 3

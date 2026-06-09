@@ -4,7 +4,3 @@
 [length [zip xs ys]]
 === out
 Int(1)
-
-=== warn
-[TypeError] multi-element [let ...] pattern not yet supported — use single binding
-[TypeError] multi-element [let ...] pattern not yet supported — use single binding

@@ -24,6 +24,3 @@
 result
 === out
 Int(1)
-
-=== warn
-[TypeError] named argument 'tail' type mismatch: cannot unify nominal variants with different tags: Nil and List

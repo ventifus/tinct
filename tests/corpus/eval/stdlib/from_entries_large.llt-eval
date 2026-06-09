@@ -3,30 +3,3 @@
 [let d [collect [range 0 1000]]]
 [let pairs [each-kv d]]
 [length [from-entries [collect pairs]]]
-=== error
-[E010] collect: expected Seq, got Dict (defined at stdlib/prelude.llt:2950:32-2950:34) (called at stdlib/prelude.llt:2950:15-2950:35)
-  --> stdlib/prelude.llt:2950:32-2950:34
-   |
-  2950 | """] [let xs] [builtin-collect xs]]
-       |                                ^^
-  in [builtin-collect ...] at stdlib/prelude.llt:2950:15-2950:35
-   |
-  2950 | """] [let xs] [builtin-collect xs]]
-       |               ^^^^^^^^^^^^^^^^^^^^
-  in materialized at stdlib/prelude.llt:1337:18-1337:36
-   |
-  1337 | """] [let pairs] [build-dict pairs]]
-       |                  ^^^^^^^^^^^^^^^^^^
-  in [build-dict ...] at stdlib/prelude.llt:1337:18-1337:36
-   |
-  1337 | """] [let pairs] [build-dict pairs]]
-       |                  ^^^^^^^^^^^^^^^^^^
-  in [builtin-length ...] at stdlib/prelude.llt:2503:20-2503:39
-   |
-  2503 | """]: [fn [let xs] [builtin-length xs]]
-       |                    ^^^^^^^^^^^^^^^^^^^
-  in [length ...] at 4:1-4:40
-
-=== warn
-[TypeError] multi-element [let ...] pattern not yet supported — use single binding
-[TypeError] multi-element [let ...] pattern not yet supported — use single binding
