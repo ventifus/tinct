@@ -1338,7 +1338,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
     );
 
     // ── Builder primitives ────────────────────────────────────────────────────
-    // Transient mutable dict builders. Canonical names for inject_builtin_aliases().
+    // Transient mutable dict builders. Canonical names for per-file *_builtin_types() alias resolution.
     // Parameter order follows T-777 (key-first, builder-last).
     // make-builder: () → Unknown
     env.insert(
@@ -1441,7 +1441,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
 
     // ── Reactive cells (T-831) ────────────────────────────────────────────────
     // ReactiveCell is opaque — all params and return are Unknown.
-    // Canonical names for inject_builtin_aliases().
+    // Canonical names for per-file *_builtin_types() alias resolution.
     // reactive-cell: T → ReactiveCell@T
     env.insert(
         "reactive-cell".to_string(),

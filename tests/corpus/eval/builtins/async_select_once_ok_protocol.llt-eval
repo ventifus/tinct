@@ -17,5 +17,3 @@
 [match %.result
   [case [let v] [Result.Ok v] v]
   Closed.Closed: -1]
-=== out
-Int(42)

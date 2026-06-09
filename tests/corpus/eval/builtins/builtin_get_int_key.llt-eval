@@ -1,3 +1,4 @@
+--- uses: ["core"]
 # builtin-get : int key lookup returns value at that index
 [builtin-get 1 [10 20 30]]
 === out

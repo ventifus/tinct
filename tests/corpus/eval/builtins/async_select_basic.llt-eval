@@ -15,4 +15,4 @@
 ]
 .result
 === error
-[E043]
+[E043] select-once: channel poll limit exceeded
