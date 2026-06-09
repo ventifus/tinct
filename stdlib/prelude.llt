@@ -2290,6 +2290,10 @@ ComparableStr@[doc: "Comparable instance for Str"]:
   [instance Comparable
     [let a@String]: [lt: [fn [let a b] [builtin-lt a b]]]]
 
+ComparableBool@[doc: "Comparable instance for Bool (false < true)"]:
+  [instance Comparable
+    [let a@Bool]: [lt: [fn [let a b] [builtin-lt a b]]]]
+
 # ============================================================================
 # Type Class Declarations: Showable
 # ============================================================================

@@ -21,6 +21,34 @@ use crate::types::{
     TypeError, TypeScheme,
 };
 
+/// Widen literal types in a type, recursively through Record fields.
+///
+/// Promotes `IntLiteral(n)` to `Int` and `StringLiteral(s)` to `Str` at every
+/// level of the type.  This is needed when unifying variadic arguments against
+/// a shared Seq element TypeVar: the first argument (e.g. `[1 2]`) would bind
+/// the TypeVar to `Record({0: IntLiteral(1), 1: IntLiteral(2)})`, and the second
+/// argument (e.g. `[3 4]`) would then fail to unify because
+/// `IntLiteral(1) ≠ IntLiteral(3)`.  Widening both records to
+/// `Record({0: Int, 1: Int})` lets them unify correctly.
+fn widen_literal_types(ty: Type) -> Type {
+    match ty {
+        Type::IntLiteral(_) => Type::Int,
+        Type::StringLiteral(_) => Type::Str,
+        Type::Record(row) => {
+            let widened_fields = row
+                .fields
+                .into_iter()
+                .map(|(k, v)| (k, widen_literal_types(v)))
+                .collect();
+            Type::Record(Row {
+                fields: widened_fields,
+                tail: row.tail,
+            })
+        }
+        other => other,
+    }
+}
+
 pub(crate) fn check_dot_access(
     target: &Arc<SurfaceNode>,
     field: &DotKey,
@@ -953,11 +981,9 @@ pub(crate) fn check_call(
                                 Ok(arg_ty) => {
                                     // Widen literal types before unifying to allow [f 10 20 30]
                                     // where 10, 20, 30 all unify with Int element type.
-                                    let widened_ty = match arg_ty {
-                                        Type::IntLiteral(_) => Type::Int,
-                                        Type::StringLiteral(_) => Type::Str,
-                                        other => other,
-                                    };
+                                    // Also widen Record field values so that [f [1 2] [3 4]] does
+                                    // not fail with IntLiteral(1) ≠ IntLiteral(3).
+                                    let widened_ty = widen_literal_types(arg_ty);
                                     let mut subst = std::mem::take(&mut state.subst);
                                     if let Err(e) = unify(
                                         &widened_ty,
@@ -1162,12 +1188,10 @@ pub(crate) fn check_call(
                         for arg in args.iter().skip(non_variadic_param_count) {
                             match infer_surface_expr(arg, env, state, type_map) {
                                 Ok(arg_ty) => {
-                                    // Widen literal types before unifying
-                                    let widened_ty = match arg_ty {
-                                        Type::IntLiteral(_) => Type::Int,
-                                        Type::StringLiteral(_) => Type::Str,
-                                        other => other,
-                                    };
+                                    // Widen literal types before unifying.
+                                    // Also widen Record field values so that [f [1 2] [3 4]] does
+                                    // not fail with IntLiteral(1) ≠ IntLiteral(3).
+                                    let widened_ty = widen_literal_types(arg_ty);
                                     let mut subst = std::mem::take(&mut state.subst);
                                     if let Err(e) = unify(
                                         &widened_ty,

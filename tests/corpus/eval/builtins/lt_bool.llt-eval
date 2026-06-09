@@ -3,7 +3,3 @@
 [< false true]
 === out
 Bool(true)
-
-=== warn
-[TypeError] type Bool does not satisfy constraint Comparable
-[TypeError] type Bool does not satisfy constraint Comparable

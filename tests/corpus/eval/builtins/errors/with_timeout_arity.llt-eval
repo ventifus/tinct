@@ -1,8 +1,10 @@
-# with-timeout: calling with 2 arguments instead of 3 produces a user error (E080)
+# builtin-with-timeout: calling with 2 arguments instead of 3 produces a user error (E080)
 # The ClockCap gate requires 3 positional args: (ClockCap, Context, Duration).
-[with-timeout [context] 1000]
+--- uses: ["core"]
+[builtin-with-timeout [builtin-context] 1000]
 === error
-[E080] with-timeout expects 3 arguments, got 2
+[E080] with-timeout expects 3 arguments, got 2 (defined at 3:1-3:46)
+  in [builtin-with-timeout ...] at 3:1-3:46
 
 === warn
-[ArityMismatch]
+[ArityMismatch] expected 3 arguments, got 2

@@ -1,12 +1,12 @@
 [raise "direct error call"]
 === error
-[E080] direct error call (defined at stdlib/prelude.llt:2480:28-2480:47)
-  --> stdlib/prelude.llt:2480:28-2480:47
+[E080] direct error call (defined at stdlib/prelude.llt:2484:28-2484:47)
+  --> stdlib/prelude.llt:2484:28-2484:47
    |
-  2480 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2484 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
-  in [builtin-raise ...] at stdlib/prelude.llt:2480:28-2480:47
+  in [builtin-raise ...] at stdlib/prelude.llt:2484:28-2484:47
    |
-  2480 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2484 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
   in [raise ...] at 1:1-1:28

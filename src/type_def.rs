@@ -2692,6 +2692,7 @@ pub fn primitive_satisfies_constraint(ty: &Type, class_name: &str) -> bool {
 
         // Comparable: types that support ordering ([< $a $b], [> $a $b], etc.).
         // Comparable implies Equatable via superclass relationship.
+        // Bool is Comparable: false < true (matches runtime builtin_lt behavior).
         "Comparable" => matches!(
             ty,
             Type::Int
@@ -2700,6 +2701,7 @@ pub fn primitive_satisfies_constraint(ty: &Type, class_name: &str) -> bool {
                 | Type::Str
                 | Type::StringLiteral(_)
                 | Type::Number
+                | Type::Bool
         ),
 
         // Numeric: types that support arithmetic ([+ $a $b], [* $a $b], etc.).
@@ -2908,9 +2910,9 @@ mod tests {
     }
 
     #[test]
-    fn test_primitive_comparable_bool_false() {
-        // Bool is NOT Comparable — no ordering defined for booleans
-        assert!(!primitive_satisfies_constraint(&Type::Bool, "Comparable"));
+    fn test_primitive_comparable_bool() {
+        // Bool IS Comparable: false < true matches runtime builtin_lt behavior.
+        assert!(primitive_satisfies_constraint(&Type::Bool, "Comparable"));
     }
 
     // --- Numeric ---

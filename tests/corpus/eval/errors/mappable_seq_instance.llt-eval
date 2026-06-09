@@ -1,9 +1,10 @@
 # MappableSeq instance: fmap applies a function over a Seq.
 # The instance method dict is callable directly.
+--- uses: ["core"]
 [
   inst: [instance Mappable [pattern [Seq]]:
     fmap: [fn [f xs] [builtin-map f xs]]]
   result: [collect [inst.fmap [fn [x] [+ x 10]] [builtin-range 0 3]]]
 ]
 === error
-[E099] syntax error at 4:41 (cannot evaluate error node) (defined at 4:41-4:42)
+[E099] syntax error at 5:41 (cannot evaluate error node) (defined at 5:41-5:42)

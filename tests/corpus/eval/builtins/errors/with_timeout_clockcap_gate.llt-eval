@@ -1,6 +1,12 @@
-# with-timeout: passing a non-ClockCap first argument produces a type error (E010).
+# builtin-with-timeout: passing a non-ClockCap first argument produces a type error (E010).
 # This verifies the ClockCap capability gate: only a real ClockCap value may be used.
 # Passing 42 (Int) instead of a ClockCap triggers the runtime guard.
-[with-timeout 42 [context] 1000]
+--- uses: ["core"]
+[builtin-with-timeout 42 [builtin-context] 1000]
 === error
-[E010] type mismatch: expected ClockCap, got Int
+[E010] type mismatch: expected ClockCap, got Int (defined at 4:1-4:49)
+  in [builtin-with-timeout ...] at 4:1-4:49
+
+=== warn
+[UnificationFailure] cannot unify ClockCap with 42
+[UnificationFailure] cannot unify Duration with 1000
