@@ -4,3 +4,5 @@
 ---
 
 [call %.parse-toml-lite "[section]\nkey = \"value\""]
+=== out
+Variant(Result.Ok, Dict({"section": Dict({"key": String("value")})}))

@@ -1,8 +1,11 @@
 # T-977: Unit constructor injection produces qualified Variant tag.
 # Color: [type Red Green Blue] injects Red, Green, Blue as dict entries.
 # Tags are qualified as "Color.Red", "Color.Green", "Color.Blue" (T-974).
-# The TypeAlias entry (Color) is skipped at runtime — produces no dict key.
+# After T-1193, constructors are accessed via Color.Red (dot notation).
 [
   Color: [type Red Green Blue]
-  value: Red
+  value: Color.Red
 ]
+
+=== out
+Dict({"Color": Dict({"Red": Variant(Color.Red, Null), "Green": Variant(Color.Green, Null), "Blue": Variant(Color.Blue, Null)}), "value": Variant(Color.Red, Null)})

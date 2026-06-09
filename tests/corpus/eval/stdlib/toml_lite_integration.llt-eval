@@ -4,3 +4,5 @@
 ---
 
 [call %.parse-toml-lite "[package]\nname = \"myproject\""]
+=== out
+Variant(Result.Ok, Dict({"package": Dict({"name": String("myproject")})}))

@@ -4,3 +4,5 @@
 ---
 
 [call %.parse-toml-lite "# comment\nkey = \"value\"\n# another comment"]
+=== out
+Variant(Result.Ok, Dict({"key": String("value")}))

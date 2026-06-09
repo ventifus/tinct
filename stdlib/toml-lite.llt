@@ -1,0 +1,137 @@
+# ============================================================================
+# LLT TOML-lite Parser (stdlib/toml-lite.llt)
+# ============================================================================
+#
+# Parses a minimal subset of TOML:
+#   - Comments (#) and blank lines — ignored
+#   - Regular sections: [section-name]
+#   - Array tables: [[array-name]]
+#   - Key-value pairs: key = "string" or key = integer
+#
+# Returns: Result.Ok(dict) or Result.Error(message)
+#
+# Limitations:
+#   - No nested sections, inline tables, multiline strings
+#   - String values must be double-quoted; no escape sequences in strings
+#   - Integer values only (no floats, booleans, dates)
+# ============================================================================
+
+# ============================================================================
+# Private helpers — not exported
+# ============================================================================
+[
+
+# Check if string s starts with prefix p.
+toml-sw: [fn [let p s]
+  [plen: [str-length p]
+   slen: [str-length s]]
+  [if [<= plen slen] [= p [str-slice 0 plen s]] false]]
+
+# Parse a TOML value token: quoted string or integer.
+toml-val: [fn [let raw]
+  [ts: [trim raw]]
+  [if [toml-sw "\"" ts]
+    [str-slice 1 [- [str-length ts] 1] ts]
+    [match [try [fn [let] [to-int ts]]]
+      [case [let v] [Result.Ok v] v]
+      _:                          ts]]]
+
+# Handle key-value for array table: insert k=v into the current entry.
+toml-kv-arr: [fn [let state k v]
+  [aname:   state.arr-name
+   idx:     state.arr-idx
+   cur-arr: [get aname state.result]
+   cur-ent: [get idx cur-arr]
+   upd-ent: [merge cur-ent [make-entry k v]]
+   upd-arr: [merge cur-arr [make-entry idx upd-ent]]
+   upd-res: [merge state.result [make-entry aname upd-arr]]]
+  [merge state [result: upd-res]]]
+
+# Handle key-value for regular section: insert k=v into the current section dict.
+toml-kv-sect: [fn [let state k v]
+  [sect:    [get-or state.section [] state.result]
+   upd-s:   [merge sect [make-entry k v]]
+   upd-res: [merge state.result [make-entry state.section upd-s]]]
+  [merge state [result: upd-res]]]
+
+# Handle key-value for top level: insert k=v into result.
+toml-kv-top: [fn [let state k v]
+  [merge state [result: [merge state.result [make-entry k v]]]]]
+
+# Dispatch key-value update based on current section context.
+toml-kv: [fn [let state k v]
+  [if [not [= "" state.arr-name]]
+    [toml-kv-arr state k v]
+    [if [not [= "" state.section]]
+      [toml-kv-sect state k v]
+      [toml-kv-top state k v]]]]
+
+# Handle array-table header [[name]].
+toml-arr-header: [fn [let state tl]
+  [inner:    [str-slice 2 [- [str-length tl] 2] tl]
+   aname:    [trim inner]
+   cur-arr:  [get-or aname [] state.result]
+   new-idx:  [length cur-arr]
+   upd-arr:  [merge cur-arr [make-entry new-idx []]]
+   upd-res:  [merge state.result [make-entry aname upd-arr]]]
+  [merge state [result: upd-res  section: ""  arr-name: aname  arr-idx: new-idx]]]
+
+# Handle regular section header [name].
+toml-sect-header: [fn [let state tl]
+  [inner: [str-slice 1 [- [str-length tl] 1] tl]
+   sname: [trim inner]]
+  [merge state [section: sname  arr-name: ""]]]
+
+# Apply key-value given pre-computed key end position and total length.
+# Factored out of toml-kv-line to avoid multi-body in else-branch.
+toml-kv-apply: [fn [let state tl key-end total-len]
+  [k: [trim [str-slice 0 key-end tl]]
+   v: [toml-val [str-slice [+ key-end 1] total-len tl]]]
+  [toml-kv state k v]]
+
+# Handle a key-value line (may contain '=').
+toml-kv-line: [fn [let state tl]
+  [first-part: [get 0 [split "=" tl]]
+   key-end:    [str-length first-part]
+   total-len:  [str-length tl]]
+  [if [= key-end total-len]
+    state
+    [toml-kv-apply state tl key-end total-len]]]
+
+# Process one TOML line; return updated state dict.
+# State fields: result (dict), section (string), arr-name (string), arr-idx (int).
+toml-process: [fn [let state line]
+  [tl: [trim line]]
+  [if [or [= "" tl] [toml-sw "#" tl]]
+    state
+    [if [toml-sw "[[" tl]
+      [toml-arr-header state tl]
+      [if [toml-sw "[" tl]
+        [toml-sect-header state tl]
+        [toml-kv-line state tl]]]]]
+
+# Initial parse state.
+toml-init: [result: []  section: ""  arr-name: ""  arr-idx: 0]
+
+]
+
+# ============================================================================
+# Public API — exported
+# ============================================================================
+[
+
+# Parse a TOML-lite formatted string.
+# Returns Result.Ok(dict) on success, Result.Error(message) on failure.
+#
+# Type: String -> Result
+# Example: [parse-toml-lite "[pkg]\nname = \"myapp\""] => Result.Ok({pkg: {name: "myapp"}})
+# Example: [parse-toml-lite "x = 42"] => Result.Ok({x: 42})
+parse-toml-lite@[doc: "Parse a minimal TOML-lite string into a dict. Returns Result.Ok(dict) on success or Result.Error(message) on failure."]:
+  [fn [let input@String]
+    [match [try [fn [let]
+      [state: [reduce toml-process toml-init [split "\n" input]]]
+      state.result]]
+      [case [let v] [Result.Ok v]    [builtin-variant "Result.Ok" v]]
+      [case [let e] [Result.Error e] [builtin-variant "Result.Error" [str "toml-lite: " e]]]]]
+
+]

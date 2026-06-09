@@ -1,9 +1,10 @@
 # Parameterized type alias basic usage
 # [type [let a b] Body] declares a type alias with parameters
-# Constructor usage should work, but @[Alias T1 T2] instantiation is not yet implemented
+# After T-1193, constructors are accessed via qualified dot-notation: Pair.Pair
 
 [
   Pair: [type [let a b] [Pair first: a  second: b]]
-  int-str: [Pair first: 42  second: "hello"]
+  int-str: [Pair.Pair first: 42  second: "hello"]
 ]
 int-str.first
+

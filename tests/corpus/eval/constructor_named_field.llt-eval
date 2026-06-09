@@ -1,7 +1,8 @@
 # B-337: Named-field constructor calling convention.
-# Constructor [Boxed value: Int] generates [fn [...payload] [variant-payload "Box.Boxed" payload]].
-# Calling [Boxed value: 42] passes the named arg correctly.
+# Constructor [Boxed value: Int] generates [fn [value] [builtin-variant "Box.Boxed" {value: value}]].
+# Calling [Box.Boxed value: 42] passes the named arg correctly (T-1193: qualified form).
 [
   Box: [type [Boxed value: Int]]
-  result: [Boxed value: 42]
+  result: [Box.Boxed value: 42]
 ]
+

@@ -1,13 +1,10 @@
-# T-974: Named-field constructor injection redesign.
-# After T-974, [type Shape [Circle r: Int] [Square s: Int]] injects:
-#   - Shape: Variant("Shape", Null) (unit from VarRef)
-#   - Circle: fn [r] [variant "Circle" [r: r]] (named-field constructor fn wrapper)
-#   - Square: fn [s] [variant "Square" [s: s]] (named-field constructor fn wrapper)
-# [Circle r: 5] → Variant("Circle", Dict({r: Int(5)})).
-# Pattern [Circle r]: binds r = Dict({r: Int(5)}) (the payload dict, not the raw int).
-# [* 3 [* r r]] where r is a Dict → arithmetic type error.
-# NOTE: This test will work correctly once T-968 (pattern tag qualification and field
-# extraction semantics) is implemented. For now it shows the T-974 intermediate state.
+# T-974 / T-968: Named-field constructor match with payload dict access.
+# After T-1193, [type Shape [Circle r: Int] [Square s: Int]] produces a constructor dict:
+#   Shape: {Shape: Variant("Shape.Shape", Null), Circle: fn [r] ..., Square: fn [s] ...}
+# [Shape.Circle r: 5] → Variant("Shape.Circle", Dict({r: Int(5)})).
+# Pattern [case [let p] [Shape.Circle p] body]: binds p = payload dict {r: Int(5)}.
+# [* 3 [* p.r p.r]] accesses p.r = 5 → 75.
+# T-968 implemented: constructor tag qualification works correctly.
 [
   Shape: [type Shape
     [Circle r: Int]
@@ -21,3 +18,4 @@
     [case [let p] [Shape.Square p] [* p.s p.s]]
   ]
 ]
+

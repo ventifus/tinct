@@ -1,15 +1,18 @@
 # T-977: Match on unit constructor using qualified dot-access patterns.
 # Color.Green: in match arm position → Pattern::Constructor { tag: "Color.Green", binding: None }.
-# Scrutinee Green has Variant tag "Color.Green" — tag equality holds, arm matches.
-# The evaluator's match_pattern checks tag != variant_tag, so "Color.Green" == "Color.Green" → match.
+# Scrutinee Color.Green has Variant tag "Color.Green" — tag equality holds, arm matches.
+# After T-1193, constructors are accessed via Color.Red/Color.Green/Color.Blue (qualified form).
 #
 # Note: no non-exhaustive warning for this case — Color type uses TypeTag patterns (bare uppercase
 # like Color.Red:) which the coverage checker doesn't enumerate. B-344 tracks the remaining gap
 # where qualified Constructor patterns in nested dicts aren't recognized as covering.
 [
   Color: [type Red Green Blue]
-  result: [match Green
+  result: [match Color.Green
     Color.Red:   "red"
     Color.Green: "green"
     Color.Blue:  "blue"]
 ]
+
+=== out
+Dict({"Color": Dict({"Red": Variant(Color.Red, Null), "Green": Variant(Color.Green, Null), "Blue": Variant(Color.Blue, Null)}), "result": String("green")})
