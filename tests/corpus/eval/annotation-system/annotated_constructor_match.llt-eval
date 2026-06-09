@@ -5,7 +5,7 @@
 # After the fix, Value::Annotated is peeled and the inner Variant tag "MyType.Red" is matched.
 # Uses MyType.Red as scrutinee (T-1086: qualified form is in typecheck scope; unqualified Red is not).
 [
-  MyType:  [type Red@[category: "primary"]]
+  MyType:  [type [Red@[category: "primary"]]]
   matched: [match MyType.Red
     MyType.Red: "matched"
     _:          "wildcard"]

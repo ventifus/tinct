@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use crate::ast::{
     node_id, CoreEntry, CoreExpr, CoreMatchArm, CoreNamedArg, CoreParam, Pattern, ResolutionTable,
-    Spanned, SurfaceExpression, SurfaceNode, TypeAnnotationTable,
+    Spanned, SurfaceEntry, SurfaceExpression, SurfaceNode, TypeAnnotationTable,
 };
 use crate::type_def::Type;
 
@@ -597,7 +597,8 @@ fn extract_type_name_from_key(key: &Option<Arc<SurfaceNode>>) -> Option<String> 
 /// Lower a TypeAlias body to a constructor dict at runtime (T-1193).
 ///
 /// Produces a `CoreExpr::Dict` containing constructor entries:
-/// - Unit constructors → `CtorName: [builtin-variant "TypeName.CtorName"]`
+/// - Unit constructors (no annotation) → `CtorName: [builtin-variant "TypeName.CtorName"]`
+/// - Unit constructors (with annotation) → `CtorName: [builtin-make-annotated [builtin-variant "TypeName.CtorName"] [key: val ...]]`
 /// - Payload constructors → `CtorName: [fn [...fields] [builtin-variant "TypeName.CtorName" payload]]`
 ///
 /// The type name (if present) qualifies the variant tags. When absent, uses unqualified tags.
@@ -606,8 +607,8 @@ fn extract_type_name_from_key(key: &Option<Arc<SurfaceNode>>) -> Option<String> 
 fn lower_type_alias_to_constructor_dict(
     type_name_opt: Option<String>,
     body: &Arc<SurfaceNode>,
-    _res: &ResolutionTable,
-    _types: &TypeAnnotationTable,
+    res: &ResolutionTable,
+    types: &TypeAnnotationTable,
 ) -> CoreExpr {
     use crate::ast::{CoreEntry, CoreParam, Span};
 
@@ -633,7 +634,8 @@ fn lower_type_alias_to_constructor_dict(
         // Create the value: either a unit variant or a constructor function
         let value = if ctor.is_unit {
             // Unit constructor: [builtin-variant "TypeName.CtorName"]
-            Arc::new(Spanned::new(
+            // If the constructor carries a @[...] annotation (T-1121), wrap with make-annotated.
+            let variant_call = Arc::new(Spanned::new(
                 CoreExpr::Call {
                     func: Arc::new(Spanned::new(
                         CoreExpr::FreeVar("builtin-variant".to_string()),
@@ -647,7 +649,40 @@ fn lower_type_alias_to_constructor_dict(
                     implied: false,
                 },
                 syn_span.clone(),
-            ))
+            ));
+
+            if let Some(ann_entries) = &ctor.annotation {
+                // Build annotation dict CoreExpr from PropertyDict entries.
+                // Each entry is a SurfaceEntry with a string key and literal value.
+                // Lower the values through the normal lower() pipeline for correct resolution.
+                let ann_core_entries: Vec<Spanned<CoreEntry>> = ann_entries
+                    .iter()
+                    .map(|se| {
+                        let key = se.node.key.as_ref().map(|k| Arc::new(lower(k, res, types)));
+                        let value = Arc::new(lower(&se.node.value, res, types));
+                        Spanned::new(CoreEntry { key, value }, se.span.clone())
+                    })
+                    .collect();
+                let ann_dict = Arc::new(Spanned::new(
+                    CoreExpr::Dict(ann_core_entries),
+                    syn_span.clone(),
+                ));
+                // [builtin-make-annotated [builtin-variant "TypeName.CtorName"] [ann_entries...]]
+                Arc::new(Spanned::new(
+                    CoreExpr::Call {
+                        func: Arc::new(Spanned::new(
+                            CoreExpr::FreeVar("builtin-make-annotated".to_string()),
+                            syn_span.clone(),
+                        )),
+                        args: vec![variant_call, ann_dict],
+                        named_args: vec![],
+                        implied: false,
+                    },
+                    syn_span.clone(),
+                ))
+            } else {
+                variant_call
+            }
         } else {
             // Payload constructor: function that takes named args and returns a variant
             // [fn [let ...fields] [builtin-variant "TypeName.CtorName" [dict field: value ...]]]
@@ -725,6 +760,10 @@ struct ConstructorInfo {
     name: String,
     is_unit: bool,
     fields: Vec<String>,
+    /// Annotation entries from `@[...]` on the constructor declaration (T-1121).
+    /// Present when the constructor was written as `CtorName@[key: val ...]` in the type body.
+    /// Used by `lower_type_alias_to_constructor_dict` to emit `[builtin-make-annotated ...]`.
+    annotation: Option<Vec<Spanned<SurfaceEntry>>>,
 }
 
 /// Extract constructor information from a TypeAlias body.
@@ -744,20 +783,30 @@ fn extract_constructors_from_body(body: &SurfaceExpression) -> Vec<ConstructorIn
 
     fn try_extract_one(expr: &SurfaceExpression, ctors: &mut Vec<ConstructorInfo>) {
         match expr {
-            // Bare uppercase VarRef → unit constructor
+            // Bare uppercase VarRef → unit constructor (no annotation)
             SurfaceExpression::VarRef { name, .. } if is_ctor(name) => {
                 ctors.push(ConstructorInfo {
                     name: name.clone(),
                     is_unit: true,
                     fields: Vec::new(),
+                    annotation: None,
                 });
             }
-            // Annotated uppercase → unit constructor
-            SurfaceExpression::Annotated { name, .. } if is_ctor(name) => {
+            // Annotated uppercase → unit constructor with annotation (T-1121).
+            // `Red@[category: "primary"]` → unit constructor carrying the PropertyDict entries.
+            SurfaceExpression::Annotated { name, annotation } if is_ctor(name) => {
+                // Extract PropertyDict entries for annotation wrapping at runtime.
+                let ann_entries = match &annotation.node {
+                    crate::ast::Annotation::PropertyDict(entries) if !entries.is_empty() => {
+                        Some(entries.clone())
+                    }
+                    _ => None,
+                };
                 ctors.push(ConstructorInfo {
                     name: name.clone(),
                     is_unit: true,
                     fields: Vec::new(),
+                    annotation: ann_entries,
                 });
             }
             // Call with uppercase func → unit or named-field constructor
@@ -774,6 +823,7 @@ fn extract_constructors_from_body(body: &SurfaceExpression) -> Vec<ConstructorIn
                                 name: name.clone(),
                                 is_unit: true,
                                 fields: Vec::new(),
+                                annotation: None,
                             });
                         } else {
                             // Named args → named-field constructor
@@ -782,6 +832,7 @@ fn extract_constructors_from_body(body: &SurfaceExpression) -> Vec<ConstructorIn
                                 name: name.clone(),
                                 is_unit: false,
                                 fields,
+                                annotation: None,
                             });
                         }
                     }
@@ -815,6 +866,7 @@ fn extract_constructors_from_body(body: &SurfaceExpression) -> Vec<ConstructorIn
                     name: ctor_name,
                     is_unit,
                     fields,
+                    annotation: None,
                 });
             }
             _ => {}

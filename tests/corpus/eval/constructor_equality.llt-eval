@@ -1,5 +1,11 @@
 # T-977: Constructor equality — same qualified tag compares equal, different tags compare unequal.
 # values_equal on Variant{payload: None} compares tag strings directly.
-# Red == Red is true; Red == Green is false.
-[Color: [type Red Green Blue]]
-[eq-same: [= Red Red]  eq-diff: [= Red Green]]
+# Color.Red == Color.Red is true; Color.Red == Color.Green is false.
+# Uses qualified names (T-1086: [type ...] evaluates to constructor dict; bare Red not in scope).
+[
+  Color:   [type Red Green Blue]
+  eq-same: [= Color.Red Color.Red]
+  eq-diff: [= Color.Red Color.Green]
+]
+=== out
+Dict({"Color": Dict({"Red": Variant(Color.Red, Null), "Green": Variant(Color.Green, Null), "Blue": Variant(Color.Blue, Null)}), "eq-same": Bool(true), "eq-diff": Bool(false)})

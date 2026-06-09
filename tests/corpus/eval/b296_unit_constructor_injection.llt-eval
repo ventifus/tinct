@@ -1,8 +1,11 @@
-# T-974: Unit constructor desugar-pass injection (consolidated from B-296 eval-dict pre-scan)
-# Unit constructors from [type ...] declarations are injected by the desugar pass.
+# T-974: Unit constructor qualified access (T-1086: [type ...] evaluates to constructor dict).
+# After T-1086, [type ...] evaluates to a dict {CtorName: Variant(TypeName.CtorName, Null)}.
+# Constructors are accessed via dot-access: Transport.Tcp, Transport.Udp.
 # The variant tag is qualified as "TypeName.CtorName" for keyed type declarations.
 [
   Transport: [type Tcp Udp]
-  tcp-val: Tcp
-  udp-val: Udp
+  tcp-val:   Transport.Tcp
+  udp-val:   Transport.Udp
 ]
+=== out
+Dict({"Transport": Dict({"Tcp": Variant(Transport.Tcp, Null), "Udp": Variant(Transport.Udp, Null)}), "tcp-val": Variant(Transport.Tcp, Null), "udp-val": Variant(Transport.Udp, Null)})

@@ -1,20 +1,18 @@
 # Match on variants with and without payloads
 # Some has a payload field, None is unit-like
-# T-1154: Pattern::Variable replaced by Pattern::Pin; use 3-arg [case [let n] [Some n] n] to bind.
-
+# T-1154: Pattern::Variable replaced by Pattern::Pin; use 3-arg [case [let n] [Option.Some n] n] to bind.
+# T-1086: [type ...] evaluates to constructor dict; use keyed form and qualified names.
 [
-  [type Option [Some value: Int] [None]]
+  Option: [type [Some value: Int] [None]]
 
-  x: [Some 10]
-  y: None
+  x: [Option.Some value: 10]
+  y: Option.None
 
   result1: [match x
-    [case [let n] [Some n] n]
-    [None]:                 0]
+    [case [let n] [Option.Some n] n.value]
+    Option.None:                  0]
 
   result2: [match y
-    [case [let n] [Some n] n]
-    [None]:                 0]
-
-  both: [seq result1 result2]
+    [case [let n] [Option.Some n] n.value]
+    Option.None:                  0]
 ]
