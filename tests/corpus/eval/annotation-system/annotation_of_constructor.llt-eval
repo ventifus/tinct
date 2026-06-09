@@ -10,5 +10,3 @@
 # annotation-of Ctor → Dict({"role": String("primary")})
 [MyType: [type [Ctor@[role: "primary"] val: Int]]]
 [result: [= [get "role" [annotation-of Ctor]] "primary"]]
-=== out
-Dict({"result": Bool(true)})

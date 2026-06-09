@@ -1475,17 +1475,6 @@ fn create_stdlib_env_inner(bootstrap_base_dir: cap_std::fs::Dir) -> StdlibEnvWit
     // evaluation) during runtime bootstrap, so that structural macros in prelude.llt
     // are expanded without requiring a live stdlib env. This is left for a future sprint.
     crate::desugar::desugar_surface_program(&mut prelude_program);
-    // B-296: Inject `CtorName: [variant "CtorName"]` entries for all `[type ...]` ADT
-    // declarations in prelude.llt. This runs BEFORE resolve so de Bruijn slots are correct.
-    // Must run after desugar ($_ lowering) but before resolve (slot assignment).
-    //
-    // This is the runtime counterpart to the type checker's inject_adt_constructor_schemes
-    // (in typecheck_dict.rs). The type checker exports constructors with precise NominalVariant
-    // or Function types; the desugar injection makes them available as runtime values.
-    //
-    // Previously, prelude.llt had explicit `Tcp: [variant "Tcp"]` entries as a workaround.
-    // Those were removed (B-296 fix) and replaced by this injection call.
-    crate::desugar::inject_adt_constructors_surface_program(&mut prelude_program);
     // Transform instance decls to method dicts (T-1142).
     // Must run before resolve so [instance ...] entries in dict position are
     // converted to explicit Dict values before lower.rs skips all Decl entries.
@@ -1595,14 +1584,6 @@ pub fn create_type_stage_env() -> Result<Arc<RwLock<Environment>>, Box<crate::er
     // Desugar $_ implicit lambdas on SurfaceProgram.
     let mut program = parsed.program.clone();
     crate::desugar::desugar_surface_program(&mut program);
-    // Inject ADT constructor bindings so TypeNode's named-field constructors (Record, Union,
-    // Intersect, TypeConstructor, TypeApplication, Arrow, Recursive, RecursiveRef, TypeVar)
-    // are in scope when the type-stage prelude's first dict is evaluated. Without this, any
-    // lazy binding that references these constructors (Null, Seq, Map, union, all) fails
-    // silently when forced, and the second dict's `TypeNode: [merge TypeNode [...]]` fails
-    // immediately because `TypeNode` is undefined in the env. Must run after desugar, before
-    // resolve (same ordering as create_stdlib_env_inner).
-    crate::desugar::inject_adt_constructors_surface_program(&mut program);
     // Transform instance decls to method dicts (T-1142).
     crate::desugar::desugar_instance_decls_surface_program(&mut program);
     // Variable resolution pass (Phase 1 of arena allocation strategy).

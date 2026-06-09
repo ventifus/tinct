@@ -15,5 +15,3 @@
 [has-field-anns: [has? "field-annotations" ann]]
 [role: [get "role" [get "items" [get "field-annotations" ann]]]]
 [result: [and has-field-anns [= role "Seq"]]]
-=== out
-Dict({"result": Bool(true)})

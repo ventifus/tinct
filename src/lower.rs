@@ -602,8 +602,7 @@ fn extract_type_name_from_key(key: &Option<Arc<SurfaceNode>>) -> Option<String> 
 ///
 /// The type name (if present) qualifies the variant tags. When absent, uses unqualified tags.
 ///
-/// This mirrors the logic in `desugar.rs::build_constructor_value` but produces `CoreExpr`
-/// instead of `SurfaceExpression`.
+/// Produces `CoreExpr` nodes for each constructor entry in the runtime dict.
 fn lower_type_alias_to_constructor_dict(
     type_name_opt: Option<String>,
     body: &Arc<SurfaceNode>,
@@ -730,13 +729,7 @@ struct ConstructorInfo {
 
 /// Extract constructor information from a TypeAlias body.
 ///
-/// Simplified version of `desugar.rs::extract_surface_adt_ctors_from_expr`.
-/// Handles the common cases:
-/// - Bare uppercase VarRef → unit constructor
-/// - Dict with uppercase VarRef first positional entry → payload constructor with named fields
-/// Extract constructor info from a TypeAlias body, mirroring `desugar.rs::extract_surface_adt_ctors_from_expr`.
-///
-/// Constructor forms:
+/// Handles the common constructor forms:
 /// 1. Bare VarRef uppercase → unit constructor (e.g., `Red`, `None`)
 /// 2. Annotated uppercase → unit constructor with annotation
 /// 3. Call with uppercase func + no named args → unit constructor (e.g., `[Ok a]`, `[Error String]`)
@@ -828,7 +821,7 @@ fn extract_constructors_from_body(body: &SurfaceExpression) -> Vec<ConstructorIn
         }
     }
 
-    // Top-level dispatch — mirrors desugar.rs::extract_surface_adt_ctors_from_expr.
+    // Top-level dispatch: distinguish single-constructor dict from union of constructors.
     match body {
         SurfaceExpression::Dict(entries) => {
             // Distinguish "single named-field constructor dict" from "union of constructors":

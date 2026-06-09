@@ -14,4 +14,4 @@
   result: 42
 ]
 === out
-Dict({"MyTag": Function(payload), "Tag": Dict({"MyTag": Function(value)}), "extract": Function(s), "result": Int(42)})
+Dict({"Tag": Dict({"MyTag": Function(value)}), "extract": Function(s), "result": Int(42)})

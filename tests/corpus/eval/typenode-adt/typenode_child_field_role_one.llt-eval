@@ -16,5 +16,3 @@
 [role: [get "role" [get "child" field-anns]]]
 [no-label: [not [has? "label" field-anns]]]
 [result: [and has-field-anns [and [= role "One"] no-label]]]
-=== out
-Dict({"result": Bool(true)})

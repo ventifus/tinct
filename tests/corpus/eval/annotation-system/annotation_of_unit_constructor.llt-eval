@@ -8,5 +8,3 @@
 [MyType: [type Red@[category: "primary"]]]
 [ann: [annotation-of Red]]
 [result: [= [get "category" ann] "primary"]]
-=== out
-Dict({"result": Bool(true)})

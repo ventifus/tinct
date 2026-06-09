@@ -6,7 +6,7 @@
 # cap: DirCap, path: String
 # Returns: [Ok seq] or [Error message]
 read-lines@[doc: "Read a file as a lazy sequence of lines"]: [fn@Dict [let cap@DirCap path@String]
-  [try [fn [let] [lines [open cap path Readable]]]]]
+  [try [fn [let] [lines [open cap path OpenFlag.Readable]]]]]
 
 # Print a string followed by a newline to stdout.
 println@[doc: "Print a string followed by a newline to stdout"]: [fn@Null [let s@String]
@@ -34,19 +34,19 @@ write-line@[doc: "Write a line to a WriteHandle, appending a newline and flushin
 # Append content to a file (creates if doesn't exist).
 # cap: DirCap, path: String, content: String
 append-file@[doc: "Append content to a file (creates if doesn't exist)"]: [fn@Null [let cap@DirCap path@String content@String]
-  [write-handle [open cap path Writable Appendable] content]]
+  [write-handle [open cap path OpenFlag.Writable OpenFlag.Appendable] content]]
 
 # Open a file for writing (creates or truncates, returns handle).
 # cap: DirCap, path: String
 # Returns: WriteHandle
 open-write@[doc: "Open a file for writing (creates or truncates, returns handle)"]: [fn@WriteHandle [let cap@DirCap path@String]
-  [open cap path Writable]]
+  [open cap path OpenFlag.Writable]]
 
 # Open a file for appending (creates if doesn't exist, returns handle).
 # cap: DirCap, path: String
 # Returns: WriteHandle
 open-append@[doc: "Open a file for appending (creates if doesn't exist, returns handle)"]: [fn@WriteHandle [let cap@DirCap path@String]
-  [open cap path Writable Appendable]]
+  [open cap path OpenFlag.Writable OpenFlag.Appendable]]
 
 # Write a sequence of lines to a WriteHandle.
 # handle: WriteHandle, lines: Seq
@@ -63,5 +63,5 @@ has-cap?@[doc: "Check if a capability is present on a Handle or WriteHandle"]: [
 # cap: DirCap, src: String source path, dst: String destination path
 # Reads the source file line-by-line and writes it to the destination (create/truncate).
 copy@[doc: "Copy a file from src to dst"]: [fn@Null [let cap@DirCap src@String dst@String]
-  [close [write-lines [raw-create cap dst] [lines [open cap src Readable]]]]]
+  [close [write-lines [raw-create cap dst] [lines [open cap src OpenFlag.Readable]]]]]
 ]

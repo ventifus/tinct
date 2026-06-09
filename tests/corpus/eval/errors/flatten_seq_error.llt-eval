@@ -1,14 +1,14 @@
 # flatten: Seq input produces descriptive error
 [flatten [seq 1 [seq 2 []]]]
 === error
-[E080] flatten: expected Dict, got Seq -- collect the Seq first (defined at stdlib/prelude.llt:2483:28-2483:47)
-  --> stdlib/prelude.llt:2483:28-2483:47
+[E080] flatten: expected Dict, got Seq -- collect the Seq first (defined at stdlib/prelude.llt:2480:28-2480:47)
+  --> stdlib/prelude.llt:2480:28-2480:47
    |
-  2483 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2480 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
-  in [builtin-raise ...] at stdlib/prelude.llt:2483:28-2483:47
+  in [builtin-raise ...] at stdlib/prelude.llt:2480:28-2480:47
    |
-  2483 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2480 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
   in [builtin-if ...] at stdlib/prelude.llt:1506:5-1508:32
    |

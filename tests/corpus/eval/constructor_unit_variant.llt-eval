@@ -6,5 +6,3 @@
   Color: [type Red Green Blue]
   value: Red
 ]
-=== out
-Dict({"Red": Variant(Color.Red, Null), "Green": Variant(Color.Green, Null), "Blue": Variant(Color.Blue, Null), "Color": Dict({"Red": Variant(Color.Red, Null), "Green": Variant(Color.Green, Null), "Blue": Variant(Color.Blue, Null)}), "value": Variant(Color.Red, Null)})

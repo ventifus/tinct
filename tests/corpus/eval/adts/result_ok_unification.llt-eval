@@ -8,4 +8,4 @@
   result: ok1
 ]
 === out
-Dict({"Ok": Variant(Result.Ok, Null), "Error": Variant(Result.Error, Null), "Result": Dict({"Ok": Variant(Result.Ok, Null), "Error": Variant(Result.Error, Null)}), "ok1": Variant(Result.Ok, Int(42)), "ok2": Variant(Result.Ok, String("hello")), "result": Variant(Result.Ok, Int(42))})
+Dict({"Result": Dict({"Ok": Variant(Result.Ok, Null), "Error": Variant(Result.Error, Null)}), "ok1": Variant(Result.Ok, Int(42)), "ok2": Variant(Result.Ok, String("hello")), "result": Variant(Result.Ok, Int(42))})

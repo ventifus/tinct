@@ -597,6 +597,14 @@ pub(crate) fn infer_dict(
                                 });
                                 dict_env.insert_tycon_def(name.clone(), Arc::clone(&tycon_def));
                                 state.tycon_env.insert(name.clone(), tycon_def);
+                                // Register the alias name as an Unknown-typed value so that
+                                // qualified access like `Color.Green` can resolve `Color` in
+                                // value position. T-1193: [type ...] now evaluates to a constructor
+                                // dict at runtime; the type checker uses Unknown as a placeholder.
+                                dict_env.insert_scheme(
+                                    name.clone(),
+                                    crate::types::TypeScheme::mono(crate::types::Type::Unknown),
+                                );
                             }
                         }
 

@@ -2133,8 +2133,6 @@ fn run_eval(
             .map_err(|e| format!("{e}"))?;
             // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
             tinct::desugar::desugar_surface_program(&mut program);
-            // Inject ADT constructor bindings (must run after desugar, before resolve).
-            tinct::desugar::inject_adt_constructors_surface_program(&mut program);
             // Transform instance decls to method dicts (T-1142).
             tinct::desugar::desugar_instance_decls_surface_program(&mut program);
             // Variable resolution pass (Phase 1 of arena allocation strategy).
@@ -2927,8 +2925,6 @@ fn run_literate_eval(tangled: &str, config: &LiterateConfig) -> Result<(), Strin
     .map_err(|e| format!("{e}"))?;
     // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
     tinct::desugar::desugar_surface_program(&mut program);
-    // Inject ADT constructor bindings (must run after desugar, before resolve).
-    tinct::desugar::inject_adt_constructors_surface_program(&mut program);
     // Transform instance decls to method dicts (T-1142).
     tinct::desugar::desugar_instance_decls_surface_program(&mut program);
     // Variable resolution pass (Phase 1 of arena allocation strategy).
@@ -3207,11 +3203,6 @@ fn run_literate_lint(tangled: &str, config: &LiterateConfig) -> Result<(), Strin
     .map_err(|e| format!("{e}"))?;
     // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
     tinct::desugar::desugar_surface_program(&mut program);
-    // Inject ADT constructor bindings so that [type ...] declarations produce usable
-    // sibling constructor names (e.g., Red, Green, Blue from Color). Runs on the Surface
-    // AST before resolve; lib.rs typecheck-only paths skip this because they run
-    // typecheck_surface_program_with_env which already seeds from the prelude env. B-342
-    tinct::desugar::inject_adt_constructors_surface_program(&mut program);
     // Transform instance decls to method dicts (T-1142).
     tinct::desugar::desugar_instance_decls_surface_program(&mut program);
     // Type check with prelude environment
@@ -3549,8 +3540,6 @@ fn run_literate_weave(
         }
         // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
         tinct::desugar::desugar_surface_program(&mut program);
-        // Inject ADT constructor bindings (must run after desugar, before resolve).
-        tinct::desugar::inject_adt_constructors_surface_program(&mut program);
         // Transform instance decls to method dicts (T-1142).
         tinct::desugar::desugar_instance_decls_surface_program(&mut program);
         // Variable resolution pass (Phase 1 of arena allocation strategy).

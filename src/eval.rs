@@ -5559,12 +5559,12 @@ mod tests {
 
     #[test]
     fn test_adt_constructor_scoping_eval() {
-        // T-974: unit constructors in KEYED declarations produce qualified tags "TypeName.CtorName".
-        // `Color: [type Red Green Blue]` → Red: Variant("Color.Red", Null)
+        // T-974: unit constructors accessed via qualified dot path produce qualified tags.
+        // `Color: [type Red Green Blue]` → Color.Red: Variant("Color.Red", Null)
         let src = concat!(
             "[\n",
             "  Color: [type Red Green Blue]\n",
-            "  color: Red\n",
+            "  color: Color.Red\n",
             "  color\n",
             "]"
         );
@@ -9533,7 +9533,6 @@ mod tests {
 
         // Desugar (no macros in this source, but maintain pipeline invariant).
         crate::desugar::desugar_surface_program(&mut program);
-        crate::desugar::inject_adt_constructors_surface_program(&mut program);
         crate::desugar::desugar_instance_decls_surface_program(&mut program);
 
         // Resolve variable references.

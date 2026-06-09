@@ -26,5 +26,3 @@
   g: [label Green]
   b: [label Blue]
 ]
-=== out
-Dict({"Red": Variant(Color.Red, Null), "Green": Variant(Color.Green, Null), "Blue": Variant(Color.Blue, Null), "Color": Dict({"Red": Variant(Color.Red, Null), "Green": Variant(Color.Green, Null), "Blue": Variant(Color.Blue, Null)}), "label": Function(c), "r": String("red"), "g": String("green"), "b": String("blue")})

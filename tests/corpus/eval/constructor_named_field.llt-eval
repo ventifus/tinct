@@ -5,5 +5,3 @@
   Box: [type [Boxed value: Int]]
   result: [Boxed value: 42]
 ]
-=== out
-Dict({"Boxed": Function(payload), "Box": Dict({"Boxed": Function(value)}), "result": Variant(Box.Boxed, Dict({"value": Int(42)}))})

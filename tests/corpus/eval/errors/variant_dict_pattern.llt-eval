@@ -6,4 +6,4 @@
   [match cfg [host h  port p]: [str h ":" [str p]]]
 ]
 === error
-[E002] undefined variable: host (did you mean the string "host"? Use quotes.) (defined at 5:15-5:19)
+[E002] undefined variable: ServerCfg (defined at 4:9-4:18)

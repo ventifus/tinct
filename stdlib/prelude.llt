@@ -1864,8 +1864,8 @@ Note: Wraps the function call in error handling. Returns the function's result i
 # Transport type: union of network transport variants
 # Used by connect builtin to specify connection type
 Transport: [type Tcp Udp UnixStream UnixDatagram NamedPipe Icmp]
-# Constructors Tcp, Udp, UnixStream, UnixDatagram, NamedPipe, Icmp are automatically exported
-# by the type checker (B-296 fix) — no explicit re-exports needed.
+# T-1086: Transport constructors are accessible via Transport.Tcp, Transport.Udp, etc.
+# The Transport dict also contains them for dot-access: Transport.Tcp, Transport.Udp, etc.
 
 # ============================================================================
 # OpenFlag Type (File Open Mode Variants)
@@ -1874,16 +1874,13 @@ Transport: [type Tcp Udp UnixStream UnixDatagram NamedPipe Icmp]
 # OpenFlag type: capability flags passed to the [open] builtin.
 # Each flag is a unit variant; multiple flags may be combined in a single open call.
 #
-# Note: AppendableFlag is intentionally omitted here because the name "Appendable"
-# is already used by the Appendable type class (see §Type Class Declarations below).
-# Use the "Appendable" string directly with [open] if append mode is needed until
-# a rename is decided (pre-1.0).
+# Appendable is included here now that constructors use qualified access (OpenFlag.Appendable).
+# The bare name "Appendable" still refers to the Appendable type class; no conflict.
 #
 # DirCap permission flags (used by [narrow]) that do not conflict with open flags:
 # Statable, Listable, Deletable, Renameable.
-OpenFlag: [type Readable Writable Binary Text Seekable]
-# Constructors Readable, Writable, Binary, Text, Seekable are automatically exported
-# by the type checker (B-296 fix) — no explicit re-exports needed.
+OpenFlag: [type Readable Writable Appendable Binary Text Seekable]
+# Constructors accessible as OpenFlag.Readable, OpenFlag.Writable, OpenFlag.Appendable, etc.
 
 # DirCapFlag type: permission flags passed to the [narrow] builtin.
 # Controls which capabilities a narrowed DirCap inherits from its source.
@@ -3384,7 +3381,7 @@ Returns the last document's result.
 include-cache-success: [fn@[return: Any  doc: """
 Store include result in cache and return it. Internal helper for include.
 """] [let hash result]
-  [builtin-include-cache-put hash [Cached result]]
+  [builtin-include-cache-put hash [builtin-variant "IncludeCacheEntry.Cached" result]]
   result]
 
 # include-cache-failure: reset cache entry on error and re-raise.
@@ -3392,7 +3389,7 @@ Store include result in cache and return it. Internal helper for include.
 include-cache-failure: [fn@[return: Never  doc: """
 Reset include cache entry on error and re-raise. Internal helper for include.
 """] [let hash e]
-  [builtin-include-cache-put hash Missing]
+  [builtin-include-cache-put hash IncludeCacheEntry.Missing]
   [raise e]]
 
 # include-evaluate-and-cache: evaluate a file and memoize it.
@@ -3406,8 +3403,8 @@ path:           file path string (for error spans)
 hash:           content cache key (blake3(cap-identity + "|" + source))
 cap:            DirCap — passed as %include-dir; included files start with % = []
 integrity-hash: optional blake3 hex digest for integrity verification (--require-integrity)
-"""] [let source path hash cap integrity-hash@[default: Absent]]
-  [builtin-include-cache-put hash Pending]
+"""] [let source path hash cap integrity-hash@[default: Absent.Absent]]
+  [builtin-include-cache-put hash IncludeCacheEntry.Pending]
   [program: [if [absent? integrity-hash]
     [load source name: path]
     [load source name: path hash: integrity-hash]]]
@@ -3435,8 +3432,8 @@ integrity-hash: optional blake3 hex digest for integrity verification (--require
 Uses content-addressed memoization: blake3(cap-identity + "|" + source).
 Detects circular includes via Pending cache state.
 Included files start with % = [] (fresh pipeline input).
-"""] [let cap@DirCap path@String integrity-hash@[default: Absent]]
-  [source: [builtin-read-all [open cap path Readable]]]
+"""] [let cap@DirCap path@String integrity-hash@[default: Absent.Absent]]
+  [source: [builtin-read-all [open cap path OpenFlag.Readable]]]
   [hash:   [blake3 [str [cap-identity cap] "|" source]]]
   [match [builtin-include-cache-get hash]
     [case [let result] [IncludeCacheEntry.Cached result] result]
@@ -3464,7 +3461,7 @@ Same semantics as --- within a file, applied across multiple files.
   [reduce
     [fn@[return: Any] [let prev file-path]
       [eval-file
-        [expand [load [builtin-read-all [open pwd file-path Readable]] name: file-path]]
+        [expand [load [builtin-read-all [open pwd file-path OpenFlag.Readable]] name: file-path]]
         prev
         pwd]]
     initial

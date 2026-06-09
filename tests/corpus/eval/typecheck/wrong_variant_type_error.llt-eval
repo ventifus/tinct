@@ -10,7 +10,7 @@
 # Variant values; the actual type-error path will be covered by a new test in B-343.
 [
   Color: [type Red Green Blue]
-  result: Green
+  result: Color.Green
 ]
 === out
-Dict({"Red": Variant(Color.Red, Null), "Green": Variant(Color.Green, Null), "Blue": Variant(Color.Blue, Null), "Color": Dict({"Red": Variant(Color.Red, Null), "Green": Variant(Color.Green, Null), "Blue": Variant(Color.Blue, Null)}), "result": Variant(Color.Green, Null)})
+Dict({"Color": Dict({"Red": Variant(Color.Red, Null), "Green": Variant(Color.Green, Null), "Blue": Variant(Color.Blue, Null)}), "result": Variant(Color.Green, Null)})

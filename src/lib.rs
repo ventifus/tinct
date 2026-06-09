@@ -288,10 +288,6 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
     .map_err(|e| format!("{e}"))?;
     // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
     desugar::desugar_surface_program(&mut program);
-    // ADT constructor injection: add `CtorName: [variant "CtorName"]` entries to dicts that
-    // contain `[type ...]` declarations. Must run BEFORE resolve so the resolver assigns
-    // correct de Bruijn slots to constructor names.
-    desugar::inject_adt_constructors_surface_program(&mut program);
     // NOTE: desugar_instance_decls_surface_program intentionally NOT called here.
     // The type checker's Pass 0c (typecheck_dict.rs) must see InstanceDecl entries to register
     // typeclass instances. If desugar transforms them to method dicts before typecheck, Pass 0c
@@ -441,10 +437,6 @@ pub fn eval_source_with_cap_net(
     .map_err(|e| format!("{e}"))?;
     // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
     desugar::desugar_surface_program(&mut program);
-    // ADT constructor injection: add `CtorName: [variant "CtorName"]` entries to dicts that
-    // contain `[type ...]` declarations. Must run BEFORE resolve so the resolver assigns
-    // correct de Bruijn slots to constructor names.
-    desugar::inject_adt_constructors_surface_program(&mut program);
     // NOTE: desugar_instance_decls_surface_program NOT called here (see above).
     // Variable resolution pass (Phase 1 of arena allocation strategy).
     // Keep the table for eval_surface_file (used by lower.rs to resolve VarRef → Var).
@@ -597,10 +589,6 @@ pub fn typecheck_source(input: &str) -> Result<(), String> {
     .map_err(|e| format!("{e}"))?;
     // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
     desugar::desugar_surface_program(&mut program);
-    // Note: inject_adt_constructors_surface_program is NOT called here.
-    // The type checker handles ADT constructor scoping via `inject_adt_constructor_schemes`
-    // in typecheck_dict.rs (Pass 2), which gives constructors precise function types without
-    // needing the surface-level injection that would conflict with [variant "..."] type inference.
     // Type check the surface program with prelude-seeded environment.
     let env = imports::build_prelude_env();
     let (type_errors, _type_map, _doc_map, _scheme_map, diagnostics) =
@@ -645,10 +633,6 @@ pub fn typecheck_source_errors_only(input: &str) -> Result<(), String> {
     .map_err(|e| format!("{e}"))?;
     // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
     desugar::desugar_surface_program(&mut program);
-    // Note: inject_adt_constructors_surface_program is NOT called here.
-    // The type checker handles ADT constructor scoping via `inject_adt_constructor_schemes`
-    // in typecheck_dict.rs (Pass 2), which gives constructors precise function types without
-    // needing the surface-level injection that would conflict with [variant "..."] type inference.
     // Type check the surface program with prelude-seeded environment.
     let env = imports::build_prelude_env();
     let (type_errors, _type_map, _doc_map, _scheme_map, _diagnostics) =

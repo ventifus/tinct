@@ -198,10 +198,9 @@ pub(crate) fn core_expr_is_static_key(k: &CoreExpr) -> bool {
 /// - Non-literal values become CoreExpr thunks in `dict_env` (UnevaluatedState::CoreExpr)
 ///   — no CoreExpr→Expr round-trip for dict values.
 ///
-/// **Constructor injection**: All constructors (unit and named-field) are injected by the
-/// desugar pass (`inject_adt_constructors_expr`) as ordinary `SurfaceExpression` entries
-/// before lowering. No runtime pre-scan is needed — there are no `CoreExpr::TypeDecl`
-/// entries in the lowered AST.
+/// **Constructor dict**: Constructors (unit and named-field) are produced by the lower.rs
+/// pass (T-1193) as entries in the runtime constructor dict. No runtime pre-scan is needed —
+/// there are no `CoreExpr::TypeDecl` entries in the lowered AST.
 pub(crate) async fn eval_dict_core(
     entries: &[Spanned<CoreEntry>],
     parent_env: &Arc<RwLock<Environment>>,

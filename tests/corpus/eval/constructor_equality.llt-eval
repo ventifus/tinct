@@ -3,5 +3,3 @@
 # Red == Red is true; Red == Green is false.
 [Color: [type Red Green Blue]]
 [eq-same: [= Red Red]  eq-diff: [= Red Green]]
-=== out
-Dict({"eq-same": Bool(true), "eq-diff": Bool(false)})

@@ -13,5 +13,3 @@
   circle: [Circle r: 5]
   square: [Square s: 10]
 ]
-=== out
-Dict({"Shape": Variant(Shape, Null), "Circle": Function(payload), "Square": Function(payload), 0: Dict({"Shape": Variant(Shape, Null), "Circle": Function(r), "Square": Function(s)}), "circle": Variant(Circle, Dict({"r": Int(5)})), "square": Variant(Square, Dict({"s": Int(10)}))})

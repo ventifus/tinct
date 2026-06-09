@@ -1268,8 +1268,8 @@ pub(crate) fn builtin_annotation_of(
 /// Forms:
 /// - `[make-annotated value annotation-dict]` — returns `Value::Annotated { inner: value, annotation: annotation-dict }`
 ///
-/// Used internally by the desugar pass (`build_constructor_value`) to wrap unit constructor
-/// values in `Value::Annotated` when the constructor carries a `@[...]` annotation (T-1121).
+/// Used by the lower.rs constructor dict (T-1193) to wrap unit constructor values in
+/// `Value::Annotated` when the constructor carries a `@[...]` annotation (T-1121).
 /// The annotation dict must be a `Value::Dict`; passing any other type is a type error.
 ///
 /// Both arguments are pre-materialized by `pos_strictness = [Seq, Seq]`.
@@ -1787,8 +1787,6 @@ pub(crate) fn builtin_expand(
                 })?;
                 // Desugar $_ patterns introduced by macros.
                 crate::desugar::desugar_surface_program(&mut new_surface_program);
-                // Inject ADT constructor bindings (must run after desugar, before resolve).
-                crate::desugar::inject_adt_constructors_surface_program(&mut new_surface_program);
                 // Transform instance decls to method dicts (T-1142).
                 crate::desugar::desugar_instance_decls_surface_program(&mut new_surface_program);
 
@@ -2684,7 +2682,7 @@ pub(crate) fn builtin_include_cache_put(
         let entry = match &entry_val {
             Value::Variant { tag, payload } => {
                 // Strip qualifier prefix ("IncludeCacheEntry.Pending" → "Pending") for
-                // compatibility with T-974 qualified variant tags from inject_adt_constructors_expr.
+                // compatibility with T-974 qualified variant tags (lower.rs constructor dict).
                 let original_tag = tag.as_str();
                 let tag_name = tag
                     .strip_prefix("IncludeCacheEntry.")

@@ -6,14 +6,14 @@
 [p: [proxy [fn [let key] [raise "proxy-error"]]]
  result: p.test]
 === error
-[E080] proxy-error (defined at stdlib/prelude.llt:2483:28-2483:47)
-  --> stdlib/prelude.llt:2483:28-2483:47
+[E080] proxy-error (defined at stdlib/prelude.llt:2480:28-2480:47)
+  --> stdlib/prelude.llt:2480:28-2480:47
    |
-  2483 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2480 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
-  in [builtin-raise ...] at stdlib/prelude.llt:2483:28-2483:47
+  in [builtin-raise ...] at stdlib/prelude.llt:2480:28-2480:47
    |
-  2483 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2480 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
   in materialized at 6:10-6:16
   in proxy field access at 6:10-6:16

@@ -6,4 +6,4 @@
   result: [Some value: 42]
 ]
 === out
-Dict({"Some": Function(payload), "None": Variant(Maybe.None, Null), "Maybe": Dict({"Some": Function(value), "None": Variant(Maybe.None, Null)}), "result": Variant(Maybe.Some, Dict({"value": Int(42)}))})
+Dict({"Maybe": Dict({"Some": Function(value), "None": Variant(Maybe.None, Null)}), "result": Variant(Maybe.Some, Int(42))})

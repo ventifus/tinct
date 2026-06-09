@@ -127,10 +127,6 @@ fn typecheck_and_merge_stdlib_module(
     // Expansion is normally in the pipeline but skipped here for stdlib modules
     // (see rationale above) — desugar still runs to maintain correct ordering.
     desugar::desugar_surface_program(&mut program);
-    // NOTE: inject_adt_constructors_surface_program is intentionally NOT called here.
-    // The type checker handles ADT constructor scoping via inject_adt_constructor_schemes
-    // in typecheck_dict.rs (Pass 2), which exports constructors with precise NominalVariant
-    // or Function types — far better than Unknown-typed [variant "..."] entries (B-296).
 
     // Type-check with the parent environment (builtins + prelude), capturing InferState
     // and the final TypeEnv (which holds properly generalized TypeSchemes for all prelude

@@ -80,7 +80,7 @@
           [parse-http-response
             [bytes-str [bytes-concat [collect [chunks
               [write-handle
-                [connect cap Tcp url.host url.port]
+                [connect cap Transport.Tcp url.host url.port]
                 [str-bytes [build-http-request "GET" url.path url.host]]]
               65536]]]]]]]
         [Error [str "http-get: unsupported scheme: " url.scheme]]]]]

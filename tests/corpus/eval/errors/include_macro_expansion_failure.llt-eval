@@ -8,72 +8,72 @@
   lib: [include %cwd "tests/corpus/eval/macros/macro_lib.llt"]
 ]
 === error
-[E080] expand: macro expansion error: macro 'my-add' transformer call failed: arity mismatch: expected 1 argument, got 2 (defined at stdlib/prelude.llt:2483:28-2483:47)
-  --> stdlib/prelude.llt:2483:28-2483:47
+[E080] expand: macro expansion error: macro 'my-add' transformer call failed: arity mismatch: expected 1 argument, got 2 (defined at stdlib/prelude.llt:2480:28-2480:47)
+  --> stdlib/prelude.llt:2480:28-2480:47
    |
-  2483 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2480 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
-  in [builtin-raise ...] at stdlib/prelude.llt:2483:28-2483:47
+  in [builtin-raise ...] at stdlib/prelude.llt:2480:28-2480:47
    |
-  2483 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2480 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
-  in materialized at stdlib/prelude.llt:3392:24-3396:13
+  in materialized at stdlib/prelude.llt:3389:24-3393:13
    |
-  3392 | include-cache-failure: [fn@[return: Never  doc: """
-  3393 | Reset include cache entry on error and re-raise. Internal helper for include.
-  3394 | """] [let hash e]
-  3395 |   [builtin-include-cache-put hash Missing]
-  3396 |   [raise e]]
+  3389 | include-cache-failure: [fn@[return: Never  doc: """
+  3390 | Reset include cache entry on error and re-raise. Internal helper for include.
+  3391 | """] [let hash e]
+  3392 |   [builtin-include-cache-put hash IncludeCacheEntry.Missing]
+  3393 |   [raise e]]
        | ^^^^^^^^^^^^
-  in materialized at stdlib/prelude.llt:3414:3-3416:78
+  in materialized at stdlib/prelude.llt:3411:3-3413:78
    |
-  3414 |   [match [try [fn [let] [eval-file [expand program] [] cap]]]
-  3415 |     [case [let result] [Result.Ok result]    [include-cache-success hash result]]
-  3416 |     [case [let e]      [Result.Error e]      [include-cache-failure hash e]]]]
+  3411 |   [match [try [fn [let] [eval-file [expand program] [] cap]]]
+  3412 |     [case [let result] [Result.Ok result]    [include-cache-success hash result]]
+  3413 |     [case [let e]      [Result.Error e]      [include-cache-failure hash e]]]]
        | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in materialized at stdlib/prelude.llt:3401:29-3416:79
+  in materialized at stdlib/prelude.llt:3398:29-3413:79
    |
-  3401 | include-evaluate-and-cache: [fn@[return: Any  doc: """
-  3402 | Evaluate a file and update the content-addressed include cache.
-  3403 | 
-  3404 | source:         source text string
-  3405 | path:           file path string (for error spans)
-  3406 | hash:           content cache key (blake3(cap-identity + "|" + source))
-  3407 | cap:            DirCap — passed as %include-dir; included files start with % = []
-  3408 | integrity-hash: optional blake3 hex digest for integrity verification (--require-integrity)
-  3409 | """] [let source path hash cap integrity-hash@[default: Absent]]
-  3410 |   [builtin-include-cache-put hash Pending]
-  3411 |   [program: [if [absent? integrity-hash]
-  3412 |     [load source name: path]
-  3413 |     [load source name: path hash: integrity-hash]]]
-  3414 |   [match [try [fn [let] [eval-file [expand program] [] cap]]]
-  3415 |     [case [let result] [Result.Ok result]    [include-cache-success hash result]]
-  3416 |     [case [let e]      [Result.Error e]      [include-cache-failure hash e]]]]
+  3398 | include-evaluate-and-cache: [fn@[return: Any  doc: """
+  3399 | Evaluate a file and update the content-addressed include cache.
+  3400 | 
+  3401 | source:         source text string
+  3402 | path:           file path string (for error spans)
+  3403 | hash:           content cache key (blake3(cap-identity + "|" + source))
+  3404 | cap:            DirCap — passed as %include-dir; included files start with % = []
+  3405 | integrity-hash: optional blake3 hex digest for integrity verification (--require-integrity)
+  3406 | """] [let source path hash cap integrity-hash@[default: Absent.Absent]]
+  3407 |   [builtin-include-cache-put hash IncludeCacheEntry.Pending]
+  3408 |   [program: [if [absent? integrity-hash]
+  3409 |     [load source name: path]
+  3410 |     [load source name: path hash: integrity-hash]]]
+  3411 |   [match [try [fn [let] [eval-file [expand program] [] cap]]]
+  3412 |     [case [let result] [Result.Ok result]    [include-cache-success hash result]]
+  3413 |     [case [let e]      [Result.Error e]      [include-cache-failure hash e]]]]
        | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in materialized at stdlib/prelude.llt:3441:3-3444:121
+  in materialized at stdlib/prelude.llt:3438:3-3441:121
    |
-  3441 |   [match [builtin-include-cache-get hash]
-  3442 |     [case [let result] [IncludeCacheEntry.Cached result] result]
-  3443 |     [IncludeCacheEntry.Pending]:       [error [str "circular include: " path]]
-  3444 |     [IncludeCacheEntry.Missing]:       [include-evaluate-and-cache source path hash cap integrity-hash: integrity-hash]]]
+  3438 |   [match [builtin-include-cache-get hash]
+  3439 |     [case [let result] [IncludeCacheEntry.Cached result] result]
+  3440 |     [IncludeCacheEntry.Pending]:       [error [str "circular include: " path]]
+  3441 |     [IncludeCacheEntry.Missing]:       [include-evaluate-and-cache source path hash cap integrity-hash: integrity-hash]]]
        | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in materialized at stdlib/prelude.llt:3428:10-3444:122
+  in materialized at stdlib/prelude.llt:3425:10-3441:122
    |
-  3428 | include: [fn@[return: Any  doc: """
-  3429 | Load, expand, and evaluate a tinct file from a DirCap.
-  3430 | 
-  3431 | cap:            DirCap — confines filesystem access; injected as %include-dir
-  3432 | path:           String — file path relative to cap
-  3433 | integrity-hash: optional blake3 hex digest for integrity verification (--require-integrity)
-  3434 | 
-  3435 | Uses content-addressed memoization: blake3(cap-identity + "|" + source).
-  3436 | Detects circular includes via Pending cache state.
-  3437 | Included files start with % = [] (fresh pipeline input).
-  3438 | """] [let cap@DirCap path@String integrity-hash@[default: Absent]]
-  3439 |   [source: [builtin-read-all [open cap path Readable]]]
-  3440 |   [hash:   [blake3 [str [cap-identity cap] "|" source]]]
-  3441 |   [match [builtin-include-cache-get hash]
-  3442 |     [case [let result] [IncludeCacheEntry.Cached result] result]
-  3443 |     [IncludeCacheEntry.Pending]:       [error [str "circular include: " path]]
-  3444 |     [IncludeCacheEntry.Missing]:       [include-evaluate-and-cache source path hash cap integrity-hash: integrity-hash]]]
+  3425 | include: [fn@[return: Any  doc: """
+  3426 | Load, expand, and evaluate a tinct file from a DirCap.
+  3427 | 
+  3428 | cap:            DirCap — confines filesystem access; injected as %include-dir
+  3429 | path:           String — file path relative to cap
+  3430 | integrity-hash: optional blake3 hex digest for integrity verification (--require-integrity)
+  3431 | 
+  3432 | Uses content-addressed memoization: blake3(cap-identity + "|" + source).
+  3433 | Detects circular includes via Pending cache state.
+  3434 | Included files start with % = [] (fresh pipeline input).
+  3435 | """] [let cap@DirCap path@String integrity-hash@[default: Absent.Absent]]
+  3436 |   [source: [builtin-read-all [open cap path OpenFlag.Readable]]]
+  3437 |   [hash:   [blake3 [str [cap-identity cap] "|" source]]]
+  3438 |   [match [builtin-include-cache-get hash]
+  3439 |     [case [let result] [IncludeCacheEntry.Cached result] result]
+  3440 |     [IncludeCacheEntry.Pending]:       [error [str "circular include: " path]]
+  3441 |     [IncludeCacheEntry.Missing]:       [include-evaluate-and-cache source path hash cap integrity-hash: integrity-hash]]]
        | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

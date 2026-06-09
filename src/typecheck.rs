@@ -1413,8 +1413,8 @@ fn register_type_aliases(
                     state.tycon_env.insert(name.clone(), tycon_def);
 
                     // T-1048: Register each constructor name with a precise type.
-                    // Constructors are injected at desugar time (inject_adt_constructors_expr) but
-                    // the type checker doesn't see them, causing "undefined variable" warnings.
+                    // Constructors are available via the runtime constructor dict (lower.rs T-1193)
+                    // but the type checker must register them to avoid "undefined variable" warnings.
                     // Unit constructors (no fields): type is the NominalVariant value itself.
                     // Field constructors: type is Function{params: [(field_name, field_ty), ...], ret: NominalVariant}.
                     // Both qualified ("Result.Ok") and unqualified ("Ok") forms are registered:

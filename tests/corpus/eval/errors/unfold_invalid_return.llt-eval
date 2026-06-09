@@ -1,17 +1,17 @@
 # unfold: error when step function returns a non-Dict value
 [head [unfold [fn [let x] "not a dict"] 0]]
 === error
-[E010] unfold: expected Dict, got String (defined at stdlib/prelude.llt:3000:22-3000:45)
-  --> stdlib/prelude.llt:3000:22-3000:45
+[E010] unfold: expected Dict, got String (defined at stdlib/prelude.llt:2997:22-2997:45)
+  --> stdlib/prelude.llt:2997:22-2997:45
    |
-  3000 | """] [let f@Fn seed] [builtin-unfold f seed]]
+  2997 | """] [let f@Fn seed] [builtin-unfold f seed]]
        |                      ^^^^^^^^^^^^^^^^^^^^^^^
-  in call $unfold at stdlib/prelude.llt:3000:22-3000:45
+  in call $unfold at stdlib/prelude.llt:2997:22-2997:45
    |
-  3000 | """] [let f@Fn seed] [builtin-unfold f seed]]
+  2997 | """] [let f@Fn seed] [builtin-unfold f seed]]
        |                      ^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-head ...] at stdlib/prelude.llt:2940:15-2940:32
+  in [builtin-head ...] at stdlib/prelude.llt:2937:15-2937:32
    |
-  2940 | """] [let xs] [builtin-head xs]]
+  2937 | """] [let xs] [builtin-head xs]]
        |               ^^^^^^^^^^^^^^^^^
   in [head ...] at 1:1-1:44
