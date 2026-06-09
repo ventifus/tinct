@@ -1437,13 +1437,9 @@ fn register_type_aliases(
                             doc: None,
                             inner_schemes: None,
                         };
-                        // Unqualified form (e.g., "Ok"): inserted first so the qualified form can
-                        // override it if a name collision occurs (qualified takes precedence).
-                        if let Some(dot_pos) = qualified_tag.rfind('.') {
-                            let unqualified = qualified_tag[dot_pos + 1..].to_string();
-                            target_env.insert_scheme(unqualified, scheme.clone());
-                        }
-                        // Qualified form (e.g., "Result.Ok"): for dot-access uses in type checker.
+                        // T-1086: Only register qualified form (e.g., "Result.Ok").
+                        // Unqualified form ("Ok") was previously leaked here but is now provided
+                        // via explicit prelude aliases (Ok: Result.Ok in stdlib/prelude.llt).
                         target_env.insert_scheme(qualified_tag, scheme);
                     }
                 }

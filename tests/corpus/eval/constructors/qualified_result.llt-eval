@@ -12,4 +12,4 @@
     [Result.Error _]:              0]
 ]
 === out
-Dict({"Ok": Function(payload), "Error": Function(payload), "ok-val": Variant(Result.Ok, Dict({"value": Int(42)})), "err-val": Variant(Result.Error, Dict({"msg": String("fail")})), "ok-matched": Int(1)})
+Dict({"Ok": Function(payload), "Error": Function(payload), "Result": Dict({"Ok": Function(value), "Error": Function(msg)}), "ok-val": Variant(Result.Ok, Dict({"value": Int(42)})), "err-val": Variant(Result.Error, Dict({"msg": String("fail")})), "ok-matched": Int(1)})

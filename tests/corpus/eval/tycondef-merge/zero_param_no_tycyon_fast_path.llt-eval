@@ -14,4 +14,4 @@
   result: 42
 ]
 === out
-Dict({"result": Int(42)})
+Dict({"IdRecord": Dict({}), "result": Int(42)})

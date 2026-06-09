@@ -9,4 +9,4 @@
     [Result.Error _]:              0]
 ]
 === out
-Dict({"Ok": Function(payload), "Error": Function(payload), "matched": Int(42)})
+Dict({"Ok": Function(payload), "Error": Function(payload), "Result": Dict({"Ok": Function(value), "Error": Function(msg)}), "matched": Int(42)})

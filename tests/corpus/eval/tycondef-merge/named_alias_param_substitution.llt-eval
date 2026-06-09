@@ -14,4 +14,4 @@
   result: [f [id: 42]]
 ]
 === out
-Dict({"f": Function(x), "result": Int(42)})
+Dict({"BoxRecord": Dict({}), "f": Function(x), "result": Int(42)})

@@ -3,17 +3,17 @@
 # filter should unpack the Seq and keep elements matching the predicate
 [filter [> _ 2] [variant-payload "Wrapper" [1 2 3 4 5]]]
 === error
-[E010] filter: expected Dict, got Variant (defined at stdlib/prelude.llt:2487:72-2487:96)
-  --> stdlib/prelude.llt:2487:72-2487:96
+[E010] filter: expected Dict, got Variant (defined at stdlib/prelude.llt:2490:72-2490:96)
+  --> stdlib/prelude.llt:2490:72-2490:96
    |
-  2487 | filter@[doc: "Keep elements matching predicate"]: [fn [let pred@Fn xs] [builtin-filter pred xs]]
+  2490 | filter@[doc: "Keep elements matching predicate"]: [fn [let pred@Fn xs] [builtin-filter pred xs]]
        |                                                                        ^^^^^^^^^^^^^^^^^^^^^^^^
-  in call $filter at stdlib/prelude.llt:2487:72-2487:96
+  in call $filter at stdlib/prelude.llt:2490:72-2490:96
    |
-  2487 | filter@[doc: "Keep elements matching predicate"]: [fn [let pred@Fn xs] [builtin-filter pred xs]]
+  2490 | filter@[doc: "Keep elements matching predicate"]: [fn [let pred@Fn xs] [builtin-filter pred xs]]
        |                                                                        ^^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-filter ...] at stdlib/prelude.llt:2487:72-2487:96
+  in [builtin-filter ...] at stdlib/prelude.llt:2490:72-2490:96
    |
-  2487 | filter@[doc: "Keep elements matching predicate"]: [fn [let pred@Fn xs] [builtin-filter pred xs]]
+  2490 | filter@[doc: "Keep elements matching predicate"]: [fn [let pred@Fn xs] [builtin-filter pred xs]]
        |                                                                        ^^^^^^^^^^^^^^^^^^^^^^^^
   in [filter ...] at 3:1-3:57

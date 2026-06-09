@@ -8,4 +8,4 @@
   result: true
 ]
 === out
-Dict({"result": Bool(true)})
+Dict({"Tree": Dict({}), "result": Bool(true)})

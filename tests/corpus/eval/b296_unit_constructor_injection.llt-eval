@@ -7,4 +7,4 @@
   udp-val: Udp
 ]
 === out
-Dict({"Tcp": Variant(Transport.Tcp, Null), "Udp": Variant(Transport.Udp, Null), "tcp-val": Variant(Transport.Tcp, Null), "udp-val": Variant(Transport.Udp, Null)})
+Dict({"Tcp": Variant(Transport.Tcp, Null), "Udp": Variant(Transport.Udp, Null), "Transport": Dict({"Tcp": Variant(Transport.Tcp, Null), "Udp": Variant(Transport.Udp, Null)}), "tcp-val": Variant(Transport.Tcp, Null), "udp-val": Variant(Transport.Udp, Null)})

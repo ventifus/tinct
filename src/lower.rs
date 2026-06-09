@@ -202,27 +202,53 @@ fn lower_expr(
         SurfaceExpression::Dict(entries) => {
             let mut core_entries: Vec<Spanned<CoreEntry>> = Vec::with_capacity(entries.len());
             for se in entries {
-                // Most Decl forms (TypeAlias, ClassDecl, MacroDecl) are skipped at runtime.
-                // Constructor injection is handled by the desugar pass (inject_adt_constructors).
+                // Most Decl forms (TypeAlias, ClassDecl, MacroDecl) are processed at type-check time.
+                // At runtime:
                 //
-                // EXCEPTION (B-353): InstanceDecl with non-empty arms is NOT skipped — it
-                // produces a method dict so MonadResult.bind etc. work at runtime.
+                // EXCEPTION 1 (B-353): InstanceDecl with non-empty arms produces a method dict.
                 // desugar_instance_decls_surface_program is NOT called in lib.rs eval path so
                 // the type checker's Pass 0c sees InstanceDecl entries for instance registration.
                 // lower.rs handles the eval-side transformation here.
+                //
+                // EXCEPTION 2 (T-1193): TypeAlias produces a constructor dict at runtime.
+                // `Color: [type Red Green Blue]` → `Color` is a dict `{Red: Variant("Color.Red"), ...}`
                 if let SurfaceExpression::Decl(decl) = &se.node.value.expr {
-                    let is_instance = matches!(
-                        decl.as_ref(),
+                    match decl.as_ref() {
                         crate::ast::SurfaceDeclaration::InstanceDecl { arms, .. }
-                            if !arms.is_empty()
-                    );
-                    if !is_instance {
-                        continue;
+                            if !arms.is_empty() =>
+                        {
+                            // InstanceDecl: pass through to lower() which handles it
+                            let key = se.node.key.as_ref().map(|k| Arc::new(lower(k, res, types)));
+                            let value = Arc::new(lower(&se.node.value, res, types));
+                            core_entries
+                                .push(Spanned::new(CoreEntry { key, value }, se.span.clone()));
+                        }
+                        crate::ast::SurfaceDeclaration::TypeAlias { body, .. } => {
+                            // T-1193: TypeAlias produces a constructor dict at runtime.
+                            // Extract type name from the dict entry key for qualified tags.
+                            let type_name_opt = extract_type_name_from_key(&se.node.key);
+                            let ctor_dict = lower_type_alias_to_constructor_dict(
+                                type_name_opt,
+                                body,
+                                res,
+                                types,
+                            );
+                            let key = se.node.key.as_ref().map(|k| Arc::new(lower(k, res, types)));
+                            let value = Arc::new(Spanned::new(ctor_dict, se.span.clone()));
+                            core_entries
+                                .push(Spanned::new(CoreEntry { key, value }, se.span.clone()));
+                        }
+                        _ => {
+                            // Other Decl forms (ClassDecl, MacroDecl, SyntaxClass) are skipped.
+                            continue;
+                        }
                     }
+                } else {
+                    // Non-Decl entries: lower normally
+                    let key = se.node.key.as_ref().map(|k| Arc::new(lower(k, res, types)));
+                    let value = Arc::new(lower(&se.node.value, res, types));
+                    core_entries.push(Spanned::new(CoreEntry { key, value }, se.span.clone()));
                 }
-                let key = se.node.key.as_ref().map(|k| Arc::new(lower(k, res, types)));
-                let value = Arc::new(lower(&se.node.value, res, types));
-                core_entries.push(Spanned::new(CoreEntry { key, value }, se.span.clone()));
             }
             CoreExpr::Dict(core_entries)
         }
@@ -364,25 +390,37 @@ fn lower_expr(
         // Most Decl forms produce Placeholder (an error when forced); the type checker
         // registers them via Pass 0c before evaluation occurs.
         //
-        // EXCEPTION (B-353): InstanceDecl with non-empty arms produces a method dict at runtime.
+        // EXCEPTION 1 (B-353): InstanceDecl with non-empty arms produces a method dict at runtime.
         // desugar_instance_decls_surface_program is NOT called before lower.rs in lib.rs so
         // the type checker sees InstanceDecl. lower.rs handles the runtime transformation here.
+        //
+        // EXCEPTION 2 (T-1193): TypeAlias produces a constructor dict when accessed directly
+        // (not via a dict entry). Dict entries are handled in the Dict arm above.
         SurfaceExpression::Decl(decl) => {
-            if let crate::ast::SurfaceDeclaration::InstanceDecl { arms, .. } = decl.as_ref() {
-                if !arms.is_empty() {
-                    let method_entries = &arms[0].1;
-                    let core_entries: Vec<Spanned<CoreEntry>> = method_entries
-                        .iter()
-                        .map(|me| {
-                            let key = me.node.key.as_ref().map(|k| Arc::new(lower(k, res, types)));
-                            let value = Arc::new(lower(&me.node.value, res, types));
-                            Spanned::new(CoreEntry { key, value }, me.span.clone())
-                        })
-                        .collect();
-                    return CoreExpr::Dict(core_entries);
+            match decl.as_ref() {
+                crate::ast::SurfaceDeclaration::InstanceDecl { arms, .. } => {
+                    if !arms.is_empty() {
+                        let method_entries = &arms[0].1;
+                        let core_entries: Vec<Spanned<CoreEntry>> = method_entries
+                            .iter()
+                            .map(|me| {
+                                let key =
+                                    me.node.key.as_ref().map(|k| Arc::new(lower(k, res, types)));
+                                let value = Arc::new(lower(&me.node.value, res, types));
+                                Spanned::new(CoreEntry { key, value }, me.span.clone())
+                            })
+                            .collect();
+                        return CoreExpr::Dict(core_entries);
+                    }
+                    CoreExpr::Placeholder
                 }
+                crate::ast::SurfaceDeclaration::TypeAlias { body, .. } => {
+                    // T-1193: TypeAlias accessed directly (not via dict entry).
+                    // No type name available, use unqualified tags.
+                    lower_type_alias_to_constructor_dict(None, body, res, types)
+                }
+                _ => CoreExpr::Placeholder,
             }
-            CoreExpr::Placeholder
         }
 
         SurfaceExpression::Error(span) => CoreExpr::Error(span.clone()),
@@ -534,6 +572,292 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
         CoreExpr::Error(span) => SurfaceExpression::Error(span.clone()),
         CoreExpr::Placeholder => SurfaceExpression::Placeholder,
     }
+}
+
+/// Extract the type name from a dict entry key for TypeAlias qualified tags.
+///
+/// Recognized key forms (same as desugar.rs):
+/// - `Str(s)` — plain string key
+/// - `VarRef { name }` — bare identifier key
+/// - `Annotated { name, .. }` — annotated name key (T-1052)
+///
+/// Returns None for computed keys or absent keys.
+fn extract_type_name_from_key(key: &Option<Arc<SurfaceNode>>) -> Option<String> {
+    match key {
+        Some(key_node) => match &key_node.expr {
+            SurfaceExpression::Str(s) => Some(s.clone()),
+            SurfaceExpression::VarRef { name, .. } => Some(name.clone()),
+            SurfaceExpression::Annotated { name, .. } => Some(name.clone()),
+            _ => None, // Computed key
+        },
+        None => None, // Positional entry
+    }
+}
+
+/// Lower a TypeAlias body to a constructor dict at runtime (T-1193).
+///
+/// Produces a `CoreExpr::Dict` containing constructor entries:
+/// - Unit constructors → `CtorName: [builtin-variant "TypeName.CtorName"]`
+/// - Payload constructors → `CtorName: [fn [...fields] [builtin-variant "TypeName.CtorName" payload]]`
+///
+/// The type name (if present) qualifies the variant tags. When absent, uses unqualified tags.
+///
+/// This mirrors the logic in `desugar.rs::build_constructor_value` but produces `CoreExpr`
+/// instead of `SurfaceExpression`.
+fn lower_type_alias_to_constructor_dict(
+    type_name_opt: Option<String>,
+    body: &Arc<SurfaceNode>,
+    _res: &ResolutionTable,
+    _types: &TypeAnnotationTable,
+) -> CoreExpr {
+    use crate::ast::{CoreEntry, CoreParam, Span};
+
+    // Extract constructors from the body using the desugar.rs helpers.
+    // We need to import the extraction logic. For now, we'll inline a simplified version.
+    let ctors = extract_constructors_from_body(&body.expr);
+
+    let syn_span = Span::origin();
+    let mut core_entries: Vec<Spanned<CoreEntry>> = Vec::new();
+
+    for ctor in ctors {
+        let qualified_tag = match &type_name_opt {
+            Some(tn) => format!("{}.{}", tn, ctor.name),
+            None => ctor.name.clone(),
+        };
+
+        // Create the key for this constructor entry
+        let key = Some(Arc::new(Spanned::new(
+            CoreExpr::Str(ctor.name.clone()),
+            syn_span.clone(),
+        )));
+
+        // Create the value: either a unit variant or a constructor function
+        let value = if ctor.is_unit {
+            // Unit constructor: [builtin-variant "TypeName.CtorName"]
+            Arc::new(Spanned::new(
+                CoreExpr::Call {
+                    func: Arc::new(Spanned::new(
+                        CoreExpr::FreeVar("builtin-variant".to_string()),
+                        syn_span.clone(),
+                    )),
+                    args: vec![Arc::new(Spanned::new(
+                        CoreExpr::Str(qualified_tag),
+                        syn_span.clone(),
+                    ))],
+                    named_args: vec![],
+                    implied: false,
+                },
+                syn_span.clone(),
+            ))
+        } else {
+            // Payload constructor: function that takes named args and returns a variant
+            // [fn [let ...fields] [builtin-variant "TypeName.CtorName" [dict field: value ...]]]
+            let params: Vec<Spanned<CoreParam>> = ctor
+                .fields
+                .iter()
+                .map(|field_name| {
+                    Spanned::new(
+                        CoreParam {
+                            name: field_name.clone(),
+                            annotation: None,
+                            variadic: false,
+                        },
+                        syn_span.clone(),
+                    )
+                })
+                .collect();
+
+            // Build the payload dict: [dict field: field-value ...]
+            let payload_entries: Vec<Spanned<CoreEntry>> = ctor
+                .fields
+                .iter()
+                .map(|field_name| {
+                    Spanned::new(
+                        CoreEntry {
+                            key: Some(Arc::new(Spanned::new(
+                                CoreExpr::Str(field_name.clone()),
+                                syn_span.clone(),
+                            ))),
+                            value: Arc::new(Spanned::new(
+                                CoreExpr::FreeVar(field_name.clone()),
+                                syn_span.clone(),
+                            )),
+                        },
+                        syn_span.clone(),
+                    )
+                })
+                .collect();
+
+            let payload_dict = CoreExpr::Dict(payload_entries);
+
+            // Build [builtin-variant "TypeName.CtorName" payload]
+            let variant_call = CoreExpr::Call {
+                func: Arc::new(Spanned::new(
+                    CoreExpr::FreeVar("builtin-variant".to_string()),
+                    syn_span.clone(),
+                )),
+                args: vec![
+                    Arc::new(Spanned::new(CoreExpr::Str(qualified_tag), syn_span.clone())),
+                    Arc::new(Spanned::new(payload_dict, syn_span.clone())),
+                ],
+                named_args: vec![],
+                implied: false,
+            };
+
+            Arc::new(Spanned::new(
+                CoreExpr::Fn {
+                    return_ann: None,
+                    params,
+                    body: Arc::new(Spanned::new(variant_call, syn_span.clone())),
+                    desugared: false,
+                },
+                syn_span.clone(),
+            ))
+        };
+
+        core_entries.push(Spanned::new(CoreEntry { key, value }, syn_span.clone()));
+    }
+
+    CoreExpr::Dict(core_entries)
+}
+
+/// Simplified constructor info for lowering.
+struct ConstructorInfo {
+    name: String,
+    is_unit: bool,
+    fields: Vec<String>,
+}
+
+/// Extract constructor information from a TypeAlias body.
+///
+/// Simplified version of `desugar.rs::extract_surface_adt_ctors_from_expr`.
+/// Handles the common cases:
+/// - Bare uppercase VarRef → unit constructor
+/// - Dict with uppercase VarRef first positional entry → payload constructor with named fields
+/// Extract constructor info from a TypeAlias body, mirroring `desugar.rs::extract_surface_adt_ctors_from_expr`.
+///
+/// Constructor forms:
+/// 1. Bare VarRef uppercase → unit constructor (e.g., `Red`, `None`)
+/// 2. Annotated uppercase → unit constructor with annotation
+/// 3. Call with uppercase func + no named args → unit constructor (e.g., `[Ok a]`, `[Error String]`)
+/// 4. Call with uppercase func + named args → named-field constructor (e.g., `[Circle r: Int]`)
+/// 5. Dict with first positional VarRef/Annotated + keyed entries → named-field constructor
+fn extract_constructors_from_body(body: &SurfaceExpression) -> Vec<ConstructorInfo> {
+    let mut ctors = Vec::new();
+
+    fn is_ctor(s: &str) -> bool {
+        crate::eval::is_constructor_name(s)
+    }
+
+    fn try_extract_one(expr: &SurfaceExpression, ctors: &mut Vec<ConstructorInfo>) {
+        match expr {
+            // Bare uppercase VarRef → unit constructor
+            SurfaceExpression::VarRef { name, .. } if is_ctor(name) => {
+                ctors.push(ConstructorInfo {
+                    name: name.clone(),
+                    is_unit: true,
+                    fields: Vec::new(),
+                });
+            }
+            // Annotated uppercase → unit constructor
+            SurfaceExpression::Annotated { name, .. } if is_ctor(name) => {
+                ctors.push(ConstructorInfo {
+                    name: name.clone(),
+                    is_unit: true,
+                    fields: Vec::new(),
+                });
+            }
+            // Call with uppercase func → unit or named-field constructor
+            // [Ok a] → Call { func: VarRef("Ok"), args: [VarRef("a")], named_args: [] } → unit
+            // [Circle r: Int] → Call { func: VarRef("Circle"), named_args: [(r, Int)] } → named-field
+            SurfaceExpression::Call {
+                func, named_args, ..
+            } => {
+                if let SurfaceExpression::VarRef { name, .. } = &func.expr {
+                    if is_ctor(name) {
+                        if named_args.is_empty() {
+                            // Positional-only args are type params → unit constructor at runtime
+                            ctors.push(ConstructorInfo {
+                                name: name.clone(),
+                                is_unit: true,
+                                fields: Vec::new(),
+                            });
+                        } else {
+                            // Named args → named-field constructor
+                            let fields = named_args.iter().map(|na| na.node.name.clone()).collect();
+                            ctors.push(ConstructorInfo {
+                                name: name.clone(),
+                                is_unit: false,
+                                fields,
+                            });
+                        }
+                    }
+                }
+            }
+            // Dict `[Constructor field: Type ...]` — single named-field constructor
+            SurfaceExpression::Dict(entries) if !entries.is_empty() => {
+                let first = &entries[0];
+                if first.node.key.is_some() {
+                    return;
+                }
+                let ctor_name = match &first.node.value.expr {
+                    SurfaceExpression::VarRef { name, .. } if is_ctor(name) => name.clone(),
+                    SurfaceExpression::Annotated { name, .. } if is_ctor(name) => name.clone(),
+                    _ => return,
+                };
+                let fields: Vec<String> = entries[1..]
+                    .iter()
+                    .filter_map(|e| {
+                        let key = e.node.key.as_ref()?;
+                        match &key.expr {
+                            SurfaceExpression::Str(s) => Some(s.clone()),
+                            SurfaceExpression::VarRef { name, .. } => Some(name.clone()),
+                            SurfaceExpression::Annotated { name, .. } => Some(name.clone()),
+                            _ => None,
+                        }
+                    })
+                    .collect();
+                let is_unit = fields.is_empty();
+                ctors.push(ConstructorInfo {
+                    name: ctor_name,
+                    is_unit,
+                    fields,
+                });
+            }
+            _ => {}
+        }
+    }
+
+    // Top-level dispatch — mirrors desugar.rs::extract_surface_adt_ctors_from_expr.
+    match body {
+        SurfaceExpression::Dict(entries) => {
+            // Distinguish "single named-field constructor dict" from "union of constructors":
+            // - Constructor dict: first positional is VarRef/Annotated uppercase AND has keyed entries
+            // - Union: each positional entry is a separate constructor
+            let is_single_ctor_dict = entries.first().map_or(false, |first| {
+                if first.node.key.is_some() {
+                    return false;
+                }
+                let first_is_ctor = matches!(&first.node.value.expr,
+                    SurfaceExpression::VarRef { name, .. } if is_ctor(name))
+                    || matches!(&first.node.value.expr,
+                    SurfaceExpression::Annotated { name, .. } if is_ctor(name));
+                let has_keyed = entries[1..].iter().any(|e| e.node.key.is_some());
+                first_is_ctor && has_keyed
+            });
+            if is_single_ctor_dict {
+                try_extract_one(body, &mut ctors);
+            } else {
+                for entry in entries {
+                    if entry.node.key.is_none() {
+                        try_extract_one(&entry.node.value.expr, &mut ctors);
+                    }
+                }
+            }
+        }
+        other => try_extract_one(other, &mut ctors),
+    }
+    ctors
 }
 
 #[cfg(test)]

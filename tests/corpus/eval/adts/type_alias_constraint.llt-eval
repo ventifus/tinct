@@ -13,4 +13,4 @@
   result: [identity-key 42]
 ]
 === out
-Dict({"identity-key": Function(k), "result": Int(42)})
+Dict({"SortKey": Dict({}), "identity-key": Function(k), "result": Int(42)})

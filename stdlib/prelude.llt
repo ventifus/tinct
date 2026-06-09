@@ -1897,8 +1897,10 @@ DirCapFlag: [type Statable Listable Deletable Renameable]
 
 # Result type: Ok[a] | Error[String]
 Result: [type [Ok a] [Error String]]
-# Constructors Ok and Error are automatically exported by the type checker (B-296 fix) —
-# no explicit re-exports needed.
+# T-1086 convenience aliases — explicit bindings so bare Ok/Error remain valid.
+# These work now that [type ...] evaluates to a constructor dict (T-1193).
+Ok:    Result.Ok
+Error: Result.Error
 
 ok?: [fn@[return: Bool  doc: """
 Check if Result is Ok.
@@ -2090,8 +2092,9 @@ TraversableResult@[doc: "Traversable instance for Result"]:
 
 # Maybe type: Some[a] | None — represents optional values
 Maybe: [type [Some a] None]
-# Constructors Some and None are automatically exported by the type checker (B-296 fix) —
-# no explicit re-exports needed.
+# T-1086 convenience aliases — explicit bindings so bare Some/None remain valid.
+Some: Maybe.Some
+None: Maybe.None
 
 # Absent: sentinel value for missing keys/vars/elements.
 # Returned by get?, env, head on empty seq. NOT interchangeable with null? (empty collection).

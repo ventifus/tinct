@@ -6,4 +6,4 @@
   result: [Boxed value: 42]
 ]
 === out
-Dict({"Boxed": Function(payload), "result": Variant(Box.Boxed, Dict({"value": Int(42)}))})
+Dict({"Boxed": Function(payload), "Box": Dict({"Boxed": Function(value)}), "result": Variant(Box.Boxed, Dict({"value": Int(42)}))})

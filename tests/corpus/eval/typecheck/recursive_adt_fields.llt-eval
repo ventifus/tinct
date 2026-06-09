@@ -10,4 +10,4 @@
   result: 42
 ]
 === out
-Dict({"result": Int(42)})
+Dict({"Node": Dict({}), "result": Int(42)})

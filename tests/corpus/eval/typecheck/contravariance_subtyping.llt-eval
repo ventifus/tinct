@@ -8,4 +8,4 @@
   result: true
 ]
 === out
-Dict({"result": Bool(true)})
+Dict({"Callback": Dict({}), "result": Bool(true)})

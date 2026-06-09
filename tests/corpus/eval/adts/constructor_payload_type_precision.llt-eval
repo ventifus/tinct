@@ -21,4 +21,4 @@
   result: 42
 ]
 === out
-Dict({"MyOk": Function(payload), "MyErr": Function(payload), "unwrap-ok": Function(r), "result": Int(42)})
+Dict({"MyOk": Function(payload), "MyErr": Function(payload), "Result2": Dict({"MyOk": Function(n), "MyErr": Function(msg)}), "unwrap-ok": Function(r), "result": Int(42)})

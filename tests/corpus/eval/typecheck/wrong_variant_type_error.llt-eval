@@ -13,4 +13,4 @@
   result: Green
 ]
 === out
-Dict({"Red": Variant(Color.Red, Null), "Green": Variant(Color.Green, Null), "Blue": Variant(Color.Blue, Null), "result": Variant(Color.Green, Null)})
+Dict({"Red": Variant(Color.Red, Null), "Green": Variant(Color.Green, Null), "Blue": Variant(Color.Blue, Null), "Color": Dict({"Red": Variant(Color.Red, Null), "Green": Variant(Color.Green, Null), "Blue": Variant(Color.Blue, Null)}), "result": Variant(Color.Green, Null)})

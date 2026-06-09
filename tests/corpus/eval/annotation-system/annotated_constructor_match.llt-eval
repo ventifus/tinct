@@ -12,4 +12,4 @@
   result:  [= matched "matched"]
 ]
 === out
-Dict({"Red": Variant(MyType.Red, Null), "matched": String("matched"), "result": Bool(true)})
+Dict({"Red": Variant(MyType.Red, Null), "MyType": Dict({"Red": Variant(MyType.Red, Null)}), "matched": String("matched"), "result": Bool(true)})
