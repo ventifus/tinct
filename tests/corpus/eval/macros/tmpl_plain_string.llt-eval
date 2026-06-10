@@ -23,5 +23,8 @@ i"Hello world"
 
 
 
+=== error
+[E080] macro 'tmpl' returned invalid AST: missing required field: type (defined at 1:1-1:15)
+
 === warn
 [E080] macro 'tmpl' returned invalid AST: missing required field: type (defined at 1:1-1:15)

@@ -22,5 +22,8 @@
 
 
 
+=== error
+[E080] macro 'tmpl' returned invalid AST: missing required field: type (defined at 1:18-1:36)
+
 === warn
 [E080] macro 'tmpl' returned invalid AST: missing required field: type (defined at 1:18-1:36)
