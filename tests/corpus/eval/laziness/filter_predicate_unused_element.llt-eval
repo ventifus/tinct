@@ -7,3 +7,5 @@
     [filter
      [fn [let x] [< x 100]]
      [seq 42 [seq [raise "predicate should not fire"] []]]]]]
+=== out
+Dict({0: Int(42)})

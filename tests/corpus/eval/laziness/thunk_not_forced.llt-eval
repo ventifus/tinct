@@ -1,4 +1,6 @@
-# Strict let* semantics: document-level sequential bindings force all values
-# eagerly. An error in a dead binding fires immediately at binding time.
+# Laziness proof: an unused dict entry is never forced, even if it contains a raise.
+# Dict entries are thunks — evaluation is deferred until the value is accessed.
+# [result: used] only accesses `used`, so `unused` is never forced and the raise
+# never fires.
 [unused: [raise "dead binding remains lazy"]  used: 42]
 [result: used]

@@ -656,16 +656,133 @@ pub(crate) fn builtin_take(
                     Arc::clone(&tail_thunk),
                 ];
                 let new_tail = Arc::new(Thunk::new_pending_builtin(
-                    // Must match the core_builtins() registration: force_count=2 forces
-                    // args[0] (the count) and args[1] (the sequence).
-                    // args[0] is already Materialized (ok_val above), but args[1] (tail_thunk)
-                    // may be unevaluated. Without force_count here, builtin_take would panic at
-                    // `args[1].try_get_materialized().expect("pre-materialized by force_count/pos_strictness")`.
+                    // Use builtin_take_seq_step with force_count=1 (only pre-force n).
+                    // The step function checks n <= 0 BEFORE touching args[1], so the
+                    // tail is never forced when take reaches its terminal case (n=0).
+                    // Using builtin_take with force_count=2 here is the laziness bug
+                    // B-383: it would force the tail even when n=0, materializing lazy
+                    // thunks that should never be observed (e.g., error sentinels past
+                    // the end of what is consumed).
                     builtin!(
                         "builtin-take",
-                        builtin_take,
-                        [Strictness::Seq, Strictness::Spine],
-                        2
+                        builtin_take_seq_step,
+                        [Strictness::Seq],
+                        1
+                    ),
+                    tail_args,
+                    None,
+                    call_span.clone(),
+                    Some(Arc::from("call $take")),
+                    Arc::clone(&ctx),
+                ));
+                ok_val(
+                    make_seq_cons(head, ctx.alloc_thunk(new_tail), &ctx),
+                    call_span,
+                )
+            }
+            other => Err(EvalError::type_mismatch_ctx(
+                "take".to_string(),
+                "Dict or Seq",
+                other.type_name(),
+                call_span,
+            )
+            .into()),
+        }
+    })
+}
+
+/// Helper for `take` on Seq: takes elements one at a time with lazy terminal case.
+///
+/// This step function is used for the recursive `PendingBuiltin` created by `builtin_take`
+/// in the Seq arm. It differs from calling `builtin_take` recursively in one critical way:
+/// `force_count=1` means only `n` (args[0]) is pre-materialized, NOT the tail (args[1]).
+///
+/// This preserves laziness at the terminal case: when `n <= 0`, the function returns
+/// `Seq.Nil` immediately WITHOUT forcing `args[1]`. If we used `builtin_take` with
+/// `force_count=2` here, the evaluator would force the tail thunk before calling this
+/// function, observing errors or side effects in tail elements that should never be reached
+/// (B-383).
+///
+/// Args: (n: Int, tail: Seq)  — n is pre-materialized; tail is NOT pre-materialized
+pub(crate) fn builtin_take_seq_step(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            call_span,
+            ctx,
+            ..
+        } = ctx_arg;
+
+        let n = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let n_int = match n {
+            Value::Int(i) => i,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "take".to_string(),
+                    "Int",
+                    other.type_name(),
+                    call_span,
+                )
+                .into())
+            }
+        };
+
+        // Check n BEFORE touching args[1]. This is the key invariant: when n <= 0,
+        // we return Seq.Nil without forcing the tail. The tail may contain lazy thunks
+        // that should never be observed (error sentinels, unevaluated expensive computations).
+        if n_int <= 0 {
+            return ok_val(make_seq_nil(), call_span);
+        }
+
+        // n > 0: materialize the tail and dispatch.
+        let xs = materialize(&args[1], None, &ctx).await?;
+
+        match xs {
+            Value::Variant {
+                ref tag,
+                payload: None,
+            } if tag == "Seq.Nil" => {
+                // Empty sequence: take n from nil = nil
+                ok_val(make_seq_nil(), call_span)
+            }
+            Value::Variant {
+                ref tag,
+                payload: Some(payload_id),
+            } if tag == "Seq.Cons" => {
+                // Extract head and tail, emit head, defer tail
+                let payload_thunk = ctx.get_thunk(payload_id);
+                let payload_val =
+                    crate::eval::materialize_sync(&payload_thunk, Some(&call_span), &ctx)?;
+                let (head, tail) = if let Value::Dict(ref d) = payload_val {
+                    let head = *d
+                        .get(&Key::String("head".into()))
+                        .expect("Seq.Cons must have head");
+                    let tail = *d
+                        .get(&Key::String("tail".into()))
+                        .expect("Seq.Cons must have tail");
+                    (head, tail)
+                } else {
+                    return Err(EvalError::internal(
+                        "Seq.Cons payload must be a Dict".to_string(),
+                        call_span,
+                    )
+                    .into());
+                };
+                let tail_thunk = ctx.get_thunk(tail);
+                let tail_args = vec![
+                    ok_val(Value::Int(n_int - 1), call_span.clone())?,
+                    Arc::clone(&tail_thunk),
+                ];
+                let new_tail = Arc::new(Thunk::new_pending_builtin(
+                    builtin!(
+                        "builtin-take",
+                        builtin_take_seq_step,
+                        [Strictness::Seq],
+                        1
                     ),
                     tail_args,
                     None,

@@ -1,0 +1,8 @@
+# Strictness proof: $begin forces each subexpression eagerly in order.
+# Unlike dict entries (which are lazy thunks), $begin evaluates each expression
+# for its effect and discards all but the last. This is the deliberate strictness
+# escape hatch for sequencing side effects.
+# Here both additions are evaluated; only the last result is returned.
+[result: [begin [+ 1 2] [+ 3 4]]]
+=== out
+Dict({"result": Int(7)})

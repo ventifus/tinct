@@ -4,3 +4,5 @@
     [filter
      [fn [let x] [< x 10]]
      [seq 5 [seq [raise "should not evaluate"] []]]]]]
+=== out
+Dict({0: Int(5)})

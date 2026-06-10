@@ -1,0 +1,10 @@
+# Laziness proof: a seq whose tail thunk holds a live binding is not forced
+# beyond what is consumed by $take.
+# `trap` is a binding that raises; it is reachable only from the third element
+# of `err-seq`, which `take 2` never demands. The result is the two-element
+# collect; `trap` and the third seq element are never evaluated.
+[
+  trap:    [raise "live binding past n must not be forced"]
+  err-seq: [seq 10 [seq 20 [seq trap []]]]
+]
+[result: [collect [take 2 err-seq]]]
