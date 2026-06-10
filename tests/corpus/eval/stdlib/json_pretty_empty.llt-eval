@@ -3,8 +3,10 @@
 
 ---
 
-[empty-dict: [%.to-json-pretty []]]
-[empty-array: [%.to-json-pretty []]]
-[nested: [%.to-json-pretty [x: [] y: []]]]
+[j1: [%.to-json-pretty []]]
+[j2: [%.to-json-pretty []]]
+[j3: [%.to-json-pretty [x: [] y: []]]]
 
-[empty-dict: empty-dict  empty-array: empty-array  nested: nested]
+[empty-dict: j1  empty-array: j2  nested: j3]
+=== out
+Dict({"empty-dict": String("null"), "empty-array": String("null"), "nested": String("{\n  \"x\": null,\n  \"y\": null\n}")})

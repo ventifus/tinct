@@ -8,3 +8,5 @@
   err-seq: [seq 10 [seq 20 [seq trap []]]]
 ]
 [result: [collect [take 2 err-seq]]]
+=== error
+[E080] live binding past n must not be forced
