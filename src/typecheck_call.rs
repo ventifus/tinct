@@ -24,13 +24,23 @@ use crate::types::{
 /// Widen literal types in a type, recursively through Record fields.
 ///
 /// Promotes `IntLiteral(n)` to `Int` and `StringLiteral(s)` to `Str` at every
-/// level of the type.  This is needed when unifying variadic arguments against
-/// a shared Seq element TypeVar: the first argument (e.g. `[1 2]`) would bind
-/// the TypeVar to `Record({0: IntLiteral(1), 1: IntLiteral(2)})`, and the second
-/// argument (e.g. `[3 4]`) would then fail to unify because
+/// level of the type.
+///
+/// This is needed in all positional argument unification paths where a polymorphic
+/// type variable could be bound to a literal type by one argument and then fail to
+/// unify against a different literal value for the next argument.  Classic example:
+/// `[> x 10]` where `x = 5` infers `IntLiteral(5)` and the literal `10` infers
+/// `IntLiteral(10)`.  Without widening, the `>` builtin's `∀a. Fn(a a → Bool)`
+/// instantiates `_t0` to `IntLiteral(5)` on the first argument, then
+/// `unify(IntLiteral(5), IntLiteral(10))` fails on the second.  Widening both
+/// to `Int` before unification lets them unify correctly. (B-384)
+///
+/// Also needed for variadic arguments: `[f [1 2] [3 4]]` where the first record
+/// argument would bind the variadic TypeVar to
+/// `Record({0: IntLiteral(1), 1: IntLiteral(2)})` and the second would fail with
 /// `IntLiteral(1) ≠ IntLiteral(3)`.  Widening both records to
 /// `Record({0: Int, 1: Int})` lets them unify correctly.
-fn widen_literal_types(ty: Type) -> Type {
+pub(super) fn widen_literal_types(ty: Type) -> Type {
     match ty {
         Type::IntLiteral(_) => Type::Int,
         Type::StringLiteral(_) => Type::Str,
@@ -467,7 +477,13 @@ pub(crate) fn check_call_with_scheme(
 
                     // Error-typed args absorb silently (unify(Error, T) = Ok(())),
                     // so we only propagate unification errors from non-Error args.
-                    if let Err(e) = unify(param_ty, arg_ty, &mut subst, state, span.clone()) {
+                    // Widen literal types before unification: IntLiteral(n) → Int,
+                    // StringLiteral(s) → Str. This prevents false-positive unification
+                    // failures when a polymorphic type variable is first bound to
+                    // IntLiteral(5) (from arg 0) and then unified against IntLiteral(10)
+                    // (from arg 1). Both are Int; widening makes this explicit. (B-384)
+                    let arg_ty_widened = widen_literal_types(arg_ty.clone());
+                    if let Err(e) = unify(param_ty, &arg_ty_widened, &mut subst, state, span.clone()) {
                         arg_errors.get_or_insert_with(Vec::new).push(e);
                     }
                 }

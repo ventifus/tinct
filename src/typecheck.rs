@@ -3352,9 +3352,16 @@ pub(super) fn check_surface_expr(
         // Expected type contains TypeVars — use unification to bind them.
         // This is the CALL-POLY path: the function is polymorphic, and we need to
         // instantiate type variables based on the argument types.
+        //
+        // Widen literal types before unification: IntLiteral(n) → Int,
+        // StringLiteral(s) → Str. This prevents false-positive unification failures
+        // when a polymorphic type variable is first bound to IntLiteral(5) (from arg 0)
+        // and then the widened-expected type IntLiteral(5) is unified against the inferred
+        // IntLiteral(10) (from arg 1). Both are Int; widening makes this explicit. (B-384)
+        let actual_widened = widen_literal_types(actual.clone());
         let mut subst = std::mem::take(&mut state.subst);
         let result = unify(
-            &actual,
+            &actual_widened,
             &expected_resolved,
             &mut subst,
             state,

@@ -163,6 +163,9 @@ fn update_eval_corpus() {
     let _ = tinct::build_prelude_env();
 
     let dry_run = std::env::var("UPDATE_CORPUS_DRY_RUN").is_ok_and(|v| v == "1" || v == "true");
+    // When UPDATE_CORPUS_ACCEPT_WARN=1, accept (keep) type warnings instead of stripping them.
+    // Use this to bulk-add === warn sections for type checker advisory warnings.
+    let _accept_warn = std::env::var("UPDATE_CORPUS_ACCEPT_WARN").is_ok_and(|v| v == "1");
     let filter = std::env::var("UPDATE_CORPUS_FILTER").ok();
 
     let corpus_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/corpus/eval");

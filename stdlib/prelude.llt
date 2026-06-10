@@ -405,7 +405,7 @@
 
 ]
 
---- uses: ["core" "io" "math" "meta" "dict" "string" "seq" "async"]
+--- uses: ["core" "io" "math" "meta" "dict" "string" "seq" "async" "datetime"]
 
 # ============================================================================
 # LLT Standard Library (Prelude)
@@ -2745,6 +2745,9 @@ eval@[doc: "Evaluate a sequence of expressions. Optional named args: env:, scope
 eval-types@[doc: "Evaluate expressions in the type-stage environment"]: builtin-eval-types
 blake3@[doc: "Compute the BLAKE3 cryptographic hash of a string, returning a hex-encoded digest."]: builtin-blake3
 cap-identity@[doc: "Return a stable string identity for a DirCap (used for content-addressed caching keys)."]: builtin-cap-identity
+cap-data@[doc: "Extract capability data from a Handle or WriteHandle by name. Returns [] (null) on miss."]: builtin-cap-data
+include-cache-get@[doc: "Look up the include cache by BLAKE3 key. Returns IncludeCacheEntry (Missing/Pending/Cached)."]: builtin-include-cache-get
+include-cache-put@[doc: "Insert a value into the include cache by BLAKE3 key."]: builtin-include-cache-put
 
 # module: resolve a module name to its export dict (used to build eval scope from doc.uses).
 module@[doc: "Resolve a builtin module name to its export dict."]: builtin-module
@@ -3497,11 +3500,33 @@ chunks@[doc: "Lazily read fixed-size byte chunks from a Handle. Returns a Seq of
 bytes-concat@[doc: "Concatenate a Seq or Dict of Bytes values into a single Bytes value"]:
   [fn [let chunks-seq] [apply bytes [collect chunks-seq]]]
 
-# Get current timestamp in nanoseconds since Unix epoch
-timestamp-nanos: builtin-timestamp-nanos
-
-# Convert a duration to nanoseconds
-duration-nanos: builtin-duration-nanos
+# Datetime functions — loaded via builtin-module "datetime" (T-1195 runtime wiring pending)
+# Each calls [builtin-module "datetime"] inline to access the datetime module's functions.
+# Once T-1195 is implemented, these can be simplified to direct builtin-* names.
+timestamp-nanos:   [builtin-module "datetime"].timestamp-nanos
+duration-nanos:    [builtin-module "datetime"].duration-nanos
+duration-seconds:  [builtin-module "datetime"].duration-seconds
+duration-minutes:  [builtin-module "datetime"].duration-minutes
+duration-hours:    [builtin-module "datetime"].duration-hours
+duration-days:     [builtin-module "datetime"].duration-days
+timestamp->unix:   [get "timestamp->unix"   [builtin-module "datetime"]]
+unix->timestamp:   [get "unix->timestamp"   [builtin-module "datetime"]]
+timestamp-add:     [builtin-module "datetime"].timestamp-add
+timestamp-diff:    [builtin-module "datetime"].timestamp-diff
+timestamp<?:       [get "timestamp<?"  [builtin-module "datetime"]]
+timestamp>?:       [get "timestamp>?"  [builtin-module "datetime"]]
+timestamp=?:       [get "timestamp=?"  [builtin-module "datetime"]]
+timestamp-year:    [builtin-module "datetime"].timestamp-year
+timestamp-month:   [builtin-module "datetime"].timestamp-month
+timestamp-day:     [builtin-module "datetime"].timestamp-day
+timestamp-hour:    [builtin-module "datetime"].timestamp-hour
+timestamp-minute:  [builtin-module "datetime"].timestamp-minute
+timestamp-second:  [builtin-module "datetime"].timestamp-second
+timestamp-parts:   [builtin-module "datetime"].timestamp-parts
+parse-timestamp:   [builtin-module "datetime"].parse-timestamp
+format-timestamp:  [builtin-module "datetime"].format-timestamp
+duration->nanos:   [get "duration->nanos"   [builtin-module "datetime"]]
+duration->seconds: [get "duration->seconds" [builtin-module "datetime"]]
 
 # ============================================================================
 # Async concurrency primitives
@@ -3516,8 +3541,13 @@ duration-nanos: builtin-duration-nanos
 # Used to specify which signal to listen for when creating a signal channel.
 # Supported on Unix platforms only (macOS, Linux, BSD).
 Signal: [type SIGTERM SIGINT SIGHUP SIGQUIT SIGUSR1 SIGUSR2]
-# Constructors SIGTERM, SIGINT, SIGHUP, SIGQUIT, SIGUSR1, SIGUSR2 are automatically exported
-# by the type checker (B-296 fix) — no explicit re-exports needed.
+# Short-name aliases for Signal constructors (like Ok/Error/Some/None/Tcp etc.)
+SIGTERM: Signal.SIGTERM
+SIGINT:  Signal.SIGINT
+SIGHUP:  Signal.SIGHUP
+SIGQUIT: Signal.SIGQUIT
+SIGUSR1: Signal.SIGUSR1
+SIGUSR2: Signal.SIGUSR2
 
 # Action: zero-arg side-effecting function (Moggi/Haskell IO distinction)
 Action: [type [Fn@Null []]]
@@ -3547,8 +3577,9 @@ oneshot-channel:    builtin-oneshot-channel
 try-send:           builtin-try-send
 select-once:        builtin-select-once
 
-# Emit function (requires %emit in scope, injected by loader.llt or CLI)
-emit: [fn@Null [let v@Any] [send %emit v]]
+# Emit function: write to stdout. The CLI may override this via the %emit channel.
+# Uses builtin-emit directly for standalone use; CLI loader.llt overrides with channel-based version.
+emit@[doc: "Print a value to stdout"]: builtin-emit
 
 # Event-source channels
 signal-channel:  builtin-signal-channel

@@ -42,6 +42,10 @@ test_run_flags := "--rm --memory " + container_memory + test_timeout_flag + " -v
 default:
     @just --list
 
+# Git commit without GPG signing (for use when pinentry is unavailable)
+commit MESSAGE:
+    git commit --no-gpg-sign -m "{{MESSAGE}}"
+
 # Build the project (debug mode)
 build:
     {{container}} run {{run_flags}} -e RUSTFLAGS="-D warnings" {{rust_image}} cargo build
@@ -125,6 +129,7 @@ update-corpus *ARGS:
     for arg in {{ARGS}}; do
         case "$arg" in
             --dry-run) DRY_RUN="-e UPDATE_CORPUS_DRY_RUN=1" ;;
+            --accept-warn) DRY_RUN="${DRY_RUN} -e UPDATE_CORPUS_ACCEPT_WARN=1" ;;
             --filter) shift_next=1 ;;
             --all) TESTS="update_eval_corpus update_valid_corpus update_typecheck_warnings_corpus" ;;
             --valid) TESTS="update_valid_corpus" ;;

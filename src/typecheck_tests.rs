@@ -10013,6 +10013,27 @@ fn test_instance_decl_parsed_correctly() {
 }
 
 #[test]
+fn test_instance_let_annotated_pattern_typechecks() {
+    // Regression test for B-385: `[instance Cls [let a@Type]: ...]` must typecheck without errors.
+    // The `[let a@String]` form uses SurfaceExpression::LetDecl { bindings: [Annotated] },
+    // which must be accepted by extract_pattern_types (typecheck_narrow.rs).
+    // Before the fix, the test files used `[fn [a b] body]` (old fn syntax) which caused
+    // parse errors that cascaded into typecheck errors, masking the instance pattern issue.
+    let input = r#"[
+  MyClass: [class [let MyClass a]]
+  MyClassStr: [instance MyClass [let a@String]:
+    my-method: [fn [let x] x]]
+  result: [MyClassStr.my-method "hello"]
+]"#;
+    let result = crate::typecheck_source_errors_only(input);
+    assert!(
+        result.is_ok(),
+        "[instance MyClass [let a@String]: ...] must typecheck without errors (B-385); got: {:?}",
+        result
+    );
+}
+
+#[test]
 fn test_appendable_constraint_merge_typechecks() {
     // Regression test for S-783: [merge [a: 1] [b: 2]] must typecheck without errors.
     // The Appendable constraint on `merge` must be satisfied via the prelude's AppendableDict
