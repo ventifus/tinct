@@ -1,0 +1,8 @@
+# lower: basic lowercase conversion
+[include %libdir "strings.llt"]
+[lower "HELLO"]
+=== out
+String("hello")
+
+=== warn
+[UndefinedVariable] undefined variable: lower

@@ -1,0 +1,8 @@
+# upper: unicode uppercase conversion
+[include %libdir "strings.llt"]
+[upper "café"]
+=== out
+String("CAFÉ")
+
+=== warn
+[UndefinedVariable] undefined variable: upper

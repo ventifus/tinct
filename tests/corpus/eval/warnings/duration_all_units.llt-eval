@@ -1,0 +1,8 @@
+# duration-nanos / duration->nanos roundtrip
+[duration->nanos [duration-nanos 500]]
+
+=== out
+Int(500)
+
+=== warn
+[NotAFunction] expected function type, got _t0

@@ -1,0 +1,8 @@
+# Basic task and await - spawns and awaits the task, returning Int(42)
+
+[await [task [fn [] 42]]]
+=== out
+Int(42)
+
+=== warn
+[UndefinedVariable] undefined variable: builtin-task
