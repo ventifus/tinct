@@ -2,3 +2,5 @@
 # Note: with-context/non-cancellable are standard builtins, so finally is testable
 # without a live async runtime.
 [finally [fn [let] "cleaned"] [fn [let] [raise "body failed"]]]
+=== error
+[E080] body failed

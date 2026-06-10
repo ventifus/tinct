@@ -3,10 +3,10 @@
 [connect %cwd NamedPipe "/tmp/test.pipe"]
 
 === error
-[E002] undefined variable: builtin-connect (defined at stdlib/prelude.llt:2730:60-2730:75) (called at 2:1-2:42)
-  --> stdlib/prelude.llt:2730:60-2730:75
+[E002] undefined variable: builtin-connect (defined at stdlib/prelude.llt:2736:60-2736:75) (called at 2:1-2:42)
+  --> stdlib/prelude.llt:2736:60-2736:75
    |
-  2730 | connect@[doc: "Open a TCP/UDP connection under a NetCap"]: builtin-connect
+  2736 | connect@[doc: "Open a TCP/UDP connection under a NetCap"]: builtin-connect
        |                                                            ^^^^^^^^^^^^^^^
   in [connect ...] at 2:1-2:42
 

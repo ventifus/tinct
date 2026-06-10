@@ -17,14 +17,14 @@
 # It tests E080 (UserError from $raise builtin) instead.
 [p: [proxy [fn [let key] [raise "handler called"]]]  result: p.test]
 === error
-[E080] handler called (defined at stdlib/prelude.llt:2490:28-2490:47)
-  --> stdlib/prelude.llt:2490:28-2490:47
+[E080] handler called (defined at stdlib/prelude.llt:2496:28-2496:47)
+  --> stdlib/prelude.llt:2496:28-2496:47
    |
-  2490 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2496 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
-  in [builtin-raise ...] at stdlib/prelude.llt:2490:28-2490:47
+  in [builtin-raise ...] at stdlib/prelude.llt:2496:28-2496:47
    |
-  2490 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2496 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
   in materialized at 17:62-17:68
   in proxy field access at 17:62-17:68

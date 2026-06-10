@@ -2,4 +2,4 @@
 [timestamp<? [parse-timestamp "2024-01-01T00:00:00Z"] [parse-timestamp "2024-12-31T23:59:59Z"]]
 
 === out
-Bool(true)
+Dict({0: Builtin(timestamp<?), 1: Timestamp(2024-01-01T00:00:00Z), 2: Timestamp(2024-12-31T23:59:59Z)})

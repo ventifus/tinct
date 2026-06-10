@@ -5,17 +5,17 @@
 
 [include %cwd "../../etc/passwd"]
 === error
-[E080] open: failed to open file '../../etc/passwd': a path led outside of the filesystem (defined at stdlib/prelude.llt:3449:30-3449:63) (called at stdlib/prelude.llt:3449:3-3449:65)
-  --> stdlib/prelude.llt:3449:30-3449:63
+[E080] open: failed to open file '../../etc/passwd': a path led outside of the filesystem (defined at stdlib/prelude.llt:3455:30-3455:63) (called at stdlib/prelude.llt:3455:3-3455:65)
+  --> stdlib/prelude.llt:3455:30-3455:63
    |
-  3449 |   [source: [builtin-read-all [open cap path OpenFlag.Readable]]]
+  3455 |   [source: [builtin-read-all [open cap path OpenFlag.Readable]]]
        |                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [open ...] at stdlib/prelude.llt:3449:30-3449:63
+  in [open ...] at stdlib/prelude.llt:3455:30-3455:63
    |
-  3449 |   [source: [builtin-read-all [open cap path OpenFlag.Readable]]]
+  3455 |   [source: [builtin-read-all [open cap path OpenFlag.Readable]]]
        |                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-read-all ...] at stdlib/prelude.llt:3449:12-3449:64
+  in [builtin-read-all ...] at stdlib/prelude.llt:3455:12-3455:64
    |
-  3449 |   [source: [builtin-read-all [open cap path OpenFlag.Readable]]]
+  3455 |   [source: [builtin-read-all [open cap path OpenFlag.Readable]]]
        |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   in [include ...] at 5:1-5:34

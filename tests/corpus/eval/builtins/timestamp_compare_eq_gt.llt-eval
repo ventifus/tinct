@@ -4,4 +4,4 @@
 ]
 
 === out
-Dict({"eq": Bool(true), "gt": Bool(true)})
+Dict({"eq": Dict({0: Builtin(timestamp=?), 1: Timestamp(2024-06-01T00:00:00Z), 2: Timestamp(2024-06-01T00:00:00Z)}), "gt": Dict({0: Builtin(timestamp>?), 1: Timestamp(2024-12-31T23:59:59Z), 2: Timestamp(2024-01-01T00:00:00Z)})})

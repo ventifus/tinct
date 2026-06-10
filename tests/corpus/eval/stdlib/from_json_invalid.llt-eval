@@ -2,14 +2,14 @@
 [json: [include %libdir "codecs/json.llt"]]
 [json.from-json "{bad json"]
 === error
-[E080] JSON: expected string key in object (defined at stdlib/prelude.llt:2490:28-2490:47)
-  --> stdlib/prelude.llt:2490:28-2490:47
+[E080] JSON: expected string key in object (defined at stdlib/prelude.llt:2496:28-2496:47)
+  --> stdlib/prelude.llt:2496:28-2496:47
    |
-  2490 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2496 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
-  in [builtin-raise ...] at stdlib/prelude.llt:2490:28-2490:47
+  in [builtin-raise ...] at stdlib/prelude.llt:2496:28-2496:47
    |
-  2490 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2496 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
   in [if ...] at 426:13-428:17
   in [str-length ...] at 293:16-293:30

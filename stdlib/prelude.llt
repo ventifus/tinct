@@ -1886,7 +1886,13 @@ Icmp:         Transport.Icmp
 # DirCap permission flags (used by [narrow]) that do not conflict with open flags:
 # Statable, Listable, Deletable, Renameable.
 OpenFlag: [type Readable Writable Appendable Binary Text Seekable]
-# Constructors accessible as OpenFlag.Readable, OpenFlag.Writable, OpenFlag.Appendable, etc.
+# Short-name aliases for OpenFlag constructors (like Transport/Signal aliases)
+# Note: Appendable is NOT aliased here — it conflicts with the Appendable typeclass
+Readable:   OpenFlag.Readable
+Writable:   OpenFlag.Writable
+Binary:     OpenFlag.Binary
+Text:       OpenFlag.Text
+Seekable:   OpenFlag.Seekable
 
 # DirCapFlag type: permission flags passed to the [narrow] builtin.
 # Controls which capabilities a narrowed DirCap inherits from its source.
@@ -3509,13 +3515,13 @@ duration-seconds:  [builtin-module "datetime"].duration-seconds
 duration-minutes:  [builtin-module "datetime"].duration-minutes
 duration-hours:    [builtin-module "datetime"].duration-hours
 duration-days:     [builtin-module "datetime"].duration-days
-timestamp->unix:   [get "timestamp->unix"   [builtin-module "datetime"]]
-unix->timestamp:   [get "unix->timestamp"   [builtin-module "datetime"]]
+timestamp->unix:   [fn@Int [let ts@Timestamp] [[get "timestamp->unix" [builtin-module "datetime"]] ts]]
+unix->timestamp:   [fn@Timestamp [let secs@Int] [[get "unix->timestamp" [builtin-module "datetime"]] secs]]
 timestamp-add:     [builtin-module "datetime"].timestamp-add
 timestamp-diff:    [builtin-module "datetime"].timestamp-diff
-timestamp<?:       [get "timestamp<?"  [builtin-module "datetime"]]
-timestamp>?:       [get "timestamp>?"  [builtin-module "datetime"]]
-timestamp=?:       [get "timestamp=?"  [builtin-module "datetime"]]
+timestamp<?:       [fn@Bool [let a@Timestamp b@Timestamp] [[get "timestamp<?"  [builtin-module "datetime"]] a b]]
+timestamp>?:       [fn@Bool [let a@Timestamp b@Timestamp] [[get "timestamp>?"  [builtin-module "datetime"]] a b]]
+timestamp=?:       [fn@Bool [let a@Timestamp b@Timestamp] [[get "timestamp=?"  [builtin-module "datetime"]] a b]]
 timestamp-year:    [builtin-module "datetime"].timestamp-year
 timestamp-month:   [builtin-module "datetime"].timestamp-month
 timestamp-day:     [builtin-module "datetime"].timestamp-day
@@ -3525,8 +3531,8 @@ timestamp-second:  [builtin-module "datetime"].timestamp-second
 timestamp-parts:   [builtin-module "datetime"].timestamp-parts
 parse-timestamp:   [builtin-module "datetime"].parse-timestamp
 format-timestamp:  [builtin-module "datetime"].format-timestamp
-duration->nanos:   [get "duration->nanos"   [builtin-module "datetime"]]
-duration->seconds: [get "duration->seconds" [builtin-module "datetime"]]
+duration->nanos:   [fn@Int [let d@Duration] [[get "duration->nanos"   [builtin-module "datetime"]] d]]
+duration->seconds: [fn@Float [let d@Duration] [[get "duration->seconds" [builtin-module "datetime"]] d]]
 
 # ============================================================================
 # Async concurrency primitives
@@ -3741,8 +3747,11 @@ the parent context is cancelled. Cleanup return value is discarded.
 Rust-level EvalErrors bypass finally.
 """]: [fn [let cleanup@Fn body@Fn]
     [match [try body]
-        [case [let v] [Result.Ok v]    [do [with-context [non-cancellable] [cleanup]] v]]
-        [case [let e] [Result.Error e] [do [with-context [non-cancellable] [cleanup]] [raise e]]]]]
+        # Run cleanup as a zero-arg thunk in non-cancellable context, then return result.
+        # with-context takes (context, thunk) where thunk is a fn [let] that runs cleanup.
+        # null? forces the with-context result; [if c v v] always returns v.
+        [case [let v] [Result.Ok v]    [if [null? [with-context [non-cancellable] [fn [let] [cleanup]]]] v v]]
+        [case [let e] [Result.Error e] [if [null? [with-context [non-cancellable] [fn [let] [cleanup]]]] [raise e] [raise e]]]]]
 
 # ============================================================================
 # Macro transformer helpers and public transformers

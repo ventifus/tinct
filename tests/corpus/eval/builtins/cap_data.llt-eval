@@ -1,3 +1,5 @@
 # Test cap-data on a file handle
 # open returns a handle with Readable and Text caps (both set to Bool(true) — presence flags)
 [cap-data [open %cwd "Cargo.toml" Readable] "Readable"]
+=== out
+Bool(true)

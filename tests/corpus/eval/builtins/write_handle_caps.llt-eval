@@ -8,5 +8,8 @@
 [has-cap? [open [narrow %cwd "target"] "tinct-test-write-caps.txt" Readable] "Readable"]
 
 
+=== out
+Bool(true)
+
 === warn
 [UndefinedVariable] undefined variable: has-cap?

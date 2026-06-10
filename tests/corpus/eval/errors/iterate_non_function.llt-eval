@@ -1,12 +1,12 @@
 # iterate: error when step argument is not a function (forced by collecting 2 elements)
 [collect [take 2 [iterate 42 0]]]
 === error
-[E010] type mismatch: expected Function or Builtin, got Int (defined at stdlib/prelude.llt:3002:19-3002:40)
-  --> stdlib/prelude.llt:3002:19-3002:40
+[E010] type mismatch: expected Function or Builtin, got Int (defined at stdlib/prelude.llt:3008:19-3008:40)
+  --> stdlib/prelude.llt:3008:19-3008:40
    |
-  3002 | """] [let f@Fn x] [builtin-iterate f x]]
+  3008 | """] [let f@Fn x] [builtin-iterate f x]]
        |                   ^^^^^^^^^^^^^^^^^^^^^
-  in iterate at stdlib/prelude.llt:3002:19-3002:40
+  in iterate at stdlib/prelude.llt:3008:19-3008:40
    |
-  3002 | """] [let f@Fn x] [builtin-iterate f x]]
+  3008 | """] [let f@Fn x] [builtin-iterate f x]]
        |                   ^^^^^^^^^^^^^^^^^^^^^

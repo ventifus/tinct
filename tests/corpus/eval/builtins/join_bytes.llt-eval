@@ -4,8 +4,8 @@
 === error
 [E010] bytes-of: expected Seq or Dict, got String (defined at 2:11-2:26)
   in [bytes-of ...] at 2:11-2:26
-  in [builtin-join ...] at stdlib/prelude.llt:3018:26-3018:47
+  in [builtin-join ...] at stdlib/prelude.llt:3024:26-3024:47
    |
-  3018 | """] [let sep@String xs] [builtin-join sep xs]]
+  3024 | """] [let sep@String xs] [builtin-join sep xs]]
        |                          ^^^^^^^^^^^^^^^^^^^^^
   in [join ...] at 2:1-2:27

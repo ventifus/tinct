@@ -2,3 +2,5 @@
 # open returns a handle with Readable and Text caps
 [include %libdir "io.llt"]
 [has-cap? [open %cwd "Cargo.toml" Readable] "Readable"]
+=== out
+Bool(true)
