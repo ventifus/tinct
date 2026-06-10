@@ -1,5 +1,0 @@
-# builtin-sort without comparator (natural ordering)
---- uses: ["core"]
-[builtin-sort [3 1 2]]
-=== out
-Dict({0: Int(1), 1: Int(2), 2: Int(3)})

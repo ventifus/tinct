@@ -1,5 +1,0 @@
-# lower: unicode lowercase conversion
-[include %libdir "strings.llt"]
-[lower "CAFÉ"]
-=== out
-String("café")

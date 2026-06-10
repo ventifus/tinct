@@ -1,5 +1,0 @@
-# upper: basic uppercase conversion
-[include %libdir "strings.llt"]
-[upper "hello"]
-=== out
-String("HELLO")

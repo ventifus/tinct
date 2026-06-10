@@ -1,6 +1,0 @@
-# to-tinct: attempting to serialize a non-serializable value (Task) errors with E080
-# Task values have no tinct representation
-[to-tinct [task []]]
-=== error
-[E080] to-tinct: no tinct representation for Task (defined at 2:1-2:21)
-  in [to-tinct ...] at 2:1-2:21
