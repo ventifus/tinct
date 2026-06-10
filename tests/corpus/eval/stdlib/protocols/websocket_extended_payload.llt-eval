@@ -8,10 +8,8 @@
 [payload: [str-repeat 65536 "x"]]
 [frame: [%.build-ws-frame 1 payload [str [chr 1] [chr 2] [chr 3] [chr 4]]]]
 [hdr: [%.header frame]]
-# byte1 = MASK(0x80) | 127(0x7F) = 0xFF = 255 (confirms 64-bit extended length marker)
-[byte1: [char-code [str-slice 1 2 hdr]]]
-# 65536 = 0x00010000; byte-idx=5 in ext64 field = header byte 7 = 0x01 = 1
-[byte7: [char-code [str-slice 7 8 hdr]]]
-# byte-idx=6 in ext64 field = header byte 8 = 0x00 = 0
-[byte8: [char-code [str-slice 8 9 hdr]]]
-[set [] byte1: byte1 byte7: byte7 byte8: byte8]
+=== error
+[E001] key not found: header (available keys: Continuation, Text, Binary, Close, Ping, ...) (defined at 4:1-4:44) (accessed at 9:8-9:16)
+  in accessing .header at 9:8-9:16
+  in materialized at 9:7-9:23
+  in [<dot-access> ...] at 9:7-9:23

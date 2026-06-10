@@ -4,29 +4,8 @@
 
 [Pair: [type [let a b] [Pair first: a  second: b]]]
 [@[Pair Int] [Pair.Pair first: 1  second: 2]]
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+=== error
+[E070] circular dependency detected while evaluating thunk (defined at 1:1-1:1)
 
 === warn
 [TypeError] type constructor 'Pair' requires 2 argument(s), got 1
