@@ -1,4 +1,4 @@
 # str-length: empty string returns 0
-[include %libdir "strings.llt"]
----
-[call %.str-length ""]
+[str-length ""]
+=== out
+Int(0)

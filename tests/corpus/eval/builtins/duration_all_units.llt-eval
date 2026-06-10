@@ -2,4 +2,4 @@
 [duration->nanos [duration-nanos 500]]
 
 === out
-Dict({0: Builtin(duration->nanos), 1: Duration(500 ns)})
+Int(500)

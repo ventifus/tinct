@@ -2,4 +2,4 @@
 [duration->seconds [duration-seconds 60]]
 
 === out
-Dict({0: Builtin(duration->seconds), 1: Duration(60000000000 ns)})
+Int(60)

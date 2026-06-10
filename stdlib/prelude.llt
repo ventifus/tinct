@@ -3515,8 +3515,8 @@ duration-seconds:  [builtin-module "datetime"].duration-seconds
 duration-minutes:  [builtin-module "datetime"].duration-minutes
 duration-hours:    [builtin-module "datetime"].duration-hours
 duration-days:     [builtin-module "datetime"].duration-days
-timestamp->unix:   [fn@Int [let ts@Timestamp] [[get "timestamp->unix" [builtin-module "datetime"]] ts]]
-unix->timestamp:   [fn@Timestamp [let secs@Int] [[get "unix->timestamp" [builtin-module "datetime"]] secs]]
+timestamp->unix:   [get "timestamp->unix" [builtin-module "datetime"]]
+unix->timestamp:   [get "unix->timestamp" [builtin-module "datetime"]]
 timestamp-add:     [builtin-module "datetime"].timestamp-add
 timestamp-diff:    [builtin-module "datetime"].timestamp-diff
 timestamp<?:       [fn@Bool [let a@Timestamp b@Timestamp] [[get "timestamp<?"  [builtin-module "datetime"]] a b]]
@@ -3531,8 +3531,8 @@ timestamp-second:  [builtin-module "datetime"].timestamp-second
 timestamp-parts:   [builtin-module "datetime"].timestamp-parts
 parse-timestamp:   [builtin-module "datetime"].parse-timestamp
 format-timestamp:  [builtin-module "datetime"].format-timestamp
-duration->nanos:   [fn@Int [let d@Duration] [[get "duration->nanos"   [builtin-module "datetime"]] d]]
-duration->seconds: [fn@Float [let d@Duration] [[get "duration->seconds" [builtin-module "datetime"]] d]]
+duration->nanos:   [get "duration->nanos"   [builtin-module "datetime"]]
+duration->seconds: [get "duration->seconds" [builtin-module "datetime"]]
 
 # ============================================================================
 # Async concurrency primitives

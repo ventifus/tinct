@@ -1,3 +1,5 @@
 # timestamp->unix / unix->timestamp roundtrip: convert to Unix seconds and back
 [format-timestamp [unix->timestamp [timestamp->unix [parse-timestamp "2024-01-15T10:30:00Z"]]]]
 
+=== out
+String("2024-01-15T10:30:00Z")

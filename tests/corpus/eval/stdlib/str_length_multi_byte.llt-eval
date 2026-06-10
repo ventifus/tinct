@@ -1,5 +1,5 @@
 # str-length: multi-byte UTF-8 — counts codepoints not bytes
 # "café" = c, a, f, é — 4 codepoints (é is 2 bytes but 1 codepoint)
-[include %libdir "strings.llt"]
----
-[call %.str-length "café"]
+[str-length "café"]
+=== out
+Int(4)
