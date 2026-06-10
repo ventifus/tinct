@@ -1,0 +1,12 @@
+# Parameterized type alias basic usage
+# [type [let a b] Body] declares a type alias with parameters
+# After T-1193, constructors are accessed via qualified dot-notation: Pair.Pair
+# Variant auto-unpacking: int-str.first accesses the payload dict's "first" field.
+
+[
+  Pair: [type [let a b] [Pair first: a  second: b]]
+  int-str: [Pair.Pair first: 42  second: "hello"]
+]
+int-str.first
+=== out
+Int(42)

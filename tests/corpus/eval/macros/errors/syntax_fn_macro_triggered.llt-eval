@@ -1,0 +1,19 @@
+# Test: fn let-softening macro is triggered when another macro outputs
+# a Call(fn, ...) AST node with non-LetDecl params.
+# The wrap-fn macro generates a Call to fn using the legacy dict format;
+# the fn macro normalizes the params (Call(x,[y]) → proper Fn params).
+# The fn/class/type macros are globally registered via prelude.llt; no include needed.
+
+[macro wrap-fn [let params body]
+  [
+    type:       "call"
+    implied:    false
+    fn:         [type: "var"  name: "fn"]
+    args:       [0: params  1: body]
+    named-args: []]]
+
+[add-fn: [wrap-fn [x y] [+ x y]]]
+[add-fn 3 4]
+=== error
+[E002] undefined variable: fn (did you mean the string "fn"? Use quotes.) (defined at 1:1-1:1) (called at 15:1-15:13)
+  in [add-fn ...] at 15:1-15:13

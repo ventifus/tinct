@@ -1,0 +1,17 @@
+# Calling a function whose body accesses a binding with an error forces
+# the error. The binding `x` is accessed in the return expression, so
+# the error fires when `x` is forced.
+[f: [fn [] [x: [raise "live"]] x]]
+[f]
+=== error
+[E080] live (defined at stdlib/prelude.llt:2496:28-2496:47)
+  --> stdlib/prelude.llt:2496:28-2496:47
+   |
+  2496 | """]: [fn [let msg@String] [builtin-raise msg]]
+       |                            ^^^^^^^^^^^^^^^^^^^
+  in [builtin-raise ...] at stdlib/prelude.llt:2496:28-2496:47
+   |
+  2496 | """]: [fn [let msg@String] [builtin-raise msg]]
+       |                            ^^^^^^^^^^^^^^^^^^^
+  in materialized at 3:32-3:33
+  in [f ...] at 4:1-4:4

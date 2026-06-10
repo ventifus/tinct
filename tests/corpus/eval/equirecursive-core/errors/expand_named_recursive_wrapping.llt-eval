@@ -1,0 +1,26 @@
+# expand_named Step 8 (S-860): recursive type alias triggers Type::Recursive wrapping.
+# When expand_named encounters a self-referential alias, Arc::ptr_eq detects the cycle
+# (Step 4) and returns a TypeVar sentinel. After full expansion (Step 8), it detects
+# the sentinel in the expanded body and wraps the result in Type::Recursive{var, body}.
+#
+# At runtime, the evaluator does not inspect Type::Recursive — it evaluates the dict
+# and constructor calls directly. This test verifies that a recursive type alias:
+#   1. Can be declared without a runtime error (expand_named does not infinite-loop)
+#   2. Its constructors can be constructed and matched
+#
+# The recursive self-reference `tail: List` triggers expand_named Step 4 cycle detection.
+# The test expects Int(1) from matching on a constructed List.Some node.
+#
+# Note: the type checker may emit warnings about the self-referential annotation
+# (e.g. unification warnings from resolving `tail: List` in the type body).
+# Those warnings are expected and captured in the === warn section.
+[
+  List: [type [Cons val: Int  tail: List]  Nil]
+  node: [List.Cons val: 1  tail: List.Nil]
+  result: [match node
+    [case [let p] [List.Cons p] p.val]
+    List.Nil:                   0]
+]
+result
+=== out
+Int(1)

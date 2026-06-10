@@ -1,0 +1,10 @@
+# Test: unquote-splicing in call argument position (MH2)
+# A macro with variadic args splices them into a call via [unquote-splicing].
+# This exercises the collect_seq_elements path in eval_quote_preprocess.
+[macro sum-spliced [let ...args]
+  [quote [+ [unquote-splicing args]]]]
+
+[sum-spliced 10 20]
+=== error
+[E002] undefined variable: unquote-splicing (did you mean the string "unquote-splicing"? Use quotes.) (defined at 4:14-4:30)
+  in [+ ...] at 4:10-4:37

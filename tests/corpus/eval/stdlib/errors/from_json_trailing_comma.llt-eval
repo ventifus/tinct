@@ -1,0 +1,67 @@
+# from-json: trailing comma in array raises error
+[json: [include %libdir "codecs/json.llt"]]
+[json.from-json "[1, 2,]"]
+=== error
+[E080] JSON: unexpected character: ] (defined at stdlib/prelude.llt:2496:28-2496:47)
+  --> stdlib/prelude.llt:2496:28-2496:47
+   |
+  2496 | """]: [fn [let msg@String] [builtin-raise msg]]
+       |                            ^^^^^^^^^^^^^^^^^^^
+  in [builtin-raise ...] at stdlib/prelude.llt:2496:28-2496:47
+   |
+  2496 | """]: [fn [let msg@String] [builtin-raise msg]]
+       |                            ^^^^^^^^^^^^^^^^^^^
+  in materialized at stdlib/prelude.llt:535:5-539:50
+   |
+  535 |     [builtin-if [builtin-gte i [builtin-length pairs]]
+  536 |         []
+  537 |         [builtin-if [builtin-get i pairs].0
+  538 |             [builtin-get i pairs].1
+  539 |             [cond-impl pairs [builtin-add i 1]]]]]
+      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  in [builtin-if ...] at stdlib/prelude.llt:537:9-539:49
+   |
+  537 |         [builtin-if [builtin-get i pairs].0
+  538 |             [builtin-get i pairs].1
+  539 |             [cond-impl pairs [builtin-add i 1]]]]]
+      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  in [builtin-if ...] at stdlib/prelude.llt:535:5-539:50
+   |
+  535 |     [builtin-if [builtin-gte i [builtin-length pairs]]
+  536 |         []
+  537 |         [builtin-if [builtin-get i pairs].0
+  538 |             [builtin-get i pairs].1
+  539 |             [cond-impl pairs [builtin-add i 1]]]]]
+      | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  in materialized at 450:3-460:81
+  in [if ...] at 450:3-460:81
+  in materialized at 448:19-460:82
+  in materialized at 410:24-410:33
+  in accessing .rest at 410:24-410:33
+  in [str-length ...] at 285:14-285:28
+  in [= ...] at 285:11-285:31
+  in materialized at stdlib/prelude.llt:984:16-984:34
+   |
+  984 | """] [let a b] [builtin-if a a b]]
+      |                ^^^^^^^^^^^^^^^^^^
+  in [builtin-if ...] at stdlib/prelude.llt:984:16-984:34
+   |
+  984 | """] [let a b] [builtin-if a a b]]
+      |                ^^^^^^^^^^^^^^^^^^
+  in materialized at 285:3-287:51
+  in [if ...] at 285:3-287:51
+  in materialized at 279:3-279:26
+  in [str-slice ...] at 279:3-279:26
+  in materialized at stdlib/prelude.llt:537:21-537:44
+   |
+  537 |         [builtin-if [builtin-get i pairs].0
+      |                     ^^^^^^^^^^^^^^^^^^^^^^^
+  in [= ...] at 412:6-412:33
+  in materialized at 406:25-414:59
+  in materialized at 419:3-421:50
+  in [if ...] at 419:3-421:50
+  in materialized at 416:19-421:51
+  in materialized at 572:5-572:17
+  in [if ...] at 568:7-571:64
+  in accessing .value at 572:5-572:17
+  in [<dot-access> ...] at 2:1-2:27

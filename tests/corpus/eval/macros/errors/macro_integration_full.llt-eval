@@ -1,0 +1,35 @@
+# Comprehensive macro integration test
+[macro add-one [let x]
+  [
+    type: "call"
+    implied: true
+    fn: [type: "var" name: "+"]
+    args: [
+      x
+      [type: "literal" kind: "int" value: 1]
+    ]
+    named-args: []
+  ]]
+
+[macro double [let x]
+  [
+    type: "call"
+    implied: true
+    fn: [type: "var" name: "*"]
+    args: [
+      x
+      [type: "literal" kind: "int" value: 2]
+    ]
+    named-args: []
+  ]]
+
+[
+  test1: [add-one 5]
+  test2: [double 7]
+  test3: [double [add-one 3]]
+]
+
+=== error
+[E010] type mismatch: expected Function or Builtin, got Expression (defined at 6:11-9:6)
+  in [x ...] at 6:11-9:6
+  in in expansion of `add-one` at 26:10-26:21

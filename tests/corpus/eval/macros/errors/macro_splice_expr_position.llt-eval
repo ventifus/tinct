@@ -1,0 +1,12 @@
+# Task 2: Splice in expression position is an expansion-time error.
+# A macro returning splice cannot be used as a plain expression (only in dict/doc context).
+[macro two-ints [let ...args]
+  [type: "splice"
+   forms: [
+     [type: "literal"  kind: "int"  value: 10]
+     [type: "literal"  kind: "int"  value: 20]
+   ]]]
+
+[+ [two-ints] 1]
+=== error
+[E080] macro 'two-ints' returned invalid AST: dict_to_surface_node: unknown node type: splice (defined at 9:4-9:14)

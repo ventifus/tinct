@@ -1,0 +1,9 @@
+# B-337: Named-field constructor calling convention.
+# Constructor [Boxed value: Int] generates [fn [let value] [builtin-variant "Box.Boxed" {value: value}]].
+# Calling [Box.Boxed value: 42] passes the named arg correctly (T-1193: qualified form).
+[
+  Box: [type [Boxed value: Int]]
+  result: [Box.Boxed value: 42]
+]
+=== out
+Dict({"Box": Dict({"Boxed": Function(value)}), "result": Variant(Box.Boxed, Dict({"value": Int(42)}))})

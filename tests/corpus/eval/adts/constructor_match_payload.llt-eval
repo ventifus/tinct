@@ -1,0 +1,12 @@
+# B-337: Named-field constructor match test.
+# Constructor [Ok value: a] generates [fn [let value] [builtin-variant "Result.Ok" {value: value}]].
+# Calling [Result.Ok value: 42] creates a variant with payload {value: 42}.
+# Pattern match extracts the payload dict as `v`, then accesses `v.value`.
+[
+  Result: [type [let a] [Ok value: a] [Error msg: Str]]
+  matched: [match [Result.Ok value: 42]
+    [case [let v] [Result.Ok v]    v.value]
+    [Result.Error _]:              0]
+]
+=== out
+Dict({"Result": Dict({"Ok": Function(value), "Error": Function(msg)}), "matched": Int(42)})

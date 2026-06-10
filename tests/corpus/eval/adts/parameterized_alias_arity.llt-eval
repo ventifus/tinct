@@ -1,0 +1,8 @@
+# Parameterized type alias with annotation
+# Pair expects 2 type params; @[Pair Int] annotation passes through at runtime
+# (type-level annotations are not enforced at runtime without a resolved type).
+
+[Pair: [type [let a b] [Pair first: a  second: b]]]
+[@[Pair Int] [Pair.Pair first: 1  second: 2]]
+=== out
+Variant(Pair.Pair, Dict({"first": Int(1), "second": Int(2)}))

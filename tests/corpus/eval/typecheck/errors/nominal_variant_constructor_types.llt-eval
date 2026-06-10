@@ -1,0 +1,17 @@
+# Test precise types for ADT constructors — CORRECT constructor calls only.
+# Unit constructors have type NominalVariant (values).
+# Field constructors have type Function (params → NominalVariant).
+# This test verifies that well-typed constructor calls produce zero type warnings.
+
+[
+  Shape: [type Shape
+    [Circle r: Int]
+    [Square s: Int]
+  ]
+
+  # Correct constructor calls — should typecheck without warnings
+  circle: [Shape.Circle r: 5]
+  square: [Shape.Square s: 10]
+]
+=== out
+Dict({"Shape": Dict({"Shape": Variant(Shape.Shape, Null), "Circle": Function(r), "Square": Function(s)}), "circle": Variant(Shape.Circle, Dict({"r": Int(5)})), "square": Variant(Shape.Square, Dict({"s": Int(10)}))})

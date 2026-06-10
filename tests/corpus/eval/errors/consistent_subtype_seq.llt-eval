@@ -1,0 +1,3 @@
+[@Seq[Int] [seq 1 2 3]]
+=== error
+[E002] undefined variable: Int (defined at 1:7-1:10)
