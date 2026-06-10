@@ -161,7 +161,9 @@ If `annotation_to_variance` returns `None` AND the name is a registered class, t
 
 ## Unification: UNIFY-TYCON and UNIFY-UNIFORM
 
-**UNIFY-TYCON:** `TyCon(n1)` and `TyCon(n2)` unify iff `n1 == n2`. Name-equality is the operative check; `Arc::ptr_eq` is also called as scaffolding (B-343 implemented in S-856), but is currently always true since both lookups hit the same HashMap slot when `n1 == n2`. Pointer-identity-based cross-scope rejection becomes meaningful after the T-1112 migration to `Type::TyCon(Arc<TyConDef>)`. No binding is produced — UNIFY-TYCON is a pure equality check with no substitution side-effects.
+**UNIFY-TYCON:** `TyCon(n1)` and `TyCon(n2)` unify iff `n1 == n2`. Name-equality is the operative check; `Arc::ptr_eq` is also called via `tycon_env` lookup (B-343). No binding is produced — UNIFY-TYCON is a pure equality check with no substitution side-effects.
+
+**UNIFY-TYCON-EXPAND:** `TyCon(n)` unified with `NominalVariant{tag, fields}` (T-1112). When a zero-arity TyCon (e.g., `@Color`) is unified against a value whose type is `NominalVariant{tag: "Color.Red", ...}`, the unifier looks up `n` in `state.tycon_env`, retrieves the registered body (the Union of NominalVariants for the type declaration), and checks membership via `is_subtype`. This enables `@Color` annotations to accept any constructed variant of `Color`. If the TyCon has no registered body (unknown or builtin opaque type), unification fails with a type mismatch. Both `(TyCon, NominalVariant)` and `(NominalVariant, TyCon)` directions are handled symmetrically.
 
 **UNIFY-APP:** Decomposes `App(f1, a1)` and `App(f2, a2)` by first unifying constructors (`f1 ~ f2`, which dispatches to UNIFY-TYCON for `TyCon` heads), then unifying arguments (`a1 ~ a2`).
 

@@ -50,7 +50,7 @@ fn infer(input: &str) -> Type {
         crate::ast::SurfaceItem::Expr(n) => n,
         _ => panic!("expected expression item"),
     };
-    infer_surface_expr(node, &env, &mut state, &mut None).unwrap()
+    infer_surface_expr(node, &env, &mut state, &mut Vec::new(), &mut None).unwrap()
 }
 
 fn doc_env(input: &str) -> Rc<TypeEnv> {
@@ -333,7 +333,7 @@ fn test_dict_multiple_errors() {
         crate::ast::SurfaceItem::Expr(n) => n,
         _ => panic!("expected expression item"),
     };
-    let errs = infer_surface_expr(node, &env, &mut state, &mut None).unwrap_err();
+    let errs = infer_surface_expr(node, &env, &mut state, &mut Vec::new(), &mut None).unwrap_err();
     assert_eq!(errs.len(), 2, "infer_expr should return all dict errors");
     assert!(errs[0].message().contains("undefined1"));
     assert!(errs[1].message().contains("undefined2"));
@@ -1125,7 +1125,7 @@ fn test_check_call_with_scheme_non_function_scheme() {
         crate::ast::SurfaceItem::Expr(n) => n,
         _ => panic!("expected expression item"),
     };
-    let result = infer_surface_expr(node, &parent_env, &mut state, &mut None);
+    let result = infer_surface_expr(node, &parent_env, &mut state, &mut Vec::new(), &mut None);
 
     // Must produce a not_a_function error, not a panic.
     assert!(
@@ -1488,14 +1488,17 @@ fn test_pipeline_percent_type() {
 fn test_annotation_simple() {
     let env = Rc::new(TypeEnv::new());
     let span = crate::test_util::test_span(1, 1, 1, 5);
+    let mut c = Vec::new();
     assert_eq!(
         resolve_annotation(
             &Annotation::Simple("Int".into()),
             &env,
             span,
             &mut InferState::new(),
+            &mut c,
             &mut None,
-            &mut None
+            &mut None,
+            None
         )
         .unwrap(),
         Type::Int,
@@ -1511,13 +1514,16 @@ fn test_annotation_type_var() {
     // NOT the raw annotation name. This prevents cross-contamination between
     // two different `@a` annotations in the same dict.
     let mut state = InferState::new();
+    let mut c = Vec::new();
     let ty = resolve_annotation(
         &Annotation::Simple("a".into()),
         &env,
         span,
         &mut state,
+        &mut c,
         &mut None,
         &mut None,
+        None,
     )
     .unwrap();
     // Should be a fresh TypeVar (not literally "a"), at level 0
@@ -1538,9 +1544,29 @@ fn test_resolve_type_name_outside_function_scope() {
     let mut state = InferState::new();
 
     // First call: creates fresh var (e.g. _t0)
-    let ty1 = resolve_type_name("a", &env, span.clone(), &mut state, &mut None, &None).unwrap();
+    let ty1 = resolve_type_name(
+        "a",
+        &env,
+        span.clone(),
+        &mut state,
+        &mut Vec::new(),
+        &mut None,
+        &None,
+        None,
+    )
+    .unwrap();
     // Second call: creates a DIFFERENT fresh var (e.g. _t1)
-    let ty2 = resolve_type_name("a", &env, span, &mut state, &mut None, &None).unwrap();
+    let ty2 = resolve_type_name(
+        "a",
+        &env,
+        span,
+        &mut state,
+        &mut Vec::new(),
+        &mut None,
+        &None,
+        None,
+    )
+    .unwrap();
 
     // Both should be TypeVars at level 0 but with different names
     match (&ty1, &ty2) {
@@ -1577,11 +1603,31 @@ fn test_resolve_type_name_outside_function_scope_monotonicity() {
 
     // Call at level 1
     state.level = 1;
-    let ty1 = resolve_type_name("a", &env, span.clone(), &mut state, &mut None, &None).unwrap();
+    let ty1 = resolve_type_name(
+        "a",
+        &env,
+        span.clone(),
+        &mut state,
+        &mut Vec::new(),
+        &mut None,
+        &None,
+        None,
+    )
+    .unwrap();
 
     // Call at level 2 (simulating a nested scope)
     state.level = 2;
-    let ty2 = resolve_type_name("a", &env, span, &mut state, &mut None, &None).unwrap();
+    let ty2 = resolve_type_name(
+        "a",
+        &env,
+        span,
+        &mut state,
+        &mut Vec::new(),
+        &mut None,
+        &None,
+        None,
+    )
+    .unwrap();
 
     // Each call produces a distinct TypeVar at its respective current level
     match (&ty1, &ty2) {
@@ -1743,14 +1789,17 @@ fn test_property_dict_non_str_key_falls_back_to_any() {
         Some(SurfaceExpression::Int(42)),
         SurfaceExpression::Str("Int".into()),
     )]);
+    let mut c = Vec::new();
     assert_eq!(
         resolve_annotation(
             &ann,
             &env,
             span,
             &mut InferState::new(),
+            &mut c,
             &mut None,
-            &mut None
+            &mut None,
+            None
         )
         .unwrap(),
         Type::Unknown
@@ -1770,14 +1819,17 @@ fn test_property_dict_no_key_resolves_as_union() {
             escaped: false,
         },
     )]);
+    let mut c = Vec::new();
     assert_eq!(
         resolve_annotation(
             &ann,
             &env,
             span,
             &mut InferState::new(),
+            &mut c,
             &mut None,
-            &mut None
+            &mut None,
+            None
         )
         .unwrap(),
         Type::Int
@@ -1825,13 +1877,16 @@ fn test_property_dict_unresolvable_type_propagates_error() {
             escaped: false,
         },
     )]);
+    let mut c = Vec::new();
     let result = resolve_annotation(
         &ann,
         &env,
         span,
         &mut InferState::new(),
+        &mut c,
         &mut None,
         &mut None,
+        None,
     );
     // Uppercase unresolvable type names like "NoSuchType" become NominalVariants (unit constructors).
     // For this test we use "noSuchType" (lowercase) which does not match is_constructor_name
@@ -1856,14 +1911,17 @@ fn test_property_dict_literal_value_falls_back_to_any() {
         Some(SurfaceExpression::Str("default".into())),
         SurfaceExpression::Int(30),
     )]);
+    let mut c = Vec::new();
     assert_eq!(
         resolve_annotation(
             &ann,
             &env,
             span,
             &mut InferState::new(),
+            &mut c,
             &mut None,
-            &mut None
+            &mut None,
+            None
         )
         .unwrap(),
         Type::Unknown
@@ -1883,13 +1941,16 @@ fn test_property_dict_fn_type_error_propagates() {
             annotation: Spanned::new(Annotation::Simple("Int".into()), span.clone()),
         },
     )]);
+    let mut c = Vec::new();
     let result = resolve_annotation(
         &ann,
         &env,
         span,
         &mut InferState::new(),
+        &mut c,
         &mut None,
         &mut None,
+        None,
     );
     assert!(result.is_err());
     assert!(result.unwrap_err().message().contains("function type"));
@@ -4293,7 +4354,13 @@ fn test_call_any_callee_populates_type_map_for_positional_args() {
         crate::ast::SurfaceItem::Expr(n) => n,
         _ => panic!("expected expression item"),
     };
-    let result = infer_surface_expr(node, &parent_env, &mut state, &mut Some(&mut type_map));
+    let result = infer_surface_expr(
+        node,
+        &parent_env,
+        &mut state,
+        &mut Vec::new(),
+        &mut Some(&mut type_map),
+    );
 
     // The call to an Any-typed function returns Any.
     assert_eq!(
@@ -5362,7 +5429,14 @@ fn test_check_expr_lambda_arity_mismatch() {
 
     let env = Rc::new(TypeEnv::new());
     let mut state = InferState::new();
-    let result = check_surface_expr(&lambda, &expected_ty, &env, &mut state, &mut None);
+    let result = check_surface_expr(
+        &lambda,
+        &expected_ty,
+        &env,
+        &mut state,
+        &mut Vec::new(),
+        &mut None,
+    );
 
     assert!(
         result.is_err(),
@@ -5504,11 +5578,13 @@ fn test_error_absorbed_in_unify_does_not_corrupt_substitution() {
     state.levels.insert("a".into(), 1);
 
     // Simulate: polymorphic param type is TypeVar("a"), arg type is Error
+    let mut constraints = Vec::new();
     let result = unify(
         &Type::TypeVar("a".into(), 1),
         &Type::Error,
         &mut subst,
         &mut state,
+        &mut constraints,
         span,
     );
     assert!(result.is_ok(), "unify(TypeVar, Error) must succeed");
@@ -5916,8 +5992,10 @@ fn test_union_annotation_basic() {
         &env,
         span,
         &mut InferState::new(),
+        &mut vec![],
         &mut None,
         &mut None,
+        None,
     )
     .unwrap();
     match ty {
@@ -5940,8 +6018,10 @@ fn test_union_annotation_three_types() {
         &env,
         span,
         &mut InferState::new(),
+        &mut vec![],
         &mut None,
         &mut None,
+        None,
     )
     .unwrap();
     match ty {
@@ -5965,8 +6045,10 @@ fn test_union_annotation_single_unwraps() {
         &env,
         span,
         &mut InferState::new(),
+        &mut vec![],
         &mut None,
         &mut None,
+        None,
     )
     .unwrap();
     assert_eq!(ty, Type::Int);
@@ -6003,8 +6085,10 @@ fn test_union_annotation_with_metadata() {
         &env,
         span,
         &mut InferState::new(),
+        &mut vec![],
         &mut None,
         &mut None,
+        None,
     )
     .unwrap();
     match ty {
@@ -6053,8 +6137,10 @@ fn test_or_annotation_two_types() {
         &env,
         span,
         &mut InferState::new(),
+        &mut vec![],
         &mut None,
         &mut None,
+        None,
     )
     .unwrap();
     match ty {
@@ -6095,8 +6181,10 @@ fn test_or_annotation_three_types() {
         &env,
         span,
         &mut InferState::new(),
+        &mut vec![],
         &mut None,
         &mut None,
+        None,
     )
     .unwrap();
     match ty {
@@ -6209,8 +6297,10 @@ fn test_union_in_function_signature() {
         &env,
         span,
         &mut InferState::new(),
+        &mut vec![],
         &mut None,
         &mut None,
+        None,
     )
     .unwrap();
     match ret_ty {
@@ -6251,8 +6341,10 @@ fn test_union_deduplication() {
         &env,
         span,
         &mut InferState::new(),
+        &mut vec![],
         &mut None,
         &mut None,
+        None,
     )
     .unwrap();
     match ty {
@@ -7498,7 +7590,15 @@ fn test_c_var1_binds_typevar_in_union() {
     state.levels.insert(var_name.clone(), 1);
     let a = Type::Int;
     let b = Type::Union(vec![Type::Str, Type::TypeVar(var_name.clone(), 1)]);
-    let result = unify(&a, &b, &mut subst, &mut state, Span::origin());
+    let mut constraints = Vec::new();
+    let result = unify(
+        &a,
+        &b,
+        &mut subst,
+        &mut state,
+        &mut constraints,
+        Span::origin(),
+    );
     assert!(result.is_ok(), "C-Var1 should succeed: {result:?}");
     // a is bound to Int
     assert_eq!(
@@ -7517,7 +7617,15 @@ fn test_c_var1_already_covered_no_binding() {
     state.levels.insert(var_name.clone(), 1);
     let a = Type::Int;
     let b = Type::Union(vec![Type::Int, Type::TypeVar(var_name.clone(), 1)]);
-    let result = unify(&a, &b, &mut subst, &mut state, Span::origin());
+    let mut constraints = Vec::new();
+    let result = unify(
+        &a,
+        &b,
+        &mut subst,
+        &mut state,
+        &mut constraints,
+        Span::origin(),
+    );
     assert!(
         result.is_ok(),
         "C-Var1 already covered should succeed: {result:?}"
@@ -7538,7 +7646,15 @@ fn test_c_var1_symmetric_union_on_left() {
     state.levels.insert(var_name.clone(), 1);
     let a = Type::Union(vec![Type::Str, Type::TypeVar(var_name.clone(), 1)]);
     let b = Type::Int;
-    let result = unify(&a, &b, &mut subst, &mut state, Span::origin());
+    let mut constraints = Vec::new();
+    let result = unify(
+        &a,
+        &b,
+        &mut subst,
+        &mut state,
+        &mut constraints,
+        Span::origin(),
+    );
     assert!(
         result.is_ok(),
         "C-Var1 symmetric should succeed: {result:?}"
@@ -7561,7 +7677,15 @@ fn test_c_var2_binds_typevar_in_intersection() {
     // Intersection([Str, TypeVar(a)]) — Str doesn't satisfy Int, so bind a = Int
     let a = Type::Intersection(vec![Type::Str, Type::TypeVar(var_name.clone(), 1)]);
     let b = Type::Int;
-    let result = unify(&a, &b, &mut subst, &mut state, Span::origin());
+    let mut constraints = Vec::new();
+    let result = unify(
+        &a,
+        &b,
+        &mut subst,
+        &mut state,
+        &mut constraints,
+        Span::origin(),
+    );
     assert!(result.is_ok(), "C-Var2 should succeed: {result:?}");
     assert_eq!(
         subst.get(&var_name),
@@ -8496,23 +8620,30 @@ fn test_transfer_class_constraints_via_typevar_unify() {
     // The Numeric class is already registered in InferState::new(),
     // so we can retrieve it from class_env.
     let numeric_class = state.class_env.get("Numeric").unwrap();
-    state.constraints.push(Constraint::Class {
+    let mut constraints: Vec<Constraint> = vec![Constraint::Class {
         class: std::sync::Arc::new(numeric_class.clone()),
         vars: vec![alpha.clone()],
         origin_name: None,
         origin_span: None,
-    });
+    }];
 
     let a = Type::TypeVar(alpha.clone(), 1);
     let b = Type::TypeVar(beta.clone(), 1);
-    let result = unify(&a, &b, &mut subst, &mut state, Span::origin());
+    let result = unify(
+        &a,
+        &b,
+        &mut subst,
+        &mut state,
+        &mut constraints,
+        Span::origin(),
+    );
     assert!(
         result.is_ok(),
         "TypeVar-TypeVar unify should succeed: {result:?}"
     );
 
     // After unification, beta must have the Numeric constraint.
-    let beta_has_numeric = state.constraints.iter().any(|c| match c {
+    let beta_has_numeric = constraints.iter().any(|c| match c {
         Constraint::Class { class, vars, .. } => {
             class.name == "Numeric" && vars.len() == 1 && vars[0] == beta
         }
@@ -8520,8 +8651,8 @@ fn test_transfer_class_constraints_via_typevar_unify() {
     });
     assert!(
         beta_has_numeric,
-        "beta should have Numeric constraint after transfer; state.constraints = {:?}",
-        state.constraints
+        "beta should have Numeric constraint after transfer; constraints = {:?}",
+        constraints
     );
 }
 
@@ -8666,7 +8797,7 @@ fn test_boundary_guard_collection_stub() {
     };
     // Errors are expected (advisory): Unknown arg vs Int param produces a type error,
     // but the boundary guard collection happens before the unification error is returned.
-    let _ = infer_surface_expr(node, &parent_env, &mut state, &mut None);
+    let _ = infer_surface_expr(node, &parent_env, &mut state, &mut Vec::new(), &mut None);
 
     // The boundary guard must have been collected: Unknown crossed into Int.
     assert!(
@@ -8724,7 +8855,7 @@ fn test_placeholder_has_type_unknown() {
         crate::ast::SurfaceItem::Expr(n) => n,
         _ => panic!("expected expression item"),
     };
-    let ty = infer_surface_expr(node, &env, &mut state, &mut None).unwrap();
+    let ty = infer_surface_expr(node, &env, &mut state, &mut Vec::new(), &mut None).unwrap();
     assert_eq!(
         ty,
         Type::Unknown,
@@ -10425,5 +10556,202 @@ fn test_is_contractive_type_record_with_selfref_true() {
         result,
         "is_contractive_type(Record({{x: TypeVar(\"a\")}}), \"a\") must be true \
          (Rule 3: Record is a guarding constructor)"
+    );
+}
+
+// -- T-1197: Class names in annotation position (@C) --
+
+#[test]
+fn test_class_name_in_annotation_position_returns_constrained_typevar() {
+    // T-1197: When a class name appears in annotation position, resolve_type_name should
+    // return a fresh TypeVar with a Constraint::Class entry rather than an undefined_type error.
+    // Use the Comparable class which is registered in InferState::new().
+    let env = Rc::new(TypeEnv::new());
+    let span = crate::test_util::test_span(1, 1, 1, 10);
+    let ann = Annotation::Simple("Comparable".into());
+    let mut state = InferState::new();
+    let mut c = Vec::new();
+
+    let result = resolve_annotation(
+        &ann, &env, span, &mut state, &mut c, &mut None, &mut None, None,
+    );
+    assert!(
+        result.is_ok(),
+        "Class name 'Comparable' in annotation position should succeed, not produce undefined_type; got: {:?}",
+        result
+    );
+
+    let ty = result.unwrap();
+    // The resolved type must be a TypeVar (not Unknown, not Error, not a concrete type).
+    let typevar_name = match &ty {
+        Type::TypeVar(name, _) => name.clone(),
+        other => panic!("Expected TypeVar for class-name annotation, got {other:?}"),
+    };
+
+    // c must contain a Comparable constraint on the fresh TypeVar.
+    let has_comparable = c.iter().any(|c| match c {
+        Constraint::Class { class, vars, .. } => {
+            class.name == "Comparable" && vars.len() == 1 && vars[0] == typevar_name
+        }
+        _ => false,
+    });
+    assert!(
+        has_comparable,
+        "constraints must contain Comparable({typevar_name}) after resolving @Comparable; \
+         got: {:?}",
+        c
+    );
+}
+
+#[test]
+fn test_class_name_annotation_each_occurrence_independent() {
+    // T-1197: Two occurrences of @Comparable in the same function must produce TWO DISTINCT
+    // TypeVars (each independently constrained). Class names are not in the type variable
+    // namespace (unlike lowercase @a which is deduplicated via ann_mapping).
+    let env = Rc::new(TypeEnv::new());
+    let span = crate::test_util::test_span(1, 1, 1, 10);
+    let mut state = InferState::new();
+    let mut c = Vec::new();
+    // Use a function scope mapping (Some(HashMap)) to confirm class names don't reuse it.
+    let mut mapping: HashMap<String, String> = HashMap::new();
+    let mut mapping_opt = Some(&mut mapping);
+
+    let ann = Annotation::Simple("Comparable".into());
+
+    // First occurrence
+    let ty1 = resolve_annotation(
+        &ann,
+        &env,
+        span.clone(),
+        &mut state,
+        &mut c,
+        &mut mapping_opt,
+        &mut None,
+        None,
+    )
+    .unwrap();
+
+    // Second occurrence — must produce a different TypeVar
+    let ty2 = resolve_annotation(
+        &ann,
+        &env,
+        span,
+        &mut state,
+        &mut c,
+        &mut mapping_opt,
+        &mut None,
+        None,
+    )
+    .unwrap();
+
+    match (&ty1, &ty2) {
+        (Type::TypeVar(n1, _), Type::TypeVar(n2, _)) => {
+            assert_ne!(
+                n1, n2,
+                "Two @Comparable annotations must produce distinct TypeVars; both got: {n1}"
+            );
+        }
+        _ => panic!("Expected TypeVar for both @Comparable annotations; got {ty1:?}, {ty2:?}"),
+    }
+
+    // Both must be constrained
+    let comparable_count = c
+        .iter()
+        .filter(|c| matches!(c, Constraint::Class { class, .. } if class.name == "Comparable"))
+        .count();
+    assert_eq!(
+        comparable_count, 2,
+        "Expected 2 Comparable constraints after two @Comparable annotations; got {comparable_count}"
+    );
+}
+
+#[test]
+fn test_class_name_in_param_annotation_no_error_on_builtin_class() {
+    // T-1197 + T-1198: A function parameter annotated with a built-in class name
+    // must not produce an "undefined type" error.
+    // [fn [let x@Equatable] x] — Equatable is a registered class.
+    let result = check("[f: [fn [let x@Equatable] $x]]");
+    assert!(
+        result.is_ok(),
+        "fn with @Equatable param annotation should typecheck without error; got: {:?}",
+        result
+    );
+}
+
+#[test]
+fn test_class_name_in_param_annotation_constraint_satisfied() {
+    // T-1198: When @Comparable is used as a parameter annotation and the function is called
+    // with Int (which satisfies Comparable), the call must succeed without error.
+    let result = check("[f: [fn [let x@Comparable] $x]  r: [f 42]]");
+    assert!(
+        result.is_ok(),
+        "[fn [let x@Comparable] x] called with 42 (Int/Comparable) must typecheck; got: {:?}",
+        result
+    );
+}
+
+#[test]
+fn test_class_name_in_param_annotation_user_defined_class() {
+    // T-1197: A user-defined class name in annotation position must also produce a
+    // constrained TypeVar rather than an undefined_type error, once the class is registered.
+    // The class is declared as part of the same dict (Pass 0c pre-registers it).
+    let result = check("[MyClass: [class [let MyClass a]]  f: [fn [let x@MyClass] $x]  r: [f 42]]");
+    // Note: result may succeed or produce a constraint violation on Int vs MyClass,
+    // depending on whether Int has a MyClass instance. The key property being tested
+    // is that @MyClass does NOT produce "undefined type: MyClass" — it dispatches
+    // to constraint checking instead. If it's a constraint error, the message must not
+    // say "undefined type".
+    match &result {
+        Ok(_) => {} // Succeeded — class lookup worked correctly
+        Err(errors) => {
+            // All errors must be constraint-related, never "undefined type: MyClass"
+            for err in errors {
+                assert!(
+                    !err.message().contains("undefined type"),
+                    "Expected constraint error (not undefined_type) for @MyClass; got: {:?}",
+                    err
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn test_class_name_annotation_numeric_builtin() {
+    // T-1197: A built-in class name (Numeric) in annotation position must resolve to a
+    // constrained TypeVar rather than an "undefined type" error.
+    // Numeric is registered in InferState::new() but is NOT a type alias — it is only
+    // in class_env. This test verifies the class_env fallback branch in resolve_type_name.
+    let env = Rc::new(TypeEnv::new());
+    let span = crate::test_util::test_span(1, 1, 1, 10);
+    let ann = Annotation::Simple("Numeric".into());
+    let mut state = InferState::new();
+    let mut c = Vec::new();
+
+    let result = resolve_annotation(
+        &ann, &env, span, &mut state, &mut c, &mut None, &mut None, None,
+    );
+    assert!(
+        result.is_ok(),
+        "Class name 'Numeric' must resolve to a constrained TypeVar, not undefined_type; got: {:?}",
+        result
+    );
+
+    let ty = result.unwrap();
+    let typevar_name = match &ty {
+        Type::TypeVar(name, _) => name.clone(),
+        other => panic!("Expected TypeVar for @Numeric class annotation, got {other:?}"),
+    };
+
+    let has_numeric = c.iter().any(|c| match c {
+        Constraint::Class { class, vars, .. } => {
+            class.name == "Numeric" && vars.len() == 1 && vars[0] == typevar_name
+        }
+        _ => false,
+    });
+    assert!(
+        has_numeric,
+        "constraints must contain Numeric({typevar_name}); got: {:?}",
+        c
     );
 }

@@ -22,6 +22,12 @@ Tinct has one syntactic form: `[...]`. Whether it's a dict, a function call, or 
 
 **The parser rule:** if the first element is a bare word (not followed by `:`), it's a call. If the first element is a keyword (`fn`, `match`, `type`, `let`, `class`, `instance`, `macro`), it's that construct. Otherwise it's a dict.
 
+**No IIFE syntax.** A bracket expression in head position is a positional dict entry, not a call — `[[fn [let x] body] arg]` is a two-entry dict `{0: <fn>, 1: arg}`, not a function call. To immediately invoke a function expression, use `[call ...]` explicitly:
+
+```tinct
+[call [fn [let x] [* x 2]] 5]   # → 10, not {0: fn, 1: 5}
+```
+
 ---
 
 ## Dict

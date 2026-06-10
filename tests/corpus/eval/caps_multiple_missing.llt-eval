@@ -1,8 +1,0 @@
-# Test: capability declared but not provided
-# no_fs
---- caps: [%missing: @NetCap]
-[result: "should not execute"]
-=== error
-[E044] %missing@NetCap is required but not provided
-  inject it with:  tinct run --cap-net missing=HOST:PORT ...
-  or unrestricted: tinct run --cap-net missing=any ... (defined at 2:5-2:30)

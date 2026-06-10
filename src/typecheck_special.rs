@@ -20,7 +20,9 @@ use std::sync::Arc;
 
 use crate::ast::{Span, Spanned, SurfaceExpression, SurfaceNamedArg, SurfaceNode};
 use crate::type_errors::{ArityMismatch, GenericTypeError, TypeErrorTyped};
-use crate::types::{resolve_has_field, InferState, Label, Row, Type, TypeEnv, TypeError};
+use crate::types::{
+    resolve_has_field, Constraint, InferState, Label, Row, Type, TypeEnv, TypeError,
+};
 
 use super::check_surface_expr;
 use super::infer_surface_expr;
@@ -73,6 +75,7 @@ pub(crate) fn check_open(
     env: &Rc<TypeEnv>,
     span: Span,
     state: &mut InferState,
+    constraints: &mut Vec<Constraint>,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
     // Arity check: require at least 3 args (DirCap, path, at least one flag).
@@ -83,6 +86,7 @@ pub(crate) fn check_open(
             got: args.len(),
             span,
             notes: vec!["`open` requires at least 3 arguments (DirCap, path, flag...)".to_string()],
+            call_stack: vec![],
         })]);
     }
 
@@ -90,14 +94,18 @@ pub(crate) fn check_open(
 
     // Check arg[0]: DirCap
     {
-        if let Err(mut errs) = check_surface_expr(&args[0], &Type::DirCap, env, state, type_map) {
+        if let Err(mut errs) =
+            check_surface_expr(&args[0], &Type::DirCap, env, state, constraints, type_map)
+        {
             errors.append(&mut errs);
         }
     }
 
     // Check arg[1]: Str (path)
     {
-        if let Err(mut errs) = check_surface_expr(&args[1], &Type::Str, env, state, type_map) {
+        if let Err(mut errs) =
+            check_surface_expr(&args[1], &Type::Str, env, state, constraints, type_map)
+        {
             errors.append(&mut errs);
         }
     }
@@ -124,7 +132,7 @@ pub(crate) fn check_open(
 
     for flag_arg in args.iter().skip(2) {
         // Infer the flag arg for type map population (side effect: records hover type for LSP).
-        if let Ok(_flag_ty) = infer_surface_expr(flag_arg, env, state, type_map) {
+        if let Ok(_flag_ty) = infer_surface_expr(flag_arg, env, state, constraints, type_map) {
             // Type map already populated by infer_surface_expr above.
         }
 
@@ -200,6 +208,7 @@ pub(crate) fn check_connect(
     env: &Rc<TypeEnv>,
     span: Span,
     state: &mut InferState,
+    constraints: &mut Vec<Constraint>,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
     // Arity check: require exactly 4 args (cap, transport, host, port)
@@ -209,12 +218,13 @@ pub(crate) fn check_connect(
             got: args.len(),
             span,
             notes: vec![],
+            call_stack: vec![],
         })]);
     }
 
     // Infer arg types (for type checking, even if we don't use them all)
     for arg in args.iter() {
-        infer_surface_expr(arg, env, state, type_map)?;
+        infer_surface_expr(arg, env, state, constraints, type_map)?;
     }
 
     // Inspect arg 1 (transport) — check if it's a statically-known VarRef
@@ -294,6 +304,7 @@ pub(crate) fn check_map(
     env: &Rc<TypeEnv>,
     span: Span,
     state: &mut InferState,
+    constraints: &mut Vec<Constraint>,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
     // Arity check: require exactly 2 args (callback, collection)
@@ -303,14 +314,15 @@ pub(crate) fn check_map(
             got: args.len(),
             span,
             notes: vec![],
+            call_stack: vec![],
         })]);
     }
 
     // Infer both argument types
-    let callback_ty = infer_surface_expr(&args[0], env, state, type_map)?;
+    let callback_ty = infer_surface_expr(&args[0], env, state, constraints, type_map)?;
     let callback_ty = state.subst.apply(&callback_ty);
 
-    let coll_ty = infer_surface_expr(&args[1], env, state, type_map)?;
+    let coll_ty = infer_surface_expr(&args[1], env, state, constraints, type_map)?;
     let coll_ty = state.subst.apply(&coll_ty);
 
     // Synthesize return type based on collection and callback
@@ -342,6 +354,7 @@ pub(crate) fn check_tls_layer(
     env: &Rc<TypeEnv>,
     span: Span,
     state: &mut InferState,
+    constraints: &mut Vec<Constraint>,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
     // Arity check: require exactly 3 args (handle, hostname, opts)
@@ -351,16 +364,17 @@ pub(crate) fn check_tls_layer(
             got: args.len(),
             span,
             notes: vec![],
+            call_stack: vec![],
         })]);
     }
 
     // Infer all argument types (for type checking)
-    let handle_ty = infer_surface_expr(&args[0], env, state, type_map)?;
+    let handle_ty = infer_surface_expr(&args[0], env, state, constraints, type_map)?;
     let handle_ty = state.subst.apply(&handle_ty);
 
     // Infer the other args to check them, but we don't use their types
-    infer_surface_expr(&args[1], env, state, type_map)?; // hostname
-    infer_surface_expr(&args[2], env, state, type_map)?; // opts
+    infer_surface_expr(&args[1], env, state, constraints, type_map)?; // hostname
+    infer_surface_expr(&args[2], env, state, constraints, type_map)?; // opts
 
     // Preserve the handle's capability row
     match handle_ty.as_handle() {
@@ -378,6 +392,7 @@ pub(crate) fn check_tls_layer(
                 message: format!("tls-layer requires a Handle argument, got {}", handle_ty),
                 span,
                 notes: vec![],
+                call_stack: vec![],
             })])
         }
     }
@@ -392,6 +407,7 @@ pub(crate) fn check_get_in(
     env: &Rc<TypeEnv>,
     span: Span,
     state: &mut InferState,
+    constraints: &mut Vec<Constraint>,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
     use crate::ast::SurfaceExpression as SE;
@@ -410,11 +426,12 @@ pub(crate) fn check_get_in(
             } else {
                 vec![]
             },
+            call_stack: vec![],
         })]);
     }
 
     // Infer the dict type
-    let dict_ty = infer_surface_expr(&args[1], env, state, type_map)?;
+    let dict_ty = infer_surface_expr(&args[1], env, state, constraints, type_map)?;
     let dict_ty = state.subst.apply(&dict_ty);
 
     // Check if path is a literal dict with auto-indexed string entries
@@ -529,6 +546,7 @@ pub(crate) fn check_do_infer(
     env: &Rc<TypeEnv>,
     call_span: Span,
     state: &mut InferState,
+    constraints: &mut Vec<Constraint>,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
     let method_str = match method {
@@ -540,6 +558,7 @@ pub(crate) fn check_do_infer(
                 ),
                 span: call_span,
                 notes: vec![],
+                call_stack: vec![],
             })]);
         }
     };
@@ -549,10 +568,10 @@ pub(crate) fn check_do_infer(
     if let Some(_existing) = state.do_infer_resolutions.get(sentinel_name) {
         // Already resolved — infer remaining args for side effects and return the expected type.
         for arg in args {
-            let _ = infer_surface_expr(arg, env, state, type_map);
+            let _ = infer_surface_expr(arg, env, state, constraints, type_map);
         }
         for na in named_args {
-            let _ = infer_surface_expr(&na.node.value, env, state, type_map);
+            let _ = infer_surface_expr(&na.node.value, env, state, constraints, type_map);
         }
         let ret = match method_str {
             "bind" | "pure" => {
@@ -582,7 +601,7 @@ pub(crate) fn check_do_infer(
     // first_arg_already_inferred tracks whether we consumed the first arg here,
     // so Step 3 can skip it to avoid double-inference.
     let (resolved, first_arg_already_inferred) = if resolved.is_none() && !args.is_empty() {
-        let first_arg_ty = infer_surface_expr(&args[0], env, state, type_map)
+        let first_arg_ty = infer_surface_expr(&args[0], env, state, constraints, type_map)
             .ok()
             .map(|ty| state.subst.apply(&ty));
         let rule2_result = first_arg_ty.and_then(|ty| resolve_monad_from_type(&ty, state));
@@ -606,15 +625,15 @@ pub(crate) fn check_do_infer(
             // Infer remaining args for type map population before returning error.
             let start = if first_arg_already_inferred { 1 } else { 0 };
             for arg in args.iter().skip(start) {
-                let _ = infer_surface_expr(arg, env, state, type_map);
+                let _ = infer_surface_expr(arg, env, state, constraints, type_map);
             }
             for na in named_args {
-                let _ = infer_surface_expr(&na.node.value, env, state, type_map);
+                let _ = infer_surface_expr(&na.node.value, env, state, constraints, type_map);
             }
             return Err(vec![TypeErrorTyped::Generic(GenericTypeError {
                 message: "cannot infer monad for [do] — add an explicit monad argument (e.g., [do result ...])".to_string(),
                 span: call_span,
-                notes: vec![],
+                notes: vec![], call_stack: vec![],
             })]);
         }
     };
@@ -628,10 +647,10 @@ pub(crate) fn check_do_infer(
     // Skip the first arg if Rule 2 already inferred it (avoid double-inference side effects).
     let start = if first_arg_already_inferred { 1 } else { 0 };
     for arg in args.iter().skip(start) {
-        let _ = infer_surface_expr(arg, env, state, type_map);
+        let _ = infer_surface_expr(arg, env, state, constraints, type_map);
     }
     for na in named_args {
-        let _ = infer_surface_expr(&na.node.value, env, state, type_map);
+        let _ = infer_surface_expr(&na.node.value, env, state, constraints, type_map);
     }
 
     // Step 4: Return the expected return type or a fresh TypeVar.

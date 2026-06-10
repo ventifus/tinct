@@ -239,7 +239,16 @@ pub(crate) fn expand_type_alias(
     // is for validation side-effects (error propagation) only. Standalone type alias expressions
     // have no runtime type; returning Any is correct. The actual type alias definition is
     // registered in the TypeEnv during dict inference (see infer_dict Pass 2).
-    let _ = resolve_type_expr(inner, env, state, &mut Some(&mut alias_ann_map), &mut None)?;
+    let mut _alias_expand_constraints: Vec<Constraint> = Vec::new();
+    let _ = resolve_type_expr(
+        inner,
+        env,
+        state,
+        &mut _alias_expand_constraints,
+        &mut Some(&mut alias_ann_map),
+        &mut None,
+        None,
+    )?;
     Ok(Type::Unknown)
 }
 
@@ -249,6 +258,7 @@ pub(crate) fn resolve_type_assert(
     env: &Rc<TypeEnv>,
     _span: Span,
     state: &mut InferState,
+    constraints: &mut Vec<Constraint>,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
     // Create per-annotation-scope mappings for type and row variables.
@@ -263,13 +273,15 @@ pub(crate) fn resolve_type_assert(
         env,
         annotation.span.clone(),
         state,
+        constraints,
         &mut ann_mapping_opt,
         &mut row_ann_mapping_opt,
+        None,
     )
     .map_err(|e| vec![e])?;
 
     // Use checking mode for TypeAssert inner expression (doc/06 §Bidirectional Typing).
-    let check_result = check_surface_expr(inner, &expected, env, state, type_map);
+    let check_result = check_surface_expr(inner, &expected, env, state, constraints, type_map);
 
     // If checking fails, propagate errors (TypeAssert failures are hard type errors).
     if let Err(type_errors) = check_result {
@@ -281,7 +293,7 @@ pub(crate) fn resolve_type_assert(
 
     // Validate the default value type — hard error if the default cannot satisfy the asserted type.
     if let Some(default_node) = annotation.node.get_property("default") {
-        match infer_surface_expr(default_node, env, state, type_map) {
+        match infer_surface_expr(default_node, env, state, constraints, type_map) {
             Ok(default_ty) => {
                 // Apply state.subst to both types before comparison — access-chain constraints
                 // may have bound TypeVars in state.subst (e.g., $data.name generates row-variable
@@ -305,6 +317,7 @@ pub(crate) fn resolve_type_assert(
                         ),
                         span: default_node.span.clone(),
                         notes: vec![],
+                        call_stack: vec![],
                     })]);
                 }
             }
@@ -329,6 +342,7 @@ pub(crate) fn resolve_type_assert(
                     ),
                     span: repr_node.span.clone(),
                     notes: vec![],
+                    call_stack: vec![],
                 })]);
             }
             // Check consistency: repr requires a numeric type (Int or Number)
@@ -341,6 +355,7 @@ pub(crate) fn resolve_type_assert(
                     ),
                     span: repr_node.span.clone(),
                     notes: vec![],
+                    call_stack: vec![],
                 })]);
             }
         }
@@ -370,14 +385,17 @@ pub(crate) fn resolve_type_assert(
 /// - `[@Seq expr]` (TypeAssert) → checks `expr` against `App(TyCon("Seq"), Any)` (element type is Any; `@ElemType` suffix is a parse error in TypeAssert position)
 ///
 /// Otherwise, resolves `$annotation` as a regular type annotation.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn resolve_annotated(
     name: &str,
     annotation: &Spanned<Annotation>,
     env: &Rc<TypeEnv>,
     span: Span,
     state: &mut InferState,
+    constraints: &mut Vec<Constraint>,
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
+    type_params_scope: Option<&HashSet<String>>,
 ) -> Result<Type, TypeError> {
     if name == "Fn" {
         resolve_fn_type(
@@ -385,8 +403,10 @@ pub(crate) fn resolve_annotated(
             env,
             annotation.span.clone(),
             state,
+            constraints,
             ann_mapping,
             row_ann_mapping,
+            type_params_scope,
         )
     } else if name == "Seq" {
         let elem = resolve_annotation(
@@ -394,8 +414,10 @@ pub(crate) fn resolve_annotated(
             env,
             span.clone(),
             state,
+            constraints,
             ann_mapping,
             row_ann_mapping,
+            type_params_scope,
         )?;
         let ty = Type::seq(elem);
         crate::types::check_kind_wellformed(&ty, &state.kind_env, span)?;
@@ -415,8 +437,10 @@ pub(crate) fn resolve_annotated(
             env,
             span,
             state,
+            constraints,
             ann_mapping,
             row_ann_mapping,
+            type_params_scope,
         )?;
         Ok(Type::handle(cap_type))
     } else {
@@ -425,8 +449,10 @@ pub(crate) fn resolve_annotated(
             env,
             span,
             state,
+            constraints,
             ann_mapping,
             row_ann_mapping,
+            type_params_scope,
         )
     }
 }
@@ -442,13 +468,16 @@ pub(crate) fn resolve_annotated(
 /// 5. `doc:` — extracts string literal, returned as Option<String>
 ///
 /// Returns (return_type, doc_string).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn resolve_fn_metadata(
     entries: &[Spanned<SurfaceEntry>],
     env: &TypeEnv,
     span: Span,
     state: &mut InferState,
+    constraints: &mut Vec<Constraint>,
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
+    type_params_scope: Option<&HashSet<String>>,
 ) -> Result<(Type, Option<String>), TypeError> {
     // Valid hardcoded class names (pre-HKT)
     const VALID_CLASSES: &[&str] = &[
@@ -485,7 +514,7 @@ pub(crate) fn resolve_fn_metadata(
                                     return Err(TypeErrorTyped::Generic(GenericTypeError {
                                         message: "bind: list must contain only positional entries (bare names)".to_string(),
                                         span: bind_entry.span.clone(),
-                                        notes: vec![],
+                                        notes: vec![], call_stack: vec![],
                                     }));
                                 }
                                 match &bind_entry.node.value.expr {
@@ -498,7 +527,7 @@ pub(crate) fn resolve_fn_metadata(
                                                     name
                                                 ),
                                                 span: bind_entry.node.value.span.clone(),
-                                                notes: vec![],
+                                                notes: vec![], call_stack: vec![],
                                             }));
                                         }
                                         // Create fresh TypeVar and register in ann_mapping
@@ -516,7 +545,7 @@ pub(crate) fn resolve_fn_metadata(
                                             return Err(TypeErrorTyped::Generic(GenericTypeError {
                                                 message: "bind: requires an annotation mapping context".to_string(),
                                                 span,
-                                                notes: vec![],
+                                                notes: vec![], call_stack: vec![],
                                             }));
                                         }
                                     }
@@ -527,6 +556,7 @@ pub(crate) fn resolve_fn_metadata(
                                                     .to_string(),
                                             span: bind_entry.node.value.span.clone(),
                                             notes: vec![],
+                                            call_stack: vec![],
                                         }));
                                     }
                                 }
@@ -546,7 +576,7 @@ pub(crate) fn resolve_fn_metadata(
                                 return Err(TypeErrorTyped::Generic(GenericTypeError {
                                     message: "bind: list must contain only bare names, not named arguments".to_string(),
                                     span: entry.node.value.span.clone(),
-                                    notes: vec![],
+                                    notes: vec![], call_stack: vec![],
                                 }));
                             }
                             // Collect all names: func first, then each positional arg
@@ -563,6 +593,7 @@ pub(crate) fn resolve_fn_metadata(
                                                     .to_string(),
                                             span: func.span.clone(),
                                             notes: vec![],
+                                            call_stack: vec![],
                                         }))
                                     }
                                 }
@@ -574,7 +605,7 @@ pub(crate) fn resolve_fn_metadata(
                                             _ => return Err(TypeErrorTyped::Generic(GenericTypeError {
                                                 message: "bind: entries must be bare names (TypeVar names)".to_string(),
                                                 span: arg.span.clone(),
-                                                notes: vec![],
+                                                notes: vec![], call_stack: vec![],
                                             })),
                                         }
                                 }
@@ -588,7 +619,7 @@ pub(crate) fn resolve_fn_metadata(
                                             name
                                         ),
                                         span: name_span,
-                                        notes: vec![],
+                                        notes: vec![], call_stack: vec![],
                                     }));
                                 }
                                 let n = state.subst.name_counter.get();
@@ -607,6 +638,7 @@ pub(crate) fn resolve_fn_metadata(
                                             .to_string(),
                                         span,
                                         notes: vec![],
+                                        call_stack: vec![],
                                     }));
                                 }
                             }
@@ -616,6 +648,7 @@ pub(crate) fn resolve_fn_metadata(
                                 message: "bind: value must be a list [a b c]".to_string(),
                                 span: entry.node.value.span.clone(),
                                 notes: vec![],
+                                call_stack: vec![],
                             }))
                         }
                     }
@@ -643,6 +676,7 @@ pub(crate) fn resolve_fn_metadata(
                                                         .to_string(),
                                                 span: kind_entry.span.clone(),
                                                 notes: vec![],
+                                                call_stack: vec![],
                                             }))
                                         }
                                     },
@@ -652,6 +686,7 @@ pub(crate) fn resolve_fn_metadata(
                                                 .to_string(),
                                             span: kind_entry.span.clone(),
                                             notes: vec![],
+                                            call_stack: vec![],
                                         }))
                                     }
                                 };
@@ -668,6 +703,7 @@ pub(crate) fn resolve_fn_metadata(
                                                 ),
                                                 span: kind_entry.span.clone(),
                                                 notes: vec![],
+                                                call_stack: vec![],
                                             }))
                                         }
                                     }
@@ -677,6 +713,7 @@ pub(crate) fn resolve_fn_metadata(
                                             .to_string(),
                                         span,
                                         notes: vec![],
+                                        call_stack: vec![],
                                     }));
                                 };
 
@@ -695,7 +732,7 @@ pub(crate) fn resolve_fn_metadata(
                                                         kind_name
                                                     ),
                                                     span: kind_entry.node.value.span.clone(),
-                                                    notes: vec![],
+                                                    notes: vec![], call_stack: vec![],
                                                 }))
                                             }
                                         };
@@ -705,7 +742,7 @@ pub(crate) fn resolve_fn_metadata(
                                         return Err(TypeErrorTyped::Generic(GenericTypeError {
                                             message: "kinds: value must be a kind name (Operator or Label)".to_string(),
                                             span: kind_entry.node.value.span.clone(),
-                                            notes: vec![],
+                                            notes: vec![], call_stack: vec![],
                                         }));
                                     }
                                 }
@@ -716,6 +753,7 @@ pub(crate) fn resolve_fn_metadata(
                                 message: "kinds: value must be a dict [name: kind ...]".to_string(),
                                 span: entry.node.value.span.clone(),
                                 notes: vec![],
+                                call_stack: vec![],
                             }))
                         }
                     }
@@ -746,7 +784,7 @@ pub(crate) fn resolve_fn_metadata(
                                             return Err(TypeErrorTyped::Generic(GenericTypeError {
                                                 message: "constraint key must be a bare word (TypeVar name)".to_string(),
                                                 span: c_entry.span.clone(),
-                                                notes: vec![],
+                                                notes: vec![], call_stack: vec![],
                                             }));
                                         }
                                     },
@@ -773,7 +811,7 @@ pub(crate) fn resolve_fn_metadata(
                                     return Err(TypeErrorTyped::Generic(GenericTypeError {
                                         message: "constraint annotations require an annotation mapping context".to_string(),
                                         span,
-                                        notes: vec![],
+                                        notes: vec![], call_stack: vec![],
                                     }));
                                 };
 
@@ -796,10 +834,15 @@ pub(crate) fn resolve_fn_metadata(
                                                     ),
                                                     span: c_entry.node.value.span.clone(),
                                                     notes: vec![],
+                                                    call_stack: vec![],
                                                 },
                                             ));
                                         }
-                                        state.add_constraint(name.clone(), type_var.clone());
+                                        state.add_constraint(
+                                            constraints,
+                                            name.clone(),
+                                            type_var.clone(),
+                                        );
                                     }
                                     SurfaceExpression::Dict(class_list) => {
                                         // Require [each ...] keyword form
@@ -817,14 +860,14 @@ pub(crate) fn resolve_fn_metadata(
                                                     return Err(TypeErrorTyped::Generic(GenericTypeError {
                                                         message: "constraint class list must start with 'each' keyword: use [each ClassName ...]".to_string(),
                                                         span: class_list[0].span.clone(),
-                                                        notes: vec![],
+                                                        notes: vec![], call_stack: vec![],
                                                     }));
                                                 }
                                             } else {
                                                 return Err(TypeErrorTyped::Generic(GenericTypeError {
                                                     message: "constraint class list must start with 'each' keyword: use [each ClassName ...]".to_string(),
                                                     span: class_list[0].span.clone(),
-                                                    notes: vec![],
+                                                    notes: vec![], call_stack: vec![],
                                                 }));
                                             }
                                         } else {
@@ -835,6 +878,7 @@ pub(crate) fn resolve_fn_metadata(
                                                             .to_string(),
                                                     span: c_entry.node.value.span.clone(),
                                                     notes: vec![],
+                                                    call_stack: vec![],
                                                 },
                                             ));
                                         };
@@ -845,7 +889,7 @@ pub(crate) fn resolve_fn_metadata(
                                                 return Err(TypeErrorTyped::Generic(GenericTypeError {
                                                     message: "constraint class list must contain only positional entries".to_string(),
                                                     span: class_entry.span.clone(),
-                                                    notes: vec![],
+                                                    notes: vec![], call_stack: vec![],
                                                 }));
                                             }
                                             match &class_entry.node.value.expr {
@@ -865,10 +909,12 @@ pub(crate) fn resolve_fn_metadata(
                                                                     .span
                                                                     .clone(),
                                                                 notes: vec![],
+                                                                call_stack: vec![],
                                                             },
                                                         ));
                                                     }
                                                     state.add_constraint(
+                                                        constraints,
                                                         name.clone(),
                                                         type_var.clone(),
                                                     );
@@ -877,7 +923,7 @@ pub(crate) fn resolve_fn_metadata(
                                                     return Err(TypeErrorTyped::Generic(GenericTypeError {
                                                         message: "constraint class must be a class name (e.g., Comparable)".to_string(),
                                                         span: class_entry.node.value.span.clone(),
-                                                        notes: vec![],
+                                                        notes: vec![], call_stack: vec![],
                                                     }));
                                                 }
                                             }
@@ -898,7 +944,7 @@ pub(crate) fn resolve_fn_metadata(
                                             return Err(TypeErrorTyped::Generic(GenericTypeError {
                                                 message: "constraint class list must not contain named arguments".to_string(),
                                                 span: c_entry.node.value.span.clone(),
-                                                notes: vec![],
+                                                notes: vec![], call_stack: vec![],
                                             }));
                                         }
                                         // Determine class names to add
@@ -918,7 +964,7 @@ pub(crate) fn resolve_fn_metadata(
                                                                 return Err(TypeErrorTyped::Generic(GenericTypeError {
                                                                     message: "constraint class must be a class name (e.g., Comparable)".to_string(),
                                                                     span: arg.span.clone(),
-                                                                    notes: vec![],
+                                                                    notes: vec![], call_stack: vec![],
                                                                 }))
                                                             }
                                                         }
@@ -935,7 +981,7 @@ pub(crate) fn resolve_fn_metadata(
                                                     return Err(TypeErrorTyped::Generic(GenericTypeError {
                                                         message: "constraint value must be a class name or [each Class1 Class2 ...]".to_string(),
                                                         span: c_entry.node.value.span.clone(),
-                                                        notes: vec![],
+                                                        notes: vec![], call_stack: vec![],
                                                     }))
                                                 }
                                             };
@@ -951,18 +997,22 @@ pub(crate) fn resolve_fn_metadata(
                                                         ),
                                                         span: name_span,
                                                         notes: vec![],
+                                                        call_stack: vec![],
                                                     },
                                                 ));
                                             }
-                                            state
-                                                .add_constraint(name.to_string(), type_var.clone());
+                                            state.add_constraint(
+                                                constraints,
+                                                name.to_string(),
+                                                type_var.clone(),
+                                            );
                                         }
                                     }
                                     _ => {
                                         return Err(TypeErrorTyped::Generic(GenericTypeError {
                                             message: "constraint value must be a class name or list of class names".to_string(),
                                             span: c_entry.node.value.span.clone(),
-                                            notes: vec![],
+                                            notes: vec![], call_stack: vec![],
                                         }));
                                     }
                                 }
@@ -974,6 +1024,7 @@ pub(crate) fn resolve_fn_metadata(
                                     .to_string(),
                                 span: entry.node.value.span.clone(),
                                 notes: vec![],
+                                call_stack: vec![],
                             }));
                         }
                     }
@@ -1015,6 +1066,7 @@ pub(crate) fn resolve_fn_metadata(
                                                     ),
                                                     span: c_entry.node.value.span.clone(),
                                                     notes: vec![],
+                                                    call_stack: vec![],
                                                 })
                                             })?;
 
@@ -1042,7 +1094,7 @@ pub(crate) fn resolve_fn_metadata(
                                                                     var_name, var_name
                                                                 ),
                                                                 span: subsequent.node.value.span.clone(),
-                                                                notes: vec![],
+                                                                notes: vec![], call_stack: vec![],
                                                             }));
                                                         }
                                                         // Map to the actual TypeVar name (e.g., _t0)
@@ -1053,7 +1105,7 @@ pub(crate) fn resolve_fn_metadata(
                                                         return Err(TypeErrorTyped::Generic(GenericTypeError {
                                                             message: "constraint annotations require an annotation mapping context".to_string(),
                                                             span,
-                                                            notes: vec![],
+                                                            notes: vec![], call_stack: vec![],
                                                         }));
                                                     }
                                                 }
@@ -1067,7 +1119,7 @@ pub(crate) fn resolve_fn_metadata(
                                                     return Err(TypeErrorTyped::Generic(GenericTypeError {
                                                         message: "MPTC constraint entries after class name must be TypeVar names".to_string(),
                                                         span: subsequent.node.value.span.clone(),
-                                                        notes: vec![],
+                                                        notes: vec![], call_stack: vec![],
                                                     }));
                                                 }
                                             }
@@ -1075,7 +1127,7 @@ pub(crate) fn resolve_fn_metadata(
                                         }
 
                                         // Create the MPTC constraint using Arc<ClassDecl>
-                                        state.constraints.push(Constraint::Class {
+                                        constraints.push(Constraint::Class {
                                             class: Arc::new(class_decl.clone()),
                                             vars: typevar_names,
                                             origin_name: None,
@@ -1092,7 +1144,7 @@ pub(crate) fn resolve_fn_metadata(
                                         return Err(TypeErrorTyped::Generic(GenericTypeError {
                                             message: "positional constraint entries must start with escaped class name (e.g., $Add)".to_string(),
                                             span: c_entry.node.value.span.clone(),
-                                            notes: vec![],
+                                            notes: vec![], call_stack: vec![],
                                         }));
                                     }
                                 }
@@ -1116,8 +1168,10 @@ pub(crate) fn resolve_fn_metadata(
                         &entry.node.value,
                         env,
                         state,
+                        constraints,
                         ann_mapping,
                         row_ann_mapping,
+                        type_params_scope,
                     )?;
                     return_type = Some(ret);
                 }
@@ -1159,6 +1213,7 @@ pub(crate) fn resolve_fn_metadata(
                                 message: "doc: value must be a string literal".to_string(),
                                 span: entry.node.value.span.clone(),
                                 notes: vec![],
+                                call_stack: vec![],
                             }));
                         }
                     }
@@ -1202,13 +1257,16 @@ pub(crate) fn resolve_fn_metadata(
 /// - `resolve_fn_metadata()` if ANY entry has a named key matching `return:`, `constraint:`, or `doc:`
 /// - existing union return type path if ALL entries are positional
 /// - error if mixed named + positional
+#[allow(clippy::too_many_arguments)]
 fn resolve_fn_type(
     ann: &Annotation,
     env: &TypeEnv,
     span: Span,
     state: &mut InferState,
+    constraints: &mut Vec<Constraint>,
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
+    type_params_scope: Option<&HashSet<String>>,
 ) -> Result<Type, TypeError> {
     match ann {
         Annotation::PropertyDict(surface_entries) => {
@@ -1237,7 +1295,7 @@ fn resolve_fn_type(
                     return Err(TypeErrorTyped::Generic(GenericTypeError {
                         message: "fn annotation must use either named keys (return:, constraint:, doc:, bind:, kinds:) or positional entries (union return type), not both".to_string(),
                         span,
-                        notes: vec![],
+                        notes: vec![], call_stack: vec![],
                     }));
                 }
                 let (ret, _doc) = resolve_fn_metadata(
@@ -1245,8 +1303,10 @@ fn resolve_fn_type(
                     env,
                     span.clone(),
                     state,
+                    constraints,
                     ann_mapping,
                     row_ann_mapping,
+                    type_params_scope,
                 )?;
                 let ty = Type::Function {
                     params: vec![],
@@ -1265,8 +1325,10 @@ fn resolve_fn_type(
                     env,
                     span,
                     state,
+                    constraints,
                     ann_mapping,
                     row_ann_mapping,
+                    type_params_scope,
                 )
             }
         }
@@ -1277,8 +1339,10 @@ fn resolve_fn_type(
                 env,
                 span.clone(),
                 state,
+                constraints,
                 ann_mapping,
                 row_ann_mapping,
+                type_params_scope,
             )?;
             let ty = Type::Function {
                 params: vec![],
@@ -1295,18 +1359,30 @@ fn resolve_fn_type(
 /// Resolve an annotation in a context where a type expression is expected.
 /// Unlike `resolve_annotation`, a PropertyDict is interpreted as a type expression
 /// (record type or function type) rather than a property bag.
+#[allow(clippy::too_many_arguments)]
 fn resolve_annotation_as_type(
     ann: &Annotation,
     env: &TypeEnv,
     span: Span,
     state: &mut InferState,
+    constraints: &mut Vec<Constraint>,
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
+    type_params_scope: Option<&HashSet<String>>,
 ) -> Result<Type, TypeError> {
     match ann {
         Annotation::Simple(name) => {
             let row_ref: Option<&HashMap<String, String>> = row_ann_mapping.as_ref().map(|m| &**m);
-            resolve_type_name(name, env, span, state, ann_mapping, &row_ref)
+            resolve_type_name(
+                name,
+                env,
+                span,
+                state,
+                constraints,
+                ann_mapping,
+                &row_ref,
+                type_params_scope,
+            )
         }
         Annotation::PropertyDict(surface_entries) => {
             // In a type-expression context, a PropertyDict is always a structural type:
@@ -1318,8 +1394,10 @@ fn resolve_annotation_as_type(
                 env,
                 span,
                 state,
+                constraints,
                 ann_mapping,
                 row_ann_mapping,
+                type_params_scope,
             )
         }
         Annotation::Annotated(name, inner) => {
@@ -1330,33 +1408,55 @@ fn resolve_annotation_as_type(
                 env,
                 span,
                 state,
+                constraints,
                 ann_mapping,
                 row_ann_mapping,
+                type_params_scope,
             )
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn resolve_annotation(
     ann: &Annotation,
     env: &TypeEnv,
     span: Span,
     state: &mut InferState,
+    constraints: &mut Vec<Constraint>,
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
+    type_params_scope: Option<&HashSet<String>>,
 ) -> Result<Type, TypeError> {
     match ann {
         Annotation::Simple(name) => {
             let row_ref: Option<&HashMap<String, String>> = row_ann_mapping.as_ref().map(|m| &**m);
-            resolve_type_name(name, env, span, state, ann_mapping, &row_ref)
+            resolve_type_name(
+                name,
+                env,
+                span,
+                state,
+                constraints,
+                ann_mapping,
+                &row_ref,
+                type_params_scope,
+            )
         }
         Annotation::Annotated(name, inner) => {
             // Parameterized type annotations: Seq@Int, Map@[String: Int], Record@[field: Type]
             match name.as_str() {
                 "Seq" => {
                     // Resolve the inner type
-                    let elem_type =
-                        resolve_annotation(inner, env, span, state, ann_mapping, row_ann_mapping)?;
+                    let elem_type = resolve_annotation(
+                        inner,
+                        env,
+                        span,
+                        state,
+                        constraints,
+                        ann_mapping,
+                        row_ann_mapping,
+                        type_params_scope,
+                    )?;
                     Ok(Type::seq(elem_type))
                 }
                 "Map" => {
@@ -1371,8 +1471,10 @@ pub(crate) fn resolve_annotation(
                                 env,
                                 span,
                                 state,
+                                constraints,
                                 ann_mapping,
                                 row_ann_mapping,
+                                type_params_scope,
                             )?;
                             Ok(Type::map(state.fresh_type_var(), value_type))
                         }
@@ -1398,8 +1500,10 @@ pub(crate) fn resolve_annotation(
                                         &k_entry.node.value,
                                         env,
                                         state,
+                                        constraints,
                                         ann_mapping,
                                         row_ann_mapping,
+                                        type_params_scope,
                                     )?
                                 } else {
                                     Type::Unknown
@@ -1408,8 +1512,10 @@ pub(crate) fn resolve_annotation(
                                     &v_entry.node.value,
                                     env,
                                     state,
+                                    constraints,
                                     ann_mapping,
                                     row_ann_mapping,
+                                    type_params_scope,
                                 )?;
                                 Ok(Type::map(key_ty, value_ty))
                             } else {
@@ -1420,8 +1526,10 @@ pub(crate) fn resolve_annotation(
                                     env,
                                     span,
                                     state,
+                                    constraints,
                                     ann_mapping,
                                     row_ann_mapping,
+                                    type_params_scope,
                                 )
                             }
                         }
@@ -1434,8 +1542,10 @@ pub(crate) fn resolve_annotation(
                                 env,
                                 span,
                                 state,
+                                constraints,
                                 ann_mapping,
                                 row_ann_mapping,
+                                type_params_scope,
                             )?;
                             Ok(Type::map(state.fresh_type_var(), value_type))
                         }
@@ -1453,8 +1563,10 @@ pub(crate) fn resolve_annotation(
                                 env,
                                 span,
                                 state,
+                                constraints,
                                 ann_mapping,
                                 row_ann_mapping,
+                                type_params_scope,
                             )
                         }
                         _ => Err(TypeErrorTyped::Generic(GenericTypeError {
@@ -1463,6 +1575,7 @@ pub(crate) fn resolve_annotation(
                                     .to_string(),
                             span,
                             notes: vec![],
+                            call_stack: vec![],
                         })),
                     }
                 }
@@ -1476,8 +1589,16 @@ pub(crate) fn resolve_annotation(
                     //   @Handle@Unknown           → Handle(Unknown)  (gradual handle)
                     //
                     // Resolve the inner annotation as a capability type and wrap in Handle.
-                    let cap_type =
-                        resolve_annotation(inner, env, span, state, ann_mapping, row_ann_mapping)?;
+                    let cap_type = resolve_annotation(
+                        inner,
+                        env,
+                        span,
+                        state,
+                        constraints,
+                        ann_mapping,
+                        row_ann_mapping,
+                        type_params_scope,
+                    )?;
                     Ok(Type::handle(cap_type))
                 }
                 _ => {
@@ -1491,8 +1612,10 @@ pub(crate) fn resolve_annotation(
                                 env,
                                 span,
                                 state,
+                                constraints,
                                 ann_mapping,
                                 row_ann_mapping,
+                                type_params_scope,
                             )?;
                             return Ok(Type::App(
                                 Box::new(Type::TyCon(name.clone())),
@@ -1508,6 +1631,7 @@ pub(crate) fn resolve_annotation(
                         message: format!("unknown parameterized type: {}", name),
                         span,
                         notes: vec![],
+                        call_stack: vec![],
                     }))
                 }
             }
@@ -1558,7 +1682,15 @@ pub(crate) fn resolve_annotation(
 
             if let Some(type_node) = type_value_node {
                 // @[type: T ...] shorthand — resolve the type: value as a type expression.
-                resolve_type_expr(type_node, env, state, ann_mapping, row_ann_mapping)
+                resolve_type_expr(
+                    type_node,
+                    env,
+                    state,
+                    constraints,
+                    ann_mapping,
+                    row_ann_mapping,
+                    type_params_scope,
+                )
             } else if let Some(label_value_node) = surface_entries.iter().find_map(|se| {
                 // @[label: name] — named Label-kinded TypeVar annotation.
                 // Only fires when there is exactly one entry and its key is "label".
@@ -1582,7 +1714,7 @@ pub(crate) fn resolve_annotation(
                     SurfaceExpression::Str(_) => Err(TypeErrorTyped::Generic(GenericTypeError {
                         message: "label: value must be a bare name (e.g. `label: l`), not a string literal".to_string(),
                         span,
-                        notes: vec![],
+                        notes: vec![], call_stack: vec![],
                     })),
                     SurfaceExpression::VarRef { name, .. } => {
                         if name.starts_with(|c: char| c.is_uppercase()) {
@@ -1592,7 +1724,7 @@ pub(crate) fn resolve_annotation(
                                     name
                                 ),
                                 span,
-                                notes: vec![],
+                                notes: vec![], call_stack: vec![],
                             }))
                         } else {
                             // Valid lowercase label name: create a Label-kinded TypeVar.
@@ -1630,7 +1762,7 @@ pub(crate) fn resolve_annotation(
                     _ => Err(TypeErrorTyped::Generic(GenericTypeError {
                         message: "label: value must be a bare name (e.g. `label: l`)".to_string(),
                         span,
-                        notes: vec![],
+                        notes: vec![], call_stack: vec![],
                     })),
                 }
             } else {
@@ -1640,29 +1772,36 @@ pub(crate) fn resolve_annotation(
                     env,
                     span,
                     state,
+                    constraints,
                     ann_mapping,
                     row_ann_mapping,
+                    type_params_scope,
                 )
             }
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn resolve_property_dict_as_record(
     entries: &[Spanned<SurfaceEntry>],
     env: &TypeEnv,
     span: Span,
     state: &mut InferState,
+    constraints: &mut Vec<Constraint>,
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
+    type_params_scope: Option<&HashSet<String>>,
 ) -> Result<Type, TypeError> {
     resolve_type_dict(
         entries,
         env,
         span.clone(),
         state,
+        constraints,
         ann_mapping,
         row_ann_mapping,
+        type_params_scope,
     )
     .or_else(|e| {
         let is_tycon_error = entries.first().is_some_and(|first| {
@@ -1787,6 +1926,7 @@ fn instantiate_type_alias(
                                 ),
                                 span: error_span,
                                 notes: vec![],
+                                call_stack: vec![],
                             }));
                         }
                         Err(ambiguity_msg) => {
@@ -1798,6 +1938,7 @@ fn instantiate_type_alias(
                                 ),
                                 span: error_span,
                                 notes: vec![],
+                                call_stack: vec![],
                             }));
                         }
                     }
@@ -1946,6 +2087,7 @@ pub(crate) fn resolve_type_name_with_guard(
     recursion_guard: &mut HashSet<String>,
     _current_alias: &str,
     depth: usize,
+    type_params_scope: Option<&HashSet<String>>,
 ) -> Result<Type, TypeError> {
     // Handle builtin types and lowercase type variables using normal resolution
     if !name.starts_with(|c: char| c.is_uppercase())
@@ -1970,7 +2112,17 @@ pub(crate) fn resolve_type_name_with_guard(
         )
     {
         let row_ref: Option<&HashMap<String, String>> = row_ann_mapping.as_ref().map(|m| &**m);
-        return resolve_type_name(name, env, span, state, ann_mapping, &row_ref);
+        let mut _discard = Vec::new();
+        return resolve_type_name(
+            name,
+            env,
+            span,
+            state,
+            &mut _discard,
+            ann_mapping,
+            &row_ref,
+            type_params_scope,
+        );
     }
 
     // Uppercase type name — check for type alias
@@ -1994,6 +2146,7 @@ pub(crate) fn resolve_type_name_with_guard(
                 ),
                 span,
                 notes: vec![],
+                call_stack: vec![],
             }));
         }
 
@@ -2017,22 +2170,51 @@ pub(crate) fn resolve_type_name_with_guard(
         recursion_guard.remove(name);
 
         result
+    } else if let Some(class_decl) = state.class_env.get(name).cloned() {
+        // T-1197: Class name used in annotation position in a recursive/guarded context.
+        // Mirrors the same logic in resolve_type_name so both lookup paths handle class
+        // names consistently. See resolve_type_name for the full rationale.
+        let n = state.subst.name_counter.get();
+        let fresh = format!("_t{}", n);
+        state.subst.name_counter.set(n.saturating_add(1));
+        state.levels.insert(fresh.clone(), state.level);
+        // Construct the Constraint::Class that @C should produce in this guarded path.
+        // resolve_type_name_with_guard does not carry a constraints parameter (unlike
+        // resolve_type_name), so we cannot push it to the caller's constraint vec. A local
+        // vec records the constraint to make the intent explicit. The correct fix is to add
+        // a `constraints: &mut Vec<Constraint>` parameter to this function so the constraint
+        // reaches the caller's SCC constraint collection — tracked as part of T-1206 scope.
+        // Without that threading, @C in a recursive/guarded type annotation context produces
+        // a TypeVar that is unconstrained at the unification site: a known limitation.
+        let mut _local_constraints: Vec<Constraint> = Vec::new();
+        _local_constraints.push(Constraint::Class {
+            class: Arc::new(class_decl),
+            vars: vec![fresh.clone()],
+            origin_name: None,
+            origin_span: Some(span),
+        });
+        // TODO(T-1206): thread _local_constraints into caller via constraints parameter
+        Ok(Type::TypeVar(fresh, state.level))
     } else {
         Err(TypeErrorTyped::UndefinedType(UndefinedType {
             name: name.to_string(),
             span,
             notes: vec![],
+            call_stack: vec![],
         }))
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn resolve_type_name(
     name: &str,
     env: &TypeEnv,
     span: Span,
     state: &mut InferState,
+    constraints: &mut Vec<Constraint>,
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
     row_ann_mapping: &Option<&HashMap<String, String>>,
+    type_params_scope: Option<&HashSet<String>>,
 ) -> Result<Type, TypeError> {
     match name {
         "Int" => Ok(Type::Int),
@@ -2050,7 +2232,7 @@ pub(crate) fn resolve_type_name(
         "Operator" => Err(TypeErrorTyped::Generic(GenericTypeError {
             message: "Operator is a kind, not a type — annotate a class type parameter as `f@Operator`, not a value expression".to_string(),
             span,
-            notes: vec![],
+            notes: vec![], call_stack: vec![],
         })),
         "Label" => {
             // Anonymous Label-kinded TypeVar (parallel to `@Operator` error above).
@@ -2119,12 +2301,12 @@ pub(crate) fn resolve_type_name(
         }
         _ => {
             if name.starts_with(|c: char| c.is_lowercase()) {
-                // Type parameter scope enforcement (T-951).
-                // When inside a TypeAlias body resolution (state.type_params_scope is Some),
+                // Type parameter scope enforcement (T-1100 / T-951).
+                // When inside a TypeAlias body resolution (type_params_scope is Some),
                 // lowercase names are TypeVars ONLY if they appear in the declared params list.
                 // Unknown lowercase names are a type error rather than silently creating a
                 // fresh TypeVar — enforcing the "explicit type params" principle.
-                if let Some(ref params) = state.type_params_scope {
+                if let Some(params) = type_params_scope {
                     // Check if this name is a declared type param (via ann_mapping which maps
                     // param name → fresh TypeVar name). If not, check if it's a scope reference
                     // (a TyConDef or TypeAlias visible in the current env), else error.
@@ -2139,7 +2321,7 @@ pub(crate) fn resolve_type_name(
                                      with [let ...] or must refer to a type in scope"
                                 ),
                                 span,
-                                notes: vec![],
+                                notes: vec![], call_stack: vec![],
                             }));
                         }
                         // It's a scope reference — fall through to normal resolution.
@@ -2165,7 +2347,7 @@ pub(crate) fn resolve_type_name(
                              it cannot also be used as a type variable"
                         ),
                         span,
-                        notes: vec![],
+                        notes: vec![], call_stack: vec![],
                     }));
                 }
 
@@ -2217,18 +2399,55 @@ pub(crate) fn resolve_type_name(
                                 alias.params.len()
                             ),
                             span,
-                            notes: vec![],
+                            notes: vec![], call_stack: vec![],
                         }));
                     }
 
-                    // Zero-parameter alias: return the body directly
+                    // Zero-parameter alias: check if this is a user-declared nominal type.
+                    // If so, return Type::TyCon(name) for nominal identity checking (UNIFY-TYCON).
+                    // This enables UNIFY-TYCON-EXPAND to match @Color with NominalVariant members.
+                    //
+                    // Only return TyCon for types that have actual constructors (nominal ADTs)
+                    // or are builtin opaque types. Record/structural aliases fall through to the
+                    // body directly — they don't need nominal identity checking.
+                    if let Some(def) = env.lookup_tycon_def(name) {
+                        if !def.constructors.is_empty() || def.builtin_type.is_some() {
+                            return Ok(Type::TyCon(name.to_string()));
+                        }
+                    }
+
+                    // Non-nominal alias: return the body directly
                     // Recursive expansion happens during alias registration via resolve_type_name_with_guard
                     Ok(alias.body.clone())
+                } else if let Some(class_decl) = state.class_env.get(name).cloned() {
+                    // T-1197: Class name used in annotation position: @Comparable, @Equatable, etc.
+                    //
+                    // When a name in annotation position resolves to a ClassDecl (not a type alias),
+                    // introduce a fresh type variable constrained by that class. The class constraint
+                    // is added to the threaded `constraints` parameter so that when this TypeVar is later unified with a
+                    // concrete type at a call site, check_constraints_on_var fires and verifies the
+                    // instance exists (T-1198).
+                    //
+                    // Each occurrence of @C creates an independent fresh TypeVar — class names are
+                    // not in the type variable namespace (unlike lowercase annotation names such as
+                    // @a which are deduplicated via ann_mapping). Two parameters x@Comparable and
+                    // y@Comparable get distinct TypeVars _tN and _tM, each independently constrained.
+                    let n = state.subst.name_counter.get();
+                    let fresh = format!("_t{}", n);
+                    state.subst.name_counter.set(n.saturating_add(1));
+                    state.levels.insert(fresh.clone(), state.level);
+                    constraints.push(Constraint::Class {
+                        class: Arc::new(class_decl),
+                        vars: vec![fresh.clone()],
+                        origin_name: None,
+                        origin_span: Some(span),
+                    });
+                    Ok(Type::TypeVar(fresh, state.level))
                 } else {
                     Err(TypeErrorTyped::UndefinedType(UndefinedType {
                         name: name.to_string(),
                         span,
-                        notes: vec![],
+                        notes: vec![], call_stack: vec![],
                     }))
                 }
             }
@@ -2262,6 +2481,7 @@ fn expand_alias_body_guarded(
             ),
             span,
             notes: vec![],
+            call_stack: vec![],
         }));
     }
 
@@ -2416,11 +2636,13 @@ pub(crate) fn resolve_type_expr_with_guard(
     node: &Arc<SurfaceNode>,
     env: &TypeEnv,
     state: &mut InferState,
+    constraints: &mut Vec<Constraint>,
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
     recursion_guard: &mut HashSet<String>,
     current_alias: &str,
     depth: usize,
+    type_params_scope: Option<&HashSet<String>>,
 ) -> Result<Type, TypeError> {
     const MAX_ALIAS_DEPTH: usize = 256;
     if depth >= MAX_ALIAS_DEPTH {
@@ -2431,6 +2653,7 @@ pub(crate) fn resolve_type_expr_with_guard(
             ),
             span: node.span.clone(),
             notes: vec![],
+            call_stack: vec![],
         }));
     }
 
@@ -2446,24 +2669,35 @@ pub(crate) fn resolve_type_expr_with_guard(
             recursion_guard,
             current_alias,
             depth,
+            type_params_scope,
         ),
         SurfaceExpression::Dict(entries) => resolve_type_dict_with_guard(
             entries,
             env,
             node.span.clone(),
             state,
+            constraints,
             ann_mapping,
             row_ann_mapping,
             recursion_guard,
             current_alias,
             depth,
+            type_params_scope,
         ),
         _ => {
             // For all other expr types, delegate to normal resolve_type_expr.
             // Most expr types (literals, Annotated, Call) don't recursively reference type aliases,
             // so the guard isn't needed. If we encounter cases where nested aliases cause issues,
             // we can expand this match to handle them explicitly.
-            resolve_type_expr(node, env, state, ann_mapping, row_ann_mapping)
+            resolve_type_expr(
+                node,
+                env,
+                state,
+                constraints,
+                ann_mapping,
+                row_ann_mapping,
+                type_params_scope,
+            )
         }
     }
 }
@@ -2475,11 +2709,13 @@ fn resolve_type_dict_with_guard(
     env: &TypeEnv,
     span: Span,
     state: &mut InferState,
+    constraints: &mut Vec<Constraint>,
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
     recursion_guard: &mut HashSet<String>,
     current_alias: &str,
     depth: usize,
+    type_params_scope: Option<&HashSet<String>>,
 ) -> Result<Type, TypeError> {
     // Handle type-stage keywords ([or ...], [all ...], [without ...]) with guard propagation.
     // Other dict forms (function types, parameterized aliases, record types, unions)
@@ -2495,6 +2731,7 @@ fn resolve_type_dict_with_guard(
                         message: "[or ...] requires at least one type argument".to_string(),
                         span,
                         notes: vec![],
+                        call_stack: vec![],
                     }));
                 }
                 let mut members = Vec::new();
@@ -2503,11 +2740,13 @@ fn resolve_type_dict_with_guard(
                         &entry.node.value,
                         env,
                         state,
+                        constraints,
                         ann_mapping,
                         row_ann_mapping,
                         recursion_guard,
                         current_alias,
                         depth,
+                        type_params_scope,
                     )?;
                     members.push(ty);
                 }
@@ -2519,6 +2758,7 @@ fn resolve_type_dict_with_guard(
                         message: "[all ...] requires at least one type argument".to_string(),
                         span,
                         notes: vec![],
+                        call_stack: vec![],
                     }));
                 }
                 let mut members = Vec::new();
@@ -2527,11 +2767,13 @@ fn resolve_type_dict_with_guard(
                         &entry.node.value,
                         env,
                         state,
+                        constraints,
                         ann_mapping,
                         row_ann_mapping,
                         recursion_guard,
                         current_alias,
                         depth,
+                        type_params_scope,
                     )?;
                     members.push(ty);
                 }
@@ -2543,17 +2785,20 @@ fn resolve_type_dict_with_guard(
                         message: "[without A] requires exactly one type argument".to_string(),
                         span,
                         notes: vec![],
+                        call_stack: vec![],
                     }));
                 }
                 let inner = resolve_type_expr_with_guard(
                     &entries[1].node.value,
                     env,
                     state,
+                    constraints,
                     ann_mapping,
                     row_ann_mapping,
                     recursion_guard,
                     current_alias,
                     depth,
+                    type_params_scope,
                 )?;
                 return Ok(Type::Negation(Box::new(inner)));
             }
@@ -2591,6 +2836,7 @@ fn resolve_type_dict_with_guard(
                             message: "type record keys must be bare words".to_string(),
                             span: k.span.clone(),
                             notes: vec![],
+                            call_stack: vec![],
                         }))
                     }
                 },
@@ -2601,8 +2847,10 @@ fn resolve_type_dict_with_guard(
                         env,
                         span,
                         state,
+                        constraints,
                         ann_mapping,
                         row_ann_mapping,
+                        type_params_scope,
                     );
                 }
             };
@@ -2610,11 +2858,13 @@ fn resolve_type_dict_with_guard(
                 &entry.node.value,
                 env,
                 state,
+                constraints,
                 ann_mapping,
                 row_ann_mapping,
                 recursion_guard,
                 current_alias,
                 depth,
+                type_params_scope,
             )?;
             fields.insert(key, ty);
         }
@@ -2665,15 +2915,26 @@ fn resolve_type_dict_with_guard(
     // For remaining positional-only cases (function types, [Seq T], [Map K V],
     // parameterized alias applications, and multi-type unions), delegate to the normal
     // resolver which has the full dispatch logic for those forms.
-    resolve_type_dict(entries, env, span, state, ann_mapping, row_ann_mapping)
+    resolve_type_dict(
+        entries,
+        env,
+        span,
+        state,
+        constraints,
+        ann_mapping,
+        row_ann_mapping,
+        type_params_scope,
+    )
 }
 
 pub(crate) fn resolve_type_expr(
     node: &Arc<SurfaceNode>,
     env: &TypeEnv,
     state: &mut InferState,
+    constraints: &mut Vec<Constraint>,
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
+    type_params_scope: Option<&HashSet<String>>,
 ) -> Result<Type, TypeError> {
     match &node.expr {
         // String literals in type position → Type::StringLiteral (tag-only enum variants).
@@ -2694,7 +2955,16 @@ pub(crate) fn resolve_type_expr(
             //      `[type [Option a] [Some a] None]`.
             //   3. For lowercase names, propagate the `resolve_type_name` error directly.
             let row_ref: Option<&HashMap<String, String>> = row_ann_mapping.as_ref().map(|m| &**m);
-            match resolve_type_name(name, env, node.span.clone(), state, ann_mapping, &row_ref) {
+            match resolve_type_name(
+                name,
+                env,
+                node.span.clone(),
+                state,
+                constraints,
+                ann_mapping,
+                &row_ref,
+                type_params_scope,
+            ) {
                 Ok(ty) => Ok(ty),
                 Err(e) if crate::eval::is_constructor_name(name) => {
                     // Unknown uppercase name: treat as a zero-payload nominal variant constructor.
@@ -2717,8 +2987,10 @@ pub(crate) fn resolve_type_expr(
             env,
             node.span.clone(),
             state,
+            constraints,
             ann_mapping,
             row_ann_mapping,
+            type_params_scope,
         ),
         SurfaceExpression::Annotated { name, annotation } => {
             if name == "Fn" {
@@ -2727,8 +2999,10 @@ pub(crate) fn resolve_type_expr(
                     env,
                     annotation.span.clone(),
                     state,
+                    constraints,
                     ann_mapping,
                     row_ann_mapping,
+                    type_params_scope,
                 )
             } else {
                 // For all other parameterized type annotations in type-expression position
@@ -2746,8 +3020,10 @@ pub(crate) fn resolve_type_expr(
                     env,
                     node.span.clone(),
                     state,
+                    constraints,
                     ann_mapping,
                     row_ann_mapping,
+                    type_params_scope,
                 )
             }
         }
@@ -2777,8 +3053,10 @@ pub(crate) fn resolve_type_expr(
                         env,
                         annotation.span.clone(),
                         state,
+                        constraints,
                         ann_mapping,
                         row_ann_mapping,
+                        type_params_scope,
                     )?;
                     // args[0] should be the parameter list (a Dict or another implied Call)
                     let mut params = Vec::new();
@@ -2802,8 +3080,10 @@ pub(crate) fn resolve_type_expr(
                                         &entry.node.value,
                                         env,
                                         state,
+                                        constraints,
                                         ann_mapping,
                                         row_ann_mapping,
+                                        type_params_scope,
                                     )?;
                                     params.push((param_name, param_ty));
                                 }
@@ -2819,8 +3099,10 @@ pub(crate) fn resolve_type_expr(
                                     inner_func,
                                     env,
                                     state,
+                                    constraints,
                                     ann_mapping,
                                     row_ann_mapping,
+                                    type_params_scope,
                                 )?;
                                 params.push((None, param_ty));
                                 for a in inner_args.iter() {
@@ -2828,8 +3110,10 @@ pub(crate) fn resolve_type_expr(
                                         a,
                                         env,
                                         state,
+                                        constraints,
                                         ann_mapping,
                                         row_ann_mapping,
+                                        type_params_scope,
                                     )?;
                                     params.push((None, param_ty));
                                 }
@@ -2840,8 +3124,10 @@ pub(crate) fn resolve_type_expr(
                                     param_list,
                                     env,
                                     state,
+                                    constraints,
                                     ann_mapping,
                                     row_ann_mapping,
+                                    type_params_scope,
                                 )?;
                                 params.push((None, param_ty));
                             }
@@ -2854,7 +3140,7 @@ pub(crate) fn resolve_type_expr(
                                 1 + args.len()
                             ),
                             span: node.span.clone(),
-                            notes: vec![],
+                            notes: vec![], call_stack: vec![],
                         }));
                     }
                     let required_count = params.len();
@@ -2883,11 +3169,20 @@ pub(crate) fn resolve_type_expr(
                             message: "[or ...] requires at least one type argument".to_string(),
                             span: node.span.clone(),
                             notes: vec![],
+                            call_stack: vec![],
                         }));
                     }
                     let mut members = Vec::new();
                     for arg in args.iter() {
-                        let ty = resolve_type_expr(arg, env, state, ann_mapping, row_ann_mapping)?;
+                        let ty = resolve_type_expr(
+                            arg,
+                            env,
+                            state,
+                            constraints,
+                            ann_mapping,
+                            row_ann_mapping,
+                            type_params_scope,
+                        )?;
                         members.push(ty);
                     }
                     return Ok(Type::normalize_union(members));
@@ -2898,11 +3193,20 @@ pub(crate) fn resolve_type_expr(
                             message: "[all ...] requires at least one type argument".to_string(),
                             span: node.span.clone(),
                             notes: vec![],
+                            call_stack: vec![],
                         }));
                     }
                     let mut members = Vec::new();
                     for arg in args.iter() {
-                        let ty = resolve_type_expr(arg, env, state, ann_mapping, row_ann_mapping)?;
+                        let ty = resolve_type_expr(
+                            arg,
+                            env,
+                            state,
+                            constraints,
+                            ann_mapping,
+                            row_ann_mapping,
+                            type_params_scope,
+                        )?;
                         members.push(ty);
                     }
                     return Ok(Type::normalize_intersection(members));
@@ -2912,10 +3216,18 @@ pub(crate) fn resolve_type_expr(
                             message: "[without A] requires exactly one type argument".to_string(),
                             span: node.span.clone(),
                             notes: vec![],
+                            call_stack: vec![],
                         }));
                     }
-                    let inner =
-                        resolve_type_expr(&args[0], env, state, ann_mapping, row_ann_mapping)?;
+                    let inner = resolve_type_expr(
+                        &args[0],
+                        env,
+                        state,
+                        constraints,
+                        ann_mapping,
+                        row_ann_mapping,
+                        type_params_scope,
+                    )?;
                     return Ok(Type::Negation(Box::new(inner)));
                 }
             }
@@ -2935,8 +3247,10 @@ pub(crate) fn resolve_type_expr(
                                 arg_node,
                                 env,
                                 state,
+                                constraints,
                                 ann_mapping,
                                 row_ann_mapping,
+                                type_params_scope,
                             )?;
                             result = Type::App(Box::new(result), Box::new(arg));
                         }
@@ -2955,8 +3269,10 @@ pub(crate) fn resolve_type_expr(
                             arg,
                             env,
                             state,
+                            constraints,
                             ann_mapping,
                             row_ann_mapping,
+                            type_params_scope,
                         )?);
                     }
 
@@ -2971,6 +3287,7 @@ pub(crate) fn resolve_type_expr(
                             ),
                             span: node.span.clone(),
                             notes: vec![],
+                            call_stack: vec![],
                         }));
                     }
 
@@ -2986,7 +3303,7 @@ pub(crate) fn resolve_type_expr(
                 let is_builtin = state
                     .tycon_env
                     .get(name)
-                    .map_or(false, |def| def.builtin_type.is_some());
+                    .is_some_and(|def| def.builtin_type.is_some());
                 if crate::eval::is_constructor_name(name) && !is_builtin {
                     // This is a nominal variant constructor with named fields.
                     // args is empty, named_args contains the field types.
@@ -2998,8 +3315,10 @@ pub(crate) fn resolve_type_expr(
                                 &named_arg.node.value,
                                 env,
                                 state,
+                                constraints,
                                 ann_mapping,
                                 row_ann_mapping,
+                                type_params_scope,
                             )?;
                             fields_map.insert(named_arg.node.name.clone(), field_ty);
                         }
@@ -3013,8 +3332,15 @@ pub(crate) fn resolve_type_expr(
                     } else if args.len() == 1 {
                         // Single positional payload: [Some a] → NominalVariant("Some", { "0": a })
                         // Use integer string key "0" for the single positional payload field.
-                        let payload_ty =
-                            resolve_type_expr(&args[0], env, state, ann_mapping, row_ann_mapping)?;
+                        let payload_ty = resolve_type_expr(
+                            &args[0],
+                            env,
+                            state,
+                            constraints,
+                            ann_mapping,
+                            row_ann_mapping,
+                            type_params_scope,
+                        )?;
                         let mut fields_map = BTreeMap::new();
                         fields_map.insert("0".to_string(), payload_ty);
                         return Ok(Type::NominalVariant {
@@ -3040,7 +3366,7 @@ pub(crate) fn resolve_type_expr(
                                 name
                             ),
                             span: node.span.clone(),
-                            notes: vec![],
+                            notes: vec![], call_stack: vec![],
                         }));
                     }
                 }
@@ -3072,13 +3398,22 @@ pub(crate) fn resolve_type_expr(
                         env,
                         func.span.clone(),
                         state,
+                        constraints,
                         ann_mapping,
                         &row_ann_mapping.as_ref().map(|m| &**m),
+                        type_params_scope,
                     )?;
                     let mut members = vec![head_ty];
                     for arg in args.iter() {
-                        let member_ty =
-                            resolve_type_expr(arg, env, state, ann_mapping, row_ann_mapping)?;
+                        let member_ty = resolve_type_expr(
+                            arg,
+                            env,
+                            state,
+                            constraints,
+                            ann_mapping,
+                            row_ann_mapping,
+                            type_params_scope,
+                        )?;
                         members.push(member_ty);
                     }
                     return Ok(Type::normalize_union(members));
@@ -3089,31 +3424,38 @@ pub(crate) fn resolve_type_expr(
                 message: format!("invalid type expression in annotation: {:?}", node.expr),
                 span: node.span.clone(),
                 notes: vec![],
+                call_stack: vec![],
             }))
         }
         _ => Err(TypeErrorTyped::Generic(GenericTypeError {
             message: format!("invalid type expression in annotation: {:?}", node.expr),
             span: node.span.clone(),
             notes: vec![],
+            call_stack: vec![],
         })),
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn resolve_type_dict(
     entries: &[Spanned<SurfaceEntry>],
     env: &TypeEnv,
     span: Span,
     state: &mut InferState,
+    constraints: &mut Vec<Constraint>,
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
+    type_params_scope: Option<&HashSet<String>>,
 ) -> Result<Type, TypeError> {
     if let Some(fn_type) = try_resolve_fn_type_expr(
         entries,
         env,
         span.clone(),
         state,
+        constraints,
         ann_mapping,
         row_ann_mapping,
+        type_params_scope,
     )? {
         return Ok(fn_type);
     }
@@ -3147,6 +3489,7 @@ pub(crate) fn resolve_type_dict(
                                     ),
                                     span,
                                     notes: vec![],
+                                    call_stack: vec![],
                                 }));
                             }
                             let mut args = Vec::with_capacity(arity);
@@ -3155,8 +3498,10 @@ pub(crate) fn resolve_type_dict(
                                     &entry.node.value,
                                     env,
                                     state,
+                                    constraints,
                                     ann_mapping,
                                     row_ann_mapping,
+                                    type_params_scope,
                                 )?;
                                 args.push(arg);
                             }
@@ -3204,8 +3549,10 @@ pub(crate) fn resolve_type_dict(
                                         &e.node.value,
                                         env,
                                         state,
+                                        constraints,
                                         ann_mapping,
                                         row_ann_mapping,
+                                        type_params_scope,
                                     )
                                 })
                                 .collect();
@@ -3222,7 +3569,7 @@ pub(crate) fn resolve_type_dict(
                                         args.len()
                                     ),
                                     span,
-                                    notes: vec![],
+                                    notes: vec![], call_stack: vec![],
                                 }));
                             }
                             let a_type = args.into_iter().next().unwrap();
@@ -3235,6 +3582,7 @@ pub(crate) fn resolve_type_dict(
                                     ),
                                     span,
                                     notes: vec![],
+                                    call_stack: vec![],
                                 }));
                             }
                             return Ok(Type::App(
@@ -3269,14 +3617,17 @@ pub(crate) fn resolve_type_dict(
                                         ),
                                         span: entry.span.clone(),
                                         notes: vec![],
+                                        call_stack: vec![],
                                     }));
                                 }
                                 type_args.push(resolve_type_expr(
                                     &entry.node.value,
                                     env,
                                     state,
+                                    constraints,
                                     ann_mapping,
                                     row_ann_mapping,
+                                    type_params_scope,
                                 )?);
                             }
                             if type_args.len() != alias.params.len() {
@@ -3289,6 +3640,7 @@ pub(crate) fn resolve_type_dict(
                                     ),
                                     span,
                                     notes: vec![],
+                                    call_stack: vec![],
                                 }));
                             }
                             return instantiate_type_alias(&alias, &type_args, state);
@@ -3321,6 +3673,7 @@ pub(crate) fn resolve_type_dict(
                         message: "[or ...] requires at least one type argument".to_string(),
                         span,
                         notes: vec![],
+                        call_stack: vec![],
                     }));
                 }
                 let mut members = Vec::new();
@@ -3329,8 +3682,10 @@ pub(crate) fn resolve_type_dict(
                         &entry.node.value,
                         env,
                         state,
+                        constraints,
                         ann_mapping,
                         row_ann_mapping,
+                        type_params_scope,
                     )?;
                     members.push(ty);
                 }
@@ -3342,6 +3697,7 @@ pub(crate) fn resolve_type_dict(
                         message: "[all ...] requires at least one type argument".to_string(),
                         span,
                         notes: vec![],
+                        call_stack: vec![],
                     }));
                 }
                 let mut members = Vec::new();
@@ -3350,8 +3706,10 @@ pub(crate) fn resolve_type_dict(
                         &entry.node.value,
                         env,
                         state,
+                        constraints,
                         ann_mapping,
                         row_ann_mapping,
+                        type_params_scope,
                     )?;
                     members.push(ty);
                 }
@@ -3363,14 +3721,17 @@ pub(crate) fn resolve_type_dict(
                         message: "[without A] requires exactly one type argument".to_string(),
                         span,
                         notes: vec![],
+                        call_stack: vec![],
                     }));
                 }
                 let inner = resolve_type_expr(
                     &entries[1].node.value,
                     env,
                     state,
+                    constraints,
                     ann_mapping,
                     row_ann_mapping,
+                    type_params_scope,
                 )?;
                 return Ok(Type::Negation(Box::new(inner)));
             }
@@ -3411,14 +3772,23 @@ pub(crate) fn resolve_type_dict(
                     let is_builtin_type = state
                         .tycon_env
                         .get(&tag)
-                        .map_or(false, |def| def.builtin_type.is_some());
+                        .is_some_and(|def| def.builtin_type.is_some());
                     if is_builtin_type && entries.len() == 1 && first.node.key.is_none() {
                         // Single positional entry that is a builtin type name: [Int] → Type::Int.
                         // This handles annotations like @[Int] which should resolve to Int,
                         // not to NominalVariant { tag: "Int" }.
                         let row_ref: Option<&HashMap<String, String>> =
                             row_ann_mapping.as_ref().map(|m| &**m);
-                        return resolve_type_name(&tag, env, span, state, ann_mapping, &row_ref);
+                        return resolve_type_name(
+                            &tag,
+                            env,
+                            span,
+                            state,
+                            constraints,
+                            ann_mapping,
+                            &row_ref,
+                            type_params_scope,
+                        );
                     }
                     if crate::eval::is_constructor_name(&tag) && !is_builtin_type {
                         // Case 1: Pure positional — [Constructor] or [Constructor PayloadType]
@@ -3440,8 +3810,10 @@ pub(crate) fn resolve_type_dict(
                                     &entries[1].node.value,
                                     env,
                                     state,
+                                    constraints,
                                     ann_mapping,
                                     row_ann_mapping,
+                                    type_params_scope,
                                 )?;
                                 // Unnamed payload: create record with single field "0"
                                 let mut fields = BTreeMap::new();
@@ -3480,15 +3852,17 @@ pub(crate) fn resolve_type_dict(
                                             _ => return Err(TypeErrorTyped::Generic(GenericTypeError {
                                                 message: "nominal variant field names must be bare words".to_string(),
                                                 span: k.span.clone(),
-                                                notes: vec![],
+                                                notes: vec![], call_stack: vec![],
                                             })),
                                         };
                                         let field_ty = resolve_type_expr(
                                             &field_entry.node.value,
                                             env,
                                             state,
+                                            constraints,
                                             ann_mapping,
                                             row_ann_mapping,
+                                            type_params_scope,
                                         )?;
                                         variant_fields.insert(field_name, field_ty);
                                     }
@@ -3496,7 +3870,7 @@ pub(crate) fn resolve_type_dict(
                                         return Err(TypeErrorTyped::Generic(GenericTypeError {
                                             message: "nominal variant constructor with named fields requires all fields after the constructor tag to be keyed (field: Type)".to_string(),
                                             span: field_entry.span.clone(),
-                                            notes: vec![],
+                                            notes: vec![], call_stack: vec![],
                                         }));
                                     }
                                 }
@@ -3529,8 +3903,10 @@ pub(crate) fn resolve_type_dict(
                     &first.node.value,
                     env,
                     state,
+                    constraints,
                     ann_mapping,
                     row_ann_mapping,
+                    type_params_scope,
                 );
             }
         }
@@ -3557,8 +3933,15 @@ pub(crate) fn resolve_type_dict(
         {
             let mut members = Vec::new();
             for entry in &positional_entries {
-                let member_ty =
-                    resolve_type_expr(&entry.node.value, env, state, ann_mapping, row_ann_mapping)?;
+                let member_ty = resolve_type_expr(
+                    &entry.node.value,
+                    env,
+                    state,
+                    constraints,
+                    ann_mapping,
+                    row_ann_mapping,
+                    type_params_scope,
+                )?;
                 members.push(member_ty);
             }
             return Ok(Type::normalize_union(members));
@@ -3577,8 +3960,15 @@ pub(crate) fn resolve_type_dict(
         let mut all_ok = true;
         for entry in entries {
             if entry.node.key.is_none() {
-                match resolve_type_expr(&entry.node.value, env, state, ann_mapping, row_ann_mapping)
-                {
+                match resolve_type_expr(
+                    &entry.node.value,
+                    env,
+                    state,
+                    constraints,
+                    ann_mapping,
+                    row_ann_mapping,
+                    type_params_scope,
+                ) {
                     Ok(ty) => members.push(ty),
                     Err(_) => {
                         all_ok = false;
@@ -3626,11 +4016,18 @@ pub(crate) fn resolve_type_dict(
                 return Err(TypeErrorTyped::Generic(GenericTypeError {
                     message: "duplicate uniform-field sentinel `_` in row type annotation — at most one `_` allowed per row".to_string(),
                     span: entry.span.clone(),
-                    notes: vec![],
+                    notes: vec![], call_stack: vec![],
                 }));
             }
-            let value_ty =
-                resolve_type_expr(&entry.node.value, env, state, ann_mapping, row_ann_mapping)?;
+            let value_ty = resolve_type_expr(
+                &entry.node.value,
+                env,
+                state,
+                constraints,
+                ann_mapping,
+                row_ann_mapping,
+                type_params_scope,
+            )?;
             // Check for typed-key form `_@K` vs plain `_`
             let key_ty = match entry.node.key.as_ref().map(|k| &k.expr) {
                 Some(SurfaceExpression::Annotated { annotation, .. }) => {
@@ -3640,8 +4037,10 @@ pub(crate) fn resolve_type_dict(
                         env,
                         annotation.span.clone(),
                         state,
+                        constraints,
                         ann_mapping,
                         row_ann_mapping,
+                        type_params_scope,
                     )?;
                     Some(Box::new(key_t))
                 }
@@ -3665,6 +4064,7 @@ pub(crate) fn resolve_type_dict(
                         message: "type record keys must be bare words".to_string(),
                         span: k.span.clone(),
                         notes: vec![],
+                        call_stack: vec![],
                     }))
                 }
             },
@@ -3673,10 +4073,19 @@ pub(crate) fn resolve_type_dict(
                     message: "auto-indexed entries not supported in type expressions".to_string(),
                     span: entry.span.clone(),
                     notes: vec![],
+                    call_stack: vec![],
                 }))
             }
         };
-        let ty = resolve_type_expr(&entry.node.value, env, state, ann_mapping, row_ann_mapping)?;
+        let ty = resolve_type_expr(
+            &entry.node.value,
+            env,
+            state,
+            constraints,
+            ann_mapping,
+            row_ann_mapping,
+            type_params_scope,
+        )?;
         fields.insert(key, ty);
     }
 
@@ -4230,6 +4639,7 @@ pub(crate) fn eval_type_stage_value(
                     .to_string(),
                 span: origin_span.clone(),
                 notes: vec![],
+                call_stack: vec![],
             })
         })?;
 
@@ -4242,6 +4652,7 @@ pub(crate) fn eval_type_stage_value(
                 message: format!("type-stage eval: cannot open ambient dir: {e}"),
                 span: origin_span.clone(),
                 notes: vec![],
+                call_stack: vec![],
             })
         })?;
     let ctx = crate::eval::EvalContext::new_empty(base_dir, type_stage_env, false);
@@ -4284,6 +4695,7 @@ pub(crate) fn eval_type_stage_value(
                     message: format!("type-stage function call failed: {e}"),
                     span: origin_span.clone(),
                     notes: vec![],
+                    call_stack: vec![],
                 })
             })?
         }
@@ -4293,6 +4705,7 @@ pub(crate) fn eval_type_stage_value(
                 message: "eval_type_stage_value: argument is not a function value".to_string(),
                 span: origin_span,
                 notes: vec![],
+                call_stack: vec![],
             }))
         }
     };
@@ -4303,6 +4716,7 @@ pub(crate) fn eval_type_stage_value(
             message: format!("type-stage materialization failed: {e}"),
             span: origin_span.clone(),
             notes: vec![],
+            call_stack: vec![],
         })
     })?;
 
@@ -4315,6 +4729,7 @@ pub(crate) fn eval_type_stage_value(
             ),
             span: origin_span,
             notes: vec![],
+            call_stack: vec![],
         })
     })
 }
@@ -4385,6 +4800,7 @@ pub(crate) fn eval_type_stage_expr(
                     .to_string(),
                 span: node_span.clone(),
                 notes: vec![],
+                call_stack: vec![],
             })
         })?;
 
@@ -4397,6 +4813,7 @@ pub(crate) fn eval_type_stage_expr(
                 message: format!("type-stage eval: cannot open ambient dir: {e}"),
                 span: node_span.clone(),
                 notes: vec![],
+                call_stack: vec![],
             })
         })?;
     let ctx = crate::eval::EvalContext::new_empty(base_dir, Arc::clone(&type_stage_env), false);
@@ -4423,6 +4840,7 @@ pub(crate) fn eval_type_stage_expr(
                 message: format!("type-stage expression evaluation failed: {e}"),
                 span: node_span.clone(),
                 notes: vec![],
+                call_stack: vec![],
             })
         })?;
 
@@ -4475,6 +4893,7 @@ pub(crate) fn eval_type_stage_expr(
             ),
             span: node_span,
             notes: vec![],
+            call_stack: vec![],
         })
     })
 }
@@ -5006,13 +5425,16 @@ fn collect_app_spine(ty: &Type) -> (Option<&str>, Vec<&Type>) {
 /// Detect `[Fn@Return [ParamTypes]]` -- a Dict with two auto-indexed entries
 /// where the first is `Annotated { name: "Fn", ... }` and the second is a Dict
 /// containing the parameter type list.
+#[allow(clippy::too_many_arguments)]
 fn try_resolve_fn_type_expr(
     entries: &[Spanned<SurfaceEntry>],
     env: &TypeEnv,
     span: Span,
     state: &mut InferState,
+    constraints: &mut Vec<Constraint>,
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
+    type_params_scope: Option<&HashSet<String>>,
 ) -> Result<Option<Type>, TypeError> {
     let first = match entries.first() {
         Some(e) if e.node.key.is_none() => e,
@@ -5034,6 +5456,7 @@ fn try_resolve_fn_type_expr(
             ),
             span,
             notes: vec![],
+            call_stack: vec![],
         }));
     }
 
@@ -5043,11 +5466,20 @@ fn try_resolve_fn_type_expr(
             message: "function type parameter list must be auto-indexed".to_string(),
             span: second.span.clone(),
             notes: vec![],
+            call_stack: vec![],
         }));
     }
 
-    let ret =
-        resolve_annotation_as_type(ann_node, env, ann_span, state, ann_mapping, row_ann_mapping)?;
+    let ret = resolve_annotation_as_type(
+        ann_node,
+        env,
+        ann_span,
+        state,
+        constraints,
+        ann_mapping,
+        row_ann_mapping,
+        type_params_scope,
+    )?;
 
     // The parameter list can be:
     // - SurfaceExpression::Dict(entries) — standard syntax: `[$a $b]` or `[$Number]`
@@ -5068,8 +5500,15 @@ fn try_resolve_fn_type_expr(
                 } else {
                     None
                 };
-                let param_ty =
-                    resolve_type_expr(&entry.node.value, env, state, ann_mapping, row_ann_mapping)?;
+                let param_ty = resolve_type_expr(
+                    &entry.node.value,
+                    env,
+                    state,
+                    constraints,
+                    ann_mapping,
+                    row_ann_mapping,
+                    type_params_scope,
+                )?;
                 params.push((param_name, param_ty));
             }
         }
@@ -5081,10 +5520,26 @@ fn try_resolve_fn_type_expr(
         } => {
             // New syntax: [TypeA TypeB] parses as an implied call.
             // Treat func as the first param, args as remaining params.
-            let param_ty = resolve_type_expr(func, env, state, ann_mapping, row_ann_mapping)?;
+            let param_ty = resolve_type_expr(
+                func,
+                env,
+                state,
+                constraints,
+                ann_mapping,
+                row_ann_mapping,
+                type_params_scope,
+            )?;
             params.push((None, param_ty));
             for arg in args.iter() {
-                let param_ty = resolve_type_expr(arg, env, state, ann_mapping, row_ann_mapping)?;
+                let param_ty = resolve_type_expr(
+                    arg,
+                    env,
+                    state,
+                    constraints,
+                    ann_mapping,
+                    row_ann_mapping,
+                    type_params_scope,
+                )?;
                 params.push((None, param_ty));
             }
         }
@@ -5093,6 +5548,7 @@ fn try_resolve_fn_type_expr(
                 message: "function type parameter list must be a bracket expression".to_string(),
                 span: second.node.value.span.clone(),
                 notes: vec![],
+                call_stack: vec![],
             }))
         }
     }

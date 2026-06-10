@@ -8,14 +8,5 @@
   err-seq: [seq 10 [seq 20 [seq trap []]]]
 ]
 [result: [collect [take 2 err-seq]]]
-=== error
-[E080] live binding past n must not be forced (defined at stdlib/prelude.llt:2496:28-2496:47)
-  --> stdlib/prelude.llt:2496:28-2496:47
-   |
-  2496 | """]: [fn [let msg@String] [builtin-raise msg]]
-       |                            ^^^^^^^^^^^^^^^^^^^
-  in [builtin-raise ...] at stdlib/prelude.llt:2496:28-2496:47
-   |
-  2496 | """]: [fn [let msg@String] [builtin-raise msg]]
-       |                            ^^^^^^^^^^^^^^^^^^^
-  in materialized at 5:1-8:2
+=== out
+Dict({"result": Dict({0: Int(10), 1: Int(20)})})

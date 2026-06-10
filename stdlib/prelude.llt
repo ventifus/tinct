@@ -3919,6 +3919,18 @@ tmpl-expand: [fn [let template-str args]
       [nodes: []  skip: false  is-first: true]
       [split "$" template-str]]]]
 
+# Build the args dict for tmpl-expand from a collected parts dict.
+# args[0] = template AST node, args[1..] = expression part AST nodes.
+# Named helper because [[fn [let parts-dict] ...] [collect parts]] is NOT a function call
+# in tinct — a bracket expression in head position is a positional dict entry, so that
+# would produce a two-entry dict {0: <fn>, 1: <arg>}. To call a function expression
+# inline, use [call [fn ...] arg]. Here we just name the function instead.
+tmpl-build-args: [fn [let template parts-dict]
+  [reduce
+    [fn [let acc i] [merge acc [make-entry [+ i 1] [get i parts-dict]]]]
+    [0: template]
+    [range 0 [length parts-dict]]]]
+
 # Wrap the collected AST nodes in a [str ...] call AST Variant.
 # Uses builtin-variant "Call" (same as do-call-1/do-call-2 helpers) to produce
 # Value::Expression directly, bypassing the dict_to_surface_node conversion path.
@@ -4061,14 +4073,9 @@ do-desugar-inferred: [fn [let steps]
 
 # tmpl macro transformer: string interpolation i"...$var..." syntax
 [macro tmpl [let template ...parts]
-  [[fn [let parts-dict]
-    [tmpl-expand
-      template.value
-      [reduce
-        [fn [let acc i] [merge acc [make-entry [+ i 1] [get i parts-dict]]]]
-        [0: template]
-        [range 0 [length parts-dict]]]]]
-   [collect parts]]]
+  [tmpl-expand
+    template.value
+    [tmpl-build-args template [collect parts]]]]
 
 # do macro transformer: monadic do-notation desugaring.
 #

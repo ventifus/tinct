@@ -1,6 +1,3 @@
 [Fn@Number [Number Number]]
 === out
 [Fn@Number  [Number Number]]
-
-=== warn
-[UndefinedVariable] undefined variable: Number

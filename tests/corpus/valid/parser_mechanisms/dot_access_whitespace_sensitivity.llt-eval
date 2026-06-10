@@ -4,6 +4,3 @@
 [x: config.host]
 === out
 ["x": config.host]
-
-=== warn
-[UndefinedVariable] undefined variable: config

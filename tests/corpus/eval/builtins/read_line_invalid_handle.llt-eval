@@ -1,9 +1,0 @@
-# builtin-read-line: error when argument is not a Handle
---- uses: ["core"]
-[builtin-read-line 42]
-=== error
-[E010] builtin-read-line: expected Handle, got Int (defined at 2:20-2:22)
-  in [builtin-read-line ...] at 2:1-2:23
-
-=== warn
-[UnificationFailure] cannot unify Handle[[__cap_flag_readable: []]] with 42

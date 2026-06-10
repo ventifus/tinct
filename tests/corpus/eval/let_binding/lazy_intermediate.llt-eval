@@ -1,16 +1,6 @@
-# Sequential lazy let* semantics: unused bindings in fn bodies remain lazy.
-# Dead bindings are never forced — errors only fire when accessed.
+# Lazy evaluation: unused bindings in fn bodies are never forced.
+# The raise in 'unused' never fires because it is never accessed.
 [test: [fn [let x] [unused: [raise "dead binding"]] [+ x 1]]]
 [test 41]
-=== error
-[E080] dead binding (defined at stdlib/prelude.llt:2496:28-2496:47)
-  --> stdlib/prelude.llt:2496:28-2496:47
-   |
-  2496 | """]: [fn [let msg@String] [builtin-raise msg]]
-       |                            ^^^^^^^^^^^^^^^^^^^
-  in [builtin-raise ...] at stdlib/prelude.llt:2496:28-2496:47
-   |
-  2496 | """]: [fn [let msg@String] [builtin-raise msg]]
-       |                            ^^^^^^^^^^^^^^^^^^^
-  in materialized at 2:20-2:52
-  in [test ...] at 3:1-3:10
+=== out
+Int(42)

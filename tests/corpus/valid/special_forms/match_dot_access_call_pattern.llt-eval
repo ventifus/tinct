@@ -3,6 +3,3 @@
     _: "error"]
 === out
 [match r [Result.Ok v] v _ "error"]
-
-=== warn
-[UndefinedVariable] undefined variable: r

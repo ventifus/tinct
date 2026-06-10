@@ -5,6 +5,3 @@
   _: "not-int"]
 === out
 String("not-int")
-
-=== warn
-[UndefinedVariable] undefined variable: x

@@ -10,6 +10,3 @@
 
 === out
 Bool(true)
-
-=== warn
-[UndefinedVariable] undefined variable: has-cap?

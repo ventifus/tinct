@@ -17,6 +17,3 @@
   2984 |         [builtin-range start]]]
        | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   in [range ...] at 1:1-1:16
-
-=== warn
-[UnificationFailure] cannot unify Int with "hello"

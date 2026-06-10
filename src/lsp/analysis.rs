@@ -1436,7 +1436,7 @@ pub fn diagnostics_for(
                         crate::typecheck::typecheck_surface_program(&program, seeded_env);
 
                     for err in type_errors {
-                        let mut diag = type_error_to_diagnostic(&err, &block.code);
+                        let mut diag = type_error_to_diagnostic(&err, &block.code, uri);
                         // Map span from block-local to markdown coordinates
                         let md_span = crate::literate::block_span_to_md(
                             &doc.literate_blocks,
@@ -1481,7 +1481,7 @@ pub fn diagnostics_for(
 
     // Type errors -> Warning severity (advisory)
     for err in &doc.type_errors {
-        diagnostics.push(type_error_to_diagnostic(err, source));
+        diagnostics.push(type_error_to_diagnostic(err, source, uri));
     }
 
     // Type quality diagnostics -> severity per DiagnosticLevel (Info/Warn/Err)
@@ -1532,11 +1532,67 @@ fn parse_error_to_diagnostic(err: &ParseError, source: &str) -> Diagnostic {
     }
 }
 
-fn type_error_to_diagnostic(err: &TypeError, source: &str) -> Diagnostic {
+fn type_error_to_diagnostic(err: &TypeError, source: &str, uri: &Uri) -> Diagnostic {
     let range = llt_span_to_lsp_range(err.span(), source);
 
-    // TypeError carries one span (the annotation site), so related_information
-    // is always None — the type checker does not yet track separate definition/use sites.
+    // Populate related_information from the call-chain context stack (B-374, B-379).
+    // Each TypeSpanFrame in call_stack() represents one enclosing call site.
+    // This lets editor users click through the chain:
+    //   primary diagnostic → error site (e.g. type mismatch in argument)
+    //   related[i]         → call site i ("in call to `map`")
+    let related_information = {
+        let mut related: Vec<DiagnosticRelatedInformation> = Vec::new();
+        for frame in err.call_stack() {
+            // Skip synthetic (origin) frames — byte offsets 0..0 indicate
+            // stdlib-internal or synthetic call sites not meaningful to the user.
+            if frame.span.start.offset == 0 && frame.span.end.offset == 0 {
+                continue;
+            }
+            // Use embedded source from the frame's span if available (e.g. prelude.llt);
+            // otherwise use the current document's source.
+            let frame_source = frame
+                .span
+                .file
+                .as_ref()
+                .map(|sf| sf.content.as_ref())
+                .unwrap_or(source);
+            let frame_range = llt_span_to_lsp_range(&frame.span, frame_source);
+            let snippet = render_span_snippet(frame_source, frame.span.clone())
+                .map(|s| format!("\n{s}"))
+                .unwrap_or_default();
+            // For cross-file frames, we need a URI for the other file.  When the
+            // frame has an embedded SourceFile with a path, construct a file URI.
+            // When no file is available, fall back to the current document URI.
+            let frame_uri = if let Some(ref sf) = frame.span.file {
+                // Best-effort: convert the file path to a file:// URI.
+                // If the path is already a URI, parse it directly.
+                let path = sf.path.as_ref();
+                if path.starts_with("file://") {
+                    path.parse::<Uri>().unwrap_or_else(|_| uri.clone())
+                } else {
+                    // Construct file URI from an absolute path.
+                    format!("file://{path}")
+                        .parse::<Uri>()
+                        .unwrap_or_else(|_| uri.clone())
+                }
+            } else {
+                uri.clone()
+            };
+            related.push(DiagnosticRelatedInformation {
+                location: Location {
+                    uri: frame_uri,
+                    range: frame_range,
+                },
+                message: format!("{}{snippet}", frame.label),
+            });
+        }
+        if related.is_empty() {
+            None
+        } else {
+            Some(related)
+        }
+    };
+
     Diagnostic {
         range,
         severity: Some(DiagnosticSeverity::WARNING),
@@ -1544,7 +1600,7 @@ fn type_error_to_diagnostic(err: &TypeError, source: &str) -> Diagnostic {
         code_description: None,
         source: Some("tinct-typecheck".to_string()),
         message: err.message(),
-        related_information: None,
+        related_information,
         tags: None,
         data: None,
     }

@@ -3,6 +3,3 @@
 [upper "café"]
 === out
 String("CAFÉ")
-
-=== warn
-[UndefinedVariable] undefined variable: upper

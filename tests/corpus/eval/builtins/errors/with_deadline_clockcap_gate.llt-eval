@@ -6,7 +6,3 @@
 === error
 [E010] type mismatch: expected ClockCap, got Int (defined at 4:1-4:50)
   in [builtin-with-deadline ...] at 4:1-4:50
-
-=== warn
-[UnificationFailure] cannot unify ClockCap with 42
-[UnificationFailure] cannot unify Timestamp with 1000

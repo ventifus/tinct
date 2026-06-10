@@ -4,11 +4,64 @@
 //! enabling pattern matching, programmatic introspection, and IDE integration
 //! without string-parsing. The `GenericTypeError` variant serves as a migration
 //! escape hatch for errors not yet migrated to typed variants.
+//!
+//! ## Call-chain context (B-374, B-379)
+//!
+//! Every `TypeErrorTyped` carries a `call_stack: Vec<TypeSpanFrame>` that records
+//! the chain of call sites that led to the error.  Each frame is a label
+//! (e.g. `"in call to \`map\`"`) paired with the call-site [`Span`].
+//!
+//! Frames are pushed **outward** as errors bubble up through `check_call` and
+//! `check_call_with_scheme`.  The innermost call site is at index 0; the
+//! outermost is last.  `format_type_error` renders the stack below the primary
+//! error snippet as:
+//!
+//! ```text
+//!   = note: in call to `map`
+//!    --> src/main.llt:10:5
+//! ```
+//!
+//! This also fixes B-379: when an error originates inside a macro expansion or
+//! prelude function (whose span byte-offsets belong to prelude.llt), the
+//! call-site frame correctly identifies the user's source location.
 
 use std::fmt;
 
 use crate::ast::Span;
 use crate::type_def::{Kind, Type};
+
+// ────────────────────────────────────────────────────────────────────────────────
+// TypeSpanFrame — a single call-chain context frame
+// ────────────────────────────────────────────────────────────────────────────────
+
+/// A single frame in the type-error call-chain context stack.
+///
+/// `label` is a human-readable description of the call site,
+/// e.g. `"in call to \`map\`"` or `"in call to anonymous function"`.
+/// `span` is the source location of the call expression (the entire `[f arg ...]`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypeSpanFrame {
+    pub label: String,
+    pub span: Span,
+}
+
+impl TypeSpanFrame {
+    /// Construct a frame for a named function call.
+    pub fn call(name: &str, span: Span) -> Self {
+        TypeSpanFrame {
+            label: format!("in call to `{name}`"),
+            span,
+        }
+    }
+
+    /// Construct a frame for an anonymous (non-VarRef) call.
+    pub fn call_anon(span: Span) -> Self {
+        TypeSpanFrame {
+            label: "in call to anonymous function".to_string(),
+            span,
+        }
+    }
+}
 
 // ────────────────────────────────────────────────────────────────────────────────
 // Per-error structs
@@ -20,6 +73,7 @@ pub struct ArityMismatch {
     pub got: usize,
     pub span: Span,
     pub notes: Vec<String>,
+    pub call_stack: Vec<TypeSpanFrame>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -27,6 +81,7 @@ pub struct UndefinedVariable {
     pub name: String,
     pub span: Span,
     pub notes: Vec<String>,
+    pub call_stack: Vec<TypeSpanFrame>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -34,6 +89,7 @@ pub struct UndefinedType {
     pub name: String,
     pub span: Span,
     pub notes: Vec<String>,
+    pub call_stack: Vec<TypeSpanFrame>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -42,6 +98,7 @@ pub struct UnificationFailure {
     pub got: Type,
     pub span: Span,
     pub notes: Vec<String>,
+    pub call_stack: Vec<TypeSpanFrame>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -50,6 +107,7 @@ pub struct FieldNotFound {
     pub record_type: Type,
     pub span: Span,
     pub notes: Vec<String>,
+    pub call_stack: Vec<TypeSpanFrame>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -57,6 +115,7 @@ pub struct NotARecord {
     pub actual: Type,
     pub span: Span,
     pub notes: Vec<String>,
+    pub call_stack: Vec<TypeSpanFrame>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -64,6 +123,7 @@ pub struct NotAFunction {
     pub actual: Type,
     pub span: Span,
     pub notes: Vec<String>,
+    pub call_stack: Vec<TypeSpanFrame>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -72,6 +132,7 @@ pub struct TypeAssertFailed {
     pub actual: Type,
     pub span: Span,
     pub notes: Vec<String>,
+    pub call_stack: Vec<TypeSpanFrame>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -80,30 +141,35 @@ pub struct NonExhaustiveMatch {
     pub missing: Vec<String>,
     pub span: Span,
     pub notes: Vec<String>,
+    pub call_stack: Vec<TypeSpanFrame>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct OverlappingInstancePatterns {
     pub span: Span,
     pub notes: Vec<String>,
+    pub call_stack: Vec<TypeSpanFrame>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConsistencyViolation {
     pub span: Span,
     pub notes: Vec<String>,
+    pub call_stack: Vec<TypeSpanFrame>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CoverageViolation {
     pub span: Span,
     pub notes: Vec<String>,
+    pub call_stack: Vec<TypeSpanFrame>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct InstanceContainsUnknown {
     pub span: Span,
     pub notes: Vec<String>,
+    pub call_stack: Vec<TypeSpanFrame>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -112,6 +178,7 @@ pub struct KindMismatch {
     pub actual: Type,
     pub span: Span,
     pub notes: Vec<String>,
+    pub call_stack: Vec<TypeSpanFrame>,
 }
 
 /// Catch-all for errors not yet migrated to typed variants.
@@ -122,6 +189,7 @@ pub struct GenericTypeError {
     pub message: String,
     pub span: Span,
     pub notes: Vec<String>,
+    pub call_stack: Vec<TypeSpanFrame>,
 }
 
 // ────────────────────────────────────────────────────────────────────────────────
@@ -163,6 +231,7 @@ impl TypeErrorTyped {
             message: message.into(),
             span,
             notes: Vec::new(),
+            call_stack: Vec::new(),
         })
     }
 
@@ -226,6 +295,63 @@ impl TypeErrorTyped {
             Self::InstanceContainsUnknown(e) => e.notes.push(note),
             Self::KindMismatch(e) => e.notes.push(note),
             Self::Generic(e) => e.notes.push(note),
+        }
+    }
+
+    // ── Call-chain context (B-374, B-379) ──────────────────────────────────
+
+    /// Push a call-chain frame onto this error's stack (mutating).
+    ///
+    /// Frames are appended outward as errors bubble up through `check_call` /
+    /// `check_call_with_scheme`.  The innermost call site is pushed first (index 0);
+    /// the outermost call site is pushed last.
+    pub fn push_frame(&mut self, frame: TypeSpanFrame) {
+        match self {
+            Self::ArityMismatch(e) => e.call_stack.push(frame),
+            Self::UndefinedVariable(e) => e.call_stack.push(frame),
+            Self::UndefinedType(e) => e.call_stack.push(frame),
+            Self::UnificationFailure(e) => e.call_stack.push(frame),
+            Self::FieldNotFound(e) => e.call_stack.push(frame),
+            Self::NotARecord(e) => e.call_stack.push(frame),
+            Self::NotAFunction(e) => e.call_stack.push(frame),
+            Self::TypeAssertFailed(e) => e.call_stack.push(frame),
+            Self::NonExhaustiveMatch(e) => e.call_stack.push(frame),
+            Self::OverlappingInstancePatterns(e) => e.call_stack.push(frame),
+            Self::ConsistencyViolation(e) => e.call_stack.push(frame),
+            Self::CoverageViolation(e) => e.call_stack.push(frame),
+            Self::InstanceContainsUnknown(e) => e.call_stack.push(frame),
+            Self::KindMismatch(e) => e.call_stack.push(frame),
+            Self::Generic(e) => e.call_stack.push(frame),
+        }
+    }
+
+    /// Builder variant: push a call-chain frame and return `self`.
+    pub fn with_frame(mut self, frame: TypeSpanFrame) -> Self {
+        self.push_frame(frame);
+        self
+    }
+
+    /// Returns the call-chain context frames for this error.
+    ///
+    /// Frames are ordered innermost-first (index 0 = the directly enclosing call).
+    /// `format_type_error` renders these below the primary error snippet.
+    pub fn call_stack(&self) -> &[TypeSpanFrame] {
+        match self {
+            Self::ArityMismatch(e) => &e.call_stack,
+            Self::UndefinedVariable(e) => &e.call_stack,
+            Self::UndefinedType(e) => &e.call_stack,
+            Self::UnificationFailure(e) => &e.call_stack,
+            Self::FieldNotFound(e) => &e.call_stack,
+            Self::NotARecord(e) => &e.call_stack,
+            Self::NotAFunction(e) => &e.call_stack,
+            Self::TypeAssertFailed(e) => &e.call_stack,
+            Self::NonExhaustiveMatch(e) => &e.call_stack,
+            Self::OverlappingInstancePatterns(e) => &e.call_stack,
+            Self::ConsistencyViolation(e) => &e.call_stack,
+            Self::CoverageViolation(e) => &e.call_stack,
+            Self::InstanceContainsUnknown(e) => &e.call_stack,
+            Self::KindMismatch(e) => &e.call_stack,
+            Self::Generic(e) => &e.call_stack,
         }
     }
 

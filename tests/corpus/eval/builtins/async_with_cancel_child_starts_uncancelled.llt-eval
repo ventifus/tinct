@@ -3,6 +3,3 @@
 [cancelled? [with-cancel [context]].child-ctx]
 === out
 Bool(false)
-
-=== warn
-[NotARecord] expected record type, got Top

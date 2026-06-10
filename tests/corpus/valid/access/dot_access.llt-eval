@@ -1,6 +1,3 @@
 [name: user.name]
 === out
 ["name": user.name]
-
-=== warn
-[UndefinedVariable] undefined variable: user

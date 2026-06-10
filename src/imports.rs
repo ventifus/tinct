@@ -4,15 +4,29 @@
 //! with prelude function type signatures. It ensures that `typecheck_source`
 //! knows about stdlib prelude functions, suppressing false "undefined variable" errors.
 //!
-//! The prelude environment is built once per thread and cached using thread-local
-//! storage. Subsequent calls to `build_prelude_env()` return a cheap `Rc::clone`
-//! of the cached environment.
+//! The prelude environment is built once globally and cached in a `OnceLock<Arc<TypeEnv>>`.
+//! Subsequent calls to `build_prelude_env()` clone the `Arc` and return a fresh `Rc<TypeEnv>`
+//! wrapping a clone of the shared data. This eliminates per-thread cold-start stack overflows:
+//! only the first thread to call `build_prelude_env()` runs `build_prelude_env_inner()`.
+//!
+//! # Thread safety
+//!
+//! `OnceLock` provides lock-free reads after initialization and a single-initialization
+//! guarantee under concurrent access. The stored `Arc<TypeEnv>` is `Send + Sync` because
+//! `TypeEnv` contains only `HashMap`, `String`, and `Vec` fields (no `Rc` in the cached root
+//! because `build_prelude_env_inner()` returns a flat env with `parent: None`).
+//!
+//! # Rc boundary
+//!
+//! The typecheck path uses `Rc<TypeEnv>` for cheap single-threaded cloning. The global cache
+//! stores `Arc<TypeEnv>`. The conversion at the boundary is: `Rc::new((*arc_env).clone())`.
+//! This is safe and cheap because the flat root env has no `Rc<TypeEnv>` parent pointer.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::rc::Rc;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 use crate::ast::{Span, SurfaceExpression, SurfaceNode, SurfaceProgram};
 use crate::desugar;
@@ -27,24 +41,62 @@ type IncludeBindings = HashMap<Span, Vec<(String, Type)>>;
 /// Depth limit for recursive include resolution (prevents infinite include cycles).
 const MAX_INCLUDE_DEPTH: usize = 16;
 
+/// Newtype wrapper that makes `TypeEnv` usable in a global `OnceLock`.
+///
+/// `TypeEnv` contains `Option<Rc<TypeEnv>>` as its parent field, which makes it `!Send`.
+/// However, the root prelude env cached here ALWAYS has `parent: None` — the `Rc` field
+/// is `None` and is never dereferenced across threads. The only operation performed on
+/// the cached value from multiple threads is `TypeEnv::clone`, which produces a new
+/// value with `parent: None` that is then wrapped in a thread-local `Rc<TypeEnv>`.
+///
+/// # Safety
+///
+/// This is sound because:
+/// 1. The stored `TypeEnv` is the flat root env with `parent: None`.
+/// 2. The `Option<Rc<TypeEnv>>` parent field is `None`, so no `Rc` is ever shared.
+/// 3. `clone()` on the stored value creates a new `TypeEnv` with `parent: None`,
+///    which is immediately handed off to a single thread as `Rc::new(clone)`.
+/// 4. No mutable reference to the stored `TypeEnv` is ever created after initialization;
+///    `OnceLock` provides immutable shared access only after `get_or_init` completes.
+struct SendableTypeEnv(TypeEnv);
+
+// SAFETY: see doc-comment on `SendableTypeEnv`.
+unsafe impl Send for SendableTypeEnv {}
+unsafe impl Sync for SendableTypeEnv {}
+
+/// Newtype wrapper that makes `(ClassEnv, InstanceEnv)` usable in a global `OnceLock`.
+///
+/// `ClassEnv` and `InstanceEnv` contain only `HashMap` values (no `Rc`), so they are
+/// naturally `Send + Sync`. This wrapper exists only for symmetry with `SendableTypeEnv`
+/// and to make the intent explicit.
+struct SendableInstanceCache(ClassEnv, InstanceEnv);
+
+// SAFETY: ClassEnv and InstanceEnv contain only BTreeMap/HashMap values with Send + Sync
+// keys and values. No Rc or RefCell is involved.
+unsafe impl Send for SendableInstanceCache {}
+unsafe impl Sync for SendableInstanceCache {}
+
+/// Global cache of the prelude type environment.
+///
+/// Built once on the first call to `build_prelude_env()`, regardless of which thread
+/// calls first. All subsequent calls read from this cache without re-running the
+/// prelude type-checker.
+///
+/// Stored via `SendableTypeEnv` (a sound `Send + Sync` wrapper) so it can live in a
+/// process-global static. See `SendableTypeEnv` for the safety argument.
+static PRELUDE_CACHE: OnceLock<Arc<SendableTypeEnv>> = OnceLock::new();
+
+/// Global cache of the prelude's class and instance environments.
+///
+/// Populated atomically alongside `PRELUDE_CACHE` when `build_prelude_env_inner` succeeds.
+/// Consumed by `seed_infer_state_from_prelude_cache` to propagate prelude-registered
+/// instances (Equatable, Comparable, Showable, Mappable, Appendable) to user-code
+/// type-checking sessions. Without this, each fresh `InferState::new()` starts with
+/// an empty `instance_env`, so constraint checking for those classes always falls through
+/// to the hardcoded arms in `satisfies_constraint`.
+static PRELUDE_INSTANCE_CACHE: OnceLock<Arc<SendableInstanceCache>> = OnceLock::new();
+
 thread_local! {
-    /// Thread-local cache of the prelude type environment.
-    /// Built once per thread on first access, then reused for all subsequent calls.
-    static PRELUDE_CACHE: RefCell<Option<Rc<TypeEnv>>> = const { RefCell::new(None) };
-
-    /// Thread-local cache of the prelude's class and instance environments.
-    ///
-    /// Populated after prelude.llt is type-checked (in `build_prelude_env_inner`).
-    /// Consumed by `seed_infer_state_from_prelude_cache` to propagate prelude-registered
-    /// instances (Mappable, Appendable for higher-level types, and any user-defined prelude
-    /// classes) to user-code type-checking sessions.
-    ///
-    /// Primitive class instances (Equatable, Comparable, Numeric, Showable, Appendable for
-    /// leaf/structural types) are now pre-seeded in `InferState::new()` via
-    /// `primitive_satisfies_constraint` (type_def.rs). Re-seeding from this cache is safe
-    /// because `InstanceEnv::insert` is idempotent.
-    static PRELUDE_INSTANCE_CACHE: RefCell<Option<(ClassEnv, InstanceEnv)>> = const { RefCell::new(None) };
-
     /// Thread-local cache of the type-stage evaluation environment.
     ///
     /// Contains type dicts (Int, Str, etc.) and type-level functions (Seq, Map, union, all).
@@ -54,29 +106,46 @@ thread_local! {
     /// Recursion guard for type-stage env building (prevents infinite recursion when
     /// type-checking the prelude's type-stage sections).
     static BUILDING_TYPE_STAGE_ENV: RefCell<bool> = const { RefCell::new(false) };
+
+    /// Thread-local cache of stdlib module type environments.
+    ///
+    /// Maps stdlib module path (e.g., `"strings.llt"`) to a `TypeEnv` containing only
+    /// the bindings that module exports (above the prelude baseline). Built on demand
+    /// when the type checker encounters `[include %libdir "X.llt"]` calls and caches
+    /// the result so subsequent references to the same module are cheap.
+    static STDLIB_MODULE_CACHE: RefCell<HashMap<String, Rc<TypeEnv>>> = RefCell::new(HashMap::new());
+
+    /// Recursion guard for stdlib module env building (prevents re-entrant calls).
+    static BUILDING_STDLIB_MODULE_ENV: RefCell<bool> = const { RefCell::new(false) };
 }
 
 /// Build or retrieve the prelude type environment.
 ///
-/// This function parses the embedded prelude source, type-checks it, and extracts
-/// all top-level binding types. The result is cached in thread-local storage, so
-/// subsequent calls return a cheap `Rc::clone` of the cached environment.
+/// On the first call (any thread), this parses the embedded prelude source, type-checks it,
+/// and extracts all top-level binding types into a global `OnceLock<Arc<TypeEnv>>`.
+/// All subsequent calls (any thread) retrieve the cached `Arc`, clone its data, and wrap
+/// the clone in a fresh `Rc<TypeEnv>` for use by the single-threaded typecheck path.
+///
+/// The clone-on-read pattern avoids sharing `Rc<TypeEnv>` across threads (which would be
+/// unsound) while keeping the hot path — the `build_prelude_env_inner()` call — to
+/// exactly one execution per process lifetime.
 ///
 /// If the prelude has type errors (e.g., unresolvable type variables), they are
 /// silently ignored and the best-effort environment is returned.
 pub fn build_prelude_env() -> Rc<TypeEnv> {
-    PRELUDE_CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        if let Some(ref env) = *cache {
-            // Cache hit: return a clone of the cached environment
-            return Rc::clone(env);
-        }
-
-        // Cache miss: build the prelude environment from scratch
-        let env = build_prelude_env_inner();
-        *cache = Some(Rc::clone(&env));
-        env
-    })
+    let arc_env = PRELUDE_CACHE.get_or_init(|| {
+        // First call: build the prelude environment and store it globally.
+        // `build_prelude_env_inner` returns an Rc<TypeEnv>; we extract the TypeEnv
+        // value (Rc::try_unwrap — guaranteed to succeed since we just created it
+        // and hold the only reference) and wrap it in Arc<SendableTypeEnv> for global storage.
+        let rc_env = build_prelude_env_inner();
+        let env = Rc::try_unwrap(rc_env)
+            .expect("build_prelude_env_inner returned an Rc with more than one reference");
+        Arc::new(SendableTypeEnv(env))
+    });
+    // Clone the globally-shared TypeEnv value into a fresh Rc for this call site.
+    // TypeEnv::clone walks only the own bindings/aliases (parent is None for the root env).
+    Rc::new(arc_env.0.clone())
 }
 
 /// Helper function to type-check a stdlib module and extract its bindings into the given env.
@@ -286,38 +355,23 @@ fn extract_bindings_fallback_from_node(
 /// types into a new `TypeEnv`. Returns the environment even if type errors occur
 /// (best-effort approach).
 ///
-/// ## B-324: Stack overflow on cold-start thread
+/// ## B-324: Stack overflow on cold-start thread (RESOLVED via T-1114)
 ///
-/// When called on a cold-start thread (no thread-local cache hits for either
-/// `STDLIB_RESULT_CACHE` or `PRELUDE_CACHE`), the stack usage is:
+/// The previous thread-local cache caused stack overflows on cold-start threads because
+/// each new thread had to re-run the full prelude type-check. The OnceLock global cache
+/// (T-1114) resolves this: `build_prelude_env_inner` runs exactly once per process
+/// lifetime, and all subsequent calls (from any thread) clone the already-built TypeEnv.
 ///
-/// 1. `create_stdlib_env_with_arena()` — runtime prelude evaluation via `eval_program` →
-///    `create_stdlib_env_inner` → multi-phase bootstrap (parse + eval `prelude.llt`).
-///    The eval path uses a heap-based CEK machine / Action stack, so direct eval recursion
-///    is NOT the overflow cause here.
-///
-/// 2. `build_prelude_env_inner()` (THIS FUNCTION) — type-checks prelude.llt via
+/// The remaining contributing factors are noted for completeness:
+/// 1. `build_prelude_env_inner()` — type-checks prelude.llt via
 ///    `typecheck_surface_program_with_env`. The type checker calls `infer_dict` for the prelude's
 ///    top-level dict, which calls `infer_dict` recursively for nested dict bodies (class/instance
-///    declarations and their method dicts). Each recursive `infer_dict` call adds a new Rust stack
-///    frame. The prelude has O(n) nested dict scopes (where n ≈ 30–50 for all class/instance decls),
-///    contributing significant stack depth.
+///    declarations and their method dicts).
+/// 2. `unify` → `apply` substitution chains can be deep when the prelude's complex type
+///    annotations interact with the per-dict Substitution frame chain (T-926).
 ///
-/// 3. Additionally, `unify` → `apply` substitution chains can be deep when the prelude's
-///    complex type annotations (e.g., `@[return: a]` on `and-then`) interact with the
-///    per-dict Substitution frame chain (T-926). Each `apply` call walks the substitution parent
-///    chain, potentially re-traversing the full prelude's type environment.
-///
-/// **Root cause**: the combination of (2) and (3) running on the same cold-start thread
-/// exhausts 64 MB of stack. The existing corpus test infrastructure avoids this because
-/// both caches are warm from earlier test execution in the same OS thread.
-///
-/// **Fix candidates**:
-/// - Increase RUST_MIN_STACK for test threads that call `eval_source` directly (workaround)
-/// - Make `infer_dict` iterative instead of recursive (eliminates cause 2)
-/// - Flatten the Substitution frame chain in `apply` (eliminates cause 3)
-/// - Pre-cache the prelude type env in a global OnceLock instead of thread-local storage,
-///   eliminating repeated cold-start on test threads
+/// With T-1114, causes (1) and (2) occur only once per process. Subsequent calls return
+/// immediately from `OnceLock::get()` with no stack cost.
 fn build_prelude_env_inner() -> Rc<TypeEnv> {
     // Start with an empty TypeEnv.
     // The user-facing TypeEnv should contain ONLY what the prelude explicitly exports,
@@ -433,18 +487,21 @@ fn build_prelude_env_inner() -> Rc<TypeEnv> {
             return builtins_env;
         }
         Ok(prelude_state) => {
-            // Cache the prelude's class and instance environments.
+            // Cache the prelude's class and instance environments globally.
             // User-code InferState instances are seeded from this cache (via
             // `seed_infer_state_from_prelude_cache`) so that prelude-registered instances
-            // (Mappable, Appendable for higher-level types, user-defined classes) are visible
-            // during constraint checking. Primitive instances (Equatable Int, Numeric Float,
-            // etc.) are pre-seeded in InferState::new() via primitive_satisfies_constraint.
-            PRELUDE_INSTANCE_CACHE.with(|cache| {
-                *cache.borrow_mut() = Some((
-                    prelude_state.class_env.clone(),
-                    prelude_state.instance_env.clone(),
-                ));
-            });
+            // (Equatable, Comparable, Showable, Mappable, Appendable) are visible during
+            // constraint checking. Without this, `check_constraints_on_var` falls through
+            // to the hardcoded arms in `satisfies_constraint` for all non-Numeric classes.
+            //
+            // `set` on a `OnceLock` is a no-op if already initialized (which can happen if
+            // two threads race on first initialization and both call `build_prelude_env_inner`).
+            // In practice `OnceLock::get_or_init` ensures only one thread runs this body,
+            // but the `set` call is still safe under any execution order.
+            let _ = PRELUDE_INSTANCE_CACHE.set(Arc::new(SendableInstanceCache(
+                prelude_state.class_env.clone(),
+                prelude_state.instance_env.clone(),
+            )));
         }
     }
 
@@ -483,7 +540,7 @@ fn build_prelude_env_inner() -> Rc<TypeEnv> {
     // A degraded arithmetic scheme means FD improvement never fires, causing return types
     // to be Number instead of the more precise Int or Float, and causing "cannot unify
     // Int with Number" errors when the narrower type is expected.
-    for name in &["=", "<", "+", "-", "*", "/"] {
+    for name in &["=", "<", ">", "<=", ">=", "+", "-", "*", "/"] {
         let is_degraded = env
             .get_own(name)
             .map(|s| s.type_vars.is_empty() || s.constraints.is_empty())
@@ -558,6 +615,87 @@ fn build_prelude_env_inner() -> Rc<TypeEnv> {
     Rc::new(env)
 }
 
+/// Retrieve the type environment exported by a stdlib module at `module_path`.
+///
+/// Used by the type checker when it encounters `[include %libdir "X.llt"]` in a sequential
+/// document. Returns a `TypeEnv` containing only the bindings the module exports above
+/// the prelude baseline (i.e., the names that bare-include makes available in scope).
+///
+/// The result is cached per thread by module path. On cache miss:
+/// 1. Finds the stdlib directory via `crate::find_libdir_path()`.
+/// 2. Reads the file from disk.
+/// 3. Type-checks it with the prelude env as the parent baseline.
+/// 4. Extracts the above-baseline bindings via `typecheck_and_merge_stdlib_module`.
+/// 5. Stores the result in `STDLIB_MODULE_CACHE`.
+///
+/// Returns `None` if:
+/// - The stdlib directory cannot be located.
+/// - The file cannot be read or parsed.
+/// - A re-entrant call is detected (recursion guard).
+// AMBIENT-OK: type-checker include resolution fallback — reads libdir files without cap; type-only, no runtime I/O
+#[allow(clippy::disallowed_methods)]
+pub fn get_stdlib_module_type_env(module_path: &str) -> Option<Rc<TypeEnv>> {
+    // Recursion guard: prevent re-entrant calls (e.g., from modules that include other modules
+    // during type-checking). The guard is per-thread so parallel test threads are independent.
+    let already_building = BUILDING_STDLIB_MODULE_ENV.with(|flag| *flag.borrow());
+    if already_building {
+        return None;
+    }
+
+    // Cache hit path: check without the recursion guard set (fast path).
+    let cached = STDLIB_MODULE_CACHE.with(|cache| cache.borrow().get(module_path).map(Rc::clone));
+    if let Some(env) = cached {
+        return Some(env);
+    }
+
+    // Cache miss: set recursion guard before building.
+    BUILDING_STDLIB_MODULE_ENV.with(|flag| *flag.borrow_mut() = true);
+
+    let result = build_stdlib_module_type_env_inner(module_path);
+
+    // Clear recursion guard and store result in cache (even if None, to avoid re-trying).
+    BUILDING_STDLIB_MODULE_ENV.with(|flag| *flag.borrow_mut() = false);
+
+    if let Some(ref env) = result {
+        STDLIB_MODULE_CACHE.with(|cache| {
+            cache
+                .borrow_mut()
+                .insert(module_path.to_string(), Rc::clone(env));
+        });
+    }
+
+    result
+}
+
+/// Inner implementation of `get_stdlib_module_type_env`.
+///
+/// Finds the libdir, reads the module file, type-checks it, and extracts bindings.
+// AMBIENT-OK: type-checker include resolution — reads libdir files; type-only, no runtime I/O
+#[allow(clippy::disallowed_methods)]
+fn build_stdlib_module_type_env_inner(module_path: &str) -> Option<Rc<TypeEnv>> {
+    // Locate the stdlib directory.
+    let libdir = crate::find_libdir_path()?;
+    let full_path = libdir.join(module_path);
+
+    // Read the file content. Skip unreadable files silently (best-effort).
+    let content = std::fs::read_to_string(&full_path).ok()?;
+
+    // Build the type env with the prelude as the parent baseline.
+    // typecheck_and_merge_stdlib_module extracts only bindings ABOVE the prelude baseline
+    // (i.e., the module's own exports), which is exactly what we inject into scope after
+    // a bare [include %libdir "X.llt"] call.
+    let prelude_env = build_prelude_env();
+    let mut module_env = TypeEnv::new();
+    let _ = typecheck_and_merge_stdlib_module(
+        &content,
+        &prelude_env,
+        &mut module_env,
+        Some(module_path),
+    );
+
+    Some(Rc::new(module_env))
+}
+
 /// Seed a fresh [`InferState`] with the prelude's class and instance environments.
 ///
 /// Called at the start of every user-code type-checking session (in
@@ -577,28 +715,27 @@ fn build_prelude_env_inner() -> Rc<TypeEnv> {
 ///   where we are currently type-checking the prelude itself.
 /// - The cache is empty due to a prelude parse/expand error.
 pub fn seed_infer_state_from_prelude_cache(state: &mut InferState) {
-    PRELUDE_INSTANCE_CACHE.with(|cache| {
-        if let Some((class_env, instance_env)) = &*cache.borrow() {
-            // Merge prelude classes into state (or_insert: don't overwrite user-defined classes)
-            for class_decl in class_env.iter_classes() {
-                state.class_env.insert_if_absent(class_decl.clone());
-            }
-            // Merge all prelude instances into state.
-            //
-            // InstanceEnv::insert is idempotent: instances already pre-seeded by InferState::new()
-            // (Equatable, Comparable, Numeric, Showable, Appendable for primitives/structural types)
-            // are silently discarded when the same string key is encountered again. This means
-            // prelude-defined instances for the same classes (e.g., EquatableInt from prelude.llt)
-            // are merged without error — they hit the same key and are no-ops.
-            //
-            // Indexable: MPTC class with FD — its instances are pre-seeded in InferState::new()
-            // for Map and Seq. Prelude does not declare additional Indexable instances, so no
-            // conflict arises. Seeding here is safe (idempotent).
-            for inst_decl in instance_env.iter_instances() {
-                let _ = state.instance_env.insert(inst_decl.clone());
-            }
+    if let Some(cached) = PRELUDE_INSTANCE_CACHE.get() {
+        let SendableInstanceCache(class_env, instance_env) = cached.as_ref();
+        // Merge prelude classes into state (or_insert: don't overwrite user-defined classes)
+        for class_decl in class_env.iter_classes() {
+            state.class_env.insert_if_absent(class_decl.clone());
         }
-    });
+        // Merge all prelude instances into state.
+        //
+        // InstanceEnv::insert is idempotent: instances already pre-seeded by InferState::new()
+        // (Equatable, Comparable, Numeric, Showable, Appendable for primitives/structural types)
+        // are silently discarded when the same string key is encountered again. This means
+        // prelude-defined instances for the same classes (e.g., EquatableInt from prelude.llt)
+        // are merged without error — they hit the same key and are no-ops.
+        //
+        // Indexable: MPTC class with FD — its instances are pre-seeded in InferState::new()
+        // for Map and Seq. Prelude does not declare additional Indexable instances, so no
+        // conflict arises. Seeding here is safe (idempotent).
+        for inst_decl in instance_env.iter_instances() {
+            let _ = state.instance_env.insert(inst_decl.clone());
+        }
+    }
 }
 
 /// Build or retrieve the type-stage evaluation environment.
@@ -1538,8 +1675,24 @@ mod tests {
     fn test_build_prelude_env_caches() {
         let env1 = build_prelude_env();
         let env2 = build_prelude_env();
-        // Should return the same Rc (pointer equality)
-        assert!(Rc::ptr_eq(&env1, &env2));
+        // Both calls must return distinct Rc allocations (clone-on-read pattern) that
+        // refer to equal content — the global OnceLock is only built once, so both
+        // envs contain the same bindings.
+        assert!(
+            !Rc::ptr_eq(&env1, &env2),
+            "expected distinct Rc allocations"
+        );
+        // Both envs expose the same prelude bindings.
+        assert_eq!(
+            env1.get("map").is_some(),
+            env2.get("map").is_some(),
+            "both envs should agree on 'map' presence"
+        );
+        assert_eq!(
+            env1.get("filter").is_some(),
+            env2.get("filter").is_some(),
+            "both envs should agree on 'filter' presence"
+        );
     }
 
     #[test]

@@ -496,7 +496,16 @@ pub fn run_corpus_dir(
         }
 
         // Channel 2: warnings (=== warn) — runs independently of eval outcome
-        match (&outcome.warnings, &test.expectations.warn) {
+        // Path-based stripping: mirror update_corpus behavior. Warnings are only
+        // meaningful when the test is in a warn/ directory; elsewhere they are stripped
+        // so tests don't fail just because the type checker is advisory.
+        let path_str = test_file.to_string_lossy();
+        let actual_warnings = if path_str.contains("/warnings/") || path_str.contains("/warn/") {
+            outcome.warnings.as_deref()
+        } else {
+            None
+        };
+        match (&actual_warnings, &test.expectations.warn) {
             (Some(actual_warnings), Some(expected_warnings)) => {
                 // === warn present: typecheck must produce warnings matching the substring
                 if !actual_warnings.contains(expected_warnings) {

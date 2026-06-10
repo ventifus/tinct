@@ -8,7 +8,3 @@
 [str [bytes-str chunk] "/" [= eof []]]
 === out
 String("abcd/true")
-
-=== warn
-[UnificationFailure] cannot unify Bytes with Bytes | []
-[UnificationFailure] cannot unify [] with Bytes | []

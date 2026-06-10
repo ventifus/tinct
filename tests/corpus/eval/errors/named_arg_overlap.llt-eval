@@ -7,6 +7,3 @@
 [E024] missing argument for required parameter 'y' (defined at 4:10-4:22)
   in [f ...] at 4:10-4:22
   in [f ...] at 4:10-4:22
-
-=== warn
-[TypeError] named argument 'x' conflicts with positional argument at position 0

@@ -5,6 +5,3 @@
 [call [fn [let x@Int] x] [from-json "\"hello\""]]
 === error
 [E002] undefined variable: from-json (defined at 4:27-4:36)
-
-=== warn
-[UndefinedVariable] undefined variable: from-json

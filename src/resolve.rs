@@ -211,7 +211,7 @@ impl SurfaceResolver {
                 // body (with the declared names in scope for slot-based lookup).
                 let bound_names = let_bindings
                     .as_ref()
-                    .map(|lb| extract_surface_let_binding_names(lb))
+                    .map(extract_surface_let_binding_names)
                     .unwrap_or_default();
                 let has_bindings = !bound_names.is_empty();
                 if has_bindings {

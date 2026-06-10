@@ -702,10 +702,24 @@ fn lower_type_alias_to_constructor_dict(
                 .collect();
 
             // Build the payload dict: [dict field: field-value ...]
+            //
+            // CRITICAL: Use CoreExpr::Var { level: 1, slot: idx } instead of
+            // CoreExpr::FreeVar(field_name) here. The payload dict is evaluated by
+            // eval_dict_core which creates a letrec environment where each field name
+            // is bound as a key. Using FreeVar(field_name) would shadow the function
+            // param of the same name: FreeVar lookup starts from the dict's own letrec
+            // env, finds the dict's own "field" entry (which is the thunk being forced),
+            // and triggers E070 circular dependency.
+            //
+            // Var { level: 1 } skips one level up past the dict's letrec env to the
+            // function's call env (created by bind_args_thunks), where the param is
+            // bound at slot `idx`. This correctly references the caller's argument
+            // without shadowing through the payload dict's letrec scope.
             let payload_entries: Vec<Spanned<CoreEntry>> = ctor
                 .fields
                 .iter()
-                .map(|field_name| {
+                .enumerate()
+                .map(|(idx, field_name)| {
                     Spanned::new(
                         CoreEntry {
                             key: Some(Arc::new(Spanned::new(
@@ -713,7 +727,15 @@ fn lower_type_alias_to_constructor_dict(
                                 syn_span.clone(),
                             ))),
                             value: Arc::new(Spanned::new(
-                                CoreExpr::FreeVar(field_name.clone()),
+                                // level=1: one env level up from the payload dict's letrec
+                                // env → reaches the function's call env (bind_args_thunks).
+                                // slot=idx: params are inserted in declaration order, so
+                                // the i-th field is at slot i in the call env.
+                                CoreExpr::Var {
+                                    name: field_name.clone(),
+                                    level: 1,
+                                    slot: idx as u32,
+                                },
                                 syn_span.clone(),
                             )),
                         },
@@ -880,7 +902,9 @@ fn extract_constructors_from_body(body: &SurfaceExpression) -> Vec<ConstructorIn
                     SurfaceExpression::Annotated { name, annotation } if is_ctor(name) => {
                         // Extract PropertyDict annotation entries for the constructor
                         let ann = match &annotation.node {
-                            crate::ast::Annotation::PropertyDict(entries) if !entries.is_empty() => {
+                            crate::ast::Annotation::PropertyDict(entries)
+                                if !entries.is_empty() =>
+                            {
                                 Some(entries.clone())
                             }
                             _ => None,
@@ -919,7 +943,7 @@ fn extract_constructors_from_body(body: &SurfaceExpression) -> Vec<ConstructorIn
             // Distinguish "single named-field constructor dict" from "union of constructors":
             // - Constructor dict: first positional is VarRef/Annotated uppercase AND has keyed entries
             // - Union: each positional entry is a separate constructor
-            let is_single_ctor_dict = entries.first().map_or(false, |first| {
+            let is_single_ctor_dict = entries.first().is_some_and(|first| {
                 if first.node.key.is_some() {
                     return false;
                 }

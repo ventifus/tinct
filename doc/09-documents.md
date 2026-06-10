@@ -284,14 +284,14 @@ Recursive case:
     vᵢ = Dict(mapᵢ) ∧ mapᵢ ≠ {}  ⟹          (non-empty Dict: promote all String-keyed entries)
       ρᵢ = ({}, Some(ρᵢ₋₁))
       ∀(k, thunk_id) ∈ mapᵢ:
-        k = String(s) ⟹ ρᵢ.B[s] ← Materialized(materialize(get_thunk(thunk_id), d))
+        k = String(s) ⟹ ρᵢ.B[s] ← get_thunk(thunk_id)   (lazy — not materialized at binding time)
         k = Int(_)    ⟹ no binding
 
     vᵢ = Overlay(l, r)  ⟹                    (Overlay: flatten to Dict, then promote as above)
       mapᵢ = flatten_overlay(l, r)
       ρᵢ = ({}, Some(ρᵢ₋₁))
       ∀(k, thunk_id) ∈ mapᵢ:
-        k = String(s) ⟹ ρᵢ.B[s] ← Materialized(materialize(get_thunk(thunk_id), d))
+        k = String(s) ⟹ ρᵢ.B[s] ← get_thunk(thunk_id)   (lazy — not materialized at binding time)
         k = Int(_)    ⟹ no binding
 
     otherwise  ⟹  ρᵢ = ρᵢ₋₁                 (non-dict result: silently skip, no scope extension)
@@ -307,11 +307,11 @@ When `n = 1`, the `∀i ∈ 1..0` range is empty and the rule reduces to `eval_d
 
 **Return value:** Only `θₙ` (the last expression's thunk) is returned. Intermediate expressions `e₁..eₙ₋₁` contribute bindings to the scope chain but are not part of the document's value. This is the formal basis for module-style encapsulation: helpers placed in earlier expressions are lexically visible within the document but are excluded from the returned value and therefore not accessible to callers.
 
-**Intermediate materialization (strict let\* semantics):** Expressions `e₁..eₙ₋₁` are materialized to extract their dict bindings into the scope chain. This is inherent materialization — the scope chain construction itself requires knowing the dict's keys to create named bindings. Beyond extracting the dict structure, **named (string-keyed) entry values are also shallowly materialized (one-level forcing) at binding time** — this is strict `let*` semantics. Each binding's outermost thunk is forced before the next expression sees it. Consequences:
+**Intermediate materialization (lazy binding semantics):** Expressions `e₁..eₙ₋₁` are materialized to WHNF to extract their dict structure (keys) into the scope chain. This is inherent materialization — the scope chain construction requires knowing which keys exist to create named bindings. However, **named (string-keyed) entry values are inserted as lazy thunks** — they are NOT forced at binding time. Each entry value is forced only when a subsequent expression accesses it by name. Consequences:
 
-- **Dead-but-erroring bindings fail eagerly.** If a named binding computes an error, it fails at binding time even if no subsequent expression uses that name.
-- **Shallow only, not deep.** The outer thunk is forced to produce a concrete `Value`; inner thunks (e.g., dict entry values) remain unevaluated. This is analogous to WHNF in call-by-need languages but is more precisely called shallow or one-level materialization in tinct's context. Use `[eval ...]` for deep materialization.
-- **Use `[force expr]` for explicit control.** The `$force` builtin provides shallow materialization for function bodies and other lazy contexts where auto-materialization does not apply.
+- **Dead bindings never fire.** If a named binding computes an error, it does NOT fail unless accessed by a subsequent expression. Unused bindings remain as unforced thunks.
+- **Demand-driven evaluation throughout.** Binding time does not trigger evaluation; access time does. This is consistent with tinct's call-by-need semantics everywhere.
+- **Use `[force expr]` for explicit control.** The `$force` builtin provides explicit shallow materialization when a side-effecting expression must be evaluated regardless of whether the result is used.
 
 The last expression `eₙ` is returned as a lazy thunk, preserving tinct's call-by-need semantics.
 

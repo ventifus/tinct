@@ -3,7 +3,7 @@
 //! This module contains the type class system infrastructure including
 //! `ClassDecl`, `Constraint`, `ClassEnv`, and `InstanceEnv`.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::sync::Arc;
 
@@ -198,7 +198,7 @@ pub struct InstanceDecl {
 /// Class environment: lexically scoped registry of type class declarations.
 ///
 /// Follows the same parent-chain scoping model as `TypeEnv`:
-/// - A `HashMap` per scope frame with a parent pointer
+/// - A `BTreeMap` per scope frame with a parent pointer
 /// - Insertions go into the current frame; lookups walk the chain (inner wins)
 /// - Prelude classes live in the root frame — visible everywhere
 /// - A class in an inner dict is visible only to that dict's descendants
@@ -209,9 +209,16 @@ pub struct InstanceDecl {
 /// `parent` uses `Arc` so the parent frame can be shared without cloning when creating children.
 /// `InferState` holds a plain `ClassEnv` (not Arc); on dict entry/exit, `mem::take` and
 /// parent-chain restore are used (see `typecheck_dict.rs`).
+///
+/// Uses `BTreeMap` for deterministic iteration order across threads. HashMap iteration
+/// order is randomized per-process (via `RandomState` hashing) and differs across threads
+/// with separate hash seeds — using HashMap here would cause non-deterministic class
+/// resolution results when `build_prelude_env()` is called from different threads
+/// (e.g., the corpus-test thread vs. the main thread). BTreeMap is sorted by key
+/// and produces the same iteration order on every thread.
 #[derive(Debug, Clone)]
 pub struct ClassEnv {
-    classes: HashMap<String, ClassDecl>,
+    classes: BTreeMap<String, ClassDecl>,
     parent: Option<std::sync::Arc<ClassEnv>>,
 }
 
@@ -219,7 +226,7 @@ impl ClassEnv {
     /// Create a new root-level (no parent) ClassEnv.
     pub fn new() -> Self {
         Self {
-            classes: HashMap::new(),
+            classes: BTreeMap::new(),
             parent: None,
         }
     }
@@ -230,7 +237,7 @@ impl ClassEnv {
     /// Lookups walk child → parent chain with inner-wins semantics.
     pub fn child(parent: std::sync::Arc<ClassEnv>) -> Self {
         Self {
-            classes: HashMap::new(),
+            classes: BTreeMap::new(),
             parent: Some(parent),
         }
     }
@@ -287,9 +294,17 @@ impl Default for ClassEnv {
 ///
 /// The comment "Globally registered: coherence requires global uniqueness" no longer applies.
 /// Lexically scoped with frame-local coherence enforced at insertion time.
+///
+/// Uses `BTreeMap` for deterministic iteration order across threads. `resolve_instance` and
+/// `lookup_mptc` both iterate over instances and return the first match; with `HashMap` the
+/// iteration order is randomized per-process and differs between threads (different hash seeds),
+/// causing non-deterministic instance dispatch when `build_prelude_env()` runs in multiple
+/// threads (e.g., the corpus-test spawn thread vs. the main thread). BTreeMap is sorted
+/// by `(class_name, det_type_strings)` and produces the same iteration order on every thread,
+/// making instance resolution deterministic regardless of thread scheduling.
 #[derive(Debug, Clone)]
 pub struct InstanceEnv {
-    instances: HashMap<(String, Vec<String>), InstanceDecl>,
+    instances: BTreeMap<(String, Vec<String>), InstanceDecl>,
     parent: Option<std::sync::Arc<InstanceEnv>>,
 }
 
@@ -297,7 +312,7 @@ impl InstanceEnv {
     /// Create a new root-level (no parent) InstanceEnv.
     pub fn new() -> Self {
         Self {
-            instances: HashMap::new(),
+            instances: BTreeMap::new(),
             parent: None,
         }
     }
@@ -308,7 +323,7 @@ impl InstanceEnv {
     /// Lookups walk child → parent chain with inner-wins semantics.
     pub fn child(parent: std::sync::Arc<InstanceEnv>) -> Self {
         Self {
-            instances: HashMap::new(),
+            instances: BTreeMap::new(),
             parent: Some(parent),
         }
     }
@@ -411,7 +426,6 @@ impl InstanceEnv {
                 // side-effect-free (mirrors patterns_overlap in typecheck.rs).
                 // NOTE: name_counter is part of state.subst, so saved_subst captures it.
                 let saved_levels = state.levels.clone();
-                let saved_constraints = state.constraints.clone();
                 let saved_kind_env = state.kind_env.clone();
                 let saved_deferred = state.deferred_equalities.clone();
                 let saved_subst = state.subst.clone();
@@ -423,11 +437,13 @@ impl InstanceEnv {
                 let fresh_candidate = instantiate_at_level(&candidate.instance_type, state);
 
                 let mut temp_subst = state.subst.clone();
+                let mut probe_constraints: Vec<Constraint> = Vec::new();
                 let overlaps = unify(
                     &fresh_existing,
                     &fresh_candidate,
                     &mut temp_subst,
                     state,
+                    &mut probe_constraints,
                     Span::origin(),
                 )
                 .is_ok();
@@ -435,7 +451,6 @@ impl InstanceEnv {
                 // Always restore state — this is a pure probe.
                 // Restoring state.subst also restores name_counter (it lives in the Substitution).
                 state.levels = saved_levels;
-                state.constraints = saved_constraints;
                 state.kind_env = saved_kind_env;
                 state.deferred_equalities = saved_deferred;
                 state.subst = saved_subst;
@@ -483,12 +498,11 @@ impl InstanceEnv {
             }
 
             // F1 FIX: Save state before candidate probe to prevent leakage from failed matches.
-            // unify() mutates state.levels, state.constraints, state.kind_env, state.deferred_equalities,
+            // unify() mutates state.levels, state.kind_env, state.deferred_equalities,
             // and state.subst (which now includes name_counter via instantiate_at_level).
             // Failed candidates must not leak these mutations.
             // NOTE: name_counter is part of state.subst, so saved_subst captures it.
             let saved_levels = state.levels.clone();
-            let saved_constraints = state.constraints.clone();
             let saved_kind_env = state.kind_env.clone();
             let saved_deferred = state.deferred_equalities.clone();
             let saved_subst = state.subst.clone();
@@ -516,7 +530,6 @@ impl InstanceEnv {
                         // Malformed instance, skip — restore state first
                         // Restoring state.subst also restores name_counter.
                         state.levels = saved_levels;
-                        state.constraints = saved_constraints;
                         state.kind_env = saved_kind_env;
                         state.deferred_equalities = saved_deferred;
                         state.subst = saved_subst;
@@ -529,7 +542,6 @@ impl InstanceEnv {
             if instance_det_types.len() != determining_types.len() {
                 // Restoring state.subst also restores name_counter.
                 state.levels = saved_levels;
-                state.constraints = saved_constraints;
                 state.kind_env = saved_kind_env;
                 state.deferred_equalities = saved_deferred;
                 state.subst = saved_subst;
@@ -541,8 +553,18 @@ impl InstanceEnv {
             let mut temp_subst = state.subst.clone();
             let mut all_match = true;
 
+            let mut probe_constraints: Vec<Constraint> = Vec::new();
             for (inst_ty, query_ty) in instance_det_types.iter().zip(determining_types.iter()) {
-                if unify(inst_ty, query_ty, &mut temp_subst, state, Span::origin()).is_err() {
+                if unify(
+                    inst_ty,
+                    query_ty,
+                    &mut temp_subst,
+                    state,
+                    &mut probe_constraints,
+                    Span::origin(),
+                )
+                .is_err()
+                {
                     all_match = false;
                     break;
                 }
@@ -554,7 +576,6 @@ impl InstanceEnv {
                 // state.subst — the caller will handle substitution propagation.
                 // Restoring state.subst also restores name_counter.
                 state.levels = saved_levels;
-                state.constraints = saved_constraints;
                 state.kind_env = saved_kind_env;
                 state.deferred_equalities = saved_deferred;
                 state.subst = saved_subst;
@@ -573,7 +594,6 @@ impl InstanceEnv {
                 // F1 FIX: Restore state after failed probe (discard leaked mutations).
                 // Restoring state.subst also restores name_counter.
                 state.levels = saved_levels;
-                state.constraints = saved_constraints;
                 state.kind_env = saved_kind_env;
                 state.deferred_equalities = saved_deferred;
                 state.subst = saved_subst;
@@ -618,7 +638,6 @@ impl InstanceEnv {
 
             // Save state before probe — restore on failure.
             let saved_levels = state.levels.clone();
-            let saved_constraints = state.constraints.clone();
             let saved_kind_env = state.kind_env.clone();
             let saved_deferred = state.deferred_equalities.clone();
             let saved_subst = state.subst.clone();
@@ -638,7 +657,6 @@ impl InstanceEnv {
                     // Single-parameter class or malformed: no determined positions to match.
                     // Restore and skip.
                     state.levels = saved_levels;
-                    state.constraints = saved_constraints;
                     state.kind_env = saved_kind_env;
                     state.deferred_equalities = saved_deferred;
                     state.subst = saved_subst;
@@ -649,7 +667,6 @@ impl InstanceEnv {
             // Arity check: must have the same number of determined types.
             if instance_ded_types.len() != ded_types.len() {
                 state.levels = saved_levels;
-                state.constraints = saved_constraints;
                 state.kind_env = saved_kind_env;
                 state.deferred_equalities = saved_deferred;
                 state.subst = saved_subst;
@@ -660,12 +677,14 @@ impl InstanceEnv {
             let mut temp_subst = state.subst.clone();
             let mut all_match = true;
 
+            let mut rl_probe_constraints: Vec<Constraint> = Vec::new();
             for (inst_ded_ty, query_ded_ty) in instance_ded_types.iter().zip(ded_types.iter()) {
                 if unify(
                     inst_ded_ty,
                     query_ded_ty,
                     &mut temp_subst,
                     state,
+                    &mut rl_probe_constraints,
                     Span::origin(),
                 )
                 .is_err()
@@ -692,7 +711,6 @@ impl InstanceEnv {
                     _ => {
                         // No determining positions to back-propagate for single-param classes.
                         state.levels = saved_levels;
-                        state.constraints = saved_constraints;
                         state.kind_env = saved_kind_env;
                         state.deferred_equalities = saved_deferred;
                         state.subst = saved_subst;
@@ -702,7 +720,6 @@ impl InstanceEnv {
 
                 // Restore state — the caller handles the actual unification of determining vars.
                 state.levels = saved_levels;
-                state.constraints = saved_constraints;
                 state.kind_env = saved_kind_env;
                 state.deferred_equalities = saved_deferred;
                 state.subst = saved_subst;
@@ -711,7 +728,6 @@ impl InstanceEnv {
             } else {
                 // Restore state after failed probe.
                 state.levels = saved_levels;
-                state.constraints = saved_constraints;
                 state.kind_env = saved_kind_env;
                 state.deferred_equalities = saved_deferred;
                 state.subst = saved_subst;
@@ -830,15 +846,14 @@ impl InstanceEnv {
 
         for inst in &candidates {
             // F1 FIX: Save state before candidate probe to prevent leakage from failed matches.
-            // unify() mutates state.levels, state.constraints, state.kind_env, state.deferred_equalities,
+            // unify() mutates state.levels, state.kind_env, state.deferred_equalities,
             // and state.subst.name_counter (via instantiate_at_level). Failed candidates must not leak
-            // levels/constraints/kind_env/deferred, but the name_counter must be preserved at its peak
+            // levels/kind_env/deferred, but the name_counter must be preserved at its peak
             // value (not rolled back) to prevent _tN name reuse across candidates.
             //
             // B-325: Also save state.subst because FD-improvement bindings during the probe must not
             // survive if the probe ultimately fails (e.g., unify succeeds but FD constraints fail).
             let saved_levels = state.levels.clone();
-            let saved_constraints = state.constraints.clone();
             let saved_kind_env = state.kind_env.clone();
             let saved_deferred = state.deferred_equalities.clone();
             let saved_subst = state.subst.clone();
@@ -850,11 +865,13 @@ impl InstanceEnv {
             // Use a temporary substitution so the global state is not polluted.
             let mut temp_subst = state.subst.clone();
 
+            let mut probe_constraints: Vec<Constraint> = Vec::new();
             let unify_ok = unify(
                 &freshened_instance_type,
                 target_type,
                 &mut temp_subst,
                 state,
+                &mut probe_constraints,
                 Span::origin(),
             )
             .is_ok();
@@ -862,7 +879,6 @@ impl InstanceEnv {
             // Always restore state after the probe; preserve peak name_counter (F1 fix).
             let peak_counter = state.subst.name_counter.get();
             state.levels = saved_levels;
-            state.constraints = saved_constraints;
             state.kind_env = saved_kind_env;
             state.deferred_equalities = saved_deferred;
             state.subst = saved_subst;
@@ -916,7 +932,6 @@ impl InstanceEnv {
         let winner = winners[0];
 
         let saved_levels = state.levels.clone();
-        let saved_constraints = state.constraints.clone();
         let saved_kind_env = state.kind_env.clone();
         let saved_deferred = state.deferred_equalities.clone();
         let saved_subst = state.subst.clone();
@@ -926,11 +941,13 @@ impl InstanceEnv {
         let mut temp_subst = state.subst.clone();
 
         // This unification must succeed — we confirmed it in Pass 1.
+        let mut winner_constraints: Vec<Constraint> = Vec::new();
         let _ = unify(
             &freshened_instance_type,
             target_type,
             &mut temp_subst,
             state,
+            &mut winner_constraints,
             Span::origin(),
         );
 
@@ -947,7 +964,6 @@ impl InstanceEnv {
         // Restore state after resolution; preserve peak name_counter (F1 fix).
         let peak_counter = state.subst.name_counter.get();
         state.levels = saved_levels;
-        state.constraints = saved_constraints;
         state.kind_env = saved_kind_env;
         state.deferred_equalities = saved_deferred;
         state.subst = saved_subst;
@@ -1169,7 +1185,6 @@ mod tests {
 
         let counter_before = state.subst.name_counter.get();
         let levels_before = state.levels.clone();
-        let constraints_before = state.constraints.clone();
 
         // This will detect overlap and return Err — but state must be restored.
         let _ = env.check_structural_overlap(&make_appendable_instance(make_seq_int()), &mut state);
@@ -1182,10 +1197,6 @@ mod tests {
         assert_eq!(
             state.levels, levels_before,
             "levels must be restored after overlap check"
-        );
-        assert_eq!(
-            state.constraints, constraints_before,
-            "constraints must be restored after overlap check"
         );
     }
 

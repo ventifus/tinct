@@ -6,6 +6,3 @@
 [@[x: Int] [merge [x: 1] [from-json "\"not-a-dict\""]]]
 === error
 [E002] undefined variable: from-json (defined at 5:27-5:36) (materialized at 5:1-5:56)
-
-=== warn
-[UndefinedVariable] undefined variable: from-json

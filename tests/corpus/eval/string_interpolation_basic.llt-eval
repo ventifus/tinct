@@ -25,8 +25,5 @@
 
 
 
-=== error
-[E080] macro 'tmpl' returned invalid AST: missing required field: type (defined at 3:13-3:27)
-
-=== warn
-[E080] macro 'tmpl' returned invalid AST: missing required field: type (defined at 3:13-3:27)
+=== out
+Dict({"name": String("Alice"), "greeting": String("Hello Alice")})

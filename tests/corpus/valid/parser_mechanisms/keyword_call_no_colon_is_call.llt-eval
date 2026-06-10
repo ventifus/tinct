@@ -3,6 +3,3 @@
 [f 42]
 === out
 [f 42]
-
-=== warn
-[UndefinedVariable] undefined variable: f

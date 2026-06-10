@@ -6,8 +6,3 @@
 [length [deep-merge d1 d2]]
 === out
 Int(1000)
-
-=== warn
-[UnificationFailure] cannot unify [] with <error>
-[UnificationFailure] cannot unify [] with <error>
-[UnificationFailure] cannot unify [] with <error>

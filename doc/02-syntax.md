@@ -60,7 +60,11 @@ config.database.host            # chained dot access
 [f arg1 arg2]                   # Positional args
 [f arg1 opt: val]               # Named args
 
-# Function application — explicit call (for computed functions)
+# Function application — explicit call (for function expressions in head position)
+# A bracket expression in head position is a dict entry, not a call.
+# [[fn [let x] body] arg] → two-entry dict {0: fn, 1: arg} — NOT a call.
+# Use [call ...] to invoke any non-identifier function expression:
+[call [fn [let x] [+ x 1]] 5]      # immediately-invoked function expression
 [call [get-handler request] data]   # function from another call
 [call % data]                       # pipeline value used as function
 

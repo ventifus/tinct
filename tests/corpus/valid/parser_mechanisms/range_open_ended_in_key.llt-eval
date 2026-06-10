@@ -3,6 +3,3 @@
 [tail: [drop 2 data]]
 === out
 ["tail": [drop 2 data]]
-
-=== warn
-[UndefinedVariable] undefined variable: data

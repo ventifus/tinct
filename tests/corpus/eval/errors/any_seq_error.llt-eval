@@ -17,6 +17,3 @@
   997 |         [any?-impl pred xs [keys xs] 0 [length xs]]]]
       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   in [any? ...] at 1:1-1:37
-
-=== warn
-[UnificationFailure] cannot unify [] with Seq[_]

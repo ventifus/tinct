@@ -3,6 +3,3 @@
 
 === out
 Variant(Maybe.None, Null)
-
-=== warn
-[NotARecord] expected record type, got <error>

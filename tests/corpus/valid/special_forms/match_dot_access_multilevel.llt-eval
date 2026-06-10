@@ -4,6 +4,3 @@
     _: "unknown"]
 === out
 [match f [Net.Transport.Tcp payload] payload Net.Transport.Udp "udp" _ "unknown"]
-
-=== warn
-[UndefinedVariable] undefined variable: f

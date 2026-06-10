@@ -663,12 +663,7 @@ pub(crate) fn builtin_take(
                     // B-383: it would force the tail even when n=0, materializing lazy
                     // thunks that should never be observed (e.g., error sentinels past
                     // the end of what is consumed).
-                    builtin!(
-                        "builtin-take",
-                        builtin_take_seq_step,
-                        [Strictness::Seq],
-                        1
-                    ),
+                    builtin!("builtin-take", builtin_take_seq_step, [Strictness::Seq], 1),
                     tail_args,
                     None,
                     call_span.clone(),
@@ -778,12 +773,7 @@ pub(crate) fn builtin_take_seq_step(
                     Arc::clone(&tail_thunk),
                 ];
                 let new_tail = Arc::new(Thunk::new_pending_builtin(
-                    builtin!(
-                        "builtin-take",
-                        builtin_take_seq_step,
-                        [Strictness::Seq],
-                        1
-                    ),
+                    builtin!("builtin-take", builtin_take_seq_step, [Strictness::Seq], 1),
                     tail_args,
                     None,
                     call_span.clone(),

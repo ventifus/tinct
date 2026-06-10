@@ -14,7 +14,7 @@ use std::sync::Arc;
 use super::typecheck_annot::resolve_annotation;
 use crate::ast::{Annotation, Pattern, Span, SurfaceExpression, SurfaceNode};
 use crate::type_errors::{GenericTypeError, TypeErrorTyped};
-use crate::types::{unify, InferState, Row, Type, TypeEnv, TypeError};
+use crate::types::{unify, Constraint, InferState, Row, Type, TypeEnv, TypeError};
 
 /// Narrowing constraints extracted from conditional expressions.
 /// Each constraint refines the type of a variable in the true branch of an `if`.
@@ -679,6 +679,7 @@ pub(crate) fn extract_pattern_types(
                 .to_string(),
             span: pattern_node.span.clone(),
             notes: vec![],
+            call_stack: vec![],
         })]),
     }
 }
@@ -722,8 +723,17 @@ pub(crate) fn extract_binding_types(
         } if args.is_empty() => {
             if let SurfaceExpression::VarRef { name, .. } = &func.expr {
                 let ann = Annotation::Simple(name.clone());
-                match resolve_annotation(&ann, env, func.span.clone(), state, &mut None, &mut None)
-                {
+                let mut narrow_constraints: Vec<Constraint> = Vec::new();
+                match resolve_annotation(
+                    &ann,
+                    env,
+                    func.span.clone(),
+                    state,
+                    &mut narrow_constraints,
+                    &mut None,
+                    &mut None,
+                    None,
+                ) {
                     Ok(ty) => types.push(ty),
                     Err(_) => types.push(Type::Unknown),
                 }
@@ -738,13 +748,16 @@ pub(crate) fn extract_binding_types(
         }
         // a@Type form
         SurfaceExpression::Annotated { annotation, .. } => {
+            let mut ann_constraints: Vec<Constraint> = Vec::new();
             let ty = resolve_annotation(
                 &annotation.node,
                 env,
                 annotation.span.clone(),
                 state,
+                &mut ann_constraints,
                 &mut None,
                 &mut None,
+                None,
             )
             .map_err(|e| vec![e])?;
             types.push(ty);
@@ -753,7 +766,17 @@ pub(crate) fn extract_binding_types(
         // Handles `Int` in [pattern [Int]] where the inner dict entry is VarRef("Int").
         SurfaceExpression::VarRef { name, .. } => {
             let ann = Annotation::Simple(name.clone());
-            match resolve_annotation(&ann, env, binding.span.clone(), state, &mut None, &mut None) {
+            let mut vref_constraints: Vec<Constraint> = Vec::new();
+            match resolve_annotation(
+                &ann,
+                env,
+                binding.span.clone(),
+                state,
+                &mut vref_constraints,
+                &mut None,
+                &mut None,
+                None,
+            ) {
                 Ok(ty) => types.push(ty),
                 Err(_) => types.push(Type::Unknown),
             }
@@ -768,6 +791,7 @@ pub(crate) fn extract_binding_types(
                     .to_string(),
                 span: binding.span.clone(),
                 notes: vec![],
+                call_stack: vec![],
             })]);
         }
     }
@@ -790,7 +814,6 @@ pub(crate) fn patterns_overlap(
 
     // Save every field that unify() may touch so this probe is side-effect-free.
     let saved_levels = state.levels.clone();
-    let saved_constraints = state.constraints.clone();
     let saved_kind_env = state.kind_env.clone();
     let saved_deferred = state.deferred_equalities.clone();
     // Also save subst: improve_functional_dependency writes directly to state.subst
@@ -801,6 +824,7 @@ pub(crate) fn patterns_overlap(
 
     // Use a temporary substitution so state.subst is also unaffected.
     let mut temp_subst = state.subst.clone();
+    let mut probe_constraints: Vec<Constraint> = Vec::new();
     let overlaps = types_a.iter().zip(types_b.iter()).all(|(ty_a, ty_b)| {
         // Gradual: Unknown is the gradual-typing wildcard for unannotated pattern bindings.
         // Treat Unknown as distinct from any concrete type: a position with Unknown
@@ -808,13 +832,20 @@ pub(crate) fn patterns_overlap(
         if matches!(ty_a, Type::Unknown) || matches!(ty_b, Type::Unknown) {
             return false; // non-overlapping at this position — Unknown is not concrete
         }
-        unify(ty_a, ty_b, &mut temp_subst, state, Span::origin()).is_ok()
+        unify(
+            ty_a,
+            ty_b,
+            &mut temp_subst,
+            state,
+            &mut probe_constraints,
+            Span::origin(),
+        )
+        .is_ok()
     });
 
     // Restore all mutated fields.
     // Restoring state.subst also restores name_counter (it lives in the Substitution).
     state.levels = saved_levels;
-    state.constraints = saved_constraints;
     state.kind_env = saved_kind_env;
     state.deferred_equalities = saved_deferred;
     state.subst = saved_subst;
@@ -856,7 +887,6 @@ pub(crate) fn types_can_unify(
     // Save every field that unify() may touch so this probe is side-effect-free.
     // Restoring state.subst also restores name_counter (it lives in the Substitution).
     let saved_levels = state.levels.clone();
-    let saved_constraints = state.constraints.clone();
     let saved_kind_env = state.kind_env.clone();
     let saved_deferred = state.deferred_equalities.clone();
     let saved_subst = state.subst.clone();
@@ -867,15 +897,22 @@ pub(crate) fn types_can_unify(
     // for instance consistency checks where types are typically concrete annotations,
     // but would need to be addressed for general-purpose unification probes.
     let mut temp_subst = state.subst.clone();
-    let can_unify = types_a
-        .iter()
-        .zip(types_b.iter())
-        .all(|(ty_a, ty_b)| unify(ty_a, ty_b, &mut temp_subst, state, Span::origin()).is_ok());
+    let mut probe_constraints: Vec<Constraint> = Vec::new();
+    let can_unify = types_a.iter().zip(types_b.iter()).all(|(ty_a, ty_b)| {
+        unify(
+            ty_a,
+            ty_b,
+            &mut temp_subst,
+            state,
+            &mut probe_constraints,
+            Span::origin(),
+        )
+        .is_ok()
+    });
 
     // Restore all mutated fields.
     // Restoring state.subst also restores name_counter (it lives in the Substitution).
     state.levels = saved_levels;
-    state.constraints = saved_constraints;
     state.kind_env = saved_kind_env;
     state.deferred_equalities = saved_deferred;
     state.subst = saved_subst;
@@ -904,6 +941,7 @@ pub(crate) fn extract_param_indices(
                     message: format!("functional dependency references unknown param '{}'", name),
                     span,
                     notes: vec![],
+                    call_stack: vec![],
                 })]);
             }
         }
@@ -920,6 +958,7 @@ pub(crate) fn extract_param_indices(
                                 .to_string(),
                             span: entry.span.clone(),
                             notes: vec![],
+                            call_stack: vec![],
                         })]);
                     }
                 };
@@ -934,6 +973,7 @@ pub(crate) fn extract_param_indices(
                         ),
                         span: entry.span.clone(),
                         notes: vec![],
+                        call_stack: vec![],
                     })]);
                 }
             }
@@ -956,6 +996,7 @@ pub(crate) fn extract_param_indices(
                             .to_string(),
                         span: func.span.clone(),
                         notes: vec![],
+                        call_stack: vec![],
                     })])
                 }
             };
@@ -969,6 +1010,7 @@ pub(crate) fn extract_param_indices(
                     ),
                     span: func.span.clone(),
                     notes: vec![],
+                    call_stack: vec![],
                 })]);
             }
             // Extract the remaining args
@@ -982,6 +1024,7 @@ pub(crate) fn extract_param_indices(
                                 .to_string(),
                             span: arg.span.clone(),
                             notes: vec![],
+                            call_stack: vec![],
                         })])
                     }
                 };
@@ -995,6 +1038,7 @@ pub(crate) fn extract_param_indices(
                         ),
                         span: arg.span.clone(),
                         notes: vec![],
+                        call_stack: vec![],
                     })]);
                 }
             }
@@ -1005,6 +1049,7 @@ pub(crate) fn extract_param_indices(
                     .to_string(),
                 span,
                 notes: vec![],
+                call_stack: vec![],
             })]);
         }
     }

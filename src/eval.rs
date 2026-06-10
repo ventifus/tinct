@@ -105,12 +105,13 @@ pub(crate) fn wrap_with_nominal_validation(
 ///
 /// - **Intermediate expressions** (all but the last): lower → eval → materialize.
 ///   If the result is a non-empty `Dict` or `Overlay`, ALL `Key::String` entries are
-///   materialized strictly and inserted into a child environment for subsequent
-///   expressions. Non-dict/overlay results are silently ignored (no error, no scope
-///   extension). This is the `bare-include-scope` behavior.
-///   **Why strict?** Per `doc/09-documents.md §SEQ-SCOPE`: dead bindings must fire
-///   immediately (strict let* semantics), not lazily. A binding that would error must
-///   error at bind-time, not silently defer until (or unless) the name is accessed.
+///   inserted as lazy thunks into a child environment for subsequent expressions.
+///   Non-dict/overlay results are silently ignored (no error, no scope extension).
+///   This is the `bare-include-scope` behavior.
+///   **Why lazy?** Dead bindings that are never accessed must never fire. Evaluation
+///   is demand-driven: a binding is forced only when a subsequent expression accesses
+///   it. This is the correct lazy evaluation semantics throughout (function bodies and
+///   document-level).
 /// - **Last expression**: lower → eval (lazy). The resulting thunk is returned
 ///   without forcing — callers decide when (and whether) to materialize it.
 /// - **Empty slice**: returns a materialized empty-dict thunk (same as an empty doc).
@@ -163,19 +164,15 @@ pub(crate) async fn eval_document_exprs(
             let child_env = Arc::new(RwLock::new(Environment::with_parent(Arc::clone(
                 &current_env,
             ))));
-            for (key, val_thunk_id) in entries.iter() {
-                if let Key::String(name) = key {
-                    // Force each entry value eagerly (strict let* semantics for scope chains).
-                    // This matches doc/09-documents.md §SEQ-SCOPE: named entries are shallowly
-                    // materialized at binding time so dead-but-erroring bindings fire immediately.
-                    let val_thunk = ctx.get_thunk(*val_thunk_id);
-                    let forced_value = materialize(&val_thunk, Some(&node_span), ctx).await?;
-                    let strict_thunk =
-                        Arc::new(Thunk::new_materialized(forced_value, node_span.clone()));
-                    child_env
-                        .write()
-                        .unwrap()
-                        .insert(name.to_string(), strict_thunk);
+            {
+                let mut env_write = child_env.write().unwrap();
+                for (key, val_thunk_id) in entries.iter() {
+                    if let Key::String(name) = key {
+                        // Insert as a lazy thunk — the entry is forced only when accessed.
+                        // Dead bindings (never referenced by subsequent expressions) never fire.
+                        let val_thunk = ctx.get_thunk(*val_thunk_id);
+                        env_write.insert(name.to_string(), val_thunk);
+                    }
                 }
             }
             current_env = child_env;
@@ -194,7 +191,8 @@ pub(crate) async fn eval_document_exprs(
 /// `eval_core_expr_pub`. `SurfaceItem::Decl` items are skipped (processed at expand time).
 ///
 /// Scope-chain semantics are delegated to [`eval_document_exprs`]:
-/// - Intermediate expressions are materialized; Dict/Overlay results promote bindings into scope.
+/// - Intermediate expressions are materialized to WHNF; Dict/Overlay results promote
+///   their entry thunks (lazily) into a child scope for subsequent expressions.
 /// - The last expression is returned as-is (lazy, any type).
 /// - An empty document returns an empty dict.
 ///

@@ -129,19 +129,20 @@ fn test_types_are_not_disjoint_multi_field_records() {
 /// Task 4a: Literal promotion restricted to promotable classes
 #[test]
 fn test_promote_literal_restricted_to_promotable_classes() {
-    let mut state = InferState::new();
+    let state = InferState::new();
 
     // Add a Numeric constraint (promotable)
     // Numeric class is already registered in InferState::new()
     let numeric_class = state.class_env.get("Numeric").unwrap();
-    state.constraints.push(Constraint::Class {
+    let constraints: Vec<Constraint> = vec![Constraint::Class {
         class: std::sync::Arc::new(numeric_class.clone()),
         vars: vec!["t0".to_string()],
         origin_name: None,
         origin_span: None,
-    });
+    }];
 
-    let promoted = promote_literal_for_constrained_var("t0", Type::IntLiteral(42), &state);
+    let promoted =
+        promote_literal_for_constrained_var("t0", Type::IntLiteral(42), &constraints, &state);
 
     match promoted {
         Type::Int => {} // Expected: Numeric is promotable
@@ -152,7 +153,7 @@ fn test_promote_literal_restricted_to_promotable_classes() {
 /// Task 4b: Literal NOT promoted for non-promotable classes
 #[test]
 fn test_promote_literal_not_promoted_for_non_promotable_class() {
-    let mut state = InferState::new();
+    let state = InferState::new();
 
     // Add a non-promotable constraint (e.g., custom class "MyClass")
     // Create a dummy ClassDecl for testing
@@ -166,14 +167,15 @@ fn test_promote_literal_not_promoted_for_non_promotable_class() {
         resolver_injective: false,
         prelude_origin: false,
     });
-    state.constraints.push(Constraint::Class {
+    let constraints: Vec<Constraint> = vec![Constraint::Class {
         class: my_class,
         vars: vec!["t0".to_string()],
         origin_name: None,
         origin_span: None,
-    });
+    }];
 
-    let result = promote_literal_for_constrained_var("t0", Type::IntLiteral(42), &state);
+    let result =
+        promote_literal_for_constrained_var("t0", Type::IntLiteral(42), &constraints, &state);
 
     match result {
         Type::IntLiteral(42) => {} // Expected: NOT promoted
@@ -184,19 +186,23 @@ fn test_promote_literal_not_promoted_for_non_promotable_class() {
 /// Task 4c: String literal promotion restricted to promotable classes
 #[test]
 fn test_promote_string_literal_restricted() {
-    let mut state = InferState::new();
+    let state = InferState::new();
 
     // Comparable is promotable and already registered in InferState::new()
     let comparable_class = state.class_env.get("Comparable").unwrap();
-    state.constraints.push(Constraint::Class {
+    let constraints: Vec<Constraint> = vec![Constraint::Class {
         class: std::sync::Arc::new(comparable_class.clone()),
         vars: vec!["t0".to_string()],
         origin_name: None,
         origin_span: None,
-    });
+    }];
 
-    let promoted =
-        promote_literal_for_constrained_var("t0", Type::StringLiteral("hello".to_string()), &state);
+    let promoted = promote_literal_for_constrained_var(
+        "t0",
+        Type::StringLiteral("hello".to_string()),
+        &constraints,
+        &state,
+    );
 
     match promoted {
         Type::Str => {} // Expected: Comparable is promotable
@@ -211,18 +217,22 @@ fn test_promote_literal_label_kind_never_promotes() {
 
     // Add Numeric constraint (already registered in InferState::new())
     let numeric_class = state.class_env.get("Numeric").unwrap();
-    state.constraints.push(Constraint::Class {
+    let constraints: Vec<Constraint> = vec![Constraint::Class {
         class: std::sync::Arc::new(numeric_class.clone()),
         vars: vec!["t0".to_string()],
         origin_name: None,
         origin_span: None,
-    });
+    }];
 
     // Mark as Label kind
     state.kind_env.insert("t0".to_string(), Kind::Label);
 
-    let result =
-        promote_literal_for_constrained_var("t0", Type::StringLiteral("x".to_string()), &state);
+    let result = promote_literal_for_constrained_var(
+        "t0",
+        Type::StringLiteral("x".to_string()),
+        &constraints,
+        &state,
+    );
 
     match result {
         Type::StringLiteral(s) if s == "x" => {} // Expected: Label kind prevents promotion
@@ -251,7 +261,7 @@ fn test_union_vs_union_with_typevars_defers() {
     let lhs = Type::Union(vec![Type::Int, Type::TypeVar("a".to_string(), 0)]);
     let rhs = Type::Union(vec![Type::Str, Type::TypeVar("b".to_string(), 0)]);
 
-    let result = unify(&lhs, &rhs, &mut subst, &mut state, span);
+    let result = unify(&lhs, &rhs, &mut subst, &mut state, &mut Vec::new(), span);
 
     // Should succeed (not a hard error)
     assert!(
@@ -282,7 +292,7 @@ fn test_union_vs_union_concrete_no_deferral() {
 
     // This falls through to the generic _ => Err arm (no C-Var1 match either),
     // not the deferral arm. Deferred_equalities should remain empty.
-    let _ = unify(&lhs, &rhs, &mut subst, &mut state, span);
+    let _ = unify(&lhs, &rhs, &mut subst, &mut state, &mut Vec::new(), span);
 
     assert_eq!(
         state.deferred_equalities.len(),
@@ -311,6 +321,7 @@ fn test_unify_type_var_occurs_in_type_stage_app() {
         &type_stage_app_f_a,
         &mut subst,
         &mut state,
+        &mut Vec::new(),
         span,
     );
 
@@ -350,7 +361,14 @@ fn test_unify_variadic_zero_with_concrete_arity() {
         required_count: 1,
     };
 
-    let result = unify(&any_function, &concrete_fn, &mut subst, &mut state, span);
+    let result = unify(
+        &any_function,
+        &concrete_fn,
+        &mut subst,
+        &mut state,
+        &mut Vec::new(),
+        span,
+    );
 
     assert!(
         result.is_ok(),
@@ -379,7 +397,14 @@ fn test_unify_variadic_zero_with_zero_non_variadic() {
         required_count: 0,
     };
 
-    let result = unify(&any_function, &concrete_fn, &mut subst, &mut state, span);
+    let result = unify(
+        &any_function,
+        &concrete_fn,
+        &mut subst,
+        &mut state,
+        &mut Vec::new(),
+        span,
+    );
 
     assert!(
         result.is_err(),
@@ -407,7 +432,14 @@ fn test_unify_variadic_zero_with_multi_param() {
         required_count: 3,
     };
 
-    let result = unify(&any_function, &concrete_fn, &mut subst, &mut state, span);
+    let result = unify(
+        &any_function,
+        &concrete_fn,
+        &mut subst,
+        &mut state,
+        &mut Vec::new(),
+        span,
+    );
 
     assert!(
         result.is_ok(),
@@ -493,6 +525,7 @@ fn test_unify_two_any_functions() {
         &any_function_2,
         &mut subst,
         &mut state,
+        &mut Vec::new(),
         span,
     );
 
@@ -523,7 +556,14 @@ fn test_unify_concrete_fn_with_any_function_symmetric() {
         required_count: 0,
     };
 
-    let result = unify(&concrete_fn, &any_function, &mut subst, &mut state, span);
+    let result = unify(
+        &concrete_fn,
+        &any_function,
+        &mut subst,
+        &mut state,
+        &mut Vec::new(),
+        span,
+    );
 
     assert!(
         result.is_ok(),
@@ -716,7 +756,14 @@ fn test_apply_type_recursive_does_not_bind_var_name() {
     // Create a TypeVar _t0 and bind it to Int
     state.levels.insert("_t0".to_string(), 0);
     let tv = Type::TypeVar("_t0".to_string(), 0);
-    let _ = unify(&tv, &Type::Int, &mut subst, &mut state, span);
+    let _ = unify(
+        &tv,
+        &Type::Int,
+        &mut subst,
+        &mut state,
+        &mut Vec::new(),
+        span,
+    );
 
     // Recursive type: μμ_var.{head: _t0, tail: TypeVar(μ_var, 0)}
     // The body contains _t0 which should be substituted to Int
@@ -792,7 +839,14 @@ fn test_unify_recursive_recursive_isomorphic() {
         })),
     };
 
-    let result = unify(&rec_a, &rec_b, &mut subst, &mut state, span);
+    let result = unify(
+        &rec_a,
+        &rec_b,
+        &mut subst,
+        &mut state,
+        &mut Vec::new(),
+        span,
+    );
 
     assert!(
         result.is_ok(),
@@ -836,7 +890,14 @@ fn test_unify_recursive_recursive_incompatible_fields() {
         })),
     };
 
-    let result = unify(&rec_int, &rec_str, &mut subst, &mut state, span);
+    let result = unify(
+        &rec_int,
+        &rec_str,
+        &mut subst,
+        &mut state,
+        &mut Vec::new(),
+        span,
+    );
 
     assert!(
         result.is_err(),
@@ -869,7 +930,7 @@ fn test_unify_typevar_binds_to_recursive_type() {
         })),
     };
 
-    let result = unify(&tv, &rec_ty, &mut subst, &mut state, span);
+    let result = unify(&tv, &rec_ty, &mut subst, &mut state, &mut Vec::new(), span);
 
     assert!(
         result.is_ok(),
@@ -922,7 +983,14 @@ fn test_unify_recursive_left_with_typevar_right() {
         tail: crate::type_def::RowTail::Empty,
     });
 
-    let result = unify(&rec_ty, &record_ty, &mut subst, &mut state, span);
+    let result = unify(
+        &rec_ty,
+        &record_ty,
+        &mut subst,
+        &mut state,
+        &mut Vec::new(),
+        span,
+    );
 
     assert!(
         result.is_ok(),
@@ -959,7 +1027,14 @@ fn test_unify_concrete_left_with_recursive_right() {
         })),
     };
 
-    let result = unify(&record_ty, &rec_ty, &mut subst, &mut state, span);
+    let result = unify(
+        &record_ty,
+        &rec_ty,
+        &mut subst,
+        &mut state,
+        &mut Vec::new(),
+        span,
+    );
 
     assert!(
         result.is_ok(),
@@ -1052,7 +1127,14 @@ fn test_handle_capability_partialeq_limitation() {
     let mut state = InferState::new();
     let mut subst = Substitution::new();
 
-    let result = unify(&handle_a, &handle_b, &mut subst, &mut state, Span::origin());
+    let result = unify(
+        &handle_a,
+        &handle_b,
+        &mut subst,
+        &mut state,
+        &mut Vec::new(),
+        Span::origin(),
+    );
 
     assert!(
         result.is_ok(),
@@ -1124,18 +1206,25 @@ fn test_reverse_fd_back_propagates_determining_type() {
     state.levels.insert("t1".to_string(), 0);
 
     // Add the constraint: MySeq [t0, t1]
-    state.constraints.push(Constraint::Class {
+    let mut constraints: Vec<Constraint> = vec![Constraint::Class {
         class: my_class,
         vars: vec!["t0".to_string(), "t1".to_string()],
         origin_name: None,
         origin_span: None,
-    });
+    }];
 
     // Unify t1 (determined position) with Str.
     // This should trigger the reverse FD and back-propagate t0 = Int.
     let mut subst = Substitution::new();
     let t1 = Type::TypeVar("t1".to_string(), 0);
-    let result = unify(&t1, &Type::Str, &mut subst, &mut state, Span::origin());
+    let result = unify(
+        &t1,
+        &Type::Str,
+        &mut subst,
+        &mut state,
+        &mut constraints,
+        Span::origin(),
+    );
 
     assert!(
         result.is_ok(),
@@ -1204,17 +1293,24 @@ fn test_reverse_fd_does_not_fire_when_not_injective() {
     state.levels.insert("t0".to_string(), 0);
     state.levels.insert("t1".to_string(), 0);
 
-    state.constraints.push(Constraint::Class {
+    let mut constraints: Vec<Constraint> = vec![Constraint::Class {
         class: my_class,
         vars: vec!["t0".to_string(), "t1".to_string()],
         origin_name: None,
         origin_span: None,
-    });
+    }];
 
     // Unify t1 with Str — should NOT back-propagate t0.
     let mut subst = Substitution::new();
     let t1 = Type::TypeVar("t1".to_string(), 0);
-    let result = unify(&t1, &Type::Str, &mut subst, &mut state, Span::origin());
+    let result = unify(
+        &t1,
+        &Type::Str,
+        &mut subst,
+        &mut state,
+        &mut constraints,
+        Span::origin(),
+    );
 
     assert!(
         result.is_ok(),
@@ -1466,12 +1562,12 @@ fn test_fd_in_progress_terminates_mutual_recursion() {
     state.levels.insert("t1".to_string(), 0);
 
     // Add the constraint.
-    state.constraints.push(Constraint::Class {
+    let mut constraints: Vec<Constraint> = vec![Constraint::Class {
         class: my_class,
         vars: vec!["t0".to_string(), "t1".to_string()],
         origin_name: None,
         origin_span: None,
-    });
+    }];
 
     // Unify t0 with Int. This should:
     // 1. Forward FD: t0=Int → t1=Str
@@ -1479,7 +1575,14 @@ fn test_fd_in_progress_terminates_mutual_recursion() {
     // Result: terminates successfully without infinite loop.
     let mut subst = Substitution::new();
     let t0 = Type::TypeVar("t0".to_string(), 0);
-    let result = unify(&t0, &Type::Int, &mut subst, &mut state, Span::origin());
+    let result = unify(
+        &t0,
+        &Type::Int,
+        &mut subst,
+        &mut state,
+        &mut constraints,
+        Span::origin(),
+    );
 
     assert!(
         result.is_ok(),
@@ -1620,7 +1723,7 @@ fn test_unify_tycon_same_name_ok() {
     let ty1 = Type::TyCon("Color".to_string());
     let ty2 = Type::TyCon("Color".to_string());
 
-    let result = unify(&ty1, &ty2, &mut subst, &mut state, span);
+    let result = unify(&ty1, &ty2, &mut subst, &mut state, &mut Vec::new(), span);
 
     assert!(
         result.is_ok(),
@@ -1640,7 +1743,7 @@ fn test_unify_tycon_different_name_err() {
     let ty1 = Type::TyCon("Color".to_string());
     let ty2 = Type::TyCon("Shape".to_string());
 
-    let result = unify(&ty1, &ty2, &mut subst, &mut state, span);
+    let result = unify(&ty1, &ty2, &mut subst, &mut state, &mut Vec::new(), span);
 
     assert!(
         result.is_err(),
@@ -1659,7 +1762,7 @@ fn test_unify_tycon_vs_empty_name_err() {
     let ty1 = Type::TyCon("Foo".to_string());
     let ty2 = Type::TyCon("".to_string());
 
-    let result = unify(&ty1, &ty2, &mut subst, &mut state, span);
+    let result = unify(&ty1, &ty2, &mut subst, &mut state, &mut Vec::new(), span);
 
     assert!(
         result.is_err(),
@@ -1693,7 +1796,7 @@ fn test_unify_uniform_same_value_type_records_ok() {
     let rec1 = Type::Record(row.clone());
     let rec2 = Type::Record(row);
 
-    let result = unify(&rec1, &rec2, &mut subst, &mut state, span);
+    let result = unify(&rec1, &rec2, &mut subst, &mut state, &mut Vec::new(), span);
 
     assert!(
         result.is_ok(),
@@ -1730,7 +1833,7 @@ fn test_unify_uniform_inconsistent_named_field_type_errors() {
     let rec1 = Type::Record(row1);
     let rec2 = Type::Record(row2);
 
-    let result = unify(&rec1, &rec2, &mut subst, &mut state, span);
+    let result = unify(&rec1, &rec2, &mut subst, &mut state, &mut Vec::new(), span);
 
     assert!(
         result.is_err(),
@@ -1774,7 +1877,14 @@ fn test_unify_empty_uniform_typevar_join() {
     let rec_lhs = Type::Record(row_lhs);
     let rec_rhs = Type::Record(row_rhs);
 
-    let result = unify(&rec_lhs, &rec_rhs, &mut subst, &mut state, span);
+    let result = unify(
+        &rec_lhs,
+        &rec_rhs,
+        &mut subst,
+        &mut state,
+        &mut Vec::new(),
+        span,
+    );
     assert!(
         result.is_ok(),
         "Empty+Uniform TypeVar join should succeed: {:?}",
@@ -1819,7 +1929,14 @@ fn test_unify_empty_uniform_concrete_subtype_fail() {
     let rec_lhs = Type::Record(row_lhs);
     let rec_rhs = Type::Record(row_rhs);
 
-    let result = unify(&rec_lhs, &rec_rhs, &mut subst, &mut state, span);
+    let result = unify(
+        &rec_lhs,
+        &rec_rhs,
+        &mut subst,
+        &mut state,
+        &mut Vec::new(),
+        span,
+    );
     assert!(
         result.is_err(),
         "Empty+Uniform with non-conforming concrete type should fail"
@@ -1923,5 +2040,221 @@ fn test_infer_variance_uniform_tail_covariant() {
         variances[0],
         Variance::Covariant,
         "Uniform tail value type param should be Covariant (positive polarity)"
+    );
+}
+
+// ============================================================================
+// T-1112: UNIFY-TYCON-EXPAND tests
+// ============================================================================
+
+/// T-1112a: UNIFY-TYCON-EXPAND — TyCon with registered body should unify with
+/// a NominalVariant that is a member of its union body.
+///
+/// When `@Color` (a zero-arity TyCon) is unified with `NominalVariant{tag:"Color.Red", ...}`,
+/// UNIFY-TYCON-EXPAND looks up the registered body (Union of NominalVariants) and checks
+/// membership via is_subtype.
+#[test]
+fn test_unify_tycon_expand_nominal_variant_member_ok() {
+    use std::sync::Arc;
+
+    let mut state = InferState::new();
+    let mut subst = Substitution::new();
+    let span = Span::origin();
+
+    // Build body: Union([NominalVariant{Red}, NominalVariant{Green}])
+    let red = Type::NominalVariant {
+        tag: "Color.Red".to_string(),
+        fields: crate::type_def::Row {
+            fields: BTreeMap::new(),
+            tail: crate::type_def::RowTail::Empty,
+        },
+    };
+    let green = Type::NominalVariant {
+        tag: "Color.Green".to_string(),
+        fields: crate::type_def::Row {
+            fields: BTreeMap::new(),
+            tail: crate::type_def::RowTail::Empty,
+        },
+    };
+    let body = Type::Union(vec![red.clone(), green.clone()]);
+
+    // Register TyConDef for "Color" in tycon_env with the body
+    let tycon_def = Arc::new(TyConDef {
+        params: vec![],
+        body: body.clone(),
+        constraints: vec![],
+        variance: vec![],
+        constructors: vec![("Color.Red".to_string(), 0), ("Color.Green".to_string(), 0)],
+        builtin_type: None,
+        annotation: None,
+        field_annotations: indexmap::IndexMap::new(),
+    });
+    state.tycon_env.insert("Color".to_string(), tycon_def);
+
+    let tycon = Type::TyCon("Color".to_string());
+
+    // Unify @Color with NominalVariant(Red) — should succeed via UNIFY-TYCON-EXPAND
+    let result = unify(
+        &tycon,
+        &red,
+        &mut subst,
+        &mut state,
+        &mut Vec::new(),
+        span.clone(),
+    );
+    assert!(
+        result.is_ok(),
+        "TyCon(@Color) should unify with NominalVariant(Red) via body expansion, got: {:?}",
+        result.unwrap_err()
+    );
+}
+
+/// T-1112b: UNIFY-TYCON-EXPAND — TyCon should NOT unify with a NominalVariant
+/// that is NOT a member of its union body.
+#[test]
+fn test_unify_tycon_expand_nominal_variant_non_member_fails() {
+    use std::sync::Arc;
+
+    let mut state = InferState::new();
+    let mut subst = Substitution::new();
+    let span = Span::origin();
+
+    let red = Type::NominalVariant {
+        tag: "Color.Red".to_string(),
+        fields: crate::type_def::Row {
+            fields: BTreeMap::new(),
+            tail: crate::type_def::RowTail::Empty,
+        },
+    };
+    let green = Type::NominalVariant {
+        tag: "Color.Green".to_string(),
+        fields: crate::type_def::Row {
+            fields: BTreeMap::new(),
+            tail: crate::type_def::RowTail::Empty,
+        },
+    };
+    let body = Type::Union(vec![red.clone(), green.clone()]);
+
+    let tycon_def = Arc::new(TyConDef {
+        params: vec![],
+        body,
+        constraints: vec![],
+        variance: vec![],
+        constructors: vec![("Color.Red".to_string(), 0), ("Color.Green".to_string(), 0)],
+        builtin_type: None,
+        annotation: None,
+        field_annotations: indexmap::IndexMap::new(),
+    });
+    state.tycon_env.insert("Color".to_string(), tycon_def);
+
+    let tycon = Type::TyCon("Color".to_string());
+
+    // Blue is not in the union — should fail
+    let blue = Type::NominalVariant {
+        tag: "Color.Blue".to_string(),
+        fields: crate::type_def::Row {
+            fields: BTreeMap::new(),
+            tail: crate::type_def::RowTail::Empty,
+        },
+    };
+    let result = unify(&tycon, &blue, &mut subst, &mut state, &mut Vec::new(), span);
+    assert!(
+        result.is_err(),
+        "TyCon(@Color) should NOT unify with NominalVariant(Blue) which is not in Color's union"
+    );
+}
+
+/// T-1112c: UNIFY-TYCON-EXPAND — TyCon with no registered body cannot unify with NominalVariant.
+///
+/// When the TyCon name is not in tycon_env, the type is opaque and NominalVariant unification
+/// must fail (type mismatch).
+#[test]
+fn test_unify_tycon_expand_no_registered_body_fails() {
+    let mut state = InferState::new();
+    let mut subst = Substitution::new();
+    let span = Span::origin();
+
+    // "Unknown" is not registered in tycon_env
+    let tycon = Type::TyCon("Unknown".to_string());
+    let variant = Type::NominalVariant {
+        tag: "Unknown.A".to_string(),
+        fields: crate::type_def::Row {
+            fields: BTreeMap::new(),
+            tail: crate::type_def::RowTail::Empty,
+        },
+    };
+
+    let result = unify(
+        &tycon,
+        &variant,
+        &mut subst,
+        &mut state,
+        &mut Vec::new(),
+        span,
+    );
+    assert!(
+        result.is_err(),
+        "TyCon with no registered body should not unify with NominalVariant"
+    );
+}
+
+/// T-1112d: UNIFY-TYCON-EXPAND symmetry — NominalVariant on LHS, TyCon on RHS.
+///
+/// The arm is symmetric: both (TyCon, NominalVariant) and (NominalVariant, TyCon)
+/// should produce the same result.
+#[test]
+fn test_unify_tycon_expand_symmetric() {
+    use std::sync::Arc;
+
+    let mut state = InferState::new();
+    let mut subst = Substitution::new();
+    let span = Span::origin();
+
+    let red = Type::NominalVariant {
+        tag: "Color.Red".to_string(),
+        fields: crate::type_def::Row {
+            fields: BTreeMap::new(),
+            tail: crate::type_def::RowTail::Empty,
+        },
+    };
+    let body = Type::Union(vec![red.clone()]);
+
+    let tycon_def = Arc::new(TyConDef {
+        params: vec![],
+        body,
+        constraints: vec![],
+        variance: vec![],
+        constructors: vec![("Color.Red".to_string(), 0)],
+        builtin_type: None,
+        annotation: None,
+        field_annotations: indexmap::IndexMap::new(),
+    });
+    state
+        .tycon_env
+        .insert("Color".to_string(), Arc::clone(&tycon_def));
+
+    let tycon = Type::TyCon("Color".to_string());
+
+    // (TyCon, NominalVariant) direction
+    let r1 = unify(
+        &tycon,
+        &red,
+        &mut subst,
+        &mut state,
+        &mut Vec::new(),
+        span.clone(),
+    );
+    // (NominalVariant, TyCon) direction
+    let r2 = unify(&red, &tycon, &mut subst, &mut state, &mut Vec::new(), span);
+
+    assert!(
+        r1.is_ok(),
+        "TyCon ~ NominalVariant should succeed: {:?}",
+        r1.unwrap_err()
+    );
+    assert!(
+        r2.is_ok(),
+        "NominalVariant ~ TyCon should succeed: {:?}",
+        r2.unwrap_err()
     );
 }

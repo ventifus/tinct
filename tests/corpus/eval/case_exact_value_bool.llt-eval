@@ -4,6 +4,3 @@
   _: "other"]
 === out
 String("yes")
-
-=== warn
-[TypeError] inaccessible match arm: reachable only via diverging (bottom) values

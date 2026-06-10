@@ -7,6 +7,3 @@
 [E002] undefined variable: ℊꜱʏᴍ⧼do-infer⧽8 (defined at 1:1-1:1) (called at 4:1-4:35)
   in [<dot-access> ...] at 4:1-4:35
   in expansion of `do` at 4:1
-
-=== warn
-[TypeError] cannot infer monad for [do] — add an explicit monad argument (e.g., [do result ...])

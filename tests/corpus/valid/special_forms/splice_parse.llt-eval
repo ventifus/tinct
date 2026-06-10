@@ -3,6 +3,3 @@
 [splice [quote [x: 1]] [quote [y: 2]]]
 === out
 [splice [quote ["x": 1]] [quote ["y": 2]]]
-
-=== warn
-[UndefinedVariable] undefined variable: splice

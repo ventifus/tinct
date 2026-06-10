@@ -3,8 +3,3 @@
 [$call f x]
 === out
 [call  f  x]
-
-=== warn
-[UndefinedVariable] undefined variable: call
-[UndefinedVariable] undefined variable: f
-[UndefinedVariable] undefined variable: x

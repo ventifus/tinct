@@ -1,6 +1,3 @@
 [f x y]
 === out
 [f x y]
-
-=== warn
-[UndefinedVariable] undefined variable: f

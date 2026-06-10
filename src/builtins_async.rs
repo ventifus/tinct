@@ -2737,6 +2737,43 @@ pub(crate) fn builtin_cell_set(
     })
 }
 
+/// Register `builtin-*` type aliases for async concurrency builtins (T-1102).
+///
+/// Each alias copies the TypeScheme from the canonical name already registered in
+/// `core_type_env`. Call this AFTER `core_type_env` has run.
+pub fn async_builtin_types(env: &mut crate::types::TypeEnv) {
+    env.alias_types(&[
+        ("builtin-task", "task"),
+        ("builtin-await", "await"),
+        ("builtin-channel", "channel"),
+        ("builtin-send", "send"),
+        ("builtin-recv", "recv"),
+        ("builtin-broadcast-channel", "broadcast-channel"),
+        ("builtin-oneshot-channel", "oneshot-channel"),
+        ("builtin-try-send", "try-send"),
+        ("builtin-select-once", "select-once"),
+        ("builtin-par", "par"),
+        ("builtin-par-map", "par-map"),
+        ("builtin-par-filter", "par-filter"),
+        ("builtin-signal-channel", "signal-channel"),
+        ("builtin-timer-channel", "timer-channel"),
+        ("builtin-watch-channel", "watch-channel"),
+        ("builtin-context", "context"),
+        ("builtin-with-cancel", "with-cancel"),
+        ("builtin-with-timeout", "with-timeout"),
+        ("builtin-with-deadline", "with-deadline"),
+        ("builtin-cancel-task", "cancel-task"),
+        ("builtin-cancel-root", "cancel-root"),
+        ("builtin-drain", "drain"),
+        ("builtin-exit-now", "exit-now"),
+        ("builtin-non-cancellable", "non-cancellable"),
+        ("builtin-with-context", "with-context"),
+        ("builtin-reactive-cell", "reactive-cell"),
+        ("builtin-cell-get", "cell-get"),
+        ("builtin-cell-set", "cell-set"),
+    ]);
+}
+
 #[cfg(test)]
 mod tests {
     /// Verify that task+await works: spawn a zero-arg function and await its result.
@@ -3004,41 +3041,4 @@ mod tests {
             "both awaits should have the same error, got: {output}"
         );
     }
-}
-
-/// Register `builtin-*` type aliases for async concurrency builtins (T-1102).
-///
-/// Each alias copies the TypeScheme from the canonical name already registered in
-/// `core_type_env`. Call this AFTER `core_type_env` has run.
-pub fn async_builtin_types(env: &mut crate::types::TypeEnv) {
-    env.alias_types(&[
-        ("builtin-task", "task"),
-        ("builtin-await", "await"),
-        ("builtin-channel", "channel"),
-        ("builtin-send", "send"),
-        ("builtin-recv", "recv"),
-        ("builtin-broadcast-channel", "broadcast-channel"),
-        ("builtin-oneshot-channel", "oneshot-channel"),
-        ("builtin-try-send", "try-send"),
-        ("builtin-select-once", "select-once"),
-        ("builtin-par", "par"),
-        ("builtin-par-map", "par-map"),
-        ("builtin-par-filter", "par-filter"),
-        ("builtin-signal-channel", "signal-channel"),
-        ("builtin-timer-channel", "timer-channel"),
-        ("builtin-watch-channel", "watch-channel"),
-        ("builtin-context", "context"),
-        ("builtin-with-cancel", "with-cancel"),
-        ("builtin-with-timeout", "with-timeout"),
-        ("builtin-with-deadline", "with-deadline"),
-        ("builtin-cancel-task", "cancel-task"),
-        ("builtin-cancel-root", "cancel-root"),
-        ("builtin-drain", "drain"),
-        ("builtin-exit-now", "exit-now"),
-        ("builtin-non-cancellable", "non-cancellable"),
-        ("builtin-with-context", "with-context"),
-        ("builtin-reactive-cell", "reactive-cell"),
-        ("builtin-cell-get", "cell-get"),
-        ("builtin-cell-set", "cell-set"),
-    ]);
 }

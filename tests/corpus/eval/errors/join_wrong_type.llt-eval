@@ -11,6 +11,3 @@
   3024 | """] [let sep@String xs] [builtin-join sep xs]]
        |                          ^^^^^^^^^^^^^^^^^^^^^
   in [join ...] at 1:1-1:18
-
-=== warn
-[UnificationFailure] cannot unify String with 42

@@ -23,8 +23,5 @@ i"$a and $b"
 
 
 
-=== error
-[E080] macro 'tmpl' returned invalid AST: missing required field: type (defined at 2:1-2:13)
-
-=== warn
-[E080] macro 'tmpl' returned invalid AST: missing required field: type (defined at 2:1-2:13)
+=== out
+String("foo and bar")

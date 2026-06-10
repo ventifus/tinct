@@ -17,6 +17,3 @@
 [builtin-pow 2 10]
 === out
 Float(1024)
-
-=== warn
-[UndefinedVariable] undefined variable: builtin-pow

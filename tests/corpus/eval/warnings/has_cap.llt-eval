@@ -6,4 +6,4 @@
 Bool(true)
 
 === warn
-[UndefinedVariable] undefined variable: has-cap?
+[UnificationFailure] cannot unify Handle[WriteHandle] with Handle[[__cap_flag_readable: []]]

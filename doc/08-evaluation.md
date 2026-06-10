@@ -1021,7 +1021,7 @@ When a function body contains multiple expressions, the parser wraps them in `Su
 **Semantics:**
 
 - **Environment extension:** Each intermediate expression (if it's a dict) adds its bindings to the environment for subsequent expressions
-- **Strict intermediate bindings:** Intermediate dict values are eagerly materialized when inserted into the scope chain — dead bindings fire immediately (SEQ-SCOPE semantics)
+- **Lazy intermediate bindings:** Intermediate dict entry values are inserted as lazy thunks — dead bindings that are never accessed never fire (SEQ-SCOPE semantics)
 - **Result is final expression:** The value of the last expression in the sequence is the function's return value
 - **CEK machine routing:** `CoreSurfaceExpression::Sequential` is handled directly inside `eval_core_expr` in `eval.rs` via a recursive async call — it iterates the expression list, materializing each intermediate dict to extend the scope chain, then tail-calls into the final expression. This path uses the Rust async call stack rather than the CEK continuation stack (tracked in the issue tracker)
 
@@ -1039,7 +1039,7 @@ Tinct's evaluation model is lazy by default — values remain unevaluated until 
 
 3. **Guarded default fallback:** When a guard fails and a `default:` value is provided, the default is evaluated and materialized immediately. This prevents deferred errors from propagating when the guard explicitly signals a fallback path should be taken.
 
-4. **Sequential expression scope chain (SEQ-SCOPE):** Named bindings from intermediate expressions in a multi-expression document are materialized strictly — both keys and values are eagerly forced at binding time. Dead bindings fire immediately rather than being deferred. See [Documents & Pipelines](09-documents.md) §Scope Chain Semantics for the formal specification.
+4. ~~Sequential expression scope chain (SEQ-SCOPE) was previously listed as a strictness exception.~~ SEQ-SCOPE now uses lazy semantics: named entry values from intermediate expressions are inserted as thunks, not forced. This is no longer a strictness exception — it is consistent with tinct's lazy-everywhere model. See [Documents & Pipelines](09-documents.md) §Scope Chain Semantics for the updated formal specification.
 
 ### Overlay Eagerness
 
@@ -1163,7 +1163,7 @@ This table documents the laziness behavior of every operation and the rationale 
 | `$include` | Evaluates file; returns cached thunk on re-include | Include memoization |
 | **Document Pipeline** | | |
 | `%` (document pipeline) | Bound as `Unevaluated` thunk across `---` boundary | `---` is not a materialization point — laziness is preserved across documents |
-| Document scope chain (`eval_surface_document`) | Both keys and values materialized strictly at binding time | Strict let* semantics: values are eagerly forced when inserted into the child env, so dead-but-erroring bindings fire immediately per SEQ-SCOPE spec. (`eval.rs`) |
+| Document scope chain (`eval_surface_document`) | Intermediate dict is materialized to WHNF to extract keys; entry values inserted as lazy thunks | Lazy SEQ-SCOPE semantics: dead bindings that are never accessed never fire. (`eval.rs`) |
 | **Internal (eval.rs)** | | |
 | `eval_key` (dict construction) | Materializes all dict keys | Keys must be known for dict insertion |
 | `builtin_keys` | Materializes dict | Keys are never thunks |

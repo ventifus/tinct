@@ -5,6 +5,3 @@
 [0]]
 === out
 [a [0]]
-
-=== warn
-[UndefinedVariable] undefined variable: a

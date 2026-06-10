@@ -3,6 +3,3 @@
 [length [take-while [fn [let x] [< x 500]] d]]
 === out
 Int(500)
-
-=== warn
-[UnificationFailure] cannot unify [] with <error>

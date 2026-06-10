@@ -5,6 +5,3 @@
 [MonadMaybe.bind [Some 42] [fn [let x] [Some [+ x 1]]]]
 === out
 Variant(Maybe.Some, Int(43))
-
-=== warn
-[NotARecord] expected record type, got <error>

@@ -1,6 +1,3 @@
 [@[type: "Number"] 42]
 === out
 [@["type": "Number"] 42]
-
-=== warn
-[UnificationFailure] cannot unify "Number" with 42

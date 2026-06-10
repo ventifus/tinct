@@ -5,6 +5,3 @@
 [length [from-entries [collect pairs]]]
 === out
 Int(1000)
-
-=== warn
-[UnificationFailure] cannot unify [] with <error>

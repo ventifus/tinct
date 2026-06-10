@@ -5,6 +5,3 @@
 [[ast-of %.add].type]
 === out
 Dict({0: String("fn")})
-
-=== warn
-[NotARecord] expected record type, got Top

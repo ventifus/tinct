@@ -3,6 +3,3 @@
 _
 === error
 [E002] undefined variable: _ (defined at 2:1-2:2)
-
-=== warn
-[UndefinedVariable] undefined variable: _

@@ -13,7 +13,7 @@ use std::sync::Arc;
 use super::{check_surface_expr, infer_surface_expr, TypeMap};
 use crate::ast::{Annotation, Param, Pattern, Span, Spanned, SurfaceExpression, SurfaceNode};
 use crate::type_errors::{GenericTypeError, TypeErrorTyped};
-use crate::types::{instantiate_scheme, unify, InferState, Type, TypeEnv, TypeError};
+use crate::types::{instantiate_scheme, unify, Constraint, InferState, Type, TypeEnv, TypeError};
 
 // resolve_annotation and resolve_fn_metadata come from typecheck_annot via the
 // `use typecheck_annot::*` glob in typecheck.rs; they are re-exported into super's
@@ -55,13 +55,16 @@ pub(crate) fn elaborate_pattern(
     match pat {
         Pattern::TypeAssertPending { annotation, inner } => {
             // Resolve the annotation to a concrete Type.
+            let mut pat_constraints: Vec<Constraint> = Vec::new();
             let resolved_type = resolve_annotation(
                 &annotation.node,
                 env,
                 annotation.span.clone(),
                 state,
+                &mut pat_constraints,
                 &mut None,
                 &mut None,
+                None,
             )
             .map_err(|e| vec![e])?;
 
@@ -153,7 +156,7 @@ pub(crate) fn elaborate_pattern(
                                     "unqualified constructor pattern tag '{tag}' — use qualified form '{qualified}'"
                                 ),
                                 span: span.clone(),
-                                notes: vec![],
+                                notes: vec![], call_stack: vec![],
                             },
                         )]);
                     }
@@ -263,6 +266,7 @@ pub(crate) fn typecheck_case_arm(
     scrutinee_ty: &Type,
     env: &Rc<TypeEnv>,
     state: &mut InferState,
+    constraints: &mut Vec<Constraint>,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
     match &pattern.expr {
@@ -330,6 +334,7 @@ pub(crate) fn typecheck_case_arm(
                                     scheme,
                                     state.level,
                                     state,
+                                    constraints,
                                     Some(&constructor_name),
                                     Some(binding.span.clone()),
                                 );
@@ -411,8 +416,10 @@ pub(crate) fn typecheck_case_arm(
                                 env,
                                 annotation.span.clone(),
                                 state,
+                                constraints,
                                 &mut None,
                                 &mut None,
+                                None,
                             )
                             .map_err(|e| vec![e])?;
 
@@ -466,8 +473,10 @@ pub(crate) fn typecheck_case_arm(
                                         env,
                                         annotation.span.clone(),
                                         state,
+                                        constraints,
                                         &mut None,
                                         &mut None,
+                                        None,
                                     )
                                     .map_err(|e| vec![e])?;
                                     arm_env.insert(name.clone(), ann_ty);
@@ -485,6 +494,7 @@ pub(crate) fn typecheck_case_arm(
                             message: "unsupported binding pattern in case arm".to_string(),
                             span: binding.span.clone(),
                             notes: vec![],
+                            call_stack: vec![],
                         })]);
                     }
                 }
@@ -492,13 +502,13 @@ pub(crate) fn typecheck_case_arm(
 
             // Type-check body with extended environment (body is already Arc<SurfaceNode>)
             let arm_env = Rc::new(arm_env);
-            infer_surface_expr(body, &arm_env, state, type_map)
+            infer_surface_expr(body, &arm_env, state, constraints, type_map)
         }
 
         _ => {
             // Exact-value match: infer pattern expression type, then infer body.
             // Both pattern and body are already Arc<SurfaceNode> — no conversion needed.
-            let pattern_ty = infer_surface_expr(pattern, env, state, type_map)?;
+            let pattern_ty = infer_surface_expr(pattern, env, state, constraints, type_map)?;
 
             // T020: Dead-arm warning — check if pattern type is disjoint from scrutinee type.
             // If types_are_disjoint(scrutinee_ty, pattern_ty) is true, the arm can never match
@@ -533,11 +543,12 @@ pub(crate) fn typecheck_case_arm(
             }
 
             // Body is checked in the enclosing environment (no new bindings from exact-value match)
-            infer_surface_expr(body, env, state, type_map)
+            infer_surface_expr(body, env, state, constraints, type_map)
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn infer_fn(
     return_ann: &Option<Spanned<Annotation>>,
     params: &[Spanned<Param>],
@@ -545,6 +556,7 @@ pub(crate) fn infer_fn(
     env: &Rc<TypeEnv>,
     _span: Span,
     state: &mut InferState,
+    constraints: &mut Vec<Constraint>,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
     // Create a fresh annotation mapping for this function to prevent
@@ -580,8 +592,10 @@ pub(crate) fn infer_fn(
                     env,
                     ann.span.clone(),
                     state,
+                    constraints,
                     &mut ann_mapping_opt,
                     &mut row_ann_mapping_opt,
+                    None,
                 ),
                 // Unannotated params use Unknown (gradual typing escape hatch).
                 //
@@ -647,7 +661,7 @@ pub(crate) fn infer_fn(
                             return Err(vec![TypeErrorTyped::Generic(GenericTypeError {
                                 message: "fn annotation must use either named keys (return:, constraint:, doc:, bind:, kinds:) or positional entries (union return type), not both".to_string(),
                                 span: ann.span.clone(),
-                                notes: vec![],
+                                notes: vec![], call_stack: vec![],
                             })]);
                         }
                         // Function metadata dict: extract return type from return: key.
@@ -656,8 +670,10 @@ pub(crate) fn infer_fn(
                             env,
                             ann.span.clone(),
                             state,
+                            constraints,
                             &mut ann_mapping_opt,
                             &mut row_ann_mapping_opt,
+                            None,
                         )
                         .map_err(|e| vec![e])?;
                         ret
@@ -669,8 +685,10 @@ pub(crate) fn infer_fn(
                             env,
                             ann.span.clone(),
                             state,
+                            constraints,
                             &mut ann_mapping_opt,
                             &mut row_ann_mapping_opt,
+                            None,
                         )
                         .map_err(|e| vec![e])?
                     }
@@ -682,8 +700,10 @@ pub(crate) fn infer_fn(
                         env,
                         ann.span.clone(),
                         state,
+                        constraints,
                         &mut ann_mapping_opt,
                         &mut row_ann_mapping_opt,
+                        None,
                     )
                     .map_err(|e| vec![e])?
                 }
@@ -700,10 +720,17 @@ pub(crate) fn infer_fn(
             // is_subtype(IntLiteral(42), TypeVar("_t5")) = false would reject valid code.
             // Unification mode binds the TypeVars via constraint solving.
             let result = if actual_ann.has_inference_vars() {
-                let body_ty = infer_surface_expr(body, &fn_env, state, type_map)?;
+                let body_ty = infer_surface_expr(body, &fn_env, state, constraints, type_map)?;
                 // Borrow-split: mem::take + restore avoids simultaneous &mut state.subst and &mut state
                 let mut subst = std::mem::take(&mut state.subst);
-                let result = unify(&body_ty, &actual_ann, &mut subst, state, body.span.clone());
+                let result = unify(
+                    &body_ty,
+                    &actual_ann,
+                    &mut subst,
+                    state,
+                    constraints,
+                    body.span.clone(),
+                );
                 state.subst = subst;
                 result.map_err(|e| vec![e])?;
                 // Apply substitution to resolve any TypeVars bound during unification.
@@ -713,7 +740,7 @@ pub(crate) fn infer_fn(
                 state.subst.apply(&actual_ann)
             } else {
                 // Use checking mode for concrete return types (no type variables)
-                check_surface_expr(body, &actual_ann, &fn_env, state, type_map)?;
+                check_surface_expr(body, &actual_ann, &fn_env, state, constraints, type_map)?;
                 actual_ann
             };
 
@@ -721,7 +748,7 @@ pub(crate) fn infer_fn(
             state.expected_return = prev_expected_return;
             result
         }
-        None => infer_surface_expr(body, &fn_env, state, type_map)?,
+        None => infer_surface_expr(body, &fn_env, state, constraints, type_map)?,
     };
 
     // Check if any parameter is variadic

@@ -20,9 +20,3 @@
   in [/ ...] at 13:3-13:10
   in macro:will-error at 16:1-16:19
   in in expansion of `will-error` at 16:1-16:19
-
-=== warn
-[E080] macro 'will-error' expansion result failed to evaluate: /: division by zero (defined at 16:1-16:19)
-  in [/ ...] at 13:3-13:10
-  in macro:will-error at 16:1-16:19
-  in in expansion of `will-error` at 16:1-16:19

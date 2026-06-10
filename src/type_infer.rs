@@ -72,16 +72,6 @@ pub struct InferState {
     /// inference, so that constraints from `$x.field1` are visible when processing
     /// `$x.field2` in the same expression. See doc/07-type-extensions.md Part 5.
     pub subst: Substitution,
-    /// Accumulated type class constraints on type variables.
-    /// Constraints are generated when overloaded builtins are called with type variables.
-    ///
-    /// **Scoping contract**: On the `infer_dict` path, `state.constraints` is cleared via
-    /// `std::mem::take` after each entry's inference. The collected constraints are stored
-    /// per-entry in `typecheck_dict.rs` and passed explicitly to `generalize_with_doc` —
-    /// `generalize_with_doc` does NOT read this field. This field is used by coherence probes
-    /// in `type_class.rs` (which save/restore it around probes) and by `type_unify.rs`
-    /// (constraint transfer during TypeVar→TypeVar binding).
-    pub constraints: Vec<Constraint>,
     /// Kind environment: maps TypeVar names to their kinds.
     /// Populated during class method processing (Kind::Operator) and when `key@"k"` annotations
     /// are resolved (Kind::Label). Used to prevent promotion of label-kinded TypeVars and to
@@ -187,16 +177,6 @@ pub struct InferState {
     /// Active type parameter scope for TypeAlias body resolution (T-951).
     ///
     /// When `Some(params)`: `resolve_type_name` enforces that lowercase names are TypeVars
-    /// ONLY if they are in `params`. Unknown lowercase names are a type error rather than
-    /// silently creating a fresh TypeVar. This implements the "explicit type params" requirement
-    /// from `doc/whatif/user-type-constructors.md` §Unified [type ...] Syntax rule 1.
-    ///
-    /// Set to `Some(param_names)` before resolving a TypeAlias body and cleared immediately after.
-    /// All other inference code leaves this as `None` (no scope enforcement).
-    ///
-    /// TODO(T-1022): Refactor to explicit parameter threaded through resolve_annotation,
-    /// resolve_type_expr, and resolve_type_dict instead of mutable state.
-    pub type_params_scope: Option<std::collections::HashSet<String>>,
     /// Type-stage evaluation environment extending the prelude type-stage env with user file's
     /// type-stage sections. When `Some(env)`, `eval_type_stage_expr` uses this env instead of
     /// calling `build_type_stage_env()` (which only returns prelude bindings). This allows user
@@ -718,7 +698,6 @@ impl InferState {
             level: 0,
             levels: HashMap::new(),
             subst: Substitution::new(),
-            constraints: Vec::new(),
             kind_env,
             class_env,
             instance_env,
@@ -740,17 +719,21 @@ impl InferState {
             registered_nominal_tags: HashMap::new(),
             type_annotation_table: crate::ast::TypeAnnotationTable::new(),
             expects_resolved: HashMap::new(),
-            type_params_scope: None,
             type_stage_env: None,
         }
     }
 
-    /// Add a type class constraint to the inference state.
+    /// Add a type class constraint to the given constraint accumulator.
     /// The constraint is checked during instantiation.
     ///
     /// The class_name must be registered in class_env. If not found, this will panic
     /// (the caller is responsible for validating class existence before calling).
-    pub fn add_constraint(&mut self, class_name: impl Into<String>, var: impl Into<String>) {
+    pub fn add_constraint(
+        &self,
+        constraints: &mut Vec<Constraint>,
+        class_name: impl Into<String>,
+        var: impl Into<String>,
+    ) {
         let class_name = class_name.into();
         let class_decl = self.class_env.get(&class_name).unwrap_or_else(|| {
             panic!(
@@ -758,8 +741,7 @@ impl InferState {
                 class_name
             )
         });
-        self.constraints
-            .push(Constraint::new(Arc::new(class_decl.clone()), var));
+        constraints.push(Constraint::new(Arc::new(class_decl.clone()), var));
     }
 
     /// Create a fresh type variable at the current level and register it in `state.levels`.

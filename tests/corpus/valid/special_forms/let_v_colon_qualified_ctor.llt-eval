@@ -5,7 +5,3 @@
 [let v: Result.Ok]
 === out
 <error at 4:6-4:18>
-
-=== warn
-[TypeError] syntax error at 4:6 (cannot typecheck error node)
-[TypeError] binding declaration [let ...] is not valid in expression position

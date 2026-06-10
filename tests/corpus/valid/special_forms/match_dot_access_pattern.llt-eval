@@ -3,6 +3,3 @@
     _: "other"]
 === out
 [match x Color.Red "red" _ "other"]
-
-=== warn
-[UndefinedVariable] undefined variable: x

@@ -38,6 +38,7 @@
   in materialized at 450:3-460:81
   in [if ...] at 450:3-460:81
   in materialized at 448:19-460:82
-  in materialized at 567:5-571:65
+  in materialized at 572:5-572:17
   in [if ...] at 568:7-571:64
+  in accessing .value at 572:5-572:17
   in [<dot-access> ...] at 2:1-2:25

@@ -198,6 +198,7 @@ pub fn instantiate_scheme(
     scheme: &TypeScheme,
     level: u32,
     state: &mut InferState,
+    constraints: &mut Vec<Constraint>,
     origin_name: Option<&str>,
     origin_span: Option<Span>,
 ) -> Type {
@@ -241,7 +242,7 @@ pub fn instantiate_scheme(
                         let final_origin_span =
                             constraint_origin_span.clone().or(origin_span.clone());
 
-                        state.constraints.push(Constraint::Class {
+                        constraints.push(Constraint::Class {
                             class: Arc::clone(class),
                             vars: fresh_vars,
                             origin_name: final_origin_name,
@@ -272,7 +273,7 @@ pub fn instantiate_scheme(
                             }
                         };
 
-                        state.constraints.push(Constraint::HasField {
+                        constraints.push(Constraint::HasField {
                             label: fresh_label,
                             dict_var: fresh_dict_var.clone(),
                             field_var: fresh_field_var.clone(),
@@ -374,7 +375,7 @@ pub fn instantiate_scheme(
                         .or_else(|| origin_name.map(Arc::from));
                     let final_origin_span = constraint_origin_span.clone().or(origin_span.clone());
 
-                    state.constraints.push(Constraint::Class {
+                    constraints.push(Constraint::Class {
                         class: Arc::clone(class),
                         vars: fresh_vars,
                         origin_name: final_origin_name,
@@ -405,7 +406,7 @@ pub fn instantiate_scheme(
                         }
                     };
 
-                    state.constraints.push(Constraint::HasField {
+                    constraints.push(Constraint::HasField {
                         label: fresh_label,
                         dict_var: fresh_dict_var.clone(),
                         field_var: fresh_field_var.clone(),
@@ -447,13 +448,17 @@ pub(crate) fn simplify_constraints(class_env: &ClassEnv, constraints: &mut Vec<C
 ///
 /// Diagnostics are pushed to `state.diagnostics`. Uses a synthetic span (0:0) for warnings.
 /// Prefer `generalize_with_doc` when a real span is available.
-pub fn generalize(level: u32, ty: &Type, state: &mut InferState) -> TypeScheme {
-    let constraints_snap = state.constraints.clone();
+pub fn generalize(
+    level: u32,
+    ty: &Type,
+    state: &mut InferState,
+    constraints: &[Constraint],
+) -> TypeScheme {
     generalize_with_doc(
         level,
         ty,
         state,
-        &constraints_snap,
+        constraints,
         None,
         crate::ast::Span::origin(),
     )
@@ -1550,6 +1555,49 @@ pub fn format_type_error(err: &TypeError, source: &str, file_name: &str) -> Stri
         out.push_str(note);
     }
 
+    // Call-chain context frames (B-374, B-379).
+    //
+    // Frames are ordered innermost-first (index 0 = the directly enclosing call).
+    // Each frame is rendered as:
+    //
+    //   = note: in call to `map`
+    //    --> user.llt:10:5
+    //     |
+    //  10 | [map [* _ 2] xs]
+    //     |  ^^^
+    //
+    // When the frame span comes from a different file (prelude or included file),
+    // the file path from the span is used. When the frame span is a user-code span
+    // with no embedded source, only the location line is shown.
+    for frame in err.call_stack() {
+        let frame_line = frame.span.start.line;
+        let frame_col = frame.span.start.column;
+        out.push('\n');
+        out.push_str(&format!("  = note: {}\n", frame.label));
+        // Determine which file name to show for this frame.
+        let frame_file = frame
+            .span
+            .file
+            .as_ref()
+            .map(|sf| sf.path.as_ref())
+            .unwrap_or(file_name);
+        out.push_str(&format!("   --> {frame_file}:{frame_line}:{frame_col}"));
+        // Show snippet if source is available via the embedded SourceFile or the current source.
+        let snippet = if let Some(ref sf) = frame.span.file {
+            render_span_snippet(&sf.content, frame.span.clone())
+        } else {
+            render_span_snippet(source, frame.span.clone())
+        };
+        if let Some(snip) = snippet {
+            out.push('\n');
+            out.push_str("    |");
+            for ln in snip.lines() {
+                out.push('\n');
+                out.push_str(ln);
+            }
+        }
+    }
+
     out
 }
 
@@ -2100,7 +2148,14 @@ mod help_suggestion_tests {
             inner_schemes: None,
         };
 
-        let instantiated = instantiate_scheme(&scheme, state.level, &mut state, None, None);
+        let instantiated = instantiate_scheme(
+            &scheme,
+            state.level,
+            &mut state,
+            &mut Vec::new(),
+            None,
+            None,
+        );
 
         // The instantiated type must be App(Operator(fresh_f), TypeVar(fresh_a, 1)).
         match instantiated {
@@ -2160,7 +2215,14 @@ mod help_suggestion_tests {
 
         let scheme = TypeScheme::mono(Type::Int);
 
-        let result = instantiate_scheme(&scheme, state.level, &mut state, None, None);
+        let result = instantiate_scheme(
+            &scheme,
+            state.level,
+            &mut state,
+            &mut Vec::new(),
+            None,
+            None,
+        );
 
         assert_eq!(
             result,

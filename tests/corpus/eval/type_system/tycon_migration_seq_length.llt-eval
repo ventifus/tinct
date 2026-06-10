@@ -8,6 +8,3 @@
 ]
 === out
 Dict({"xs": Dict({0: Int(1), 1: Int(2), 2: Int(3)}), "n": Int(3)})
-
-=== warn
-[UnificationFailure] cannot unify [] | String | Bytes | Seq[Top] with <error>

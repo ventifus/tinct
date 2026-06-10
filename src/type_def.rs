@@ -175,6 +175,41 @@ impl TyConDef {
     pub fn arity(&self) -> usize {
         self.params.len()
     }
+
+    /// Create a new TyConDef for a zero-arity nominal type with its resolved body.
+    ///
+    /// Convenience constructor for registration and testing (T-1112). The `body` is the
+    /// resolved union of NominalVariants for zero-arity ADTs (e.g., `Color` → `Union([Red, Green, Blue])`).
+    pub fn new_with_body(_name: impl Into<String>, body: Type) -> Self {
+        Self {
+            params: vec![],
+            body,
+            constraints: vec![],
+            variance: vec![],
+            constructors: vec![],
+            builtin_type: None,
+            annotation: None,
+            field_annotations: IndexMap::new(),
+        }
+    }
+
+    /// Create a new TyConDef for a parameterized type constructor with the given arity.
+    ///
+    /// Convenience constructor for registration and testing (T-1112). The body is set to
+    /// `Type::Unknown` (opaque until instantiated with type arguments).
+    pub fn new_parameterized(name: impl Into<String>, arity: usize) -> Self {
+        let _name = name.into(); // name is unused in main tree (TyCon carries name in Type::TyCon(String))
+        Self {
+            params: (0..arity).map(|i| format!("a{i}")).collect(),
+            body: Type::Unknown,
+            constraints: vec![],
+            variance: vec![Variance::Invariant; arity],
+            constructors: vec![],
+            builtin_type: None,
+            annotation: None,
+            field_annotations: IndexMap::new(),
+        }
+    }
 }
 
 /// Type constructor environment mapping type constructor names to their definitions.
@@ -2759,6 +2794,7 @@ pub fn check_kind_wellformed(
                     ),
                     span,
                     notes: vec![],
+                    call_stack: vec![],
                 }));
             }
             Ok(())
@@ -2800,7 +2836,7 @@ pub fn check_kind_wellformed(
                 return Err(TypeErrorTyped::Generic(GenericTypeError {
                     message: format!("kind mismatch: operator `{name}` has kind (* → *) but expected kind *; did you forget to apply it?"),
                     span,
-                    notes: vec![],
+                    notes: vec![], call_stack: vec![],
                 }));
             }
             // Bare Kind::Arrow in a type position is also kind-incorrect.
@@ -2809,7 +2845,7 @@ pub fn check_kind_wellformed(
                 return Err(TypeErrorTyped::Generic(GenericTypeError {
                     message: format!("kind mismatch: `{name}` is a higher-kinded type constructor but was used in a type position"),
                     span,
-                    notes: vec![],
+                    notes: vec![], call_stack: vec![],
                 }));
             }
             // If the name is not in kind_env, let it pass (freshly introduced Operator

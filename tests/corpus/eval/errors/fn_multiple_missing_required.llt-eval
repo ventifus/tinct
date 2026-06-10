@@ -3,6 +3,3 @@
 [call [fn [let a b c] a]]
 === error
 [E024] missing argument for required parameter 'a' (defined at 2:1-2:26)
-
-=== warn
-[ArityMismatch] expected 3 arguments, got 0

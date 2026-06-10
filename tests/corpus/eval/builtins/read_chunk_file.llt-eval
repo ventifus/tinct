@@ -7,7 +7,3 @@
 [str [bytes-str chunk] "/" [bytes-str rest]]
 === out
 String("hel/lo")
-
-=== warn
-[UnificationFailure] cannot unify Bytes with Bytes | []
-[UnificationFailure] cannot unify Bytes with Bytes | []

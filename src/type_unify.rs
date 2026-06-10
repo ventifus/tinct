@@ -302,6 +302,7 @@ fn check_constraints_on_var(
     concrete_ty: &Type,
     subst: &Substitution,
     state: &mut InferState,
+    constraints: &mut Vec<Constraint>,
     span: Span,
 ) -> Result<(), TypeError> {
     // Collect only the constraints that apply to var_name (immutable scan first).
@@ -321,8 +322,7 @@ fn check_constraints_on_var(
         },
     }
 
-    let applicable: Vec<ApplicableConstraint> = state
-        .constraints
+    let applicable: Vec<ApplicableConstraint> = constraints
         .iter()
         .filter_map(|c| match c {
             Constraint::Class { class, vars, .. } if vars.len() == 1 && vars[0] == var_name => {
@@ -374,7 +374,7 @@ fn check_constraints_on_var(
                             class
                         ),
                         span: span.clone(),
-                        notes: vec![],
+                        notes: vec![], call_stack: vec![],
                     }));
                 }
                 state.instance_resolution_depth += 1;
@@ -396,6 +396,7 @@ fn check_constraints_on_var(
                             ),
                             span: span.clone(),
                             notes: vec![],
+                            call_stack: vec![],
                         }));
                     }
                     Err(ambig_msg) => {
@@ -404,6 +405,7 @@ fn check_constraints_on_var(
                             message: ambig_msg,
                             span: span.clone(),
                             notes: vec![],
+                            call_stack: vec![],
                         }));
                     }
                 }
@@ -434,6 +436,7 @@ fn check_constraints_on_var(
                     concrete_ty,
                     subst,
                     state,
+                    constraints,
                     span.clone(),
                 );
                 if was_inserted {
@@ -468,6 +471,7 @@ fn improve_functional_dependency(
     bound_type: &Type,
     subst: &Substitution,
     state: &mut InferState,
+    constraints: &mut Vec<Constraint>,
     span: Span,
 ) -> Result<(), TypeError> {
     // Depth guard: prevent infinite recursion through the FD improvement cycle.
@@ -479,7 +483,7 @@ fn improve_functional_dependency(
                 MAX_FD_DEPTH, class
             ),
             span,
-            notes: vec![],
+            notes: vec![], call_stack: vec![],
         }));
     }
     state.fd_depth += 1;
@@ -492,6 +496,7 @@ fn improve_functional_dependency(
         bound_type,
         subst,
         state,
+        constraints,
         span,
     );
     state.fd_depth -= 1;
@@ -508,6 +513,7 @@ fn improve_functional_dependency_inner(
     bound_type: &Type,
     subst: &Substitution,
     state: &mut InferState,
+    constraints: &mut Vec<Constraint>,
     span: Span,
 ) -> Result<(), TypeError> {
     // For each functional dependency (determining → determined)
@@ -594,8 +600,14 @@ fn improve_functional_dependency_inner(
                         let det_type_var = Type::TypeVar(det_var.clone(), 0);
                         state.fd_in_progress.insert(det_var.clone());
                         let mut local_subst = std::mem::take(&mut state.subst);
-                        let result =
-                            unify(&det_type_var, det_ty, &mut local_subst, state, span.clone());
+                        let result = unify(
+                            &det_type_var,
+                            det_ty,
+                            &mut local_subst,
+                            state,
+                            constraints,
+                            span.clone(),
+                        );
                         state.subst = local_subst;
                         state.fd_in_progress.remove(det_var.as_str());
                         result?;
@@ -787,7 +799,7 @@ fn improve_functional_dependency_inner(
                                                         class, pos
                                                     ),
                                                     span: span.clone(),
-                                                    notes: vec![],
+                                                    notes: vec![], call_stack: vec![],
                                                 },
                                             )
                                         })?,
@@ -798,7 +810,7 @@ fn improve_functional_dependency_inner(
                                                 class
                                             ),
                                             span: span.clone(),
-                                            notes: vec![],
+                                            notes: vec![], call_stack: vec![],
                                         }));
                                     }
                                 }
@@ -811,6 +823,7 @@ fn improve_functional_dependency_inner(
                                     ),
                                     span: span.clone(),
                                     notes: vec![],
+                                    call_stack: vec![],
                                 }));
                             }
                         }
@@ -838,6 +851,7 @@ fn improve_functional_dependency_inner(
                             message: format!("no instance for {}", class),
                             span: span.clone(),
                             notes: vec![],
+                            call_stack: vec![],
                         }));
                     }
                 }
@@ -848,6 +862,7 @@ fn improve_functional_dependency_inner(
                 message: format!("unknown class {}", class),
                 span: span.clone(),
                 notes: vec![],
+                call_stack: vec![],
             }));
         };
 
@@ -889,6 +904,7 @@ fn improve_functional_dependency_inner(
                 &result_type,
                 &mut local_subst,
                 state,
+                constraints,
                 span.clone(),
             );
             state.subst = local_subst;
@@ -932,6 +948,7 @@ fn lookup_arithmetic_instance(
             ),
             span,
             notes: vec![],
+            call_stack: vec![],
         }));
     }
 
@@ -959,6 +976,7 @@ fn lookup_arithmetic_instance(
                 message: format!("no instance for {} {} {}", class, a, b),
                 span,
                 notes: vec![],
+                call_stack: vec![],
             })),
         },
         "Divisible" => match key {
@@ -977,6 +995,7 @@ fn lookup_arithmetic_instance(
                 message: format!("no instance for Divisible {} {}", a, b),
                 span,
                 notes: vec![],
+                call_stack: vec![],
             })),
         },
         _ => {
@@ -1012,7 +1031,7 @@ fn lookup_arithmetic_instance(
                                                 class, a, b, pos
                                             ),
                                             span: span.clone(),
-                                            notes: vec![],
+                                            notes: vec![], call_stack: vec![],
                                         })
                                     }),
                                 None => Err(TypeErrorTyped::Generic(GenericTypeError {
@@ -1021,7 +1040,7 @@ fn lookup_arithmetic_instance(
                                         class, a, b
                                     ),
                                     span,
-                                    notes: vec![],
+                                    notes: vec![], call_stack: vec![],
                                 })),
                             }
                         }
@@ -1032,6 +1051,7 @@ fn lookup_arithmetic_instance(
                             ),
                             span,
                             notes: vec![],
+                            call_stack: vec![],
                         })),
                     }
                 }
@@ -1039,6 +1059,7 @@ fn lookup_arithmetic_instance(
                     message: format!("no instance for {} {} {}", class, a, b),
                     span,
                     notes: vec![],
+                    call_stack: vec![],
                 })),
             }
         }
@@ -1107,7 +1128,12 @@ fn type_key(ty: &Type) -> &'static str {
 /// Promotion is now restricted to known primitive classes where literal instances entail
 /// parent instances (Numeric, Comparable, Equatable, Showable, Add, Sub, Mul, Div).
 /// For other classes, preserve the literal type and let instance resolution handle it.
-fn promote_literal_for_constrained_var(var_name: &str, ty: Type, state: &InferState) -> Type {
+fn promote_literal_for_constrained_var(
+    var_name: &str,
+    ty: Type,
+    constraints: &[Constraint],
+    state: &InferState,
+) -> Type {
     // Label-kinded TypeVars must not be promoted regardless of constraint presence
     // (preserves StringLiteral identity for field access)
     if state.kind_env.get(var_name) == Some(&Kind::Label) {
@@ -1128,7 +1154,7 @@ fn promote_literal_for_constrained_var(var_name: &str, ty: Type, state: &InferSt
         "Divisible",
     ];
 
-    let has_promotable_constraint = state.constraints.iter().any(|c| match c {
+    let has_promotable_constraint = constraints.iter().any(|c| match c {
         Constraint::Class { class, vars, .. } => {
             vars.iter().any(|v| v == var_name) && PROMOTABLE_CLASSES.contains(&class.name.as_str())
         }
@@ -1170,6 +1196,7 @@ pub fn resolve_has_field(
             message: "HasField recursion depth exceeded".to_string(),
             span,
             notes: vec![],
+            call_stack: vec![],
         }));
     }
 
@@ -1188,6 +1215,7 @@ pub fn resolve_has_field(
                         ),
                         span,
                         notes: vec![],
+                        call_stack: vec![],
                     }))
                 }
             }
@@ -1206,7 +1234,7 @@ pub fn resolve_has_field(
                 Err(TypeErrorTyped::Generic(GenericTypeError {
                     message: format!("record has no field '{}'", label_str),
                     span,
-                    notes: vec![],
+                    notes: vec![], call_stack: vec![],
                 }))
             }
         }
@@ -1244,14 +1272,14 @@ pub fn resolve_has_field(
         Type::TypeVar(_, _) => Err(TypeErrorTyped::Generic(GenericTypeError {
             message: "cannot resolve HasField constraint on unbound type variable (expected caller to defer)".to_string(),
             span,
-            notes: vec![],
+            notes: vec![], call_stack: vec![],
         })),
 
         // All other types don't support field access
         _ => Err(TypeErrorTyped::Generic(GenericTypeError {
             message: format!("type {} does not support field access", dict_type),
             span,
-            notes: vec![],
+            notes: vec![], call_stack: vec![],
         })),
     }
 }
@@ -1401,7 +1429,7 @@ impl Substitution {
                     len, MAX_SUBST_SIZE
                 ),
                 span,
-                notes: vec![],
+                notes: vec![], call_stack: vec![],
             }))
         } else {
             Ok(())
@@ -1769,6 +1797,7 @@ fn unify_rows(
     row2: &Row,
     subst: &mut Substitution,
     state: &mut InferState,
+    constraints: &mut Vec<Constraint>,
     span: Span,
 ) -> Result<(), TypeError> {
     // Fast-path: identical field sets — unify all named fields, then fall through to tail.
@@ -1779,7 +1808,7 @@ fn unify_rows(
     {
         for (key, ty1) in &row1.fields {
             let ty2 = &row2.fields[key];
-            unify(ty1, ty2, subst, state, span.clone())?;
+            unify(ty1, ty2, subst, state, constraints, span.clone())?;
         }
         // Fall through to tail unification — do NOT return here.
     } else {
@@ -1794,7 +1823,7 @@ fn unify_rows(
             }
             if let Some(ty2) = row2.fields.get(key) {
                 shared_count += 1;
-                unify(ty1, ty2, subst, state, span.clone())?;
+                unify(ty1, ty2, subst, state, constraints, span.clone())?;
             }
         }
         for ty2 in row2.fields.values() {
@@ -1840,6 +1869,7 @@ fn unify_rows(
                     got: Type::Record(row2.clone()),
                     span,
                     notes: vec![],
+                    call_stack: vec![],
                 }));
             }
         }
@@ -1856,14 +1886,14 @@ fn unify_rows(
         // Both Uniform — unify value types, key types, then validate named fields
         // (T-1007/UNIFY-UNIFORM steps 1-3).
         (RowTail::Uniform { key: k1, value: v1 }, RowTail::Uniform { key: k2, value: v2 }) => {
-            unify(v1, v2, subst, state, span.clone())?;
+            unify(v1, v2, subst, state, constraints, span.clone())?;
 
             // B-327: Unify key type constraints when both sides specify them.
             // When only one side specifies a key type (asymmetric), the unconstrained
             // side is implicitly compatible with any key type (Unknown semantics) and
             // no error is emitted — the keyed side's constraint is preserved in its row.
             if let (Some(k1_ty), Some(k2_ty)) = (k1, k2) {
-                unify(k1_ty, k2_ty, subst, state, span.clone())?;
+                unify(k1_ty, k2_ty, subst, state, constraints, span.clone())?;
             }
 
             // UNIFY-UNIFORM steps 2-3: after unifying the value types, apply the
@@ -1891,6 +1921,7 @@ fn unify_rows(
                         &join,
                         subst,
                         state,
+                        constraints,
                         span.clone(),
                     )?;
                 } else if !v_fixed.has_inference_vars() {
@@ -1903,7 +1934,7 @@ fn unify_rows(
                                     "field type {field_fixed} does not conform to Uniform constraint {v_fixed}"
                                 ),
                                 span: span.clone(),
-                                notes: vec![],
+                                notes: vec![], call_stack: vec![],
                             }));
                         }
                     }
@@ -1953,6 +1984,7 @@ fn unify_rows(
                     &join,
                     subst,
                     state,
+                    constraints,
                     span.clone(),
                 )?;
             } else if !v_fixed.has_inference_vars() {
@@ -1965,7 +1997,7 @@ fn unify_rows(
                                 "field type {field_fixed} does not conform to Uniform constraint {v_fixed}"
                             ),
                             span: span.clone(),
-                            notes: vec![],
+                            notes: vec![], call_stack: vec![],
                         }));
                     }
                 }
@@ -2126,10 +2158,9 @@ fn lower_levels_check_occurs(
 /// are NOT transferred — they reference the specific dict variable and must not migrate.
 ///
 /// Returns immediately if α has no class constraints (fast path for the common case).
-fn transfer_class_constraints(alpha: &str, beta: &str, state: &mut InferState) {
+fn transfer_class_constraints(alpha: &str, beta: &str, constraints: &mut Vec<Constraint>) {
     // Collect all Class constraints on α (both single-param and MPTC).
-    let alpha_constraints: Vec<(Arc<ClassDecl>, Vec<String>)> = state
-        .constraints
+    let alpha_constraints: Vec<(Arc<ClassDecl>, Vec<String>)> = constraints
         .iter()
         .filter_map(|c| match c {
             Constraint::Class { class, vars, .. } if vars.contains(&alpha.to_string()) => {
@@ -2144,8 +2175,7 @@ fn transfer_class_constraints(alpha: &str, beta: &str, state: &mut InferState) {
 
     // Transfer to β (deduplicated: only add if not already present).
     // F3 FIX: For MPTC constraints, substitute alpha→beta in the vars list.
-    let beta_existing: HashSet<Vec<String>> = state
-        .constraints
+    let beta_existing: HashSet<Vec<String>> = constraints
         .iter()
         .filter_map(|c| match c {
             Constraint::Class { class: _, vars, .. } if vars.contains(&beta.to_string()) => {
@@ -2170,7 +2200,7 @@ fn transfer_class_constraints(alpha: &str, beta: &str, state: &mut InferState) {
 
         // F3 FIX: Check if the renamed constraint already exists (avoid duplicates)
         if !beta_existing.contains(&renamed_vars) {
-            state.constraints.push(Constraint::Class {
+            constraints.push(Constraint::Class {
                 class,
                 vars: renamed_vars,
                 origin_name: None,
@@ -2202,6 +2232,7 @@ fn bind_single_type_var_from_compound(
     is_union: bool,
     subst: &mut Substitution,
     state: &mut InferState,
+    constraints: &mut Vec<Constraint>,
     span: Span,
 ) -> Result<(), TypeError> {
     // Partition into TypeVars and non-TypeVar (concrete) members
@@ -2228,6 +2259,7 @@ fn bind_single_type_var_from_compound(
             got: representative,
             span,
             notes: vec![],
+            call_stack: vec![],
         }));
     }
 
@@ -2259,11 +2291,20 @@ fn bind_single_type_var_from_compound(
             message: format!("infinite type: {var_name} occurs in {concrete}"),
             span,
             notes: vec![],
+            call_stack: vec![],
         }));
     }
 
-    let concrete_promoted = promote_literal_for_constrained_var(var_name, concrete.clone(), state);
-    check_constraints_on_var(var_name, &concrete_promoted, subst, state, span.clone())?;
+    let concrete_promoted =
+        promote_literal_for_constrained_var(var_name, concrete.clone(), constraints, state);
+    check_constraints_on_var(
+        var_name,
+        &concrete_promoted,
+        subst,
+        state,
+        constraints,
+        span.clone(),
+    )?;
     let var_level = state.levels.get(var_name).copied().unwrap_or(0);
     subst.bind_at_level(var_name.clone(), var_level, concrete_promoted);
     subst.check_size(span)
@@ -2274,6 +2315,7 @@ pub fn unify(
     b: &Type,
     subst: &mut Substitution,
     state: &mut InferState,
+    constraints: &mut Vec<Constraint>,
     span: Span,
 ) -> Result<(), TypeError> {
     // Apply current substitution to both sides (Robinson step: chase bound vars).
@@ -2373,7 +2415,7 @@ pub fn unify(
             // creation_level matches the TypeVar's level, keeping per-dict bindings local.
             if level_a >= level_b {
                 // Bind name_a → TypeVar(name_b)
-                transfer_class_constraints(name_a, name_b, state);
+                transfer_class_constraints(name_a, name_b, constraints);
                 subst.bind_at_level(
                     name_a.clone(),
                     level_a,
@@ -2381,7 +2423,7 @@ pub fn unify(
                 );
             } else {
                 // Bind name_b → TypeVar(name_a)
-                transfer_class_constraints(name_b, name_a, state);
+                transfer_class_constraints(name_b, name_a, constraints);
                 subst.bind_at_level(
                     name_b.clone(),
                     level_b,
@@ -2403,12 +2445,13 @@ pub fn unify(
                     message: format!("infinite type: {name} occurs in {b}"),
                     span,
                     notes: vec![],
+                    call_stack: vec![],
                 }));
             }
             // Promote literal types when binding a constrained type variable.
             // Without this, `[+ 1 2]` would bind _t0 to IntLiteral(1) and then fail
             // to unify IntLiteral(1) with IntLiteral(2) for the second argument.
-            let b = promote_literal_for_constrained_var(name, b, state);
+            let b = promote_literal_for_constrained_var(name, b, constraints, state);
 
             // CONSTRAINT TRANSFER: when binding α to β (both TypeVars or Operator), transfer Class
             // constraints from α to β instead of checking. β inherits α's obligations and will be
@@ -2416,16 +2459,16 @@ pub fn unify(
             // (they reference the dict variable, not the param).
             // bind_at_level routes the binding to the frame matching the TypeVar's creation level.
             if let Type::TypeVar(beta_name, _) = &b {
-                transfer_class_constraints(name, beta_name, state);
+                transfer_class_constraints(name, beta_name, constraints);
                 // After transferring constraints, bind α to β directly — no check_constraints_on_var
                 subst.bind_at_level(name.clone(), alpha_level, b);
             } else if let Type::Operator(beta_name) = &b {
-                transfer_class_constraints(name, beta_name, state);
+                transfer_class_constraints(name, beta_name, constraints);
                 // After transferring constraints, bind α to β directly — no check_constraints_on_var
                 subst.bind_at_level(name.clone(), alpha_level, b);
             } else {
                 // Binding α to a concrete type — check constraints normally
-                check_constraints_on_var(name, &b, subst, state, span.clone())?;
+                check_constraints_on_var(name, &b, subst, state, constraints, span.clone())?;
                 subst.bind_at_level(name.clone(), alpha_level, b);
             }
             subst.check_size(span)?;
@@ -2440,10 +2483,11 @@ pub fn unify(
                     message: format!("infinite type: {name} occurs in {a}"),
                     span,
                     notes: vec![],
+                    call_stack: vec![],
                 }));
             }
             // Promote literal types when binding a constrained type variable.
-            let a = promote_literal_for_constrained_var(name, a, state);
+            let a = promote_literal_for_constrained_var(name, a, constraints, state);
 
             // CONSTRAINT TRANSFER: when binding α to β (both TypeVars or Operator), transfer Class
             // constraints from α to β instead of checking. β inherits α's obligations and will be
@@ -2451,16 +2495,16 @@ pub fn unify(
             // (they reference the dict variable, not the param).
             // bind_at_level routes the binding to the frame matching the TypeVar's creation level.
             if let Type::TypeVar(beta_name, _) = &a {
-                transfer_class_constraints(name, beta_name, state);
+                transfer_class_constraints(name, beta_name, constraints);
                 // After transferring constraints, bind α to β directly — no check_constraints_on_var
                 subst.bind_at_level(name.clone(), alpha_level, a);
             } else if let Type::Operator(beta_name) = &a {
-                transfer_class_constraints(name, beta_name, state);
+                transfer_class_constraints(name, beta_name, constraints);
                 // After transferring constraints, bind α to β directly — no check_constraints_on_var
                 subst.bind_at_level(name.clone(), alpha_level, a);
             } else {
                 // Binding α to a concrete type — check constraints normally
-                check_constraints_on_var(name, &a, subst, state, span.clone())?;
+                check_constraints_on_var(name, &a, subst, state, constraints, span.clone())?;
                 subst.bind_at_level(name.clone(), alpha_level, a);
             }
             subst.check_size(span)?;
@@ -2502,7 +2546,7 @@ pub fn unify(
             let fresh = state.fresh_type_var();
             let opened_a = substitute_recvar(ba, va, &fresh);
             let opened_b = substitute_recvar(bb, vb, &fresh);
-            unify(&opened_a, &opened_b, subst, state, span)
+            unify(&opened_a, &opened_b, subst, state, constraints, span)
         }
 
         // Arm 4 (open-left): left is Recursive, right is a concrete type (not TypeVar — that
@@ -2511,7 +2555,7 @@ pub fn unify(
         (Type::Recursive { var: va, body: ba }, _) => {
             let fresh = state.fresh_type_var();
             let opened_a = substitute_recvar(ba, va, &fresh);
-            unify(&opened_a, &b, subst, state, span)
+            unify(&opened_a, &b, subst, state, constraints, span)
         }
 
         // Arm 5 (open-right): right is Recursive, left is a concrete type (not TypeVar — caught
@@ -2520,7 +2564,7 @@ pub fn unify(
         (_, Type::Recursive { var: vb, body: bb }) => {
             let fresh = state.fresh_type_var();
             let opened_b = substitute_recvar(bb, vb, &fresh);
-            unify(&a, &opened_b, subst, state, span)
+            unify(&a, &opened_b, subst, state, constraints, span)
         }
 
         // Literal type promotion shortcuts (performance optimization over U-SUBSUME).
@@ -2544,13 +2588,27 @@ pub fn unify(
         (Type::Float, Type::Number) | (Type::Number, Type::Float) => Ok(()),
         (Type::StringLiteral(_), Type::Str) | (Type::Str, Type::StringLiteral(_)) => Ok(()),
         // Same-value literals: covered by the `a == b` early-return above.
-        // Different-value literals of the same base type are NOT unifiable — they are distinct
-        // singleton types with no subtype relationship between them. U-SUBSUME (the
-        // is_subtype(a,b) || is_subtype(b,a) fallback) also fails because IntLiteral(n1)
-        // is not a subtype of IntLiteral(n2) when n1≠n2, so U-SUBSUME produces a type mismatch
-        // as well. Callers that need to accept either value must widen to Int/Str first (e.g.
-        // via constrained type variables with promote_literal_for_constrained_var, or dict
-        // field promotion in typecheck_dict).
+        // Different-value INTEGER literals: allow unification without rebinding.
+        //
+        // DESIGN NOTE (B-384): This arm is intentionally a no-op (no TypeVar rebinding)
+        // rather than a widening to Int. The reason: by the time two distinct IntLiterals
+        // reach this arm, the TypeVar that introduced the binding (e.g., `_t42` bound to
+        // IntLiteral(1) from the first argument) has already been committed in the
+        // substitution. Widening it here would require knowing which TypeVar introduced
+        // IntLiteral(n1) — that information is not available at this match site.
+        //
+        // What this arm DOES provide: it prevents false UnificationFailure warnings for
+        // call sites like `[= [x: 1] [x: 2]]` where the same polymorphic TypeVar is
+        // unified against two different integer literals. The arm succeeds (Ok(()))
+        // without changing the substitution, which is correct for the single-arg-call
+        // scenario (the TypeVar stays at IntLiteral(1), the narrower type). For the
+        // two-different-literal case, the arm prevents a spurious warning at the cost of
+        // not widening to Int — acceptable since the subsequent call-site check at
+        // check_constraints_on_var uses widen_literal_types to recover Int precision.
+        //
+        // StringLiteral values are NOT handled here because they serve as field labels in
+        // Indexable FD resolution and must remain distinct across unification sites.
+        (Type::IntLiteral(n1), Type::IntLiteral(n2)) if n1 != n2 => Ok(()),
         (
             Type::Function {
                 params: p1,
@@ -2577,11 +2635,11 @@ pub fn unify(
             // Apply special case when one side is zero-param variadic and the other has params.
             if is_any_function_1 && !p2.is_empty() {
                 // Zero-param variadic unifies with any concrete-arity function.
-                return unify(r1, r2, subst, state, span);
+                return unify(r1, r2, subst, state, constraints, span);
             }
             if is_any_function_2 && !p1.is_empty() {
                 // Zero-param variadic unifies with any concrete-arity function (symmetric).
-                return unify(r1, r2, subst, state, span);
+                return unify(r1, r2, subst, state, constraints, span);
             }
 
             if p1.len() != p2.len() {
@@ -2593,6 +2651,7 @@ pub fn unify(
                     ),
                     span,
                     notes: vec![],
+                    call_stack: vec![],
                 }));
             }
             if v1 != v2 {
@@ -2604,6 +2663,7 @@ pub fn unify(
                     ),
                     span,
                     notes: vec![],
+                    call_stack: vec![],
                 }));
             }
             // Robinson invariant: sub-terms are passed without explicit apply() because
@@ -2612,9 +2672,9 @@ pub fn unify(
             // from earlier parameter unifications are therefore visible to later ones via
             // the shared `subst` -- this is correct Robinson (1965) unification.
             for ((_name_a, ty_a), (_name_b, ty_b)) in p1.iter().zip(p2.iter()) {
-                unify(ty_a, ty_b, subst, state, span.clone())?;
+                unify(ty_a, ty_b, subst, state, constraints, span.clone())?;
             }
-            unify(r1, r2, subst, state, span)
+            unify(r1, r2, subst, state, constraints, span)
         }
 
         (Type::Proxy, Type::Proxy) => Ok(()),
@@ -2636,7 +2696,7 @@ pub fn unify(
         (Type::Never, _) | (_, Type::Never) => Ok(()),
 
         // Negation unification: structural (for now, basic support)
-        (Type::Negation(t1), Type::Negation(t2)) => unify(t1, t2, subst, state, span),
+        (Type::Negation(t1), Type::Negation(t2)) => unify(t1, t2, subst, state, constraints, span),
 
         // Negation disjointness: if T <: A, then T & ~A = Never (provably empty intersection).
         // We can statically reject this case without full RDNF normalization — if is_subtype(T, A)
@@ -2653,7 +2713,7 @@ pub fn unify(
                         concrete, inner
                     ),
                     span,
-                    notes: vec![],
+                    notes: vec![], call_stack: vec![],
                 }))
             } else {
                 Ok(()) // conservative: may still be empty but can't prove it statically
@@ -2669,7 +2729,7 @@ pub fn unify(
                         inner, concrete
                     ),
                     span,
-                    notes: vec![],
+                    notes: vec![], call_stack: vec![],
                 }))
             } else {
                 Ok(()) // conservative: may still be empty but can't prove it statically
@@ -2706,6 +2766,7 @@ pub fn unify(
                     got: b.clone(),
                     span,
                     notes: vec![],
+                    call_stack: vec![],
                 }));
             }
             // Names are equal. Verify Arc identity. NOTE: In the current architecture,
@@ -2728,12 +2789,87 @@ pub fn unify(
                         ),
                         span,
                         notes: vec![],
+                        call_stack: vec![],
                     }))
                 }
                 _ => {
                     // Both None (unknown TyCon), or same Arc (same definition) — unify.
                     Ok(())
                 }
+            }
+        }
+
+        // UNIFY-TYCON-EXPAND: TyCon unified with a NominalVariant.
+        //
+        // When a zero-arity TyCon (e.g., `@Color`) is unified with a NominalVariant value
+        // (e.g., a value of type `NominalVariant{tag:"Color.Red", fields:{}}`), check that the
+        // NominalVariant is a subtype of the TyCon's body (the union of NominalVariants).
+        //
+        // We use `is_subtype` rather than a recursive `unify` call here because:
+        // 1. Both the body (Union of NominalVariants) and the NominalVariant are concrete (no
+        //    inference variables) — no variable binding is needed.
+        // 2. The recursive `unify` path would hit the C-Var1 arm for `(Union(concrete_members),
+        //    concrete)` which requires exactly 1 TypeVar in the union; without TypeVars it errors.
+        //    `is_subtype` correctly checks `NominalVariant <: Union([...])` via [UNION-INJ] rules.
+        //
+        // If the TyConDef has no registered body (unknown or builtin TyCon), the TyCon is opaque
+        // and cannot unify with NominalVariant — produce a type mismatch.
+        (Type::TyCon(n), Type::NominalVariant { .. }) => {
+            if let Some(def) = state.tycon_env.get(n.as_str()) {
+                let body = def.body.clone();
+                let tycon_env = Some(&state.tycon_env);
+                // Check that the NominalVariant (b) is a subtype of the body (the union).
+                // Unidirectional: NominalVariant <: body only — the reverse is unsound.
+                // is_subtype(body, NominalVariant) would accept any variant matching one constructor
+                // of the union even from a different TyCon family (no tag-equality check in that path).
+                if Type::is_subtype(&b, &body, tycon_env) {
+                    Ok(())
+                } else {
+                    Err(TypeErrorTyped::Generic(GenericTypeError {
+                        message: format!(
+                            "cannot unify nominal variant with type '{}': variant is not a member of '{}'",
+                            n, n
+                        ),
+                        span,
+                        notes: vec![],
+                        call_stack: vec![],
+                    }))
+                }
+            } else {
+                Err(TypeErrorTyped::UnificationFailure(UnificationFailure {
+                    expected: a.clone(),
+                    got: b.clone(),
+                    span,
+                    notes: vec![],
+                    call_stack: vec![],
+                }))
+            }
+        }
+        (Type::NominalVariant { .. }, Type::TyCon(n)) => {
+            if let Some(def) = state.tycon_env.get(n.as_str()) {
+                let body = def.body.clone();
+                let tycon_env = Some(&state.tycon_env);
+                if Type::is_subtype(&a, &body, tycon_env) {
+                    Ok(())
+                } else {
+                    Err(TypeErrorTyped::Generic(GenericTypeError {
+                        message: format!(
+                            "cannot unify nominal variant with type '{}': variant is not a member of '{}'",
+                            n, n
+                        ),
+                        span,
+                        notes: vec![],
+                        call_stack: vec![],
+                    }))
+                }
+            } else {
+                Err(TypeErrorTyped::UnificationFailure(UnificationFailure {
+                    expected: a.clone(),
+                    got: b.clone(),
+                    span,
+                    notes: vec![],
+                    call_stack: vec![],
+                }))
             }
         }
 
@@ -2747,11 +2883,11 @@ pub fn unify(
             // If levels are equal, bind left-to-right for determinism.
             if level_m >= level_n {
                 // Bind m → Operator(n)
-                transfer_class_constraints(m, n, state);
+                transfer_class_constraints(m, n, constraints);
                 subst.bind_at_level(m.clone(), level_m, Type::Operator(n.clone()));
             } else {
                 // Bind n → Operator(m)
-                transfer_class_constraints(n, m, state);
+                transfer_class_constraints(n, m, constraints);
                 subst.bind_at_level(n.clone(), level_n, Type::Operator(m.clone()));
             }
             subst.check_size(span)?;
@@ -2769,17 +2905,18 @@ pub fn unify(
                     message: format!("infinite type: operator variable {} occurs in {}", m, b),
                     span,
                     notes: vec![],
+                    call_stack: vec![],
                 }));
             }
             // CONSTRAINT TRANSFER: when binding m to TypeVar, transfer constraints
             // instead of checking. When binding to a concrete type, check constraints normally.
             // bind_at_level routes to the frame matching the Operator variable's creation level.
             if let Type::TypeVar(beta_name, _) = &b {
-                transfer_class_constraints(m, beta_name, state);
+                transfer_class_constraints(m, beta_name, constraints);
                 subst.bind_at_level(m.clone(), alpha_level, b.clone());
             } else {
                 // Binding to concrete type — check constraints
-                check_constraints_on_var(m, &b, subst, state, span.clone())?;
+                check_constraints_on_var(m, &b, subst, state, constraints, span.clone())?;
                 subst.bind_at_level(m.clone(), alpha_level, b.clone());
             }
             subst.check_size(span)?;
@@ -2794,17 +2931,18 @@ pub fn unify(
                     message: format!("infinite type: operator variable {} occurs in {}", m, a),
                     span,
                     notes: vec![],
+                    call_stack: vec![],
                 }));
             }
             // CONSTRAINT TRANSFER: when binding m to TypeVar, transfer constraints
             // instead of checking. When binding to a concrete type, check constraints normally.
             // bind_at_level routes to the frame matching the Operator variable's creation level.
             if let Type::TypeVar(beta_name, _) = &a {
-                transfer_class_constraints(m, beta_name, state);
+                transfer_class_constraints(m, beta_name, constraints);
                 subst.bind_at_level(m.clone(), alpha_level, a.clone());
             } else {
                 // Binding to concrete type — check constraints
-                check_constraints_on_var(m, &a, subst, state, span.clone())?;
+                check_constraints_on_var(m, &a, subst, state, constraints, span.clone())?;
                 subst.bind_at_level(m.clone(), alpha_level, a.clone());
             }
             subst.check_size(span)?;
@@ -2822,7 +2960,14 @@ pub fn unify(
 
             match (&k1_resolved, &k2_resolved) {
                 (Type::TypeVar(_, _), _) | (_, Type::TypeVar(_, _)) => {
-                    unify(&k1_resolved, &k2_resolved, subst, state, span.clone())?;
+                    unify(
+                        &k1_resolved,
+                        &k2_resolved,
+                        subst,
+                        state,
+                        constraints,
+                        span.clone(),
+                    )?;
                 }
                 (Type::Int, Type::Number)
                 | (Type::Number, Type::Int)
@@ -2835,6 +2980,7 @@ pub fn unify(
                         ),
                         span,
                         notes: vec![],
+                        call_stack: vec![],
                     }));
                 }
                 _ if k1_resolved != k2_resolved => {
@@ -2845,6 +2991,7 @@ pub fn unify(
                         ),
                         span,
                         notes: vec![],
+                        call_stack: vec![],
                     }));
                 }
                 _ => {}
@@ -2852,21 +2999,23 @@ pub fn unify(
             // Values are covariant (unify normally)
             let val1 = map_v1.clone();
             let val2 = map_v2.clone();
-            unify(&val1, &val2, subst, state, span)
+            unify(&val1, &val2, subst, state, constraints, span)
         }
 
         // UNIFY-APP: decompose App(f₁, a₁) vs App(f₂, a₂).
         // Unify constructors first, then apply resulting substitution and unify arguments.
         (Type::App(f1, a1), Type::App(f2, a2)) => {
             // Unify constructors
-            unify(f1, f2, subst, state, span.clone())?;
+            unify(f1, f2, subst, state, constraints, span.clone())?;
             // Substitution from constructor unification is already in subst and will be
             // applied by the recursive unify() call (via apply_with_visited at the top).
-            unify(a1, a2, subst, state, span)
+            unify(a1, a2, subst, state, constraints, span)
         }
 
         // Record unification: delegate to row unification
-        (Type::Record(row1), Type::Record(row2)) => unify_rows(row1, row2, subst, state, span),
+        (Type::Record(row1), Type::Record(row2)) => {
+            unify_rows(row1, row2, subst, state, constraints, span)
+        }
 
         // NominalVariant unification: tags must match (nominal identity), then unify fields structurally
         (
@@ -2887,10 +3036,11 @@ pub fn unify(
                     ),
                     span,
                     notes: vec![],
+                    call_stack: vec![],
                 }));
             }
             // Tags match — unify fields structurally
-            unify_rows(fields1, fields2, subst, state, span)
+            unify_rows(fields1, fields2, subst, state, constraints, span)
         }
 
         // NominalVariant vs Record: never unifiable (nominal vs structural distinction)
@@ -2902,6 +3052,7 @@ pub fn unify(
                 ),
                 span,
                 notes: vec![],
+                call_stack: vec![],
             }))
         }
         (Type::Record(_), Type::NominalVariant { tag, .. }) => {
@@ -2912,6 +3063,7 @@ pub fn unify(
                 ),
                 span,
                 notes: vec![],
+                call_stack: vec![],
             }))
         }
 
@@ -2933,7 +3085,7 @@ pub fn unify(
         {
             let members = members.clone();
             for member in &members {
-                unify(&a, member, subst, state, span.clone())?;
+                unify(&a, member, subst, state, constraints, span.clone())?;
             }
             Ok(())
         }
@@ -2942,7 +3094,7 @@ pub fn unify(
         {
             let members = members.clone();
             for member in &members {
-                unify(member, &b, subst, state, span.clone())?;
+                unify(member, &b, subst, state, constraints, span.clone())?;
             }
             Ok(())
         }
@@ -2972,13 +3124,29 @@ pub fn unify(
         // Pattern: concrete type a, Union on side b with exactly one TypeVar
         (concrete, Type::Union(members)) if !concrete.has_inference_vars() => {
             let members = members.clone();
-            bind_single_type_var_from_compound(&members, concrete, true, subst, state, span)
+            bind_single_type_var_from_compound(
+                &members,
+                concrete,
+                true,
+                subst,
+                state,
+                constraints,
+                span,
+            )
         }
 
         // Symmetric C-Var1: Union on the left, concrete on the right
         (Type::Union(members), concrete) if !concrete.has_inference_vars() => {
             let members = members.clone();
-            bind_single_type_var_from_compound(&members, concrete, true, subst, state, span)
+            bind_single_type_var_from_compound(
+                &members,
+                concrete,
+                true,
+                subst,
+                state,
+                constraints,
+                span,
+            )
         }
 
         // [C-VAR2] (BAS constraint rewriting, conservative):
@@ -2991,13 +3159,29 @@ pub fn unify(
         // Pattern: Intersection with exactly one TypeVar on one side, concrete on the other
         (Type::Intersection(members), concrete) if !concrete.has_inference_vars() => {
             let members = members.clone();
-            bind_single_type_var_from_compound(&members, concrete, false, subst, state, span)
+            bind_single_type_var_from_compound(
+                &members,
+                concrete,
+                false,
+                subst,
+                state,
+                constraints,
+                span,
+            )
         }
 
         // Symmetric C-Var2: concrete on the left, Intersection on the right
         (concrete, Type::Intersection(members)) if !concrete.has_inference_vars() => {
             let members = members.clone();
-            bind_single_type_var_from_compound(&members, concrete, false, subst, state, span)
+            bind_single_type_var_from_compound(
+                &members,
+                concrete,
+                false,
+                subst,
+                state,
+                constraints,
+                span,
+            )
         }
 
         // TypeStageApp unification cases (after normalization in chr-normalization sprint).
@@ -3022,10 +3206,11 @@ pub fn unify(
                     ),
                     span,
                     notes: vec![],
+                    call_stack: vec![],
                 }));
             }
             for (arg1, arg2) in a1.iter().zip(a2.iter()) {
-                unify(arg1, arg2, subst, state, span.clone())?;
+                unify(arg1, arg2, subst, state, constraints, span.clone())?;
             }
             Ok(())
         }
@@ -3038,6 +3223,7 @@ pub fn unify(
                 ),
                 span,
                 notes: vec![],
+                call_stack: vec![],
             }))
         }
         // Case 3: TypeStageApp vs concrete (non-TypeVar, non-Unknown, non-Top)
@@ -3066,6 +3252,7 @@ pub fn unify(
                     got: b.clone(),
                     span,
                     notes: vec![],
+                    call_stack: vec![],
                 }))
             }
         }
@@ -3075,6 +3262,7 @@ pub fn unify(
             got: b.clone(),
             span,
             notes: vec![],
+            call_stack: vec![],
         })),
     }
 }
@@ -3097,7 +3285,12 @@ pub fn unify(
 /// Called after each SCC's substitution merge in `infer_dict` (typecheck_dict.rs).
 /// Union-vs-Union deferred equalities (from the arm above) also land here.
 /// See doc/06-type-inference.md:884.
-pub fn process_deferred_equalities(state: &mut InferState, subst: &mut Substitution, span: Span) {
+pub fn process_deferred_equalities(
+    state: &mut InferState,
+    subst: &mut Substitution,
+    constraints: &mut Vec<Constraint>,
+    span: Span,
+) {
     let max_iterations = 100;
     let mut iteration = 0;
     let mut progress = true;
@@ -3119,7 +3312,7 @@ pub fn process_deferred_equalities(state: &mut InferState, subst: &mut Substitut
             if !a_norm.has_type_stage_app() && !b_norm.has_type_stage_app() {
                 // Both sides fully reduced — attempt unification.
                 // F10 FIX: Emit diagnostic on unification failure instead of silently dropping.
-                match unify(&a_norm, &b_norm, subst, state, span.clone()) {
+                match unify(&a_norm, &b_norm, subst, state, constraints, span.clone()) {
                     Ok(()) => {
                         progress = true;
                     }

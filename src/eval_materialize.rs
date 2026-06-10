@@ -360,29 +360,6 @@ pub(crate) struct SequentialStepData {
     pub(crate) seq_span: Span,
 }
 
-/// Payload for Cont::ForceAndBind. Boxed to keep the Cont enum ≤96 bytes.
-///
-/// After a dict entry value is forced to WHNF, this continuation inserts it as a
-/// materialized thunk into child_env and then either forces the next entry (if any
-/// remain) or evaluates the next sequential expression (when all entries are bound).
-///
-/// This enforces strict let* semantics for sequential-step bindings: every named
-/// binding is fully evaluated before the next expression in the sequence runs.
-/// Without forcing here, a later expression that accesses a binding can trigger
-/// a circular dependency (E070) when the outer sequential is still "in progress".
-pub(crate) struct ForceAndBindData {
-    /// Name of the entry that was just forced (used to insert into child_env).
-    pub(crate) name: String,
-    /// Span of the dict entry value (used when wrapping the forced value as a thunk).
-    pub(crate) value_span: Span,
-    /// Remaining entries still to force-and-bind, in order.
-    pub(crate) remaining: Vec<(String, Arc<Thunk>)>,
-    /// The child environment being built (shared across all ForceAndBind steps).
-    pub(crate) child_env: Arc<RwLock<Environment>>,
-    /// The sequential step to push once all entries are bound.
-    pub(crate) step: Box<SequentialStepData>,
-}
-
 /// Payload for Cont::MatchDispatch. Boxed to keep the Cont enum ≤96 bytes.
 pub(crate) struct MatchDispatchData {
     /// The arms to try matching. Index starts at 0.
@@ -502,11 +479,6 @@ pub(crate) enum Cont {
     /// After an intermediate expression is materialized (and its dict bindings extracted),
     /// this continuation evaluates the next expression in the sequence.
     SequentialStep(Box<SequentialStepData>),
-    /// Force a dict entry value to WHNF and insert it (materialized) into child_env.
-    /// Pushed by the SequentialStep handler for each static-key entry so that all
-    /// bindings are resolved before the next sequential expression is evaluated.
-    /// This prevents E070 circular dependencies from lazy binding insertion.
-    ForceAndBind(Box<ForceAndBindData>),
     /// Dispatch to the next arm after materializing the scrutinee in a Match expression.
     /// Tries each arm pattern in order until one matches, then evaluates that arm's body.
     MatchDispatch(Box<MatchDispatchData>),
@@ -3084,17 +3056,6 @@ pub(crate) async fn apply_cont(
                         _ => None,
                     };
 
-                    // Build the SequentialStepData for the NEXT expression.
-                    // This is shared regardless of whether we have entries to force.
-                    let next_step = Box::new(SequentialStepData {
-                        idx: next_idx,
-                        exprs: Arc::clone(&exprs),
-                        // env will be updated to child_env below if we have static keys
-                        env: Arc::clone(&env),
-                        ctx: Arc::clone(&ctx),
-                        seq_span,
-                    });
-
                     if let Some(ref static_key_set) = static_keys {
                         // Flatten Overlay to Dict for scope chain binding
                         let map = match intermediate_value {
@@ -3147,8 +3108,11 @@ pub(crate) async fn apply_cont(
                                         // In practice the payload is a single level of indirection (a
                                         // Variant wrapping a Dict) so nesting depth is at most 1 here.
                                         //
-                                        // TODO(B-273): replace with Action::Materialize continuation so
+                                        // TODO(B-396): replace with Action::Materialize continuation so
                                         // the CEK machine forces the payload iteratively without re-entry.
+                                        // B-273 was closed after adding the fast path above; this slow
+                                        // path is now LOAD-BEARING (B-386 made SequentialStep the primary
+                                        // execution path). Tracked as B-396 with escalated priority.
                                         match crate::eval::materialize_sync(
                                             &payload_thunk,
                                             Some(&current_expr.span),
@@ -3182,127 +3146,55 @@ pub(crate) async fn apply_cont(
                             }
                         };
 
-                        // Collect all static-key entries that need to be forced.
-                        // We process them in order: first entry is forced immediately,
-                        // remaining entries are processed by chained ForceAndBind continuations.
+                        // Insert static-key entries as lazy thunks into child_env.
+                        //
+                        // Sequential dict bindings use lazy semantics: named entries are
+                        // inserted as unevaluated thunks. They are forced only when accessed
+                        // by subsequent expressions. Dead bindings (never accessed) never fire,
+                        // which is the correct lazy evaluation behavior.
                         let child_env =
                             Arc::new(RwLock::new(Environment::with_parent(Arc::clone(&env))));
 
-                        let mut entries_to_force: Vec<(String, Arc<Thunk>)> = map
-                            .into_iter()
-                            .filter_map(|(key, thunk_id)| {
+                        {
+                            let mut env_write = child_env.write().unwrap();
+                            for (key, thunk_id) in map.into_iter() {
                                 if let Key::String(name) = key {
                                     if static_key_set.contains(name.as_ref()) {
                                         let val_thunk = ctx.get_thunk(thunk_id);
-                                        return Some((name.to_string(), val_thunk));
+                                        env_write.insert(name.to_string(), val_thunk);
                                     }
                                 }
-                                None
-                            })
-                            .collect();
-
-                        if entries_to_force.is_empty() {
-                            // No entries to force — push SequentialStep directly with child_env
-                            // (child_env is empty but still establishes a child scope).
-                            let next_expr = &exprs[next_idx];
-                            stack.push(Cont::SequentialStep(Box::new(SequentialStepData {
-                                env: Arc::clone(&child_env),
-                                ..*next_step
-                            })));
-                            Action::EvalCore {
-                                expr: Arc::clone(next_expr),
-                                env: child_env,
-                                ctx,
                             }
-                        } else {
-                            // Force entries one at a time via ForceAndBind continuations.
-                            // Pop the first entry; the rest become `remaining` in ForceAndBind.
-                            let (first_name, first_thunk) = entries_to_force.remove(0);
-                            let first_span = first_thunk.span.clone();
+                        }
 
-                            // The step.env field is a placeholder (parent env) that is never
-                            // read — ForceAndBind always reconstructs SequentialStepData with
-                            // child_env once all entries are bound.
-                            stack.push(Cont::ForceAndBind(Box::new(ForceAndBindData {
-                                name: first_name,
-                                value_span: first_span,
-                                remaining: entries_to_force,
-                                child_env,
-                                step: next_step,
-                            })));
-
-                            Action::Materialize {
-                                thunk: first_thunk,
-                                mat_span: Some(current_expr.span.clone()),
-                            }
+                        // Proceed directly to the next expression with the populated child_env.
+                        let next_expr = &exprs[next_idx];
+                        stack.push(Cont::SequentialStep(Box::new(SequentialStepData {
+                            idx: next_idx,
+                            exprs: Arc::clone(&exprs),
+                            env: Arc::clone(&child_env),
+                            ctx: Arc::clone(&ctx),
+                            seq_span,
+                        })));
+                        Action::EvalCore {
+                            expr: Arc::clone(next_expr),
+                            env: child_env,
+                            ctx,
                         }
                     } else {
                         // No static keys — no scope created, continue with same env.
                         let next_expr = &exprs[next_idx];
-                        stack.push(Cont::SequentialStep(next_step));
+                        stack.push(Cont::SequentialStep(Box::new(SequentialStepData {
+                            idx: next_idx,
+                            exprs: Arc::clone(&exprs),
+                            env: Arc::clone(&env),
+                            ctx: Arc::clone(&ctx),
+                            seq_span,
+                        })));
                         Action::EvalCore {
                             expr: Arc::clone(next_expr),
                             env,
                             ctx,
-                        }
-                    }
-                }
-            }
-        }
-        Cont::ForceAndBind(data) => {
-            let ForceAndBindData {
-                name,
-                value_span,
-                remaining,
-                child_env,
-                step,
-            } = *data;
-
-            match result {
-                Err(e) => Action::Continue(Err(e)),
-                Ok(forced_value) => {
-                    // Insert the forced value as a materialized thunk into child_env.
-                    let materialized_thunk =
-                        Arc::new(Thunk::new_materialized(forced_value, value_span));
-                    child_env.write().unwrap().insert(name, materialized_thunk);
-
-                    if remaining.is_empty() {
-                        // All entries have been forced and bound — now evaluate the next
-                        // sequential expression with the fully-populated child_env.
-                        let next_idx = step.idx;
-                        let next_expr = Arc::clone(&step.exprs[next_idx]);
-                        let step_ctx = Arc::clone(&step.ctx);
-                        let seq_span = step.seq_span;
-                        let exprs = Arc::clone(&step.exprs);
-                        stack.push(Cont::SequentialStep(Box::new(SequentialStepData {
-                            env: Arc::clone(&child_env),
-                            idx: next_idx,
-                            exprs,
-                            ctx: Arc::clone(&step_ctx),
-                            seq_span,
-                        })));
-                        Action::EvalCore {
-                            expr: next_expr,
-                            env: child_env,
-                            ctx: step_ctx,
-                        }
-                    } else {
-                        // More entries remain — force the next one.
-                        let mut remaining = remaining;
-                        let (next_name, next_thunk) = remaining.remove(0);
-                        let next_span = next_thunk.span.clone();
-
-                        stack.push(Cont::ForceAndBind(Box::new(ForceAndBindData {
-                            name: next_name,
-                            value_span: next_span,
-                            remaining,
-                            child_env,
-                            step,
-                        })));
-
-                        Action::Materialize {
-                            thunk: next_thunk,
-                            mat_span: None,
                         }
                     }
                 }

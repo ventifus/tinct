@@ -17,8 +17,8 @@ use crate::type_errors::{
     ArityMismatch, GenericTypeError, NotAFunction, NotARecord, TypeErrorTyped, UnificationFailure,
 };
 use crate::types::{
-    instantiate_at_level, instantiate_scheme, unify, InferState, Row, Substitution, Type, TypeEnv,
-    TypeError, TypeScheme,
+    instantiate_at_level, instantiate_scheme, unify, Constraint, InferState, Row, Substitution,
+    Type, TypeEnv, TypeError, TypeScheme,
 };
 
 /// Widen literal types in a type, recursively through Record fields.
@@ -65,12 +65,15 @@ pub(crate) fn check_dot_access(
     env: &Rc<TypeEnv>,
     span: Span,
     state: &mut InferState,
+    constraints: &mut Vec<Constraint>,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
     // Convert DotKey to string for field lookup
     let field_str = match field {
         DotKey::Ident(s) => s.as_str(),
-        DotKey::Int(n) => return check_dot_access_int(target, *n, env, span, state, type_map),
+        DotKey::Int(n) => {
+            return check_dot_access_int(target, *n, env, span, state, constraints, type_map)
+        }
     };
 
     // [DOT-POLY] fast-path: if target is a VarRef and its scheme has inner_schemes,
@@ -88,6 +91,7 @@ pub(crate) fn check_dot_access(
                         field_scheme,
                         state.level,
                         state,
+                        constraints,
                         Some(origin_name.as_str()),
                         Some(span.clone()),
                     );
@@ -97,7 +101,7 @@ pub(crate) fn check_dot_access(
         }
     }
 
-    let target_ty = infer_surface_expr(target, env, state, type_map)?;
+    let target_ty = infer_surface_expr(target, env, state, constraints, type_map)?;
     // Apply the global accumulated substitution so that constraints from prior accesses
     // on the same target are visible (doc/07-type-extensions.md Part 5).
     let target_ty = state.subst.apply(&target_ty);
@@ -125,7 +129,7 @@ pub(crate) fn check_dot_access(
             // Unify TypeVar(α) with Record({field: β})
             let alpha_ty = Type::TypeVar(alpha.clone(), alpha_level);
             let mut subst = std::mem::take(&mut state.subst);
-            let result = unify(&alpha_ty, &record_ty, &mut subst, state, span);
+            let result = unify(&alpha_ty, &record_ty, &mut subst, state, constraints, span);
             state.subst = subst;
             result.map_err(|e| vec![e])?;
 
@@ -196,6 +200,7 @@ pub(crate) fn check_dot_access(
             actual: target_ty,
             span,
             notes: vec![],
+            call_stack: vec![],
         })]),
     }
 }
@@ -207,9 +212,10 @@ pub(crate) fn check_dot_access_int(
     env: &Rc<TypeEnv>,
     span: Span,
     state: &mut InferState,
+    constraints: &mut Vec<Constraint>,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
-    let target_ty = infer_surface_expr(target, env, state, type_map)?;
+    let target_ty = infer_surface_expr(target, env, state, constraints, type_map)?;
     let target_ty = state.subst.apply(&target_ty);
 
     let field_name = index.to_string();
@@ -235,7 +241,7 @@ pub(crate) fn check_dot_access_int(
 
             let alpha_ty = Type::TypeVar(alpha.clone(), *alpha_level);
             let mut subst = std::mem::take(&mut state.subst);
-            let result = unify(&alpha_ty, &record_ty, &mut subst, state, span);
+            let result = unify(&alpha_ty, &record_ty, &mut subst, state, constraints, span);
             state.subst = subst;
             result.map_err(|e| vec![e])?;
             Ok(beta)
@@ -262,6 +268,7 @@ pub(crate) fn check_dot_access_int(
             actual: target_ty.clone(),
             span,
             notes: vec![],
+            call_stack: vec![],
         })]),
     }
 }
@@ -303,6 +310,7 @@ pub(crate) fn check_call_with_scheme(
     env: &Rc<TypeEnv>,
     span: Span,
     state: &mut InferState,
+    constraints: &mut Vec<Constraint>,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
     // Instantiate the scheme once at the current level.
@@ -314,11 +322,12 @@ pub(crate) fn check_call_with_scheme(
     // ensuring "argument to `g` has unconstrained type" messages cite the callee name.
     // Record the constraint count before instantiation so we can update origin_span on
     // the new constraints to per-argument spans after argument unification (T013 Task 4).
-    let constraints_start = state.constraints.len();
+    let constraints_start = constraints.len();
     let func_ty = instantiate_scheme(
         scheme,
         state.level,
         state,
+        constraints,
         func_name,
         Some(func_span.clone()),
     );
@@ -341,11 +350,11 @@ pub(crate) fn check_call_with_scheme(
     if matches!(func_ty, Type::Error) {
         // Infer positional args for type map population and error propagation.
         for arg in args {
-            let _ = infer_surface_expr(arg, env, state, type_map);
+            let _ = infer_surface_expr(arg, env, state, constraints, type_map);
         }
         // Infer named args for type map population and error propagation.
         for na in named_args {
-            let _ = infer_surface_expr(&na.node.value, env, state, type_map);
+            let _ = infer_surface_expr(&na.node.value, env, state, constraints, type_map);
         }
         return Ok(Type::Error);
     }
@@ -381,6 +390,7 @@ pub(crate) fn check_call_with_scheme(
                     } else {
                         vec![]
                     },
+                    call_stack: vec![],
                 })]);
             }
 
@@ -404,7 +414,7 @@ pub(crate) fn check_call_with_scheme(
             let mut arg_types = Vec::with_capacity(args.len());
             let mut arg_errors: Option<Vec<TypeError>> = None;
             for a in args {
-                match infer_surface_expr(a, env, state, type_map) {
+                match infer_surface_expr(a, env, state, constraints, type_map) {
                     Ok(ty) => arg_types.push(ty),
                     Err(mut errs) => {
                         arg_errors.get_or_insert_with(Vec::new).append(&mut errs);
@@ -477,13 +487,14 @@ pub(crate) fn check_call_with_scheme(
 
                     // Error-typed args absorb silently (unify(Error, T) = Ok(())),
                     // so we only propagate unification errors from non-Error args.
-                    // Widen literal types before unification: IntLiteral(n) → Int,
-                    // StringLiteral(s) → Str. This prevents false-positive unification
-                    // failures when a polymorphic type variable is first bound to
-                    // IntLiteral(5) (from arg 0) and then unified against IntLiteral(10)
-                    // (from arg 1). Both are Int; widening makes this explicit. (B-384)
-                    let arg_ty_widened = widen_literal_types(arg_ty.clone());
-                    if let Err(e) = unify(param_ty, &arg_ty_widened, &mut subst, state, span.clone()) {
+                    if let Err(e) = unify(
+                        param_ty,
+                        arg_ty,
+                        &mut subst,
+                        state,
+                        constraints,
+                        span.clone(),
+                    ) {
                         arg_errors.get_or_insert_with(Vec::new).push(e);
                     }
                 }
@@ -504,7 +515,7 @@ pub(crate) fn check_call_with_scheme(
                     }
                 }
                 if !var_to_arg_span.is_empty() {
-                    for c in state.constraints[constraints_start..].iter_mut() {
+                    for c in constraints[constraints_start..].iter_mut() {
                         if let crate::type_class::Constraint::Class {
                             vars, origin_span, ..
                         } = c
@@ -544,9 +555,14 @@ pub(crate) fn check_call_with_scheme(
                                     Type::StringLiteral(_) => Type::Str,
                                     other => other.clone(),
                                 };
-                                if let Err(e) =
-                                    unify(&elem_ty, &widened_ty, &mut subst, state, span.clone())
-                                {
+                                if let Err(e) = unify(
+                                    &elem_ty,
+                                    &widened_ty,
+                                    &mut subst,
+                                    state,
+                                    constraints,
+                                    span.clone(),
+                                ) {
                                     arg_errors.get_or_insert_with(Vec::new).push(e);
                                 }
                             }
@@ -576,6 +592,7 @@ pub(crate) fn check_call_with_scheme(
                                 message: format!("duplicate named argument: '{}'", na.node.name),
                                 span: na.span.clone(),
                                 notes: vec![],
+                                call_stack: vec![],
                             }));
                     }
                 }
@@ -605,7 +622,7 @@ pub(crate) fn check_call_with_scheme(
                                             arg_name, param_idx
                                         ),
                                         span: na.span.clone(),
-                                        notes: vec![],
+                                        notes: vec![], call_stack: vec![],
                                     }),
                                 );
                                 continue;
@@ -613,16 +630,27 @@ pub(crate) fn check_call_with_scheme(
                             // Mark param as consumed (Task 1: Robinson idempotency)
                             consumed_params.insert(param_idx);
                             // Infer named arg type and unify
-                            match infer_surface_expr(&na.node.value, env, state, type_map) {
+                            match infer_surface_expr(
+                                &na.node.value,
+                                env,
+                                state,
+                                constraints,
+                                type_map,
+                            ) {
                                 Ok(arg_ty) => {
                                     // Task 2: merge state.subst updates from infer_surface_expr into local subst
                                     subst
                                         .type_map
                                         .borrow_mut()
                                         .extend(state.subst.type_map.borrow().clone());
-                                    if let Err(e) =
-                                        unify(&arg_ty, param_ty, &mut subst, state, na.span.clone())
-                                    {
+                                    if let Err(e) = unify(
+                                        &arg_ty,
+                                        param_ty,
+                                        &mut subst,
+                                        state,
+                                        constraints,
+                                        na.span.clone(),
+                                    ) {
                                         arg_errors.get_or_insert_with(Vec::new).push(
                                             TypeErrorTyped::Generic(GenericTypeError {
                                                 message: format!(
@@ -632,6 +660,7 @@ pub(crate) fn check_call_with_scheme(
                                                 ),
                                                 span: na.span.clone(),
                                                 notes: vec![],
+                                                call_stack: vec![],
                                             }),
                                         );
                                     }
@@ -655,7 +684,7 @@ pub(crate) fn check_call_with_scheme(
                                             arg_name
                                         ),
                                         span: na.span.clone(),
-                                        notes: vec![],
+                                        notes: vec![], call_stack: vec![],
                                     }),
                                 );
                             } else {
@@ -663,9 +692,13 @@ pub(crate) fn check_call_with_scheme(
                                 // The value will be collected into the variadic dict at runtime; we don't know
                                 // the element type of the variadic dict statically (it's a mixed Dict of positionals
                                 // and named args), so we just ensure the arg itself type-checks.
-                                if let Err(mut errs) =
-                                    infer_surface_expr(&na.node.value, env, state, type_map)
-                                {
+                                if let Err(mut errs) = infer_surface_expr(
+                                    &na.node.value,
+                                    env,
+                                    state,
+                                    constraints,
+                                    type_map,
+                                ) {
                                     arg_errors.get_or_insert_with(Vec::new).append(&mut errs);
                                 }
                             }
@@ -715,7 +748,7 @@ pub(crate) fn check_call_with_scheme(
             // state.subst.name_counter and state.subst a second time in violation of single-pass Algorithm W.
             // Cascade prevention: ignore arg errors (already recorded as Error in type_map).
             for arg in args {
-                let _ = infer_surface_expr(arg, env, state, type_map);
+                let _ = infer_surface_expr(arg, env, state, constraints, type_map);
             }
             // Infer named arg values exactly once here for type map population and error propagation.
             // Previously these were inferred in a pre-dispatch loop before `match &func_ty`, which
@@ -723,7 +756,9 @@ pub(crate) fn check_call_with_scheme(
             // args again). Moving inference to each arm ensures single-pass Algorithm W.
             let mut named_arg_errors: Vec<TypeError> = Vec::new();
             for na in named_args {
-                if let Err(mut errs) = infer_surface_expr(&na.node.value, env, state, type_map) {
+                if let Err(mut errs) =
+                    infer_surface_expr(&na.node.value, env, state, constraints, type_map)
+                {
                     named_arg_errors.append(&mut errs);
                 }
             }
@@ -746,6 +781,7 @@ pub(crate) fn check_call_with_scheme(
                     got: args.len(),
                     span,
                     notes: vec!["unit variant constructor takes exactly 1 argument".to_string()],
+                    call_stack: vec![],
                 })]);
             }
             if !named_args.is_empty() {
@@ -753,11 +789,12 @@ pub(crate) fn check_call_with_scheme(
                     message: "unit variant constructor does not accept named arguments".to_string(),
                     span,
                     notes: vec![],
+                    call_stack: vec![],
                 })]);
             }
 
             // Infer the argument type
-            let arg_ty = infer_surface_expr(&args[0], env, state, type_map)?;
+            let arg_ty = infer_surface_expr(&args[0], env, state, constraints, type_map)?;
 
             // Result type: NominalVariant with the arg type as payload.
             // Runtime stores payload as Some(payload_id), so we model it as a single-field
@@ -778,11 +815,13 @@ pub(crate) fn check_call_with_scheme(
             actual: func_ty.clone(),
             span: func_span,
             notes: vec![],
+            call_stack: vec![],
         })]),
         _ => Err(vec![TypeErrorTyped::NotAFunction(NotAFunction {
             actual: func_ty.clone(),
             span: func_span,
             notes: vec![],
+            call_stack: vec![],
         })]),
     }
 }
@@ -808,6 +847,7 @@ pub(crate) fn check_call_with_scheme(
 ///
 ///   Note: named-arg checking fires only for resolved function types; same-dict letrec forward
 ///   references fall through to the `TypeVar` arm and skip named-arg validation.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn check_call(
     func: &Arc<SurfaceNode>,
     args: &[Arc<SurfaceNode>],
@@ -815,9 +855,10 @@ pub(crate) fn check_call(
     env: &Rc<TypeEnv>,
     span: Span,
     state: &mut InferState,
+    constraints: &mut Vec<Constraint>,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
-    let func_ty = infer_surface_expr(func, env, state, type_map)?;
+    let func_ty = infer_surface_expr(func, env, state, constraints, type_map)?;
     // Apply state.subst to resolve any TypeVars bound during infer_expr (e.g., from infer_fn
     // with polymorphic return annotations). Without this, has_inference_vars() incorrectly returns
     // true for already-bound TypeVars, causing CALL-POLY to fire and double-instantiate.
@@ -836,11 +877,11 @@ pub(crate) fn check_call(
     if matches!(func_ty, Type::Error) {
         // Infer positional args for type map population and error propagation.
         for arg in args {
-            let _ = infer_surface_expr(arg, env, state, type_map);
+            let _ = infer_surface_expr(arg, env, state, constraints, type_map);
         }
         // Infer named args for type map population and error propagation.
         for na in named_args {
-            let _ = infer_surface_expr(&na.node.value, env, state, type_map);
+            let _ = infer_surface_expr(&na.node.value, env, state, constraints, type_map);
         }
         return Ok(Type::Error);
     }
@@ -876,6 +917,7 @@ pub(crate) fn check_call(
                     } else {
                         vec![]
                     },
+                    call_stack: vec![],
                 })]);
             }
 
@@ -922,14 +964,14 @@ pub(crate) fn check_call(
                             // so no explicit state.subst.apply() is needed here — check_surface_expr applies
                             // state.subst to its expected type internally, which is a no-op on ground types.
                             if let Err(mut errs) =
-                                check_surface_expr(arg, param_ty, env, state, type_map)
+                                check_surface_expr(arg, param_ty, env, state, constraints, type_map)
                             {
                                 errors.append(&mut errs);
                             }
                         }
                         _ => {
                             // Non-lambda: infer once, check Unknown, then subsume (no double-inference).
-                            match infer_surface_expr(arg, env, state, type_map) {
+                            match infer_surface_expr(arg, env, state, constraints, type_map) {
                                 Ok(arg_ty) => {
                                     // Apply substitution before Unknown check and subsumption.
                                     let arg_ty_resolved = if state.subst.is_empty() {
@@ -974,6 +1016,7 @@ pub(crate) fn check_call(
                                                 got: arg_ty_resolved,
                                                 span: arg.span.clone(),
                                                 notes: vec![],
+                                                call_stack: vec![],
                                             },
                                         ));
                                     }
@@ -993,7 +1036,7 @@ pub(crate) fn check_call(
                     let last_seq_elem = params.last().and_then(|(_, t)| t.as_seq()).cloned();
                     if let Some(elem_ty) = last_seq_elem {
                         for arg in args.iter().skip(non_variadic_param_count) {
-                            match infer_surface_expr(arg, env, state, type_map) {
+                            match infer_surface_expr(arg, env, state, constraints, type_map) {
                                 Ok(arg_ty) => {
                                     // Widen literal types before unifying to allow [f 10 20 30]
                                     // where 10, 20, 30 all unify with Int element type.
@@ -1006,6 +1049,7 @@ pub(crate) fn check_call(
                                         &elem_ty,
                                         &mut subst,
                                         state,
+                                        constraints,
                                         arg.span.clone(),
                                     ) {
                                         errors.push(e);
@@ -1027,6 +1071,7 @@ pub(crate) fn check_call(
                             message: format!("duplicate named argument: '{}'", na.node.name),
                             span: na.span.clone(),
                             notes: vec![],
+                            call_stack: vec![],
                         }));
                     }
                 }
@@ -1054,7 +1099,7 @@ pub(crate) fn check_call(
                                             arg_name, param_idx
                                         ),
                                         span: na.span.clone(),
-                                        notes: vec![],
+                                        notes: vec![], call_stack: vec![],
                                     }),
                                 );
                                 continue;
@@ -1067,7 +1112,13 @@ pub(crate) fn check_call(
                             // Unknown and the parameter expects a concrete type, record the span
                             // for gradual typing boundary guard insertion. This avoids a redundant
                             // pre-call infer_surface_expr that would mutate state before the actual check.
-                            match infer_surface_expr(&na.node.value, env, state, type_map) {
+                            match infer_surface_expr(
+                                &na.node.value,
+                                env,
+                                state,
+                                constraints,
+                                type_map,
+                            ) {
                                 Ok(arg_ty) => {
                                     // Boundary guard check (post-inference, single-pass)
                                     if is_concrete_type(param_ty) {
@@ -1089,6 +1140,7 @@ pub(crate) fn check_call(
                                         param_ty,
                                         &mut subst,
                                         state,
+                                        constraints,
                                         na.span.clone(),
                                     );
                                     state.subst = subst;
@@ -1101,6 +1153,7 @@ pub(crate) fn check_call(
                                             ),
                                             span: na.span.clone(),
                                             notes: vec![],
+                                            call_stack: vec![],
                                         }));
                                     }
                                 }
@@ -1123,7 +1176,7 @@ pub(crate) fn check_call(
                                             arg_name
                                         ),
                                         span: na.span.clone(),
-                                        notes: vec![],
+                                        notes: vec![], call_stack: vec![],
                                     }),
                                 );
                             } else {
@@ -1131,9 +1184,13 @@ pub(crate) fn check_call(
                                 // The value will be collected into the variadic dict at runtime; we don't know
                                 // the element type of the variadic dict statically (it's a mixed Dict of positionals
                                 // and named args), so we just ensure the arg itself type-checks.
-                                if let Err(mut errs) =
-                                    infer_surface_expr(&na.node.value, env, state, type_map)
-                                {
+                                if let Err(mut errs) = infer_surface_expr(
+                                    &na.node.value,
+                                    env,
+                                    state,
+                                    constraints,
+                                    type_map,
+                                ) {
                                     errors.append(&mut errs);
                                 }
                             }
@@ -1189,7 +1246,9 @@ pub(crate) fn check_call(
                     .enumerate()
                 {
                     consumed_params.insert(idx);
-                    if let Err(mut errs) = check_surface_expr(arg, param_ty, env, state, type_map) {
+                    if let Err(mut errs) =
+                        check_surface_expr(arg, param_ty, env, state, constraints, type_map)
+                    {
                         arg_errors.get_or_insert_with(Vec::new).append(&mut errs);
                     }
                 }
@@ -1202,7 +1261,7 @@ pub(crate) fn check_call(
                         inst_params.last().and_then(|(_, t)| t.as_seq()).cloned();
                     if let Some(elem_ty) = last_inst_seq_elem {
                         for arg in args.iter().skip(non_variadic_param_count) {
-                            match infer_surface_expr(arg, env, state, type_map) {
+                            match infer_surface_expr(arg, env, state, constraints, type_map) {
                                 Ok(arg_ty) => {
                                     // Widen literal types before unifying.
                                     // Also widen Record field values so that [f [1 2] [3 4]] does
@@ -1214,6 +1273,7 @@ pub(crate) fn check_call(
                                         &elem_ty,
                                         &mut subst,
                                         state,
+                                        constraints,
                                         arg.span.clone(),
                                     ) {
                                         arg_errors.get_or_insert_with(Vec::new).push(e);
@@ -1237,6 +1297,7 @@ pub(crate) fn check_call(
                                 message: format!("duplicate named argument: '{}'", na.node.name),
                                 span: na.span.clone(),
                                 notes: vec![],
+                                call_stack: vec![],
                             }));
                     }
                 }
@@ -1268,7 +1329,7 @@ pub(crate) fn check_call(
                                             arg_name, param_idx
                                         ),
                                         span: na.span.clone(),
-                                        notes: vec![],
+                                        notes: vec![], call_stack: vec![],
                                     }),
                                 );
                                 continue;
@@ -1282,7 +1343,13 @@ pub(crate) fn check_call(
                             // state before the actual bidirectional check (the prior pattern of
                             // calling infer_surface_expr twice — once for guard, once via check_expr —
                             // left stale type vars from the first call affecting the second).
-                            match infer_surface_expr(&na.node.value, env, state, type_map) {
+                            match infer_surface_expr(
+                                &na.node.value,
+                                env,
+                                state,
+                                constraints,
+                                type_map,
+                            ) {
                                 Ok(arg_ty) => {
                                     // Boundary guard check (post-inference, single-pass)
                                     if is_concrete_type(param_ty) {
@@ -1305,6 +1372,7 @@ pub(crate) fn check_call(
                                         param_ty,
                                         &mut subst,
                                         state,
+                                        constraints,
                                         na.span.clone(),
                                     );
                                     state.subst = subst;
@@ -1318,6 +1386,7 @@ pub(crate) fn check_call(
                                                 ),
                                                 span: na.span.clone(),
                                                 notes: vec![],
+                                                call_stack: vec![],
                                             }),
                                         );
                                     }
@@ -1341,7 +1410,7 @@ pub(crate) fn check_call(
                                             arg_name
                                         ),
                                         span: na.span.clone(),
-                                        notes: vec![],
+                                        notes: vec![], call_stack: vec![],
                                     }),
                                 );
                             } else {
@@ -1349,9 +1418,13 @@ pub(crate) fn check_call(
                                 // The value will be collected into the variadic dict at runtime; we don't know
                                 // the element type of the variadic dict statically (it's a mixed Dict of positionals
                                 // and named args), so we just ensure the arg itself type-checks.
-                                if let Err(mut errs) =
-                                    infer_surface_expr(&na.node.value, env, state, type_map)
-                                {
+                                if let Err(mut errs) = infer_surface_expr(
+                                    &na.node.value,
+                                    env,
+                                    state,
+                                    constraints,
+                                    type_map,
+                                ) {
                                     arg_errors.get_or_insert_with(Vec::new).append(&mut errs);
                                 }
                             }
@@ -1381,7 +1454,7 @@ pub(crate) fn check_call(
             // infer args for side effects and return Unknown.
             // Cascade prevention: ignore arg errors (already recorded as Error in type_map).
             for arg in args {
-                let _ = infer_surface_expr(arg, env, state, type_map);
+                let _ = infer_surface_expr(arg, env, state, constraints, type_map);
             }
             // Infer named arg values exactly once here for type map population and error propagation.
             // Previously these were inferred in a pre-dispatch loop before `match &func_ty`, which
@@ -1389,7 +1462,9 @@ pub(crate) fn check_call(
             // infer named args again). Moving inference to each arm ensures single-pass Algorithm W.
             let mut named_arg_errors: Vec<TypeError> = Vec::new();
             for na in named_args {
-                if let Err(mut errs) = infer_surface_expr(&na.node.value, env, state, type_map) {
+                if let Err(mut errs) =
+                    infer_surface_expr(&na.node.value, env, state, constraints, type_map)
+                {
                     named_arg_errors.append(&mut errs);
                 }
             }
@@ -1415,12 +1490,14 @@ pub(crate) fn check_call(
             // state.subst.name_counter and state.subst a second time in violation of single-pass Algorithm W.
             // Cascade prevention: ignore arg errors (already recorded as Error in type_map).
             for arg in args {
-                let _ = infer_surface_expr(arg, env, state, type_map);
+                let _ = infer_surface_expr(arg, env, state, constraints, type_map);
             }
             // Infer named arg values exactly once here for type map population and error propagation.
             let mut named_arg_errors: Vec<TypeError> = Vec::new();
             for na in named_args {
-                if let Err(mut errs) = infer_surface_expr(&na.node.value, env, state, type_map) {
+                if let Err(mut errs) =
+                    infer_surface_expr(&na.node.value, env, state, constraints, type_map)
+                {
                     named_arg_errors.append(&mut errs);
                 }
             }
@@ -1443,6 +1520,7 @@ pub(crate) fn check_call(
                     got: args.len(),
                     span,
                     notes: vec!["unit variant constructor takes exactly 1 argument".to_string()],
+                    call_stack: vec![],
                 })]);
             }
             if !named_args.is_empty() {
@@ -1450,11 +1528,12 @@ pub(crate) fn check_call(
                     message: "unit variant constructor does not accept named arguments".to_string(),
                     span,
                     notes: vec![],
+                    call_stack: vec![],
                 })]);
             }
 
             // Infer the argument type
-            let arg_ty = infer_surface_expr(&args[0], env, state, type_map)?;
+            let arg_ty = infer_surface_expr(&args[0], env, state, constraints, type_map)?;
 
             // Result type: NominalVariant with the arg type as payload.
             // Runtime stores payload as Some(payload_id), so we model it as a single-field
@@ -1476,6 +1555,7 @@ pub(crate) fn check_call(
             actual: func_ty.clone(),
             span: func.span.clone(),
             notes: vec![],
+            call_stack: vec![],
         })]),
         _ => {
             // T003: func_ty is a concrete non-callable type (e.g., Str, Int, Bool).
@@ -1506,6 +1586,7 @@ pub(crate) fn check_call(
                 actual: func_ty.clone(),
                 span: func.span.clone(),
                 notes: vec![],
+                call_stack: vec![],
             })])
         }
     }

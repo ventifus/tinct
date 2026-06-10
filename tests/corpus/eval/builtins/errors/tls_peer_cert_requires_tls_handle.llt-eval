@@ -12,6 +12,3 @@
   2738 | tls-peer-cert@[doc: "Extract TLS peer certificate metadata"]: builtin-tls-peer-cert
        |                                                               ^^^^^^^^^^^^^^^^^^^^^
   in [tls-peer-cert ...] at 5:1-5:18
-
-=== warn
-[UnificationFailure] cannot unify Handle[[__cap_flag_readable: []]] with []

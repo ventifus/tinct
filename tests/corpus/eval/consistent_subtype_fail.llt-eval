@@ -1,6 +1,3 @@
 [@String 42]
 === out
 Int(42)
-
-=== warn
-[UnificationFailure] cannot unify String with 42

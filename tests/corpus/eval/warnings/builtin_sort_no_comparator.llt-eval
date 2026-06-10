@@ -5,4 +5,4 @@
 Dict({0: Int(1), 1: Int(2), 2: Int(3)})
 
 === warn
-[UnificationFailure] cannot unify Seq[_t0] with [0: Int 1: Int 2: Int]
+[UnificationFailure] cannot unify Seq[_t0] with [0: 3 1: 1 2: 2]

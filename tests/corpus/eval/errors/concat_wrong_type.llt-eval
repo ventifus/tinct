@@ -28,6 +28,3 @@
   2486 | if@[doc: "Conditional (select branch by condition)"]: [fn [let c t e] [builtin-if c t e]]
        |                                                                       ^^^^^^^^^^^^^^^^^^
   in [concat ...] at 1:1-1:20
-
-=== warn
-[UnificationFailure] cannot unify Int with [0: 1 1: 2 2: 3]

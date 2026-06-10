@@ -8,8 +8,8 @@ use super::{infer_surface_expr, resolve_annotation, resolve_type_expr, TypeMap};
 use crate::ast::{Span, Spanned, SurfaceDeclaration, SurfaceEntry, SurfaceExpression, SurfaceNode};
 use crate::type_def::{TyConDef, Variance};
 use crate::types::{
-    generalize_with_doc, unify, ClassEnv, InferState, InstanceEnv, Row, Substitution, Type,
-    TypeEnv, TypeError, TypeScheme,
+    generalize_with_doc, unify, ClassEnv, Constraint, InferState, InstanceEnv, Row, Substitution,
+    Type, TypeEnv, TypeError, TypeScheme,
 };
 
 /// Inject NominalVariant constructor function types into `dict_env` for ADT constructor scoping.
@@ -535,22 +535,22 @@ pub(crate) fn infer_dict(
                         state.levels.insert(fresh.clone(), state.level);
                         alias_ann_map.insert(p.clone(), fresh.clone());
                     }
-                    // Set type_params_scope for T-951: enforce explicit type param scoping
-                    // during TypeAlias body resolution.
+                    // Build the type_params_scope for T-1100 / T-951: the set of declared
+                    // parameter names. Passed to resolve_type_name to enforce explicit param
+                    // scoping during TypeAlias body resolution (no mutable state needed).
                     let param_names_set: std::collections::HashSet<String> =
                         params.iter().map(|(n, _)| n.clone()).collect();
-                    state.type_params_scope = Some(param_names_set);
 
+                    let mut _alias_constraints: Vec<Constraint> = Vec::new();
                     let alias_result = resolve_type_expr(
                         body,
                         &Rc::new(dict_env.clone()),
                         state,
+                        &mut _alias_constraints,
                         &mut Some(&mut alias_ann_map),
                         &mut None,
+                        Some(&param_names_set),
                     );
-
-                    // Always clear type_params_scope after resolution.
-                    state.type_params_scope = None;
 
                     if let Ok(alias_ty) = alias_result {
                         // B-362: Compute remapped_params before inject_adt_constructor_schemes
@@ -645,7 +645,7 @@ pub(crate) fn infer_dict(
     // Track constraints generated during each entry's inference (constraint-preservation fix).
     // Constraints from fn@[constraint: ...] annotations should be scoped to the function being
     // inferred, not leak across dict entries.
-    let mut entry_constraints: HashMap<String, Vec<crate::types::Constraint>> = HashMap::new();
+    let mut entry_constraints: HashMap<String, Vec<Constraint>> = HashMap::new();
 
     // Pass 0c: pre-register class/instance declarations so all classes and instances
     // are visible during body type-checking, regardless of declaration order in the file.
@@ -663,7 +663,14 @@ pub(crate) fn infer_dict(
         );
         if is_class_or_instance {
             // Infer class/instance expression (registers into state)
-            match infer_surface_expr(&entry.node.value, &dict_env_rc, state, type_map) {
+            let mut cls_inst_constraints: Vec<Constraint> = Vec::new();
+            match infer_surface_expr(
+                &entry.node.value,
+                &dict_env_rc,
+                state,
+                &mut cls_inst_constraints,
+                type_map,
+            ) {
                 Ok(ty) => {
                     let (ref key_name, _) = key_entries[idx];
                     if let Some(name) = key_name {
@@ -690,9 +697,8 @@ pub(crate) fn infer_dict(
             // constraints into state.constraints (e.g., Numeric constraints from [+ x 1] in a
             // method body). These constraints are not associated with any generalizable binding
             // — the return type of class/instance inference is always Type::Record(Row::empty()),
-            // which has no TypeVars to quantify. Discard them here, exactly as the SCC loop's
-            // mem::take() discards per-entry constraints after each regular entry's inference.
-            state.constraints.clear();
+            // which has no TypeVars to quantify. They are discarded since class/instance inference
+            // now uses local constraint vecs (no state.constraints field to clear).
         }
     }
 
@@ -793,13 +799,10 @@ pub(crate) fn infer_dict(
                     state.current_function = Some(name.clone());
                 }
 
-                // Save any constraints accumulated before this entry (from outer check_call_with_scheme
-                // tracking, Pass 2 type alias resolution, or Pass 0c class/instance inference).
-                // Those outer constraints must survive across this entry's inference so that any
-                // outer call site's constraints_start index into state.constraints remains valid.
-                // Per-entry constraints are captured by the take() below after inference completes,
-                // then outer constraints are restored.
-                let saved_outer_constraints = std::mem::take(&mut state.constraints);
+                // Each entry gets its own constraints vec, scoped to this entry's inference.
+                // Function constraints (from fn@[constraint: ...] annotations) are scoped
+                // to the function being inferred and do not leak across dict entries.
+                let mut this_entry_constraints: Vec<Constraint> = Vec::new();
 
                 // If the value is wrapped in TypeAssert (e.g., `x: [@T expr]`), extract the
                 // asserted type upfront. When inference of the inner expression fails, the
@@ -820,13 +823,16 @@ pub(crate) fn infer_dict(
                     let mut row_ann_mapping_opt: Option<
                         &mut std::collections::HashMap<String, String>,
                     > = None;
+                    let mut _ta_constraints: Vec<Constraint> = Vec::new();
                     resolve_annotation(
                         &annotation.node,
                         &dict_env_rc,
                         annotation.span.clone(),
                         state,
+                        &mut _ta_constraints,
                         &mut ann_mapping_opt,
                         &mut row_ann_mapping_opt,
+                        None,
                     )
                     .ok()
                 } else {
@@ -847,20 +853,20 @@ pub(crate) fn infer_dict(
                         (Ok(ty), Some(schemes))
                     } else {
                         (
-                            infer_surface_expr(&entry.node.value, &dict_env_rc, state, type_map),
+                            infer_surface_expr(
+                                &entry.node.value,
+                                &dict_env_rc,
+                                state,
+                                &mut this_entry_constraints,
+                                type_map,
+                            ),
                             None,
                         )
                     };
 
-                // Constraints generated during this entry's inference are now in state.constraints.
-                // Collect them for generalization (Pass 4); restore outer constraints afterward
-                // so that outer call sites' constraints_start indices remain valid.
-                let this_entry_constraints = std::mem::take(&mut state.constraints);
-                state.constraints.extend(saved_outer_constraints);
-
                 // Store this entry's constraints for use during generalization
                 if !this_entry_constraints.is_empty() {
-                    entry_constraints.insert(name.clone(), this_entry_constraints);
+                    entry_constraints.insert(name.clone(), this_entry_constraints.clone());
                 }
 
                 if should_check_recursion {
@@ -888,6 +894,7 @@ pub(crate) fn infer_dict(
                                 &value_ty,
                                 &mut subst,
                                 state,
+                                &mut this_entry_constraints,
                                 entry.node.value.span.clone(),
                             ) {
                                 errors.push(e);
@@ -955,9 +962,15 @@ pub(crate) fn infer_dict(
                 match existing_opt {
                     Some(existing) => {
                         subst.type_map.borrow_mut().remove(&k);
-                        if let Err(e) =
-                            unify(&existing, &applied_v, &mut subst, state, span.clone())
-                        {
+                        let mut merge_constraints: Vec<Constraint> = Vec::new();
+                        if let Err(e) = unify(
+                            &existing,
+                            &applied_v,
+                            &mut subst,
+                            state,
+                            &mut merge_constraints,
+                            span.clone(),
+                        ) {
                             errors.push(e);
                             subst.type_map.borrow_mut().insert(k, existing);
                             continue;
@@ -976,7 +989,13 @@ pub(crate) fn infer_dict(
         // This attempts to resolve TypeStageApp and Union-vs-Union constraints that may
         // have become ground after unification in this SCC. See doc/06-type-inference.md:884.
         if !state.deferred_equalities.is_empty() {
-            crate::types::process_deferred_equalities(state, &mut subst, span.clone());
+            let mut deferred_constraints: Vec<Constraint> = Vec::new();
+            crate::types::process_deferred_equalities(
+                state,
+                &mut subst,
+                &mut deferred_constraints,
+                span.clone(),
+            );
         }
 
         // Apply substitution to this SCC's field types
@@ -1269,6 +1288,7 @@ pub(crate) fn entry_key_name(
     state: &mut InferState,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Option<String> {
+    let mut _key_constraints: Vec<Constraint> = Vec::new();
     match &entry.key {
         Some(key_node) => match &key_node.expr {
             SurfaceExpression::Str(s) => Some(s.clone()),
@@ -1276,7 +1296,7 @@ pub(crate) fn entry_key_name(
             SurfaceExpression::U64(n) => Some(n.to_string()),
             // Annotated key: name@[doc: "..."] — extract name directly
             SurfaceExpression::Annotated { name, .. } => Some(name.clone()),
-            _ => match infer_surface_expr(key_node, env, state, type_map) {
+            _ => match infer_surface_expr(key_node, env, state, &mut _key_constraints, type_map) {
                 Ok(Type::StringLiteral(s)) => Some(s),
                 Ok(Type::IntLiteral(n)) => Some(n.to_string()),
                 _ => None,

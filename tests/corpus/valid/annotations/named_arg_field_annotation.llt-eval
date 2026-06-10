@@ -7,6 +7,3 @@
 [Union types@Child: "values"]
 === out
 [Union types: "values"]
-
-=== warn
-[UndefinedVariable] undefined variable: Union

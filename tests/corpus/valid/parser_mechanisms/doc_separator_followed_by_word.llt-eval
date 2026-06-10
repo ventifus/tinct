@@ -3,6 +3,3 @@
 [x: ---foo]
 === out
 ["x": ---foo]
-
-=== warn
-[UndefinedVariable] undefined variable: ---foo

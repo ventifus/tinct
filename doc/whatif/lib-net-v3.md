@@ -713,6 +713,7 @@ The type chain: `MessageStream@Any → MessageStream@String → ByteStream → B
 | `Datagram` | packet + address | per-packet | `UdpSocket` |
 | `MessageStream T` | one typed `T` | protocol's job | `Channel T` |
 | `Codec input output` | `input → output` | codec's job | `NdjsonCodec`, `GzipCodec`, `HpackCodec` |
+
 ---
 
 ## Layer 4 — Protocol Layers
@@ -1555,7 +1556,6 @@ What the implementation adds to the Rust runtime and stdlib to realise this what
 - **Updated**: `read-bytes`, `write-bytes` Rust primitives become `Handle`'s `ByteStream` instance methods; `udp-send`, `udp-recv` become `UdpSocket`'s `Datagram` instance methods. They remain in the primitives table as the Rust backing but are exposed through typeclass dispatch.
 - **Updated**: All `*-accept` signatures use `constraint: [h: ByteStream]`; protocol layers are typed records; `WebSocketConnection` implements `MessageStream WsFrame` rather than `ByteStream`
 
-
 ### Add Rust primitives
 
 All primitives in the New Rust Primitives table above, registered in the appropriate module via `builtin_module()` (builtin-privacy architecture): transport and crypto primitives in `builtin_module("net")` (`src/builtins_net.rs`). Stdlib files that use them declare `--- uses: ["net"]` in their document header.
@@ -1885,5 +1885,3 @@ ns-to-resolver: [fn [let cap@NetCap ns@Nameserver]
 - Rescorla, E. (2018). RFC 8446 — TLS 1.3. — Handshake and record layer for `stdlib/protocols/tls.llt`.
 - Schwartz, B. & Bishop, M. (2022). RFC 9460 — Service Binding and Parameter Specification via the DNS. — SVCB and HTTPS record types; `SvcbRecord`, `svcb-lookup`, and `http-connect` alias-chain logic in `stdlib/protocols/http.llt`.
 - Pauly, T. et al. (2023). RFC 8305 — Happy Eyeballs Version 2. — Parallel A/AAAA resolution and staggered connection racing; extended here to the protocol dimension (h3/QUIC vs h2/TCP).
-
-

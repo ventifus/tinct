@@ -11,5 +11,5 @@
     [case [let v] [Result.Ok v]    v.value]
     [Result.Error _]:              0]
 ]
-=== error
-[E070] circular dependency detected while evaluating thunk (defined at 1:1-1:1)
+=== out
+Dict({"Result": Dict({"Ok": Function(value), "Error": Function(msg)}), "ok-val": Variant(Result.Ok, Dict({"value": Int(42)})), "err-val": Variant(Result.Error, Dict({"msg": String("fail")})), "ok-matched": Int(1)})

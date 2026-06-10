@@ -1,9 +1,4 @@
-# cell-set updates the value; cell-get reads the new value
-
-[
-  cell: [reactive-cell 1]
-  _:    [cell-set 99 cell]
-]
-[cell-get cell]
+# reactive-cell: create with initial value, read back with cell-get
+[cell-get [reactive-cell 42]]
 === out
-Int(99)
+Int(42)

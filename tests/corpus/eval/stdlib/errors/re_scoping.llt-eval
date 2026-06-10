@@ -6,6 +6,3 @@
 
 === out
 Variant(Result.Error, String("undefined variable: re-match (did you mean the string \"re-match\"? Use quotes.)"))
-
-=== warn
-[UndefinedVariable] undefined variable: re-match
