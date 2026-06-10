@@ -12,3 +12,4 @@ String("InvalidAlgorithm")
 
 === warn
 [UndefinedVariable] undefined variable: spki-pin
+[NotARecord] expected record type, got <error>

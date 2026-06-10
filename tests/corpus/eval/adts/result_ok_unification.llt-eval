@@ -2,7 +2,7 @@
 # Uses qualified Result.Ok constructor (T-1086: unqualified Ok not in type scope).
 # ok1 and ok2 use different payload types (Int vs String), verifying independent types.
 [
-  Result: [type [Ok a] [Error String]]
+  Result: [type [let a] [Ok a] [Error String]]
   ok1: [Result.Ok 42]
   ok2: [Result.Ok "hello"]
   result: ok1

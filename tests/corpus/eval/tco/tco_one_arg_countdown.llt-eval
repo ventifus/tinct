@@ -5,4 +5,6 @@
       [retry-countdown [- n 1]]]]
 ]
 ---
-[retry-countdown 500]
+[%.retry-countdown 500]
+=== out
+String("success")

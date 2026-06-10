@@ -5,4 +5,6 @@
       [countdown [- n 1] [+ acc 1]]]]
 ]
 ---
-[countdown 500 0]
+[%.countdown 500 0]
+=== out
+Int(500)

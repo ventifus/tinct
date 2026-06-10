@@ -1,5 +1,5 @@
 # entries: large input (n=1000) to verify O(n) performance
-[let test-dict [collect [range 0 1000]]]
+[test-dict: [collect [range 0 1000]]]
 [length [entries test-dict]]
 === out
-Int(1)
+Int(1000)

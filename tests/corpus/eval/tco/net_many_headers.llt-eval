@@ -5,4 +5,6 @@
       [parse-headers [+ i 1] n [merge acc [header-num: i]]]]]
 ]
 ---
-[parse-headers 0 500 []]
+[%.parse-headers 0 500 []]
+=== out
+Dict({"header-num": Int(499)})

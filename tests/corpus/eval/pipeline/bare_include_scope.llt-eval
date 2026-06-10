@@ -3,3 +3,6 @@
 [str-at 0 "hello"]
 === out
 String("h")
+
+=== warn
+[UndefinedVariable] undefined variable: str-at

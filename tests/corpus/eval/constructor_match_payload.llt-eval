@@ -3,7 +3,7 @@
 # Calling [Result.Ok value: 42] creates a variant with payload {value: 42}.
 # Pattern match extracts the payload dict as `v`, then accesses `v.value`.
 [
-  Result: [type [Ok value: a] [Error msg: Str]]
+  Result: [type [let a] [Ok value: a] [Error msg: Str]]
   matched: [match [Result.Ok value: 42]
     [case [let v] [Result.Ok v]    v.value]
     [Result.Error _]:              0]

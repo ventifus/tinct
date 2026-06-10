@@ -1,4 +1,7 @@
-# uri: invalid URI without scheme separator produces parse error (E063)
+# uri: not in prelude — requires explicit include; type checker and eval both see it as undefined
 [uri "not-a-valid-uri-no-colon"]
 === error
 [E002] undefined variable: uri (did you mean the string "uri"? Use quotes.) (defined at 1:2-1:5)
+
+=== warn
+[UndefinedVariable] undefined variable: uri

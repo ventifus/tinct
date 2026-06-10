@@ -192,6 +192,7 @@ fn update_eval_corpus() {
     let mut unchanged = 0;
     let mut errors = 0;
     let mut skipped = 0;
+    let mut stripped = 0;
 
     for (i, test_file) in test_files.iter().enumerate() {
         let content = match fs::read_to_string(test_file) {
@@ -230,14 +231,26 @@ fn update_eval_corpus() {
         let path_str = test_file.to_string_lossy();
         if error.is_some() && !path_str.contains("error") {
             if test.expectations.error.is_none() {
-                eprintln!("  NOTE: stripping === error (path not under errors/ and no existing === error)");
+                let err_content = error.as_deref().unwrap_or("");
+                eprintln!(
+                    "  STRIPPED === error from {}: {}",
+                    relative.display(),
+                    err_content.lines().next().unwrap_or("").trim()
+                );
                 error = None;
+                stripped += 1;
             }
         }
         if warnings.is_some() && !path_str.contains("warn") {
             if test.expectations.warn.is_none() {
-                eprintln!("  NOTE: stripping === warn (path not under warnings/ and no existing === warn)");
+                let warn_content = warnings.as_deref().unwrap_or("");
+                eprintln!(
+                    "  STRIPPED === warn from {}: {}",
+                    relative.display(),
+                    warn_content.lines().next().unwrap_or("").trim()
+                );
                 warnings = None;
+                stripped += 1;
             }
         }
 
@@ -356,9 +369,19 @@ fn update_eval_corpus() {
     eprintln!("  Unchanged: {}", unchanged);
     eprintln!("  Skipped:   {}", skipped);
     eprintln!("  Errors:    {}", errors);
+    eprintln!("  Stripped:  {}", stripped);
 
     if dry_run {
         eprintln!("\n  (dry run — no files modified)");
+    }
+
+    if stripped > 0 {
+        panic!(
+            "{} file(s) produced unexpected warnings/errors that were stripped. \
+             These indicate type checker regressions that need investigation. \
+             See STRIPPED lines above for details.",
+            stripped
+        );
     }
 }
 

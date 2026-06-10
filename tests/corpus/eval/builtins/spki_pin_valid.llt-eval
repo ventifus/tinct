@@ -15,3 +15,5 @@ Dict({"algorithm": String("Sha256"), "fingerprint": Bool(true)})
 
 === warn
 [UndefinedVariable] undefined variable: spki-pin
+[NotARecord] expected record type, got <error>
+[NotARecord] expected record type, got <error>

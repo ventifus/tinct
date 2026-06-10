@@ -4,3 +4,6 @@
 [try [fn [] [hex-encode "A"]]]
 === out
 Variant(Result.Error, String("undefined variable: hex-encode (did you mean the string \"hex-encode\"? Use quotes.)"))
+
+=== warn
+[UndefinedVariable] undefined variable: hex-encode

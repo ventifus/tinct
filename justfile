@@ -35,8 +35,8 @@ tinct_max_memory := "10200547328"
 # Common container run flags
 # target/ is a bind mount so binaries land on the host (symlinkable from ~/.local/bin)
 # cargo registry cache stays a named volume — no need to expose it on the host
-run_flags := "--rm --memory " + container_memory + timeout_flag + " -v .:/workspace:z -v ./target:/workspace/target:z -v " + project_name + "-cargo:/usr/local/cargo/registry -w /workspace"
-test_run_flags := "--rm --memory " + container_memory + test_timeout_flag + " -v .:/workspace:z -v ./target:/workspace/target:z -v " + project_name + "-cargo:/usr/local/cargo/registry -w /workspace"
+run_flags := "--rm --memory " + container_memory + timeout_flag + " -v .:/workspace:z -v ./target:/workspace/target:z -v " + project_name + "-cargo:/usr/local/cargo/registry -w /workspace -e RUST_BACKTRACE=1"
+test_run_flags := "--rm --memory " + container_memory + test_timeout_flag + " -v .:/workspace:z -v ./target:/workspace/target:z -v " + project_name + "-cargo:/usr/local/cargo/registry -w /workspace -e RUST_BACKTRACE=1"
 
 # Default recipe - show available commands
 default:
@@ -82,7 +82,15 @@ test-lib-summary:
 
 # Run corpus tests and show only failures + summary lines
 test-corpus-summary:
-    -{{container}} run {{test_run_flags}} -e RUST_MIN_STACK=67108864 -e RUSTFLAGS="-D warnings" {{rust_image}} sh -c "cargo test --test corpus_tests -- --test-threads=1 2>&1 | grep -E 'FAILED|test result:|failures:'"
+    -{{container}} run {{test_run_flags}} -e RUST_MIN_STACK=67108864 -e RUSTFLAGS="-D warnings" {{rust_image}} sh -c "cargo test --test corpus_tests -- --test-threads=1 2>&1 | grep -E 'FAILED|test result:|failures:| - tests'"
+
+# Run eval corpus and show full failure details with error messages (first 5 failures)
+test-corpus-failures:
+    -{{container}} run {{test_run_flags}} -e RUST_MIN_STACK=67108864 -e RUSTFLAGS="-D warnings" {{rust_image}} sh -c "cargo test --test corpus_tests -- --test-threads=1 test_eval_corpus 2>&1 | grep -A 3 'eval test.*failed' | head -100"
+
+# Run update-corpus dry run and show just the summary (stripped count)
+update-corpus-summary:
+    -{{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 -e RUSTFLAGS="-D warnings" {{rust_image}} sh -c "cargo test --test update_corpus -- --ignored --nocapture --test-threads=1 update_eval_corpus 2>&1 | grep -E 'Stripped:|Updated:|Unchanged:|panicked'"
 
 # Run CLI tests and show only failures + summary lines
 test-cli-summary:

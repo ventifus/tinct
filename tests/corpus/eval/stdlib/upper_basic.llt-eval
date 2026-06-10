@@ -3,3 +3,6 @@
 [upper "hello"]
 === out
 String("HELLO")
+
+=== warn
+[UndefinedVariable] undefined variable: upper

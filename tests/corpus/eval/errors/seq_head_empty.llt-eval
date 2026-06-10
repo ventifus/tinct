@@ -1,13 +1,13 @@
 # head: error on empty seq
 [head []]
 === error
-[E010] head: expected Seq, got Dict (defined at stdlib/prelude.llt:2941:15-2941:32)
-  --> stdlib/prelude.llt:2941:15-2941:32
+[E010] head: expected Seq, got Dict (defined at stdlib/prelude.llt:2947:15-2947:32)
+  --> stdlib/prelude.llt:2947:15-2947:32
    |
-  2941 | """] [let xs] [builtin-head xs]]
+  2947 | """] [let xs] [builtin-head xs]]
        |               ^^^^^^^^^^^^^^^^^
-  in [builtin-head ...] at stdlib/prelude.llt:2941:15-2941:32
+  in [builtin-head ...] at stdlib/prelude.llt:2947:15-2947:32
    |
-  2941 | """] [let xs] [builtin-head xs]]
+  2947 | """] [let xs] [builtin-head xs]]
        |               ^^^^^^^^^^^^^^^^^
   in [head ...] at 1:1-1:10

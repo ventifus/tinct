@@ -2,7 +2,7 @@
 # Constructor [Ok value: a] generates [fn [let value] [variant "Result.Ok" [value: value]]].
 # Two calls to [Ok value: 1] create identical variants with payload {value: 1}.
 # Variant equality compares both tag and payload.
-[Result: [type [Ok value: a] [Error msg: Str]]]
+[Result: [type [let a] [Ok value: a] [Error msg: Str]]]
 [eq: [= [Ok value: 1] [Ok value: 1]]]
 === out
 Dict({"eq": Bool(true)})

@@ -1864,8 +1864,14 @@ Note: Wraps the function call in error handling. Returns the function's result i
 # Transport type: union of network transport variants
 # Used by connect builtin to specify connection type
 Transport: [type Tcp Udp UnixStream UnixDatagram NamedPipe Icmp]
-# T-1086: Transport constructors are accessible via Transport.Tcp, Transport.Udp, etc.
-# The Transport dict also contains them for dot-access: Transport.Tcp, Transport.Udp, etc.
+# Short-name aliases for Transport constructors (injected like Ok/Error/Some/None).
+# User code can use bare Tcp, Udp etc. without qualifying with Transport.
+Tcp:          Transport.Tcp
+Udp:          Transport.Udp
+UnixStream:   Transport.UnixStream
+UnixDatagram: Transport.UnixDatagram
+NamedPipe:    Transport.NamedPipe
+Icmp:         Transport.Icmp
 
 # ============================================================================
 # OpenFlag Type (File Open Mode Variants)
@@ -3874,10 +3880,10 @@ tmpl-expand: [fn [let template-str args]
       [split "$" template-str]]]]
 
 # Wrap the collected AST nodes in a [str ...] call AST Variant.
-# Uses the legacy dict form with explicit type: fields. The dict_to_surface_node
-# function requires type: when processing a plain Value::Dict value.
+# Uses builtin-variant "Call" (same as do-call-1/do-call-2 helpers) to produce
+# Value::Expression directly, bypassing the dict_to_surface_node conversion path.
 tmpl-emit-call: [fn [let result]
-  [type: "call"  fn: [type: "var"  name: "str"]  args: result.nodes  named-args: []  implied: true]]
+  [builtin-variant "Call" [fn: [builtin-variant "VarRef" [name: "str"]]  args: result.nodes  named-args: []  implied: true]]]
 
 # ============================================================================
 # [do] macro helpers — AST node builders for monadic do-notation desugaring

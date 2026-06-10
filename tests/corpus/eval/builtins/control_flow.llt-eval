@@ -18,3 +18,5 @@
   f: [fn [let x y] [+ x y]]
   apply_result: [apply f [0: 3  1: 4]]
 ]
+=== out
+Dict({"if_true": Int(1), "if_false": Int(2), "try_success": Variant(Result.Ok, Int(42)), "try_error": Variant(Result.Error, String("caught")), "eval_deep": Dict({"x": Int(3)}), "force_whnf": Int(3), "f": Function(x, y), "apply_result": Int(7)})
