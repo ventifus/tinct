@@ -15,6 +15,12 @@
 [has-field-anns: [has? "field-annotations" ann]]
 [role: [get "role" [get "items" [get "field-annotations" ann]]]]
 [result: [and has-field-anns [= role "Seq"]]]
+=== error
+[E001] key not found: field-annotations
+
+
+
+
 
 
 

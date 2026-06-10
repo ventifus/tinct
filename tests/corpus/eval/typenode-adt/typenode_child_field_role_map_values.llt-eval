@@ -16,3 +16,5 @@
 [role: [get "role" [get "fields" field-anns]]]
 [no-open: [not [has? "open" field-anns]]]
 [result: [and has-field-anns [and [= role "MapValues"] no-open]]]
+=== error
+[E001] key not found: field-annotations

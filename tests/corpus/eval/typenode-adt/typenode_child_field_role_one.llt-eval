@@ -16,3 +16,5 @@
 [role: [get "role" [get "child" field-anns]]]
 [no-label: [not [has? "label" field-anns]]]
 [result: [and has-field-anns [and [= role "One"] no-label]]]
+=== error
+[E001] key not found: field-annotations

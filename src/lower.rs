@@ -738,7 +738,7 @@ fn lower_type_alias_to_constructor_dict(
                 implied: false,
             };
 
-            Arc::new(Spanned::new(
+            let fn_expr = Arc::new(Spanned::new(
                 CoreExpr::Fn {
                     return_ann: None,
                     params,
@@ -746,7 +746,37 @@ fn lower_type_alias_to_constructor_dict(
                     desugared: false,
                 },
                 syn_span.clone(),
-            ))
+            ));
+
+            // Wrap payload constructor with annotation if present (mirrors unit constructor handling)
+            if let Some(ann_entries) = &ctor.annotation {
+                let ann_core_entries: Vec<Spanned<CoreEntry>> = ann_entries
+                    .iter()
+                    .map(|se| {
+                        let key = se.node.key.as_ref().map(|k| Arc::new(lower(k, res, types)));
+                        let value = Arc::new(lower(&se.node.value, res, types));
+                        Spanned::new(CoreEntry { key, value }, se.span.clone())
+                    })
+                    .collect();
+                let ann_dict = Arc::new(Spanned::new(
+                    CoreExpr::Dict(ann_core_entries),
+                    syn_span.clone(),
+                ));
+                Arc::new(Spanned::new(
+                    CoreExpr::Call {
+                        func: Arc::new(Spanned::new(
+                            CoreExpr::FreeVar("builtin-make-annotated".to_string()),
+                            syn_span.clone(),
+                        )),
+                        args: vec![fn_expr, ann_dict],
+                        named_args: vec![],
+                        implied: false,
+                    },
+                    syn_span.clone(),
+                ))
+            } else {
+                fn_expr
+            }
         };
 
         core_entries.push(Spanned::new(CoreEntry { key, value }, syn_span.clone()));
@@ -844,9 +874,19 @@ fn extract_constructors_from_body(body: &SurfaceExpression) -> Vec<ConstructorIn
                 if first.node.key.is_some() {
                     return;
                 }
-                let ctor_name = match &first.node.value.expr {
-                    SurfaceExpression::VarRef { name, .. } if is_ctor(name) => name.clone(),
-                    SurfaceExpression::Annotated { name, .. } if is_ctor(name) => name.clone(),
+                // Extract constructor name and annotation from the first (positional) entry
+                let (ctor_name, ctor_annotation) = match &first.node.value.expr {
+                    SurfaceExpression::VarRef { name, .. } if is_ctor(name) => (name.clone(), None),
+                    SurfaceExpression::Annotated { name, annotation } if is_ctor(name) => {
+                        // Extract PropertyDict annotation entries for the constructor
+                        let ann = match &annotation.node {
+                            crate::ast::Annotation::PropertyDict(entries) if !entries.is_empty() => {
+                                Some(entries.clone())
+                            }
+                            _ => None,
+                        };
+                        (name.clone(), ann)
+                    }
                     _ => return,
                 };
                 let fields: Vec<String> = entries[1..]
@@ -866,7 +906,7 @@ fn extract_constructors_from_body(body: &SurfaceExpression) -> Vec<ConstructorIn
                     name: ctor_name,
                     is_unit,
                     fields,
-                    annotation: None,
+                    annotation: ctor_annotation,
                 });
             }
             _ => {}

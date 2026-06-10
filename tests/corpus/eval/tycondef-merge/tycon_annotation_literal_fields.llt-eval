@@ -18,3 +18,5 @@
 [MyLibType: [type [Widget@[role: "primary"  priority: 1] name: String]]]
 [ann: [annotation-of MyLibType.Widget]]
 [result: [and [= [get "role" ann] "primary"] [= [get "priority" ann] 1]]]
+=== out
+Dict({"result": Bool(true)})
