@@ -8,5 +8,7 @@
 # should verify that a value from an inner Color is rejected where an outer Color is expected.
 [
   Color: [type Red Green Blue]
-  result: Red
+  result: Color.Red
 ]
+=== out
+Dict({"Color": Dict({"Red": Variant(Color.Red, Null), "Green": Variant(Color.Green, Null), "Blue": Variant(Color.Blue, Null)}), "result": Variant(Color.Red, Null)})

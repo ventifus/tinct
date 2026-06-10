@@ -3,3 +3,6 @@
 === error
 [E010] each-key: expected Dict, got String (defined at 1:11-1:18)
   in [each-key ...] at 1:1-1:19
+
+=== warn
+[UnificationFailure] cannot unify [] with "hello"

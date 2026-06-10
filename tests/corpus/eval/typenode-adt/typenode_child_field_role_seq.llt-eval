@@ -11,7 +11,13 @@
 # whose "types" key holds {role: "Seq"}.
 [NodeType: [type [Union@[as-type: [fn [let u] u]  guarding: false]
   items@Child: [Seq NodeType]]]]
-[ann: [annotation-of Union]]
+[ann: [annotation-of NodeType.Union]]
 [has-field-anns: [has? "field-annotations" ann]]
 [role: [get "role" [get "items" [get "field-annotations" ann]]]]
 [result: [and has-field-anns [= role "Seq"]]]
+
+
+=== warn
+[TypeError] invalid type expression in annotation: Call { func: SurfaceNode { expr: VarRef { name: "Seq", escaped: false }, span: Span { start: Position { offset: 603, line: 12, column: 17 }, end: Position { offset: 606, line: 12, column: 20 }, file: None } }, args: [SurfaceNode { expr: VarRef { name: "NodeType", escaped: false }, span: Span { start: Position { offset: 607, line: 12, column: 21 }, end: Position { offset: 615, line: 12, column: 29 }, file: None } }], named_args: [], implied: true }
+[UndefinedVariable] undefined variable: NodeType
+[UnificationFailure] cannot unify [] with <error>

@@ -15,3 +15,8 @@
 # Second call: valid [let ...] argument → should succeed
 # Without ExpansionGuard, this would spuriously error with "recursive macro expansion"
 [wraps-let [let x 1]]
+=== error
+[E012] macro expansion error: macro 'wraps-let': argument 'binding' expected LetDecl, got Literal (defined at 11:1-11:15)
+
+=== warn
+[E012] macro expansion error: macro 'wraps-let': argument 'binding' expected LetDecl, got Literal (defined at 11:1-11:15)

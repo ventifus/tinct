@@ -4,3 +4,6 @@
 [type-of with-deadline]
 === out
 String("Function")
+
+=== warn
+[UnificationFailure] cannot unify Top with <error>

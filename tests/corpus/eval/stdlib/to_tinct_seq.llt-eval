@@ -2,3 +2,6 @@
 [to-tinct [cons 1 []]]
 === out
 String("[0: 1]")
+
+=== warn
+[UnificationFailure] cannot unify Top with <error>

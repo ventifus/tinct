@@ -3,3 +3,6 @@
 [length [slice 200 800 d]]
 === out
 Int(600)
+
+=== warn
+[UnificationFailure] cannot unify [] with <error>

@@ -2,13 +2,13 @@
 # Regression: after migration, tail must check for Seq.Nil Variant (not empty Dict)
 [tail [tail [range 1 2]]]
 === error
-[E034] tail on empty collection (defined at stdlib/prelude.llt:2955:15-2955:32)
-  --> stdlib/prelude.llt:2955:15-2955:32
+[E034] tail on empty collection (defined at stdlib/prelude.llt:2958:15-2958:32)
+  --> stdlib/prelude.llt:2958:15-2958:32
    |
-  2955 | """] [let xs] [builtin-tail xs]]
+  2958 | """] [let xs] [builtin-tail xs]]
        |               ^^^^^^^^^^^^^^^^^
-  in [builtin-tail ...] at stdlib/prelude.llt:2955:15-2955:32
+  in [builtin-tail ...] at stdlib/prelude.llt:2958:15-2958:32
    |
-  2955 | """] [let xs] [builtin-tail xs]]
+  2958 | """] [let xs] [builtin-tail xs]]
        |               ^^^^^^^^^^^^^^^^^
   in [tail ...] at 2:1-2:26

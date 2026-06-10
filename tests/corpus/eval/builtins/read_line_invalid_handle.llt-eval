@@ -1,3 +1,7 @@
 # builtin-read-line: error when argument is not a Handle
 --- uses: ["core"]
 [builtin-read-line 42]
+
+
+=== warn
+[UnificationFailure] cannot unify Handle[[__cap_flag_readable: []]] with 42

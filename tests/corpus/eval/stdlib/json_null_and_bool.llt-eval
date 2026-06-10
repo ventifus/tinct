@@ -3,4 +3,6 @@
 
 ---
 
-[to-json [null: [] yes: true no: false]]
+[%.to-json [null: [] yes: true no: false]]
+=== out
+String("{\"null\":null,\"yes\":true,\"no\":false}")

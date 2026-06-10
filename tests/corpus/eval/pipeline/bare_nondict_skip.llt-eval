@@ -3,3 +3,6 @@
 42
 === out
 Int(42)
+
+=== warn
+[NotARecord] expected record type, got "hello"

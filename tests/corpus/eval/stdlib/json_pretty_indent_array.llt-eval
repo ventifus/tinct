@@ -3,3 +3,6 @@
 [to-json-pretty [0: "a"  1: "b"  2: "c"]]
 === out
 String("[\n  \"a\",\n  \"b\",\n  \"c\"\n]")
+
+=== warn
+[UndefinedVariable] undefined variable: to-json-pretty

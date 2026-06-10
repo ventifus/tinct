@@ -5,3 +5,6 @@
 === error
 [E002] undefined variable: %undefined_section (defined at 3:1-3:19)
   in accessing .x at 3:1-3:21
+
+=== warn
+[UndefinedVariable] undefined variable: %undefined_section

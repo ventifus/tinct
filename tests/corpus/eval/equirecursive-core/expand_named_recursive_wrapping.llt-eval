@@ -22,3 +22,6 @@
     List.Nil:                   0]
 ]
 result
+=== error
+[E070] circular dependency detected while evaluating thunk (defined at 1:1-1:1) (materialized at 20:33-20:38)
+  in materialized at 16:1-22:2

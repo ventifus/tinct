@@ -15,3 +15,9 @@
  finally-type:       [type-of finally]]
 === out
 Dict({"retry-ok": Int(42), "exit-type": String("Function"), "graceful-exit-type": String("Function"), "await-all-type": String("Function"), "recv-all-type": String("Function"), "par-map-type": String("Function"), "par-filter-type": String("Function"), "retry-type": String("Function"), "finally-type": String("Function")})
+
+=== warn
+[UnificationFailure] cannot unify Top with <error>
+[UnificationFailure] cannot unify Top with <error>
+[UnificationFailure] cannot unify Top with <error>
+[UnificationFailure] cannot unify Top with <error>

@@ -5,3 +5,6 @@
 [= result []]
 === out
 Bool(true)
+
+=== warn
+[UnificationFailure] cannot unify [] with String | []

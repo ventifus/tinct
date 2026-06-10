@@ -4,3 +4,6 @@
 [type-of with-timeout]
 === out
 String("Function")
+
+=== warn
+[UnificationFailure] cannot unify Top with <error>

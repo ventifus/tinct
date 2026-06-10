@@ -3,4 +3,6 @@
 
 ---
 
-[to-json [fn [let x] x]]
+[%.to-json [fn [let x] x]]
+=== out
+String("null")

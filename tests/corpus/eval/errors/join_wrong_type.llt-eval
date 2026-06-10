@@ -1,13 +1,16 @@
 # join: error when separator is not a string
 [join 42 [1 2 3]]
 === error
-[E010] join: expected String, got Int (defined at stdlib/prelude.llt:3015:40-3015:43)
-  --> stdlib/prelude.llt:3015:40-3015:43
+[E010] join: expected String, got Int (defined at stdlib/prelude.llt:3018:40-3018:43)
+  --> stdlib/prelude.llt:3018:40-3018:43
    |
-  3015 | """] [let sep@String xs] [builtin-join sep xs]]
+  3018 | """] [let sep@String xs] [builtin-join sep xs]]
        |                                        ^^^
-  in [builtin-join ...] at stdlib/prelude.llt:3015:26-3015:47
+  in [builtin-join ...] at stdlib/prelude.llt:3018:26-3018:47
    |
-  3015 | """] [let sep@String xs] [builtin-join sep xs]]
+  3018 | """] [let sep@String xs] [builtin-join sep xs]]
        |                          ^^^^^^^^^^^^^^^^^^^^^
   in [join ...] at 1:1-1:18
+
+=== warn
+[UnificationFailure] cannot unify String with 42

@@ -36,3 +36,8 @@
   # Call the function with a B-219-constructed Ok value
   result: [unwrap [Ok 42]]
 ]
+=== error
+[E099] syntax error at 31:12 (cannot evaluate error node) (defined at 31:12-31:13)
+
+=== warn
+[UndefinedType] undefined type: Result

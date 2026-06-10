@@ -9,3 +9,9 @@
 [str a "|" b "|" c "|" [str? d]]
 === out
 String("line1|line2|line3|false")
+
+=== warn
+[UnificationFailure] cannot unify String with String | []
+[UnificationFailure] cannot unify String with String | []
+[UnificationFailure] cannot unify String with String | []
+[UnificationFailure] cannot unify Bool with String | []

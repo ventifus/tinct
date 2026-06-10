@@ -8,3 +8,6 @@
 a.b.c
 === error
 [E002] undefined variable: undefined (did you mean the string "undefined"? Use quotes.) (defined at 4:10-4:19) (materialized at 8:1-8:6)
+
+=== warn
+[UndefinedVariable] undefined variable: undefined

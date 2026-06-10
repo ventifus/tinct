@@ -1,5 +1,11 @@
 # dict_to_surface_node_inner via tmpl/i-string macro: verifies Literal, VarRef, Call
 # variant reconstruction. The `tmpl` macro builds a [str ...] call AST from Literal
 # and VarRef Variant nodes — all reconstructed via dict_to_surface_node_inner.
-# This test was blocked until the macro-runtime-v2-regression fix.
+# This test exposes a macro-runtime-v2 regression (B-382).
+# i"..." works in standalone expressions but fails inside letrec dicts with non-string values.
 [x: 42  msg: i"Value is $x"]
+=== error
+[E080] macro 'tmpl' returned invalid AST: missing required field: type (defined at 5:14-5:28)
+
+=== warn
+[E080] macro 'tmpl' returned invalid AST: missing required field: type (defined at 5:14-5:28)

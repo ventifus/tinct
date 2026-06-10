@@ -7,3 +7,6 @@
 [f: [fn [let xs@Seq] xs]
  seq_assert: [@Seq [seq 1 [seq 2 [builtin-variant "Seq.Nil"]]]]
  param_seq: [f [seq "a" [seq "b" [builtin-variant "Seq.Nil"]]]]]
+=== error
+[E011] type assertion failed: expected Seq[_], got Seq (defined at 7:20-7:63) (materialized at 7:14-7:64)
+  note: value produced here at 7:20-7:63

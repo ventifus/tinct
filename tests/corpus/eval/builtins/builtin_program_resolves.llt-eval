@@ -5,3 +5,6 @@
 [type-of program]
 === out
 String("Function")
+
+=== warn
+[UnificationFailure] cannot unify Top with <error>

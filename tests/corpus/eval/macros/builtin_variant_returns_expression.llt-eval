@@ -12,3 +12,5 @@
   # VarRef nodes have the tag "Var" (from surface_expr_tag)
   node-tag: [tag-of node]
 ]
+=== error
+[E035] cannot serialize Expression to JSON (defined at 5:9-5:47)

@@ -11,7 +11,9 @@
 # Uses `guarding: true` (same as TypeNode.Int, TypeNode.Float, etc.) and an
 # identity function for `as-type` (same as all built-in TypeNode constructors).
 [MyNode: [type [Leaf@[as-type: [fn [let t] t]  guarding: true]]]]
-[ann: [annotation-of Leaf]]
+[ann: [annotation-of MyNode.Leaf]]
 [has-as-type: [has? "as-type" ann]]
 [guarding-val: [get "guarding" ann]]
 [result: [and has-as-type guarding-val]]
+=== out
+Dict({"result": Bool(true)})

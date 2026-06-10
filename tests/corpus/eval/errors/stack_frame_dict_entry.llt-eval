@@ -7,3 +7,6 @@
 === error
 [E013] no instance for Addable (Int, String) (defined at 3:12-3:32)
   in [+ ...] at 3:12-3:32
+
+=== warn
+[TypeError] no instance for Addable Int String

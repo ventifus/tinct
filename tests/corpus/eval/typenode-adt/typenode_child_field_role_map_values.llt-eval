@@ -10,7 +10,7 @@
 [DictNode: [type [Record@[as-type: [fn [let r] r]  guarding: true]
   fields@Child: [Map String DictNode]
   open:         Bool]]]
-[ann: [annotation-of Record]]
+[ann: [annotation-of DictNode.Record]]
 [has-field-anns: [has? "field-annotations" ann]]
 [field-anns: [get "field-annotations" ann]]
 [role: [get "role" [get "fields" field-anns]]]

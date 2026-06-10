@@ -4,3 +4,6 @@
 
 === error
 [E002] undefined variable: http-request (did you mean the string "http-request"? Use quotes.) (defined at 2:2-2:14)
+
+=== warn
+[UndefinedVariable] undefined variable: http-request

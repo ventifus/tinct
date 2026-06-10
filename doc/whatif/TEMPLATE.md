@@ -8,6 +8,12 @@
 
 What would it take to [add/adopt/implement feature] in tinct?
 
+## Goals
+
+1. **[Primary goal].** One sentence on what this achieves and why.
+2. **[Secondary goal].** ...
+3. **[Tertiary goal].** ...
+
 ## Current State
 
 How tinct handles this area today. What exists, what works, what's

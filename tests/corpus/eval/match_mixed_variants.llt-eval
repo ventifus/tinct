@@ -16,4 +16,5 @@
     [case [let n] [Option.Some n] n.value]
     Option.None:                  0]
 ]
-
+=== error
+[E070] circular dependency detected while evaluating thunk (defined at 1:1-1:1)

@@ -9,4 +9,4 @@
 # extract_fn_annotation_extra (which only captures scalar literals; see T-1125 for dict values).
 # annotation-of Ctor → Dict({"role": String("primary")})
 [MyType: [type [Ctor@[role: "primary"] val: Int]]]
-[result: [= [get "role" [annotation-of Ctor]] "primary"]]
+[result: [= [get "role" [annotation-of MyType.Ctor]] "primary"]]

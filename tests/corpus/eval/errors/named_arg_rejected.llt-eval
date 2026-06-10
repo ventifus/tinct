@@ -3,3 +3,6 @@
 === error
 [E020] arity mismatch: expected 1 argument, got 0 (defined at 1:1-1:15)
   in [floor ...] at 1:1-1:15
+
+=== warn
+[TypeError] unknown named argument: function has no parameter named 'n'

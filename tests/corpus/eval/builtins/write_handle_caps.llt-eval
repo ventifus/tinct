@@ -6,3 +6,7 @@
 %
 [include %libdir "io.llt"]
 [has-cap? [open [narrow %cwd "target"] "tinct-test-write-caps.txt" Readable] "Readable"]
+
+
+=== warn
+[UndefinedVariable] undefined variable: has-cap?

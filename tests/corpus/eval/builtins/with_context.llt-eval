@@ -6,3 +6,6 @@
 [with-context [non-cancellable] [fn [let] 42]]
 === out
 Function()
+
+=== warn
+[ArityMismatch] expected 1 arguments, got 0

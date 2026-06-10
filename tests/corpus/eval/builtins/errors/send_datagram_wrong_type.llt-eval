@@ -9,3 +9,7 @@
   2733 | send-datagram@[doc: "Send a datagram packet (UDP/Unix datagram)"]: builtin-send-datagram
        |                                                                    ^^^^^^^^^^^^^^^^^^^^^
   in [send-datagram ...] at 2:1-2:27
+
+=== warn
+[UnificationFailure] cannot unify String | Bytes with 42
+[UnificationFailure] cannot unify QuicDatagramHandle | DatagramHandle with "hello"

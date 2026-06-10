@@ -46,6 +46,11 @@ default:
 commit MESSAGE:
     git commit --no-gpg-sign -m "{{MESSAGE}}"
 
+# Stage all tracked changes and commit without GPG signing
+commit-all MESSAGE:
+    git add -u
+    git commit --no-gpg-sign -m "{{MESSAGE}}"
+
 # Build the project (debug mode)
 build:
     {{container}} run {{run_flags}} -e RUSTFLAGS="-D warnings" {{rust_image}} cargo build

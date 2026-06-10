@@ -3,5 +3,7 @@
 
 ---
 
-[tags: [seq "admin" "editor" "user"]]
-[to-json-pretty tags]
+[tags: ["admin" "editor" "user"]]
+[%.to-json-pretty tags]
+=== out
+String("[\n  \"admin\",\n  \"editor\",\n  \"user\"\n]")

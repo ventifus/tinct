@@ -10,10 +10,11 @@
 [
   ch: [channel 10]
   sent: [send ch 42]
-  sources: [seq [{ch: ch  handler: [fn [let v] v]}] [builtin-variant "Seq.Nil"]]
+  sources: [seq [ch: ch  handler: [fn [let v] v]] [builtin-variant "Seq.Nil"]]
   result: [if [= sent []] [select-once [context] sources] [select-once [context] sources]]
 ]
 ---
 [match %.result
   [case [let v] [Result.Ok v] v]
   Closed.Closed: -1]
+

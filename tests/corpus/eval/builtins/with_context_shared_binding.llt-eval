@@ -10,3 +10,6 @@
 [result: [+ [with-context [non-cancellable] %.x] %.x]]
 === out
 Dict({"result": Int(84)})
+
+=== warn
+[ArityMismatch] expected 1 arguments, got 0

@@ -61,7 +61,8 @@ loop:
 
 - Run `just fmt` in the foreground (auto-fixes formatting; wait for it to complete)
 - Run `just ci` in the foreground (check + test + lint; wait for full output)
-- Fix ALL failures — pre-existing failures are your responsibility too. Dispatch agents to write fixes, then re-run `just ci` yourself. Never skip tests, add `#[ignore]`, or suppress warnings with `#[allow(...)]` to pass the gate. If a pre-existing failure is too large to fix inline, create a tracker item and fix it before proceeding.
+- Fix ALL failures. It doesn't matter who introduced them or when — you own the current state of the codebase. Dispatch agents to write fixes, then re-run `just ci` yourself. Never skip tests, add `#[ignore]`, or suppress warnings with `#[allow(...)]` to pass the gate. If a failure is too large to fix inline, create a tracker item and fix it before proceeding.
+- **If a failure is intractable** (multiple fix attempts fail, root cause unclear) → do NOT give up, do NOT apply a workaround. Dispatch the full specialist panel (computer-scientist, eval-engine, type-theorist, integration-verifier as appropriate) to research the root cause. Brief them: describe the failure, what you've already tried, and instruct them to determine the most justifiably correct solution and map a concrete path forward. Implement their recommended solution. Only proceed past the gate once it is genuinely green.
 - When both pass → proceed to 2c
 
 **2c — Sprint review:**
@@ -135,11 +136,11 @@ If every task only touches `.md` files, comments, mempalace, or non-code metadat
 
 ## Key Principles
 
-- **Build gate first**: `just fmt` + `just ci` before any reviewer. Fix all failures including pre-existing ones.
+- **Build gate first**: `just fmt` + `just ci` before any reviewer. Fix all failures — you own the codebase, not just what this sprint touched.
 - **Inner loop gates panel**: sprint-reviewer APPROVE required before specialist panel.
 - **Fix root causes**: when you find a bug, fix the cause — not the symptom. No special cases, no workarounds.
 - **Two-bucket triage**: fix-now or tracker item. Nits are always fix-now.
-- **Never halt**: stuck detection creates a bug item and continues.
+- **Never halt, never give up**: stuck on an intractable problem? Dispatch the specialist panel to research the root cause and determine the correct solution. Never apply workarounds to pass the gate — fix the actual problem.
 - **Tests are mandatory**: no implementation without tests.
 - **Design comes from doc/*.md**: don't invent new behavior without documenting it.
 - **Coordinator runs CI, not agents**: `just build`, `just ci`, `just fmt` are run by the coordinator in the foreground. Never ask agents to run these — concurrent CI runs crash the MCP.

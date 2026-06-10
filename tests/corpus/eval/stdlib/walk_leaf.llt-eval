@@ -2,3 +2,6 @@
 [walk [fn [let x] [if [= [type-of x] "Dict"] x [* x 2]]] 5]
 === out
 Int(10)
+
+=== warn
+[TypeError] no instance for Multipliable ~[] Int

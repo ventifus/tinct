@@ -4,3 +4,6 @@
 === error
 [E013] no instance for Addable (Int, String) (defined at 1:27-1:42)
   in [+ ...] at 1:27-1:42
+
+=== warn
+[TypeError] named argument 'y' type mismatch: cannot unify "not an int" with Int

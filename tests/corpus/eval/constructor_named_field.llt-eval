@@ -5,4 +5,5 @@
   Box: [type [Boxed value: Int]]
   result: [Box.Boxed value: 42]
 ]
-
+=== error
+[E070] circular dependency detected while evaluating thunk (defined at 1:1-1:1)

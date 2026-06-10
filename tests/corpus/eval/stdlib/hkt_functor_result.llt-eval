@@ -3,3 +3,6 @@
 
 === out
 Variant(Result.Ok, Int(43))
+
+=== warn
+[NotARecord] expected record type, got <error>

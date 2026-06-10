@@ -6,3 +6,6 @@
 [bad-macro 1]
 === error
 [E080] macro 'bad-macro' returned invalid AST: missing required field: type (defined at 5:1-5:14)
+
+=== warn
+[E080] macro 'bad-macro' returned invalid AST: missing required field: type (defined at 5:1-5:14)

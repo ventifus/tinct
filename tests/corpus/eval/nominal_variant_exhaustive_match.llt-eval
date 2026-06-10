@@ -18,4 +18,5 @@
     [case [let p] [Shape.Square p] [* p.s p.s]]
   ]
 ]
-
+=== error
+[E070] circular dependency detected while evaluating thunk (defined at 1:1-1:1)

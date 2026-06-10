@@ -6,6 +6,20 @@
 
 ---
 
+## Goals
+
+1. **Compositional protocol stack via `|` pipeline.** Replace ad-hoc per-protocol boilerplate (accept → task → loop) with a uniform layer model: each protocol function takes a connection as its last argument and returns a higher-level connection, composing cleanly with `|`. Subject-last throughout.
+
+2. **Typed errors per subsystem.** Each network subsystem (`dns.llt`, `tls13.llt`, `http.llt`, etc.) defines its own discriminated error union. Callers pattern-match on named failure modes rather than string-matching generic errors.
+
+3. **Implement as much of the network stack as possible in tinct; use Rust only where tinct cannot.** TLS, HTTP/2, HTTP/3, QUIC, WebSocket, WireGuard, and Noise are tinct stdlib code — not opaque Rust handles — backed by the minimal set of Rust primitives that are genuinely impossible to express in tinct (OS syscalls, cryptographic primitives). The type checker can verify layer composition and user code can inspect protocol state.
+
+4. **Fixed-size byte types and `[Bytes N]`.** IP addresses, cryptographic keys, and other fixed-width values get `[Bytes N]` types rather than raw `Bytes`, enabling the type checker to catch size mismatches at protocol boundaries.
+
+5. **`cap-std::Pool`-backed `NetCap`.** Network capability control via a pool model — fine-grained allow-listing of hosts and ports — rather than a global allow/deny flag.
+
+---
+
 ## Problem
 
 After runtime-v2 provides the async foundation (`task`, `await`, `channel`, `select-once`, `select`), building a network server still requires boilerplate: accept a connection, hand it off to a task, loop. Every protocol layer adds the same pattern. There is no compositional model for stacking protocol layers, no separation between transport (how bytes move) and application protocol (what the bytes mean), and no typed representation for fixed-size byte sequences like IP addresses and cryptographic keys.

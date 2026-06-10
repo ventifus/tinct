@@ -1,3 +1,5 @@
 --- uses: ["datetime"]
 # duration-nanos: zero duration
 [duration-nanos 0]
+=== out
+Duration(0 ns)

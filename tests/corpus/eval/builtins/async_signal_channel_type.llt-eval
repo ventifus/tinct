@@ -1,3 +1,3 @@
 # signal-channel returns a Channel value on Unix platforms (type check via type-of)
 
-[type-of [signal-channel "SIGUSR1"]]
+[type-of [signal-channel [SIGUSR1]]]

@@ -10,7 +10,7 @@
 [TreeNode: [type [Branch@[as-type: [fn [let r] r]  guarding: true]
   label: String
   child@Child: TreeNode]]]
-[ann: [annotation-of Branch]]
+[ann: [annotation-of TreeNode.Branch]]
 [has-field-anns: [has? "field-annotations" ann]]
 [field-anns: [get "field-annotations" ann]]
 [role: [get "role" [get "child" field-anns]]]

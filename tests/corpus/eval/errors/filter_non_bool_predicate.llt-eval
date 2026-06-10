@@ -15,3 +15,7 @@
   2497 | filter@[doc: "Keep elements matching predicate"]: [fn [let pred@Fn xs] [builtin-filter pred xs]]
        |                                                                        ^^^^^^^^^^^^^^^^^^^^^^^^
   in [filter ...] at 1:1-1:37
+
+=== warn
+[UndefinedVariable] undefined variable: a
+[UndefinedVariable] undefined variable: b

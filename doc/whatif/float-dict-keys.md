@@ -2,6 +2,8 @@
 
 What would it take to allow floating-point numbers as dict keys?
 
+TODO: make this be "any comparable" as dict keys.
+
 ## Current State
 
 tinct dict keys are either integers or strings (doc/03-data-model.md

@@ -3,3 +3,6 @@
 [length [remove 500 d]]
 === out
 Int(999)
+
+=== warn
+[UnificationFailure] cannot unify [] with <error>

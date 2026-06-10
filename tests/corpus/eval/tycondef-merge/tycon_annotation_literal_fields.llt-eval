@@ -16,5 +16,5 @@
 # The test verifies both fields are present with correct values.
 # Absence of === warn asserts the named-field constructor annotation path is clean.
 [MyLibType: [type [Widget@[role: "primary"  priority: 1] name: String]]]
-[ann: [annotation-of Widget]]
+[ann: [annotation-of MyLibType.Widget]]
 [result: [and [= [get "role" ann] "primary"] [= [get "priority" ann] 1]]]

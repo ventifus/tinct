@@ -1,2 +1,5 @@
 # duration-nanos / duration->nanos roundtrip
 [duration->nanos [duration-nanos 500]]
+
+=== out
+Int(500)

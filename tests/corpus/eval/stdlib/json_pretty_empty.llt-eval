@@ -3,8 +3,8 @@
 
 ---
 
-[empty-dict: [to-json-pretty []]]
-[empty-array: [to-json-pretty []]]
-[nested: [to-json-pretty [x: [] y: []]]]
+[empty-dict: [%.to-json-pretty []]]
+[empty-array: [%.to-json-pretty []]]
+[nested: [%.to-json-pretty [x: [] y: []]]]
 
 [empty-dict: empty-dict  empty-array: empty-array  nested: nested]

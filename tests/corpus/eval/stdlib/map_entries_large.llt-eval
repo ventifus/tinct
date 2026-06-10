@@ -4,3 +4,6 @@
 [get 999 mapped]
 === out
 Int(1998)
+
+=== warn
+[UnificationFailure] cannot unify [] with <error>
