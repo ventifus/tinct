@@ -373,7 +373,7 @@ fn collect_dependencies(
     deps
 }
 
-pub(crate) fn infer_dict(
+pub(crate) async fn infer_dict(
     entries: &[Spanned<SurfaceEntry>],
     env: &Rc<TypeEnv>,
     state: &mut InferState,
@@ -427,7 +427,7 @@ pub(crate) fn infer_dict(
 
     // Pass 0: Key resolution
     for entry in entries {
-        let key_name = entry_key_name(&entry.node, &mut auto_index, env, state, type_map);
+        let key_name = entry_key_name(&entry.node, &mut auto_index, env, state, type_map).await;
         let is_alias = matches!(
             &entry.node.value.expr,
             SurfaceExpression::Decl(d) if matches!(d.as_ref(), SurfaceDeclaration::TypeAlias { .. })
@@ -535,11 +535,17 @@ pub(crate) fn infer_dict(
                         state.levels.insert(fresh.clone(), state.level);
                         alias_ann_map.insert(p.clone(), fresh.clone());
                     }
-                    // Build the type_params_scope for T-1100 / T-951: the set of declared
-                    // parameter names. Passed to resolve_type_name to enforce explicit param
-                    // scoping during TypeAlias body resolution (no mutable state needed).
-                    let param_names_set: std::collections::HashSet<String> =
-                        params.iter().map(|(n, _)| n.clone()).collect();
+                    // Build the type_params_scope: maps declared param names → TypeVars.
+                    // Enforces explicit param scoping in TypeAlias bodies (T-1100 / T-951).
+                    let param_scope: HashMap<String, crate::types::Type> = params
+                        .iter()
+                        .filter_map(|(n, _)| {
+                            alias_ann_map.get(n).map(|fresh| {
+                                let level = state.levels.get(fresh).copied().unwrap_or(state.level);
+                                (n.clone(), crate::types::Type::TypeVar(fresh.clone(), level))
+                            })
+                        })
+                        .collect();
 
                     let mut _alias_constraints: Vec<Constraint> = Vec::new();
                     let alias_result = resolve_type_expr(
@@ -549,8 +555,8 @@ pub(crate) fn infer_dict(
                         &mut _alias_constraints,
                         &mut Some(&mut alias_ann_map),
                         &mut None,
-                        Some(&param_names_set),
-                    );
+                        Some((&param_scope, true)), // strict: TypeAlias rejects undeclared names
+                    ).await;
 
                     if let Ok(alias_ty) = alias_result {
                         // B-362: Compute remapped_params before inject_adt_constructor_schemes
@@ -670,7 +676,7 @@ pub(crate) fn infer_dict(
                 state,
                 &mut cls_inst_constraints,
                 type_map,
-            ) {
+            ).await {
                 Ok(ty) => {
                     let (ref key_name, _) = key_entries[idx];
                     if let Some(name) = key_name {
@@ -691,6 +697,16 @@ pub(crate) fn infer_dict(
                             .failed_bindings
                             .insert(name.clone(), entry.span.clone());
                     }
+                }
+            }
+            // After a ClassDecl is registered, inject its method schemes into dict_env so
+            // subsequent SCC passes in this dict see the method types (e.g., `+` after Addable).
+            // infer_class_decl_from_surface pushes schemes to state.pending_scheme_injections;
+            // drain them here rather than re-reading from state.class_env (which would duplicate
+            // the scheme-building logic and silently drop schemes at other call sites).
+            if !state.pending_scheme_injections.is_empty() {
+                for (method_name, scheme) in state.pending_scheme_injections.drain(..) {
+                    dict_env.insert_scheme(method_name, scheme);
                 }
             }
             // Class/instance method body inference (infer_instance_decl_from_surface) may push
@@ -833,7 +849,7 @@ pub(crate) fn infer_dict(
                         &mut ann_mapping_opt,
                         &mut row_ann_mapping_opt,
                         None,
-                    )
+                    ).await
                     .ok()
                 } else {
                     None
@@ -842,13 +858,13 @@ pub(crate) fn infer_dict(
                 // Special case: if the value is a Dict, call infer_dict directly to capture schemes
                 let (value_ty, nested_schemes_opt) =
                     if let SurfaceExpression::Dict(nested_entries) = &entry.node.value.expr {
-                        let (ty, schemes, mut nested_errs) = infer_dict(
+                        let (ty, schemes, mut nested_errs) = Box::pin(infer_dict(
                             nested_entries,
                             &dict_env_rc,
                             state,
                             type_map,
                             entry.node.value.span.clone(),
-                        );
+                        )).await;
                         errors.append(&mut nested_errs);
                         (Ok(ty), Some(schemes))
                     } else {
@@ -859,7 +875,7 @@ pub(crate) fn infer_dict(
                                 state,
                                 &mut this_entry_constraints,
                                 type_map,
-                            ),
+                            ).await,
                             None,
                         )
                     };
@@ -889,14 +905,14 @@ pub(crate) fn infer_dict(
 
                         if let Some(bound_var) = bound_var_opt {
                             // Unify the inferred type with the bound var
-                            if let Err(e) = unify(
+                            if let Err(e) = Box::pin(unify(
                                 bound_var,
                                 &value_ty,
                                 &mut subst,
                                 state,
                                 &mut this_entry_constraints,
                                 entry.node.value.span.clone(),
-                            ) {
+                            )).await {
                                 errors.push(e);
                                 field_types.insert(name.clone(), Type::Error);
                                 state
@@ -963,14 +979,14 @@ pub(crate) fn infer_dict(
                     Some(existing) => {
                         subst.type_map.borrow_mut().remove(&k);
                         let mut merge_constraints: Vec<Constraint> = Vec::new();
-                        if let Err(e) = unify(
+                        if let Err(e) = Box::pin(unify(
                             &existing,
                             &applied_v,
                             &mut subst,
                             state,
                             &mut merge_constraints,
                             span.clone(),
-                        ) {
+                        )).await {
                             errors.push(e);
                             subst.type_map.borrow_mut().insert(k, existing);
                             continue;
@@ -995,7 +1011,7 @@ pub(crate) fn infer_dict(
                 &mut subst,
                 &mut deferred_constraints,
                 span.clone(),
-            );
+            ).await;
         }
 
         // Apply substitution to this SCC's field types
@@ -1249,7 +1265,18 @@ pub(crate) fn infer_dict(
 
         for class_decl in child_classes {
             if class_decl.prelude_origin {
-                outer_ce.insert_if_absent(class_decl);
+                // S-886: Always overwrite when the child class has method_signatures.
+                // InferState::new() pre-registers Addable/Equatable/Comparable with
+                // empty method_signatures. The prelude's class declarations populate
+                // method_signatures ("+": Fn for Addable, "=": Fn for Equatable, etc.).
+                // insert_if_absent would skip the update, leaving the outer frame with
+                // the empty-signature version. The imports.rs S-886 injection then has
+                // no method_signatures to inject as TypeSchemes for +, =, <.
+                if !class_decl.method_signatures.is_empty() {
+                    outer_ce.insert(class_decl);
+                } else {
+                    outer_ce.insert_if_absent(class_decl);
+                }
             }
         }
         for inst_decl in child_instances {
@@ -1281,7 +1308,7 @@ pub(crate) fn infer_dict(
     (record_type, schemes, errors)
 }
 
-pub(crate) fn entry_key_name(
+pub(crate) async fn entry_key_name(
     entry: &SurfaceEntry,
     auto_index: &mut i64,
     env: &Rc<TypeEnv>,
@@ -1296,7 +1323,7 @@ pub(crate) fn entry_key_name(
             SurfaceExpression::U64(n) => Some(n.to_string()),
             // Annotated key: name@[doc: "..."] — extract name directly
             SurfaceExpression::Annotated { name, .. } => Some(name.clone()),
-            _ => match infer_surface_expr(key_node, env, state, &mut _key_constraints, type_map) {
+            _ => match infer_surface_expr(key_node, env, state, &mut _key_constraints, type_map).await {
                 Ok(Type::StringLiteral(s)) => Some(s),
                 Ok(Type::IntLiteral(n)) => Some(n.to_string()),
                 _ => None,

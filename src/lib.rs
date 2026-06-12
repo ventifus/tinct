@@ -130,7 +130,7 @@ pub use parser::{
 /// Evaluation functions.
 pub use eval::{
     eval_surface_file, eval_surface_file_with_input, invoke_function, materialize,
-    materialize_sync, CallContext, EvalConfig, EvalContext, EvalState,
+    CallContext, EvalConfig, EvalContext, EvalState,
 };
 
 /// Arena thunk identifier — needed by callers that allocate thunks to build Seq values.
@@ -309,13 +309,13 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
         infer_state,
         _final_env,
         type_annotation_table,
-    ) = typecheck::typecheck_surface_program_with_env(
+    ) = crate::async_rt::block_on_anywhere(typecheck::typecheck_surface_program_with_env(
         &program,
         crate::imports::build_prelude_env(),
         false, // disable scheme_map (not needed for eval)
         false, // not in prelude load
         Some(&resolution_table),
-    );
+    ));
     let type_annotation_table = std::sync::Arc::new(type_annotation_table);
 
     // Use create_stdlib_env_with_arena so the eval context shares the stdlib's ThunkArena.
@@ -453,13 +453,13 @@ pub fn eval_source_with_cap_net(
         infer_state,
         _final_env,
         type_annotation_table,
-    ) = typecheck::typecheck_surface_program_with_env(
+    ) = crate::async_rt::block_on_anywhere(typecheck::typecheck_surface_program_with_env(
         &program,
         crate::imports::build_prelude_env(),
         false, // disable scheme_map (not needed for eval)
         false, // not in prelude load
         Some(&resolution_table),
-    );
+    ));
     let type_annotation_table = std::sync::Arc::new(type_annotation_table);
 
     let (env, stdlib_arena) =
@@ -592,7 +592,7 @@ pub fn typecheck_source(input: &str) -> Result<(), String> {
     // Type check the surface program with prelude-seeded environment.
     let env = imports::build_prelude_env();
     let (type_errors, _type_map, _doc_map, _scheme_map, diagnostics) =
-        typecheck::typecheck_surface_program(&program, env);
+        crate::async_rt::block_on_anywhere(typecheck::typecheck_surface_program(&program, env));
     if type_errors.is_empty() && diagnostics.is_empty() {
         Ok(())
     } else {
@@ -636,7 +636,7 @@ pub fn typecheck_source_errors_only(input: &str) -> Result<(), String> {
     // Type check the surface program with prelude-seeded environment.
     let env = imports::build_prelude_env();
     let (type_errors, _type_map, _doc_map, _scheme_map, _diagnostics) =
-        typecheck::typecheck_surface_program(&program, env);
+        crate::async_rt::block_on_anywhere(typecheck::typecheck_surface_program(&program, env));
     if type_errors.is_empty() {
         Ok(())
     } else {
@@ -776,7 +776,7 @@ pub fn visit_value<V: ValueVisitor>(
         }
         value::Value::Overlay(l, r) => {
             // Flatten overlay to a concrete dict, then visit it.
-            let map = builtins::flatten_overlay(l, r, "value serialization", ctx, span.clone())?;
+            let map = crate::async_rt::block_on_anywhere(builtins::flatten_overlay(l, r, "value serialization", ctx, span.clone()))?;
             visit_value(&value::Value::Dict(map), ctx, depth, visitor, span)
         }
         value::Value::Variant {
@@ -918,6 +918,9 @@ pub fn visit_value<V: ValueVisitor>(
         )),
         // Annotated is transparent — delegate to inner value serialization.
         value::Value::Annotated { inner, .. } => visit_value(inner, ctx, depth, visitor, span),
+        value::Value::MethodDispatcher(_) => Err(Box::new(
+            error::EvalError::value_not_serializable("MethodDispatcher".to_string(), span),
+        )),
     }
 }
 
@@ -1850,7 +1853,7 @@ mod tests {
         desugar::desugar_surface_program(&mut program);
         let resolution_table = std::sync::Arc::new(resolve::resolve_surface_program(&program));
         let (_type_errors, type_annotation_table, _inferred) =
-            typecheck::typecheck_surface_program_annotation_table(&program);
+            crate::async_rt::block_on_anywhere(typecheck::typecheck_surface_program_annotation_table(&program));
         let type_annotation_table = std::sync::Arc::new(type_annotation_table);
 
         let (env, ctx) = if let Some(ext_ctx) = external_ctx {
@@ -1964,7 +1967,7 @@ mod tests {
         desugar::desugar_surface_program(&mut program);
         let resolution_table = std::sync::Arc::new(resolve::resolve_surface_program(&program));
         let (_type_errors, type_annotation_table, _inferred) =
-            typecheck::typecheck_surface_program_annotation_table(&program);
+            crate::async_rt::block_on_anywhere(typecheck::typecheck_surface_program_annotation_table(&program));
         let type_annotation_table = std::sync::Arc::new(type_annotation_table);
         let env = builtins::create_stdlib_env().expect("stdlib failed");
         let ctx = test_ctx();
@@ -1992,7 +1995,7 @@ mod tests {
         desugar::desugar_surface_program(&mut program);
         let resolution_table = std::sync::Arc::new(resolve::resolve_surface_program(&program));
         let (_type_errors, type_annotation_table, _inferred) =
-            typecheck::typecheck_surface_program_annotation_table(&program);
+            crate::async_rt::block_on_anywhere(typecheck::typecheck_surface_program_annotation_table(&program));
         let type_annotation_table = std::sync::Arc::new(type_annotation_table);
         let env = builtins::create_stdlib_env().expect("stdlib failed");
         let ctx = test_ctx();
@@ -2186,7 +2189,7 @@ mod tests {
         desugar::desugar_surface_program(&mut program);
         let resolution_table = std::sync::Arc::new(resolve::resolve_surface_program(&program));
         let (_type_errors, type_annotation_table, _inferred) =
-            typecheck::typecheck_surface_program_annotation_table(&program);
+            crate::async_rt::block_on_anywhere(typecheck::typecheck_surface_program_annotation_table(&program));
         let type_annotation_table = std::sync::Arc::new(type_annotation_table);
         let env = builtins::create_stdlib_env().expect("stdlib failed");
         let ctx = test_ctx();
@@ -2265,7 +2268,7 @@ mod tests {
         desugar::desugar_surface_program(&mut program);
         let env = imports::build_prelude_env();
         let (type_errors, _type_map, _doc_map, _scheme_map, _diagnostics) =
-            typecheck::typecheck_surface_program(&program, env);
+            crate::async_rt::block_on_anywhere(typecheck::typecheck_surface_program(&program, env));
         assert!(
             type_errors.is_empty(),
             "expected no type errors (prelude map should be in scope), got: {:?}",

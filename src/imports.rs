@@ -150,7 +150,7 @@ pub fn build_prelude_env() -> Rc<TypeEnv> {
 
 /// Helper function to type-check a stdlib module and extract its bindings into the given env.
 /// Returns the final `InferState` on success (used by the prelude path to capture instance_env).
-fn typecheck_and_merge_stdlib_module(
+async fn typecheck_and_merge_stdlib_module(
     source: &str,
     parent_env: &Rc<TypeEnv>,
     env: &mut TypeEnv,
@@ -184,11 +184,12 @@ fn typecheck_and_merge_stdlib_module(
     #[allow(clippy::disallowed_methods)]
     let expand_base_dir =
         cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority()).map_err(|_| ())?;
-    crate::async_rt::block_on_anywhere(crate::expand::expand_surface_program(
+    crate::expand::expand_surface_program(
         &mut program,
         true, // no_fs: true — prelude expansion never accesses filesystem
         &expand_base_dir,
-    ))
+    )
+    .await
     .map_err(|_| ())?;
 
     // Desugar $_ implicit lambdas on SurfaceProgram (after expansion, before resolve).
@@ -207,7 +208,7 @@ fn typecheck_and_merge_stdlib_module(
     // typecheck_surface_program_with_env bridges to the File-based path internally via
     // surface_program_to_file, so no manual conversion is needed here.
     let (
-        _type_errors,
+        type_errors,
         _type_map,
         _doc_map,
         _scheme_map,
@@ -215,7 +216,17 @@ fn typecheck_and_merge_stdlib_module(
         state,
         final_env,
         _annotation_table, // not needed for stdlib module type merging
-    ) = typecheck_surface_program_with_env(&program, Rc::clone(parent_env), false, true, None);
+    ) = typecheck_surface_program_with_env(&program, Rc::clone(parent_env), false, true, None).await;
+
+    // Stdlib modules are user code loaded by loader.llt — they receive no special treatment.
+    // Type errors in stdlib are bugs that must be surfaced immediately, not silently discarded.
+    if !type_errors.is_empty() {
+        let path = source_path.unwrap_or("<stdlib>");
+        for err in &type_errors {
+            eprintln!("{}", crate::format_type_error(err, source, path));
+        }
+        return Err(());
+    }
 
     // Merge the generalized schemes from the final env into the output env.
     //
@@ -476,96 +487,63 @@ fn build_prelude_env_inner() -> Rc<TypeEnv> {
     }
     let builtins_env = Rc::new(builtins_env);
 
-    match typecheck_and_merge_stdlib_module(
+    // sync bridge — build_prelude_env_inner is called from OnceLock::get_or_init (sync context).
+    match crate::async_rt::block_on_anywhere(typecheck_and_merge_stdlib_module(
         prelude_source,
         &builtins_env,
         &mut env,
         Some("prelude.llt"),
-    ) {
+    )) {
         Err(_) => {
             // Parse/expand error: return builtins-only environment (with capability bindings)
             return builtins_env;
         }
         Ok(prelude_state) => {
             // Cache the prelude's class and instance environments globally.
-            // User-code InferState instances are seeded from this cache (via
-            // `seed_infer_state_from_prelude_cache`) so that prelude-registered instances
-            // (Equatable, Comparable, Showable, Mappable, Appendable) are visible during
-            // constraint checking. Without this, `check_constraints_on_var` falls through
-            // to the hardcoded arms in `satisfies_constraint` for all non-Numeric classes.
-            //
-            // `set` on a `OnceLock` is a no-op if already initialized (which can happen if
-            // two threads race on first initialization and both call `build_prelude_env_inner`).
-            // In practice `OnceLock::get_or_init` ensures only one thread runs this body,
-            // but the `set` call is still safe under any execution order.
             let _ = PRELUDE_INSTANCE_CACHE.set(Arc::new(SendableInstanceCache(
                 prelude_state.class_env.clone(),
                 prelude_state.instance_env.clone(),
             )));
-        }
-    }
 
-    // Post-process: restore authoritative builtin schemes for constraint-annotated
-    // operators whose prelude-inferred schemes may be degraded.
-    //
-    // Root cause: prelude type-checking runs in a single pass over a large letrec dict.
-    // If any entry in the dict produces a type error (e.g., an instance pattern overlap),
-    // `infer_dict` returns Err and the entire dict's generalized schemes are discarded
-    // from `final_env`. The fallback path (`extract_bindings_from_program_with_fallback`)
-    // extracts types from the TypeMap, but TypeVars are erased to Unknown — producing
-    // `Fn@Bool [x: Unknown y: Unknown]` instead of `Equatable a => Fn@Bool [x: a y: a]`.
-    //
-    // Fix: if the prelude-inferred scheme for `=` or `<` is monomorphic (no type_vars),
-    // replace it with the authoritative builtin scheme. The builtin schemes have the
-    // correct Equatable/Comparable constraints and are structurally identical to the
-    // prelude wrappers — the only difference is the constraint display in LSP hover.
-    //
-    // Note: if the prelude scheme IS polymorphic (has type_vars), it is kept as-is,
-    // since it may carry additional information (doc strings, tighter return type, etc.).
-    // The "==" and "<" operators require Equatable/Comparable constraints.
-    // A degraded scheme is one that either has no type_vars OR has type_vars but no constraints
-    // (the constraints were lost when the prelude dict had type errors and the scheme was
-    // inferred without constraint propagation).
-    // Same fix for `get` / `get?` — the prelude wrappers `get: [fn@[return: a] [let key@k
-    // dict@d] [builtin-get key dict]]` lose the `Indexable c k v` functional dependency
-    // constraint during SCC generalization. The SCC inference accumulates constraints across
-    // multiple iterations and the discharged-variable detection in generalize_with_doc
-    // inconsistently marks the FD constraint vars, causing it to be dropped as ambiguous.
-    // Restoring the authoritative builtin scheme ensures `get 1 (Seq[String])` resolves
-    // the return type to `String` via the Indexable FD machinery.
-    // Restore arithmetic operators (+, -, *, /) in addition to equality/comparison.
-    // The prelude may define or override these operators (e.g., via [+ x y] desugaring),
-    // and the inferred scheme can be degraded to monomorphic Number → Number → Number
-    // instead of the correct Addable a b c => a → b → c with MPTC functional dependency.
-    // A degraded arithmetic scheme means FD improvement never fires, causing return types
-    // to be Number instead of the more precise Int or Float, and causing "cannot unify
-    // Int with Number" errors when the narrower type is expected.
-    for name in &["=", "<", ">", "<=", ">=", "+", "-", "*", "/"] {
-        let is_degraded = env
-            .get_own(name)
-            .map(|s| s.type_vars.is_empty() || s.constraints.is_empty())
-            .unwrap_or(true); // missing from env → definitely degraded
-        if is_degraded {
-            if let Some(builtin_scheme) = builtins_env.get(name) {
-                env.insert_scheme((*name).to_string(), builtin_scheme.clone());
+            // S-886: Inject class method schemes from prelude-registered classes into env.
+            // For each class that has method signatures (e.g., Addable with `+: [fn@c [a b]]`),
+            // build a TypeScheme and insert it into the user-facing env.
+            // This replaces the core_type_env workaround for arithmetic/comparison operators.
+            use crate::type_class::Constraint;
+            use crate::types::{ConstraintArg, TypeScheme};
+            for class_decl in prelude_state.class_env.iter_classes() {
+                for (method_name, method_type) in &class_decl.method_signatures {
+                    // Only inject if not already present (prelude may define a better version)
+                    if env.get_own(method_name).is_some() {
+                        continue;
+                    }
+                    let type_vars: Vec<String> =
+                        class_decl.params.iter().map(|(n, _)| n.clone()).collect();
+                    let scheme = TypeScheme {
+                        type_vars: type_vars.clone(),
+                        constraints: vec![Constraint::Class {
+                            class: std::sync::Arc::new(class_decl.clone()),
+                            vars: type_vars
+                                .iter()
+                                .map(|n| ConstraintArg::Var(n.clone()))
+                                .collect(),
+                            origin_name: Some(std::sync::Arc::from(method_name.as_str())),
+                            origin_span: None,
+                        }],
+                        body: method_type.clone(),
+                        label_vars: vec![],
+                        kind_vars: vec![],
+                        doc: None,
+                        inner_schemes: None,
+                    };
+                    env.insert_scheme(method_name.clone(), scheme);
+                }
             }
         }
     }
 
-    // `get` / `get?` / `builtin-get`: always restore the authoritative Indexable-constrained
-    // scheme. The prelude wrappers carry the Indexable constraint in their generalized scheme,
-    // but the Indexable FD fails to fire at call sites due to SCC-interaction issues in the
-    // constraint generalization machinery (the constraint is present but the discharged-variable
-    // detection inconsistently marks vars, causing `improve_functional_dependency_inner` to see
-    // a partially-ground constraint that fails the `all_det_ground` check).
-    // The authoritative builtin scheme `Indexable c k v => k → c → v` passes through
-    // `instantiate_scheme` correctly and the FD fires reliably. This mirrors the existing
-    // `=`/`<` fallback for Equatable/Comparable constraints.
-    for name in &["get", "get?", "builtin-get"] {
-        if let Some(builtin_scheme) = builtins_env.get(name) {
-            env.insert_scheme((*name).to_string(), builtin_scheme.clone());
-        }
-    }
+    // B-398: fallback restoration loops removed. Prelude inference should now produce
+    // correct polymorphic schemes for all operators via the ConstraintArg fix.
 
     // Manual overrides for prelude functions whose types may be degraded to Error
     // when the prelude has type-checking failures. These functions are called by
@@ -600,6 +578,63 @@ fn build_prelude_env_inner() -> Rc<TypeEnv> {
         },
     );
 
+    // `when` / `unless` / `cond`: prelude-defined control flow functions.
+    // These have no builtin-* counterpart and are not in core_type_env.
+    // Manually inject safe fallback types so they are never Error-typed in the prelude env.
+    //
+    // The prelude infers more precise types for these (e.g., ∀a. Bool → a → a | {})
+    // via generalization, but those schemes are lost when the prelude SCC fails inference.
+    // The fallback types below are intentionally broad (Top) to avoid false-positive errors:
+    //
+    // `when`: Bool → Top → Top   (evaluates body if predicate is true)
+    // `unless`: Bool → Top → Top (evaluates body if predicate is false)
+    // `cond`: Top → Top          (multi-branch conditional, takes a list of [pred result] pairs)
+    //
+    // These are only inserted if NOT already present (from successful prelude inference).
+    // This ensures that when prelude correctly infers `when: ∀a. Bool → a → a | {}`,
+    // the authoritative scheme is kept — the fallback only fires on degradation.
+    for (name, ty) in [
+        (
+            "when",
+            Type::Function {
+                params: vec![(None, Type::Bool), (None, Type::Top)],
+                ret: Box::new(Type::Top),
+                variadic: false,
+                required_count: 2,
+            },
+        ),
+        (
+            "unless",
+            Type::Function {
+                params: vec![(None, Type::Bool), (None, Type::Top)],
+                ret: Box::new(Type::Top),
+                variadic: false,
+                required_count: 2,
+            },
+        ),
+        (
+            "cond",
+            Type::Function {
+                params: vec![(None, Type::Top)],
+                ret: Box::new(Type::Top),
+                variadic: false,
+                required_count: 1,
+            },
+        ),
+    ] {
+        // Insert fallback if the prelude inference produced an Error type OR the binding
+        // is absent entirely (which can happen if the entire prelude SCC failed and
+        // extract_bindings_from_program_with_fallback did not recover this name).
+        // If prelude correctly inferred a polymorphic scheme (non-Error, non-absent), keep it.
+        let needs_fallback = env
+            .get_own(name)
+            .map(|s| matches!(s.body, Type::Error))
+            .unwrap_or(true); // absent from env → needs fallback
+        if needs_fallback {
+            env.insert(name.to_string(), ty);
+        }
+    }
+
     // Propagate capability type aliases from the builtins env to the user-facing env.
     // These are registered in build_builtins_type_env() (e.g. NetCap, DirCap, Handle, Url)
     // and must be available for @NetCap / @DirCap / @Handle annotations in user code.
@@ -610,6 +645,48 @@ fn build_prelude_env_inner() -> Rc<TypeEnv> {
         .collect();
     for (name, alias) in aliases {
         env.insert_type_alias(name, alias);
+    }
+
+    // Inject core builtin primitive schemes into the user-facing env.
+    // Excludes +, -, *, / — those come from class method synthesis (S-886, T-1251)
+    // via the Addable/Subtractable/Multipliable/Divisible class declarations.
+    // Excludes =, <, >, <=, >= — handled in S-885 via Equatable/Comparable instances.
+    // Only primitive builtins (builtin-add, builtin-narrow, etc.) and non-operator
+    // schemes are injected here.
+    {
+        // Operator names that come from typeclass dispatch — do NOT inject from core_type_env.
+        // S-884: arithmetic operators come from Addable/etc. instances.
+        // S-885: comparison operators come from Equatable/Comparable instances.
+        let dispatch_operators: std::collections::HashSet<&str> =
+            ["+", "-", "*", "/", "=", "<", ">", "<=", ">="]
+                .iter()
+                .copied()
+                .collect();
+
+        let mut core_only_env = crate::types::TypeEnv::new();
+        crate::builtins_core::core_type_env(&mut core_only_env);
+        let mut core_names = std::collections::HashSet::new();
+        core_only_env.collect_own_names(&mut core_names);
+        for name in core_names {
+            // Skip operators that will come from class method synthesis.
+            if dispatch_operators.contains(name.as_str()) {
+                continue;
+            }
+            let core_scheme = match core_only_env.get_own(&name) {
+                Some(s) => s,
+                None => continue,
+            };
+            let current = env.get_own(&name);
+            let needs_inject = match current {
+                None => true,
+                Some(current_scheme) => {
+                    !core_scheme.constraints.is_empty() && current_scheme.constraints.is_empty()
+                }
+            };
+            if needs_inject {
+                env.insert_scheme(name, core_scheme.clone());
+            }
+        }
     }
 
     Rc::new(env)
@@ -634,7 +711,7 @@ fn build_prelude_env_inner() -> Rc<TypeEnv> {
 /// - A re-entrant call is detected (recursion guard).
 // AMBIENT-OK: type-checker include resolution fallback — reads libdir files without cap; type-only, no runtime I/O
 #[allow(clippy::disallowed_methods)]
-pub fn get_stdlib_module_type_env(module_path: &str) -> Option<Rc<TypeEnv>> {
+pub async fn get_stdlib_module_type_env(module_path: &str) -> Option<Rc<TypeEnv>> {
     // Recursion guard: prevent re-entrant calls (e.g., from modules that include other modules
     // during type-checking). The guard is per-thread so parallel test threads are independent.
     let already_building = BUILDING_STDLIB_MODULE_ENV.with(|flag| *flag.borrow());
@@ -651,7 +728,7 @@ pub fn get_stdlib_module_type_env(module_path: &str) -> Option<Rc<TypeEnv>> {
     // Cache miss: set recursion guard before building.
     BUILDING_STDLIB_MODULE_ENV.with(|flag| *flag.borrow_mut() = true);
 
-    let result = build_stdlib_module_type_env_inner(module_path);
+    let result = build_stdlib_module_type_env_inner(module_path).await;
 
     // Clear recursion guard and store result in cache (even if None, to avoid re-trying).
     BUILDING_STDLIB_MODULE_ENV.with(|flag| *flag.borrow_mut() = false);
@@ -672,7 +749,7 @@ pub fn get_stdlib_module_type_env(module_path: &str) -> Option<Rc<TypeEnv>> {
 /// Finds the libdir, reads the module file, type-checks it, and extracts bindings.
 // AMBIENT-OK: type-checker include resolution — reads libdir files; type-only, no runtime I/O
 #[allow(clippy::disallowed_methods)]
-fn build_stdlib_module_type_env_inner(module_path: &str) -> Option<Rc<TypeEnv>> {
+async fn build_stdlib_module_type_env_inner(module_path: &str) -> Option<Rc<TypeEnv>> {
     // Locate the stdlib directory.
     let libdir = crate::find_libdir_path()?;
     let full_path = libdir.join(module_path);
@@ -691,7 +768,7 @@ fn build_stdlib_module_type_env_inner(module_path: &str) -> Option<Rc<TypeEnv>> 
         &prelude_env,
         &mut module_env,
         Some(module_path),
-    );
+    ).await;
 
     Some(Rc::new(module_env))
 }
@@ -808,7 +885,7 @@ pub fn build_type_stage_env() -> Option<Arc<RwLock<crate::value::Environment>>> 
 ///   - The program has no type-stage documents
 ///   - The prelude type-stage env is unavailable (bootstrap recursion guard)
 ///   - All type-stage documents failed to evaluate
-pub fn build_user_type_stage_env(
+pub async fn build_user_type_stage_env(
     program: &SurfaceProgram,
     resolution_table: &std::sync::Arc<crate::ast::ResolutionTable>,
 ) -> Option<Arc<RwLock<crate::value::Environment>>> {
@@ -850,13 +927,14 @@ pub fn build_user_type_stage_env(
 
             for expr_node in &expr_nodes {
                 // Evaluate this expression item with the current user_type_stage_env
-                let result = crate::async_rt::block_on_anywhere(crate::eval::eval_document_exprs(
+                let result = crate::eval::eval_document_exprs(
                     std::slice::from_ref(expr_node),
                     Arc::clone(&user_type_stage_env),
                     &ctx,
                     resolution_table,
                     &empty_types,
-                ));
+                )
+                .await;
 
                 let result_thunk = match result {
                     Ok(t) => t,
@@ -864,7 +942,7 @@ pub fn build_user_type_stage_env(
                 };
 
                 // Materialize and extract bindings
-                let val = crate::eval::materialize_sync(&result_thunk, None, &ctx);
+                let val = crate::eval::materialize(&result_thunk, None, &ctx).await;
                 let val = match val {
                     Ok(v) => v,
                     Err(_) => continue, // Skip failed materialization
@@ -879,7 +957,9 @@ pub fn build_user_type_stage_env(
                             "user type-stage",
                             &ctx,
                             expr_node.span.clone(),
-                        ) {
+                        )
+                        .await
+                        {
                             Ok(d) => d,
                             Err(_) => continue,
                         }
@@ -1178,7 +1258,7 @@ fn collect_include_paths_from_node(
 // AMBIENT-OK: type-checker include resolution fallback — reads libdir files without cap; type-only, no runtime I/O
 #[allow(clippy::disallowed_methods)]
 #[allow(clippy::too_many_arguments)]
-fn resolve_includes(
+async fn resolve_includes(
     include_paths: &[(Span, Option<String>, String)],
     base_dir: Option<&Path>,
     libdir: Option<&Path>,
@@ -1315,11 +1395,12 @@ fn resolve_includes(
         // Use expand_surface_program (not expand_macros) so SurfaceItem::Decl macros are seen.
         // Desugar AFTER macro expansion so that macros can introduce $_ patterns.
         let mut program = parsed.program;
-        if crate::async_rt::block_on_anywhere(expand::expand_surface_program(
+        if expand::expand_surface_program(
             &mut program,
             true,
             expand_dir,
-        ))
+        )
+        .await
         .is_err()
         {
             continue;
@@ -1344,14 +1425,23 @@ fn resolve_includes(
             Rc::clone(&env)
         };
         let in_prelude_load = cap_name.as_deref() == Some("%libdir");
-        let (_type_errors, type_map, _doc_map, _scheme_map, _diagnostics, _state, _final_env, _ann) =
+        let (type_errors, type_map, _doc_map, _scheme_map, _diagnostics, _state, _final_env, _ann) =
             typecheck_surface_program_with_env(
                 &program,
                 typecheck_env,
                 false,
                 in_prelude_load,
                 None,
-            );
+            ).await;
+
+        // Stdlib includes are user code — their type errors are surfaced like any other.
+        if !type_errors.is_empty() {
+            let file_path = normalized.to_string_lossy().into_owned();
+            for err in &type_errors {
+                eprintln!("{}", crate::format_type_error(err, &content, &file_path));
+            }
+            continue; // Skip bindings from this file; errors have been reported
+        }
 
         // Extract bindings from this program and track them
         let mut new_env = TypeEnv::with_parent(&env);
@@ -1387,7 +1477,7 @@ fn resolve_includes(
             Err(_) => continue, // Skip if parent dir can't be opened
         };
 
-        let (nested_env, nested_bindings) = resolve_includes(
+        let (nested_env, nested_bindings) = Box::pin(resolve_includes(
             &nested_includes,
             parent_dir,
             libdir,
@@ -1396,7 +1486,8 @@ fn resolve_includes(
             depth + 1,
             &nested_cap_dir,
             Rc::clone(&prelude_type_env),
-        );
+        ))
+        .await;
         env = nested_env;
 
         // Merge nested include bindings into our map
@@ -1575,14 +1666,14 @@ fn apply_include_type_to_node(
 /// Best-effort: IO failures, parse errors, and type errors are silently ignored.
 // AMBIENT-OK: type-checker API entry point — opens CWD once; propagated to all nested resolution
 #[allow(clippy::disallowed_methods)]
-pub fn build_type_env(
+pub async fn build_type_env(
     program: &SurfaceProgram,
     base_dir: Option<&Path>,
 ) -> (Rc<TypeEnv>, IncludeBindings) {
     // Open "." as the base cap dir for type-checking includes
     let cwd_cap = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
         .expect("build_type_env: failed to open CWD as cap dir");
-    build_type_env_with_cap(program, base_dir, &cwd_cap)
+    build_type_env_with_cap(program, base_dir, &cwd_cap).await
 }
 
 /// Like `build_type_env`, but also accepts a `cap_std::fs::Dir` for `%cwd` I/O.
@@ -1590,7 +1681,7 @@ pub fn build_type_env(
 /// When `base_cap_dir` is `Some`, file reads for `%cwd`-qualified includes go through
 /// the cap-std Dir (RESOLVE_BENEATH semantics) instead of plain `std::fs` calls.
 /// This provides kernel-level path confinement rather than software-only path checks.
-pub fn build_type_env_with_cap(
+pub async fn build_type_env_with_cap(
     program: &SurfaceProgram,
     base_dir: Option<&Path>,
     cap_dir: &cap_std::fs::Dir,
@@ -1649,6 +1740,7 @@ pub fn build_type_env_with_cap(
         let include_paths = collect_include_paths(program);
         let mut visited = HashSet::new();
         let libdir = crate::find_libdir_path();
+        // sync bridge — build_type_env_with_cap is called from sync contexts (main.rs, LSP).
         let (new_env, bindings) = resolve_includes(
             &include_paths,
             Some(dir),
@@ -1658,7 +1750,7 @@ pub fn build_type_env_with_cap(
             0,
             cap_dir,
             Rc::clone(&prelude_env),
-        );
+        ).await;
         env = new_env;
         include_bindings = bindings;
     }
@@ -1850,7 +1942,7 @@ mod tests {
             .expect("failed to open test cap dir");
 
         let prelude_env_for_test = build_prelude_env();
-        let (result_env, result_bindings) = resolve_includes(
+        let (result_env, result_bindings) = crate::async_rt::block_on_anywhere(resolve_includes(
             &include_paths,
             Some(tmp.as_path()),
             None, // no libdir
@@ -1859,7 +1951,7 @@ mod tests {
             0,
             &test_cap_dir,
             prelude_env_for_test,
-        );
+        ));
 
         // Missing file: canonicalize fails → skipped → base_env returned as-is.
         assert!(
@@ -1876,7 +1968,7 @@ mod tests {
     #[test]
     fn test_build_type_env_has_cap_types() {
         let program = SurfaceProgram { documents: vec![] };
-        let (env, _bindings) = build_type_env(&program, None);
+        let (env, _bindings) = crate::async_rt::block_on_anywhere(build_type_env(&program, None));
 
         // Check that cap variables are present with correct types
         assert!(env.get("%cwd").is_some(), "expected %cwd in type env");
@@ -1924,7 +2016,7 @@ mod tests {
         let program = parser::parse(source).unwrap().program;
 
         // Without any includes, the binding map should be empty
-        let (_env, bindings) = build_type_env(&program, None);
+        let (_env, bindings) = crate::async_rt::block_on_anywhere(build_type_env(&program, None));
         assert!(
             bindings.is_empty(),
             "expected empty bindings when there are no includes"

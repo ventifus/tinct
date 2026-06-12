@@ -149,9 +149,9 @@ impl DocumentState {
                 // semantics (kernel-level path confinement) instead of plain std::fs calls.
                 let type_cap_dir = &eval_ctx.config.base_dir;
                 let (seeded_env, include_bindings) =
-                    crate::imports::build_type_env_with_cap(&program, type_base_dir, type_cap_dir);
+                    crate::async_rt::block_on_anywhere(crate::imports::build_type_env_with_cap(&program, type_base_dir, type_cap_dir));
                 let (errs, mut map, docs, smap, tc_diagnostics) =
-                    crate::typecheck::typecheck_surface_program(&program, seeded_env);
+                    crate::async_rt::block_on_anywhere(crate::typecheck::typecheck_surface_program(&program, seeded_env));
                 // Post-pass: inject precise Record types for [include %cap "path"] expressions.
                 crate::imports::apply_include_type_post_pass(&program, &include_bindings, &mut map);
                 type_errors = errs;

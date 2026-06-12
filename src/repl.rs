@@ -21,7 +21,10 @@ use indexmap::IndexMap;
 
 use crate::ast::Span;
 use crate::builtins::{create_stdlib_env_with_arena, MAX_FILE_SIZE};
-use crate::eval::{eval_surface_file_with_input, materialize_sync as materialize};
+use crate::eval::eval_surface_file_with_input;
+fn materialize(t: &crate::value::Thunk, s: Option<&Span>, c: &std::sync::Arc<crate::eval::EvalContext>) -> crate::error::EvalResult<crate::value::Value> {
+    crate::async_rt::block_on_anywhere(crate::eval::materialize(t, s, c))
+}
 use crate::parser::parse;
 use crate::typecheck::{DocMap, TypeMap};
 use crate::types::TypeEnv;
@@ -243,7 +246,7 @@ impl ReplSession {
             true,  // enable_scheme_map: populate type_map for :type/:describe commands
             false, // in_prelude_load: false (this is a user session, not the prelude)
             Some(&resolution_table),
-        );
+        ).await;
         // Extend (not replace) the session's type and doc maps with the new information.
         self.type_map.extend(type_map);
         self.doc_map.extend(doc_map);

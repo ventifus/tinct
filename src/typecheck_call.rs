@@ -59,7 +59,7 @@ pub(super) fn widen_literal_types(ty: Type) -> Type {
     }
 }
 
-pub(crate) fn check_dot_access(
+pub(crate) async fn check_dot_access(
     target: &Arc<SurfaceNode>,
     field: &DotKey,
     env: &Rc<TypeEnv>,
@@ -72,7 +72,7 @@ pub(crate) fn check_dot_access(
     let field_str = match field {
         DotKey::Ident(s) => s.as_str(),
         DotKey::Int(n) => {
-            return check_dot_access_int(target, *n, env, span, state, constraints, type_map)
+            return check_dot_access_int(target, *n, env, span, state, constraints, type_map).await
         }
     };
 
@@ -101,7 +101,7 @@ pub(crate) fn check_dot_access(
         }
     }
 
-    let target_ty = infer_surface_expr(target, env, state, constraints, type_map)?;
+    let target_ty = infer_surface_expr(target, env, state, constraints, type_map).await?;
     // Apply the global accumulated substitution so that constraints from prior accesses
     // on the same target are visible (doc/07-type-extensions.md Part 5).
     let target_ty = state.subst.apply(&target_ty);
@@ -129,7 +129,7 @@ pub(crate) fn check_dot_access(
             // Unify TypeVar(α) with Record({field: β})
             let alpha_ty = Type::TypeVar(alpha.clone(), alpha_level);
             let mut subst = std::mem::take(&mut state.subst);
-            let result = unify(&alpha_ty, &record_ty, &mut subst, state, constraints, span);
+            let result = Box::pin(unify(&alpha_ty, &record_ty, &mut subst, state, constraints, span)).await;
             state.subst = subst;
             result.map_err(|e| vec![e])?;
 
@@ -206,7 +206,7 @@ pub(crate) fn check_dot_access(
 }
 
 /// Type check integer dot access: `$data.0`
-pub(crate) fn check_dot_access_int(
+pub(crate) async fn check_dot_access_int(
     target: &Arc<SurfaceNode>,
     index: i64,
     env: &Rc<TypeEnv>,
@@ -215,7 +215,7 @@ pub(crate) fn check_dot_access_int(
     constraints: &mut Vec<Constraint>,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
-    let target_ty = infer_surface_expr(target, env, state, constraints, type_map)?;
+    let target_ty = infer_surface_expr(target, env, state, constraints, type_map).await?;
     let target_ty = state.subst.apply(&target_ty);
 
     let field_name = index.to_string();
@@ -241,7 +241,7 @@ pub(crate) fn check_dot_access_int(
 
             let alpha_ty = Type::TypeVar(alpha.clone(), *alpha_level);
             let mut subst = std::mem::take(&mut state.subst);
-            let result = unify(&alpha_ty, &record_ty, &mut subst, state, constraints, span);
+            let result = Box::pin(unify(&alpha_ty, &record_ty, &mut subst, state, constraints, span)).await;
             state.subst = subst;
             result.map_err(|e| vec![e])?;
             Ok(beta)
@@ -301,7 +301,7 @@ pub(crate) fn is_concrete_type(ty: &Type) -> bool {
 /// This avoids double instantiation: instead of VAR-POLY instantiating the scheme
 /// and then CALL-POLY instantiating the result, we instantiate once here.
 #[allow(clippy::too_many_arguments)] // Signature matches check_call pattern
-pub(crate) fn check_call_with_scheme(
+pub(crate) async fn check_call_with_scheme(
     scheme: &TypeScheme,
     func_span: Span,
     func_name: Option<&str>,
@@ -350,11 +350,11 @@ pub(crate) fn check_call_with_scheme(
     if matches!(func_ty, Type::Error) {
         // Infer positional args for type map population and error propagation.
         for arg in args {
-            let _ = infer_surface_expr(arg, env, state, constraints, type_map);
+            let _ = infer_surface_expr(arg, env, state, constraints, type_map).await;
         }
         // Infer named args for type map population and error propagation.
         for na in named_args {
-            let _ = infer_surface_expr(&na.node.value, env, state, constraints, type_map);
+            let _ = infer_surface_expr(&na.node.value, env, state, constraints, type_map).await;
         }
         return Ok(Type::Error);
     }
@@ -414,7 +414,7 @@ pub(crate) fn check_call_with_scheme(
             let mut arg_types = Vec::with_capacity(args.len());
             let mut arg_errors: Option<Vec<TypeError>> = None;
             for a in args {
-                match infer_surface_expr(a, env, state, constraints, type_map) {
+                match infer_surface_expr(a, env, state, constraints, type_map).await {
                     Ok(ty) => arg_types.push(ty),
                     Err(mut errs) => {
                         arg_errors.get_or_insert_with(Vec::new).append(&mut errs);
@@ -487,14 +487,14 @@ pub(crate) fn check_call_with_scheme(
 
                     // Error-typed args absorb silently (unify(Error, T) = Ok(())),
                     // so we only propagate unification errors from non-Error args.
-                    if let Err(e) = unify(
+                    if let Err(e) = Box::pin(unify(
                         param_ty,
                         arg_ty,
                         &mut subst,
                         state,
                         constraints,
                         span.clone(),
-                    ) {
+                    )).await {
                         arg_errors.get_or_insert_with(Vec::new).push(e);
                     }
                 }
@@ -522,7 +522,9 @@ pub(crate) fn check_call_with_scheme(
                         {
                             // Find the arg span for this constraint's vars. first-match wins
                             // (preserves the lowest argument index for shared type vars).
-                            let best_span = vars.iter().find_map(|v| var_to_arg_span.get(v));
+                            let best_span = vars
+                                .iter()
+                                .find_map(|v| v.as_var().and_then(|s| var_to_arg_span.get(s)));
                             if let Some(new_span) = best_span {
                                 *origin_span = Some(new_span.clone());
                             }
@@ -555,14 +557,14 @@ pub(crate) fn check_call_with_scheme(
                                     Type::StringLiteral(_) => Type::Str,
                                     other => other.clone(),
                                 };
-                                if let Err(e) = unify(
+                                if let Err(e) = Box::pin(unify(
                                     &elem_ty,
                                     &widened_ty,
                                     &mut subst,
                                     state,
                                     constraints,
                                     span.clone(),
-                                ) {
+                                )).await {
                                     arg_errors.get_or_insert_with(Vec::new).push(e);
                                 }
                             }
@@ -636,21 +638,21 @@ pub(crate) fn check_call_with_scheme(
                                 state,
                                 constraints,
                                 type_map,
-                            ) {
+                            ).await {
                                 Ok(arg_ty) => {
                                     // Task 2: merge state.subst updates from infer_surface_expr into local subst
                                     subst
                                         .type_map
                                         .borrow_mut()
                                         .extend(state.subst.type_map.borrow().clone());
-                                    if let Err(e) = unify(
+                                    if let Err(e) = Box::pin(unify(
                                         &arg_ty,
                                         param_ty,
                                         &mut subst,
                                         state,
                                         constraints,
                                         na.span.clone(),
-                                    ) {
+                                    )).await {
                                         arg_errors.get_or_insert_with(Vec::new).push(
                                             TypeErrorTyped::Generic(GenericTypeError {
                                                 message: format!(
@@ -698,7 +700,7 @@ pub(crate) fn check_call_with_scheme(
                                     state,
                                     constraints,
                                     type_map,
-                                ) {
+                                ).await {
                                     arg_errors.get_or_insert_with(Vec::new).append(&mut errs);
                                 }
                             }
@@ -748,7 +750,7 @@ pub(crate) fn check_call_with_scheme(
             // state.subst.name_counter and state.subst a second time in violation of single-pass Algorithm W.
             // Cascade prevention: ignore arg errors (already recorded as Error in type_map).
             for arg in args {
-                let _ = infer_surface_expr(arg, env, state, constraints, type_map);
+                let _ = infer_surface_expr(arg, env, state, constraints, type_map).await;
             }
             // Infer named arg values exactly once here for type map population and error propagation.
             // Previously these were inferred in a pre-dispatch loop before `match &func_ty`, which
@@ -757,7 +759,7 @@ pub(crate) fn check_call_with_scheme(
             let mut named_arg_errors: Vec<TypeError> = Vec::new();
             for na in named_args {
                 if let Err(mut errs) =
-                    infer_surface_expr(&na.node.value, env, state, constraints, type_map)
+                    infer_surface_expr(&na.node.value, env, state, constraints, type_map).await
                 {
                     named_arg_errors.append(&mut errs);
                 }
@@ -794,7 +796,7 @@ pub(crate) fn check_call_with_scheme(
             }
 
             // Infer the argument type
-            let arg_ty = infer_surface_expr(&args[0], env, state, constraints, type_map)?;
+            let arg_ty = infer_surface_expr(&args[0], env, state, constraints, type_map).await?;
 
             // Result type: NominalVariant with the arg type as payload.
             // Runtime stores payload as Some(payload_id), so we model it as a single-field
@@ -848,7 +850,7 @@ pub(crate) fn check_call_with_scheme(
 ///   Note: named-arg checking fires only for resolved function types; same-dict letrec forward
 ///   references fall through to the `TypeVar` arm and skip named-arg validation.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn check_call(
+pub(crate) async fn check_call(
     func: &Arc<SurfaceNode>,
     args: &[Arc<SurfaceNode>],
     named_args: &[Spanned<SurfaceNamedArg>],
@@ -858,7 +860,7 @@ pub(crate) fn check_call(
     constraints: &mut Vec<Constraint>,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
-    let func_ty = infer_surface_expr(func, env, state, constraints, type_map)?;
+    let func_ty = infer_surface_expr(func, env, state, constraints, type_map).await?;
     // Apply state.subst to resolve any TypeVars bound during infer_expr (e.g., from infer_fn
     // with polymorphic return annotations). Without this, has_inference_vars() incorrectly returns
     // true for already-bound TypeVars, causing CALL-POLY to fire and double-instantiate.
@@ -877,11 +879,11 @@ pub(crate) fn check_call(
     if matches!(func_ty, Type::Error) {
         // Infer positional args for type map population and error propagation.
         for arg in args {
-            let _ = infer_surface_expr(arg, env, state, constraints, type_map);
+            let _ = infer_surface_expr(arg, env, state, constraints, type_map).await;
         }
         // Infer named args for type map population and error propagation.
         for na in named_args {
-            let _ = infer_surface_expr(&na.node.value, env, state, constraints, type_map);
+            let _ = infer_surface_expr(&na.node.value, env, state, constraints, type_map).await;
         }
         return Ok(Type::Error);
     }
@@ -964,14 +966,14 @@ pub(crate) fn check_call(
                             // so no explicit state.subst.apply() is needed here — check_surface_expr applies
                             // state.subst to its expected type internally, which is a no-op on ground types.
                             if let Err(mut errs) =
-                                check_surface_expr(arg, param_ty, env, state, constraints, type_map)
+                                check_surface_expr(arg, param_ty, env, state, constraints, type_map).await
                             {
                                 errors.append(&mut errs);
                             }
                         }
                         _ => {
                             // Non-lambda: infer once, check Unknown, then subsume (no double-inference).
-                            match infer_surface_expr(arg, env, state, constraints, type_map) {
+                            match infer_surface_expr(arg, env, state, constraints, type_map).await {
                                 Ok(arg_ty) => {
                                     // Apply substitution before Unknown check and subsumption.
                                     let arg_ty_resolved = if state.subst.is_empty() {
@@ -1036,7 +1038,7 @@ pub(crate) fn check_call(
                     let last_seq_elem = params.last().and_then(|(_, t)| t.as_seq()).cloned();
                     if let Some(elem_ty) = last_seq_elem {
                         for arg in args.iter().skip(non_variadic_param_count) {
-                            match infer_surface_expr(arg, env, state, constraints, type_map) {
+                            match infer_surface_expr(arg, env, state, constraints, type_map).await {
                                 Ok(arg_ty) => {
                                     // Widen literal types before unifying to allow [f 10 20 30]
                                     // where 10, 20, 30 all unify with Int element type.
@@ -1044,14 +1046,14 @@ pub(crate) fn check_call(
                                     // not fail with IntLiteral(1) ≠ IntLiteral(3).
                                     let widened_ty = widen_literal_types(arg_ty);
                                     let mut subst = std::mem::take(&mut state.subst);
-                                    if let Err(e) = unify(
+                                    if let Err(e) = Box::pin(unify(
                                         &widened_ty,
                                         &elem_ty,
                                         &mut subst,
                                         state,
                                         constraints,
                                         arg.span.clone(),
-                                    ) {
+                                    )).await {
                                         errors.push(e);
                                     }
                                     state.subst = subst;
@@ -1118,7 +1120,7 @@ pub(crate) fn check_call(
                                 state,
                                 constraints,
                                 type_map,
-                            ) {
+                            ).await {
                                 Ok(arg_ty) => {
                                     // Boundary guard check (post-inference, single-pass)
                                     if is_concrete_type(param_ty) {
@@ -1135,14 +1137,14 @@ pub(crate) fn check_call(
                                         }
                                     }
                                     let mut subst = std::mem::take(&mut state.subst);
-                                    let result = unify(
+                                    let result = Box::pin(unify(
                                         &arg_ty,
                                         param_ty,
                                         &mut subst,
                                         state,
                                         constraints,
                                         na.span.clone(),
-                                    );
+                                    )).await;
                                     state.subst = subst;
                                     if let Err(e) = result {
                                         errors.push(TypeErrorTyped::Generic(GenericTypeError {
@@ -1190,7 +1192,7 @@ pub(crate) fn check_call(
                                     state,
                                     constraints,
                                     type_map,
-                                ) {
+                                ).await {
                                     errors.append(&mut errs);
                                 }
                             }
@@ -1247,7 +1249,7 @@ pub(crate) fn check_call(
                 {
                     consumed_params.insert(idx);
                     if let Err(mut errs) =
-                        check_surface_expr(arg, param_ty, env, state, constraints, type_map)
+                        check_surface_expr(arg, param_ty, env, state, constraints, type_map).await
                     {
                         arg_errors.get_or_insert_with(Vec::new).append(&mut errs);
                     }
@@ -1261,21 +1263,21 @@ pub(crate) fn check_call(
                         inst_params.last().and_then(|(_, t)| t.as_seq()).cloned();
                     if let Some(elem_ty) = last_inst_seq_elem {
                         for arg in args.iter().skip(non_variadic_param_count) {
-                            match infer_surface_expr(arg, env, state, constraints, type_map) {
+                            match infer_surface_expr(arg, env, state, constraints, type_map).await {
                                 Ok(arg_ty) => {
                                     // Widen literal types before unifying.
                                     // Also widen Record field values so that [f [1 2] [3 4]] does
                                     // not fail with IntLiteral(1) ≠ IntLiteral(3).
                                     let widened_ty = widen_literal_types(arg_ty);
                                     let mut subst = std::mem::take(&mut state.subst);
-                                    if let Err(e) = unify(
+                                    if let Err(e) = Box::pin(unify(
                                         &widened_ty,
                                         &elem_ty,
                                         &mut subst,
                                         state,
                                         constraints,
                                         arg.span.clone(),
-                                    ) {
+                                    )).await {
                                         arg_errors.get_or_insert_with(Vec::new).push(e);
                                     }
                                     state.subst = subst;
@@ -1349,7 +1351,7 @@ pub(crate) fn check_call(
                                 state,
                                 constraints,
                                 type_map,
-                            ) {
+                            ).await {
                                 Ok(arg_ty) => {
                                     // Boundary guard check (post-inference, single-pass)
                                     if is_concrete_type(param_ty) {
@@ -1367,14 +1369,14 @@ pub(crate) fn check_call(
                                     }
                                     // Unify the inferred type against the expected param type
                                     let mut subst = std::mem::take(&mut state.subst);
-                                    let result = unify(
+                                    let result = Box::pin(unify(
                                         &arg_ty,
                                         param_ty,
                                         &mut subst,
                                         state,
                                         constraints,
                                         na.span.clone(),
-                                    );
+                                    )).await;
                                     state.subst = subst;
                                     if let Err(errs) = result {
                                         arg_errors.get_or_insert_with(Vec::new).push(
@@ -1424,7 +1426,7 @@ pub(crate) fn check_call(
                                     state,
                                     constraints,
                                     type_map,
-                                ) {
+                                ).await {
                                     arg_errors.get_or_insert_with(Vec::new).append(&mut errs);
                                 }
                             }
@@ -1454,7 +1456,7 @@ pub(crate) fn check_call(
             // infer args for side effects and return Unknown.
             // Cascade prevention: ignore arg errors (already recorded as Error in type_map).
             for arg in args {
-                let _ = infer_surface_expr(arg, env, state, constraints, type_map);
+                let _ = infer_surface_expr(arg, env, state, constraints, type_map).await;
             }
             // Infer named arg values exactly once here for type map population and error propagation.
             // Previously these were inferred in a pre-dispatch loop before `match &func_ty`, which
@@ -1463,7 +1465,7 @@ pub(crate) fn check_call(
             let mut named_arg_errors: Vec<TypeError> = Vec::new();
             for na in named_args {
                 if let Err(mut errs) =
-                    infer_surface_expr(&na.node.value, env, state, constraints, type_map)
+                    infer_surface_expr(&na.node.value, env, state, constraints, type_map).await
                 {
                     named_arg_errors.append(&mut errs);
                 }
@@ -1490,13 +1492,13 @@ pub(crate) fn check_call(
             // state.subst.name_counter and state.subst a second time in violation of single-pass Algorithm W.
             // Cascade prevention: ignore arg errors (already recorded as Error in type_map).
             for arg in args {
-                let _ = infer_surface_expr(arg, env, state, constraints, type_map);
+                let _ = infer_surface_expr(arg, env, state, constraints, type_map).await;
             }
             // Infer named arg values exactly once here for type map population and error propagation.
             let mut named_arg_errors: Vec<TypeError> = Vec::new();
             for na in named_args {
                 if let Err(mut errs) =
-                    infer_surface_expr(&na.node.value, env, state, constraints, type_map)
+                    infer_surface_expr(&na.node.value, env, state, constraints, type_map).await
                 {
                     named_arg_errors.append(&mut errs);
                 }
@@ -1533,7 +1535,7 @@ pub(crate) fn check_call(
             }
 
             // Infer the argument type
-            let arg_ty = infer_surface_expr(&args[0], env, state, constraints, type_map)?;
+            let arg_ty = infer_surface_expr(&args[0], env, state, constraints, type_map).await?;
 
             // Result type: NominalVariant with the arg type as payload.
             // Runtime stores payload as Some(payload_id), so we model it as a single-field

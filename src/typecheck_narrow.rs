@@ -381,7 +381,7 @@ pub(crate) fn collect_pattern_bindings(
     out: &mut Vec<(String, Type)>,
 ) {
     match pat {
-        Pattern::Wildcard | Pattern::Literal(_) | Pattern::Pin(_) | Pattern::TypeTag(_) => {}
+        Pattern::Wildcard | Pattern::Literal(_) | Pattern::Pin(_) => {}
         Pattern::TypeAssertPending { inner, .. } => {
             // Safety fallback for non-elaborated patterns. In normal typecheck flow,
             // elaborate_pattern always runs before collect_pattern_bindings, so this arm is
@@ -661,7 +661,7 @@ pub(crate) fn collect_pattern_bindings(
 /// - `SurfaceExpression::Dict(entries)` — inner binding bracket; extracts each auto-indexed entry
 /// - `SurfaceExpression::Annotated { annotation, .. }` — `a@Type` form; resolves the annotation
 /// - `SurfaceExpression::VarRef { .. }` — bare identifier; treated as `Type::Unknown`
-pub(crate) fn extract_pattern_types(
+pub(crate) async fn extract_pattern_types(
     pattern_node: &Arc<SurfaceNode>,
     env: &Rc<TypeEnv>,
     state: &mut InferState,
@@ -670,7 +670,7 @@ pub(crate) fn extract_pattern_types(
         SurfaceExpression::PatternDecl { bindings } | SurfaceExpression::LetDecl { bindings } => {
             let mut types = Vec::new();
             for binding in bindings {
-                extract_binding_types(binding, env, state, &mut types)?;
+                extract_binding_types(binding, env, state, &mut types).await?;
             }
             Ok(types)
         }
@@ -692,7 +692,7 @@ pub(crate) fn extract_pattern_types(
 /// - `SurfaceExpression::Annotated { annotation, .. }` — `a@Type` form
 /// - `SurfaceExpression::VarRef { .. }` — bare identifier → `Type::Unknown`
 /// - `SurfaceExpression::Placeholder` — wildcard `_` → `Type::Unknown`
-pub(crate) fn extract_binding_types(
+pub(crate) async fn extract_binding_types(
     binding: &Arc<SurfaceNode>,
     env: &Rc<TypeEnv>,
     state: &mut InferState,
@@ -703,13 +703,13 @@ pub(crate) fn extract_binding_types(
         SurfaceExpression::Dict(entries) => {
             for entry in entries {
                 // Each entry should be auto-indexed (no key) with Annotated/VarRef value
-                extract_binding_types(&entry.node.value, env, state, types)?;
+                Box::pin(extract_binding_types(&entry.node.value, env, state, types)).await?;
             }
         }
         // Inner binding bracket [let a@Int b@Float] (new unified-bindings syntax)
         SurfaceExpression::LetDecl { bindings } => {
             for sub_binding in bindings {
-                extract_binding_types(sub_binding, env, state, types)?;
+                Box::pin(extract_binding_types(sub_binding, env, state, types)).await?;
             }
         }
         // Implied call [Int] or [Result String] — treat as a type name reference.
@@ -733,7 +733,7 @@ pub(crate) fn extract_binding_types(
                     &mut None,
                     &mut None,
                     None,
-                ) {
+                ).await {
                     Ok(ty) => types.push(ty),
                     Err(_) => types.push(Type::Unknown),
                 }
@@ -758,7 +758,7 @@ pub(crate) fn extract_binding_types(
                 &mut None,
                 &mut None,
                 None,
-            )
+            ).await
             .map_err(|e| vec![e])?;
             types.push(ty);
         }
@@ -776,7 +776,7 @@ pub(crate) fn extract_binding_types(
                 &mut None,
                 &mut None,
                 None,
-            ) {
+            ).await {
                 Ok(ty) => types.push(ty),
                 Err(_) => types.push(Type::Unknown),
             }
@@ -803,7 +803,7 @@ pub(crate) fn extract_binding_types(
 /// This is a pure probe: it saves and restores all mutable fields of `state`
 /// that `unify` touches (levels, constraints, kind_env) so that overlap testing
 /// never leaks side-effects into the global inference state.
-pub(crate) fn patterns_overlap(
+pub(crate) async fn patterns_overlap(
     types_a: &[Type],
     types_b: &[Type],
     state: &mut InferState,
@@ -825,23 +825,27 @@ pub(crate) fn patterns_overlap(
     // Use a temporary substitution so state.subst is also unaffected.
     let mut temp_subst = state.subst.clone();
     let mut probe_constraints: Vec<Constraint> = Vec::new();
-    let overlaps = types_a.iter().zip(types_b.iter()).all(|(ty_a, ty_b)| {
+    let mut overlaps = true;
+    for (ty_a, ty_b) in types_a.iter().zip(types_b.iter()) {
         // Gradual: Unknown is the gradual-typing wildcard for unannotated pattern bindings.
         // Treat Unknown as distinct from any concrete type: a position with Unknown
         // cannot be used to establish overlap (it carries no type information).
         if matches!(ty_a, Type::Unknown) || matches!(ty_b, Type::Unknown) {
-            return false; // non-overlapping at this position — Unknown is not concrete
+            overlaps = false; // non-overlapping at this position — Unknown is not concrete
+            break;
         }
-        unify(
+        if Box::pin(unify(
             ty_a,
             ty_b,
             &mut temp_subst,
             state,
             &mut probe_constraints,
             Span::origin(),
-        )
-        .is_ok()
-    });
+        )).await.is_err() {
+            overlaps = false;
+            break;
+        }
+    }
 
     // Restore all mutated fields.
     // Restoring state.subst also restores name_counter (it lives in the Substitution).
@@ -855,7 +859,7 @@ pub(crate) fn patterns_overlap(
 
 /// Probe whether two type slices can unify (for consistency checks).
 /// Returns true if all pairs successfully unify. Side-effect-free — restores state after probe.
-pub(crate) fn types_can_unify(
+pub(crate) async fn types_can_unify(
     types_a: &[Type],
     types_b: &[Type],
     state: &mut InferState,
@@ -898,17 +902,20 @@ pub(crate) fn types_can_unify(
     // but would need to be addressed for general-purpose unification probes.
     let mut temp_subst = state.subst.clone();
     let mut probe_constraints: Vec<Constraint> = Vec::new();
-    let can_unify = types_a.iter().zip(types_b.iter()).all(|(ty_a, ty_b)| {
-        unify(
+    let mut can_unify = true;
+    for (ty_a, ty_b) in types_a.iter().zip(types_b.iter()) {
+        if Box::pin(unify(
             ty_a,
             ty_b,
             &mut temp_subst,
             state,
             &mut probe_constraints,
             Span::origin(),
-        )
-        .is_ok()
-    });
+        )).await.is_err() {
+            can_unify = false;
+            break;
+        }
+    }
 
     // Restore all mutated fields.
     // Restoring state.subst also restores name_counter (it lives in the Substitution).

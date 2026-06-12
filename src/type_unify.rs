@@ -186,14 +186,17 @@ pub fn entails(class_env: &ClassEnv, context: &[Constraint], target: &Constraint
     } = target
     {
         if target_vars.len() == 1 {
-            let target_var = &target_vars[0];
-            for constraint in context {
-                if let Constraint::Class { class, vars, .. } = constraint {
-                    if vars.len() == 1
-                        && vars[0] == *target_var
-                        && is_superclass_of(class_env, &class.name, &target_class.name)
-                    {
-                        return true;
+            // Only compare Var positions — superclass entailment requires the same type variable.
+            // Ground positions are already resolved and don't participate in entailment chains.
+            if let Some(target_var_name) = target_vars[0].as_var() {
+                for constraint in context {
+                    if let Constraint::Class { class, vars, .. } = constraint {
+                        if vars.len() == 1
+                            && vars[0].as_var() == Some(target_var_name)
+                            && is_superclass_of(class_env, &class.name, &target_class.name)
+                        {
+                            return true;
+                        }
                     }
                 }
             }
@@ -297,7 +300,7 @@ fn is_superclass_of_impl(
 /// increments, each exit decrements. Because increments and decrements are matched, the counter
 /// naturally returns to 0 after each independent constraint resolution chain completes. This
 /// matches GHC's -freduction-depth semantics (Sulzmann et al. 2007 §3.2).
-fn check_constraints_on_var(
+async fn check_constraints_on_var(
     var_name: &str,
     concrete_ty: &Type,
     subst: &Substitution,
@@ -316,7 +319,9 @@ fn check_constraints_on_var(
         },
         MultiParam {
             class: String,
-            vars: Vec<String>,
+            /// Constraint arguments — Var positions hold variable names; Ground positions
+            /// hold concrete types that were resolved before generalization (B-398).
+            args: Vec<ConstraintArg>,
             fundeps: Vec<(Vec<usize>, Vec<usize>)>,
             resolver_injective: bool,
         },
@@ -325,17 +330,19 @@ fn check_constraints_on_var(
     let applicable: Vec<ApplicableConstraint> = constraints
         .iter()
         .filter_map(|c| match c {
-            Constraint::Class { class, vars, .. } if vars.len() == 1 && vars[0] == var_name => {
+            Constraint::Class { class, vars, .. }
+                if vars.len() == 1 && vars[0].as_var() == Some(var_name) =>
+            {
                 Some(ApplicableConstraint::SingleParam {
                     class: class.name.clone(),
                 })
             }
             Constraint::Class { class, vars, .. }
-                if vars.len() > 1 && vars.iter().any(|v| v == var_name) =>
+                if vars.len() > 1 && vars.iter().any(|v| v.as_var() == Some(var_name)) =>
             {
                 Some(ApplicableConstraint::MultiParam {
                     class: class.name.clone(),
-                    vars: vars.clone(),
+                    args: vars.clone(),
                     fundeps: class.determines.clone(),
                     resolver_injective: class.resolver_injective,
                 })
@@ -379,7 +386,7 @@ fn check_constraints_on_var(
                 }
                 state.instance_resolution_depth += 1;
                 let inst_env = state.instance_env.clone();
-                let resolve_result = inst_env.resolve_instance(&class, concrete_ty, state);
+                let resolve_result = Box::pin(inst_env.resolve_instance(&class, concrete_ty, state)).await;
                 state.instance_resolution_depth -= 1;
 
                 match resolve_result {
@@ -412,7 +419,7 @@ fn check_constraints_on_var(
             }
             ApplicableConstraint::MultiParam {
                 class,
-                vars,
+                args,
                 fundeps,
                 resolver_injective,
             } => {
@@ -429,7 +436,7 @@ fn check_constraints_on_var(
                 let was_inserted = state.fd_in_progress.insert(var_name.to_string());
                 let fd_result = improve_functional_dependency(
                     &class,
-                    &vars,
+                    &args,
                     &fundeps,
                     resolver_injective,
                     var_name,
@@ -438,7 +445,7 @@ fn check_constraints_on_var(
                     state,
                     constraints,
                     span.clone(),
-                );
+                ).await;
                 if was_inserted {
                     state.fd_in_progress.remove(var_name);
                 }
@@ -462,9 +469,9 @@ fn check_constraints_on_var(
 const MAX_FD_DEPTH: usize = 16;
 
 #[allow(clippy::too_many_arguments)] // FD improvement requires all constraint components
-fn improve_functional_dependency(
+async fn improve_functional_dependency(
     class: &str,
-    vars: &[String],
+    args: &[ConstraintArg],
     fundeps: &[(Vec<usize>, Vec<usize>)],
     resolver_injective: bool,
     bound_var: &str,
@@ -489,7 +496,7 @@ fn improve_functional_dependency(
     state.fd_depth += 1;
     let result = improve_functional_dependency_inner(
         class,
-        vars,
+        args,
         fundeps,
         resolver_injective,
         bound_var,
@@ -498,15 +505,15 @@ fn improve_functional_dependency(
         state,
         constraints,
         span,
-    );
+    ).await;
     state.fd_depth -= 1;
     result
 }
 
 #[allow(clippy::too_many_arguments)] // FD improvement requires all constraint components
-fn improve_functional_dependency_inner(
+async fn improve_functional_dependency_inner(
     class: &str,
-    vars: &[String],
+    args: &[ConstraintArg],
     fundeps: &[(Vec<usize>, Vec<usize>)],
     resolver_injective: bool,
     bound_var: &str,
@@ -518,11 +525,12 @@ fn improve_functional_dependency_inner(
 ) -> Result<(), TypeError> {
     // For each functional dependency (determining → determined)
     for (det_positions, ded_positions) in fundeps {
-        // Compute the positions of bound_var in the constraint var list
-        let bound_var_positions: Vec<usize> = vars
+        // Compute the positions of bound_var in the constraint arg list.
+        // Only Var positions can match bound_var; Ground positions are already resolved.
+        let bound_var_positions: Vec<usize> = args
             .iter()
             .enumerate()
-            .filter(|(_, v)| *v == bound_var)
+            .filter(|(_, arg)| arg.as_var() == Some(bound_var))
             .map(|(i, _)| i)
             .collect();
 
@@ -553,33 +561,35 @@ fn improve_functional_dependency_inner(
             // Collect the current types at all determined positions.
             let mut ded_types = Vec::new();
             for &pos in ded_positions {
-                if pos >= vars.len() {
+                if pos >= args.len() {
                     continue;
                 }
-                let var = &vars[pos];
-                let ty = if var == bound_var {
-                    subst.apply(bound_type)
-                } else {
-                    subst.apply(&Type::TypeVar(var.clone(), 0))
+                let ty = match &args[pos] {
+                    // In-flight binding for bound_var — use the type being bound right now.
+                    ConstraintArg::Var(v) if v.as_str() == bound_var => subst.apply(bound_type),
+                    // Another Var position — look up in substitution.
+                    ConstraintArg::Var(v) => subst.apply(&Type::TypeVar(v.clone(), 0)),
+                    // Ground position — type already known from generalization (B-398).
+                    ConstraintArg::Ground(t) => t.clone(),
                 };
-                ded_types.push((pos, var, ty));
+                ded_types.push((pos, ty));
             }
 
             // Only attempt reverse improvement when all determined positions are ground.
-            let all_ded_ground = ded_types.iter().all(|(_, _, ty)| !ty.has_inference_vars());
+            let all_ded_ground = ded_types.iter().all(|(_, ty)| !ty.has_inference_vars());
             if all_ded_ground {
                 // Scan InstanceEnv for an instance whose determined-position type
                 // unifies with the ground determined types we have.
                 let instance_env = state.instance_env.clone();
-                if let Some((determining_types, det_pos_list)) = instance_env.reverse_lookup_mptc(
+                if let Some((determining_types, det_pos_list)) = Box::pin(instance_env.reverse_lookup_mptc(
                     class,
                     ded_positions,
                     &ded_types
                         .iter()
-                        .map(|(_, _, ty)| ty.clone())
+                        .map(|(_, ty)| ty.clone())
                         .collect::<Vec<_>>(),
                     state,
-                ) {
+                )).await {
                     // Unify each determining-position variable with the back-propagated type.
                     //
                     // Guard: skip variables already being processed by an outer FD improvement
@@ -589,10 +599,14 @@ fn improve_functional_dependency_inner(
                     // The guard makes the forward FD's re-binding of t1 a no-op: t1 is already
                     // being bound in the outer check_constraints_on_var("t1", Str, …) call.
                     for (det_pos, det_ty) in det_pos_list.iter().zip(determining_types.iter()) {
-                        if *det_pos >= vars.len() {
+                        if *det_pos >= args.len() {
                             continue;
                         }
-                        let det_var = &vars[*det_pos];
+                        // Only Var positions can be unified — Ground positions are already resolved.
+                        let det_var = match &args[*det_pos] {
+                            ConstraintArg::Var(v) => v.clone(),
+                            ConstraintArg::Ground(_) => continue,
+                        };
                         // Skip if this var is already being processed by an outer FD step.
                         if state.fd_in_progress.contains(det_var.as_str()) {
                             continue;
@@ -600,14 +614,14 @@ fn improve_functional_dependency_inner(
                         let det_type_var = Type::TypeVar(det_var.clone(), 0);
                         state.fd_in_progress.insert(det_var.clone());
                         let mut local_subst = std::mem::take(&mut state.subst);
-                        let result = unify(
+                        let result = Box::pin(unify(
                             &det_type_var,
                             det_ty,
                             &mut local_subst,
                             state,
                             constraints,
                             span.clone(),
-                        );
+                        )).await;
                         state.subst = local_subst;
                         state.fd_in_progress.remove(det_var.as_str());
                         result?;
@@ -645,24 +659,22 @@ fn improve_functional_dependency_inner(
         //               this call tree), then fall back to state.subst (global accumulated).
         let mut det_types = Vec::new();
         for &pos in det_positions {
-            if pos >= vars.len() {
+            if pos >= args.len() {
                 continue;
             }
-            let var = &vars[pos];
-            let ty = if var == bound_var {
-                // In-flight binding — not yet written to subst
-                subst.apply(bound_type)
-            } else {
-                // Look up from the active subst (most up-to-date within this call tree).
-                // apply() chains through bound TypeVars, so this handles the case where
-                // _t0 was bound in a prior argument unification in this call tree.
-                subst.apply(&Type::TypeVar(var.clone(), 0))
+            let ty = match &args[pos] {
+                // In-flight binding for bound_var — use the type being bound right now.
+                ConstraintArg::Var(v) if v.as_str() == bound_var => subst.apply(bound_type),
+                // Another Var position — look up in substitution.
+                ConstraintArg::Var(v) => subst.apply(&Type::TypeVar(v.clone(), 0)),
+                // Ground position — type already known from generalization (B-398).
+                ConstraintArg::Ground(t) => t.clone(),
             };
-            det_types.push((pos, var, ty));
+            det_types.push((pos, ty));
         }
 
         // Check if ALL determining positions are ground
-        let all_det_ground = det_types.iter().all(|(_, _, ty)| !ty.has_inference_vars());
+        let all_det_ground = det_types.iter().all(|(_, ty)| !ty.has_inference_vars());
 
         if !all_det_ground {
             // Not all determining positions are ground yet - can't improve
@@ -682,8 +694,8 @@ fn improve_functional_dependency_inner(
         // instead, resolve_has_field applies [HAS-FIELD-REC], [HAS-FIELD-UNION],
         // [HAS-FIELD-INTER], and [HAS-FIELD-TOP] rules from type_unify.rs.
         let indexable_record_result = if class == "Indexable" && det_types.len() == 2 {
-            let container_ty = &det_types[0].2;
-            let key_ty = &det_types[1].2;
+            let container_ty = &det_types[0].1;
+            let key_ty = &det_types[1].1;
 
             match (container_ty, key_ty) {
                 (
@@ -740,24 +752,23 @@ fn improve_functional_dependency_inner(
                 class,
                 &det_types
                     .iter()
-                    .map(|(_, _, ty)| ty.clone())
+                    .map(|(_, ty)| ty.clone())
                     .collect::<Vec<_>>(),
                 state,
                 span.clone(),
-            )?
+            ).await?
         } else if let Some(class_decl) = state.class_env.get(class) {
             // Not an arithmetic class — check for resolver
             if let Some(ref resolver_name) = class_decl.resolver.clone() {
                 // Resolver-based path: construct a TypeStageApp and normalize it.
                 // Normalization calls evaluate_resolver() which invokes the type-stage function.
-                let det_arg_types: Vec<Type> =
-                    det_types.iter().map(|(_, _, ty)| ty.clone()).collect();
+                let det_arg_types: Vec<Type> = det_types.iter().map(|(_, ty)| ty.clone()).collect();
                 let stage_app = Type::TypeStageApp {
                     fn_name: resolver_name.clone(),
                     args: det_arg_types,
                 };
                 let mut norm_ctx = crate::type_normalize::NormCtxt::new();
-                let resolved = crate::type_normalize::normalize(&stage_app, subst, &mut norm_ctx);
+                let resolved = crate::type_normalize::normalize(&stage_app, subst, &mut norm_ctx).await;
 
                 // If normalization returned a stuck TypeStageApp, we can't improve yet.
                 // Defer: the deferred_equalities mechanism will retry when more types are ground.
@@ -767,12 +778,11 @@ fn improve_functional_dependency_inner(
                 resolved
             } else {
                 // No resolver — fall back to general MPTC instance lookup via InstanceEnv
-                let det_arg_types: Vec<Type> =
-                    det_types.iter().map(|(_, _, ty)| ty.clone()).collect();
+                let det_arg_types: Vec<Type> = det_types.iter().map(|(_, ty)| ty.clone()).collect();
 
                 // Clone instance_env to avoid borrow checker conflict
                 let instance_env = state.instance_env.clone();
-                match instance_env.lookup_mptc(class, &det_arg_types, state) {
+                match Box::pin(instance_env.lookup_mptc(class, &det_arg_types, state)).await {
                     Some(inst) => {
                         // Extract the determined type from the instance.
                         // For a multi-param MPTC instance, instance_type is a Record with
@@ -843,7 +853,7 @@ fn improve_functional_dependency_inner(
                         // Function, etc.) are definitively non-Indexable.
                         let should_defer = det_types
                             .iter()
-                            .any(|(_, _, ty)| !is_definitely_no_instance_for(class, ty));
+                            .any(|(_, ty)| !is_definitely_no_instance_for(class, ty));
                         if should_defer {
                             continue;
                         }
@@ -866,12 +876,18 @@ fn improve_functional_dependency_inner(
             }));
         };
 
-        // Unify each determined position with the result type
+        // Unify each determined position with the result type.
+        // Ground positions are already resolved — skip them.
         for &ded_pos in ded_positions {
-            if ded_pos >= vars.len() {
+            if ded_pos >= args.len() {
                 continue;
             }
-            let ded_var = &vars[ded_pos];
+            // Extract the variable name for this determined position.
+            // Ground positions are already concrete — no further unification needed.
+            let ded_var = match &args[ded_pos] {
+                ConstraintArg::Var(v) => v.clone(),
+                ConstraintArg::Ground(_) => continue,
+            };
 
             // Guard: skip variables already being processed by an outer FD improvement
             // call (in fd_in_progress). This prevents the mutual-recursion cycle when
@@ -899,14 +915,14 @@ fn improve_functional_dependency_inner(
             // for reading, not writing.
             state.fd_in_progress.insert(ded_var.clone());
             let mut local_subst = std::mem::take(&mut state.subst);
-            let result = unify(
+            let result = Box::pin(unify(
                 &ded_type_var,
                 &result_type,
                 &mut local_subst,
                 state,
                 constraints,
                 span.clone(),
-            );
+            )).await;
             state.subst = local_subst;
             state.fd_in_progress.remove(ded_var.as_str());
             result?;
@@ -933,7 +949,7 @@ fn improve_functional_dependency_inner(
 ///    On a successful lookup the determined type is extracted from the numbered-field Record
 ///    that encodes the multi-param instance head. On a miss a `no instance for …` error is
 ///    returned.
-fn lookup_arithmetic_instance(
+async fn lookup_arithmetic_instance(
     class: &str,
     det_types: &[Type],
     state: &mut InferState,
@@ -1004,7 +1020,7 @@ fn lookup_arithmetic_instance(
             // which correctly handles HKT instance heads with type variables.
             // Clone instance_env to avoid borrow checker conflict
             let instance_env = state.instance_env.clone();
-            match instance_env.lookup_mptc(class, det_types, state) {
+            match Box::pin(instance_env.lookup_mptc(class, det_types, state)).await {
                 Some(inst) => {
                     // Extract the determined type from the instance.
                     // For a multi-param MPTC instance, instance_type is a Record with
@@ -1156,7 +1172,8 @@ fn promote_literal_for_constrained_var(
 
     let has_promotable_constraint = constraints.iter().any(|c| match c {
         Constraint::Class { class, vars, .. } => {
-            vars.iter().any(|v| v == var_name) && PROMOTABLE_CLASSES.contains(&class.name.as_str())
+            vars.iter().any(|v| v.as_var() == Some(var_name))
+                && PROMOTABLE_CLASSES.contains(&class.name.as_str())
         }
         _ => false,
     });
@@ -1792,7 +1809,7 @@ impl PartialEq for Substitution {
 ///   (Uniform{V, ..}, Empty)  — UNIFY-UNIFORM step 2/3: symmetric case
 ///   (Uniform{V1, k1}, Uniform{V2, k2}) — unify V1 ~ V2; key types if both present (B-327);
 ///                               then validate named fields against unified V (T-1007 steps 2-3)
-fn unify_rows(
+async fn unify_rows(
     row1: &Row,
     row2: &Row,
     subst: &mut Substitution,
@@ -1808,7 +1825,7 @@ fn unify_rows(
     {
         for (key, ty1) in &row1.fields {
             let ty2 = &row2.fields[key];
-            unify(ty1, ty2, subst, state, constraints, span.clone())?;
+            Box::pin(unify(ty1, ty2, subst, state, constraints, span.clone())).await?;
         }
         // Fall through to tail unification — do NOT return here.
     } else {
@@ -1823,7 +1840,7 @@ fn unify_rows(
             }
             if let Some(ty2) = row2.fields.get(key) {
                 shared_count += 1;
-                unify(ty1, ty2, subst, state, constraints, span.clone())?;
+                Box::pin(unify(ty1, ty2, subst, state, constraints, span.clone())).await?;
             }
         }
         for ty2 in row2.fields.values() {
@@ -1886,14 +1903,14 @@ fn unify_rows(
         // Both Uniform — unify value types, key types, then validate named fields
         // (T-1007/UNIFY-UNIFORM steps 1-3).
         (RowTail::Uniform { key: k1, value: v1 }, RowTail::Uniform { key: k2, value: v2 }) => {
-            unify(v1, v2, subst, state, constraints, span.clone())?;
+            Box::pin(unify(v1, v2, subst, state, constraints, span.clone())).await?;
 
             // B-327: Unify key type constraints when both sides specify them.
             // When only one side specifies a key type (asymmetric), the unconstrained
             // side is implicitly compatible with any key type (Unknown semantics) and
             // no error is emitted — the keyed side's constraint is preserved in its row.
             if let (Some(k1_ty), Some(k2_ty)) = (k1, k2) {
-                unify(k1_ty, k2_ty, subst, state, constraints, span.clone())?;
+                Box::pin(unify(k1_ty, k2_ty, subst, state, constraints, span.clone())).await?;
             }
 
             // UNIFY-UNIFORM steps 2-3: after unifying the value types, apply the
@@ -1916,14 +1933,14 @@ fn unify_rows(
                     // Step 2: V is still an unbound TypeVar α — compute join of all named
                     // field types and unify α with that join.
                     let join = Type::normalize_union(all_fields);
-                    unify(
+                    Box::pin(unify(
                         &Type::TypeVar(alpha.clone(), 0),
                         &join,
                         subst,
                         state,
                         constraints,
                         span.clone(),
-                    )?;
+                    )).await?;
                 } else if !v_fixed.has_inference_vars() {
                     // Step 3: V is concrete — each named field Ti must be a subtype of V.
                     for field_ty in &all_fields {
@@ -1979,14 +1996,14 @@ fn unify_rows(
             if let Type::TypeVar(alpha, _) = &v_fixed {
                 // V is an unbound TypeVar α: compute join of all named field types and unify.
                 let join = Type::normalize_union(field_types);
-                unify(
+                Box::pin(unify(
                     &Type::TypeVar(alpha.clone(), 0),
                     &join,
                     subst,
                     state,
                     constraints,
                     span.clone(),
-                )?;
+                )).await?;
             } else if !v_fixed.has_inference_vars() {
                 // V is concrete: each named field Ti must be a subtype of V.
                 for field_ty in &field_types {
@@ -2160,10 +2177,13 @@ fn lower_levels_check_occurs(
 /// Returns immediately if α has no class constraints (fast path for the common case).
 fn transfer_class_constraints(alpha: &str, beta: &str, constraints: &mut Vec<Constraint>) {
     // Collect all Class constraints on α (both single-param and MPTC).
-    let alpha_constraints: Vec<(Arc<ClassDecl>, Vec<String>)> = constraints
+    // A constraint applies to α if any Var position names α.
+    let alpha_constraints: Vec<(Arc<ClassDecl>, Vec<ConstraintArg>)> = constraints
         .iter()
         .filter_map(|c| match c {
-            Constraint::Class { class, vars, .. } if vars.contains(&alpha.to_string()) => {
+            Constraint::Class { class, vars, .. }
+                if vars.iter().any(|v| v.as_var() == Some(alpha)) =>
+            {
                 Some((Arc::clone(class), vars.clone()))
             }
             _ => None,
@@ -2174,35 +2194,37 @@ fn transfer_class_constraints(alpha: &str, beta: &str, constraints: &mut Vec<Con
     }
 
     // Transfer to β (deduplicated: only add if not already present).
-    // F3 FIX: For MPTC constraints, substitute alpha→beta in the vars list.
-    let beta_existing: HashSet<Vec<String>> = constraints
+    // F3 FIX: For MPTC constraints, substitute alpha→beta in the Var args.
+    // Ground args are preserved as-is (they don't reference alpha).
+    let beta_existing: HashSet<Vec<ConstraintArg>> = constraints
         .iter()
         .filter_map(|c| match c {
-            Constraint::Class { class: _, vars, .. } if vars.contains(&beta.to_string()) => {
+            Constraint::Class { class: _, vars, .. }
+                if vars.iter().any(|v| v.as_var() == Some(beta)) =>
+            {
                 Some(vars.clone())
             }
             _ => None,
         })
         .collect();
 
-    for (class, vars) in alpha_constraints {
-        // Substitute alpha → beta in vars list
-        let renamed_vars: Vec<String> = vars
+    for (class, args) in alpha_constraints {
+        // Substitute alpha → beta in Var args; Ground args pass through unchanged.
+        let renamed_args: Vec<ConstraintArg> = args
             .iter()
-            .map(|v| {
-                if v == alpha {
-                    beta.to_string()
-                } else {
-                    v.clone()
+            .map(|arg| match arg {
+                ConstraintArg::Var(v) if v.as_str() == alpha => {
+                    ConstraintArg::Var(beta.to_string())
                 }
+                other => other.clone(),
             })
             .collect();
 
         // F3 FIX: Check if the renamed constraint already exists (avoid duplicates)
-        if !beta_existing.contains(&renamed_vars) {
+        if !beta_existing.contains(&renamed_args) {
             constraints.push(Constraint::Class {
                 class,
-                vars: renamed_vars,
+                vars: renamed_args,
                 origin_name: None,
                 origin_span: None,
             });
@@ -2226,7 +2248,7 @@ fn transfer_class_constraints(alpha: &str, beta: &str, constraints: &mut Vec<Con
 ///
 /// Returns `Ok(())` when the TypeVar is bound or the compound already covers the concrete type.
 /// Returns `Err(TypeError::type_mismatch)` when the compound has != 1 TypeVar.
-fn bind_single_type_var_from_compound(
+async fn bind_single_type_var_from_compound(
     compound_members: &[Type],
     concrete: &Type,
     is_union: bool,
@@ -2304,13 +2326,13 @@ fn bind_single_type_var_from_compound(
         state,
         constraints,
         span.clone(),
-    )?;
+    ).await?;
     let var_level = state.levels.get(var_name).copied().unwrap_or(0);
     subst.bind_at_level(var_name.clone(), var_level, concrete_promoted);
     subst.check_size(span)
 }
 
-pub fn unify(
+pub async fn unify(
     a: &Type,
     b: &Type,
     subst: &mut Substitution,
@@ -2334,8 +2356,8 @@ pub fn unify(
     // a type error).
     let mut norm_ctx = crate::type_normalize::NormCtxt::new();
     norm_ctx.allow_eval = false;
-    let a = crate::type_normalize::normalize(&a_substituted, subst, &mut norm_ctx);
-    let b = crate::type_normalize::normalize(&b_substituted, subst, &mut norm_ctx);
+    let a = crate::type_normalize::normalize(&a_substituted, subst, &mut norm_ctx).await;
+    let b = crate::type_normalize::normalize(&b_substituted, subst, &mut norm_ctx).await;
     drop(norm_ctx);
 
     if a == b {
@@ -2468,7 +2490,7 @@ pub fn unify(
                 subst.bind_at_level(name.clone(), alpha_level, b);
             } else {
                 // Binding α to a concrete type — check constraints normally
-                check_constraints_on_var(name, &b, subst, state, constraints, span.clone())?;
+                check_constraints_on_var(name, &b, subst, state, constraints, span.clone()).await?;
                 subst.bind_at_level(name.clone(), alpha_level, b);
             }
             subst.check_size(span)?;
@@ -2504,7 +2526,7 @@ pub fn unify(
                 subst.bind_at_level(name.clone(), alpha_level, a);
             } else {
                 // Binding α to a concrete type — check constraints normally
-                check_constraints_on_var(name, &a, subst, state, constraints, span.clone())?;
+                check_constraints_on_var(name, &a, subst, state, constraints, span.clone()).await?;
                 subst.bind_at_level(name.clone(), alpha_level, a);
             }
             subst.check_size(span)?;
@@ -2546,7 +2568,7 @@ pub fn unify(
             let fresh = state.fresh_type_var();
             let opened_a = substitute_recvar(ba, va, &fresh);
             let opened_b = substitute_recvar(bb, vb, &fresh);
-            unify(&opened_a, &opened_b, subst, state, constraints, span)
+            Box::pin(unify(&opened_a, &opened_b, subst, state, constraints, span)).await
         }
 
         // Arm 4 (open-left): left is Recursive, right is a concrete type (not TypeVar — that
@@ -2555,7 +2577,7 @@ pub fn unify(
         (Type::Recursive { var: va, body: ba }, _) => {
             let fresh = state.fresh_type_var();
             let opened_a = substitute_recvar(ba, va, &fresh);
-            unify(&opened_a, &b, subst, state, constraints, span)
+            Box::pin(unify(&opened_a, &b, subst, state, constraints, span)).await
         }
 
         // Arm 5 (open-right): right is Recursive, left is a concrete type (not TypeVar — caught
@@ -2564,7 +2586,7 @@ pub fn unify(
         (_, Type::Recursive { var: vb, body: bb }) => {
             let fresh = state.fresh_type_var();
             let opened_b = substitute_recvar(bb, vb, &fresh);
-            unify(&a, &opened_b, subst, state, constraints, span)
+            Box::pin(unify(&a, &opened_b, subst, state, constraints, span)).await
         }
 
         // Literal type promotion shortcuts (performance optimization over U-SUBSUME).
@@ -2635,11 +2657,11 @@ pub fn unify(
             // Apply special case when one side is zero-param variadic and the other has params.
             if is_any_function_1 && !p2.is_empty() {
                 // Zero-param variadic unifies with any concrete-arity function.
-                return unify(r1, r2, subst, state, constraints, span);
+                return Box::pin(unify(r1, r2, subst, state, constraints, span)).await;
             }
             if is_any_function_2 && !p1.is_empty() {
                 // Zero-param variadic unifies with any concrete-arity function (symmetric).
-                return unify(r1, r2, subst, state, constraints, span);
+                return Box::pin(unify(r1, r2, subst, state, constraints, span)).await;
             }
 
             if p1.len() != p2.len() {
@@ -2672,9 +2694,9 @@ pub fn unify(
             // from earlier parameter unifications are therefore visible to later ones via
             // the shared `subst` -- this is correct Robinson (1965) unification.
             for ((_name_a, ty_a), (_name_b, ty_b)) in p1.iter().zip(p2.iter()) {
-                unify(ty_a, ty_b, subst, state, constraints, span.clone())?;
+                Box::pin(unify(ty_a, ty_b, subst, state, constraints, span.clone())).await?;
             }
-            unify(r1, r2, subst, state, constraints, span)
+            Box::pin(unify(r1, r2, subst, state, constraints, span)).await
         }
 
         (Type::Proxy, Type::Proxy) => Ok(()),
@@ -2696,7 +2718,7 @@ pub fn unify(
         (Type::Never, _) | (_, Type::Never) => Ok(()),
 
         // Negation unification: structural (for now, basic support)
-        (Type::Negation(t1), Type::Negation(t2)) => unify(t1, t2, subst, state, constraints, span),
+        (Type::Negation(t1), Type::Negation(t2)) => Box::pin(unify(t1, t2, subst, state, constraints, span)).await,
 
         // Negation disjointness: if T <: A, then T & ~A = Never (provably empty intersection).
         // We can statically reject this case without full RDNF normalization — if is_subtype(T, A)
@@ -2916,7 +2938,7 @@ pub fn unify(
                 subst.bind_at_level(m.clone(), alpha_level, b.clone());
             } else {
                 // Binding to concrete type — check constraints
-                check_constraints_on_var(m, &b, subst, state, constraints, span.clone())?;
+                check_constraints_on_var(m, &b, subst, state, constraints, span.clone()).await?;
                 subst.bind_at_level(m.clone(), alpha_level, b.clone());
             }
             subst.check_size(span)?;
@@ -2942,79 +2964,80 @@ pub fn unify(
                 subst.bind_at_level(m.clone(), alpha_level, a.clone());
             } else {
                 // Binding to concrete type — check constraints
-                check_constraints_on_var(m, &a, subst, state, constraints, span.clone())?;
+                check_constraints_on_var(m, &a, subst, state, constraints, span.clone()).await?;
                 subst.bind_at_level(m.clone(), alpha_level, a.clone());
             }
             subst.check_size(span)?;
             Ok(())
         }
 
-        // UNIFY-MAP: Map[K1, V1] ~ Map[K2, V2] — keys must be invariant, values covariant.
-        // Map is represented as App(App(TyCon("Map"), K), V).
-        // This arm intercepts before the general UNIFY-APP to enforce key invariance.
-        (Type::App(_, _), Type::App(_, _)) if a.as_map().is_some() && b.as_map().is_some() => {
-            let (map_k1, map_v1) = a.as_map().unwrap();
-            let (map_k2, map_v2) = b.as_map().unwrap();
-            let k1_resolved = subst.apply(map_k1);
-            let k2_resolved = subst.apply(map_k2);
-
-            match (&k1_resolved, &k2_resolved) {
-                (Type::TypeVar(_, _), _) | (_, Type::TypeVar(_, _)) => {
-                    unify(
-                        &k1_resolved,
-                        &k2_resolved,
-                        subst,
-                        state,
-                        constraints,
-                        span.clone(),
-                    )?;
-                }
-                (Type::Int, Type::Number)
-                | (Type::Number, Type::Int)
-                | (Type::Float, Type::Number)
-                | (Type::Number, Type::Float) => {
-                    return Err(TypeErrorTyped::Generic(GenericTypeError {
-                        message: format!(
-                            "Map key types must be invariant: {} vs {}",
-                            k1_resolved, k2_resolved
-                        ),
-                        span,
-                        notes: vec![],
-                        call_stack: vec![],
-                    }));
-                }
-                _ if k1_resolved != k2_resolved => {
-                    return Err(TypeErrorTyped::Generic(GenericTypeError {
-                        message: format!(
-                            "Map key types must be invariant: {} vs {}",
-                            k1_resolved, k2_resolved
-                        ),
-                        span,
-                        notes: vec![],
-                        call_stack: vec![],
-                    }));
-                }
-                _ => {}
-            }
-            // Values are covariant (unify normally)
-            let val1 = map_v1.clone();
-            let val2 = map_v2.clone();
-            unify(&val1, &val2, subst, state, constraints, span)
-        }
-
         // UNIFY-APP: decompose App(f₁, a₁) vs App(f₂, a₂).
-        // Unify constructors first, then apply resulting substitution and unify arguments.
+        //
+        // When both sides are TyCon spines of the same constructor, applies variance-directed
+        // unification per parameter position declared in TyConDef.variance:
+        //   - Covariant:     standard unify (U-SUBSUME allowed for ground types)
+        //   - Invariant:     strict — TypeVar binding allowed, but no subsumption for ground types
+        //   - Contravariant: standard unify with arguments swapped
+        //   - Phantom:       always succeeds (argument doesn't affect type safety)
+        //
+        // This eliminates the need for constructor-specific arms (formerly UNIFY-MAP for Map)
+        // and makes the runtime agnostic to which constructors exist.
         (Type::App(f1, a1), Type::App(f2, a2)) => {
-            // Unify constructors
-            unify(f1, f2, subst, state, constraints, span.clone())?;
-            // Substitution from constructor unification is already in subst and will be
-            // applied by the recursive unify() call (via apply_with_visited at the top).
-            unify(a1, a2, subst, state, constraints, span)
+            // Attempt variance-directed unification for TyCon spine forms.
+            if let (Some((name1, args1)), Some((name2, args2))) =
+                (extract_tycon_spine(&a), extract_tycon_spine(&b))
+            {
+                if name1 == name2 && args1.len() == args2.len() {
+                    if let Some(def) = state.tycon_env.get(name1).cloned() {
+                        for (i, (arg_a, arg_b)) in args1.iter().zip(args2.iter()).enumerate() {
+                            let var = def.variance.get(i).copied().unwrap_or(Variance::Invariant);
+                            match var {
+                                Variance::Covariant => {
+                                    Box::pin(unify(arg_a, arg_b, subst, state, constraints, span.clone())).await?;
+                                }
+                                Variance::Contravariant => {
+                                    Box::pin(unify(arg_b, arg_a, subst, state, constraints, span.clone())).await?;
+                                }
+                                Variance::Invariant => {
+                                    // Invariant: bind TypeVars, but reject ground-type subsumption.
+                                    // U-SUBSUME must not fire here — Int and Number are distinct
+                                    // invariant positions and must not unify via subtyping.
+                                    let ra = subst.apply(arg_a);
+                                    let rb = subst.apply(arg_b);
+                                    if ra.has_inference_vars() || rb.has_inference_vars() {
+                                        Box::pin(unify(&ra, &rb, subst, state, constraints, span.clone())).await?;
+                                    } else if ra != rb {
+                                        return Err(TypeErrorTyped::UnificationFailure(
+                                            UnificationFailure {
+                                                expected: ra,
+                                                got: rb,
+                                                span: span.clone(),
+                                                notes: vec![format!(
+                                                    "type argument {} of {} must match exactly \
+                                                     (invariant position)",
+                                                    i + 1,
+                                                    name1
+                                                )],
+                                                call_stack: vec![],
+                                            },
+                                        ));
+                                    }
+                                }
+                                Variance::Phantom => {}
+                            }
+                        }
+                        return Ok(());
+                    }
+                }
+            }
+            // Fallback for non-TyCon App forms or unknown constructors: structural recursion.
+            Box::pin(unify(f1, f2, subst, state, constraints, span.clone())).await?;
+            Box::pin(unify(a1, a2, subst, state, constraints, span)).await
         }
 
         // Record unification: delegate to row unification
         (Type::Record(row1), Type::Record(row2)) => {
-            unify_rows(row1, row2, subst, state, constraints, span)
+            unify_rows(row1, row2, subst, state, constraints, span).await
         }
 
         // NominalVariant unification: tags must match (nominal identity), then unify fields structurally
@@ -3040,7 +3063,7 @@ pub fn unify(
                 }));
             }
             // Tags match — unify fields structurally
-            unify_rows(fields1, fields2, subst, state, constraints, span)
+            unify_rows(fields1, fields2, subst, state, constraints, span).await
         }
 
         // NominalVariant vs Record: never unifiable (nominal vs structural distinction)
@@ -3085,7 +3108,7 @@ pub fn unify(
         {
             let members = members.clone();
             for member in &members {
-                unify(&a, member, subst, state, constraints, span.clone())?;
+                Box::pin(unify(&a, member, subst, state, constraints, span.clone())).await?;
             }
             Ok(())
         }
@@ -3094,7 +3117,7 @@ pub fn unify(
         {
             let members = members.clone();
             for member in &members {
-                unify(member, &b, subst, state, constraints, span.clone())?;
+                Box::pin(unify(member, &b, subst, state, constraints, span.clone())).await?;
             }
             Ok(())
         }
@@ -3132,7 +3155,7 @@ pub fn unify(
                 state,
                 constraints,
                 span,
-            )
+            ).await
         }
 
         // Symmetric C-Var1: Union on the left, concrete on the right
@@ -3146,7 +3169,7 @@ pub fn unify(
                 state,
                 constraints,
                 span,
-            )
+            ).await
         }
 
         // [C-VAR2] (BAS constraint rewriting, conservative):
@@ -3167,7 +3190,7 @@ pub fn unify(
                 state,
                 constraints,
                 span,
-            )
+            ).await
         }
 
         // Symmetric C-Var2: concrete on the left, Intersection on the right
@@ -3181,7 +3204,7 @@ pub fn unify(
                 state,
                 constraints,
                 span,
-            )
+            ).await
         }
 
         // TypeStageApp unification cases (after normalization in chr-normalization sprint).
@@ -3210,7 +3233,7 @@ pub fn unify(
                 }));
             }
             for (arg1, arg2) in a1.iter().zip(a2.iter()) {
-                unify(arg1, arg2, subst, state, constraints, span.clone())?;
+                Box::pin(unify(arg1, arg2, subst, state, constraints, span.clone())).await?;
             }
             Ok(())
         }
@@ -3285,7 +3308,7 @@ pub fn unify(
 /// Called after each SCC's substitution merge in `infer_dict` (typecheck_dict.rs).
 /// Union-vs-Union deferred equalities (from the arm above) also land here.
 /// See doc/06-type-inference.md:884.
-pub fn process_deferred_equalities(
+pub async fn process_deferred_equalities(
     state: &mut InferState,
     subst: &mut Substitution,
     constraints: &mut Vec<Constraint>,
@@ -3306,13 +3329,13 @@ pub fn process_deferred_equalities(
         let mut norm_ctx = crate::type_normalize::NormCtxt::new();
         for (a, b) in deferred {
             // Normalize both sides
-            let a_norm = crate::type_normalize::normalize(&a, subst, &mut norm_ctx);
-            let b_norm = crate::type_normalize::normalize(&b, subst, &mut norm_ctx);
+            let a_norm = crate::type_normalize::normalize(&a, subst, &mut norm_ctx).await;
+            let b_norm = crate::type_normalize::normalize(&b, subst, &mut norm_ctx).await;
 
             if !a_norm.has_type_stage_app() && !b_norm.has_type_stage_app() {
                 // Both sides fully reduced — attempt unification.
                 // F10 FIX: Emit diagnostic on unification failure instead of silently dropping.
-                match unify(&a_norm, &b_norm, subst, state, constraints, span.clone()) {
+                match Box::pin(unify(&a_norm, &b_norm, subst, state, constraints, span.clone())).await {
                     Ok(()) => {
                         progress = true;
                     }

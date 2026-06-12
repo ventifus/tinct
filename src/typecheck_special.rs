@@ -70,7 +70,7 @@ use super::TypeMap;
 /// Runtime validation (at least one of Readable/Writable/Appendable required) is enforced
 /// by the builtin at runtime, not statically here. Static arity check: at least 3 args
 /// (DirCap + path + 1 flag). This matches the runtime's minimum: `open: requires >= 3 args`.
-pub(crate) fn check_open(
+pub(crate) async fn check_open(
     args: &[Arc<SurfaceNode>],
     env: &Rc<TypeEnv>,
     span: Span,
@@ -95,7 +95,7 @@ pub(crate) fn check_open(
     // Check arg[0]: DirCap
     {
         if let Err(mut errs) =
-            check_surface_expr(&args[0], &Type::DirCap, env, state, constraints, type_map)
+            check_surface_expr(&args[0], &Type::DirCap, env, state, constraints, type_map).await
         {
             errors.append(&mut errs);
         }
@@ -104,7 +104,7 @@ pub(crate) fn check_open(
     // Check arg[1]: Str (path)
     {
         if let Err(mut errs) =
-            check_surface_expr(&args[1], &Type::Str, env, state, constraints, type_map)
+            check_surface_expr(&args[1], &Type::Str, env, state, constraints, type_map).await
         {
             errors.append(&mut errs);
         }
@@ -132,7 +132,7 @@ pub(crate) fn check_open(
 
     for flag_arg in args.iter().skip(2) {
         // Infer the flag arg for type map population (side effect: records hover type for LSP).
-        if let Ok(_flag_ty) = infer_surface_expr(flag_arg, env, state, constraints, type_map) {
+        if let Ok(_flag_ty) = infer_surface_expr(flag_arg, env, state, constraints, type_map).await {
             // Type map already populated by infer_surface_expr above.
         }
 
@@ -203,7 +203,7 @@ pub(crate) fn check_open(
 /// - Tcp or UnixStream → Handle[Readable, Writable]
 /// - Udp or UnixDatagram → DatagramHandle
 /// - Unknown transport → Union fallback
-pub(crate) fn check_connect(
+pub(crate) async fn check_connect(
     args: &[Arc<SurfaceNode>],
     env: &Rc<TypeEnv>,
     span: Span,
@@ -224,7 +224,7 @@ pub(crate) fn check_connect(
 
     // Infer arg types (for type checking, even if we don't use them all)
     for arg in args.iter() {
-        infer_surface_expr(arg, env, state, constraints, type_map)?;
+        infer_surface_expr(arg, env, state, constraints, type_map).await?;
     }
 
     // Inspect arg 1 (transport) — check if it's a statically-known VarRef
@@ -299,7 +299,7 @@ pub(crate) fn check_connect(
 /// - Seq(A) with callback A → B → Seq(B)
 /// - Dict input → Unknown (runtime dispatch, no precise type available)
 /// - Unknown or other → Unknown fallback
-pub(crate) fn check_map(
+pub(crate) async fn check_map(
     args: &[Arc<SurfaceNode>],
     env: &Rc<TypeEnv>,
     span: Span,
@@ -319,10 +319,10 @@ pub(crate) fn check_map(
     }
 
     // Infer both argument types
-    let callback_ty = infer_surface_expr(&args[0], env, state, constraints, type_map)?;
+    let callback_ty = infer_surface_expr(&args[0], env, state, constraints, type_map).await?;
     let callback_ty = state.subst.apply(&callback_ty);
 
-    let coll_ty = infer_surface_expr(&args[1], env, state, constraints, type_map)?;
+    let coll_ty = infer_surface_expr(&args[1], env, state, constraints, type_map).await?;
     let coll_ty = state.subst.apply(&coll_ty);
 
     // Synthesize return type based on collection and callback
@@ -349,7 +349,7 @@ pub(crate) fn check_map(
 /// This special case preserves the input handle's capability row:
 /// - Handle[α] → ... → Handle[α] (same capabilities)
 /// - Unknown → Handle(Unknown) fallback
-pub(crate) fn check_tls_layer(
+pub(crate) async fn check_tls_layer(
     args: &[Arc<SurfaceNode>],
     env: &Rc<TypeEnv>,
     span: Span,
@@ -369,12 +369,12 @@ pub(crate) fn check_tls_layer(
     }
 
     // Infer all argument types (for type checking)
-    let handle_ty = infer_surface_expr(&args[0], env, state, constraints, type_map)?;
+    let handle_ty = infer_surface_expr(&args[0], env, state, constraints, type_map).await?;
     let handle_ty = state.subst.apply(&handle_ty);
 
     // Infer the other args to check them, but we don't use their types
-    infer_surface_expr(&args[1], env, state, constraints, type_map)?; // hostname
-    infer_surface_expr(&args[2], env, state, constraints, type_map)?; // opts
+    infer_surface_expr(&args[1], env, state, constraints, type_map).await?; // hostname
+    infer_surface_expr(&args[2], env, state, constraints, type_map).await?; // opts
 
     // Preserve the handle's capability row
     match handle_ty.as_handle() {
@@ -401,7 +401,7 @@ pub(crate) fn check_tls_layer(
 /// Type check `get-in` — chained field access.
 /// [GET-IN-NIL]: empty path returns dict unchanged
 /// [GET-IN-CONS]: unfold via repeated field access
-pub(crate) fn check_get_in(
+pub(crate) async fn check_get_in(
     args: &[Arc<SurfaceNode>],
     named_args: &[Spanned<SurfaceNamedArg>],
     env: &Rc<TypeEnv>,
@@ -431,7 +431,7 @@ pub(crate) fn check_get_in(
     }
 
     // Infer the dict type
-    let dict_ty = infer_surface_expr(&args[1], env, state, constraints, type_map)?;
+    let dict_ty = infer_surface_expr(&args[1], env, state, constraints, type_map).await?;
     let dict_ty = state.subst.apply(&dict_ty);
 
     // Check if path is a literal dict with auto-indexed string entries
@@ -538,7 +538,7 @@ pub(crate) fn check_get_in(
 ///     corresponding monad dict.
 ///   - Rule 3 (failure): If all resolution attempts fail, emit TypeError T_DO_INFER.
 #[allow(clippy::too_many_arguments)] // Signature matches check_call pattern
-pub(crate) fn check_do_infer(
+pub(crate) async fn check_do_infer(
     method: &crate::ast::DotKey,
     sentinel_name: &str,
     args: &[Arc<SurfaceNode>],
@@ -568,10 +568,10 @@ pub(crate) fn check_do_infer(
     if let Some(_existing) = state.do_infer_resolutions.get(sentinel_name) {
         // Already resolved — infer remaining args for side effects and return the expected type.
         for arg in args {
-            let _ = infer_surface_expr(arg, env, state, constraints, type_map);
+            let _ = infer_surface_expr(arg, env, state, constraints, type_map).await;
         }
         for na in named_args {
-            let _ = infer_surface_expr(&na.node.value, env, state, constraints, type_map);
+            let _ = infer_surface_expr(&na.node.value, env, state, constraints, type_map).await;
         }
         let ret = match method_str {
             "bind" | "pure" => {
@@ -601,7 +601,7 @@ pub(crate) fn check_do_infer(
     // first_arg_already_inferred tracks whether we consumed the first arg here,
     // so Step 3 can skip it to avoid double-inference.
     let (resolved, first_arg_already_inferred) = if resolved.is_none() && !args.is_empty() {
-        let first_arg_ty = infer_surface_expr(&args[0], env, state, constraints, type_map)
+        let first_arg_ty = infer_surface_expr(&args[0], env, state, constraints, type_map).await
             .ok()
             .map(|ty| state.subst.apply(&ty));
         let rule2_result = first_arg_ty.and_then(|ty| resolve_monad_from_type(&ty, state));
@@ -625,10 +625,10 @@ pub(crate) fn check_do_infer(
             // Infer remaining args for type map population before returning error.
             let start = if first_arg_already_inferred { 1 } else { 0 };
             for arg in args.iter().skip(start) {
-                let _ = infer_surface_expr(arg, env, state, constraints, type_map);
+                let _ = infer_surface_expr(arg, env, state, constraints, type_map).await;
             }
             for na in named_args {
-                let _ = infer_surface_expr(&na.node.value, env, state, constraints, type_map);
+                let _ = infer_surface_expr(&na.node.value, env, state, constraints, type_map).await;
             }
             return Err(vec![TypeErrorTyped::Generic(GenericTypeError {
                 message: "cannot infer monad for [do] — add an explicit monad argument (e.g., [do result ...])".to_string(),
@@ -647,10 +647,10 @@ pub(crate) fn check_do_infer(
     // Skip the first arg if Rule 2 already inferred it (avoid double-inference side effects).
     let start = if first_arg_already_inferred { 1 } else { 0 };
     for arg in args.iter().skip(start) {
-        let _ = infer_surface_expr(arg, env, state, constraints, type_map);
+        let _ = infer_surface_expr(arg, env, state, constraints, type_map).await;
     }
     for na in named_args {
-        let _ = infer_surface_expr(&na.node.value, env, state, constraints, type_map);
+        let _ = infer_surface_expr(&na.node.value, env, state, constraints, type_map).await;
     }
 
     // Step 4: Return the expected return type or a fresh TypeVar.

@@ -41,17 +41,18 @@ use super::{resolve_annotation, resolve_fn_metadata};
 /// - `Dict { fields, .. }`: elaborates each field sub-pattern.
 /// - `Seq { head, tail }`: elaborates both sub-patterns.
 /// - `TypeAssert { inner, .. }`: already resolved — recurse into inner if present.
-/// - All other patterns (`Variable`, `Wildcard`, `Literal`, `Pin`, `TypeTag`): pass through.
+/// - All other patterns (`Variable`, `Wildcard`, `Literal`, `Pin`): pass through.
 ///
 /// `span` is the source span of the outermost pattern being elaborated, used for diagnostics.
 /// For recursive sub-patterns, each Spanned wrapper carries its own span.
 /// For `TypeAssertPending`, the annotation's own span is used as the error location.
-pub(crate) fn elaborate_pattern(
-    pat: &Pattern,
-    env: &Rc<TypeEnv>,
-    state: &mut InferState,
-    span: &Span,
-) -> Result<Pattern, Vec<TypeError>> {
+pub(crate) fn elaborate_pattern<'a>(
+    pat: &'a Pattern,
+    env: &'a Rc<TypeEnv>,
+    state: &'a mut InferState,
+    span: &'a Span,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Pattern, Vec<TypeError>>> + 'a>> {
+    Box::pin(async move {
     match pat {
         Pattern::TypeAssertPending { annotation, inner } => {
             // Resolve the annotation to a concrete Type.
@@ -65,27 +66,21 @@ pub(crate) fn elaborate_pattern(
                 &mut None,
                 &mut None,
                 None,
-            )
+            ).await
             .map_err(|e| vec![e])?;
 
             // Recursively elaborate the inner sub-pattern if present.
-            let elaborated_inner = inner
-                .as_ref()
-                .map(
-                    |boxed_spanned| -> Result<Box<Spanned<Pattern>>, Vec<TypeError>> {
-                        let elaborated = elaborate_pattern(
-                            &boxed_spanned.node,
-                            env,
-                            state,
-                            &boxed_spanned.span,
-                        )?;
-                        Ok(Box::new(Spanned::new(
-                            elaborated,
-                            boxed_spanned.span.clone(),
-                        )))
-                    },
-                )
-                .transpose()?;
+            let elaborated_inner = if let Some(ref boxed_spanned) = inner {
+                let elaborated = elaborate_pattern(
+                    &boxed_spanned.node,
+                    env,
+                    state,
+                    &boxed_spanned.span,
+                ).await?;
+                Some(Box::new(Spanned::new(elaborated, boxed_spanned.span.clone())))
+            } else {
+                None
+            };
 
             Ok(Pattern::TypeAssert {
                 resolved_type,
@@ -94,51 +89,36 @@ pub(crate) fn elaborate_pattern(
         }
 
         Pattern::Or(branches) => {
-            let elaborated_branches = branches
-                .iter()
-                .map(|spanned_pat| {
-                    let elaborated =
-                        elaborate_pattern(&spanned_pat.node, env, state, &spanned_pat.span)?;
-                    Ok(Spanned::new(elaborated, spanned_pat.span.clone()))
-                })
-                .collect::<Result<Vec<_>, Vec<TypeError>>>()?;
+            let mut elaborated_branches = Vec::with_capacity(branches.len());
+            for spanned_pat in branches.iter() {
+                let elaborated = elaborate_pattern(&spanned_pat.node, env, state, &spanned_pat.span).await?;
+                elaborated_branches.push(Spanned::new(elaborated, spanned_pat.span.clone()));
+            }
             Ok(Pattern::Or(elaborated_branches))
         }
 
         Pattern::Constructor { tag, binding } => {
-            // Helper: recursively elaborate the optional payload binding.
-            let elaborate_binding =
-                |binding: &Option<Box<Spanned<Pattern>>>,
-                 env: &Rc<TypeEnv>,
-                 state: &mut InferState,
-                 _span: &Span|
-                 -> Result<Option<Box<Spanned<Pattern>>>, Vec<TypeError>> {
-                    binding
-                        .as_ref()
-                        .map(|boxed_spanned| {
-                            let elaborated = elaborate_pattern(
-                                &boxed_spanned.node,
-                                env,
-                                state,
-                                &boxed_spanned.span,
-                            )?;
-                            Ok(Box::new(Spanned::new(
-                                elaborated,
-                                boxed_spanned.span.clone(),
-                            )))
-                        })
-                        .transpose()
-                };
+            // Inline helper: elaborate optional payload binding asynchronously.
+            let elaborated_binding = if let Some(ref boxed_spanned) = binding {
+                let elaborated = elaborate_pattern(
+                    &boxed_spanned.node,
+                    env,
+                    state,
+                    &boxed_spanned.span,
+                ).await?;
+                Some(Box::new(Spanned::new(elaborated, boxed_spanned.span.clone())))
+            } else {
+                None
+            };
 
             let tycon_lookup = state.tycon_env.get(tag.as_str()).cloned();
             if let Some(ref def) = tycon_lookup {
                 if def.builtin_type.is_some() {
                     // Case b: builtin-type TyConDef (e.g., Int:, Str:, Bool: used as patterns).
                     // Rewrite to TypeAssert so the pattern-matching logic can use value_matches_type.
-                    let elaborated_inner = elaborate_binding(binding, env, state, span)?;
                     return Ok(Pattern::TypeAssert {
                         resolved_type: Type::TyCon(tag.clone()),
-                        inner: elaborated_inner,
+                        inner: elaborated_binding,
                     });
                 }
                 if !def.constructors.is_empty() {
@@ -160,38 +140,26 @@ pub(crate) fn elaborate_pattern(
                             },
                         )]);
                     }
-                    let elaborated_inner = elaborate_binding(binding, env, state, span)?;
                     return Ok(Pattern::Constructor {
                         tag: tag.clone(),
-                        binding: elaborated_inner,
+                        binding: elaborated_binding,
                     });
                 }
             }
             // Case c: not found in TyConEnv, or found with empty constructors and no
             // builtin_type — this is an open type or a non-nominal user type.
-            // Leave the pattern UNCHANGED; note: at runtime, the evaluator will compare
-            // the unqualified tag against qualified runtime variant tags (e.g., "Ok" vs
-            // "Result.Ok"), which will NOT match. T018 warning helps users migrate to
-            // qualified forms — see T-1085/T-1109 for the roadmap to a hard error.
-            let elaborated_inner = elaborate_binding(binding, env, state, span)?;
             Ok(Pattern::Constructor {
                 tag: tag.clone(),
-                binding: elaborated_inner,
+                binding: elaborated_binding,
             })
         }
 
         Pattern::Dict { fields, rest } => {
-            let elaborated_fields = fields
-                .iter()
-                .map(|(key, spanned_pat)| {
-                    let elaborated =
-                        elaborate_pattern(&spanned_pat.node, env, state, &spanned_pat.span)?;
-                    Ok((
-                        key.clone(),
-                        Spanned::new(elaborated, spanned_pat.span.clone()),
-                    ))
-                })
-                .collect::<Result<Vec<_>, Vec<TypeError>>>()?;
+            let mut elaborated_fields = Vec::with_capacity(fields.len());
+            for (key, spanned_pat) in fields.iter() {
+                let elaborated = elaborate_pattern(&spanned_pat.node, env, state, &spanned_pat.span).await?;
+                elaborated_fields.push((key.clone(), Spanned::new(elaborated, spanned_pat.span.clone())));
+            }
             Ok(Pattern::Dict {
                 fields: elaborated_fields,
                 rest: *rest,
@@ -199,8 +167,8 @@ pub(crate) fn elaborate_pattern(
         }
 
         Pattern::Seq { head, tail } => {
-            let elaborated_head = elaborate_pattern(&head.node, env, state, &head.span)?;
-            let elaborated_tail = elaborate_pattern(&tail.node, env, state, &tail.span)?;
+            let elaborated_head = elaborate_pattern(&head.node, env, state, &head.span).await?;
+            let elaborated_tail = elaborate_pattern(&tail.node, env, state, &tail.span).await?;
             Ok(Pattern::Seq {
                 head: Box::new(Spanned::new(elaborated_head, head.span.clone())),
                 tail: Box::new(Spanned::new(elaborated_tail, tail.span.clone())),
@@ -212,34 +180,26 @@ pub(crate) fn elaborate_pattern(
             inner,
         } => {
             // Already elaborated — recurse into inner sub-pattern if present.
-            let elaborated_inner = inner
-                .as_ref()
-                .map(
-                    |boxed_spanned| -> Result<Box<Spanned<Pattern>>, Vec<TypeError>> {
-                        let elaborated = elaborate_pattern(
-                            &boxed_spanned.node,
-                            env,
-                            state,
-                            &boxed_spanned.span,
-                        )?;
-                        Ok(Box::new(Spanned::new(
-                            elaborated,
-                            boxed_spanned.span.clone(),
-                        )))
-                    },
-                )
-                .transpose()?;
+            let elaborated_inner = if let Some(ref boxed_spanned) = inner {
+                let elaborated = elaborate_pattern(
+                    &boxed_spanned.node,
+                    env,
+                    state,
+                    &boxed_spanned.span,
+                ).await?;
+                Some(Box::new(Spanned::new(elaborated, boxed_spanned.span.clone())))
+            } else {
+                None
+            };
             Ok(Pattern::TypeAssert {
                 resolved_type: resolved_type.clone(),
                 inner: elaborated_inner,
             })
         }
 
-        // Pass-through patterns: Wildcard, Literal, Pin, TypeTag carry no
+        // Pass-through patterns: Wildcard, Literal, Pin carry no
         // sub-patterns and require no annotation resolution.
-        Pattern::Wildcard | Pattern::Literal(_) | Pattern::Pin(_) | Pattern::TypeTag(_) => {
-            Ok(pat.clone())
-        }
+        Pattern::Wildcard | Pattern::Literal(_) | Pattern::Pin(_) => Ok(pat.clone()),
 
         // T-1140: Predicate patterns — pass through unchanged.
         // The contained SurfaceNode is not type-checked here; it will be evaluated at runtime.
@@ -247,6 +207,7 @@ pub(crate) fn elaborate_pattern(
         // Predicate patterns do not affect exhaustiveness (treated as wildcard).
         Pattern::Predicate(_) => Ok(pat.clone()),
     }
+    }) // end Box::pin(async move {
 }
 
 /// Type-check a case arm: pattern + body.
@@ -260,7 +221,7 @@ pub(crate) fn elaborate_pattern(
 /// For simplified implementation:
 /// - Intersection with scrutinee type: if annotation present, use annotation; else use scrutinee
 /// - Structural test patterns (name: Constructor) are recognized but not fully implemented yet
-pub(crate) fn typecheck_case_arm(
+pub(crate) async fn typecheck_case_arm(
     pattern: &Arc<SurfaceNode>,
     body: &Arc<SurfaceNode>,
     scrutinee_ty: &Type,
@@ -420,7 +381,7 @@ pub(crate) fn typecheck_case_arm(
                                 &mut None,
                                 &mut None,
                                 None,
-                            )
+                            ).await
                             .map_err(|e| vec![e])?;
 
                             // T020: Dead-arm warning — check if pattern type is disjoint from scrutinee type.
@@ -477,7 +438,7 @@ pub(crate) fn typecheck_case_arm(
                                         &mut None,
                                         &mut None,
                                         None,
-                                    )
+                                    ).await
                                     .map_err(|e| vec![e])?;
                                     arm_env.insert(name.clone(), ann_ty);
                                 }
@@ -502,13 +463,13 @@ pub(crate) fn typecheck_case_arm(
 
             // Type-check body with extended environment (body is already Arc<SurfaceNode>)
             let arm_env = Rc::new(arm_env);
-            infer_surface_expr(body, &arm_env, state, constraints, type_map)
+            infer_surface_expr(body, &arm_env, state, constraints, type_map).await
         }
 
         _ => {
             // Exact-value match: infer pattern expression type, then infer body.
             // Both pattern and body are already Arc<SurfaceNode> — no conversion needed.
-            let pattern_ty = infer_surface_expr(pattern, env, state, constraints, type_map)?;
+            let pattern_ty = infer_surface_expr(pattern, env, state, constraints, type_map).await?;
 
             // T020: Dead-arm warning — check if pattern type is disjoint from scrutinee type.
             // If types_are_disjoint(scrutinee_ty, pattern_ty) is true, the arm can never match
@@ -543,13 +504,13 @@ pub(crate) fn typecheck_case_arm(
             }
 
             // Body is checked in the enclosing environment (no new bindings from exact-value match)
-            infer_surface_expr(body, env, state, constraints, type_map)
+            infer_surface_expr(body, env, state, constraints, type_map).await
         }
     }
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn infer_fn(
+pub(crate) async fn infer_fn(
     return_ann: &Option<Spanned<Annotation>>,
     params: &[Spanned<Param>],
     body: &Arc<SurfaceNode>,
@@ -583,42 +544,39 @@ pub(crate) fn infer_fn(
     };
     let mut row_ann_mapping_opt = row_ann_mapping.as_mut();
 
-    let mut param_types: Vec<(Option<String>, Type)> = params
-        .iter()
-        .map(|p| {
-            let ty = match &p.node.annotation {
-                Some(ann) => resolve_annotation(
-                    &ann.node,
-                    env,
-                    ann.span.clone(),
-                    state,
-                    constraints,
-                    &mut ann_mapping_opt,
-                    &mut row_ann_mapping_opt,
-                    None,
-                ),
-                // Unannotated params use Unknown (gradual typing escape hatch).
-                //
-                // WHY NOT fresh_type_var(): Using fresh TypeVars for unannotated params
-                // causes O(N²) blowup in the prelude type-checking. Each unannotated param
-                // becomes a TypeVar that unifies with constrained TypeVars from + / builtin-add
-                // etc. (∀a[Numeric]. Fn(a a → a)), creating TypeVar→TypeVar chains in
-                // state.subst. With ~170 prelude functions each having 2-3 unannotated params,
-                // state.subst grows to hundreds of entries. The substitution merge loop in
-                // infer_dict (typecheck_dict.rs:380-406) is O(|state.subst|²) in practice,
-                // making prelude type-checking take 120+ seconds.
-                //
-                // FUTURE WORK: To enable TypeVars here, fix the merge loop to be O(N) instead
-                // of O(N²) — e.g., by not calling subst.apply() for each entry, or by using
-                // Gradual: unannotated parameter gets Unknown type.
-                // TODO: once union-find substitution lands (doc/whatif/union-find-substitution.md),
-                // restore: None => Ok(state.fresh_type_var()) and update test_fn_unannotated.
-                None => Ok(Type::Unknown),
-            }?;
-            Ok((Some(p.node.name.clone()), ty))
-        })
-        .collect::<Result<_, _>>()
-        .map_err(|e| vec![e])?;
+    let mut param_types: Vec<(Option<String>, Type)> = Vec::with_capacity(params.len());
+    for p in params.iter() {
+        let ty = match &p.node.annotation {
+            Some(ann) => resolve_annotation(
+                &ann.node,
+                env,
+                ann.span.clone(),
+                state,
+                constraints,
+                &mut ann_mapping_opt,
+                &mut row_ann_mapping_opt,
+                None,
+            ).await.map_err(|e| vec![e])?,
+            // Unannotated params use Unknown (gradual typing escape hatch).
+            //
+            // WHY NOT fresh_type_var(): Using fresh TypeVars for unannotated params
+            // causes O(N²) blowup in the prelude type-checking. Each unannotated param
+            // becomes a TypeVar that unifies with constrained TypeVars from + / builtin-add
+            // etc. (∀a[Numeric]. Fn(a a → a)), creating TypeVar→TypeVar chains in
+            // state.subst. With ~170 prelude functions each having 2-3 unannotated params,
+            // state.subst grows to hundreds of entries. The substitution merge loop in
+            // infer_dict (typecheck_dict.rs:380-406) is O(|state.subst|²) in practice,
+            // making prelude type-checking take 120+ seconds.
+            //
+            // FUTURE WORK: To enable TypeVars here, fix the merge loop to be O(N) instead
+            // of O(N²) — e.g., by not calling subst.apply() for each entry, or by using
+            // Gradual: unannotated parameter gets Unknown type.
+            // TODO: once union-find substitution lands (doc/whatif/union-find-substitution.md),
+            // restore: None => Ok(state.fresh_type_var()) and update test_fn_unannotated.
+            None => Type::Unknown,
+        };
+        param_types.push((Some(p.node.name.clone()), ty));
+    }
 
     let mut fn_env = TypeEnv::with_parent(env);
     for (i, param) in params.iter().enumerate() {
@@ -674,7 +632,7 @@ pub(crate) fn infer_fn(
                             &mut ann_mapping_opt,
                             &mut row_ann_mapping_opt,
                             None,
-                        )
+                        ).await
                         .map_err(|e| vec![e])?;
                         ret
                     } else {
@@ -689,7 +647,7 @@ pub(crate) fn infer_fn(
                             &mut ann_mapping_opt,
                             &mut row_ann_mapping_opt,
                             None,
-                        )
+                        ).await
                         .map_err(|e| vec![e])?
                     }
                 }
@@ -704,7 +662,7 @@ pub(crate) fn infer_fn(
                         &mut ann_mapping_opt,
                         &mut row_ann_mapping_opt,
                         None,
-                    )
+                    ).await
                     .map_err(|e| vec![e])?
                 }
             };
@@ -720,17 +678,17 @@ pub(crate) fn infer_fn(
             // is_subtype(IntLiteral(42), TypeVar("_t5")) = false would reject valid code.
             // Unification mode binds the TypeVars via constraint solving.
             let result = if actual_ann.has_inference_vars() {
-                let body_ty = infer_surface_expr(body, &fn_env, state, constraints, type_map)?;
+                let body_ty = infer_surface_expr(body, &fn_env, state, constraints, type_map).await?;
                 // Borrow-split: mem::take + restore avoids simultaneous &mut state.subst and &mut state
                 let mut subst = std::mem::take(&mut state.subst);
-                let result = unify(
+                let result = Box::pin(unify(
                     &body_ty,
                     &actual_ann,
                     &mut subst,
                     state,
                     constraints,
                     body.span.clone(),
-                );
+                )).await;
                 state.subst = subst;
                 result.map_err(|e| vec![e])?;
                 // Apply substitution to resolve any TypeVars bound during unification.
@@ -740,7 +698,7 @@ pub(crate) fn infer_fn(
                 state.subst.apply(&actual_ann)
             } else {
                 // Use checking mode for concrete return types (no type variables)
-                check_surface_expr(body, &actual_ann, &fn_env, state, constraints, type_map)?;
+                check_surface_expr(body, &actual_ann, &fn_env, state, constraints, type_map).await?;
                 actual_ann
             };
 
@@ -748,7 +706,7 @@ pub(crate) fn infer_fn(
             state.expected_return = prev_expected_return;
             result
         }
-        None => infer_surface_expr(body, &fn_env, state, constraints, type_map)?,
+        None => infer_surface_expr(body, &fn_env, state, constraints, type_map).await?,
     };
 
     // Check if any parameter is variadic

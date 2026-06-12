@@ -75,7 +75,8 @@ impl NormCtxt {
 ///
 /// Returns the normalized type.
 #[allow(clippy::doc_overindented_list_items)] // multi-level numbered sub-list requires deeper indentation
-pub fn normalize(ty: &Type, subst: &Substitution, ctx: &mut NormCtxt) -> Type {
+pub fn normalize<'a>(ty: &'a Type, subst: &'a Substitution, ctx: &'a mut NormCtxt) -> std::pin::Pin<Box<dyn std::future::Future<Output = Type> + 'a>> {
+    Box::pin(async move {
     // Step 1: Apply current substitution
     let ty_substituted = subst.apply(ty);
 
@@ -101,8 +102,10 @@ pub fn normalize(ty: &Type, subst: &Substitution, ctx: &mut NormCtxt) -> Type {
 
             // Normalize each arg recursively
             ctx.depth += 1;
-            let normalized_args: Vec<Type> =
-                args.iter().map(|arg| normalize(arg, subst, ctx)).collect();
+            let mut normalized_args: Vec<Type> = Vec::with_capacity(args.len());
+            for arg in args.iter() {
+                normalized_args.push(Box::pin(normalize(arg, subst, ctx)).await);
+            }
             ctx.depth -= 1;
 
             // Check if all args are ground
@@ -122,10 +125,7 @@ pub fn normalize(ty: &Type, subst: &Substitution, ctx: &mut NormCtxt) -> Type {
                     // allow_eval is true — try evaluating resolver from type-stage env
                     if let Some(env) = ctx.type_stage_env.clone() {
                         // Cache miss — try evaluating user-defined resolver from type-stage env
-                        // sync bridge — tracked for async migration
-                        if let Some(resolved) = crate::async_rt::block_on_anywhere(
-                            evaluate_resolver(fn_name, &normalized_args, &env),
-                        ) {
+                        if let Some(resolved) = evaluate_resolver(fn_name, &normalized_args, &env).await {
                             // Insert into resolver_cache so subsequent calls are fast
                             ctx.resolver_cache.insert(cache_key, resolved.clone());
                             resolved
@@ -173,14 +173,14 @@ pub fn normalize(ty: &Type, subst: &Substitution, ctx: &mut NormCtxt) -> Type {
     }
 
     result
+    }) // end Box::pin(async move {
 }
 
 // normalize_union and normalize_intersection moved to impl Type in type_def.rs
 
 /// Convert a `Type` to a TypeNode `Value` (T-1061).
 ///
-/// After the type-stage combinator migration, resolver functions (`AddResult`, etc.)
-/// receive TypeNode Variant values as arguments, not kind-keyed dicts.
+/// Resolver functions (`AddResult`, etc.) receive TypeNode Variant values as arguments.
 ///
 /// Handles primitive types that appear as arithmetic resolver arguments.
 /// Complex types (Seq, Map, Union, Record, etc.) return `None` — arithmetic
@@ -242,7 +242,7 @@ pub(crate) async fn evaluate_resolver(
     let fn_val = crate::eval::materialize(&fn_thunk, None, &ctx).await.ok()?;
 
     // Convert each Type arg to a TypeNode Variant Value (T-1061).
-    // Resolver functions now receive TypeNode Variants, not kind-keyed dicts.
+    // Resolver functions receive TypeNode Variants.
     let arg_thunks: Vec<Arc<Thunk>> = args
         .iter()
         .map(|ty| {
@@ -285,9 +285,8 @@ pub(crate) async fn evaluate_resolver(
         .ok()?;
 
     // Convert the TypeNode Variant result back to a Type (T-1061).
-    // typenode_value_to_type handles both TypeNode Variants (new path) and
-    // kind-keyed dicts (fallback for any pre-migration resolver code).
-    crate::typecheck::typecheck_annot::typenode_value_to_type_pub(&result_val, &ctx)
+    // typenode_value_to_type handles TypeNode Variants.
+    crate::typecheck::typecheck_annot::typenode_value_to_type_pub(&result_val, &ctx).await
 }
 
 impl fmt::Display for Type {
@@ -499,13 +498,17 @@ mod tests {
         Substitution::new()
     }
 
+    fn norm(ty: &Type, subst: &Substitution, ctx: &mut NormCtxt) -> Type {
+        crate::async_rt::block_on_anywhere(normalize(ty, subst, ctx))
+    }
+
     /// Test: normalize(Int, subst, ctx) returns Int unchanged
     #[test]
     fn test_normalize_identity_concrete_type() {
         let subst = empty_subst();
         let mut ctx = NormCtxt::new();
         let ty = Type::Int;
-        let result = normalize(&ty, &subst, &mut ctx);
+        let result = norm(&ty, &subst, &mut ctx);
         assert_eq!(result, Type::Int);
     }
 
@@ -519,7 +522,7 @@ mod tests {
             .insert("a".to_string(), Type::Str);
         let mut ctx = NormCtxt::new();
         let ty = Type::TypeVar("a".to_string(), 0);
-        let result = normalize(&ty, &subst, &mut ctx);
+        let result = norm(&ty, &subst, &mut ctx);
         assert_eq!(result, Type::Str);
     }
 
@@ -532,7 +535,7 @@ mod tests {
             fn_name: "AddResult".to_string(),
             args: vec![Type::Int, Type::Float],
         };
-        let result = normalize(&ty, &subst, &mut ctx);
+        let result = norm(&ty, &subst, &mut ctx);
         // NormCtxt::new() pre-populates resolver_cache; AddResult(Int, Float) -> Float
         assert_eq!(result, Type::Float);
     }
@@ -545,11 +548,11 @@ mod tests {
         let ty = Type::Int;
 
         // First call - populates cache
-        let result1 = normalize(&ty, &subst, &mut ctx);
+        let result1 = norm(&ty, &subst, &mut ctx);
         assert_eq!(result1, Type::Int);
 
         // Second call - should return cached result
-        let result2 = normalize(&ty, &subst, &mut ctx);
+        let result2 = norm(&ty, &subst, &mut ctx);
         assert_eq!(result2, Type::Int);
 
         // Verify cache entry exists (use concrete Int, not Seq)
@@ -570,7 +573,7 @@ mod tests {
             args: vec![Type::Int],
         };
 
-        let result = normalize(&ty, &subst, &mut ctx);
+        let result = norm(&ty, &subst, &mut ctx);
 
         // Should return stuck (unchanged) due to cycle detection
         assert_eq!(
@@ -596,7 +599,7 @@ mod tests {
             args: vec![Type::Int],
         };
 
-        let result = normalize(&ty, &subst, &mut ctx);
+        let result = norm(&ty, &subst, &mut ctx);
 
         // Should return stuck (unchanged) due to depth exceeded
         assert_eq!(
@@ -728,7 +731,7 @@ mod tests {
             fn_name: "AddResult".to_string(),
             args: vec![Type::TypeVar("a".to_string(), 0), Type::Float],
         };
-        let result = normalize(&ty, &subst, &mut ctx);
+        let result = norm(&ty, &subst, &mut ctx);
         // Non-ground args - should return TypeStageApp with normalized args (but stuck)
         assert_eq!(
             result,
@@ -754,7 +757,7 @@ mod tests {
             args: vec![Type::TypeVar("a".to_string(), 0), Type::Float],
         };
 
-        let result = normalize(&ty, &subst, &mut ctx);
+        let result = norm(&ty, &subst, &mut ctx);
 
         // Args normalized (TypeVar("a") -> Int), then cache hit: AddResult(Int, Float) -> Float
         assert_eq!(result, Type::Float);
@@ -780,14 +783,14 @@ mod tests {
 
         // Normalize a type with inference variables
         let ty_with_var = Type::seq(Type::TypeVar("a".to_string(), 0));
-        let _result1 = normalize(&ty_with_var, &subst, &mut ctx);
+        let _result1 = norm(&ty_with_var, &subst, &mut ctx);
 
         // Cache should NOT contain this type (has inference vars)
         assert!(!ctx.cache.contains_key(&ty_with_var));
 
         // Normalize a ground type
         let ty_ground = Type::seq(Type::Int);
-        let _result2 = normalize(&ty_ground, &subst, &mut ctx);
+        let _result2 = norm(&ty_ground, &subst, &mut ctx);
 
         // Cache SHOULD contain this type (ground)
         assert!(ctx.cache.contains_key(&ty_ground));
@@ -842,7 +845,7 @@ mod tests {
             fn_name: "AddResult".to_string(),
             args: vec![Type::Int, Type::Int],
         };
-        let result = normalize(&ty, &subst, &mut ctx);
+        let result = norm(&ty, &subst, &mut ctx);
         assert_eq!(result, Type::Int);
     }
 
@@ -855,7 +858,7 @@ mod tests {
             fn_name: "AddResult".to_string(),
             args: vec![Type::Int, Type::Float],
         };
-        let result = normalize(&ty, &subst, &mut ctx);
+        let result = norm(&ty, &subst, &mut ctx);
         assert_eq!(result, Type::Float);
     }
 
@@ -868,7 +871,7 @@ mod tests {
             fn_name: "DivResult".to_string(),
             args: vec![Type::Int, Type::Int],
         };
-        let result = normalize(&ty, &subst, &mut ctx);
+        let result = norm(&ty, &subst, &mut ctx);
         assert_eq!(result, Type::Float);
     }
 
@@ -881,7 +884,7 @@ mod tests {
             fn_name: "UnknownResolver".to_string(),
             args: vec![Type::Int, Type::Float],
         };
-        let result = normalize(&ty, &subst, &mut ctx);
+        let result = norm(&ty, &subst, &mut ctx);
         // Should return stuck TypeStageApp (cache miss)
         assert_eq!(
             result,

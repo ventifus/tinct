@@ -17,7 +17,7 @@
 //! - `variant`: Create a unit variant
 //! - All type predicates (`int?`, `float?`, `str?`, `bool?`, `null?`, `dict?`, `fn?`, `seq?`,
 //!   `bytes?`, `proxy?`, `num?`, `record?`, `map?`) are implemented in stdlib/prelude.llt
-//!   via `[match x TypeTag: true _: false]` — no Rust implementations remain.
+//!   via `[match x [@Type _]: true _: false]` — no Rust implementations remain.
 //!
 //! **AST and evaluation:**
 //! - `eval-ast`: Reconstruct and evaluate AST from dict representation
@@ -52,7 +52,7 @@ use crate::builtins::{
     builtin, ok_val, reject_named, require_string, synthetic_call_expr, MAX_COLLECT_SIZE,
 };
 use crate::error::{EvalError, EvalResult};
-use crate::eval::{materialize, materialize_sync, wrap_with_nominal_validation};
+use crate::eval::{materialize, wrap_with_nominal_validation};
 use crate::eval_call::{invoke_function, CallContext};
 use crate::eval_materialize::force_dict_tree;
 use crate::value::{string_val, BuiltinArgs, Key, Strictness, Thunk, Value};
@@ -134,9 +134,11 @@ pub(crate) fn builtin_raise(
     })
 }
 
-/// `builtin-macro-error`: takes 2 args (span dict, message string).
-/// Creates a macro error with a precise source span from the span dict.
-/// Inherently materializing: must materialize both arguments.
+/// `builtin-macro-error`: takes 1-2 args (message string, optional AST node).
+/// Creates a macro error with a precise source span.
+/// If the optional node is provided, uses its span; otherwise uses call_span.
+/// Arg 1 (message) is Strictness::Seq (materialized).
+/// Arg 2 (node) is Strictness::Id (not materialized - stays as thunk).
 pub(crate) fn builtin_macro_error(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
@@ -145,123 +147,53 @@ pub(crate) fn builtin_macro_error(
             args,
             named,
             call_span,
-            ctx,
+            ctx: _,
         } = ctx_arg;
 
         // Reject named arguments
         crate::builtins::reject_named("builtin-macro-error", named.as_ref(), call_span.clone())?;
 
-        // Expect exactly 2 arguments
-        if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        // Expect 1 or 2 arguments
+        if args.len() != 1 && args.len() != 2 {
+            return Err(EvalError::arity_mismatch(
+                if args.len() == 0 { 1 } else { 2 },
+                args.len(),
+                call_span,
+            )
+            .into());
         }
 
-        // Extract span dict (first argument)
-        let span_val = args[0]
+        // Extract message (first argument) - materialized by Strictness::Seq
+        let msg_val = args[0]
             .try_get_materialized()
-            .expect("pre-materialized by force_count=2");
-        let span_dict = match span_val {
-            Value::Dict(ref map) => map,
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "builtin-macro-error".to_string(),
-                    "Dict (span)",
-                    other.type_name(),
-                    args[0].span.clone(),
-                )
-                .into());
+            .expect("pre-materialized by Strictness::Seq");
+        let message = require_string("builtin-macro-error", msg_val, args[0].span.clone())?;
+
+        // Determine the span to use for the error
+        let error_span = if args.len() == 2 {
+            // Second argument provided - check if it's an Expression and use its span
+            // Note: arg 2 has Strictness::Id, so it's not materialized - we need to check the thunk
+            let node_thunk = &args[1];
+            // Peek at the thunk state to see if it's a materialized Expression
+            if let Some(val) = node_thunk.try_get_materialized() {
+                match val {
+                    Value::Expression(ref surface_node) => surface_node.span.clone(),
+                    _ => {
+                        // Not an Expression - fall back to call_span
+                        call_span.clone()
+                    }
+                }
+            } else {
+                // Thunk not materialized - use the thunk's own span as fallback
+                args[1].span.clone()
             }
+        } else {
+            // No second argument - use call_span
+            call_span.clone()
         };
 
-        // Extract message (second argument)
-        let msg_val = args[1]
-            .try_get_materialized()
-            .expect("pre-materialized by force_count=2");
-        let message = require_string("builtin-macro-error", msg_val, args[1].span.clone())?;
-
-        // Helper to extract a dict field and materialize it
-        let get_dict =
-            |parent: &IndexMap<Key, ThunkId>, field: &str| -> EvalResult<IndexMap<Key, ThunkId>> {
-                let field_id = parent.get(&Key::String(field.into())).ok_or_else(|| {
-                    EvalError::user_error(
-                        format!("builtin-macro-error: span dict missing '{}' field", field),
-                        args[0].span.clone(),
-                    )
-                })?;
-                let field_thunk = ctx.get_thunk(*field_id);
-                let field_val = materialize_sync(&field_thunk, Some(&call_span), &ctx)?;
-                match field_val {
-                    Value::Dict(map) => Ok(map),
-                    other => Err(EvalError::type_mismatch_ctx(
-                        format!("builtin-macro-error (span.{})", field),
-                        "Dict",
-                        other.type_name(),
-                        field_thunk.span.clone(),
-                    )
-                    .into()),
-                }
-            };
-
-        // Helper to extract an integer field from a dict
-        let get_int =
-            |parent: &IndexMap<Key, ThunkId>, field: &str, context: &str| -> EvalResult<usize> {
-                let field_id = parent.get(&Key::String(field.into())).ok_or_else(|| {
-                    EvalError::user_error(
-                        format!("builtin-macro-error: {} missing '{}' field", context, field),
-                        args[0].span.clone(),
-                    )
-                })?;
-                let field_thunk = ctx.get_thunk(*field_id);
-                let field_val = materialize_sync(&field_thunk, Some(&call_span), &ctx)?;
-                match field_val {
-                    Value::Int(n) if n >= 0 => Ok(n as usize),
-                    Value::Int(n) => Err(EvalError::user_error(
-                        format!(
-                            "builtin-macro-error: {}.{} must be non-negative, got {}",
-                            context, field, n
-                        ),
-                        field_thunk.span.clone(),
-                    )
-                    .into()),
-                    other => Err(EvalError::type_mismatch_ctx(
-                        format!("builtin-macro-error ({}.{})", context, field),
-                        "Int",
-                        other.type_name(),
-                        field_thunk.span.clone(),
-                    )
-                    .into()),
-                }
-            };
-
-        // Extract start and end dicts
-        let start_dict = get_dict(span_dict, "start")?;
-        let end_dict = get_dict(span_dict, "end")?;
-
-        // Extract position fields
-        let start_line = get_int(&start_dict, "line", "span.start")?;
-        let start_col = get_int(&start_dict, "col", "span.start")?;
-        let start_offset = get_int(&start_dict, "offset", "span.start")?;
-
-        let end_line = get_int(&end_dict, "line", "span.end")?;
-        let end_col = get_int(&end_dict, "col", "span.end")?;
-        let end_offset = get_int(&end_dict, "offset", "span.end")?;
-
-        // Construct Span
-        let span = crate::ast::Span::new(
-            crate::ast::Position {
-                offset: start_offset,
-                line: start_line,
-                column: start_col,
-            },
-            crate::ast::Position {
-                offset: end_offset,
-                line: end_line,
-                column: end_col,
-            },
-        );
-
-        // Create macro error with the extracted span
-        Err(EvalError::macro_error(message, span).into())
+        // Create macro error with the determined span
+        Err(EvalError::macro_error(message, error_span).into())
     })
 }
 
@@ -489,7 +421,8 @@ pub(crate) fn builtin_apply_impl(
             args[1].span.clone(),
             &ctx,
             call_span.clone(),
-        )?;
+        )
+        .await?;
 
         // Split dict entries: integer-keyed → positional, string-keyed → named
         let mut int_entries: Vec<(i64, Arc<Thunk>)> = Vec::with_capacity(arg_dict.len());
@@ -676,17 +609,19 @@ pub(crate) fn builtin_gensym(
     })
 }
 
-/// `macro-injects`: Returns the inject: default name for a macro.
+/// `macro-injects`: Returns the names deliberately injected into the caller's scope by a macro.
 ///
-/// Takes one argument (macro name as String), returns the inject: default name (String)
-/// if the macro has an `inject:` declaration, or Null (empty dict) if not.
+/// Takes one argument (macro name as String). Returns a `Seq` of the injected binding names.
+/// Returns an empty `Seq` (i.e. `Seq.Nil`) if the macro has no `inject:` declaration.
 ///
-/// This is a reflection primitive for anaphoric macros per macros-v2.md §inject:.
-/// Enables runtime introspection of macro inject defaults for documentation tools.
+/// This is a reflection primitive for anaphoric macros per doc/feature/macros.md §Hygiene.
+/// Enables runtime introspection of macro inject names for documentation tools and callers
+/// that need to be aware of introduced bindings.
 ///
 /// Example:
-///   [macro-injects "aif"]   # → "it"  (if aif has inject: it)
-///   [macro-injects "swap"]  # → null  (if swap uses only gensym hygiene)
+///   [macro-injects "aif"]   # → Seq("it")  (if aif has `inject: it`)
+///   [macro-injects "swap"]  # → Seq.Nil    (if swap uses only gensym hygiene)
+///   [macro-injects "foo"]   # → Seq("x" "y")  (if foo has `inject: [x y]`)
 ///
 /// Non-materializing: only inspects the macro_injects_map from EvalConfig.
 pub(crate) fn builtin_macro_injects(
@@ -710,10 +645,21 @@ pub(crate) fn builtin_macro_injects(
         let macro_name = require_string("macro-injects", macro_name_val, args[0].span.clone())?;
 
         // Look up the macro in the inject map
-        match ctx.config.macro_injects_map.get(&macro_name) {
-            Some(inject_default) => ok_val(string_val(inject_default), call_span),
-            None => ok_val(Value::Dict(IndexMap::new()), call_span), // Null = empty dict
+        let inject_names: &[String] = match ctx.config.macro_injects_map.get(&macro_name) {
+            Some(names) => names.as_slice(),
+            None => &[],
+        };
+
+        // Build a Seq of the inject names (Seq.Nil if empty)
+        let mut seq = crate::value::make_seq_nil();
+        for name in inject_names.iter().rev() {
+            let name_thunk = Arc::new(Thunk::new_materialized(string_val(name), call_span.clone()));
+            let name_id = ctx.alloc_thunk(name_thunk);
+            let tail_id = ctx.alloc_thunk(ok_val(seq, call_span.clone())?);
+            seq = crate::value::make_seq_cons(name_id, tail_id, &ctx);
         }
+
+        ok_val(seq, call_span)
     })
 }
 
@@ -1190,6 +1136,94 @@ pub(crate) fn builtin_tag_of(
     })
 }
 
+/// `span-of`: extract source span from a `Value::Expression` as a dict.
+///
+/// Returns a dict with the structure:
+/// ```
+/// {
+///   file: String,       // file path or "" if unavailable
+///   start-line: Int,    // starting line number (1-based)
+///   start-col: Int,     // starting column number (1-based)
+///   end-line: Int,      // ending line number (1-based)
+///   end-col: Int        // ending column number (1-based)
+/// }
+/// ```
+///
+/// - `Value::Expression(node)` — extracts `node.span` fields into dict
+/// - Other value types — returns empty dict `[]`
+///
+/// Used for precise error reporting in macros.
+pub(crate) fn builtin_span_of(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+        } = ctx_arg;
+        let val = crate::builtins::expect_one_arg(
+            "span-of",
+            &args,
+            named.as_ref(),
+            &ctx,
+            call_span.clone(),
+        )?;
+
+        match val {
+            Value::Expression(node) => {
+                let span = &node.span;
+
+                let file_str = span.file.as_ref().map(|f| f.path.as_ref()).unwrap_or("");
+
+                let mut result = IndexMap::new();
+                result.insert(
+                    Key::String("file".into()),
+                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                        string_val(file_str),
+                        call_span.clone(),
+                    ))),
+                );
+                result.insert(
+                    Key::String("start-line".into()),
+                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                        Value::Int(span.start.line as i64),
+                        call_span.clone(),
+                    ))),
+                );
+                result.insert(
+                    Key::String("start-col".into()),
+                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                        Value::Int(span.start.column as i64),
+                        call_span.clone(),
+                    ))),
+                );
+                result.insert(
+                    Key::String("end-line".into()),
+                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                        Value::Int(span.end.line as i64),
+                        call_span.clone(),
+                    ))),
+                );
+                result.insert(
+                    Key::String("end-col".into()),
+                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                        Value::Int(span.end.column as i64),
+                        call_span.clone(),
+                    ))),
+                );
+
+                ok_val(Value::Dict(result), call_span)
+            }
+            _ => {
+                // Return empty dict for non-Expression values
+                ok_val(Value::Dict(IndexMap::new()), call_span)
+            }
+        }
+    })
+}
+
 /// `annotation-of`: return the annotation dict for a value.
 ///
 /// - `Value::Function { annotation, .. }` — returns a `Value::Dict` built from the
@@ -1466,7 +1500,7 @@ pub(crate) fn builtin_variant(
 }
 
 // All type predicates (int?, float?, str?, bool?, null?, dict?, fn?, seq?, bytes?, proxy?)
-// are implemented in stdlib/prelude.llt via [match x TypeTag: true _: false].
+// are implemented in stdlib/prelude.llt via [match x [@Type _]: true _: false].
 // The Rust implementations were removed in the type-predicates-to-tinct sprint.
 
 /// Helper for runtime type name extraction.
@@ -1513,6 +1547,7 @@ fn type_name(val: &Value) -> String {
         Value::U64(_) => "U64",
         // Annotated is transparent — delegate to inner value's type_name.
         Value::Annotated { inner, .. } => return type_name(inner),
+        Value::MethodDispatcher(_) => "MethodDispatcher",
     }
     .to_string()
 }
@@ -1787,9 +1822,6 @@ pub(crate) fn builtin_expand(
                 })?;
                 // Desugar $_ patterns introduced by macros.
                 crate::desugar::desugar_surface_program(&mut new_surface_program);
-                // Transform instance decls to method dicts (T-1142).
-                crate::desugar::desugar_instance_decls_surface_program(&mut new_surface_program);
-
                 // Re-compute resolution table for the expanded and desugared program
                 let new_resolutions = crate::resolve::resolve_surface_program(&new_surface_program);
 
@@ -1799,7 +1831,7 @@ pub(crate) fn builtin_expand(
                 let (_annotation_errors, type_annotation_table, new_expects_resolved) =
                     crate::typecheck::typecheck_surface_program_annotation_table(
                         &new_surface_program,
-                    );
+                    ).await;
 
                 // Return as Value::Program with fresh resolution, type, and expects_resolved tables
                 ok_val(
@@ -2228,7 +2260,7 @@ pub(crate) fn builtin_eval(
                     "eval",
                     &ctx,
                     call_span.clone(),
-                )?),
+                ).await?),
                 other => other,
             };
             match env_val {
@@ -2272,7 +2304,7 @@ pub(crate) fn builtin_eval(
                     "eval",
                     &ctx,
                     call_span.clone(),
-                )?),
+                ).await?),
                 other => other,
             };
             match scope_val {
@@ -2881,7 +2913,7 @@ fn validate_value(
         // Check `type` constraint
         if let Some(&type_thunk_id) = schema.get(&StrKey("type")) {
             let type_thunk = ctx.get_thunk(type_thunk_id);
-            let type_val = materialize_sync(&type_thunk, Some(&span), &ctx)?;
+            let type_val = materialize(&type_thunk, Some(&span), &ctx).await?;
             if let Value::String {
                 ref source,
                 start,
@@ -2902,7 +2934,7 @@ fn validate_value(
         // Check numeric range constraints (min, max)
         if let Some(&min_thunk_id) = schema.get(&StrKey("min")) {
             let min_thunk = ctx.get_thunk(min_thunk_id);
-            let min_val = materialize_sync(&min_thunk, Some(&span), &ctx)?;
+            let min_val = materialize(&min_thunk, Some(&span), &ctx).await?;
             match (&data, &min_val) {
                 (Value::Int(n), Value::Int(min)) if n < min => {
                     violations.push((path.clone(), format!("must be >= {}", min)));
@@ -2922,7 +2954,7 @@ fn validate_value(
 
         if let Some(&max_thunk_id) = schema.get(&StrKey("max")) {
             let max_thunk = ctx.get_thunk(max_thunk_id);
-            let max_val = materialize_sync(&max_thunk, Some(&span), &ctx)?;
+            let max_val = materialize(&max_thunk, Some(&span), &ctx).await?;
             match (&data, &max_val) {
                 (Value::Int(n), Value::Int(max)) if n > max => {
                     violations.push((path.clone(), format!("must be <= {}", max)));
@@ -2943,7 +2975,7 @@ fn validate_value(
         // Check string/sequence length constraints
         if let Some(&min_len_thunk_id) = schema.get(&StrKey("min-length")) {
             let min_len_thunk = ctx.get_thunk(min_len_thunk_id);
-            let min_len_val = materialize_sync(&min_len_thunk, Some(&span), &ctx)?;
+            let min_len_val = materialize(&min_len_thunk, Some(&span), &ctx).await?;
             if let Value::Int(min_len) = min_len_val {
                 let actual_len = match &data {
                     Value::String {
@@ -2969,7 +3001,7 @@ fn validate_value(
 
         if let Some(&max_len_thunk_id) = schema.get(&StrKey("max-length")) {
             let max_len_thunk = ctx.get_thunk(max_len_thunk_id);
-            let max_len_val = materialize_sync(&max_len_thunk, Some(&span), &ctx)?;
+            let max_len_val = materialize(&max_len_thunk, Some(&span), &ctx).await?;
             if let Value::Int(max_len) = max_len_val {
                 let actual_len = match &data {
                     Value::String {
@@ -2992,7 +3024,7 @@ fn validate_value(
         // Check pattern constraint (for strings)
         if let Some(&pattern_thunk_id) = schema.get(&StrKey("pattern")) {
             let pattern_thunk = ctx.get_thunk(pattern_thunk_id);
-            let pattern_val = materialize_sync(&pattern_thunk, Some(&span), &ctx)?;
+            let pattern_val = materialize(&pattern_thunk, Some(&span), &ctx).await?;
             if let Value::String {
                 ref source,
                 start,
@@ -3026,16 +3058,14 @@ fn validate_value(
         // Variant with payload and Dict) are compared correctly.
         if let Some(&enum_thunk_id) = schema.get(&StrKey("enum")) {
             let enum_thunk = ctx.get_thunk(enum_thunk_id);
-            let enum_val = materialize_sync(&enum_thunk, Some(&span), &ctx)?;
+            let enum_val = materialize(&enum_thunk, Some(&span), &ctx).await?;
             if let Value::Dict(ref enum_dict) = enum_val {
                 // Pre-materialize all enum values, then check membership via canonical equality.
-                let allowed_values: Vec<Value> = enum_dict
-                    .iter()
-                    .map(|(_key, &val_thunk_id)| {
-                        let val_thunk = ctx.get_thunk(val_thunk_id);
-                        materialize_sync(&val_thunk, Some(&span), &ctx)
-                    })
-                    .collect::<EvalResult<Vec<Value>>>()?;
+                let mut allowed_values = Vec::with_capacity(enum_dict.len());
+                for (_key, &val_thunk_id) in enum_dict.iter() {
+                    let val_thunk = ctx.get_thunk(val_thunk_id);
+                    allowed_values.push(materialize(&val_thunk, Some(&span), &ctx).await?);
+                }
 
                 let mut found = false;
                 for allowed in &allowed_values {
@@ -3060,14 +3090,14 @@ fn validate_value(
         // Check fields constraint (for dicts)
         if let Some(&fields_thunk_id) = schema.get(&StrKey("fields")) {
             let fields_thunk = ctx.get_thunk(fields_thunk_id);
-            let fields_val = materialize_sync(&fields_thunk, Some(&span), &ctx)?;
+            let fields_val = materialize(&fields_thunk, Some(&span), &ctx).await?;
             if let Value::Dict(ref fields_schema) = fields_val {
                 if let Value::Dict(ref data_dict) = data {
                     // Validate each field in the schema
                     for (field_key, &field_schema_thunk_id) in fields_schema {
                         let field_schema_thunk = ctx.get_thunk(field_schema_thunk_id);
                         let field_schema_val =
-                            materialize_sync(&field_schema_thunk, Some(&span), &ctx)?;
+                            materialize(&field_schema_thunk, Some(&span), &ctx).await?;
                         if let Value::Dict(field_schema) = field_schema_val {
                             let field_name = match field_key {
                                 Key::String(s) => s.to_string(),
@@ -3085,7 +3115,7 @@ fn validate_value(
                                 field_schema.get(&StrKey("required"))
                             {
                                 let req_thunk = ctx.get_thunk(req_thunk_id);
-                                let req_val = materialize_sync(&req_thunk, Some(&span), &ctx)?;
+                                let req_val = materialize(&req_thunk, Some(&span), &ctx).await?;
                                 matches!(req_val, Value::Bool(true))
                             } else {
                                 false
@@ -3094,7 +3124,7 @@ fn validate_value(
                             if let Some(&field_value_thunk_id) = data_dict.get(field_key) {
                                 let field_value_thunk = ctx.get_thunk(field_value_thunk_id);
                                 let field_value =
-                                    materialize_sync(&field_value_thunk, Some(&span), &ctx)?;
+                                    materialize(&field_value_thunk, Some(&span), &ctx).await?;
                                 let sub_violations = validate_value(
                                     field_schema,
                                     field_value,
@@ -3117,13 +3147,13 @@ fn validate_value(
         // Check items constraint (for sequences/dicts with uniform element schema)
         if let Some(&items_thunk_id) = schema.get(&StrKey("items")) {
             let items_thunk = ctx.get_thunk(items_thunk_id);
-            let items_val = materialize_sync(&items_thunk, Some(&span), &ctx)?;
+            let items_val = materialize(&items_thunk, Some(&span), &ctx).await?;
             if let Value::Dict(items_schema) = items_val {
                 match &data {
                     Value::Dict(ref data_dict) => {
                         for (idx, (_key, &val_thunk_id)) in data_dict.iter().enumerate() {
                             let val_thunk = ctx.get_thunk(val_thunk_id);
-                            let val = materialize_sync(&val_thunk, Some(&span), &ctx)?;
+                            let val = materialize(&val_thunk, Some(&span), &ctx).await?;
                             let item_path = if path.is_empty() {
                                 format!("[{}]", idx)
                             } else {
@@ -3215,7 +3245,7 @@ pub(crate) fn builtin_is_contractive(
             call_span.clone(),
         )?;
 
-        let result = is_contractive_value(&body_val, &ctx);
+        let result = is_contractive_value(&body_val, &ctx).await;
         ok_val(Value::Bool(result), call_span)
     })
 }
@@ -3236,89 +3266,83 @@ pub(crate) fn builtin_is_contractive(
 /// split: Union and Intersect are non-guarding; all others (including Recursive itself)
 /// are guarding. S-861 should replace the hard-coded list with annotation-of lookup
 /// once the annotation resolver is wired.
-fn is_contractive_value(val: &Value, ctx: &Arc<crate::eval::EvalContext>) -> bool {
-    // Unwrap Value::Annotated transparently — annotations do not affect contractiveness.
-    let val = match val {
-        Value::Annotated { inner, .. } => inner.as_ref(),
-        other => other,
-    };
+fn is_contractive_value<'a>(
+    val: &'a Value,
+    ctx: &'a Arc<crate::eval::EvalContext>,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + 'a>> {
+    Box::pin(async move {
+        // Unwrap Value::Annotated transparently — annotations do not affect contractiveness.
+        let val = match val {
+            Value::Annotated { inner, .. } => inner.as_ref(),
+            other => other,
+        };
 
-    match val {
-        // Case 1: bare RecursiveRef — non-contractive.
-        Value::Variant { tag, .. } if tag == "TypeNode.RecursiveRef" => false,
+        match val {
+            // Case 1: bare RecursiveRef — non-contractive.
+            Value::Variant { tag, .. } if tag == "TypeNode.RecursiveRef" => false,
 
-        // Case 3: Union and Intersect are non-guarding — recurse into all children.
-        Value::Variant { tag, payload }
-            if tag == "TypeNode.Union" || tag == "TypeNode.Intersect" =>
-        {
-            // Extract the `types` field from the payload dict.
-            // A non-guarding node with a malformed payload is treated as contractive
-            // (conservative: don't reject types we can't inspect).
-            let payload_id = match payload {
-                Some(id) => *id,
-                None => return true,
-            };
-            let payload_thunk = ctx.get_thunk(payload_id);
-            let payload_val = match materialize_sync(&payload_thunk, None, ctx) {
-                Ok(v) => v,
-                Err(_) => return true,
-            };
-            let types_thunk_id = match &payload_val {
-                Value::Dict(d) => match d.get(&crate::value::Key::String("types".into())) {
+            // Case 3: Union and Intersect are non-guarding — recurse into all children.
+            Value::Variant { tag, payload }
+                if tag == "TypeNode.Union" || tag == "TypeNode.Intersect" =>
+            {
+                let payload_id = match payload {
                     Some(id) => *id,
                     None => return true,
-                },
-                _ => return true,
-            };
-            // Walk the `types` Seq spine and check each member.
-            is_contractive_seq(types_thunk_id, ctx)
-        }
+                };
+                let payload_thunk = ctx.get_thunk(payload_id);
+                let payload_val = match materialize(&payload_thunk, None, ctx).await {
+                    Ok(v) => v,
+                    Err(_) => return true,
+                };
+                let types_thunk_id = match &payload_val {
+                    Value::Dict(d) => match d.get(&crate::value::Key::String("types".into())) {
+                        Some(id) => *id,
+                        None => return true,
+                    },
+                    _ => return true,
+                };
+                is_contractive_seq(types_thunk_id, ctx).await
+            }
 
-        // Case 2: all other TypeNode constructors are guarding (including Recursive,
-        // Record, Arrow, TypeApplication, TypeConstructor, TypeVar, and the leaf
-        // primitives Int/Float/String/Bool/Absent/Unknown/Never).
-        // A RecursiveRef underneath is safely separated by this structural layer.
-        _ => true,
-    }
+            // Case 2: all other TypeNode constructors are guarding.
+            _ => true,
+        }
+    })
 }
 
 /// Walk a `types` Seq spine and check that every element is contractive.
 ///
 /// Returns `true` iff all elements are contractive. An empty Seq or malformed
 /// spine is considered contractive (conservative: no self-references = trivially contractive).
-fn is_contractive_seq(
+async fn is_contractive_seq(
     types_thunk_id: crate::arena::ThunkId,
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> bool {
     let mut current_id = types_thunk_id;
-    // Depth limit to guard against malformed cycles.
     let mut depth = 0usize;
     const MAX_DEPTH: usize = 256;
 
     loop {
         if depth >= MAX_DEPTH {
-            // Treat an overlong Seq as contractive — should never occur with valid TypeNode values.
             return true;
         }
         depth += 1;
 
         let thunk = ctx.get_thunk(current_id);
-        let val = match materialize_sync(&thunk, None, ctx) {
+        let val = match materialize(&thunk, None, ctx).await {
             Ok(v) => v,
             Err(_) => return true,
         };
 
         match &val {
-            // Seq.Nil — all elements checked successfully; Seq is contractive.
             Value::Variant { tag, payload: None } if tag == "Seq.Nil" => return true,
 
-            // Seq.Cons { head, tail } — check the head element, then continue on tail.
             Value::Variant {
                 tag,
                 payload: Some(payload_id),
             } if tag == "Seq.Cons" => {
                 let payload_thunk = ctx.get_thunk(*payload_id);
-                let payload_val = match materialize_sync(&payload_thunk, None, ctx) {
+                let payload_val = match materialize(&payload_thunk, None, ctx).await {
                     Ok(v) => v,
                     Err(_) => return true,
                 };
@@ -3334,33 +3358,30 @@ fn is_contractive_seq(
                     _ => return true,
                 };
                 let head_thunk = ctx.get_thunk(head_id);
-                let head_val = match materialize_sync(&head_thunk, None, ctx) {
+                let head_val = match materialize(&head_thunk, None, ctx).await {
                     Ok(v) => v,
                     Err(_) => return true,
                 };
-                if !is_contractive_value(&head_val, ctx) {
+                if !is_contractive_value(&head_val, ctx).await {
                     return false;
                 }
-                // Tail-recursion: advance current_id to the tail ThunkId.
                 current_id = tail_id;
             }
 
-            // Collected integer-keyed Dict (from [builtin-collect types]) — iterate over values.
             Value::Dict(d) => {
                 for (_k, &v_id) in d {
                     let v_thunk = ctx.get_thunk(v_id);
-                    let v_val = match materialize_sync(&v_thunk, None, ctx) {
+                    let v_val = match materialize(&v_thunk, None, ctx).await {
                         Ok(v) => v,
                         Err(_) => continue,
                     };
-                    if !is_contractive_value(&v_val, ctx) {
+                    if !is_contractive_value(&v_val, ctx).await {
                         return false;
                     }
                 }
                 return true;
             }
 
-            // Unknown shape — treat as contractive.
             _ => return true,
         }
     }
@@ -3393,7 +3414,7 @@ fn validate_seq_items(
                 payload: Some(payload_id),
             } if tag == "Seq.Cons" => {
                 let payload_thunk = ctx.get_thunk(payload_id);
-                let payload_val = materialize_sync(&payload_thunk, Some(&span), &ctx)?;
+                let payload_val = materialize(&payload_thunk, Some(&span), &ctx).await?;
                 let (head, tail) = if let Value::Dict(ref d) = payload_val {
                     let head = *d
                         .get(&Key::String("head".into()))
@@ -3410,7 +3431,7 @@ fn validate_seq_items(
                     .into());
                 };
                 let head_thunk = ctx.get_thunk(head);
-                let head_val = materialize_sync(&head_thunk, Some(&span), &ctx)?;
+                let head_val = materialize(&head_thunk, Some(&span), &ctx).await?;
                 let item_path = if path.is_empty() {
                     format!("[{}]", idx)
                 } else {
@@ -3426,7 +3447,7 @@ fn validate_seq_items(
                 .await?;
 
                 let tail_thunk = ctx.get_thunk(tail);
-                let tail_val = materialize_sync(&tail_thunk, Some(&span), &ctx)?;
+                let tail_val = materialize(&tail_thunk, Some(&span), &ctx).await?;
                 let tail_violations =
                     validate_seq_items(tail_val, items_schema, path, idx + 1, ctx, span).await?;
                 violations.extend(tail_violations);

@@ -10,13 +10,55 @@ use std::sync::Arc;
 use crate::ast::Span;
 use crate::types::{instantiate_at_level, unify, InferState, Kind, Label, Type};
 
+/// A single argument position in a `Constraint::Class`.
+///
+/// Most positions hold a type variable name that will be renamed during instantiation.
+/// Determined positions (those resolved by functional-dependency improvement before
+/// generalization) are stored as `Ground(Type)` so that `instantiate_scheme` and
+/// `check_constraints_on_var` can use the concrete type directly without needing
+/// to look it up in the substitution.
+///
+/// Introduced by B-398: previously all positions were `Vec<String>`, which caused
+/// `generalize_with_doc` to drop FD constraints whose determined position variables
+/// were not generalizable (they were discharged ground types), and
+/// `instantiate_scheme` to silently drop constraints whose vars weren't in
+/// `var_renaming`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ConstraintArg {
+    /// A type variable that will be renamed during instantiation.
+    Var(String),
+    /// A concrete ground type — passed through unchanged during instantiation.
+    Ground(Type),
+}
+
+impl ConstraintArg {
+    /// Returns the variable name if this is a `Var` position, `None` for `Ground`.
+    pub fn as_var(&self) -> Option<&str> {
+        match self {
+            ConstraintArg::Var(s) => Some(s),
+            ConstraintArg::Ground(_) => None,
+        }
+    }
+
+    /// Returns the ground type if this is a `Ground` position, `None` for `Var`.
+    pub fn as_ground(&self) -> Option<&Type> {
+        match self {
+            ConstraintArg::Var(_) => None,
+            ConstraintArg::Ground(t) => Some(t),
+        }
+    }
+}
+
 /// Constraint on a type variable (type class membership or structural property)
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Constraint {
     /// Type class constraint: `class vars` (e.g., `Numeric a` or `Add a b c`)
     ///
     /// `class`: The type class declaration (provides name, functional dependencies, resolver, etc.)
-    /// `vars`: Type variable names in the constraint (e.g., ["a"] for single-param, ["a", "b", "c"] for MPTC)
+    /// `vars`: Arguments to the constraint — either type variable names or concrete ground types.
+    ///   Use `ConstraintArg::Var(name)` for positions that are still polymorphic and will be
+    ///   renamed during instantiation, and `ConstraintArg::Ground(ty)` for positions whose type
+    ///   was determined by functional-dependency improvement before generalization.
     /// `origin_name`: Name of the function/builtin that introduced this constraint (for T013 diagnostics)
     /// `origin_span`: Span of the argument that introduced this constraint (for T013 diagnostics)
     ///
@@ -24,7 +66,7 @@ pub enum Constraint {
     /// For `Add a b c` with FD `(a,b) → c`: `class.determines = vec![(vec![0,1], vec![2])]`
     Class {
         class: Arc<ClassDecl>,
-        vars: Vec<String>,
+        vars: Vec<ConstraintArg>,
         origin_name: Option<Arc<str>>,
         origin_span: Option<Span>,
     },
@@ -43,7 +85,7 @@ impl Constraint {
     pub fn new(class: Arc<ClassDecl>, var: impl Into<String>) -> Self {
         Self::Class {
             class,
-            vars: vec![var.into()],
+            vars: vec![ConstraintArg::Var(var.into())],
             origin_name: None,
             origin_span: None,
         }
@@ -89,12 +131,22 @@ impl Constraint {
             // prelude_origin is irrelevant here (propagation gate in typecheck_dict.rs reads
             // ClassDecl entries from ClassEnv, not from Constraint stubs).
             prelude_origin: false,
+            method_signatures: vec![],
         });
         Self::Class {
             class,
-            vars: vec![var.into()],
+            vars: vec![ConstraintArg::Var(var.into())],
             origin_name: None,
             origin_span: None,
+        }
+    }
+}
+
+impl fmt::Display for ConstraintArg {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ConstraintArg::Var(s) => write!(f, "{}", s),
+            ConstraintArg::Ground(t) => write!(f, "{}", t),
         }
     }
 }
@@ -104,8 +156,8 @@ impl fmt::Display for Constraint {
         match self {
             Constraint::Class { class, vars, .. } => {
                 write!(f, "{}", class.name)?;
-                for var in vars {
-                    write!(f, " {}", var)?;
+                for arg in vars {
+                    write!(f, " {}", arg)?;
                 }
                 Ok(())
             }
@@ -120,7 +172,7 @@ impl fmt::Display for Constraint {
 
 /// Type class declaration (Wadler & Blott 1989)
 /// Example: `[class [Equatable a] eq: [Fn@Bool [a a]]]`
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone)]
 pub struct ClassDecl {
     /// Class name (e.g., "Equatable")
     pub name: String,
@@ -159,6 +211,26 @@ pub struct ClassDecl {
     /// with `prelude_origin = true` are merged into the outer frame when a child dict scope
     /// exits. This replaces the coarse `state.in_prelude_load` gate (T-1110).
     pub prelude_origin: bool,
+    /// Method signatures declared in the class body (S-886: class method synthesis).
+    /// Each entry is (method_name, method_type) where method_type uses the class's type
+    /// parameters as TypeVars. E.g., for Addable: [("+", Fn(TypeVar("a"), TypeVar("b")) -> TypeVar("c"))].
+    /// Used by infer_class_decl_from_surface to inject method schemes into TypeEnv.
+    /// Vec instead of HashMap to avoid Hash trait requirement (Type doesn't implement Hash).
+    pub method_signatures: Vec<(String, crate::type_def::Type)>,
+}
+
+impl PartialEq for ClassDecl {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+    }
+}
+
+impl Eq for ClassDecl {}
+
+impl std::hash::Hash for ClassDecl {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.name.hash(state);
+    }
 }
 
 impl fmt::Display for ClassDecl {
@@ -255,6 +327,11 @@ impl ClassEnv {
         self.classes.insert(class_decl.name.clone(), class_decl);
     }
 
+    /// Iterate all class declarations in this frame only (not parent frames).
+    pub fn iter_classes(&self) -> impl Iterator<Item = &ClassDecl> {
+        self.classes.values()
+    }
+
     /// Insert a class declaration only if no class with that name is already visible
     /// (checks the full parent chain before inserting into the current frame).
     /// Used when seeding from the prelude cache to avoid overwriting user-defined classes.
@@ -262,13 +339,6 @@ impl ClassEnv {
         if self.get(&class_decl.name).is_none() {
             self.classes.insert(class_decl.name.clone(), class_decl);
         }
-    }
-
-    /// Iterate over class declarations in the CURRENT frame only (no parent traversal).
-    ///
-    /// Used by `imports.rs` seeding, which only needs to enumerate locally-introduced classes.
-    pub fn iter_classes(&self) -> impl Iterator<Item = &ClassDecl> {
-        self.classes.values()
     }
 }
 
@@ -404,7 +474,7 @@ impl InstanceEnv {
     /// This method takes `&self` (read-only) and `&mut InferState` (for freshening and probing).
     /// Callers that do not have a live `InferState` (built-in registration, prelude seeding)
     /// should skip this check — those instances are known-disjoint by construction.
-    pub fn check_structural_overlap(
+    pub async fn check_structural_overlap(
         &self,
         candidate: &InstanceDecl,
         state: &mut InferState,
@@ -438,14 +508,14 @@ impl InstanceEnv {
 
                 let mut temp_subst = state.subst.clone();
                 let mut probe_constraints: Vec<Constraint> = Vec::new();
-                let overlaps = unify(
+                let overlaps = Box::pin(unify(
                     &fresh_existing,
                     &fresh_candidate,
                     &mut temp_subst,
                     state,
                     &mut probe_constraints,
                     Span::origin(),
-                )
+                )).await
                 .is_ok();
 
                 // Always restore state — this is a pure probe.
@@ -485,7 +555,7 @@ impl InstanceEnv {
     /// Note: This method performs unification checks but does not modify the global substitution.
     /// It uses a temporary substitution for matching purposes only. Returns a cloned instance
     /// to avoid borrow checker issues when state is also needed by the caller.
-    pub fn lookup_mptc(
+    pub async fn lookup_mptc(
         &self,
         class: &str,
         determining_types: &[Type],
@@ -555,14 +625,14 @@ impl InstanceEnv {
 
             let mut probe_constraints: Vec<Constraint> = Vec::new();
             for (inst_ty, query_ty) in instance_det_types.iter().zip(determining_types.iter()) {
-                if unify(
+                if Box::pin(unify(
                     inst_ty,
                     query_ty,
                     &mut temp_subst,
                     state,
                     &mut probe_constraints,
                     Span::origin(),
-                )
+                )).await
                 .is_err()
                 {
                     all_match = false;
@@ -602,7 +672,7 @@ impl InstanceEnv {
 
         // No match in current frame — walk parent chain.
         if let Some(parent) = &self.parent {
-            return parent.lookup_mptc(class, determining_types, state);
+            return Box::pin(parent.lookup_mptc(class, determining_types, state)).await;
         }
 
         None
@@ -624,7 +694,7 @@ impl InstanceEnv {
     /// Like `lookup_mptc`, this is a pure probe: all state mutations from unification
     /// attempts are discarded on failure (save/restore pattern). On success, the caller
     /// is responsible for unifying the returned determining types with the constraint vars.
-    pub fn reverse_lookup_mptc(
+    pub async fn reverse_lookup_mptc(
         &self,
         class: &str,
         ded_positions: &[usize],
@@ -679,14 +749,14 @@ impl InstanceEnv {
 
             let mut rl_probe_constraints: Vec<Constraint> = Vec::new();
             for (inst_ded_ty, query_ded_ty) in instance_ded_types.iter().zip(ded_types.iter()) {
-                if unify(
+                if Box::pin(unify(
                     inst_ded_ty,
                     query_ded_ty,
                     &mut temp_subst,
                     state,
                     &mut rl_probe_constraints,
                     Span::origin(),
-                )
+                )).await
                 .is_err()
                 {
                     all_match = false;
@@ -736,7 +806,7 @@ impl InstanceEnv {
 
         // No match in current frame — walk parent chain.
         if let Some(parent) = &self.parent {
-            return parent.reverse_lookup_mptc(class, ded_positions, ded_types, state);
+            return Box::pin(parent.reverse_lookup_mptc(class, ded_positions, ded_types, state)).await;
         }
 
         None
@@ -806,7 +876,7 @@ impl InstanceEnv {
     /// - `Ok(Some(inst))` — unique most-specific match found
     /// - `Ok(None)` — no instance matches the target
     /// - `Err(msg)` — two or more equally-specific instances match (ambiguity error)
-    pub fn resolve_instance(
+    pub async fn resolve_instance(
         &self,
         class_name: &str,
         target_type: &Type,
@@ -827,7 +897,7 @@ impl InstanceEnv {
         // If no candidates in the current frame, walk the parent chain.
         if candidates.is_empty() {
             if let Some(parent) = &self.parent {
-                return parent.resolve_instance(class_name, target_type, state);
+                return Box::pin(parent.resolve_instance(class_name, target_type, state)).await;
             }
             return Ok(None);
         }
@@ -866,14 +936,14 @@ impl InstanceEnv {
             let mut temp_subst = state.subst.clone();
 
             let mut probe_constraints: Vec<Constraint> = Vec::new();
-            let unify_ok = unify(
+            let unify_ok = Box::pin(unify(
                 &freshened_instance_type,
                 target_type,
                 &mut temp_subst,
                 state,
                 &mut probe_constraints,
                 Span::origin(),
-            )
+            )).await
             .is_ok();
 
             // Always restore state after the probe; preserve peak name_counter (F1 fix).
@@ -942,14 +1012,14 @@ impl InstanceEnv {
 
         // This unification must succeed — we confirmed it in Pass 1.
         let mut winner_constraints: Vec<Constraint> = Vec::new();
-        let _ = unify(
+        let _ = Box::pin(unify(
             &freshened_instance_type,
             target_type,
             &mut temp_subst,
             state,
             &mut winner_constraints,
             Span::origin(),
-        );
+        )).await;
 
         // Apply the unification substitution to method types.
         let freshened_method_types: HashMap<String, Type> = winner
@@ -1080,6 +1150,14 @@ mod tests {
     use crate::type_infer::InferState;
     use std::collections::HashMap;
 
+    fn check_structural_overlap_sync(
+        env: &InstanceEnv,
+        candidate: &InstanceDecl,
+        state: &mut InferState,
+    ) -> Result<(), String> {
+        crate::async_rt::block_on_anywhere(env.check_structural_overlap(candidate, state))
+    }
+
     fn make_seq_a() -> Type {
         Type::seq(Type::TypeVar("a".to_string(), 0))
     }
@@ -1111,7 +1189,7 @@ mod tests {
 
         // Str does not overlap with Int — should be Ok
         assert!(
-            env.check_structural_overlap(&str_inst, &mut state).is_ok(),
+            check_structural_overlap_sync(&env, &str_inst, &mut state).is_ok(),
             "Int and Str instances should not overlap"
         );
     }
@@ -1128,7 +1206,7 @@ mod tests {
         env.insert(seq_a_inst).unwrap();
 
         // [Seq Int] overlaps with [Seq a] — must detect overlap
-        let result = env.check_structural_overlap(&seq_int_inst, &mut state);
+        let result = check_structural_overlap_sync(&env, &seq_int_inst, &mut state);
         assert!(
             result.is_err(),
             "Seq[a] and Seq[Int] should be detected as overlapping instances"
@@ -1156,7 +1234,7 @@ mod tests {
         env.insert(seq_a_inst).unwrap();
 
         // [Seq b] overlaps with [Seq a] — they are structurally equivalent
-        let result = env.check_structural_overlap(&seq_b_inst, &mut state);
+        let result = check_structural_overlap_sync(&env, &seq_b_inst, &mut state);
         assert!(
             result.is_err(),
             "Seq[a] and Seq[b] should be detected as overlapping (both accept any Seq)"
@@ -1170,7 +1248,7 @@ mod tests {
         let env = InstanceEnv::new();
         let inst = make_appendable_instance(make_seq_a());
         assert!(
-            env.check_structural_overlap(&inst, &mut state).is_ok(),
+            check_structural_overlap_sync(&env, &inst, &mut state).is_ok(),
             "Empty registry should never report overlap"
         );
     }
@@ -1187,7 +1265,7 @@ mod tests {
         let levels_before = state.levels.clone();
 
         // This will detect overlap and return Err — but state must be restored.
-        let _ = env.check_structural_overlap(&make_appendable_instance(make_seq_int()), &mut state);
+        let _ = check_structural_overlap_sync(&env, &make_appendable_instance(make_seq_int()), &mut state);
 
         assert_eq!(
             state.subst.name_counter.get(),
@@ -1319,7 +1397,7 @@ mod tests {
 
         // Attempting to add another Appendable(Int) to child must detect overlap with parent.
         let duplicate_int = make_appendable_instance(Type::Int);
-        let result = child_env.check_structural_overlap(&duplicate_int, &mut state);
+        let result = check_structural_overlap_sync(&child_env, &duplicate_int, &mut state);
         assert!(
             result.is_err(),
             "Appendable(Int) in child should overlap with Appendable(Int) in parent frame"
@@ -1333,9 +1411,7 @@ mod tests {
         // A disjoint instance (Appendable(Str)) must NOT be reported as overlapping.
         let str_inst = make_appendable_instance(Type::Str);
         assert!(
-            child_env
-                .check_structural_overlap(&str_inst, &mut state)
-                .is_ok(),
+            check_structural_overlap_sync(&child_env, &str_inst, &mut state).is_ok(),
             "Appendable(Str) should not overlap with Appendable(Int) in parent frame"
         );
     }

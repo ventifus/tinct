@@ -32,9 +32,9 @@
 //! ## EvalContext Requirement
 //!
 //! TypeNode values store child nodes as `ThunkId`s inside their payload dict. Accessing
-//! them requires an `Arc<EvalContext>` to call `materialize_sync`. Callers must provide
-//! one; the helpers in this module use `materialize_sync` (blocking) to keep the walking
-//! interface synchronous, consistent with type checking's non-async execution model.
+//! them requires an `Arc<EvalContext>` to call `materialize`. Callers must provide
+//! one; the helpers in this module use `.await` on `materialize(...)` — all traversal
+//! functions are `async fn` and callers at sync boundaries use `block_on_anywhere`.
 //!
 //! ## Scope
 //!
@@ -75,7 +75,7 @@ use crate::value::{Key, Value};
 ///
 /// These distinct contracts mean consolidation would force one to adopt the other's semantics.
 /// Both implementations are intentional and must remain separate.
-fn collect_seq_sync(seq: &Value, ctx: &Arc<crate::eval::EvalContext>) -> Vec<Value> {
+async fn collect_seq_children(seq: &Value, ctx: &Arc<crate::eval::EvalContext>) -> Vec<Value> {
     let mut result = Vec::new();
     let mut current = seq.clone();
 
@@ -96,7 +96,7 @@ fn collect_seq_sync(seq: &Value, ctx: &Arc<crate::eval::EvalContext>) -> Vec<Val
                 payload: Some(payload_id),
             } if tag == "Seq.Cons" => {
                 let payload_thunk = ctx.get_thunk(*payload_id);
-                let payload_val = match crate::eval::materialize_sync(&payload_thunk, None, ctx) {
+                let payload_val = match crate::eval::materialize(&payload_thunk, None, ctx).await {
                     Ok(v) => v,
                     Err(_) => break, // Materialization error — stop iteration gracefully.
                 };
@@ -115,14 +115,14 @@ fn collect_seq_sync(seq: &Value, ctx: &Arc<crate::eval::EvalContext>) -> Vec<Val
 
                 // Materialize the head element (the TypeNode child).
                 let head_thunk = ctx.get_thunk(head_id);
-                match crate::eval::materialize_sync(&head_thunk, None, ctx) {
+                match crate::eval::materialize(&head_thunk, None, ctx).await {
                     Ok(head_val) => result.push(head_val),
                     Err(_) => break, // Materialization error — stop gracefully.
                 }
 
                 // Advance to tail.
                 let tail_thunk = ctx.get_thunk(tail_id);
-                match crate::eval::materialize_sync(&tail_thunk, None, ctx) {
+                match crate::eval::materialize(&tail_thunk, None, ctx).await {
                     Ok(tail_val) => current = tail_val,
                     Err(_) => break,
                 }
@@ -149,7 +149,7 @@ fn collect_seq_sync(seq: &Value, ctx: &Arc<crate::eval::EvalContext>) -> Vec<Val
 /// Unwraps `Value::Annotated` on the node before reading the payload (TypeNode
 /// constructors annotated with `@[as-type: ...]` are `Value::Annotated` wrappers
 /// whose `inner` is the bare `Value::Variant`).
-fn get_payload_field(
+async fn get_payload_field(
     node: &Value,
     field: &str,
     ctx: &Arc<crate::eval::EvalContext>,
@@ -168,7 +168,7 @@ fn get_payload_field(
     };
 
     let payload_thunk = ctx.get_thunk(payload_id);
-    let payload_val = crate::eval::materialize_sync(&payload_thunk, None, ctx).ok()?;
+    let payload_val = crate::eval::materialize(&payload_thunk, None, ctx).await.ok()?;
 
     let field_id = match &payload_val {
         Value::Dict(d) => *d.get(&Key::String(field.into()))?,
@@ -176,7 +176,7 @@ fn get_payload_field(
     };
 
     let field_thunk = ctx.get_thunk(field_id);
-    crate::eval::materialize_sync(&field_thunk, None, ctx).ok()
+    crate::eval::materialize(&field_thunk, None, ctx).await.ok()
 }
 
 /// Collect all values from a TypeNode Variant's `Map String TypeNode` payload field.
@@ -188,12 +188,12 @@ fn get_payload_field(
 /// materialization step fails. Key order is `IndexMap` insertion order (preserved from
 /// the source dict literal). Keys are discarded — only values (TypeNode children) matter
 /// for traversal.
-fn get_map_values_field(
+async fn get_map_values_field(
     node: &Value,
     field: &str,
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> Vec<Value> {
-    let map_val = match get_payload_field(node, field, ctx) {
+    let map_val = match get_payload_field(node, field, ctx).await {
         Some(v) => v,
         None => return Vec::new(),
     };
@@ -206,7 +206,7 @@ fn get_map_values_field(
     let mut values = Vec::with_capacity(dict.len());
     for (_key, thunk_id) in &dict {
         let thunk = ctx.get_thunk(*thunk_id);
-        if let Ok(v) = crate::eval::materialize_sync(&thunk, None, ctx) {
+        if let Ok(v) = crate::eval::materialize(&thunk, None, ctx).await {
             values.push(v);
         }
     }
@@ -217,7 +217,7 @@ fn get_map_values_field(
 
 /// Extract the TypeNode tag string from a Value, unwrapping `Value::Annotated` first.
 ///
-/// Returns `None` for non-Variant values (e.g., old-style kind-keyed dicts).
+/// Returns `None` for non-Variant values.
 fn typenode_tag(node: &Value) -> Option<&str> {
     match node {
         Value::Annotated { inner, .. } => typenode_tag(inner),
@@ -277,109 +277,114 @@ fn is_typenode_typevar(node: &Value) -> bool {
 /// acyclic for well-formed TypeNode values. Walking into a `TypeNode.Recursive.body`
 /// will encounter `TypeNode.RecursiveRef` nodes at recursive positions (which are leaves),
 /// not the full `TypeNode.Recursive` node again.
-pub(crate) fn walk_typenode<F, R>(
-    node: &Value,
-    ctx: &Arc<crate::eval::EvalContext>,
-    f: &mut F,
-) -> Option<R>
+pub(crate) fn walk_typenode<'a, F, R>(
+    node: &'a Value,
+    ctx: &'a Arc<crate::eval::EvalContext>,
+    f: &'a mut F,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<R>> + 'a>>
 where
-    F: FnMut(&Value) -> Option<R>,
+    F: FnMut(&Value) -> Option<R> + 'a,
+    R: 'a,
 {
-    // Pre-order: visit this node first.
-    if let Some(result) = f(node) {
-        return Some(result);
-    }
+    Box::pin(async move {
+        // Pre-order: visit this node first.
+        if let Some(result) = f(node) {
+            return Some(result);
+        }
 
-    // Determine the tag (unwrapping Annotated wrappers).
-    let tag = typenode_tag(node)?; // Non-Variant — no children to walk.
+        // Determine the tag (unwrapping Annotated wrappers).
+        let tag = typenode_tag(node)?; // Non-Variant — no children to walk.
+        // Convert to owned String so we can .await without holding a borrow on node.
+        let tag = tag.to_string();
 
-    match tag {
-        // ── Union / Intersect: `types@Child: [Seq TypeNode]` ──────────────────
-        "TypeNode.Union" | "TypeNode.Intersect" => {
-            if let Some(types_val) = get_payload_field(node, "types", ctx) {
-                for child in collect_seq_sync(&types_val, ctx) {
-                    if let Some(result) = walk_typenode(&child, ctx, f) {
+        match tag.as_str() {
+            // ── Union / Intersect: `types@Child: [Seq TypeNode]` ──────────────────
+            "TypeNode.Union" | "TypeNode.Intersect" => {
+                if let Some(types_val) = get_payload_field(node, "types", ctx).await {
+                    for child in collect_seq_children(&types_val, ctx).await {
+                        if let Some(result) = walk_typenode(&child, ctx, f).await {
+                            return Some(result);
+                        }
+                    }
+                }
+            }
+
+            // ── Record: `fields@Child: [Map String TypeNode]` ─────────────────────
+            "TypeNode.Record" => {
+                for child in get_map_values_field(node, "fields", ctx).await {
+                    if let Some(result) = walk_typenode(&child, ctx, f).await {
                         return Some(result);
                     }
                 }
             }
-        }
 
-        // ── Record: `fields@Child: [Map String TypeNode]` ─────────────────────
-        "TypeNode.Record" => {
-            for child in get_map_values_field(node, "fields", ctx) {
-                if let Some(result) = walk_typenode(&child, ctx, f) {
-                    return Some(result);
+            // ── TypeApplication: `ctor@Child: TypeNode`, `args@Child: [Seq TypeNode]` ──
+            "TypeNode.TypeApplication" => {
+                // Visit ctor (One role).
+                if let Some(ctor_val) = get_payload_field(node, "ctor", ctx).await {
+                    if let Some(result) = walk_typenode(&ctor_val, ctx, f).await {
+                        return Some(result);
+                    }
+                }
+                // Visit args (Seq role).
+                if let Some(args_val) = get_payload_field(node, "args", ctx).await {
+                    for child in collect_seq_children(&args_val, ctx).await {
+                        if let Some(result) = walk_typenode(&child, ctx, f).await {
+                            return Some(result);
+                        }
+                    }
                 }
             }
-        }
 
-        // ── TypeApplication: `ctor@Child: TypeNode`, `args@Child: [Seq TypeNode]` ──
-        "TypeNode.TypeApplication" => {
-            // Visit ctor (One role).
-            if let Some(ctor_val) = get_payload_field(node, "ctor", ctx) {
-                if let Some(result) = walk_typenode(&ctor_val, ctx, f) {
-                    return Some(result);
+            // ── Arrow: `params@Child: [Seq TypeNode]`, `result@Child: TypeNode` ───
+            "TypeNode.Arrow" => {
+                // Visit params (Seq role).
+                if let Some(params_val) = get_payload_field(node, "params", ctx).await {
+                    for child in collect_seq_children(&params_val, ctx).await {
+                        if let Some(result) = walk_typenode(&child, ctx, f).await {
+                            return Some(result);
+                        }
+                    }
                 }
-            }
-            // Visit args (Seq role).
-            if let Some(args_val) = get_payload_field(node, "args", ctx) {
-                for child in collect_seq_sync(&args_val, ctx) {
-                    if let Some(result) = walk_typenode(&child, ctx, f) {
+                // Visit result (One role).
+                if let Some(result_val) = get_payload_field(node, "result", ctx).await {
+                    if let Some(result) = walk_typenode(&result_val, ctx, f).await {
                         return Some(result);
                     }
                 }
             }
-        }
 
-        // ── Arrow: `params@Child: [Seq TypeNode]`, `result@Child: TypeNode` ───
-        "TypeNode.Arrow" => {
-            // Visit params (Seq role).
-            if let Some(params_val) = get_payload_field(node, "params", ctx) {
-                for child in collect_seq_sync(&params_val, ctx) {
-                    if let Some(result) = walk_typenode(&child, ctx, f) {
+            // ── Recursive: `body@Child: TypeNode` ────────────────────────────────
+            // `var: String` has no @Child — not a TypeNode child.
+            // Walking into `body` visits `TypeNode.RecursiveRef` leaves at recursive positions
+            // (finite, acyclic — not the full Recursive node).
+            "TypeNode.Recursive" => {
+                if let Some(body_val) = get_payload_field(node, "body", ctx).await {
+                    if let Some(result) = walk_typenode(&body_val, ctx, f).await {
                         return Some(result);
                     }
                 }
             }
-            // Visit result (One role).
-            if let Some(result_val) = get_payload_field(node, "result", ctx) {
-                if let Some(result) = walk_typenode(&result_val, ctx, f) {
-                    return Some(result);
+
+            // ── Negation: `inner@Child: TypeNode` ────────────────────────────────
+            // Produced by the `without` combinator (T-1171). Has exactly one child: `inner`.
+            "TypeNode.Negation" => {
+                if let Some(inner_val) = get_payload_field(node, "inner", ctx).await {
+                    if let Some(result) = walk_typenode(&inner_val, ctx, f).await {
+                        return Some(result);
+                    }
                 }
             }
+
+            // ── Leaf constructors — no @Child fields ─────────────────────────────
+            // TypeNode.Int, TypeNode.Float, TypeNode.String, TypeNode.Bool,
+            // TypeNode.Absent, TypeNode.Unknown, TypeNode.Never,
+            // TypeNode.TypeConstructor, TypeNode.RecursiveRef, TypeNode.TypeVar
+            _ => {}
         }
 
-        // ── Recursive: `body@Child: TypeNode` ────────────────────────────────
-        // `var: String` has no @Child — not a TypeNode child.
-        // Walking into `body` visits `TypeNode.RecursiveRef` leaves at recursive positions
-        // (finite, acyclic — not the full Recursive node).
-        "TypeNode.Recursive" => {
-            if let Some(body_val) = get_payload_field(node, "body", ctx) {
-                if let Some(result) = walk_typenode(&body_val, ctx, f) {
-                    return Some(result);
-                }
-            }
-        }
-
-        // ── Negation: `inner@Child: TypeNode` ────────────────────────────────
-        // Produced by the `without` combinator (T-1171). Has exactly one child: `inner`.
-        "TypeNode.Negation" => {
-            if let Some(inner_val) = get_payload_field(node, "inner", ctx) {
-                if let Some(result) = walk_typenode(&inner_val, ctx, f) {
-                    return Some(result);
-                }
-            }
-        }
-
-        // ── Leaf constructors — no @Child fields ─────────────────────────────
-        // TypeNode.Int, TypeNode.Float, TypeNode.String, TypeNode.Bool,
-        // TypeNode.Absent, TypeNode.Unknown, TypeNode.Never,
-        // TypeNode.TypeConstructor, TypeNode.RecursiveRef, TypeNode.TypeVar
-        _ => {}
-    }
-
-    None
+        None
+    })
 }
 
 // ── Derived walkers ────────────────────────────────────────────────────────────
@@ -404,7 +409,7 @@ where
 ///
 /// Operates on TypeNode Values (equirecursive sprint). Counterpart to `Type::has_inference_vars()`
 /// on the Rust `Type` enum. Used by T-1062; will replace the Rust-enum version after S-860 (CheckerType migration).
-pub(crate) fn typenode_has_inference_vars(
+pub(crate) async fn typenode_has_inference_vars(
     node: &Value,
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> bool {
@@ -415,6 +420,7 @@ pub(crate) fn typenode_has_inference_vars(
             None
         }
     })
+    .await
     .unwrap_or(false)
 }
 
@@ -444,26 +450,29 @@ pub(crate) fn typenode_has_inference_vars(
 ///
 /// Counterpart to `Type::collect_type_vars()` on the Rust `Type` enum. Used by T-1062;
 /// will replace the Rust-enum version after S-860 (CheckerType migration).
-pub(crate) fn typenode_collect_type_vars(
+pub(crate) async fn typenode_collect_type_vars(
     node: &Value,
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> Vec<String> {
-    let mut vars: Vec<String> = Vec::new();
-
-    // walk_typenode short-circuits on Some(_) — we never return Some, so the walk is
-    // always exhaustive. The closure collects into `vars` via a mutable capture.
+    // Phase 1: collect all TypeVar nodes (sync predicate, async traversal).
+    let mut typevar_nodes: Vec<Value> = Vec::new();
     walk_typenode::<_, ()>(node, ctx, &mut |v| {
         if is_typenode_typevar(v) {
-            // Extract the `name` field from the TypeVar payload.
-            if let Some(name_val) = get_payload_field(v, "name", ctx) {
-                if let Some(name_str) = extract_string_value(&name_val) {
-                    vars.push(name_str);
-                }
-            }
+            typevar_nodes.push(v.clone());
         }
         None // Never short-circuit — always exhaustive.
-    });
+    })
+    .await;
 
+    // Phase 2: extract the `name` field from each TypeVar node asynchronously.
+    let mut vars: Vec<String> = Vec::new();
+    for typevar_node in &typevar_nodes {
+        if let Some(name_val) = get_payload_field(typevar_node, "name", ctx).await {
+            if let Some(name_str) = extract_string_value(&name_val) {
+                vars.push(name_str);
+            }
+        }
+    }
     vars
 }
 
@@ -472,23 +481,29 @@ pub(crate) fn typenode_collect_type_vars(
 /// Like [`typenode_collect_type_vars`] but deduplicates automatically via `HashSet`.
 /// Prefer this over the `Vec` variant when membership testing is needed (e.g., occurs
 /// checks, generalization filtering).
-pub(crate) fn typenode_collect_type_vars_set(
+pub(crate) async fn typenode_collect_type_vars_set(
     node: &Value,
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> HashSet<String> {
-    let mut vars: HashSet<String> = HashSet::new();
-
+    // Phase 1: collect all TypeVar nodes (sync predicate, async traversal).
+    let mut typevar_nodes: Vec<Value> = Vec::new();
     walk_typenode::<_, ()>(node, ctx, &mut |v| {
         if is_typenode_typevar(v) {
-            if let Some(name_val) = get_payload_field(v, "name", ctx) {
-                if let Some(name_str) = extract_string_value(&name_val) {
-                    vars.insert(name_str);
-                }
-            }
+            typevar_nodes.push(v.clone());
         }
         None
-    });
+    })
+    .await;
 
+    // Phase 2: extract the `name` field from each TypeVar node asynchronously.
+    let mut vars: HashSet<String> = HashSet::new();
+    for typevar_node in &typevar_nodes {
+        if let Some(name_val) = get_payload_field(typevar_node, "name", ctx).await {
+            if let Some(name_str) = extract_string_value(&name_val) {
+                vars.insert(name_str);
+            }
+        }
+    }
     vars
 }
 

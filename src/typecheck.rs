@@ -220,7 +220,7 @@ pub(crate) fn extract_field_annotations_from_body(
 /// Returns `(errors, table)` where:
 /// - `errors`: Type errors encountered during inference (advisory — evaluation proceeds)
 /// - `table`: TypeAnnotationTable mapping NodeId → Type for successfully inferred expressions
-pub fn typecheck_surface_program_annotation_table(
+pub async fn typecheck_surface_program_annotation_table(
     program: &SurfaceProgram,
 ) -> (
     Vec<TypeError>,
@@ -257,7 +257,7 @@ pub fn typecheck_surface_program_annotation_table(
             &mut None, // annotation_table path — no span TypeMap needed
             &pipeline_type,
             &named_types,
-        );
+        ).await;
         env = new_env;
         // Collect all errors (type errors + advisory) without blocking propagation.
         errors.append(&mut doc_errors);
@@ -289,7 +289,7 @@ pub fn typecheck_surface_program_annotation_table(
 /// during inference (populated per-node by `typecheck_surface_document`). Only top-level
 /// expression nodes are inserted in the table; inner sub-expressions are included via the
 /// recursive `collect_type_map_from_node` walk.
-pub fn typecheck_surface_program(
+pub async fn typecheck_surface_program(
     program: &SurfaceProgram,
     parent_env: Rc<TypeEnv>,
 ) -> (
@@ -300,7 +300,7 @@ pub fn typecheck_surface_program(
     Vec<crate::error::TypeDiagnostic>,
 ) {
     let (errors, type_map, doc_map, scheme_map, diagnostics, _state, _env, _annotation_table) =
-        typecheck_surface_program_with_env(program, parent_env, true, false, None);
+        typecheck_surface_program_with_env(program, parent_env, true, false, None).await;
     // type_map is now populated during inference (enable_scheme_map=true path).
     (errors, type_map, doc_map, scheme_map, diagnostics)
 }
@@ -328,7 +328,7 @@ pub fn typecheck_surface_program(
 /// `type_map` and `doc_map` are currently empty — all callers discard them. If a caller
 /// needs span-keyed types, use [`typecheck_surface_program`] instead.
 #[allow(clippy::type_complexity)]
-pub fn typecheck_surface_program_with_env(
+pub async fn typecheck_surface_program_with_env(
     program: &SurfaceProgram,
     parent_env: Rc<TypeEnv>,
     enable_scheme_map: bool,
@@ -355,7 +355,7 @@ pub fn typecheck_surface_program_with_env(
     // This extends the prelude type-stage env with user-defined type-stage functions,
     // allowing annotations in runtime documents to reference them.
     if let Some(res_table) = resolution_table {
-        state.type_stage_env = crate::imports::build_user_type_stage_env(program, res_table);
+        state.type_stage_env = crate::imports::build_user_type_stage_env(program, res_table).await;
     }
 
     // B-345: Seed state.tycon_env from the parent TypeEnv so that [type ...] declarations
@@ -408,7 +408,7 @@ pub fn typecheck_surface_program_with_env(
             &mut type_map_ref,
             &pipeline_type,
             &named_types,
-        );
+        ).await;
         env = new_env;
         // Collect all errors (type errors + advisory) without blocking env propagation.
         errors.append(&mut doc_errors);
@@ -467,7 +467,7 @@ pub fn typecheck_surface_program_with_env(
 ///
 /// Mirrors the structure of `typecheck_document()` but operates on SurfaceItem instead of Expr.
 /// Converts SurfaceNode back to Expr for type inference, then captures results in TypeAnnotationTable.
-fn typecheck_surface_document(
+async fn typecheck_surface_document(
     doc: &SurfaceDocument,
     parent_env: &Rc<TypeEnv>,
     state: &mut InferState,
@@ -524,7 +524,7 @@ fn typecheck_surface_document(
             &mut None,
             &mut None,
             None,
-        ) {
+        ).await {
             Ok(expected_type) => {
                 // Store resolved type for eval.rs pipeline to use in TypeAssert
                 state
@@ -576,7 +576,7 @@ fn typecheck_surface_document(
                 &mut None,
                 &mut None,
                 None,
-            ) {
+            ).await {
                 Ok(cap_type) => {
                     env_mut.insert(format!("%{}", cap_name), cap_type);
                 }
@@ -641,7 +641,8 @@ fn typecheck_surface_document(
                     resolver,
                     resolver_injective,
                 } => {
-                    // Infer the class declaration to register it into state.class_env
+                    // Infer the class declaration to register it into state.class_env.
+                    // Method schemes are pushed to state.pending_scheme_injections by the callee.
                     match infer_class_decl_from_surface(
                         name,
                         params,
@@ -654,16 +655,25 @@ fn typecheck_surface_document(
                         &env,
                         state,
                         &mut None,
-                    ) {
+                    ).await {
                         Ok(_) => {
-                            // Drain TypeAnnotationTable entries produced during ClassDecl inference
-                            // to prevent them from leaking into subsequent items.
                             state.type_annotation_table.drain_into(table);
+                            // Drain pending method schemes and inject into env.
+                            if !state.pending_scheme_injections.is_empty() {
+                                let mut env_mut = (*env).clone();
+                                for (method_name, scheme) in
+                                    state.pending_scheme_injections.drain(..)
+                                {
+                                    env_mut.insert_scheme(method_name, scheme);
+                                }
+                                env = Rc::new(env_mut);
+                            }
                         }
                         Err(mut errs) => {
                             errors.append(&mut errs);
-                            // Drain entries from failed expression to prevent leaking into next iteration.
                             state.type_annotation_table.drain_into(table);
+                            // Clear any partial injections on error to avoid leaking stale schemes.
+                            state.pending_scheme_injections.clear();
                         }
                     }
                 }
@@ -676,7 +686,7 @@ fn typecheck_surface_document(
                         &env,
                         state,
                         &mut None,
-                    ) {
+                    ).await {
                         Ok(_) => {
                             // Drain TypeAnnotationTable entries produced during InstanceDecl inference
                             // to prevent them from leaking into subsequent items.
@@ -717,7 +727,7 @@ fn typecheck_surface_document(
                 &mut None,
                 &mut None,
                 None,
-            ) {
+            ).await {
                 Ok(expected_output) => {
                     let (result_type_resolved, expected_output_resolved) = if state.subst.is_empty()
                     {
@@ -775,7 +785,7 @@ fn typecheck_surface_document(
             // This mirrors typecheck_document which calls infer_dict directly for dict exprs.
             // infer_dict always returns Ok with best-effort schemes; errors are in the third element.
             let (dict_ty, schemes, mut dict_errs) =
-                infer_dict(entries, &env, state, type_map, surface_node.span.clone());
+                infer_dict(entries, &env, state, type_map, surface_node.span.clone()).await;
             errors.append(&mut dict_errs);
             table.insert(node_id(surface_node), dict_ty.clone());
             // Merge nested TypeAssert entries (node_types) and pattern elaborations
@@ -790,7 +800,7 @@ fn typecheck_surface_document(
                 for (name, scheme) in &schemes {
                     new_env.insert_scheme(name.clone(), scheme.clone());
                 }
-                let mut alias_errs = register_type_aliases(surface_node, &mut new_env, &env, state);
+                let mut alias_errs = register_type_aliases(surface_node, &mut new_env, &env, state).await;
                 errors.append(&mut alias_errs);
                 env = Rc::new(new_env);
             }
@@ -802,7 +812,7 @@ fn typecheck_surface_document(
             state.level += 1;
 
             constraints.clear();
-            match infer_surface_expr(surface_node, &env, state, &mut constraints, type_map) {
+            match infer_surface_expr(surface_node, &env, state, &mut constraints, type_map).await {
                 Ok(ty) => {
                     state.level = enclosing_level;
                     table.insert(node_id(surface_node), ty.clone());
@@ -828,7 +838,7 @@ fn typecheck_surface_document(
                                     new_env.insert_scheme(name.clone(), scheme);
                                 }
                                 let mut alias_errs =
-                                    register_type_aliases(surface_node, &mut new_env, &env, state);
+                                    register_type_aliases(surface_node, &mut new_env, &env, state).await;
                                 errors.append(&mut alias_errs);
                                 env = Rc::new(new_env);
                             }
@@ -839,7 +849,7 @@ fn typecheck_surface_document(
                                 // subsequent expressions can reference the module's functions without
                                 // false "undefined variable" warnings.
                                 if let Some(module_env) =
-                                    try_resolve_stdlib_include_env(surface_node)
+                                    Box::pin(try_resolve_stdlib_include_env(surface_node)).await
                                 {
                                     let mut new_env = TypeEnv::with_parent(&env);
                                     // Copy all module-exported bindings into the current scope.
@@ -885,7 +895,7 @@ fn typecheck_surface_document(
             &mut None,
             &mut None,
             None,
-        ) {
+        ).await {
             Ok(expected_output) => {
                 let (result_type_resolved, expected_output_resolved) = if state.subst.is_empty() {
                     (result_type.clone(), expected_output.clone())
@@ -940,7 +950,7 @@ fn typecheck_surface_document(
         }
     }
     if let Some(ref node) = last_node {
-        let _ = register_type_aliases(node, &mut result_env, &env, state);
+        let _ = register_type_aliases(node, &mut result_env, &env, state).await;
     }
     result_env.insert("%".to_string(), result_type.clone());
 
@@ -1084,7 +1094,7 @@ fn extract_doc_from_surface_node(
 ///   pipeline in `imports::build_type_env_with_cap`).
 /// - The path is not a string literal (dynamic includes are not statically resolvable).
 /// - The module cannot be located or type-checked.
-fn try_resolve_stdlib_include_env(node: &Arc<SurfaceNode>) -> Option<Rc<TypeEnv>> {
+async fn try_resolve_stdlib_include_env(node: &Arc<SurfaceNode>) -> Option<Rc<TypeEnv>> {
     if let SurfaceExpression::Call { func, args, .. } = &node.expr {
         if let SurfaceExpression::VarRef { name, .. } = &func.expr {
             if name == "include" && args.len() == 2 {
@@ -1092,7 +1102,7 @@ fn try_resolve_stdlib_include_env(node: &Arc<SurfaceNode>) -> Option<Rc<TypeEnv>
                 if let SurfaceExpression::VarRef { name: cap_name, .. } = &args[0].expr {
                     if cap_name == "%libdir" {
                         if let SurfaceExpression::Str(module_path) = &args[1].expr {
-                            return crate::imports::get_stdlib_module_type_env(module_path);
+                            return crate::imports::get_stdlib_module_type_env(module_path).await;
                         }
                     }
                 }
@@ -1189,7 +1199,7 @@ pub(crate) fn extract_constructor_types(alias_ty: &Type, type_name: &str) -> Vec
     }
 }
 
-fn register_type_aliases(
+async fn register_type_aliases(
     node: &Arc<SurfaceNode>,
     target_env: &mut TypeEnv,
     _resolve_env: &TypeEnv,
@@ -1356,7 +1366,9 @@ fn register_type_aliases(
                                 // Use the FRESH param name (from alias_ann_map), not the original.
                                 let constraint = crate::type_class::Constraint::Class {
                                     class: std::sync::Arc::new(class_decl.clone()),
-                                    vars: vec![fresh.clone()],
+                                    vars: vec![crate::type_class::ConstraintArg::Var(
+                                        fresh.clone(),
+                                    )],
                                     origin_name: Some(std::sync::Arc::from(name.to_string())),
                                     origin_span: Some(ann_spanned.span.clone()),
                                 };
@@ -1389,13 +1401,20 @@ fn register_type_aliases(
             let mut recursion_guard = HashSet::new();
             recursion_guard.insert(name.clone());
 
-            // Build the type_params_scope: the set of declared parameter names for this alias.
-            // Passed to resolve_type_name to enforce explicit param scoping (T-1100 / T-951):
-            // inside a TypeAlias body, lowercase names are TypeVars only if declared.
-            let param_names_set: HashSet<String> = params.iter().map(|(n, _)| n.clone()).collect();
+            // Build the type_params_scope: maps declared param names → TypeVars.
+            // Enforces explicit param scoping in TypeAlias bodies (T-1100 / T-951).
+            let param_scope: HashMap<String, crate::types::Type> = params
+                .iter()
+                .filter_map(|(n, _)| {
+                    alias_ann_map.get(n).map(|fresh| {
+                        let level = state.levels.get(fresh).copied().unwrap_or(state.level);
+                        (n.clone(), crate::types::Type::TypeVar(fresh.clone(), level))
+                    })
+                })
+                .collect();
 
             let mut alias_constraints: Vec<Constraint> = Vec::new();
-            let body_resolve_result = resolve_type_expr_with_guard(
+            let body_resolve_result = Box::pin(resolve_type_expr_with_guard(
                 &body_node,
                 target_env, // Now resolve in target_env so recursive refs are visible
                 state,
@@ -1405,8 +1424,8 @@ fn register_type_aliases(
                 &mut recursion_guard,
                 &name,
                 0,
-                Some(&param_names_set),
-            );
+                Some((&param_scope, true)), // strict: TypeAlias rejects undeclared names
+            )).await;
 
             match body_resolve_result {
                 Ok(alias_ty) => {
@@ -1528,7 +1547,7 @@ fn register_type_aliases(
 }
 
 /// Type-check an `if` expression with path-sensitive narrowing.
-fn infer_if(
+async fn infer_if(
     cond: &Arc<SurfaceNode>,
     then_expr: &Arc<SurfaceNode>,
     else_expr: &Arc<SurfaceNode>,
@@ -1538,7 +1557,7 @@ fn infer_if(
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
     // Infer the condition type (must be Bool)
-    let _cond_ty = infer_surface_expr(cond, env, state, constraints, type_map)?;
+    let _cond_ty = infer_surface_expr(cond, env, state, constraints, type_map).await?;
 
     // Extract narrowings from the condition — walks SurfaceExpression natively.
     let narrowings = extract_narrowings(cond);
@@ -1554,8 +1573,8 @@ fn infer_if(
     let env_false = apply_negation_narrowings(env, &narrowings, state);
 
     // Infer the then and else branches in their respective environments
-    let then_ty = infer_surface_expr(then_expr, &env_true, state, constraints, type_map)?;
-    let else_ty = infer_surface_expr(else_expr, &env_false, state, constraints, type_map)?;
+    let then_ty = infer_surface_expr(then_expr, &env_true, state, constraints, type_map).await?;
+    let else_ty = infer_surface_expr(else_expr, &env_false, state, constraints, type_map).await?;
 
     // Form the union of both branch types and simplify (RDNF step 1b).
     // normalize_union deduplicates — if both branches return Int, the result is Int not Union([Int, Int]).
@@ -1683,7 +1702,7 @@ fn record_pattern_elaborations(
             record_pattern_elaborations(&et.node, &ot.node, table);
         }
 
-        // Leaf patterns (Variable, Wildcard, Literal, Pin, TypeTag): no sub-patterns.
+        // Leaf patterns (Variable, Wildcard, Literal, Pin): no sub-patterns.
         _ => {}
     }
 }
@@ -1768,13 +1787,14 @@ fn extract_case_arm_coverage_pattern(
 /// Natively walks SurfaceExpression variants without converting to Expr.
 /// Recursive calls use `infer_surface_expr` for child SurfaceNodes.
 /// Bridge to check_* functions (via surface_node_to_expr) will be eliminated in Phase 4.
-pub(crate) fn infer_surface_expr(
-    node: &std::sync::Arc<SurfaceNode>,
-    env: &Rc<TypeEnv>,
-    state: &mut InferState,
-    constraints: &mut Vec<Constraint>,
-    type_map: &mut Option<&mut TypeMap>,
-) -> Result<Type, Vec<TypeError>> {
+pub(crate) fn infer_surface_expr<'a>(
+    node: &'a std::sync::Arc<SurfaceNode>,
+    env: &'a Rc<TypeEnv>,
+    state: &'a mut InferState,
+    constraints: &'a mut Vec<Constraint>,
+    type_map: &'a mut Option<&mut TypeMap>,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Type, Vec<TypeError>>> + 'a>> {
+    Box::pin(async move {
     let result = match &node.expr {
         SurfaceExpression::Int(n) => Ok(Type::IntLiteral(*n)),
         // U64 literals: no dedicated U64 type yet — treated as Int at the type level.
@@ -1826,7 +1846,7 @@ pub(crate) fn infer_surface_expr(
         }
 
         SurfaceExpression::Dict(entries) => {
-            let (ty, _schemes, errs) = infer_dict(entries, env, state, type_map, node.span.clone());
+            let (ty, _schemes, errs) = infer_dict(entries, env, state, type_map, node.span.clone()).await;
             if errs.is_empty() {
                 Ok(ty)
             } else {
@@ -1847,7 +1867,7 @@ pub(crate) fn infer_surface_expr(
                 state,
                 constraints,
                 type_map,
-            )
+            ).await
         }
 
         SurfaceExpression::Pipe { .. } => {
@@ -1884,7 +1904,7 @@ pub(crate) fn infer_surface_expr(
                         state,
                         constraints,
                         type_map,
-                    );
+                    ).await;
                 }
 
                 // Intermediate expression: infer and extract record bindings.
@@ -1897,7 +1917,7 @@ pub(crate) fn infer_surface_expr(
                         state,
                         type_map,
                         seq_expr.span.clone(),
-                    );
+                    ).await;
                     if !dict_errs.is_empty() {
                         return Err(dict_errs);
                     }
@@ -1927,7 +1947,7 @@ pub(crate) fn infer_surface_expr(
                 } else {
                     let enclosing_level = state.level;
                     let expr_ty =
-                        infer_surface_expr(seq_expr, &current_env, state, constraints, type_map)?;
+                        infer_surface_expr(seq_expr, &current_env, state, constraints, type_map).await?;
 
                     // Extract record fields to extend the type environment.
                     // Generalize each field type at the enclosing level so that
@@ -1974,7 +1994,7 @@ pub(crate) fn infer_surface_expr(
                         state,
                         constraints,
                         type_map,
-                    );
+                    ).await;
                 }
 
                 // Special case: `get-in` is a type-level special form that unfolds into
@@ -1988,18 +2008,18 @@ pub(crate) fn infer_surface_expr(
                         state,
                         constraints,
                         type_map,
-                    );
+                    ).await;
                 }
 
                 // Special case: `open` synthesizes a precise Handle(cap_row) return type when
                 // capability flag arguments are statically known VarRefs (e.g., Readable, Writable).
                 if name == "open" && named_args.is_empty() && args.len() >= 2 {
-                    return check_open(args, env, node.span.clone(), state, constraints, type_map);
+                    return check_open(args, env, node.span.clone(), state, constraints, type_map).await;
                 }
 
                 // Special case: `connect` synthesizes a precise return type based on transport variant.
                 if name == "connect" && named_args.is_empty() && args.len() == 4 {
-                    let _ = infer_surface_expr(func, env, state, constraints, type_map); // Record func type for LSP hover
+                    let _ = infer_surface_expr(func, env, state, constraints, type_map).await; // Record func type for LSP hover
                     return check_connect(
                         args,
                         env,
@@ -2007,24 +2027,24 @@ pub(crate) fn infer_surface_expr(
                         state,
                         constraints,
                         type_map,
-                    );
+                    ).await;
                 }
 
                 // Special case: `map` synthesizes a precise return type for Seq input with callback.
                 if name == "map" && named_args.is_empty() && args.len() == 2 {
-                    let _ = infer_surface_expr(func, env, state, constraints, type_map); // Record func type for LSP hover
-                    return check_map(args, env, node.span.clone(), state, constraints, type_map);
+                    let _ = infer_surface_expr(func, env, state, constraints, type_map).await; // Record func type for LSP hover
+                    return check_map(args, env, node.span.clone(), state, constraints, type_map).await;
                 }
 
                 // Special case: `builtin-map` is an alias for `map` — dispatch to check_map.
                 if name == "builtin-map" && named_args.is_empty() && args.len() == 2 {
-                    let _ = infer_surface_expr(func, env, state, constraints, type_map); // Record func type for LSP hover
-                    return check_map(args, env, node.span.clone(), state, constraints, type_map);
+                    let _ = infer_surface_expr(func, env, state, constraints, type_map).await; // Record func type for LSP hover
+                    return check_map(args, env, node.span.clone(), state, constraints, type_map).await;
                 }
 
                 // Special case: `tls-layer` preserves input handle's capability row.
                 if name == "tls-layer" && named_args.is_empty() && args.len() == 3 {
-                    let _ = infer_surface_expr(func, env, state, constraints, type_map); // Record func type for LSP hover
+                    let _ = infer_surface_expr(func, env, state, constraints, type_map).await; // Record func type for LSP hover
                     return check_tls_layer(
                         args,
                         env,
@@ -2032,7 +2052,7 @@ pub(crate) fn infer_surface_expr(
                         state,
                         constraints,
                         type_map,
-                    );
+                    ).await;
                 }
             }
 
@@ -2054,7 +2074,7 @@ pub(crate) fn infer_surface_expr(
                             state,
                             constraints,
                             type_map,
-                        );
+                        ).await;
                     }
                 }
             }
@@ -2109,16 +2129,16 @@ pub(crate) fn infer_surface_expr(
 
                             for (arg, (_param_name, param_ty)) in args.iter().zip(params.iter()) {
                                 let arg_ty =
-                                    infer_surface_expr(arg, env, state, constraints, type_map)?;
+                                    infer_surface_expr(arg, env, state, constraints, type_map).await?;
                                 let mut subst = std::mem::take(&mut state.subst);
-                                let unify_result = unify(
+                                let unify_result = Box::pin(unify(
                                     &arg_ty,
                                     param_ty,
                                     &mut subst,
                                     state,
                                     constraints,
                                     arg.span.clone(),
-                                );
+                                )).await;
                                 state.subst = subst;
                                 if let Err(uerr) = unify_result {
                                     return Err(vec![uerr]);
@@ -2131,14 +2151,14 @@ pub(crate) fn infer_surface_expr(
                                     state,
                                     constraints,
                                     type_map,
-                                )?;
+                                ).await?;
                             }
                             return Ok(state.subst.apply(&ret));
                         }
                         _ => {
                             // TypeVar or other non-Function type: allow speculatively.
                             for arg in args {
-                                let _ = infer_surface_expr(arg, env, state, constraints, type_map)?;
+                                let _ = infer_surface_expr(arg, env, state, constraints, type_map).await?;
                             }
                             for na in named_args {
                                 let _ = infer_surface_expr(
@@ -2147,7 +2167,7 @@ pub(crate) fn infer_surface_expr(
                                     state,
                                     constraints,
                                     type_map,
-                                )?;
+                                ).await?;
                             }
                             return Ok(state.fresh_type_var());
                         }
@@ -2180,7 +2200,7 @@ pub(crate) fn infer_surface_expr(
                             state,
                             constraints,
                             type_map,
-                        )
+                        ).await
                         .map_err(|mut errs| {
                             // B-374/B-379: push call-site frame onto each error so the
                             // user sees WHERE the call was made, even when the error span
@@ -2217,7 +2237,7 @@ pub(crate) fn infer_surface_expr(
                             state,
                             constraints,
                             type_map,
-                        )
+                        ).await
                         .map_err(|mut errs| {
                             // B-374/B-379: push call-site frame for monomorphic named calls.
                             let frame = TypeSpanFrame::call(name, node.span.clone());
@@ -2238,7 +2258,7 @@ pub(crate) fn infer_surface_expr(
                         if name == "proxy" {
                             // Infer arguments for type map population
                             for arg in args {
-                                let _ = infer_surface_expr(arg, env, state, constraints, type_map)?;
+                                let _ = infer_surface_expr(arg, env, state, constraints, type_map).await?;
                             }
                             for na in named_args {
                                 let _ = infer_surface_expr(
@@ -2247,7 +2267,7 @@ pub(crate) fn infer_surface_expr(
                                     state,
                                     constraints,
                                     type_map,
-                                )?;
+                                ).await?;
                             }
                             Ok(Type::Proxy)
                         } else {
@@ -2278,7 +2298,7 @@ pub(crate) fn infer_surface_expr(
                     state,
                     constraints,
                     type_map,
-                )
+                ).await
                 .map_err(|mut errs| {
                     // B-374: push anonymous call-site frame so the call chain is visible
                     // even for lambda/inline-function call errors.
@@ -2327,7 +2347,7 @@ pub(crate) fn infer_surface_expr(
                 state,
                 constraints,
                 type_map,
-            )
+            ).await
         }
 
         SurfaceExpression::TypeAssert {
@@ -2345,7 +2365,7 @@ pub(crate) fn infer_surface_expr(
                 state,
                 constraints,
                 type_map,
-            );
+            ).await;
             // Populate TypeAnnotationTable so lower.rs can produce CoreExpr::TypeAssert
             // with the statically-resolved type (or Type::Unknown for errors/macros).
             if let Ok(ref ty) = result {
@@ -2371,7 +2391,7 @@ pub(crate) fn infer_surface_expr(
                 &mut ann_mapping_opt,
                 &mut row_ann_mapping_opt,
                 None,
-            )
+            ).await
             .map_err(|e| vec![e])
         }
 
@@ -2385,12 +2405,12 @@ pub(crate) fn infer_surface_expr(
 
         SurfaceExpression::Unquote(inner) => {
             // [unquote expr] evaluates expr and returns its type.
-            infer_surface_expr(inner, env, state, constraints, type_map)
+            infer_surface_expr(inner, env, state, constraints, type_map).await
         }
 
         SurfaceExpression::UnquoteSplice(inner) => {
             // [unquote-splice expr] expects expr to be a list (Dict with integer keys).
-            let inner_ty = infer_surface_expr(inner, env, state, constraints, type_map)?;
+            let inner_ty = infer_surface_expr(inner, env, state, constraints, type_map).await?;
 
             let expected_list_ty = Type::Record(Row {
                 fields: BTreeMap::new(),
@@ -2398,14 +2418,14 @@ pub(crate) fn infer_surface_expr(
             });
 
             let mut subst = std::mem::take(&mut state.subst);
-            let result = unify(
+            let result = Box::pin(unify(
                 &inner_ty,
                 &expected_list_ty,
                 &mut subst,
                 state,
                 constraints,
                 inner.span.clone(),
-            );
+            )).await;
             state.subst = subst;
             result.map_err(|_e| {
                 vec![TypeErrorTyped::Generic(GenericTypeError {
@@ -2421,7 +2441,7 @@ pub(crate) fn infer_surface_expr(
 
         SurfaceExpression::Match { scrutinee, arms } => {
             // Infer scrutinee type — needed for exhaustiveness checking.
-            let scrutinee_ty = infer_surface_expr(scrutinee, env, state, constraints, type_map)?;
+            let scrutinee_ty = infer_surface_expr(scrutinee, env, state, constraints, type_map).await?;
             let scrutinee_ty = state.subst.apply(&scrutinee_ty);
 
             // I-Case3 (BAS match narrowing): maintain a "remaining scrutinee" type that
@@ -2458,11 +2478,6 @@ pub(crate) fn infer_surface_expr(
                         // Full narrowing is deferred to the elaboration pass.
                         remaining_scrutinee.clone()
                     }
-                    Pattern::TypeTag(_) => {
-                        // TypeTag patterns (Int:, Str:, etc.) — no scrutinee narrowing yet.
-                        // Full type-dispatch narrowing is a future enhancement.
-                        remaining_scrutinee.clone()
-                    }
                     Pattern::Wildcard | Pattern::Pin(_) => remaining_scrutinee.clone(),
                     // T-1140: Predicate patterns — no static scrutinee narrowing.
                     // The predicate is opaque; we cannot determine what types it accepts.
@@ -2474,7 +2489,7 @@ pub(crate) fn infer_surface_expr(
                 // pattern bindings. This ensures collect_pattern_bindings sees resolved_type
                 // (not the raw annotation) when computing variable types for arm body checking.
                 let elaborated_pat =
-                    elaborate_pattern(&arm.pattern.node, env, state, &arm.pattern.span)?;
+                    elaborate_pattern(&arm.pattern.node, env, state, &arm.pattern.span).await?;
 
                 // Persist elaboration: record annotation-span → resolved type in the
                 // TypeAnnotationTable so lower.rs can convert TypeAssertPending → TypeAssert
@@ -2501,7 +2516,7 @@ pub(crate) fn infer_surface_expr(
                 // Type-check guard if present, and apply is: predicate narrowing.
                 let arm_env = if let Some(guard) = &arm.guard {
                     let _guard_ty =
-                        infer_surface_expr(guard, &arm_env, state, constraints, type_map)?;
+                        infer_surface_expr(guard, &arm_env, state, constraints, type_map).await?;
                     // extract_narrowings walks SurfaceExpression natively — pass guard directly.
                     let guard_narrowings = extract_narrowings(guard);
                     if guard_narrowings.is_empty() {
@@ -2512,7 +2527,7 @@ pub(crate) fn infer_surface_expr(
                 } else {
                     arm_env
                 };
-                let arm_ty = infer_surface_expr(&arm.body, &arm_env, state, constraints, type_map)?;
+                let arm_ty = infer_surface_expr(&arm.body, &arm_env, state, constraints, type_map).await?;
                 arm_result_types.push(arm_ty);
 
                 // Update remaining_scrutinee for subsequent arms (I-Case3 negation accumulation).
@@ -2618,10 +2633,11 @@ pub(crate) fn infer_surface_expr(
                         }
                         // Qualify any unqualified Variant tags so they match the qualified
                         // constructor tags in the sig (e.g., "None" → "Option.None").
-                        // This is necessary for traditional Pattern::Constructor arms where
-                        // ast_pattern_to_coverage does not have access to tycon_env.
                         coverage::qualify_coverage_pattern(
-                            coverage::ast_pattern_to_coverage(&arm.pattern.node),
+                            coverage::ast_pattern_to_coverage(
+                                &arm.pattern.node,
+                                Some(&state.tycon_env),
+                            ),
                             &state.tycon_env,
                         )
                     })
@@ -2727,19 +2743,24 @@ pub(crate) fn infer_surface_expr(
                     ref determines,
                     ref resolver,
                     resolver_injective,
-                } => infer_class_decl_from_surface(
-                    name,
-                    params,
-                    superclasses,
-                    methods,
-                    determines,
-                    resolver,
-                    resolver_injective,
-                    node.span.clone(),
-                    env,
-                    state,
-                    type_map,
-                ),
+                } => {
+                    // Method schemes are pushed to state.pending_scheme_injections by the callee.
+                    // The caller (infer_dict Pass 0c) drains and injects them into dict_env.
+                    let ty = infer_class_decl_from_surface(
+                        name,
+                        params,
+                        superclasses,
+                        methods,
+                        determines,
+                        resolver,
+                        resolver_injective,
+                        node.span.clone(),
+                        env,
+                        state,
+                        type_map,
+                    ).await?;
+                    Ok(ty)
+                }
                 SurfaceDeclaration::InstanceDecl {
                     ref class_name,
                     ref arms,
@@ -2750,11 +2771,11 @@ pub(crate) fn infer_surface_expr(
                     env,
                     state,
                     type_map,
-                ),
+                ).await,
                 SurfaceDeclaration::TypeAlias { .. } => {
                     // Extract body from decl_box directly to avoid borrow issues with **decl_box.
                     if let SurfaceDeclaration::TypeAlias { ref body, .. } = **decl_box {
-                        expand_type_alias(body, env, state).map_err(|e| vec![e])
+                        expand_type_alias(body, env, state).await.map_err(|e| vec![e])
                     } else {
                         unreachable!()
                     }
@@ -2810,7 +2831,7 @@ pub(crate) fn infer_surface_expr(
                 state,
                 constraints,
                 type_map,
-            )
+            ).await
         }
 
         SurfaceExpression::Placeholder => {
@@ -2866,12 +2887,18 @@ pub(crate) fn infer_surface_expr(
     }
 
     result
+    }) // end Box::pin(async move {
 }
 
 /// Type-check a [class ...] declaration from SurfaceDeclaration::ClassDecl fields.
 /// Called from infer_surface_expr (Decl arm) and typecheck_surface_document — no Expr bridge needed.
+///
+/// Method schemes are NOT returned in the `Result` — they are pushed to
+/// `state.pending_scheme_injections` so both call sites use the same injection channel.
+/// Callers must drain `state.pending_scheme_injections` and insert into the active TypeEnv
+/// after this function returns.
 #[allow(clippy::too_many_arguments)]
-fn infer_class_decl_from_surface(
+async fn infer_class_decl_from_surface(
     name: &str,
     params: &[String],
     superclasses: &[(String, String)],
@@ -2884,7 +2911,7 @@ fn infer_class_decl_from_surface(
     state: &mut InferState,
     _type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
-    use crate::types::{ClassDecl, Kind};
+    use crate::types::{ClassDecl, Kind, TypeScheme};
 
     if name.is_empty() {
         return Err(vec![TypeErrorTyped::Generic(GenericTypeError {
@@ -2896,8 +2923,29 @@ fn infer_class_decl_from_surface(
         })]);
     }
 
+    // Step 1: Introduce class parameter names as lexically scoped type bindings.
+    // The declared params (e.g. "a", "b", "c") are bound for the duration of the
+    // class body. Using declared names as TypeVar names keeps TypeScheme bodies
+    // consistent with type_vars: ["a", "b", "c"].
+    // strict=false: unlike TypeAlias, class method annotations may introduce
+    // additional fresh TypeVars beyond the class params — those fall through to
+    // ann_mapping / fresh_type_var creation without being rejected.
+    let class_param_scope: HashMap<String, crate::types::Type> = params
+        .iter()
+        .map(|p| {
+            state.levels.entry(p.clone()).or_insert(state.level);
+            state.type_var_source_names.insert(p.clone(), p.clone());
+            (
+                p.clone(),
+                crate::types::Type::TypeVar(p.clone(), state.level),
+            )
+        })
+        .collect();
+
+    // Step 2: Collect method signatures from the class body.
+    let mut collected_method_sigs: Vec<(String, crate::types::Type)> = Vec::new();
     for method in methods {
-        let _method_name = match &method.node.key {
+        let method_name = match &method.node.key {
             Some(key_node) => match &key_node.expr {
                 SurfaceExpression::Str(s) => s.clone(),
                 SurfaceExpression::VarRef { name: n, .. } => n.clone(),
@@ -2919,21 +2967,20 @@ fn infer_class_decl_from_surface(
                 })]);
             }
         };
-        // Method values in class declarations are type signatures ([fn params body] form).
-        // If resolve_type_expr fails, use Error to cascade the failure rather than going gradual.
-        // Dead code: current implementation doesn't use this result, but if it did, Error is
-        // correct for failed inference (not Unknown which would activate gradual typing).
-        let mut _method_constraints: Vec<Constraint> = Vec::new();
-        let _method_type = resolve_type_expr(
+        let mut method_constraints: Vec<Constraint> = Vec::new();
+        let mut ann_map_ref: HashMap<String, String> = HashMap::new();
+        let method_type = resolve_type_expr(
             &method.node.value,
             env,
             state,
-            &mut _method_constraints,
+            &mut method_constraints,
+            &mut Some(&mut ann_map_ref),
             &mut None,
-            &mut None,
-            None,
-        )
+            Some((&class_param_scope, false)), // not strict: allow extra TypeVars
+        ).await
         .unwrap_or(crate::types::Type::Error);
+
+        collected_method_sigs.push((method_name, method_type));
     }
 
     let existing_param_kinds: std::collections::HashMap<String, Kind> = state
@@ -2981,6 +3028,7 @@ fn infer_class_decl_from_surface(
         None
     };
 
+    // Step 3: Build ClassDecl with collected method signatures.
     let class_decl = ClassDecl {
         name: name.to_string(),
         params: params
@@ -2998,13 +3046,49 @@ fn infer_class_decl_from_surface(
         resolver: resolver_name,
         resolver_injective,
         prelude_origin: state.in_prelude_load,
+        method_signatures: collected_method_sigs,
     };
 
-    state.class_env.insert(class_decl.clone());
-    for (param_name, kind) in &class_decl.params {
+    // Step 4 (S-886): Wrap in Arc to keep alive for scheme construction.
+    let class_decl_arc = std::sync::Arc::new(class_decl);
+    state.class_env.insert((*class_decl_arc).clone());
+    for (param_name, kind) in &class_decl_arc.params {
         if *kind == Kind::Operator {
             state.kind_env.insert(param_name.clone(), Kind::Operator);
         }
+    }
+
+    // Step 5 (S-886): Build a TypeScheme for each method signature and push to
+    // state.pending_scheme_injections. The caller drains this vec and inserts the schemes into
+    // the active TypeEnv so subsequent entries see the method types.
+    // CRITICAL: use Arc::clone(&class_decl_arc) which has the real FD in `determines`.
+    // Do NOT use Constraint::new_by_name — it creates a stub ClassDecl with empty FD.
+    let type_vars: Vec<String> = class_decl_arc
+        .params
+        .iter()
+        .map(|(n, _)| n.clone())
+        .collect();
+    for (method_name, method_type) in &class_decl_arc.method_signatures {
+        let scheme = TypeScheme {
+            type_vars: type_vars.clone(),
+            constraints: vec![Constraint::Class {
+                class: std::sync::Arc::clone(&class_decl_arc),
+                vars: type_vars
+                    .iter()
+                    .map(|n| crate::types::ConstraintArg::Var(n.clone()))
+                    .collect(),
+                origin_name: Some(std::sync::Arc::from(method_name.as_str())),
+                origin_span: None,
+            }],
+            body: method_type.clone(),
+            label_vars: vec![],
+            kind_vars: vec![],
+            doc: None,
+            inner_schemes: None,
+        };
+        state
+            .pending_scheme_injections
+            .push((method_name.clone(), scheme));
     }
 
     Ok(Type::Record(Row {
@@ -3018,7 +3102,7 @@ type SurfaceMatchArmData<'a> = (Vec<Type>, Span, &'a Vec<Spanned<crate::ast::Sur
 
 /// Type-check an [instance ...] declaration from SurfaceDeclaration::InstanceDecl fields.
 /// Called from infer_surface_expr (Decl arm) and typecheck_surface_document — no Expr bridge needed.
-fn infer_instance_decl_from_surface(
+async fn infer_instance_decl_from_surface(
     class_name: &str,
     arms: &[(Arc<SurfaceNode>, Vec<Spanned<crate::ast::SurfaceEntry>>)],
     span: Span,
@@ -3059,7 +3143,7 @@ fn infer_instance_decl_from_surface(
     let mut arm_data: Vec<SurfaceMatchArmData> = Vec::new();
 
     for (pattern_node, methods) in arms {
-        let pattern_types = extract_pattern_types(pattern_node, env, state)?;
+        let pattern_types = extract_pattern_types(pattern_node, env, state).await?;
 
         if pattern_types.len() != param_count {
             return Err(vec![TypeErrorTyped::Generic(GenericTypeError {
@@ -3093,7 +3177,7 @@ fn infer_instance_decl_from_surface(
             let (types_i, span_i, _) = &arm_data[i];
             let (types_j, span_j, _) = &arm_data[j];
 
-            if patterns_overlap(types_i, types_j, state)? {
+            if patterns_overlap(types_i, types_j, state).await? {
                 let error = TypeErrorTyped::OverlappingInstancePatterns(OverlappingInstancePatterns {
                     span: span_j.clone(),
                     notes: vec![format!(
@@ -3152,7 +3236,7 @@ fn infer_instance_decl_from_surface(
                         .map(|&idx| types_j[idx].clone())
                         .collect();
 
-                    if types_can_unify(&determining_i, &determining_j, state)? {
+                    if types_can_unify(&determining_i, &determining_j, state).await? {
                         let determined_i: Vec<Type> = determined_indices
                             .iter()
                             .map(|&idx| types_i[idx].clone())
@@ -3162,7 +3246,7 @@ fn infer_instance_decl_from_surface(
                             .map(|&idx| types_j[idx].clone())
                             .collect();
 
-                        if !types_can_unify(&determined_i, &determined_j, state)? {
+                        if !types_can_unify(&determined_i, &determined_j, state).await? {
                             let error = TypeErrorTyped::ConsistencyViolation(ConsistencyViolation {
                                 span: span_j.clone(),
                                 notes: vec![format!(
@@ -3230,7 +3314,7 @@ fn infer_instance_decl_from_surface(
                     state,
                     &mut local_constraints,
                     type_map,
-                )?;
+                ).await?;
                 method_types.insert(method_name, method_impl_type);
             }
         }
@@ -3269,7 +3353,7 @@ fn infer_instance_decl_from_surface(
         // is an authoring error caught by the prelude test suite).
         if !state.in_prelude_load {
             let inst_env_snapshot = state.instance_env.clone();
-            if let Err(msg) = inst_env_snapshot.check_structural_overlap(&instance_decl, state) {
+            if let Err(msg) = inst_env_snapshot.check_structural_overlap(&instance_decl, state).await {
                 // Structural overlap is advisory (warning), not a blocking error.
                 // User code may deliberately re-declare instances that the prelude defines
                 // (e.g., `[instance Equatable [pattern [Int]]: ...]` in user code); the
@@ -3337,7 +3421,7 @@ fn contains_unknown_or_top(ty: &Type) -> bool {
 
 /// This function is used at checking positions where the expected type is fully concrete
 /// (no type variables): CALL-MONO arguments, concrete return annotations (no TypeVars), and TypeAssert.
-pub(super) fn check_surface_expr(
+pub(super) async fn check_surface_expr(
     node: &Arc<SurfaceNode>,
     expected: &Type,
     env: &Rc<TypeEnv>,
@@ -3423,10 +3507,9 @@ pub(super) fn check_surface_expr(
                     // type: expected_ty must be a subtype of the annotation (contravariant check).
                     // Example: expected Fn(Int→...) but param declared @String → Int <: String is
                     // false → error, because callers will pass Int but the body expects String.
-                    let param_types: Vec<Type> = params
-                        .iter()
-                        .zip(expected_params.iter())
-                        .map(|(p, (_, expected_ty))| match &p.node.annotation {
+                    let mut param_types: Vec<Type> = Vec::with_capacity(params.len());
+                    for (p, (_, expected_ty)) in params.iter().zip(expected_params.iter()) {
+                        let param_ty = match &p.node.annotation {
                             Some(ann) => {
                                 let resolved = resolve_annotation(
                                     &ann.node,
@@ -3437,7 +3520,7 @@ pub(super) fn check_surface_expr(
                                     &mut ann_mapping_opt,
                                     &mut row_ann_mapping_opt,
                                     None,
-                                )?;
+                                ).await.map_err(|e| vec![e])?;
                                 // Contravariant check: expected param type must be subtype of annotation.
                                 // When annotation contains type variables, use unification mode instead of
                                 // is_subtype (C65 fix pattern: TypeVars only match reflexively in is_subtype).
@@ -3445,14 +3528,14 @@ pub(super) fn check_surface_expr(
                                     let mut subst = std::mem::take(&mut state.subst);
                                     let mut check_fn_constraints: Vec<Constraint> = Vec::new();
                                     let result =
-                                        unify(expected_ty, &resolved, &mut subst, state, &mut check_fn_constraints, ann.span.clone());
+                                        Box::pin(unify(expected_ty, &resolved, &mut subst, state, &mut check_fn_constraints, ann.span.clone())).await;
                                     state.subst = subst;
                                     result.map_err(|_e| {
-                                        TypeErrorTyped::Generic(GenericTypeError {
+                                        vec![TypeErrorTyped::Generic(GenericTypeError {
                                             message: format!("parameter annotation {resolved} is more restrictive than required type {expected_ty}"),
                                             span: ann.span.clone(),
                                             notes: vec![], call_stack: vec![],
-                                        })
+                                        })]
                                     })?;
                                 } else {
                                     // Apply substitution before consistency check
@@ -3466,19 +3549,19 @@ pub(super) fn check_surface_expr(
                                             || contains_unknown_or_top(&resolved_ty))
                                             && Type::is_consistent(&expected_ty_resolved, &resolved_ty));
                                     if !sub_passes {
-                                        return Err(TypeErrorTyped::Generic(GenericTypeError {
+                                        return Err(vec![TypeErrorTyped::Generic(GenericTypeError {
                                             message: format!("parameter annotation {resolved_ty} is more restrictive than required type {expected_ty_resolved}"),
                                             span: ann.span.clone(),
                                             notes: vec![], call_stack: vec![],
-                                        }));
+                                        })]);
                                     }
                                 }
-                                Ok(resolved)
+                                resolved
                             }
-                            None => Ok(expected_ty.clone()),
-                        })
-                        .collect::<Result<_, _>>()
-                        .map_err(|e| vec![e])?;
+                            None => expected_ty.clone(),
+                        };
+                        param_types.push(param_ty);
+                    }
 
                     // Build function environment with parameter bindings
                     let mut fn_env = TypeEnv::with_parent(env);
@@ -3507,7 +3590,7 @@ pub(super) fn check_surface_expr(
                                 &mut ann_mapping_opt,
                                 &mut row_ann_mapping_opt,
                                 None,
-                            )
+                            ).await
                             .map_err(|e| vec![e])?;
                             // Check that declared return type is compatible with expected.
                             // When declared contains type variables, use unification mode instead of
@@ -3515,14 +3598,14 @@ pub(super) fn check_surface_expr(
                             if declared.has_inference_vars() {
                                 let mut subst = std::mem::take(&mut state.subst);
                                 let mut ret_constraints: Vec<Constraint> = Vec::new();
-                                let result = unify(
+                                let result = Box::pin(unify(
                                     &declared,
                                     expected_ret,
                                     &mut subst,
                                     state,
                                     &mut ret_constraints,
                                     ann.span.clone(),
-                                );
+                                )).await;
                                 state.subst = subst;
                                 result.map_err(|_e| {
                                     vec![TypeErrorTyped::UnificationFailure(UnificationFailure {
@@ -3537,11 +3620,11 @@ pub(super) fn check_surface_expr(
                                 // Apply substitution before consistency check
                                 let (declared_resolved, expected_ret_resolved) =
                                     if state.subst.is_empty() {
-                                        (declared.clone(), expected_ret.clone())
+                                        (declared.clone(), (**expected_ret).clone())
                                     } else {
                                         (
                                             state.subst.apply(&declared),
-                                            Box::new(state.subst.apply(expected_ret)),
+                                            state.subst.apply(expected_ret),
                                         )
                                     };
                                 let sub_passes =
@@ -3558,7 +3641,7 @@ pub(super) fn check_surface_expr(
                                 if !sub_passes {
                                     return Err(vec![TypeErrorTyped::UnificationFailure(
                                         UnificationFailure {
-                                            expected: (*expected_ret_resolved).clone(),
+                                            expected: expected_ret_resolved.clone(),
                                             got: declared_resolved.clone(),
                                             span: node.span.clone(),
                                             notes: vec![],
@@ -3568,14 +3651,14 @@ pub(super) fn check_surface_expr(
                                 }
                             }
                             // Check body against declared return type
-                            check_surface_expr(
+                            Box::pin(check_surface_expr(
                                 body,
                                 &declared,
                                 &fn_env,
                                 state,
                                 constraints,
                                 type_map,
-                            )?;
+                            )).await?;
                         }
                         None => {
                             // No return annotation: check body against expected return type.
@@ -3594,14 +3677,14 @@ pub(super) fn check_surface_expr(
                             } else {
                                 state.subst.apply(expected_ret)
                             };
-                            check_surface_expr(
+                            Box::pin(check_surface_expr(
                                 body,
                                 &applied_ret,
                                 &fn_env,
                                 state,
                                 constraints,
                                 type_map,
-                            )?;
+                            )).await?;
                         }
                     }
 
@@ -3623,7 +3706,7 @@ pub(super) fn check_surface_expr(
     }
 
     // Default: synthesize then check via infer_surface_expr
-    let actual = infer_surface_expr(node, env, state, constraints, type_map)?;
+    let actual = infer_surface_expr(node, env, state, constraints, type_map).await?;
     // Apply state.subst to both types before comparison — access-chain constraints
     // may have bound TypeVars in state.subst. Without substitution, the comparison
     // uses stale TypeVars.
@@ -3645,14 +3728,14 @@ pub(super) fn check_surface_expr(
         // instantiate type variables based on the argument types.
         //
         let mut subst = std::mem::take(&mut state.subst);
-        let result = unify(
+        let result = Box::pin(unify(
             &actual,
             &expected_resolved,
             &mut subst,
             state,
             constraints,
             node.span.clone(),
-        );
+        )).await;
         state.subst = subst;
         result.map_err(|e| vec![e])
     } else {

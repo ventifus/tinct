@@ -13,9 +13,12 @@ use std::rc::Rc;
 use std::str::FromStr;
 use std::sync::Arc;
 use tinct::{
-    create_stdlib_env, escape_json_str, literate, materialize_sync as materialize, parse,
+    create_stdlib_env, escape_json_str, literate, parse,
     parse_with_file, visit_value, EvalContext, JsonVisitor, SourceFile, Thunk, MAX_FILE_SIZE,
 };
+fn materialize(t: &Thunk, s: Option<&tinct::Span>, c: &std::sync::Arc<EvalContext>) -> tinct::EvalResult<tinct::Value> {
+    tinct::async_rt::block_on_anywhere(tinct::materialize(t, s, c))
+}
 
 // Exit codes for llt eval
 const EXIT_ERROR: i32 = 1;
@@ -2144,7 +2147,7 @@ fn run_eval(
                 PipelineStage::File(file_path) if file_path != "-" => {
                     // File-based: use build_type_env with base_dir for include resolution
                     let (env, _include_bindings) =
-                        tinct::build_type_env(&program, Some(&file_base_dir_path));
+                        tinct::async_rt::block_on_anywhere(tinct::build_type_env(&program, Some(&file_base_dir_path)));
                     env
                 }
                 _ => {
@@ -2161,13 +2164,13 @@ fn run_eval(
                 infer_state,
                 _final_env,
                 type_annotation_table_from_env,
-            ) = tinct::typecheck::typecheck_surface_program_with_env(
+            ) = tinct::async_rt::block_on_anywhere(tinct::typecheck::typecheck_surface_program_with_env(
                 &program,
                 type_env,
                 false, // disable scheme_map (not needed for eval)
                 false, // not in prelude load
                 Some(&resolution_table),
-            );
+            ));
             if !type_errors.is_empty() {
                 let file_name = match stage {
                     PipelineStage::File(fp) => fp.as_str(),
@@ -2504,7 +2507,7 @@ async fn run_fmt(
         tinct::desugar::desugar_surface_program(&mut program);
         let env = tinct::build_prelude_env();
         let (type_errors, _type_map, _doc_map, _scheme_map, fmt_diagnostics) =
-            tinct::typecheck::typecheck_surface_program(&program, env);
+            tinct::async_rt::block_on_anywhere(tinct::typecheck::typecheck_surface_program(&program, env));
 
         if !type_errors.is_empty() {
             let error_msgs: Vec<String> = type_errors
@@ -2654,7 +2657,7 @@ fn run_lint(
     // Type check with prelude environment
     let env = tinct::build_prelude_env();
     let (type_errors, _type_map, _doc_map, _scheme_map, diagnostics) =
-        tinct::typecheck::typecheck_surface_program(&program, env);
+        tinct::async_rt::block_on_anywhere(tinct::typecheck::typecheck_surface_program(&program, env));
 
     // Collect all errors and warnings
     let mut all_messages = Vec::new();
@@ -2930,7 +2933,7 @@ fn run_literate_eval(tangled: &str, config: &LiterateConfig) -> Result<(), Strin
     // Variable resolution pass (Phase 1 of arena allocation strategy).
     let resolution_table = std::sync::Arc::new(tinct::resolve::resolve_surface_program(&program));
     let (type_errors, type_annotation_table, expects_resolved) =
-        tinct::typecheck::typecheck_surface_program_annotation_table(&program);
+        tinct::async_rt::block_on_anywhere(tinct::typecheck::typecheck_surface_program_annotation_table(&program));
     let type_annotation_table = std::sync::Arc::new(type_annotation_table);
     let expects_resolved = std::sync::Arc::new(expects_resolved);
 
@@ -3208,7 +3211,7 @@ fn run_literate_lint(tangled: &str, config: &LiterateConfig) -> Result<(), Strin
     // Type check with prelude environment
     let env = tinct::build_prelude_env();
     let (type_errors, _type_map, _doc_map, _scheme_map, diagnostics) =
-        tinct::typecheck::typecheck_surface_program(&program, env);
+        tinct::async_rt::block_on_anywhere(tinct::typecheck::typecheck_surface_program(&program, env));
 
     // Collect all errors and warnings
     let mut all_messages = Vec::new();
@@ -3546,7 +3549,7 @@ fn run_literate_weave(
         let resolution_table =
             std::sync::Arc::new(tinct::resolve::resolve_surface_program(&program));
         let (type_errors, type_annotation_table, expects_resolved) =
-            tinct::typecheck::typecheck_surface_program_annotation_table(&program);
+            tinct::async_rt::block_on_anywhere(tinct::typecheck::typecheck_surface_program_annotation_table(&program));
         let type_annotation_table = std::sync::Arc::new(type_annotation_table);
 
         // Capture type warnings (always non-fatal in literate mode unless --strict)
@@ -4308,7 +4311,7 @@ fn run_describe(file_path: &str, json_mode: bool) -> Result<(), String> {
     // Type check to get DocMap (for doc strings)
     let env = tinct::build_prelude_env();
     let (_type_errors, _type_map, doc_map, _scheme_map, _diagnostics) =
-        tinct::typecheck::typecheck_surface_program(&program, env);
+        tinct::async_rt::block_on_anywhere(tinct::typecheck::typecheck_surface_program(&program, env));
 
     // Collect contract information from each document section.
     let mut contracts: Vec<DescribeJson> = Vec::new();

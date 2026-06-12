@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use super::{check_surface_expr, contains_unknown_or_top, infer_surface_expr, TypeMap};
 use crate::ast::{Annotation, Span, Spanned, SurfaceEntry, SurfaceExpression, SurfaceNode};
+use crate::type_class::ConstraintArg;
 use crate::type_def::Variance;
 use crate::type_errors::{GenericTypeError, TypeErrorTyped, UndefinedType};
 use crate::types::{Constraint, InferState, Kind, Row, Type, TypeAlias, TypeEnv, TypeError};
@@ -227,7 +228,7 @@ fn walk_polarity(
     }
 }
 
-pub(crate) fn expand_type_alias(
+pub(crate) async fn expand_type_alias(
     inner: &Arc<SurfaceNode>,
     env: &Rc<TypeEnv>,
     state: &mut InferState,
@@ -248,11 +249,11 @@ pub(crate) fn expand_type_alias(
         &mut Some(&mut alias_ann_map),
         &mut None,
         None,
-    )?;
+    ).await?;
     Ok(Type::Unknown)
 }
 
-pub(crate) fn resolve_type_assert(
+pub(crate) async fn resolve_type_assert(
     annotation: &Spanned<Annotation>,
     inner: &Arc<SurfaceNode>,
     env: &Rc<TypeEnv>,
@@ -277,11 +278,11 @@ pub(crate) fn resolve_type_assert(
         &mut ann_mapping_opt,
         &mut row_ann_mapping_opt,
         None,
-    )
+    ).await
     .map_err(|e| vec![e])?;
 
     // Use checking mode for TypeAssert inner expression (doc/06 §Bidirectional Typing).
-    let check_result = check_surface_expr(inner, &expected, env, state, constraints, type_map);
+    let check_result = check_surface_expr(inner, &expected, env, state, constraints, type_map).await;
 
     // If checking fails, propagate errors (TypeAssert failures are hard type errors).
     if let Err(type_errors) = check_result {
@@ -293,7 +294,7 @@ pub(crate) fn resolve_type_assert(
 
     // Validate the default value type — hard error if the default cannot satisfy the asserted type.
     if let Some(default_node) = annotation.node.get_property("default") {
-        match infer_surface_expr(default_node, env, state, constraints, type_map) {
+        match infer_surface_expr(default_node, env, state, constraints, type_map).await {
             Ok(default_ty) => {
                 // Apply state.subst to both types before comparison — access-chain constraints
                 // may have bound TypeVars in state.subst (e.g., $data.name generates row-variable
@@ -386,7 +387,7 @@ pub(crate) fn resolve_type_assert(
 ///
 /// Otherwise, resolves `$annotation` as a regular type annotation.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn resolve_annotated(
+pub(crate) async fn resolve_annotated(
     name: &str,
     annotation: &Spanned<Annotation>,
     env: &Rc<TypeEnv>,
@@ -395,7 +396,7 @@ pub(crate) fn resolve_annotated(
     constraints: &mut Vec<Constraint>,
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
-    type_params_scope: Option<&HashSet<String>>,
+    type_params_scope: Option<(&HashMap<String, crate::types::Type>, bool)>,
 ) -> Result<Type, TypeError> {
     if name == "Fn" {
         resolve_fn_type(
@@ -407,7 +408,7 @@ pub(crate) fn resolve_annotated(
             ann_mapping,
             row_ann_mapping,
             type_params_scope,
-        )
+        ).await
     } else if name == "Seq" {
         let elem = resolve_annotation(
             &annotation.node,
@@ -418,7 +419,7 @@ pub(crate) fn resolve_annotated(
             ann_mapping,
             row_ann_mapping,
             type_params_scope,
-        )?;
+        ).await?;
         let ty = Type::seq(elem);
         crate::types::check_kind_wellformed(&ty, &state.kind_env, span)?;
         Ok(ty)
@@ -441,7 +442,7 @@ pub(crate) fn resolve_annotated(
             ann_mapping,
             row_ann_mapping,
             type_params_scope,
-        )?;
+        ).await?;
         Ok(Type::handle(cap_type))
     } else {
         resolve_annotation(
@@ -453,7 +454,7 @@ pub(crate) fn resolve_annotated(
             ann_mapping,
             row_ann_mapping,
             type_params_scope,
-        )
+        ).await
     }
 }
 
@@ -469,7 +470,7 @@ pub(crate) fn resolve_annotated(
 ///
 /// Returns (return_type, doc_string).
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn resolve_fn_metadata(
+pub(crate) async fn resolve_fn_metadata(
     entries: &[Spanned<SurfaceEntry>],
     env: &TypeEnv,
     span: Span,
@@ -477,7 +478,7 @@ pub(crate) fn resolve_fn_metadata(
     constraints: &mut Vec<Constraint>,
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
-    type_params_scope: Option<&HashSet<String>>,
+    type_params_scope: Option<(&HashMap<String, crate::types::Type>, bool)>,
 ) -> Result<(Type, Option<String>), TypeError> {
     // Valid hardcoded class names (pre-HKT)
     const VALID_CLASSES: &[&str] = &[
@@ -1129,7 +1130,10 @@ pub(crate) fn resolve_fn_metadata(
                                         // Create the MPTC constraint using Arc<ClassDecl>
                                         constraints.push(Constraint::Class {
                                             class: Arc::new(class_decl.clone()),
-                                            vars: typevar_names,
+                                            vars: typevar_names
+                                                .into_iter()
+                                                .map(ConstraintArg::Var)
+                                                .collect(),
                                             origin_name: None,
                                             origin_span: None,
                                         });
@@ -1172,7 +1176,7 @@ pub(crate) fn resolve_fn_metadata(
                         ann_mapping,
                         row_ann_mapping,
                         type_params_scope,
-                    )?;
+                    ).await?;
                     return_type = Some(ret);
                 }
             }
@@ -1258,7 +1262,7 @@ pub(crate) fn resolve_fn_metadata(
 /// - existing union return type path if ALL entries are positional
 /// - error if mixed named + positional
 #[allow(clippy::too_many_arguments)]
-fn resolve_fn_type(
+async fn resolve_fn_type(
     ann: &Annotation,
     env: &TypeEnv,
     span: Span,
@@ -1266,7 +1270,7 @@ fn resolve_fn_type(
     constraints: &mut Vec<Constraint>,
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
-    type_params_scope: Option<&HashSet<String>>,
+    type_params_scope: Option<(&HashMap<String, crate::types::Type>, bool)>,
 ) -> Result<Type, TypeError> {
     match ann {
         Annotation::PropertyDict(surface_entries) => {
@@ -1307,7 +1311,7 @@ fn resolve_fn_type(
                     ann_mapping,
                     row_ann_mapping,
                     type_params_scope,
-                )?;
+                ).await?;
                 let ty = Type::Function {
                     params: vec![],
                     ret: Box::new(ret),
@@ -1329,7 +1333,7 @@ fn resolve_fn_type(
                     ann_mapping,
                     row_ann_mapping,
                     type_params_scope,
-                )
+                ).await
             }
         }
         _ => {
@@ -1343,7 +1347,7 @@ fn resolve_fn_type(
                 ann_mapping,
                 row_ann_mapping,
                 type_params_scope,
-            )?;
+            ).await?;
             let ty = Type::Function {
                 params: vec![],
                 ret: Box::new(ret),
@@ -1360,7 +1364,7 @@ fn resolve_fn_type(
 /// Unlike `resolve_annotation`, a PropertyDict is interpreted as a type expression
 /// (record type or function type) rather than a property bag.
 #[allow(clippy::too_many_arguments)]
-fn resolve_annotation_as_type(
+async fn resolve_annotation_as_type(
     ann: &Annotation,
     env: &TypeEnv,
     span: Span,
@@ -1368,7 +1372,7 @@ fn resolve_annotation_as_type(
     constraints: &mut Vec<Constraint>,
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
-    type_params_scope: Option<&HashSet<String>>,
+    type_params_scope: Option<(&HashMap<String, crate::types::Type>, bool)>,
 ) -> Result<Type, TypeError> {
     match ann {
         Annotation::Simple(name) => {
@@ -1398,7 +1402,7 @@ fn resolve_annotation_as_type(
                 ann_mapping,
                 row_ann_mapping,
                 type_params_scope,
-            )
+            ).await
         }
         Annotation::Annotated(name, inner) => {
             // For fn annotations, forward to full resolver
@@ -1412,13 +1416,13 @@ fn resolve_annotation_as_type(
                 ann_mapping,
                 row_ann_mapping,
                 type_params_scope,
-            )
+            ).await
         }
     }
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn resolve_annotation(
+pub(crate) async fn resolve_annotation(
     ann: &Annotation,
     env: &TypeEnv,
     span: Span,
@@ -1426,7 +1430,7 @@ pub(crate) fn resolve_annotation(
     constraints: &mut Vec<Constraint>,
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
-    type_params_scope: Option<&HashSet<String>>,
+    type_params_scope: Option<(&HashMap<String, crate::types::Type>, bool)>,
 ) -> Result<Type, TypeError> {
     match ann {
         Annotation::Simple(name) => {
@@ -1447,7 +1451,7 @@ pub(crate) fn resolve_annotation(
             match name.as_str() {
                 "Seq" => {
                     // Resolve the inner type
-                    let elem_type = resolve_annotation(
+                    let elem_type = Box::pin(resolve_annotation(
                         inner,
                         env,
                         span,
@@ -1456,7 +1460,7 @@ pub(crate) fn resolve_annotation(
                         ann_mapping,
                         row_ann_mapping,
                         type_params_scope,
-                    )?;
+                    )).await?;
                     Ok(Type::seq(elem_type))
                 }
                 "Map" => {
@@ -1466,7 +1470,7 @@ pub(crate) fn resolve_annotation(
                             // @Map@T (single type) → Map[fresh_key: T]
                             // Use a fresh TypeVar for the key so callers can unify against
                             // concrete key types instead of being stuck with Unknown.
-                            let value_type = resolve_annotation(
+                            let value_type = Box::pin(resolve_annotation(
                                 inner,
                                 env,
                                 span,
@@ -1475,7 +1479,7 @@ pub(crate) fn resolve_annotation(
                                 ann_mapping,
                                 row_ann_mapping,
                                 type_params_scope,
-                            )?;
+                            )).await?;
                             Ok(Type::map(state.fresh_type_var(), value_type))
                         }
                         Annotation::PropertyDict(surface_entries) => {
@@ -1504,7 +1508,7 @@ pub(crate) fn resolve_annotation(
                                         ann_mapping,
                                         row_ann_mapping,
                                         type_params_scope,
-                                    )?
+                                    ).await?
                                 } else {
                                     Type::Unknown
                                 };
@@ -1516,12 +1520,12 @@ pub(crate) fn resolve_annotation(
                                     ann_mapping,
                                     row_ann_mapping,
                                     type_params_scope,
-                                )?;
+                                ).await?;
                                 Ok(Type::map(key_ty, value_ty))
                             } else {
                                 // No "value:" key — delegate to resolve_type_dict which handles
                                 // positional forms like [Map K V] (though nested inside @Map@).
-                                resolve_type_dict(
+                                Box::pin(resolve_type_dict(
                                     surface_entries,
                                     env,
                                     span,
@@ -1530,14 +1534,14 @@ pub(crate) fn resolve_annotation(
                                     ann_mapping,
                                     row_ann_mapping,
                                     type_params_scope,
-                                )
+                                )).await
                             }
                         }
                         _ => {
                             // Other forms like @Map@Annotated — treat as single value type.
                             // Use a fresh TypeVar for the key so callers can unify against
                             // concrete key types instead of being stuck with Unknown.
-                            let value_type = resolve_annotation(
+                            let value_type = Box::pin(resolve_annotation(
                                 inner,
                                 env,
                                 span,
@@ -1546,7 +1550,7 @@ pub(crate) fn resolve_annotation(
                                 ann_mapping,
                                 row_ann_mapping,
                                 type_params_scope,
-                            )?;
+                            )).await?;
                             Ok(Type::map(state.fresh_type_var(), value_type))
                         }
                     }
@@ -1558,7 +1562,7 @@ pub(crate) fn resolve_annotation(
                             // @Record@[field: Type ...] → structural record type.
                             // Delegate to resolve_type_dict which handles record fields,
                             // row variables (...r), and type constructor applications.
-                            resolve_type_dict(
+                            Box::pin(resolve_type_dict(
                                 surface_entries,
                                 env,
                                 span,
@@ -1567,7 +1571,7 @@ pub(crate) fn resolve_annotation(
                                 ann_mapping,
                                 row_ann_mapping,
                                 type_params_scope,
-                            )
+                            )).await
                         }
                         _ => Err(TypeErrorTyped::Generic(GenericTypeError {
                             message:
@@ -1589,7 +1593,7 @@ pub(crate) fn resolve_annotation(
                     //   @Handle@Unknown           → Handle(Unknown)  (gradual handle)
                     //
                     // Resolve the inner annotation as a capability type and wrap in Handle.
-                    let cap_type = resolve_annotation(
+                    let cap_type = Box::pin(resolve_annotation(
                         inner,
                         env,
                         span,
@@ -1598,7 +1602,7 @@ pub(crate) fn resolve_annotation(
                         ann_mapping,
                         row_ann_mapping,
                         type_params_scope,
-                    )?;
+                    )).await?;
                     Ok(Type::handle(cap_type))
                 }
                 _ => {
@@ -1607,7 +1611,7 @@ pub(crate) fn resolve_annotation(
                     if let Some(def) = env.lookup_tycon_def(name) {
                         if def.arity() >= 1 {
                             // Resolve the inner annotation as the first type argument.
-                            let arg = resolve_annotation(
+                            let arg = Box::pin(resolve_annotation(
                                 inner,
                                 env,
                                 span,
@@ -1616,7 +1620,7 @@ pub(crate) fn resolve_annotation(
                                 ann_mapping,
                                 row_ann_mapping,
                                 type_params_scope,
-                            )?;
+                            )).await?;
                             return Ok(Type::App(
                                 Box::new(Type::TyCon(name.clone())),
                                 Box::new(arg),
@@ -1690,7 +1694,7 @@ pub(crate) fn resolve_annotation(
                     ann_mapping,
                     row_ann_mapping,
                     type_params_scope,
-                )
+                ).await
             } else if let Some(label_value_node) = surface_entries.iter().find_map(|se| {
                 // @[label: name] — named Label-kinded TypeVar annotation.
                 // Only fires when there is exactly one entry and its key is "label".
@@ -1767,7 +1771,7 @@ pub(crate) fn resolve_annotation(
                 }
             } else {
                 // No "type:" key (or has non-metadata keys) — treat as structural type or metadata.
-                resolve_property_dict_as_record(
+                Box::pin(resolve_property_dict_as_record(
                     surface_entries,
                     env,
                     span,
@@ -1776,14 +1780,14 @@ pub(crate) fn resolve_annotation(
                     ann_mapping,
                     row_ann_mapping,
                     type_params_scope,
-                )
+                )).await
             }
         }
     }
 }
 
 #[allow(clippy::too_many_arguments)]
-fn resolve_property_dict_as_record(
+async fn resolve_property_dict_as_record(
     entries: &[Spanned<SurfaceEntry>],
     env: &TypeEnv,
     span: Span,
@@ -1791,9 +1795,9 @@ fn resolve_property_dict_as_record(
     constraints: &mut Vec<Constraint>,
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
-    type_params_scope: Option<&HashSet<String>>,
+    type_params_scope: Option<(&HashMap<String, crate::types::Type>, bool)>,
 ) -> Result<Type, TypeError> {
-    resolve_type_dict(
+    let dict_result = resolve_type_dict(
         entries,
         env,
         span.clone(),
@@ -1802,36 +1806,41 @@ fn resolve_property_dict_as_record(
         ann_mapping,
         row_ann_mapping,
         type_params_scope,
-    )
-    .or_else(|e| {
-        let is_tycon_error = entries.first().is_some_and(|first| {
-            first.node.key.is_none()
-                && matches!(&first.node.value.expr, SurfaceExpression::VarRef { name, .. }
-                    if env.lookup_tycon_def(name).is_some())
-        });
-        if entries_look_like_type_dict(entries) || is_tycon_error {
-            Err(e)
-        } else {
-            // The property dict is not a type-dict (no `or`/`all`/`without`/`Seq`/`Map`
-            // head, no matching record-field shape). Try evaluating it as a type-stage
-            // expression — user-defined type-stage combinators like `@[my-combinator args]`
-            // are handled by eval_type_stage_expr.
-            //
-            // Synthesize an Arc<SurfaceNode> from the PropertyDict entries so
-            // eval_type_stage_expr can evaluate it in the type-stage environment.
-            //
-            // Annotation PropertyDicts with all-positional entries whose first entry is
-            // a VarRef represent implied calls: @[my-combinator Int String] is parsed as
-            // PropertyDict([{key:None, val:VarRef("my-combinator")}, ...]) rather than as
-            // a Dict expression. We must detect this case and synthesize a Call node so
-            // the evaluator sees a function call, not an integer-keyed dict.
-            let _ = e; // suppress the type-dict resolution error
-            let synth_node = synthesize_type_stage_node(entries, span.clone());
-            // Return Unknown when type-stage evaluation fails: env unavailable,
-            // eval error, or the result is TypeNode.Recursive/RecursiveRef (deferred).
-            Ok(eval_type_stage_expr(&synth_node, env, state).unwrap_or(Type::Unknown))
+    ).await;
+
+    match dict_result {
+        Ok(ty) => Ok(ty),
+        Err(e) => {
+            let is_tycon_error = entries.first().is_some_and(|first| {
+                first.node.key.is_none()
+                    && matches!(&first.node.value.expr, SurfaceExpression::VarRef { name, .. }
+                        if env.lookup_tycon_def(name).is_some())
+            });
+            if entries_look_like_type_dict(entries) || is_tycon_error {
+                Err(e)
+            } else {
+                // The property dict is not a type-dict (no `or`/`all`/`without`/`Seq`/`Map`
+                // head, no matching record-field shape). Try evaluating it as a type-stage
+                // expression — user-defined type-stage combinators like `@[my-combinator args]`
+                // are handled by eval_type_stage_expr.
+                //
+                // Synthesize an Arc<SurfaceNode> from the PropertyDict entries so
+                // eval_type_stage_expr can evaluate it in the type-stage environment.
+                //
+                // Annotation PropertyDicts with all-positional entries whose first entry is
+                // a VarRef represent implied calls: @[my-combinator Int String] is parsed as
+                // PropertyDict([{key:None, val:VarRef("my-combinator")}, ...]) rather than as
+                // a Dict expression. We must detect this case and synthesize a Call node so
+                // the evaluator sees a function call, not an integer-keyed dict.
+                let _ = e; // suppress the type-dict resolution error
+                let synth_node = synthesize_type_stage_node(entries, span.clone());
+                // Return Unknown when type-stage evaluation fails: env unavailable,
+                // eval error, or the result is TypeNode.Recursive/RecursiveRef (deferred).
+                Ok(eval_type_stage_expr(&synth_node, env, state).await
+                    .unwrap_or(Type::Unknown))
+            }
         }
-    })
+    }
 }
 
 /// Check whether property dict entries structurally look like they could be a
@@ -1882,7 +1891,7 @@ fn entries_look_like_type_dict(entries: &[Spanned<SurfaceEntry>]) -> bool {
 ///
 /// Given `Pair: [type [a] [first: a second: a]]` and args `[Int]`,
 /// builds substitution `{a -> Int}` and applies to body to get `[first: Int second: Int]`.
-fn instantiate_type_alias(
+async fn instantiate_type_alias(
     alias: &TypeAlias,
     type_args: &[Type],
     state: &mut InferState,
@@ -1905,14 +1914,15 @@ fn instantiate_type_alias(
         {
             // For single-parameter constraints (the common case), vars[0] is the param name.
             // Look up the type argument for that param in type_subst.
-            if let Some(param_name) = vars.first() {
+            // Only Var positions have a param name to look up; Ground positions are already resolved.
+            if let Some(crate::type_class::ConstraintArg::Var(param_name)) = vars.first() {
                 if let Some(arg_type) = type_subst.get(param_name) {
                     // Clone instance_env to avoid borrow conflict: resolve_instance takes &self
                     // on instance_env AND &mut state simultaneously, which Rust's borrow checker
                     // rejects when both are fields of InferState.
                     let instance_env = state.instance_env.clone();
                     let error_span = origin_span.clone().unwrap_or_else(crate::ast::Span::origin);
-                    match instance_env.resolve_instance(&class.name, arg_type, state) {
+                    match Box::pin(instance_env.resolve_instance(&class.name, arg_type, state)).await {
                         Ok(Some(_)) => {
                             // Constraint satisfied — continue.
                         }
@@ -2087,7 +2097,7 @@ pub(crate) fn resolve_type_name_with_guard(
     recursion_guard: &mut HashSet<String>,
     _current_alias: &str,
     depth: usize,
-    type_params_scope: Option<&HashSet<String>>,
+    type_params_scope: Option<(&HashMap<String, crate::types::Type>, bool)>,
 ) -> Result<Type, TypeError> {
     // Handle builtin types and lowercase type variables using normal resolution
     if !name.starts_with(|c: char| c.is_uppercase())
@@ -2189,7 +2199,7 @@ pub(crate) fn resolve_type_name_with_guard(
         let mut _local_constraints: Vec<Constraint> = Vec::new();
         _local_constraints.push(Constraint::Class {
             class: Arc::new(class_decl),
-            vars: vec![fresh.clone()],
+            vars: vec![ConstraintArg::Var(fresh.clone())],
             origin_name: None,
             origin_span: Some(span),
         });
@@ -2214,7 +2224,7 @@ pub(crate) fn resolve_type_name(
     constraints: &mut Vec<Constraint>,
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
     row_ann_mapping: &Option<&HashMap<String, String>>,
-    type_params_scope: Option<&HashSet<String>>,
+    type_params_scope: Option<(&HashMap<String, crate::types::Type>, bool)>,
 ) -> Result<Type, TypeError> {
     match name {
         "Int" => Ok(Type::Int),
@@ -2306,12 +2316,17 @@ pub(crate) fn resolve_type_name(
                 // lowercase names are TypeVars ONLY if they appear in the declared params list.
                 // Unknown lowercase names are a type error rather than silently creating a
                 // fresh TypeVar — enforcing the "explicit type params" principle.
-                if let Some(params) = type_params_scope {
-                    // Check if this name is a declared type param (via ann_mapping which maps
-                    // param name → fresh TypeVar name). If not, check if it's a scope reference
-                    // (a TyConDef or TypeAlias visible in the current env), else error.
+                if let Some((params, strict)) = type_params_scope {
+                    // If this name is a bound type parameter in scope, return its TypeVar
+                    // directly. Class/instance/alias params introduced via [let ...] live here.
+                    if let Some(tv) = params.get(name) {
+                        return Ok(tv.clone());
+                    }
+                    // Strict mode (TypeAlias bodies): validate that undeclared lowercase
+                    // names are either scope references or error. Non-strict (class methods):
+                    // allow extra TypeVars to fall through to ann_mapping / fresh_type_var.
                     let in_params = ann_mapping.as_ref().is_some_and(|m| m.contains_key(name));
-                    if !in_params && !params.contains(name) {
+                    if strict && !in_params && !params.contains_key(name) {
                         // Name not declared as a type parameter — check if it's a scope reference.
                         if env.get_type_alias(name).is_none() && env.lookup_tycon_def(name).is_none() {
                             return Err(TypeErrorTyped::Generic(GenericTypeError {
@@ -2390,7 +2405,17 @@ pub(crate) fn resolve_type_name(
             } else {
                 // Uppercase type name — check for type alias
                 if let Some(alias) = env.get_type_alias(name) {
-                    // Check arity — bare alias name must have zero parameters
+                    // Nominal ADT check must happen before the arity check so that parameterized
+                    // nominal ADTs (e.g. Result, Seq, Maybe) can be referenced bare as type
+                    // constructors in HKT-style instance arm annotations ([let f@Result]).
+                    // Returns TyCon(name) which UNIFY-TYCON-EXPAND can match against variants.
+                    if let Some(def) = env.lookup_tycon_def(name) {
+                        if !def.constructors.is_empty() || def.builtin_type.is_some() {
+                            return Ok(Type::TyCon(name.to_string()));
+                        }
+                    }
+
+                    // Check arity — bare alias name must have zero parameters for non-ADT aliases.
                     if !alias.params.is_empty() {
                         return Err(TypeErrorTyped::Generic(GenericTypeError {
                             message: format!(
@@ -2403,21 +2428,8 @@ pub(crate) fn resolve_type_name(
                         }));
                     }
 
-                    // Zero-parameter alias: check if this is a user-declared nominal type.
-                    // If so, return Type::TyCon(name) for nominal identity checking (UNIFY-TYCON).
-                    // This enables UNIFY-TYCON-EXPAND to match @Color with NominalVariant members.
-                    //
-                    // Only return TyCon for types that have actual constructors (nominal ADTs)
-                    // or are builtin opaque types. Record/structural aliases fall through to the
-                    // body directly — they don't need nominal identity checking.
-                    if let Some(def) = env.lookup_tycon_def(name) {
-                        if !def.constructors.is_empty() || def.builtin_type.is_some() {
-                            return Ok(Type::TyCon(name.to_string()));
-                        }
-                    }
-
-                    // Non-nominal alias: return the body directly
-                    // Recursive expansion happens during alias registration via resolve_type_name_with_guard
+                    // Non-nominal zero-parameter alias: return the body directly.
+                    // Recursive expansion happens during alias registration via resolve_type_name_with_guard.
                     Ok(alias.body.clone())
                 } else if let Some(class_decl) = state.class_env.get(name).cloned() {
                     // T-1197: Class name used in annotation position: @Comparable, @Equatable, etc.
@@ -2438,7 +2450,7 @@ pub(crate) fn resolve_type_name(
                     state.levels.insert(fresh.clone(), state.level);
                     constraints.push(Constraint::Class {
                         class: Arc::new(class_decl),
-                        vars: vec![fresh.clone()],
+                        vars: vec![ConstraintArg::Var(fresh.clone())],
                         origin_name: None,
                         origin_span: Some(span),
                     });
@@ -2632,7 +2644,7 @@ fn expand_alias_body_guarded(
 /// Resolve a type expression with recursion guard for recursive type aliases.
 /// This is the internal version used during alias registration.
 #[allow(clippy::too_many_arguments)] // Internal helper for recursive type resolution
-pub(crate) fn resolve_type_expr_with_guard(
+pub(crate) async fn resolve_type_expr_with_guard(
     node: &Arc<SurfaceNode>,
     env: &TypeEnv,
     state: &mut InferState,
@@ -2642,7 +2654,7 @@ pub(crate) fn resolve_type_expr_with_guard(
     recursion_guard: &mut HashSet<String>,
     current_alias: &str,
     depth: usize,
-    type_params_scope: Option<&HashSet<String>>,
+    type_params_scope: Option<(&HashMap<String, crate::types::Type>, bool)>,
 ) -> Result<Type, TypeError> {
     const MAX_ALIAS_DEPTH: usize = 256;
     if depth >= MAX_ALIAS_DEPTH {
@@ -2671,7 +2683,7 @@ pub(crate) fn resolve_type_expr_with_guard(
             depth,
             type_params_scope,
         ),
-        SurfaceExpression::Dict(entries) => resolve_type_dict_with_guard(
+        SurfaceExpression::Dict(entries) => Box::pin(resolve_type_dict_with_guard(
             entries,
             env,
             node.span.clone(),
@@ -2683,13 +2695,13 @@ pub(crate) fn resolve_type_expr_with_guard(
             current_alias,
             depth,
             type_params_scope,
-        ),
+        )).await,
         _ => {
             // For all other expr types, delegate to normal resolve_type_expr.
             // Most expr types (literals, Annotated, Call) don't recursively reference type aliases,
             // so the guard isn't needed. If we encounter cases where nested aliases cause issues,
             // we can expand this match to handle them explicitly.
-            resolve_type_expr(
+            Box::pin(resolve_type_expr(
                 node,
                 env,
                 state,
@@ -2697,14 +2709,14 @@ pub(crate) fn resolve_type_expr_with_guard(
                 ann_mapping,
                 row_ann_mapping,
                 type_params_scope,
-            )
+            )).await
         }
     }
 }
 
 /// Resolve a dict in type position with recursion guard.
 #[allow(clippy::too_many_arguments)] // Internal helper for recursive type resolution
-fn resolve_type_dict_with_guard(
+async fn resolve_type_dict_with_guard(
     entries: &[Spanned<SurfaceEntry>],
     env: &TypeEnv,
     span: Span,
@@ -2715,7 +2727,7 @@ fn resolve_type_dict_with_guard(
     recursion_guard: &mut HashSet<String>,
     current_alias: &str,
     depth: usize,
-    type_params_scope: Option<&HashSet<String>>,
+    type_params_scope: Option<(&HashMap<String, crate::types::Type>, bool)>,
 ) -> Result<Type, TypeError> {
     // Handle type-stage keywords ([or ...], [all ...], [without ...]) with guard propagation.
     // Other dict forms (function types, parameterized aliases, record types, unions)
@@ -2736,7 +2748,7 @@ fn resolve_type_dict_with_guard(
                 }
                 let mut members = Vec::new();
                 for entry in &entries[1..] {
-                    let ty = resolve_type_expr_with_guard(
+                    let ty = Box::pin(resolve_type_expr_with_guard(
                         &entry.node.value,
                         env,
                         state,
@@ -2747,7 +2759,7 @@ fn resolve_type_dict_with_guard(
                         current_alias,
                         depth,
                         type_params_scope,
-                    )?;
+                    )).await?;
                     members.push(ty);
                 }
                 return Ok(Type::normalize_union(members));
@@ -2763,7 +2775,7 @@ fn resolve_type_dict_with_guard(
                 }
                 let mut members = Vec::new();
                 for entry in &entries[1..] {
-                    let ty = resolve_type_expr_with_guard(
+                    let ty = Box::pin(resolve_type_expr_with_guard(
                         &entry.node.value,
                         env,
                         state,
@@ -2774,7 +2786,7 @@ fn resolve_type_dict_with_guard(
                         current_alias,
                         depth,
                         type_params_scope,
-                    )?;
+                    )).await?;
                     members.push(ty);
                 }
                 return Ok(Type::normalize_intersection(members));
@@ -2788,7 +2800,7 @@ fn resolve_type_dict_with_guard(
                         call_stack: vec![],
                     }));
                 }
-                let inner = resolve_type_expr_with_guard(
+                let inner = Box::pin(resolve_type_expr_with_guard(
                     &entries[1].node.value,
                     env,
                     state,
@@ -2799,7 +2811,7 @@ fn resolve_type_dict_with_guard(
                     current_alias,
                     depth,
                     type_params_scope,
-                )?;
+                )).await?;
                 return Ok(Type::Negation(Box::new(inner)));
             }
         }
@@ -2851,10 +2863,10 @@ fn resolve_type_dict_with_guard(
                         ann_mapping,
                         row_ann_mapping,
                         type_params_scope,
-                    );
+                    ).await;
                 }
             };
-            let ty = resolve_type_expr_with_guard(
+            let ty = Box::pin(resolve_type_expr_with_guard(
                 &entry.node.value,
                 env,
                 state,
@@ -2865,7 +2877,7 @@ fn resolve_type_dict_with_guard(
                 current_alias,
                 depth,
                 type_params_scope,
-            )?;
+            )).await?;
             fields.insert(key, ty);
         }
 
@@ -2924,17 +2936,17 @@ fn resolve_type_dict_with_guard(
         ann_mapping,
         row_ann_mapping,
         type_params_scope,
-    )
+    ).await
 }
 
-pub(crate) fn resolve_type_expr(
+pub(crate) async fn resolve_type_expr(
     node: &Arc<SurfaceNode>,
     env: &TypeEnv,
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
-    type_params_scope: Option<&HashSet<String>>,
+    type_params_scope: Option<(&HashMap<String, crate::types::Type>, bool)>,
 ) -> Result<Type, TypeError> {
     match &node.expr {
         // String literals in type position → Type::StringLiteral (tag-only enum variants).
@@ -2982,7 +2994,7 @@ pub(crate) fn resolve_type_expr(
                 Err(e) => Err(e),
             }
         }
-        SurfaceExpression::Dict(entries) => resolve_type_dict(
+        SurfaceExpression::Dict(entries) => Box::pin(resolve_type_dict(
             entries,
             env,
             node.span.clone(),
@@ -2991,10 +3003,10 @@ pub(crate) fn resolve_type_expr(
             ann_mapping,
             row_ann_mapping,
             type_params_scope,
-        ),
+        )).await,
         SurfaceExpression::Annotated { name, annotation } => {
             if name == "Fn" {
-                resolve_fn_type(
+                Box::pin(resolve_fn_type(
                     &annotation.node,
                     env,
                     annotation.span.clone(),
@@ -3003,7 +3015,7 @@ pub(crate) fn resolve_type_expr(
                     ann_mapping,
                     row_ann_mapping,
                     type_params_scope,
-                )
+                )).await
             } else {
                 // For all other parameterized type annotations in type-expression position
                 // (e.g., `Handle@DirCap`, `Seq@Int`, `Map@[key: Str value: Int]` inline),
@@ -3015,7 +3027,7 @@ pub(crate) fn resolve_type_expr(
                 // the Handle wrapper for `Handle@DirCap`, Seq wrapper for `Seq@Int`, etc.
                 let full_ann =
                     Annotation::Annotated(name.clone(), Box::new(annotation.node.clone()));
-                resolve_annotation(
+                Box::pin(resolve_annotation(
                     &full_ann,
                     env,
                     node.span.clone(),
@@ -3024,7 +3036,7 @@ pub(crate) fn resolve_type_expr(
                     ann_mapping,
                     row_ann_mapping,
                     type_params_scope,
-                )
+                )).await
             }
         }
         // This arm handles `SurfaceExpression::Call { implied: true }`, which arises when a
@@ -3048,7 +3060,7 @@ pub(crate) fn resolve_type_expr(
                 if name == "Fn" {
                     // Fn@RetType [Params] in new syntax: resolve return type from annotation,
                     // then resolve each arg as a parameter type. For zero params, args is empty.
-                    let ret = resolve_annotation_as_type(
+                    let ret = Box::pin(resolve_annotation_as_type(
                         &annotation.node,
                         env,
                         annotation.span.clone(),
@@ -3057,7 +3069,7 @@ pub(crate) fn resolve_type_expr(
                         ann_mapping,
                         row_ann_mapping,
                         type_params_scope,
-                    )?;
+                    )).await?;
                     // args[0] should be the parameter list (a Dict or another implied Call)
                     let mut params = Vec::new();
                     if let Some(param_list) = args.first() {
@@ -3076,7 +3088,7 @@ pub(crate) fn resolve_type_expr(
                                     } else {
                                         None
                                     };
-                                    let param_ty = resolve_type_expr(
+                                    let param_ty = Box::pin(resolve_type_expr(
                                         &entry.node.value,
                                         env,
                                         state,
@@ -3084,7 +3096,7 @@ pub(crate) fn resolve_type_expr(
                                         ann_mapping,
                                         row_ann_mapping,
                                         type_params_scope,
-                                    )?;
+                                    )).await?;
                                     params.push((param_name, param_ty));
                                 }
                             }
@@ -3095,7 +3107,7 @@ pub(crate) fn resolve_type_expr(
                                 ..
                             } => {
                                 // Param list itself is an implied call: [a b c] → VarRef("a") + args
-                                let param_ty = resolve_type_expr(
+                                let param_ty = Box::pin(resolve_type_expr(
                                     inner_func,
                                     env,
                                     state,
@@ -3103,10 +3115,10 @@ pub(crate) fn resolve_type_expr(
                                     ann_mapping,
                                     row_ann_mapping,
                                     type_params_scope,
-                                )?;
+                                )).await?;
                                 params.push((None, param_ty));
                                 for a in inner_args.iter() {
-                                    let param_ty = resolve_type_expr(
+                                    let param_ty = Box::pin(resolve_type_expr(
                                         a,
                                         env,
                                         state,
@@ -3114,13 +3126,13 @@ pub(crate) fn resolve_type_expr(
                                         ann_mapping,
                                         row_ann_mapping,
                                         type_params_scope,
-                                    )?;
+                                    )).await?;
                                     params.push((None, param_ty));
                                 }
                             }
                             _ => {
                                 // Single param that's not a Dict
-                                let param_ty = resolve_type_expr(
+                                let param_ty = Box::pin(resolve_type_expr(
                                     param_list,
                                     env,
                                     state,
@@ -3128,7 +3140,7 @@ pub(crate) fn resolve_type_expr(
                                     ann_mapping,
                                     row_ann_mapping,
                                     type_params_scope,
-                                )?;
+                                )).await?;
                                 params.push((None, param_ty));
                             }
                         }
@@ -3174,7 +3186,7 @@ pub(crate) fn resolve_type_expr(
                     }
                     let mut members = Vec::new();
                     for arg in args.iter() {
-                        let ty = resolve_type_expr(
+                        let ty = Box::pin(resolve_type_expr(
                             arg,
                             env,
                             state,
@@ -3182,7 +3194,7 @@ pub(crate) fn resolve_type_expr(
                             ann_mapping,
                             row_ann_mapping,
                             type_params_scope,
-                        )?;
+                        )).await?;
                         members.push(ty);
                     }
                     return Ok(Type::normalize_union(members));
@@ -3198,7 +3210,7 @@ pub(crate) fn resolve_type_expr(
                     }
                     let mut members = Vec::new();
                     for arg in args.iter() {
-                        let ty = resolve_type_expr(
+                        let ty = Box::pin(resolve_type_expr(
                             arg,
                             env,
                             state,
@@ -3206,7 +3218,7 @@ pub(crate) fn resolve_type_expr(
                             ann_mapping,
                             row_ann_mapping,
                             type_params_scope,
-                        )?;
+                        )).await?;
                         members.push(ty);
                     }
                     return Ok(Type::normalize_intersection(members));
@@ -3219,7 +3231,7 @@ pub(crate) fn resolve_type_expr(
                             call_stack: vec![],
                         }));
                     }
-                    let inner = resolve_type_expr(
+                    let inner = Box::pin(resolve_type_expr(
                         &args[0],
                         env,
                         state,
@@ -3227,7 +3239,7 @@ pub(crate) fn resolve_type_expr(
                         ann_mapping,
                         row_ann_mapping,
                         type_params_scope,
-                    )?;
+                    )).await?;
                     return Ok(Type::Negation(Box::new(inner)));
                 }
             }
@@ -3243,7 +3255,7 @@ pub(crate) fn resolve_type_expr(
                         let mut result = Type::TyCon(name.clone());
                         let arg_count = std::cmp::min(arity, args.len());
                         for arg_node in args.iter().take(arg_count) {
-                            let arg = resolve_type_expr(
+                            let arg = Box::pin(resolve_type_expr(
                                 arg_node,
                                 env,
                                 state,
@@ -3251,7 +3263,7 @@ pub(crate) fn resolve_type_expr(
                                 ann_mapping,
                                 row_ann_mapping,
                                 type_params_scope,
-                            )?;
+                            )).await?;
                             result = Type::App(Box::new(result), Box::new(arg));
                         }
                         return Ok(result);
@@ -3265,7 +3277,7 @@ pub(crate) fn resolve_type_expr(
                     // Resolve all type arguments
                     let mut type_args = Vec::new();
                     for arg in args {
-                        type_args.push(resolve_type_expr(
+                        type_args.push(Box::pin(resolve_type_expr(
                             arg,
                             env,
                             state,
@@ -3273,7 +3285,7 @@ pub(crate) fn resolve_type_expr(
                             ann_mapping,
                             row_ann_mapping,
                             type_params_scope,
-                        )?);
+                        )).await?);
                     }
 
                     // Check arity
@@ -3292,7 +3304,7 @@ pub(crate) fn resolve_type_expr(
                     }
 
                     // Build substitution and apply to body
-                    return instantiate_type_alias(&alias, &type_args, state);
+                    return Box::pin(instantiate_type_alias(&alias, &type_args, state)).await;
                 }
             }
 
@@ -3311,7 +3323,7 @@ pub(crate) fn resolve_type_expr(
                     if !named_args.is_empty() {
                         let mut fields_map = BTreeMap::new();
                         for named_arg in named_args {
-                            let field_ty = resolve_type_expr(
+                            let field_ty = Box::pin(resolve_type_expr(
                                 &named_arg.node.value,
                                 env,
                                 state,
@@ -3319,7 +3331,7 @@ pub(crate) fn resolve_type_expr(
                                 ann_mapping,
                                 row_ann_mapping,
                                 type_params_scope,
-                            )?;
+                            )).await?;
                             fields_map.insert(named_arg.node.name.clone(), field_ty);
                         }
                         return Ok(Type::NominalVariant {
@@ -3332,7 +3344,7 @@ pub(crate) fn resolve_type_expr(
                     } else if args.len() == 1 {
                         // Single positional payload: [Some a] → NominalVariant("Some", { "0": a })
                         // Use integer string key "0" for the single positional payload field.
-                        let payload_ty = resolve_type_expr(
+                        let payload_ty = Box::pin(resolve_type_expr(
                             &args[0],
                             env,
                             state,
@@ -3340,7 +3352,7 @@ pub(crate) fn resolve_type_expr(
                             ann_mapping,
                             row_ann_mapping,
                             type_params_scope,
-                        )?;
+                        )).await?;
                         let mut fields_map = BTreeMap::new();
                         fields_map.insert("0".to_string(), payload_ty);
                         return Ok(Type::NominalVariant {
@@ -3405,7 +3417,7 @@ pub(crate) fn resolve_type_expr(
                     )?;
                     let mut members = vec![head_ty];
                     for arg in args.iter() {
-                        let member_ty = resolve_type_expr(
+                        let member_ty = Box::pin(resolve_type_expr(
                             arg,
                             env,
                             state,
@@ -3413,7 +3425,7 @@ pub(crate) fn resolve_type_expr(
                             ann_mapping,
                             row_ann_mapping,
                             type_params_scope,
-                        )?;
+                        )).await?;
                         members.push(member_ty);
                     }
                     return Ok(Type::normalize_union(members));
@@ -3437,7 +3449,7 @@ pub(crate) fn resolve_type_expr(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn resolve_type_dict(
+pub(crate) async fn resolve_type_dict(
     entries: &[Spanned<SurfaceEntry>],
     env: &TypeEnv,
     span: Span,
@@ -3445,9 +3457,9 @@ pub(crate) fn resolve_type_dict(
     constraints: &mut Vec<Constraint>,
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
-    type_params_scope: Option<&HashSet<String>>,
+    type_params_scope: Option<(&HashMap<String, crate::types::Type>, bool)>,
 ) -> Result<Type, TypeError> {
-    if let Some(fn_type) = try_resolve_fn_type_expr(
+    if let Some(fn_type) = Box::pin(try_resolve_fn_type_expr(
         entries,
         env,
         span.clone(),
@@ -3456,7 +3468,7 @@ pub(crate) fn resolve_type_dict(
         ann_mapping,
         row_ann_mapping,
         type_params_scope,
-    )? {
+    )).await? {
         return Ok(fn_type);
     }
 
@@ -3502,7 +3514,7 @@ pub(crate) fn resolve_type_dict(
                                     ann_mapping,
                                     row_ann_mapping,
                                     type_params_scope,
-                                )?;
+                                ).await?;
                                 args.push(arg);
                             }
 
@@ -3542,21 +3554,18 @@ pub(crate) fn resolve_type_dict(
                 if let SurfaceExpression::VarRef { name, .. } = &first.node.value.expr {
                     if let Some(kind) = state.kind_env.get(name.as_str()) {
                         if kind.arity() > 0 {
-                            let args: Result<Vec<Type>, _> = entries[1..]
-                                .iter()
-                                .map(|e| {
-                                    resolve_type_expr(
-                                        &e.node.value,
-                                        env,
-                                        state,
-                                        constraints,
-                                        ann_mapping,
-                                        row_ann_mapping,
-                                        type_params_scope,
-                                    )
-                                })
-                                .collect();
-                            let args = args?;
+                            let mut args: Vec<Type> = Vec::new();
+                            for e in entries[1..].iter() {
+                                args.push(resolve_type_expr(
+                                    &e.node.value,
+                                    env,
+                                    state,
+                                    constraints,
+                                    ann_mapping,
+                                    row_ann_mapping,
+                                    type_params_scope,
+                                ).await?);
+                            }
 
                             // User-defined: always Kind::Operator (arity 1).
                             // Rank-1 restriction: argument cannot itself be a type constructor.
@@ -3628,7 +3637,7 @@ pub(crate) fn resolve_type_dict(
                                     ann_mapping,
                                     row_ann_mapping,
                                     type_params_scope,
-                                )?);
+                                ).await?);
                             }
                             if type_args.len() != alias.params.len() {
                                 return Err(TypeErrorTyped::Generic(GenericTypeError {
@@ -3643,7 +3652,7 @@ pub(crate) fn resolve_type_dict(
                                     call_stack: vec![],
                                 }));
                             }
-                            return instantiate_type_alias(&alias, &type_args, state);
+                            return Box::pin(instantiate_type_alias(&alias, &type_args, state)).await;
                         }
                     }
                 }
@@ -3686,7 +3695,7 @@ pub(crate) fn resolve_type_dict(
                         ann_mapping,
                         row_ann_mapping,
                         type_params_scope,
-                    )?;
+                    ).await?;
                     members.push(ty);
                 }
                 return Ok(Type::normalize_union(members));
@@ -3710,7 +3719,7 @@ pub(crate) fn resolve_type_dict(
                         ann_mapping,
                         row_ann_mapping,
                         type_params_scope,
-                    )?;
+                    ).await?;
                     members.push(ty);
                 }
                 return Ok(Type::normalize_intersection(members));
@@ -3732,7 +3741,7 @@ pub(crate) fn resolve_type_dict(
                     ann_mapping,
                     row_ann_mapping,
                     type_params_scope,
-                )?;
+                ).await?;
                 return Ok(Type::Negation(Box::new(inner)));
             }
         }
@@ -3814,7 +3823,7 @@ pub(crate) fn resolve_type_dict(
                                     ann_mapping,
                                     row_ann_mapping,
                                     type_params_scope,
-                                )?;
+                                ).await?;
                                 // Unnamed payload: create record with single field "0"
                                 let mut fields = BTreeMap::new();
                                 fields.insert("0".to_string(), payload_ty);
@@ -3863,7 +3872,7 @@ pub(crate) fn resolve_type_dict(
                                             ann_mapping,
                                             row_ann_mapping,
                                             type_params_scope,
-                                        )?;
+                                        ).await?;
                                         variant_fields.insert(field_name, field_ty);
                                     }
                                     None => {
@@ -3907,7 +3916,7 @@ pub(crate) fn resolve_type_dict(
                     ann_mapping,
                     row_ann_mapping,
                     type_params_scope,
-                );
+                ).await;
             }
         }
     }
@@ -3941,7 +3950,7 @@ pub(crate) fn resolve_type_dict(
                     ann_mapping,
                     row_ann_mapping,
                     type_params_scope,
-                )?;
+                ).await?;
                 members.push(member_ty);
             }
             return Ok(Type::normalize_union(members));
@@ -3968,7 +3977,7 @@ pub(crate) fn resolve_type_dict(
                     ann_mapping,
                     row_ann_mapping,
                     type_params_scope,
-                ) {
+                ).await {
                     Ok(ty) => members.push(ty),
                     Err(_) => {
                         all_ok = false;
@@ -4027,7 +4036,7 @@ pub(crate) fn resolve_type_dict(
                 ann_mapping,
                 row_ann_mapping,
                 type_params_scope,
-            )?;
+            ).await?;
             // Check for typed-key form `_@K` vs plain `_`
             let key_ty = match entry.node.key.as_ref().map(|k| &k.expr) {
                 Some(SurfaceExpression::Annotated { annotation, .. }) => {
@@ -4041,7 +4050,7 @@ pub(crate) fn resolve_type_dict(
                         ann_mapping,
                         row_ann_mapping,
                         type_params_scope,
-                    )?;
+                    ).await?;
                     Some(Box::new(key_t))
                 }
                 _ => None, // plain `_`: no key type constraint
@@ -4085,7 +4094,7 @@ pub(crate) fn resolve_type_dict(
             ann_mapping,
             row_ann_mapping,
             type_params_scope,
-        )?;
+        ).await?;
         fields.insert(key, ty);
     }
 
@@ -4214,7 +4223,7 @@ fn synthesize_type_stage_node(entries: &[Spanned<SurfaceEntry>], span: Span) -> 
 /// - The materialized payload is not a Dict.
 ///
 /// Used by `typenode_value_to_type` to access named fields of structural TypeNode variants.
-fn variant_payload_dict(
+async fn variant_payload_dict(
     val: &Value,
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> Option<HashMap<String, Value>> {
@@ -4225,7 +4234,7 @@ fn variant_payload_dict(
         _ => return None,
     };
     let payload_thunk = ctx.get_thunk(payload_id);
-    let payload_val = crate::eval::materialize_sync(&payload_thunk, None, ctx).ok()?;
+    let payload_val = crate::eval::materialize(&payload_thunk, None, ctx).await.ok()?;
     match payload_val {
         Value::Dict(dict) => {
             // Extract each string-keyed field, materializing the field value.
@@ -4233,7 +4242,7 @@ fn variant_payload_dict(
             for (key, thunk_id) in &dict {
                 if let Key::String(k) = key {
                     let field_thunk = ctx.get_thunk(*thunk_id);
-                    if let Ok(v) = crate::eval::materialize_sync(&field_thunk, None, ctx) {
+                    if let Ok(v) = crate::eval::materialize(&field_thunk, None, ctx).await {
                         fields.insert(k.to_string(), v);
                     }
                 }
@@ -4266,7 +4275,7 @@ fn variant_payload_dict(
 ///
 /// These distinct contracts mean consolidation would force one to adopt the other's semantics.
 /// Both implementations are intentional and must remain separate.
-fn collect_typenode_seq(seq_val: Value, ctx: &Arc<crate::eval::EvalContext>) -> Option<Vec<Type>> {
+async fn collect_typenode_seq(seq_val: Value, ctx: &Arc<crate::eval::EvalContext>) -> Option<Vec<Type>> {
     let mut result = Vec::new();
     let mut current = seq_val;
     // Depth limit to guard against malformed cycles (TypeNode seqs are always finite).
@@ -4308,7 +4317,7 @@ fn collect_typenode_seq(seq_val: Value, ctx: &Arc<crate::eval::EvalContext>) -> 
             SeqStep::Cons(payload_id) => {
                 // Materialize the Seq.Cons payload dict to extract head and tail.
                 let payload_thunk = ctx.get_thunk(payload_id);
-                let payload_val = crate::eval::materialize_sync(&payload_thunk, None, ctx).ok()?;
+                let payload_val = crate::eval::materialize(&payload_thunk, None, ctx).await.ok()?;
                 let dict = match payload_val {
                     Value::Dict(d) => d,
                     _ => return None,
@@ -4316,13 +4325,13 @@ fn collect_typenode_seq(seq_val: Value, ctx: &Arc<crate::eval::EvalContext>) -> 
                 // Extract and convert the head element.
                 let head_id = *dict.get(&Key::String("head".into()))?;
                 let head_thunk = ctx.get_thunk(head_id);
-                let head_val = crate::eval::materialize_sync(&head_thunk, None, ctx).ok()?;
-                let head_ty = typenode_value_to_type(&head_val, ctx)?;
+                let head_val = crate::eval::materialize(&head_thunk, None, ctx).await.ok()?;
+                let head_ty = Box::pin(typenode_value_to_type(&head_val, ctx)).await?;
                 result.push(head_ty);
                 // Advance to tail (replaces `current` for the next iteration).
                 let tail_id = *dict.get(&Key::String("tail".into()))?;
                 let tail_thunk = ctx.get_thunk(tail_id);
-                current = crate::eval::materialize_sync(&tail_thunk, None, ctx).ok()?;
+                current = crate::eval::materialize(&tail_thunk, None, ctx).await.ok()?;
             }
             SeqStep::CollectedDict => {
                 // Integer-keyed dict (result of builtin-collect on a Seq) — iterate in order.
@@ -4340,8 +4349,8 @@ fn collect_typenode_seq(seq_val: Value, ctx: &Arc<crate::eval::EvalContext>) -> 
                     match dict.get(&Key::Int(i)) {
                         Some(thunk_id) => {
                             let thunk = ctx.get_thunk(*thunk_id);
-                            let val = crate::eval::materialize_sync(&thunk, None, ctx).ok()?;
-                            let ty = typenode_value_to_type(&val, ctx)?;
+                            let val = crate::eval::materialize(&thunk, None, ctx).await.ok()?;
+                            let ty = Box::pin(typenode_value_to_type(&val, ctx)).await?;
                             result.push(ty);
                             i += 1;
                         }
@@ -4378,216 +4387,220 @@ fn collect_typenode_seq(seq_val: Value, ctx: &Arc<crate::eval::EvalContext>) -> 
 ///
 /// Public (crate-internal) re-export for use by `type_normalize::evaluate_resolver`.
 /// The implementation is `typenode_value_to_type`; this wrapper adds the `pub(crate)` visibility.
-pub(crate) fn typenode_value_to_type_pub(
+pub(crate) async fn typenode_value_to_type_pub(
     val: &Value,
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> Option<Type> {
-    typenode_value_to_type(val, ctx)
+    typenode_value_to_type(val, ctx).await
 }
 
-fn typenode_value_to_type(val: &Value, ctx: &Arc<crate::eval::EvalContext>) -> Option<Type> {
-    match val {
-        // Annotated wrapper — TypeNode constructors with @[...] annotations on their
-        // constructor names (e.g. `[Int@[as-type: [fn [let t] t]  guarding: true]]`) are
-        // wrapped in Value::Annotated at runtime. The inner value is the bare Variant;
-        // the annotation dict carries the constructor metadata. Unwrap transparently.
-        Value::Annotated { inner, .. } => typenode_value_to_type(inner, ctx),
+fn typenode_value_to_type<'a>(
+    val: &'a Value,
+    ctx: &'a Arc<crate::eval::EvalContext>,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<Type>> + 'a>> {
+    Box::pin(async move {
+        match val {
+            // Annotated wrapper — TypeNode constructors with @[...] annotations on their
+            // constructor names (e.g. `[Int@[as-type: [fn [let t] t]  guarding: true]]`) are
+            // wrapped in Value::Annotated at runtime. The inner value is the bare Variant;
+            // the annotation dict carries the constructor metadata. Unwrap transparently.
+            Value::Annotated { inner, .. } => typenode_value_to_type(inner, ctx).await,
 
-        // TypeNode Variant values produced by the TypeNode ADT (T-1058 / T-1061).
-        Value::Variant { tag, payload: _ } => {
-            match tag.as_str() {
-                // ── Primitive leaf constructors ──────────────────────────────────────
-                // No payload — map directly to concrete Type variants.
-                "TypeNode.Int" => Some(Type::Int),
-                "TypeNode.Float" => Some(Type::Float),
-                "TypeNode.String" => Some(Type::Str),
-                "TypeNode.Bool" => Some(Type::Bool),
-                "TypeNode.Unknown" => Some(Type::Unknown),
-                "TypeNode.Never" => Some(Type::Never),
-                "TypeNode.Absent" => Some(Type::Record(Row {
-                    fields: BTreeMap::new(),
-                    tail: crate::type_def::RowTail::Empty,
-                })),
+            // TypeNode Variant values produced by the TypeNode ADT (T-1058 / T-1061).
+            Value::Variant { tag, payload: _ } => {
+                match tag.as_str() {
+                    // ── Primitive leaf constructors ──────────────────────────────────────
+                    // No payload — map directly to concrete Type variants.
+                    "TypeNode.Int" => Some(Type::Int),
+                    "TypeNode.Float" => Some(Type::Float),
+                    "TypeNode.String" => Some(Type::Str),
+                    "TypeNode.Bool" => Some(Type::Bool),
+                    "TypeNode.Unknown" => Some(Type::Unknown),
+                    "TypeNode.Never" => Some(Type::Never),
+                    "TypeNode.Absent" => Some(Type::Record(Row {
+                        fields: BTreeMap::new(),
+                        tail: crate::type_def::RowTail::Empty,
+                    })),
 
-                // ── Union ─────────────────────────────────────────────────────────────
-                // TypeNode.Union { types: [Seq TypeNode] } → Type::normalize_union(members)
-                "TypeNode.Union" => {
-                    let fields = variant_payload_dict(val, ctx)?;
-                    let types_val = fields.get("types")?.clone();
-                    let members = collect_typenode_seq(types_val, ctx)?;
-                    if members.is_empty() {
-                        return None; // Empty union is ill-formed — fall back to Unknown.
+                    // ── Union ─────────────────────────────────────────────────────────────
+                    // TypeNode.Union { types: [Seq TypeNode] } → Type::normalize_union(members)
+                    "TypeNode.Union" => {
+                        let fields = variant_payload_dict(val, ctx).await?;
+                        let types_val = fields.get("types")?.clone();
+                        let members = collect_typenode_seq(types_val, ctx).await?;
+                        if members.is_empty() {
+                            return None; // Empty union is ill-formed — fall back to Unknown.
+                        }
+                        Some(Type::normalize_union(members))
                     }
-                    Some(Type::normalize_union(members))
-                }
 
-                // ── Intersect ────────────────────────────────────────────────────────
-                // TypeNode.Intersect { types: [Seq TypeNode] } → Type::normalize_intersection(members)
-                "TypeNode.Intersect" => {
-                    let fields = variant_payload_dict(val, ctx)?;
-                    let types_val = fields.get("types")?.clone();
-                    let members = collect_typenode_seq(types_val, ctx)?;
-                    if members.is_empty() {
-                        return None; // Empty intersection is ill-formed — fall back to Unknown.
+                    // ── Intersect ────────────────────────────────────────────────────────
+                    // TypeNode.Intersect { types: [Seq TypeNode] } → Type::normalize_intersection(members)
+                    "TypeNode.Intersect" => {
+                        let fields = variant_payload_dict(val, ctx).await?;
+                        let types_val = fields.get("types")?.clone();
+                        let members = collect_typenode_seq(types_val, ctx).await?;
+                        if members.is_empty() {
+                            return None; // Empty intersection is ill-formed — fall back to Unknown.
+                        }
+                        Some(Type::normalize_intersection(members))
                     }
-                    Some(Type::normalize_intersection(members))
-                }
 
-                // ── Negation ─────────────────────────────────────────────────────────
-                // TypeNode.Negation { inner: TypeNode } → Type::Negation(Box<Type>)
-                "TypeNode.Negation" => {
-                    let fields = variant_payload_dict(val, ctx)?;
-                    let inner_val = fields.get("inner")?.clone();
-                    let inner_type = typenode_value_to_type(&inner_val, ctx)?;
-                    Some(Type::Negation(Box::new(inner_type)))
-                }
+                    // ── Negation ─────────────────────────────────────────────────────────
+                    // TypeNode.Negation { inner: TypeNode } → Type::Negation(Box<Type>)
+                    "TypeNode.Negation" => {
+                        let fields = variant_payload_dict(val, ctx).await?;
+                        let inner_val = fields.get("inner")?.clone();
+                        let inner_type = typenode_value_to_type(&inner_val, ctx).await?;
+                        Some(Type::Negation(Box::new(inner_type)))
+                    }
 
-                // ── Record ───────────────────────────────────────────────────────────
-                // TypeNode.Record { fields: [Map String TypeNode], open: Bool }
-                // → Type::Record(Row { fields: BTreeMap<String, Type>, tail: Empty | Uniform })
-                "TypeNode.Record" => {
-                    let payload_fields = variant_payload_dict(val, ctx)?;
-                    let fields_val = payload_fields.get("fields")?.clone();
-                    let open_val = payload_fields.get("open")?.clone();
+                    // ── Record ───────────────────────────────────────────────────────────
+                    // TypeNode.Record { fields: [Map String TypeNode], open: Bool }
+                    // → Type::Record(Row { fields: BTreeMap<String, Type>, tail: Empty | Uniform })
+                    "TypeNode.Record" => {
+                        let payload_fields = variant_payload_dict(val, ctx).await?;
+                        let fields_val = payload_fields.get("fields")?.clone();
+                        let open_val = payload_fields.get("open")?.clone();
 
-                    // `fields` is a Dict (Map String TypeNode) — string-keyed, values are TypeNodes.
-                    let record_fields = match fields_val {
-                        Value::Dict(ref dict) => {
-                            let mut out: BTreeMap<String, Type> = BTreeMap::new();
-                            for (key, thunk_id) in dict {
-                                if let Key::String(k) = key {
-                                    let thunk = ctx.get_thunk(*thunk_id);
-                                    let v =
-                                        crate::eval::materialize_sync(&thunk, None, ctx).ok()?;
-                                    let ty = typenode_value_to_type(&v, ctx)?;
-                                    out.insert(k.to_string(), ty);
+                        // `fields` is a Dict (Map String TypeNode) — string-keyed, values are TypeNodes.
+                        let record_fields = match fields_val {
+                            Value::Dict(ref dict) => {
+                                let mut out: BTreeMap<String, Type> = BTreeMap::new();
+                                for (key, thunk_id) in dict {
+                                    if let Key::String(k) = key {
+                                        let thunk = ctx.get_thunk(*thunk_id);
+                                        let v = crate::eval::materialize(&thunk, None, ctx).await.ok()?;
+                                        let ty = typenode_value_to_type(&v, ctx).await?;
+                                        out.insert(k.to_string(), ty);
+                                    }
                                 }
+                                out
                             }
-                            out
-                        }
-                        // Empty dict / Seq.Nil for empty record
-                        Value::Variant { tag, payload: None } if tag == "Seq.Nil" => {
-                            BTreeMap::new()
-                        }
-                        _ => BTreeMap::new(),
-                    };
+                            // Empty dict / Seq.Nil for empty record
+                            Value::Variant { tag, payload: None } if tag == "Seq.Nil" => {
+                                BTreeMap::new()
+                            }
+                            _ => BTreeMap::new(),
+                        };
 
-                    let tail = if matches!(open_val, Value::Bool(true)) {
-                        crate::type_def::RowTail::Uniform {
-                            key: None,
-                            value: Box::new(Type::Unknown),
-                        }
-                    } else {
-                        crate::type_def::RowTail::Empty
-                    };
+                        let tail = if matches!(open_val, Value::Bool(true)) {
+                            crate::type_def::RowTail::Uniform {
+                                key: None,
+                                value: Box::new(Type::Unknown),
+                            }
+                        } else {
+                            crate::type_def::RowTail::Empty
+                        };
 
-                    Some(Type::Record(Row {
-                        fields: record_fields,
-                        tail,
-                    }))
-                }
-
-                // ── Arrow ─────────────────────────────────────────────────────────────
-                // TypeNode.Arrow { params: [Seq TypeNode], result: TypeNode }
-                // → Type::Function { params: Vec<(None, Type)>, ret: Box<Type>, variadic: false }
-                "TypeNode.Arrow" => {
-                    let fields = variant_payload_dict(val, ctx)?;
-                    let params_val = fields.get("params")?.clone();
-                    let result_val = fields.get("result")?.clone();
-
-                    let param_types = collect_typenode_seq(params_val, ctx)?;
-                    let ret_type = typenode_value_to_type(&result_val, ctx)?;
-
-                    let params: Vec<(Option<String>, Type)> =
-                        param_types.into_iter().map(|t| (None, t)).collect();
-
-                    let required_count = params.len();
-                    Some(Type::Function {
-                        params,
-                        ret: Box::new(ret_type),
-                        variadic: false,
-                        required_count,
-                    })
-                }
-
-                // ── TypeConstructor ───────────────────────────────────────────────────
-                // TypeNode.TypeConstructor { name: String }
-                // Bare (transient): name without '.' → Type::TyCon(name) for expansion
-                // Qualified (leaf): name with '.' → Type::NominalVariant or TyCon leaf
-                "TypeNode.TypeConstructor" => {
-                    let fields = variant_payload_dict(val, ctx)?;
-                    let name_val = fields.get("name")?;
-                    let name = name_val.as_str()?.to_string();
-                    // Map known primitive names to their concrete Type variants.
-                    // (These arise when param-token TypeConstructors from parametric bodies
-                    // are passed to typenode_value_to_type without being substituted first.)
-                    match name.as_str() {
-                        "Int" => Some(Type::Int),
-                        "Float" => Some(Type::Float),
-                        "String" | "Str" => Some(Type::Str),
-                        "Bool" => Some(Type::Bool),
-                        "Unknown" => Some(Type::Unknown),
-                        "Never" => Some(Type::Never),
-                        "Absent" => Some(Type::Record(Row {
-                            fields: BTreeMap::new(),
-                            tail: crate::type_def::RowTail::Empty,
-                        })),
-                        _ => Some(Type::TyCon(name)),
-                    }
-                }
-
-                // ── TypeApplication ───────────────────────────────────────────────────
-                // TypeNode.TypeApplication { ctor: TypeNode, args: [Seq TypeNode] }
-                // → left-associative Type::App chain: App(App(ctor, args[0]), args[1])...
-                "TypeNode.TypeApplication" => {
-                    let fields = variant_payload_dict(val, ctx)?;
-                    let ctor_val = fields.get("ctor")?.clone();
-                    let args_val = fields.get("args")?.clone();
-
-                    let ctor_type = typenode_value_to_type(&ctor_val, ctx)?;
-                    let arg_types = collect_typenode_seq(args_val, ctx)?;
-
-                    if arg_types.is_empty() {
-                        // Zero-arg application — return the constructor itself.
-                        return Some(ctor_type);
+                        Some(Type::Record(Row {
+                            fields: record_fields,
+                            tail,
+                        }))
                     }
 
-                    // Build left-associative App chain.
-                    let mut result = ctor_type;
-                    for arg in arg_types {
-                        result = Type::App(Box::new(result), Box::new(arg));
+                    // ── Arrow ─────────────────────────────────────────────────────────────
+                    // TypeNode.Arrow { params: [Seq TypeNode], result: TypeNode }
+                    // → Type::Function { params: Vec<(None, Type)>, ret: Box<Type>, variadic: false }
+                    "TypeNode.Arrow" => {
+                        let fields = variant_payload_dict(val, ctx).await?;
+                        let params_val = fields.get("params")?.clone();
+                        let result_val = fields.get("result")?.clone();
+
+                        let param_types = collect_typenode_seq(params_val, ctx).await?;
+                        let ret_type = typenode_value_to_type(&result_val, ctx).await?;
+
+                        let params: Vec<(Option<String>, Type)> =
+                            param_types.into_iter().map(|t| (None, t)).collect();
+
+                        let required_count = params.len();
+                        Some(Type::Function {
+                            params,
+                            ret: Box::new(ret_type),
+                            variadic: false,
+                            required_count,
+                        })
                     }
-                    Some(result)
+
+                    // ── TypeConstructor ───────────────────────────────────────────────────
+                    // TypeNode.TypeConstructor { name: String }
+                    // Bare (transient): name without '.' → Type::TyCon(name) for expansion
+                    // Qualified (leaf): name with '.' → Type::NominalVariant or TyCon leaf
+                    "TypeNode.TypeConstructor" => {
+                        let fields = variant_payload_dict(val, ctx).await?;
+                        let name_val = fields.get("name")?;
+                        let name = name_val.as_str()?.to_string();
+                        // Map known primitive names to their concrete Type variants.
+                        // (These arise when param-token TypeConstructors from parametric bodies
+                        // are passed to typenode_value_to_type without being substituted first.)
+                        match name.as_str() {
+                            "Int" => Some(Type::Int),
+                            "Float" => Some(Type::Float),
+                            "String" | "Str" => Some(Type::Str),
+                            "Bool" => Some(Type::Bool),
+                            "Unknown" => Some(Type::Unknown),
+                            "Never" => Some(Type::Never),
+                            "Absent" => Some(Type::Record(Row {
+                                fields: BTreeMap::new(),
+                                tail: crate::type_def::RowTail::Empty,
+                            })),
+                            _ => Some(Type::TyCon(name)),
+                        }
+                    }
+
+                    // ── TypeApplication ───────────────────────────────────────────────────
+                    // TypeNode.TypeApplication { ctor: TypeNode, args: [Seq TypeNode] }
+                    // → left-associative Type::App chain: App(App(ctor, args[0]), args[1])...
+                    "TypeNode.TypeApplication" => {
+                        let fields = variant_payload_dict(val, ctx).await?;
+                        let ctor_val = fields.get("ctor")?.clone();
+                        let args_val = fields.get("args")?.clone();
+
+                        let ctor_type = typenode_value_to_type(&ctor_val, ctx).await?;
+                        let arg_types = collect_typenode_seq(args_val, ctx).await?;
+
+                        if arg_types.is_empty() {
+                            // Zero-arg application — return the constructor itself.
+                            return Some(ctor_type);
+                        }
+
+                        // Build left-associative App chain.
+                        let mut result = ctor_type;
+                        for arg in arg_types {
+                            result = Type::App(Box::new(result), Box::new(arg));
+                        }
+                        Some(result)
+                    }
+
+                    // ── TypeVar ───────────────────────────────────────────────────────────
+                    // TypeNode.TypeVar { name: String, level: Int }
+                    // → Type::TypeVar(name, level)
+                    "TypeNode.TypeVar" => {
+                        let fields = variant_payload_dict(val, ctx).await?;
+                        let name_val = fields.get("name")?;
+                        let level_val = fields.get("level")?;
+                        let name = name_val.as_str()?.to_string();
+                        let level = match level_val {
+                            Value::Int(n) => *n as u32,
+                            _ => 0u32,
+                        };
+                        Some(Type::TypeVar(name, level))
+                    }
+
+                    // ── Recursive / RecursiveRef ──────────────────────────────────────────
+                    // These require the CheckerType migration (equirecursive types full impl).
+                    // Return None so the caller falls back gracefully to Type::Unknown.
+                    "TypeNode.Recursive" | "TypeNode.RecursiveRef" => None,
+
+                    // Unknown tag — not a recognized TypeNode constructor.
+                    _ => None,
                 }
-
-                // ── TypeVar ───────────────────────────────────────────────────────────
-                // TypeNode.TypeVar { name: String, level: Int }
-                // → Type::TypeVar(name, level)
-                "TypeNode.TypeVar" => {
-                    let fields = variant_payload_dict(val, ctx)?;
-                    let name_val = fields.get("name")?;
-                    let level_val = fields.get("level")?;
-                    let name = name_val.as_str()?.to_string();
-                    let level = match level_val {
-                        Value::Int(n) => *n as u32,
-                        _ => 0u32,
-                    };
-                    Some(Type::TypeVar(name, level))
-                }
-
-                // ── Recursive / RecursiveRef ──────────────────────────────────────────
-                // These require the CheckerType migration (equirecursive types full impl).
-                // Return None so the caller falls back gracefully to Type::Unknown.
-                "TypeNode.Recursive" | "TypeNode.RecursiveRef" => None,
-
-                // Unknown tag — not a recognized TypeNode constructor.
-                _ => None,
             }
-        }
 
-        // Not a Dict, Annotated, or Variant — cannot be a TypeNode value.
-        _ => None,
-    }
+            // Not a Dict, Annotated, or Variant — cannot be a TypeNode value.
+            _ => None,
+        }
+    })
 }
 
 /// Evaluate a type-stage tinct function value with the given arguments and convert the
@@ -4620,7 +4633,7 @@ fn typenode_value_to_type(val: &Value, ctx: &Arc<crate::eval::EvalContext>) -> O
 ///
 /// `state` contains the user file's extended type-stage env (T-1175) when available. Used
 /// to provide the correct evaluation environment for type-stage function calls.
-pub(crate) fn eval_type_stage_value(
+pub(crate) async fn eval_type_stage_value(
     fn_val: &Value,
     args: &[Value],
     state: &mut InferState,
@@ -4690,7 +4703,7 @@ pub(crate) fn eval_type_stage_value(
                 origin: None,
                 ctx: &ctx,
             };
-            crate::eval_call::invoke_function_sync(&call_ctx).map_err(|e| {
+            crate::eval_call::invoke_function(&call_ctx).await.map_err(|e| {
                 TypeErrorTyped::Generic(GenericTypeError {
                     message: format!("type-stage function call failed: {e}"),
                     span: origin_span.clone(),
@@ -4710,8 +4723,8 @@ pub(crate) fn eval_type_stage_value(
         }
     };
 
-    // Materialize the result synchronously.
-    let result_val = crate::eval::materialize_sync(&result_thunk, None, &ctx).map_err(|e| {
+    // Materialize the result.
+    let result_val = crate::eval::materialize(&result_thunk, None, &ctx).await.map_err(|e| {
         TypeErrorTyped::Generic(GenericTypeError {
             message: format!("type-stage materialization failed: {e}"),
             span: origin_span.clone(),
@@ -4721,7 +4734,7 @@ pub(crate) fn eval_type_stage_value(
     })?;
 
     // Convert TypeNode Value → Type.
-    typenode_value_to_type(&result_val, &ctx).ok_or_else(|| {
+    typenode_value_to_type(&result_val, &ctx).await.ok_or_else(|| {
         TypeErrorTyped::Generic(GenericTypeError {
             message: format!(
                 "type-stage result cannot be converted to Type: {result_val} \
@@ -4747,7 +4760,7 @@ pub(crate) fn eval_type_stage_value(
 /// ```text
 /// SurfaceNode (annotation expr)
 ///   → Thunk::new_surface in type-stage env
-///   → materialize_sync   (produces TypeNode Value)
+///   → materialize(...).await   (produces TypeNode Value)
 ///   → TypeNode.as-type lookup + eval_type_stage_value
 ///       (normalizes user-defined constructors to primitive TypeNode forms)
 ///   → typenode_value_to_type
@@ -4776,9 +4789,9 @@ pub(crate) fn eval_type_stage_value(
 ///
 /// If `TypeNode.as-type` is not found in the TypeNode dict (e.g., the merge was not yet
 /// evaluated), the raw value is passed directly to `typenode_value_to_type`. Primitive
-/// TypeNode constructors (`TypeNode.Int`, `TypeNode.Float`, etc.) and kind-keyed dicts
-/// are both handled without `as-type` dispatch.
-pub(crate) fn eval_type_stage_expr(
+/// TypeNode constructors (`TypeNode.Int`, `TypeNode.Float`, etc.) are handled without
+/// `as-type` dispatch.
+pub(crate) async fn eval_type_stage_expr(
     node: &Arc<SurfaceNode>,
     _env: &TypeEnv,
     state: &mut InferState,
@@ -4833,8 +4846,9 @@ pub(crate) fn eval_type_stage_expr(
         node_span.clone(),
     ));
 
-    // Materialize synchronously — type-stage evaluation is pure compute, no I/O.
-    let typenode_val = crate::eval::materialize_sync(&surface_thunk, Some(&node_span), &ctx)
+    // Materialize — type-stage evaluation is pure compute, no I/O.
+    let typenode_val = crate::eval::materialize(&surface_thunk, Some(&node_span), &ctx)
+        .await
         .map_err(|e| {
             TypeErrorTyped::Generic(GenericTypeError {
                 message: format!("type-stage expression evaluation failed: {e}"),
@@ -4854,12 +4868,15 @@ pub(crate) fn eval_type_stage_expr(
     // If the lookup fails (pre-T-1059, when `TypeNode.as-type` has not been added to the
     // TypeNode dict by the protocol-functions merge), fall through to direct conversion via
     // `typenode_value_to_type`.  This is correct for T-1060: primitive TypeNode constructors
-    // (`TypeNode.Int`, `TypeNode.Float`, etc.) and kind-keyed dicts both convert without
-    // needing `as-type` dispatch.
-    let as_type_dispatch: Option<Type> = (|| {
+    // (`TypeNode.Int`, `TypeNode.Float`, etc.) convert without needing `as-type` dispatch.
+    // Attempt TypeNode.as-type dispatch (T-1059 hook) using async helpers.
+    // We inline the former sync closure as sequential awaited steps so block_on_anywhere
+    // is no longer needed. Each step returns Option; on None we fall through to direct
+    // conversion via `typenode_value_to_type`.
+    let as_type_dispatch: Option<Type> = async {
         // Look up the TypeNode dict in the type-stage environment.
         let typenode_thunk = type_stage_env.read().ok()?.get("TypeNode")?;
-        let typenode_dict_val = crate::eval::materialize_sync(&typenode_thunk, None, &ctx).ok()?;
+        let typenode_dict_val = crate::eval::materialize(&typenode_thunk, None, &ctx).await.ok()?;
 
         // Retrieve the as-type function from the TypeNode dict.
         // This key is added by `[merge TypeNode [...]]` in T-1059; absent until then.
@@ -4867,7 +4884,7 @@ pub(crate) fn eval_type_stage_expr(
             Value::Dict(ref d) => {
                 let as_type_id = d.get(&Key::String("as-type".into()))?;
                 let as_type_thunk = ctx.get_thunk(*as_type_id);
-                crate::eval::materialize_sync(&as_type_thunk, None, &ctx).ok()?
+                crate::eval::materialize(&as_type_thunk, None, &ctx).await.ok()?
             }
             _ => return None,
         };
@@ -4875,8 +4892,9 @@ pub(crate) fn eval_type_stage_expr(
         // Call TypeNode.as-type(typenode_val) to normalize and convert to Type.
         // eval_type_stage_value handles: call fn → materialize → typenode_value_to_type.
         // Returns None on failure (non-function value, eval error, unrecognized result).
-        eval_type_stage_value(&as_type_fn, std::slice::from_ref(&typenode_val), state).ok()
-    })();
+        eval_type_stage_value(&as_type_fn, std::slice::from_ref(&typenode_val), state).await.ok()
+    }
+    .await;
 
     // If as-type dispatch succeeded, return its result (the normalized Type).
     if let Some(ty) = as_type_dispatch {
@@ -4884,8 +4902,8 @@ pub(crate) fn eval_type_stage_expr(
     }
 
     // Fall through to direct conversion: raw typenode_val → Type (no as-type normalization).
-    // Handles TypeNode primitive variants and old-style kind-keyed dicts.
-    typenode_value_to_type(&typenode_val, &ctx).ok_or_else(|| {
+    // Handles TypeNode primitive variants only.
+    typenode_value_to_type(&typenode_val, &ctx).await.ok_or_else(|| {
         TypeErrorTyped::Generic(GenericTypeError {
             message: format!(
                 "type-stage expression produced an unrecognized value: {typenode_val} \
@@ -5426,7 +5444,7 @@ fn collect_app_spine(ty: &Type) -> (Option<&str>, Vec<&Type>) {
 /// where the first is `Annotated { name: "Fn", ... }` and the second is a Dict
 /// containing the parameter type list.
 #[allow(clippy::too_many_arguments)]
-fn try_resolve_fn_type_expr(
+async fn try_resolve_fn_type_expr(
     entries: &[Spanned<SurfaceEntry>],
     env: &TypeEnv,
     span: Span,
@@ -5434,7 +5452,7 @@ fn try_resolve_fn_type_expr(
     constraints: &mut Vec<Constraint>,
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
-    type_params_scope: Option<&HashSet<String>>,
+    type_params_scope: Option<(&HashMap<String, crate::types::Type>, bool)>,
 ) -> Result<Option<Type>, TypeError> {
     let first = match entries.first() {
         Some(e) if e.node.key.is_none() => e,
@@ -5479,7 +5497,7 @@ fn try_resolve_fn_type_expr(
         ann_mapping,
         row_ann_mapping,
         type_params_scope,
-    )?;
+    ).await?;
 
     // The parameter list can be:
     // - SurfaceExpression::Dict(entries) — standard syntax: `[$a $b]` or `[$Number]`
@@ -5508,7 +5526,7 @@ fn try_resolve_fn_type_expr(
                     ann_mapping,
                     row_ann_mapping,
                     type_params_scope,
-                )?;
+                ).await?;
                 params.push((param_name, param_ty));
             }
         }
@@ -5528,7 +5546,7 @@ fn try_resolve_fn_type_expr(
                 ann_mapping,
                 row_ann_mapping,
                 type_params_scope,
-            )?;
+            ).await?;
             params.push((None, param_ty));
             for arg in args.iter() {
                 let param_ty = resolve_type_expr(
@@ -5539,7 +5557,7 @@ fn try_resolve_fn_type_expr(
                     ann_mapping,
                     row_ann_mapping,
                     type_params_scope,
-                )?;
+                ).await?;
                 params.push((None, param_ty));
             }
         }
