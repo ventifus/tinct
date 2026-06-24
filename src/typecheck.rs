@@ -2901,7 +2901,7 @@ pub(crate) fn infer_surface_expr<'a>(
 async fn infer_class_decl_from_surface(
     name: &str,
     params: &[String],
-    superclasses: &[(String, String)],
+    superclasses: &[(String, Vec<String>)],
     methods: &[Spanned<crate::ast::SurfaceEntry>],
     determines: &[Arc<SurfaceNode>],
     resolver: &Option<Arc<SurfaceNode>>,
@@ -3040,7 +3040,7 @@ async fn infer_class_decl_from_surface(
             .collect(),
         superclasses: superclasses
             .iter()
-            .map(|(class_name, param)| (class_name.clone(), vec![param.clone()]))
+            .map(|(class_name, params)| (class_name.clone(), params.clone()))
             .collect(),
         determines: fd_indices,
         resolver: resolver_name,

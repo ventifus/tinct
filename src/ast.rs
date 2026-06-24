@@ -812,7 +812,7 @@ pub enum SurfaceDeclaration {
     ClassDecl {
         name: String,
         params: Vec<String>,
-        superclasses: Vec<(String, String)>,
+        superclasses: Vec<(String, Vec<String>)>,
         methods: Vec<Spanned<SurfaceEntry>>,
         determines: Vec<Arc<SurfaceNode>>,
         resolver: Option<Arc<SurfaceNode>>,

@@ -1923,30 +1923,29 @@ fn surface_decl_to_thunk_id(
                     span.clone(),
                 ))),
             );
-            // superclasses: Seq of 2-element Seqs [[class-name, var-name] ...]
+            // superclasses: Seq of [class-name, param1, param2, ...] seqs
             // Only emitted when non-empty (e.g. [class Ord a where Eq a] → [[Eq a]])
             if !superclasses.is_empty() {
                 let pair_thunk_ids: Vec<ThunkId> = superclasses
                     .iter()
-                    .map(|(class_name, var_name)| {
-                        let inner: IndexMap<Key, ThunkId> = [
-                            (
-                                Key::Int(0),
-                                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                                    string_val(class_name),
-                                    span.clone(),
-                                ))),
-                            ),
-                            (
-                                Key::Int(1),
+                    .map(|(class_name, var_names)| {
+                        let mut entries: Vec<(Key, ThunkId)> = vec![(
+                            Key::Int(0),
+                            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                                string_val(class_name),
+                                span.clone(),
+                            ))),
+                        )];
+                        for (i, var_name) in var_names.iter().enumerate() {
+                            entries.push((
+                                Key::Int((i + 1) as i64),
                                 ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                                     string_val(var_name),
                                     span.clone(),
                                 ))),
-                            ),
-                        ]
-                        .into_iter()
-                        .collect();
+                            ));
+                        }
+                        let inner: IndexMap<Key, ThunkId> = entries.into_iter().collect();
                         ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                             Value::Dict(inner),
                             span.clone(),

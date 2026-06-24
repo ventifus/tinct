@@ -754,15 +754,16 @@ enum StackFrame {
         pending_pattern: Option<PatternWithGuard>,
         span_start: Position,
     },
-    /// Class declaration: `[class [ClassName param...] [structural-metadata] method: Type ...]`
+    /// Class declaration: `[class [param...] [structural-metadata] method: Type ...]`
+    /// Name comes from the binding position in the enclosing dict (e.g. `MyClass: [class [let a] ...]`).
     ClassDecl {
         name: Option<String>,
         params: Vec<String>,
-        superclasses: Vec<(String, String)>,
+        superclasses: Vec<(String, Vec<String>)>,
         methods: Vec<Spanned<SurfaceEntry>>,
         /// Pending key for method entries
         pending_key: Option<Arc<SurfaceNode>>,
-        /// Structural metadata bracket (second positional): `[determines: [...] resolver: ...]`
+        /// Structural metadata bracket (second positional): `[determines: [...] resolver: ... superclasses: ...]`
         structural_metadata: Option<Arc<SurfaceNode>>,
         span_start: Position,
     },
@@ -2431,10 +2432,12 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                 span: Some(span.clone()),
                             });
                         } else {
-                            // Extract determines, resolver, and injective from structural_metadata dict
+                            // Extract determines, resolver, injective, and superclasses from structural_metadata dict
                             let mut determines = Vec::new();
                             let mut resolver = None;
                             let mut resolver_injective = false;
+                            // superclasses comes from stack frame; may be extended by metadata
+                            let mut superclasses = superclasses;
 
                             if let Some(metadata_expr) = structural_metadata {
                                 if let SurfaceExpression::Dict(entries) = &metadata_expr.expr {
@@ -2476,7 +2479,49 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                                             resolver_injective = *b;
                                                         }
                                                     }
-                                                    _ => {} // Ignore other keys for now (kinds, superclasses handled later)
+                                                    "superclasses" => {
+                                                        // Value is an auto-indexed list of constraint applications:
+                                                        // [[Equatable a] [Numeric b]]
+                                                        // Each element is a Call expr: func=VarRef("ClassName"), args=[VarRef("param1"), ...]
+                                                        if let SurfaceExpression::Dict(sc_entries) =
+                                                            &entry.node.value.expr
+                                                        {
+                                                            for sc_entry in sc_entries {
+                                                                if let SurfaceExpression::Call {
+                                                                    func,
+                                                                    args,
+                                                                    ..
+                                                                } = &sc_entry.node.value.expr
+                                                                {
+                                                                    if let SurfaceExpression::VarRef {
+                                                                        name: class_name,
+                                                                        ..
+                                                                    } = &func.expr
+                                                                    {
+                                                                        let param_names: Vec<String> = args
+                                                                            .iter()
+                                                                            .filter_map(|arg| {
+                                                                                if let SurfaceExpression::VarRef {
+                                                                                    name,
+                                                                                    ..
+                                                                                } = &arg.expr
+                                                                                {
+                                                                                    Some(name.clone())
+                                                                                } else {
+                                                                                    None
+                                                                                }
+                                                                            })
+                                                                            .collect();
+                                                                        superclasses.push((
+                                                                            class_name.clone(),
+                                                                            param_names,
+                                                                        ));
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                    _ => {} // Ignore unknown metadata keys
                                                 }
                                             }
                                         }
@@ -5865,42 +5910,32 @@ fn push_expr_to_parent(
                 superclasses: _,
                 ..
             }) => {
-                // ClassDecl expects: [class [let Name params...] [structural-metadata] method: Type ...]
-                // First expression is the class header: [let Name params...]
-                // Second expression (if Dict) is structural metadata: [determines: [...] resolver: ...]
-                // No-param classes use: [class [let Equatable] ...]
+                // ClassDecl expects: [class [let a b...] [structural-metadata] method: Type ...]
+                // First expression is the class header: [let a b ...] (ALL are type params; name comes from binding)
+                // Second expression (if Dict) is structural metadata: [determines: [...] resolver: ... superclasses: ...]
                 if name.is_none() {
-                    // This is the class header — must be a LetDecl with class name
+                    // This is the class header — must be a LetDecl; all bindings are type params
                     match &node.expr {
-                        SurfaceExpression::LetDecl { bindings } if !bindings.is_empty() => {
-                            // LetDecl form: [class [let ClassName a b] ...]
-                            // First binding is the class name, rest are type params
-                            if let SurfaceExpression::VarRef {
-                                name: class_name, ..
-                            } = &bindings[0].expr
-                            {
-                                *name = Some(class_name.clone());
-                                // Extract params that are identifiers; skip others (type checker will validate)
-                                for binding in bindings.iter().skip(1) {
-                                    if let SurfaceExpression::VarRef {
-                                        name: param_name, ..
-                                    } = &binding.expr
-                                    {
-                                        params.push(param_name.clone());
-                                    }
-                                    // Non-identifier params silently skipped; semantic validation in type checker
+                        SurfaceExpression::LetDecl { bindings } => {
+                            // LetDecl form: [class [let a b c] ...]
+                            // ALL bindings are type params; class name comes from the binding position (Change B)
+                            for binding in bindings.iter() {
+                                if let SurfaceExpression::VarRef {
+                                    name: param_name, ..
+                                } = &binding.expr
+                                {
+                                    params.push(param_name.clone());
                                 }
-                                Ok(())
-                            } else {
-                                // First entry is not a VarRef; semantic validation in type checker
-                                Ok(())
+                                // Non-identifier params silently skipped; semantic validation in type checker
                             }
+                            // Mark header as parsed (name stays None until set by parent Dict frame)
+                            *name = Some(String::new());
+                            Ok(())
                         }
                         _ => {
                             // Not a LetDecl — parse error
                             Err(ParseError {
-                                message: "class declaration requires [let ClassName ...] form"
-                                    .to_string(),
+                                message: "class declaration requires [let ...] form (e.g. [class [let a] ...]); class name comes from the binding (e.g. MyClass: [class [let a] ...])".to_string(),
                                 span: Some(node.span.clone()),
                             })
                         }
@@ -6170,6 +6205,62 @@ fn commit_let_pending(
     }
 }
 
+/// Helper: if `node` contains a `SurfaceExpression::Decl(ClassDecl { name: "", ... })`, return a new
+/// node with the class name set from the binding key. Otherwise return `node` unchanged.
+///
+/// This implements the superclass-syntax sprint Change A: class names come from the
+/// binding position in an enclosing dict, not from the `[let ...]` header.
+fn inject_class_name_from_key(
+    node: &Arc<SurfaceNode>,
+    key: &Arc<SurfaceNode>,
+) -> Arc<SurfaceNode> {
+    // Extract the key name string from the key expression.
+    // Keys may be Str (bare identifiers in dict position), VarRef, or Annotated (e.g. MyClass@[doc: "..."]).
+    let key_name = match &key.expr {
+        SurfaceExpression::Str(s) => s.clone(),
+        SurfaceExpression::VarRef { name, .. } => name.clone(),
+        SurfaceExpression::Annotated { name, .. } => name.clone(),
+        _ => return Arc::clone(node),
+    };
+
+    // Check if the value is a ClassDecl with an empty name.
+    match &node.expr {
+        SurfaceExpression::Decl(decl_box) => {
+            if let SurfaceDeclaration::ClassDecl { name, .. } = decl_box.as_ref() {
+                if name.is_empty() {
+                    // Reconstruct with the binding name injected.
+                    if let SurfaceDeclaration::ClassDecl {
+                        params,
+                        superclasses,
+                        methods,
+                        determines,
+                        resolver,
+                        resolver_injective,
+                        ..
+                    } = decl_box.as_ref().clone()
+                    {
+                        let new_decl = SurfaceDeclaration::ClassDecl {
+                            name: key_name,
+                            params,
+                            superclasses,
+                            methods,
+                            determines,
+                            resolver,
+                            resolver_injective,
+                        };
+                        return Arc::new(SurfaceNode {
+                            expr: SurfaceExpression::Decl(Box::new(new_decl)),
+                            span: node.span.clone(),
+                        });
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    Arc::clone(node)
+}
+
 /// Helper: push a value expression, handling keyed entries in dict/call contexts.
 fn push_value(
     stack: &mut Vec<StackFrame>,
@@ -6213,6 +6304,10 @@ fn push_value(
                     }
                     seen_keys.insert(key_str);
                 }
+                // If the value is a ClassDecl with empty name, inject the binding key as the class name.
+                // This implements the "class name from binding position" invariant:
+                //   `MyClass: [class [let a] ...]` → ClassDecl { name: "MyClass", params: ["a"] }
+                let node = inject_class_name_from_key(&node, &key);
                 // This value completes a keyed entry
                 let entry_span = crate::ast::Span {
                     start: key.span.start,

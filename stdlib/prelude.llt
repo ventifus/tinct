@@ -1942,7 +1942,7 @@ result@[doc: "Result monad dict for [do result ...] chains"]:
 
 # Maps a function over a wrapped value (fmap)
 Functor@[doc: "Type class for type constructors supporting fmap"]:
-  [class [let Functor f]]
+  [class [let f]]
 
 # Functor instance for Result type
 FunctorResult@[doc: "Functor instance for Result"]:
@@ -1956,7 +1956,7 @@ FunctorSeq@[doc: "Functor instance for Seq"]:
 
 # Lifts values and applies wrapped functions (pure, lift2)
 Applicative@[doc: "Type class for applicative functors"]:
-  [class [let Applicative f]]
+  [class [let f]]
 
 # Applicative instance for Result type
 ApplicativeResult@[doc: "Applicative instance for Result"]:
@@ -1979,7 +1979,7 @@ ApplicativeSeq@[doc: "Applicative instance for Seq"]:
 
 # Sequential composition of wrapped computations (bind)
 Monad@[doc: "Type class for monads"]:
-  [class [let Monad m]]
+  [class [let m]]
 
 # Monad instance for Result type
 MonadResult@[doc: "Monad instance for Result"]:
@@ -1993,7 +1993,7 @@ MonadSeq@[doc: "Monad instance for Seq"]:
 
 # Reduces a structure to a single value (fold, to-seq)
 Foldable@[doc: "Type class for foldable structures"]:
-  [class [let Foldable t]]
+  [class [let t]]
 
 # Foldable instance for Seq type
 FoldableSeq@[doc: "Foldable instance for Seq"]:
@@ -2024,7 +2024,7 @@ FoldableResult@[doc: "Foldable instance for Result"]:
 
 # Traverses a structure applying effects (traverse)
 Traversable@[doc: "Type class for traversable structures"]:
-  [class [let Traversable t]]
+  [class [let t]]
 
 # Traversable instance for Seq type
 TraversableSeq@[doc: "Traversable instance for Seq"]:
@@ -2123,19 +2123,19 @@ Note: Returns action result if condition is true, otherwise returns wrapped empt
 # Arithmetic type classes with functional dependencies (a, b) → c
 
 Addable@[doc: "Type class for addition with FD (a, b) → c"]:
-  [class [let Addable a b c]  [determines: [[[a b] c]]]
+  [class [let a b c]  [determines: [[[a b] c]]]
     +: [Fn@c [a b]]]
 
 Subtractable@[doc: "Type class for subtraction with FD (a, b) → c"]:
-  [class [let Subtractable a b c]  [determines: [[[a b] c]]]
+  [class [let a b c]  [determines: [[[a b] c]]]
     -: [Fn@c [a b]]]
 
 Multipliable@[doc: "Type class for multiplication with FD (a, b) → c"]:
-  [class [let Multipliable a b c]  [determines: [[[a b] c]]]
+  [class [let a b c]  [determines: [[[a b] c]]]
     *: [Fn@c [a b]]]
 
 Divisible@[doc: "Type class for division with FD (a, b) → c"]:
-  [class [let Divisible a b c]  [determines: [[[a b] c]]]
+  [class [let a b c]  [determines: [[[a b] c]]]
     /: [Fn@c [a b]]]
 
 # Arithmetic instances for Int/Float combinations
@@ -2170,7 +2170,7 @@ Divisible@[doc: "Type class for division with FD (a, b) → c"]:
 
 # Types supporting equality comparison (=)
 Equatable@[doc: "Type class for types that support equality comparison"]:
-  [class [let Equatable a]
+  [class [let a]
     =: [Fn@Bool [a a]]]
 
 # Concrete type Equatable instances — method key is = (operator name for dispatch)
@@ -2190,7 +2190,7 @@ Equatable@[doc: "Type class for types that support equality comparison"]:
 
 # Types supporting ordering (< > <= >=)
 Comparable@[doc: "Type class for types that support ordering"]:
-  [class [let Comparable a]
+  [class [let a] [superclasses: [[Equatable a]]]
     <: [Fn@Bool [a a]]]
 
 # Concrete type Comparable instances — method key is < (operator name for dispatch)
@@ -2209,7 +2209,7 @@ Comparable@[doc: "Type class for types that support ordering"]:
 
 # Types that can be converted to string (str)
 Showable@[doc: "Type class for types that can be converted to strings"]:
-  [class [let Showable a]]
+  [class [let a]]
 
 ShowableInt@[doc: "Showable instance for Int"]:
   [instance Showable
@@ -2242,7 +2242,7 @@ ShowableBool@[doc: "Showable instance for Bool"]:
 # migration is a separate sprint.
 
 Printable@[doc: "Type class for types that can be converted to a String via print"]:
-  [class [let Printable a]]
+  [class [let a]]
 
 PrintableInt@[doc: "Printable instance for Int: print converts an Int to its decimal string"]:
   [instance Printable
@@ -2266,7 +2266,7 @@ PrintableStr@[doc: "Printable instance for String: print is the identity (string
 
 # Collection-level mapping (map over structures)
 Mappable@[doc: "Type class for mappable type constructors (Seq, Dict)"]:
-  [class [let Mappable f]]
+  [class [let f]]
 
 # Mappable instance for Seq type
 MappableSeq@[doc: "Mappable instance for Seq: fmap = builtin-map"]:
@@ -2284,7 +2284,7 @@ MappableDict@[doc: "Mappable instance for Dict: fmap = builtin-map"]:
 
 # Collections that support concatenation
 Appendable@[doc: "Type class for appendable types (String, Dict, Seq)"]:
-  [class [let Appendable a]]
+  [class [let a]]
 
 # Appendable instance for String type
 AppendableStr@[doc: "Appendable instance for String: append-one = str, empty = empty string"]:
