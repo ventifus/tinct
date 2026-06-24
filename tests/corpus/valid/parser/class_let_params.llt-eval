@@ -1,6 +1,5 @@
-# Test [class [let ClassName a b] ...] syntax works correctly
-
-[class [let Equatable a] eq: [fn [let x@a y@a] Bool]]
-
+# Test that class name comes from the dict binding key, not from [let ...]
+# Class params in [let ...] are all type variables — no class name inside.
+[Equatable: [class [let a] eq: [fn [let x@a y@a] Bool]]]
 === out
-[class [Equatable a] "eq": [fn [let x@a y@a] Bool]]
+["Equatable": [class [Equatable a] "eq": [fn [let x@a y@a] Bool]]]

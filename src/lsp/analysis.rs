@@ -1715,7 +1715,7 @@ mod tests {
 
     /// Helper: create a stdlib env for tests.
     fn test_env() -> Arc<RwLock<Environment>> {
-        create_stdlib_env().unwrap()
+        crate::async_rt::block_on_anywhere(create_stdlib_env()).unwrap()
     }
 
     /// Helper: create an EvalContext for tests.

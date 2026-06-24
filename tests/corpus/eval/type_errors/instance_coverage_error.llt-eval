@@ -3,7 +3,7 @@
 # Here c@z has TypeVar "z" which does not appear in positions a or b.
 [
   # Define a class with FD: (a, b) determines c
-  TestAdd: [class [let TestAdd a b c] [determines: [[[a b] c]]]
+  TestAdd: [class [let a b c] [determines: [[[a b] c]]]
     op: [Fn@c [a b]]]
 
   # Coverage violation: c@z uses TypeVar "z" which is absent from (a, b) positions

@@ -4410,8 +4410,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn merge_first_arg_non_dict() {
+    #[tokio::test]
+    async fn merge_first_arg_non_dict() {
         // With lazy overlay, builtin_merge succeeds (O(1) — no type check at call time).
         // The type error fires when the overlay is flattened (at access time).
         let ctx = test_ctx();
@@ -4428,7 +4428,9 @@ mod tests {
         // Flatten fires the type error: left side is Int, not Dict
         match overlay_val {
             Value::Overlay(l, r) => {
-                let err = flatten_overlay(&l, &r, "merge", &ctx, call_span()).unwrap_err();
+                let err = flatten_overlay(&l, &r, "merge", &ctx, call_span())
+                    .await
+                    .unwrap_err();
                 assert!(
                     err.kind.to_string().contains("expected Dict"),
                     "got: {}",
@@ -4444,8 +4446,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn merge_second_arg_non_dict() {
+    #[tokio::test]
+    async fn merge_second_arg_non_dict() {
         // With lazy overlay, builtin_merge succeeds (O(1) — no type check at call time).
         // The type error fires when the overlay is flattened (at access time).
         let ctx = test_ctx();
@@ -4461,7 +4463,9 @@ mod tests {
         // Flatten fires the type error: right side is String, not Dict
         match overlay_val {
             Value::Overlay(l, r) => {
-                let err = flatten_overlay(&l, &r, "merge", &ctx, call_span()).unwrap_err();
+                let err = flatten_overlay(&l, &r, "merge", &ctx, call_span())
+                    .await
+                    .unwrap_err();
                 assert!(
                     err.kind.to_string().contains("expected Dict"),
                     "got: {}",

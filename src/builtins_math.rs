@@ -1229,9 +1229,9 @@ mod tests {
 
     /// [= 1 1] returns true with prelude loaded (Equatable instances registered).
     /// Fast path handles (Int,Int) before any dispatch attempt.
-    #[test]
-    fn test_eq_int_no_infinite_recursion_with_prelude() {
-        let result = crate::eval_source_with_config("[= 1 1]", true);
+    #[tokio::test]
+    async fn test_eq_int_no_infinite_recursion_with_prelude() {
+        let result = crate::eval_source_with_config("[= 1 1]", true).await;
         assert!(
             result.is_ok(),
             "expected [= 1 1] to succeed, got: {:?}",
@@ -1242,9 +1242,9 @@ mod tests {
 
     /// [< 1 2] returns true with prelude loaded (Comparable instances registered).
     /// Fast path handles (Int,Int) before any dispatch attempt — no infinite recursion.
-    #[test]
-    fn test_lt_int_no_infinite_recursion_with_prelude() {
-        let result = crate::eval_source_with_config("[< 1 2]", true);
+    #[tokio::test]
+    async fn test_lt_int_no_infinite_recursion_with_prelude() {
+        let result = crate::eval_source_with_config("[< 1 2]", true).await;
         assert!(
             result.is_ok(),
             "expected [< 1 2] to succeed, got: {:?}",
@@ -1255,9 +1255,9 @@ mod tests {
 
     /// [sort [3 1 2]] works with prelude loaded (sort uses < internally).
     /// Int fast path prevents dispatch loops.
-    #[test]
-    fn test_sort_no_infinite_recursion_with_prelude() {
-        let result = crate::eval_source_with_config("[sort [3 1 2]]", true);
+    #[tokio::test]
+    async fn test_sort_no_infinite_recursion_with_prelude() {
+        let result = crate::eval_source_with_config("[sort [3 1 2]]", true).await;
         assert!(
             result.is_ok(),
             "expected [sort [3 1 2]] to succeed, got: {:?}",

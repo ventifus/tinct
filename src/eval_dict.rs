@@ -494,20 +494,12 @@ mod tests {
     // Tests currently use only items from parent module's glob re-exports
 
     /// Test that dict keys are evaluated in the parent scope, not the dict scope.
-    /// Per letrec semantics: keys see parent bindings, values see sibling bindings.
-    #[test]
-    fn test_key_evaluated_in_parent_scope() {
-        // [x: 1  y: $x]  -- $x in value position should see sibling x
-        // [outer: 1  inner: [x: 2  y: $outer]]  -- $outer in value should see parent outer
-        // [outer: 1  inner: [x: 2  $outer: 3]]  -- $outer in KEY position should also see parent outer (key=1)
+    #[tokio::test]
+    async fn test_key_evaluated_in_parent_scope() {
         let input = r#"
             [outer: 1  inner: [x: 2  $outer: 999]]
         "#;
-        let result = crate::eval_source(input);
-        assert!(result.is_ok(), "Should succeed: {:?}", result);
-        let output = result.unwrap();
-        // The key $outer evaluates to 1 (from parent scope) — Value::Int(1) → Key::Int(1).
-        // Key::Int is formatted as the bare integer (e.g., "1: Int(999)"), not "Int(1): Int(999)".
+        let output = crate::eval_source(input).await.expect("Should succeed");
         assert!(
             output.contains("1: Int(999)"),
             "Key $outer should evaluate to 1 (parent scope), got: {}",
@@ -516,14 +508,10 @@ mod tests {
     }
 
     /// Test that dict values are evaluated in the dict's own scope (letrec).
-    /// Sibling entries are visible to each other (forward references allowed).
-    #[test]
-    fn test_value_evaluated_in_dict_scope() {
-        // [x: 1  y: $x]  -- $x in value position should resolve to sibling x (value 1)
+    #[tokio::test]
+    async fn test_value_evaluated_in_dict_scope() {
         let input = r#"[x: 1  y: $x]"#;
-        let result = crate::eval_source(input);
-        assert!(result.is_ok(), "Should succeed: {:?}", result);
-        let output = result.unwrap();
+        let output = crate::eval_source(input).await.expect("Should succeed");
         assert!(
             output.contains(r#""y": Int(1)"#),
             "y should reference sibling x (value 1), got: {}",
@@ -532,16 +520,10 @@ mod tests {
     }
 
     /// Test that circular dependencies are detected.
-    /// [x: $y  y: $x] should produce a cycle error.
-    #[test]
-    fn test_circular_dependency_detection() {
+    #[tokio::test]
+    async fn test_circular_dependency_detection() {
         let input = r#"[x: $y  y: $x]"#;
-        let result = crate::eval_source(input);
-        assert!(
-            result.is_err(),
-            "Should fail with circular dependency error"
-        );
-        let err = result.unwrap_err();
+        let err = crate::eval_source(input).await.expect_err("Should fail with circular dependency error");
         assert!(
             err.contains("circular dependency"),
             "Error should mention circular dependency, got: {}",
@@ -550,14 +532,10 @@ mod tests {
     }
 
     /// Test that nested dicts properly shadow outer bindings.
-    /// [x: 1  inner: [x: 2  y: $x]]  -- $x in inner.y should see inner.x (2), not outer.x (1)
-    #[test]
-    fn test_nested_dict_shadowing() {
+    #[tokio::test]
+    async fn test_nested_dict_shadowing() {
         let input = r#"[x: 1  inner: [x: 2  y: $x]]"#;
-        let result = crate::eval_source(input);
-        assert!(result.is_ok(), "Should succeed: {:?}", result);
-        let output = result.unwrap();
-        // The inner dict should have y: 2 (shadowed x)
+        let output = crate::eval_source(input).await.expect("Should succeed");
         assert!(
             output.contains(r#""y": Int(2)"#),
             "inner.y should reference inner.x (2, shadowed), got: {}",
@@ -566,19 +544,10 @@ mod tests {
     }
 
     /// Test that a literal-only dict evaluates correctly via the no-dict_env fast path.
-    /// When all dict values are literals (Int/Float/Bool/Str), `eval_dict_core` skips
-    /// the letrec Environment allocation entirely (`dict_env = None`). This verifies
-    /// both correctness of the fast path and that keys/values are emitted in the right order.
-    #[test]
-    fn test_literal_only_dict_fast_path() {
+    #[tokio::test]
+    async fn test_literal_only_dict_fast_path() {
         let input = r#"[a: 1  b: 2]"#;
-        let result = crate::eval_source(input);
-        assert!(
-            result.is_ok(),
-            "literal-only dict should evaluate without error: {:?}",
-            result
-        );
-        let output = result.unwrap();
+        let output = crate::eval_source(input).await.expect("literal-only dict should evaluate without error");
         // Both entries must appear with the correct Display representation
         assert!(
             output.contains(r#""a": Int(1)"#),

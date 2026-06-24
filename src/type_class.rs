@@ -1284,8 +1284,8 @@ mod tests {
     /// Note: We insert directly (bypassing `check_structural_overlap`) to simulate the
     /// scenario T-914 addresses — `resolve_instance` must handle this case even when both
     /// instances are registered (e.g., from different scopes or via built-in seeding).
-    #[test]
-    fn test_resolve_instance_specificity_concrete_wins_over_polymorphic() {
+    #[tokio::test]
+    async fn test_resolve_instance_specificity_concrete_wins_over_polymorphic() {
         let mut state = InferState::new();
         let mut env = InstanceEnv::new();
 
@@ -1299,6 +1299,7 @@ mod tests {
         let target = make_seq_int(); // Seq[Int]
         let resolved = env
             .resolve_instance("Appendable", &target, &mut state)
+            .await
             .expect("should not be ambiguous — [Seq Int] is strictly more specific than [Seq a]");
 
         assert!(
@@ -1330,8 +1331,8 @@ mod tests {
 
     /// When `[Seq a]` and `[Seq b]` are both registered (equally polymorphic), resolving
     /// against `Seq[Int]` must report ambiguity — both score 1, so neither wins.
-    #[test]
-    fn test_resolve_instance_ambiguity_equally_specific() {
+    #[tokio::test]
+    async fn test_resolve_instance_ambiguity_equally_specific() {
         let mut state = InferState::new();
         let mut env = InstanceEnv::new();
 
@@ -1343,7 +1344,9 @@ mod tests {
         env.insert(seq_b_inst).unwrap();
 
         let target = make_seq_int();
-        let result = env.resolve_instance("Appendable", &target, &mut state);
+        let result = env
+            .resolve_instance("Appendable", &target, &mut state)
+            .await;
 
         assert!(
             result.is_err(),
@@ -1362,8 +1365,8 @@ mod tests {
 
     /// When only `[Seq a]` is registered, it resolves for `Seq[Int]` without ambiguity —
     /// single match always wins regardless of polymorphism score.
-    #[test]
-    fn test_resolve_instance_single_match_no_ambiguity() {
+    #[tokio::test]
+    async fn test_resolve_instance_single_match_no_ambiguity() {
         let mut state = InferState::new();
         let mut env = InstanceEnv::new();
 
@@ -1373,6 +1376,7 @@ mod tests {
         let target = make_seq_int();
         let resolved = env
             .resolve_instance("Appendable", &target, &mut state)
+            .await
             .expect("single match should not be ambiguous");
 
         assert!(
@@ -1417,8 +1421,8 @@ mod tests {
     }
 
     /// Resolving against a target that matches no instance returns Ok(None).
-    #[test]
-    fn test_resolve_instance_no_match_returns_none() {
+    #[tokio::test]
+    async fn test_resolve_instance_no_match_returns_none() {
         let mut state = InferState::new();
         let mut env = InstanceEnv::new();
 
@@ -1430,6 +1434,7 @@ mod tests {
         let target = Type::seq(Type::Str);
         let resolved = env
             .resolve_instance("Appendable", &target, &mut state)
+            .await
             .expect("no match should not yield an error");
 
         assert!(

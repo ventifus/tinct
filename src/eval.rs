@@ -5728,8 +5728,8 @@ mod tests {
         assert!(err.to_string().contains("got Float"), "got: {}", err);
     }
 
-    #[test]
-    fn test_adt_constructor_scoping_eval() {
+    #[tokio::test]
+    async fn test_adt_constructor_scoping_eval() {
         // T-974: unit constructors accessed via qualified dot path produce qualified tags.
         // `Color: [type Red Green Blue]` → Color.Red: Variant("Color.Red", Null)
         let src = concat!(
@@ -5739,7 +5739,7 @@ mod tests {
             "  color\n",
             "]"
         );
-        let result = crate::eval_source(src).expect("eval failed");
+        let result = crate::eval_source(src).await.expect("eval failed");
         // T-974: qualified constructor tag for keyed declarations.
         assert!(
             result.contains("Color.Red"),
@@ -5747,206 +5747,153 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_eval_document_single_expression() {
+    #[tokio::test]
+    async fn test_eval_document_single_expression() {
         // A document with one dict expression returns that dict: [x: 1  y: 2]
-        let result = crate::eval_source("[x: 1  y: 2]").expect("eval failed");
+        let result = crate::eval_source("[x: 1  y: 2]").await.expect("eval failed");
         assert_eq!(result, r#"Dict({"x": Int(1), "y": Int(2)})"#);
     }
 
-    #[test]
-    fn test_eval_document_scope_chain() {
+    #[tokio::test]
+    async fn test_eval_document_scope_chain() {
         // Two expressions in one doc form a scope chain: expr 1 defines x, expr 2 references $x
-        let result = crate::eval_source("[x: 10]\n[y: $x]").expect("eval failed");
+        let result = crate::eval_source("[x: 10]\n[y: $x]").await.expect("eval failed");
         assert_eq!(result, r#"Dict({"y": Int(10)})"#);
     }
 
-    #[test]
-    fn test_eval_document_scope_chain_shadowing() {
+    #[tokio::test]
+    async fn test_eval_document_scope_chain_shadowing() {
         // Local letrec wins over parent scope binding when same name is reused.
         // Expr 1: [x: 1]  Expr 2: [x: 2  y: $x]  → y should be 2
-        let result = crate::eval_source("[x: 1]\n[x: 2  y: $x]").expect("eval failed");
+        let result = crate::eval_source("[x: 1]\n[x: 2  y: $x]").await.expect("eval failed");
         assert_eq!(result, r#"Dict({"x": Int(2), "y": Int(2)})"#);
     }
 
-    #[test]
-    fn test_eval_document_intermediate_non_dict_expression() {
+    #[tokio::test]
+    async fn test_eval_document_intermediate_non_dict_expression() {
         // In the surface pipeline, a bare non-dict intermediate expression (e.g. `42`) has no
         // static string keys, so no scope extension is attempted and no error is produced.
         // The intermediate is silently discarded and the last expression is returned.
-        let result = crate::eval_source("42\n[x: 1]").expect("eval failed");
+        let result = crate::eval_source("42\n[x: 1]").await.expect("eval failed");
         assert_eq!(result, r#"Dict({"x": Int(1)})"#);
     }
 
-    #[test]
-    fn test_eval_document_empty() {
+    #[tokio::test]
+    async fn test_eval_document_empty() {
         // An empty document (zero expressions) returns an empty dict.
         // Covered by test_eval_file_empty; verified here via eval_source("")
-        let result = crate::eval_source("").expect("eval failed");
+        let result = crate::eval_source("").await.expect("eval failed");
         assert_eq!(result, "Dict({})");
     }
 
-    #[test]
-    fn test_eval_document_three_expressions() {
-        // Three expressions chaining scope:
-        // Expr 1: [a: 1]  Expr 2: [b: 2]  Expr 3: [ref_a: $a  ref_b: $b]
-        // Expr 3 should see both $a (grandparent) and $b (parent) via scope chain.
+    #[tokio::test]
+    async fn test_eval_document_three_expressions() {
         let result =
-            crate::eval_source("[a: 1]\n[b: 2]\n[ref_a: $a  ref_b: $b]").expect("eval failed");
+            crate::eval_source("[a: 1]\n[b: 2]\n[ref_a: $a  ref_b: $b]").await.expect("eval failed");
         assert_eq!(result, r#"Dict({"ref_a": Int(1), "ref_b": Int(2)})"#);
     }
 
-    #[test]
-    fn test_eval_document_inherits_parent_env() {
-        // Scope-chain visibility: a binding from expr 1 is seen by expr 2.
-        // (The original test injected a binding via parent env; the scope-chain
-        // variant covers the same environment lookup path via eval_surface_document.)
+    #[tokio::test]
+    async fn test_eval_document_inherits_parent_env() {
         let result =
-            crate::eval_source("[external: 999]\n[local: $external]").expect("eval failed");
+            crate::eval_source("[external: 999]\n[local: $external]").await.expect("eval failed");
         assert_eq!(result, r#"Dict({"local": Int(999)})"#);
     }
 
-    #[test]
-    fn test_eval_document_single_non_dict_expression() {
-        // A document with a single non-dict expression (Int). The last expression can be any type.
-        let result = crate::eval_source("42").expect("eval failed");
+    #[tokio::test]
+    async fn test_eval_document_single_non_dict_expression() {
+        let result = crate::eval_source("42").await.expect("eval failed");
         assert_eq!(result, "Int(42)");
     }
 
-    #[test]
-    fn test_eval_document_integer_keys_skipped_in_scope_chain() {
-        // Expr 1: [10 20 30] (positional / integer-keyed entries)
-        // Expr 2: [result: 99]
-        // Integer keys from expr 1 must not become scope bindings; expr 2 should succeed.
-        let result = crate::eval_source("[10 20 30]\n[result: 99]").expect("eval failed");
+    #[tokio::test]
+    async fn test_eval_document_integer_keys_skipped_in_scope_chain() {
+        let result = crate::eval_source("[10 20 30]\n[result: 99]").await.expect("eval failed");
         assert_eq!(result, r#"Dict({"result": Int(99)})"#);
     }
 
-    #[test]
-    fn test_eval_document_scope_chain_plus_letrec() {
-        // Scope chain + letrec: y references x from the parent scope (via scope chain),
-        // z references y via letrec within the same dict. Verify z resolves to 1.
-        let result = crate::eval_source("[x: 1]\n[y: $x  z: $y]").expect("eval failed");
+    #[tokio::test]
+    async fn test_eval_document_scope_chain_plus_letrec() {
+        let result = crate::eval_source("[x: 1]\n[y: $x  z: $y]").await.expect("eval failed");
         assert_eq!(result, r#"Dict({"y": Int(1), "z": Int(1)})"#);
     }
 
-    #[test]
-    fn test_eval_file_single_document() {
-        // A file with one document containing [x: 1]. Verify x=1.
-        let result = crate::eval_source("[x: 1]").expect("eval failed");
+    #[tokio::test]
+    async fn test_eval_file_single_document() {
+        let result = crate::eval_source("[x: 1]").await.expect("eval failed");
         assert_eq!(result, r#"Dict({"x": Int(1)})"#);
     }
 
-    #[test]
-    fn test_eval_file_percent_is_empty_for_first_doc() {
-        // A file with one document containing [prev: %].
-        // % is VarRef("%"), should resolve to empty dict for first doc.
-        let result = crate::eval_source("[prev: %]").expect("eval failed");
+    #[tokio::test]
+    async fn test_eval_file_percent_is_empty_for_first_doc() {
+        let result = crate::eval_source("[prev: %]").await.expect("eval failed");
         assert_eq!(result, r#"Dict({"prev": Dict({})})"#);
     }
 
-    #[test]
-    fn test_eval_file_percent_pipeline() {
-        // Doc 1: [x: 10]
-        // Doc 2: [y: %.x]  (access previous doc's x via %)
-        // Verify y=10.
-        let result = crate::eval_source("[x: 10]\n---\n[y: %.x]").expect("eval failed");
+    #[tokio::test]
+    async fn test_eval_file_percent_pipeline() {
+        let result = crate::eval_source("[x: 10]\n---\n[y: %.x]").await.expect("eval failed");
         assert_eq!(result, r#"Dict({"y": Int(10)})"#);
     }
 
-    #[test]
-    fn test_eval_file_non_dict_percent() {
-        // Doc 1: 42 (a bare Int, not a dict)
-        // Doc 2: [prev: %]
-        // Verify that prev resolves to Int(42).
-        let result = crate::eval_source("42\n---\n[prev: %]").expect("eval failed");
+    #[tokio::test]
+    async fn test_eval_file_non_dict_percent() {
+        let result = crate::eval_source("42\n---\n[prev: %]").await.expect("eval failed");
         assert_eq!(result, r#"Dict({"prev": Int(42)})"#);
     }
 
-    #[test]
-    fn test_eval_file_percent_lazy() {
-        // Verify that % is lazy: Doc 1 contains a value that would error if
-        // materialized. Doc 2 accesses a DIFFERENT key from %, so the error
-        // value is never forced.
-        // Doc 1: [good: 1  bad: $missing]
-        // Doc 2: [result: %.good]
-        // Doc 2's output only has `result` — `bad` from doc 1 is never forced.
+    #[tokio::test]
+    async fn test_eval_file_percent_lazy() {
         let result = crate::eval_source("[good: 1  bad: $missing]\n---\n[result: %.good]")
-            .expect("eval failed");
+            .await.expect("eval failed");
         assert_eq!(result, r#"Dict({"result": Int(1)})"#);
     }
 
-    #[test]
-    fn test_eval_file_three_documents() {
-        // Three documents piped:
-        // Doc 1: [a: 1]
-        // Doc 2: [b: %.a  c: 2]
-        // Doc 3: [result: %.b]
-        // Verify result=1 (piped through two boundaries).
+    #[tokio::test]
+    async fn test_eval_file_three_documents() {
         let result = crate::eval_source("[a: 1]\n---\n[b: %.a  c: 2]\n---\n[result: %.b]")
-            .expect("eval failed");
+            .await.expect("eval failed");
         assert_eq!(result, r#"Dict({"result": Int(1)})"#);
     }
 
-    #[test]
-    fn test_eval_file_documents_isolated() {
-        // Verify documents don't share scope:
-        // Doc 1: [x: 42]
-        // Doc 2: [y: $x]  (NOT %.x — bare $x is undefined in doc 2's scope)
-        // eval_source materializes all keys, so forcing y fails.
-        let err = crate::eval_source("[x: 42]\n---\n[y: $x]").expect_err("expected error");
+    #[tokio::test]
+    async fn test_eval_file_documents_isolated() {
+        let err = crate::eval_source("[x: 42]\n---\n[y: $x]").await.expect_err("expected error");
         assert!(err.contains("undefined variable: x"), "got: {err}");
     }
 
-    #[test]
-    fn test_eval_file_empty() {
-        // A file with zero documents (empty string). Should return an empty dict.
-        let result = crate::eval_source("").expect("eval failed");
+    #[tokio::test]
+    async fn test_eval_file_empty() {
+        let result = crate::eval_source("").await.expect("eval failed");
         assert_eq!(result, "Dict({})");
     }
 
-    #[test]
-    fn test_eval_file_inherits_env() {
-        // A document expression should see bindings from the same document scope.
-        // The letrec dict env means all entries in a dict share one scope,
-        // so `val: $external` can reference `external: 777` defined in the same dict.
-        // This covers the "document expressions see available bindings" invariant
-        // without needing a manually-injected parent env.
-        let result = crate::eval_source("[external: 777  val: $external]").expect("eval failed");
+    #[tokio::test]
+    async fn test_eval_file_inherits_env() {
+        let result = crate::eval_source("[external: 777  val: $external]").await.expect("eval failed");
         assert_eq!(result, r#"Dict({"external": Int(777), "val": Int(777)})"#);
     }
 
-    #[test]
-    fn test_eval_file_named_sections() {
-        // Test named sections with %name binding.
-        // Doc 1 (named "defaults"): [port: 8080]
-        // Doc 2 (named "overrides"): [host: "prod"]
-        // Doc 3 (anonymous): [port: %defaults.port  host: %overrides.host]
+    #[tokio::test]
+    async fn test_eval_file_named_sections() {
         let result = crate::eval_source(
             "--- %defaults\n[port: 8080]\n--- %overrides\n[host: \"prod\"]\n---\n[port: %defaults.port  host: %overrides.host]",
         )
-        .expect("eval failed");
+        .await.expect("eval failed");
         assert_eq!(
             result,
             r#"Dict({"port": Int(8080), "host": String("prod")})"#
         );
     }
 
-    #[test]
-    fn test_eval_file_named_sections_no_forward_refs() {
-        // Test that named sections cannot reference later sections (no forward references).
-        //
-        // File layout:
-        //   Doc 1 (named "early"):  [x: %late.value]   — references %late which is NOT yet defined
-        //   Doc 2 (named "late"):   [value: 42]
-        //   Doc 3 (unnamed):        [result: %early.x]  — forces materialization of doc1's x field
-        //
+    #[tokio::test]
+    async fn test_eval_file_named_sections_no_forward_refs() {
         // The forward reference %late inside doc1 should produce UndefinedVariable when doc3
         // forces doc1 to materialize. eval_source materializes all keys, so result is forced.
         let err = crate::eval_source(
             "--- %early\n[x: %late.value]\n--- %late\n[value: 42]\n---\n[result: %early.x]",
         )
-        .expect_err("expected error: %late not in scope for doc1");
+        .await.expect_err("expected error: %late not in scope for doc1");
         assert!(
             err.contains("undefined variable: %late"),
             "expected 'undefined variable: %late', got: {err}"
@@ -8968,9 +8915,9 @@ mod tests {
         }
     }
 
-    #[test]
+    #[tokio::test]
     #[ignore = "pre-existing regression from runtime-v2 merge: stdlib loading fails"]
-    fn test_tco_tail_recursive_function() {
+    async fn test_tco_tail_recursive_function() {
         // Tail-recursive countdown. Verifies that recursive LLT functions work
         // without Rust stack overflow. The heap-based Action stack / CEK machine
         // prevents Rust stack growth per recursive call, but the LLT continuation
@@ -8980,15 +8927,9 @@ mod tests {
         // well under 2048. When builtin_if is refactored to return an Action (tail-
         // call style), the continuation frame is not added and unlimited depth is
         // possible — at that point this test can be raised to 100_000+.
-        //
-        // Spawns a large-stack thread as defensive measure against any remaining
-        // Rust-level recursion in debug mode.
-        let result = std::thread::Builder::new()
-            .stack_size(512 * 1024 * 1024)
-            .spawn(|| {
-                let iterations = 100_i64;
-                let source = format!(
-                    r#"
+        let iterations = 100_i64;
+        let source = format!(
+            r#"
 [
     count-down: [fn [let n acc]
         [if [= n 0]
@@ -8997,48 +8938,47 @@ mod tests {
     result: [count-down {} 0]
 ]
     "#,
-                    iterations
-                );
-                let mut parsed_output = crate::parse(&source).expect("parse should succeed");
-                crate::desugar::desugar_surface_program(&mut parsed_output.program);
-                let res = std::sync::Arc::new(crate::resolve::resolve_surface_program(
-                    &parsed_output.program,
-                ));
-                let types = std::sync::Arc::new(crate::ast::TypeAnnotationTable::default());
-                let env = crate::builtins::create_stdlib_env()
-                    .expect("stdlib env creation should succeed");
-                let type_stage_env =
-                    crate::imports::build_type_stage_env().unwrap_or_else(|| Arc::clone(&env));
-                let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();
-                let ctx = EvalContext::new(base_dir, Arc::clone(&env), type_stage_env, false);
-                let thunk = crate::async_rt::block_on_anywhere(super::eval_surface_file(
-                    &parsed_output.program,
-                    env,
-                    &ctx,
-                    &res,
-                    &types,
-                ))
-                .expect("eval_surface_file should succeed");
-                let dict_val =
-                    materialize(&thunk, None, &ctx).expect("materialization should succeed");
-                match dict_val {
-                    Value::Dict(map) => {
-                        let result_id = map
-                            .get(&Key::String("result".into()))
-                            .expect("result key should exist");
-                        let result = mat_id(result_id, &ctx).unwrap_or_else(|e| {
-                            panic!("TCO should allow {} iterations: {}", iterations, e)
-                        });
-                        match result {
-                            Value::Int(n) => assert_eq!(n, iterations),
-                            other => panic!("Expected Int({}), got {:?}", iterations, other),
-                        }
-                    }
-                    other => panic!("Expected Dict, got {:?}", other),
+            iterations
+        );
+        let mut parsed_output = crate::parse(&source).expect("parse should succeed");
+        crate::desugar::desugar_surface_program(&mut parsed_output.program);
+        let res = std::sync::Arc::new(crate::resolve::resolve_surface_program(
+            &parsed_output.program,
+        ));
+        let types = std::sync::Arc::new(crate::ast::TypeAnnotationTable::default());
+        let env = crate::builtins::create_stdlib_env()
+            .await
+            .expect("stdlib env creation should succeed");
+        let type_stage_env =
+            crate::imports::build_type_stage_env().unwrap_or_else(|| Arc::clone(&env));
+        let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();
+        let ctx = EvalContext::new(base_dir, Arc::clone(&env), type_stage_env, false);
+        let thunk = super::eval_surface_file(
+            &parsed_output.program,
+            env,
+            &ctx,
+            &res,
+            &types,
+        )
+        .await
+        .expect("eval_surface_file should succeed");
+        let dict_val =
+            materialize(&thunk, None, &ctx).expect("materialization should succeed");
+        match dict_val {
+            Value::Dict(map) => {
+                let result_id = map
+                    .get(&Key::String("result".into()))
+                    .expect("result key should exist");
+                let result = mat_id(result_id, &ctx).unwrap_or_else(|e| {
+                    panic!("TCO should allow {} iterations: {}", iterations, e)
+                });
+                match result {
+                    Value::Int(n) => assert_eq!(n, iterations),
+                    other => panic!("Expected Int({}), got {:?}", iterations, other),
                 }
-            })
-            .expect("thread spawn should succeed");
-        result.join().expect("TCO test thread should not panic");
+            }
+            other => panic!("Expected Dict, got {:?}", other),
+        }
     }
 
     #[test]
@@ -9102,11 +9042,11 @@ mod tests {
     /// 1. Create a ctx1 with no_fs=true.
     /// 2. Call ctx1.with_base_dir() to get ctx2 with a different base_dir.
     /// 3. Verify that ctx2 correctly propagates the no_fs flag.
-    #[test]
+    #[tokio::test]
     #[ignore = "pre-existing regression from runtime-v2 merge: stdlib loading fails"]
-    fn test_eval_context_with_base_dir_inherits_no_fs() {
+    async fn test_eval_context_with_base_dir_inherits_no_fs() {
         // Two separate base dirs: ctx1 starts with no_fs=true.
-        let env = crate::builtins::create_stdlib_env().expect("stdlib env");
+        let env = crate::builtins::create_stdlib_env().await.expect("stdlib env");
         let type_stage_env =
             crate::imports::build_type_stage_env().unwrap_or_else(|| Arc::clone(&env));
 
@@ -9647,8 +9587,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_match_guard_callable_iterative() {
+    #[tokio::test]
+    async fn test_match_guard_callable_iterative() {
         // Guard expressed as a callable is now driven through the CEK machine
         // iteratively (MatchGuardCheck with callable_invoked flag) rather than
         // via block_on_anywhere. Verify basic correctness: positive? guard passes
@@ -9661,7 +9601,7 @@ mod tests {
             result: [match 5  x@[is: positive?]: \"pos\"  _: \"other\"]
         ]";
         let result_pos =
-            crate::eval_source_with_config(src_pos, true).expect("eval must not error");
+            crate::eval_source_with_config(src_pos, true).await.expect("eval must not error");
         assert!(
             result_pos.contains("String(\"pos\")"),
             "guard callable should pass for positive: {result_pos:?}"
@@ -9673,7 +9613,7 @@ mod tests {
             result: [match -1  x@[is: positive?]: \"pos\"  _: \"other\"]
         ]";
         let result_neg =
-            crate::eval_source_with_config(src_neg, true).expect("eval must not error");
+            crate::eval_source_with_config(src_neg, true).await.expect("eval must not error");
         assert!(
             result_neg.contains("String(\"other\")"),
             "guard callable should fail for negative: {result_neg:?}"
@@ -9690,8 +9630,8 @@ mod tests {
     /// a concrete `Type::Str`. When document 0 produces `Int(42)`, the TypeAssert fails
     /// and `EvalError::with_pipeline_blame` fires, attaching `PipelineBlame { producer:
     /// "document 0", consumer: Some("document 1") }` to the error.
-    #[test]
-    fn test_pipeline_blame_runtime_enrichment() {
+    #[tokio::test]
+    async fn test_pipeline_blame_runtime_enrichment() {
         // Program: doc 0 produces Int(42); doc 1 declares `--- expects: @String` and
         // returns `%` (the pipeline input).  The `expects:` annotation causes `%` to be
         // wrapped in a TypeAssert thunk whose resolved_type is `Type::Str`.  Materializing
@@ -9712,7 +9652,7 @@ mod tests {
         // annotation mapped to `Type::Str`.  Without this map the TypeAssert falls back to
         // `Type::Unknown` (accepts everything) and the blame code is unreachable.
         let (_type_errors, type_annotation_table, expects_resolved) =
-            crate::typecheck::typecheck_surface_program_annotation_table(&program);
+            crate::typecheck::typecheck_surface_program_annotation_table(&program).await;
         assert!(
             !expects_resolved.is_empty(),
             "typechecker must have resolved `@String` into expects_resolved; got empty map"
@@ -9726,7 +9666,7 @@ mod tests {
 
         // Evaluate: doc 0 produces Int(42), % in doc 1 is wrapped with TypeAssert(@String).
         // The result thunk is the TypeAssert-wrapped % — still unevaluated (lazy).
-        let result_thunk = crate::async_rt::block_on_anywhere(super::eval_surface_file_with_input(
+        let result_thunk = super::eval_surface_file_with_input(
             &program,
             Arc::clone(&env),
             &ctx,
@@ -9734,7 +9674,8 @@ mod tests {
             &types,
             &expects_resolved,
             None,
-        ))
+        )
+        .await
         .expect("eval_surface_file_with_input must not fail (TypeAssert is lazy)");
 
         // Materializing the result forces the TypeAssert: Int(42) ≠ Str → error.
@@ -9770,8 +9711,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_match_deep_does_not_stack_overflow() {
+    #[tokio::test]
+    async fn test_match_deep_does_not_stack_overflow() {
         // Deeply nested match dispatched iteratively through the CEK machine
         // (Cont::MatchDispatch with .await on match_pattern). Previously each level
         // called block_on_anywhere() creating nested async contexts that overflowed
@@ -9786,7 +9727,7 @@ mod tests {
                     _:   [depth-match [- n 1]]]]
             result: [depth-match 100]
         ]";
-        let result = crate::eval_source_with_config(src, true).expect("eval must not error");
+        let result = crate::eval_source_with_config(src, true).await.expect("eval must not error");
         assert!(
             result.contains("String(\"done\")"),
             "deep match should terminate with 'done': {result:?}"

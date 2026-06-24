@@ -2,7 +2,7 @@
 # Two arms with the same pattern [a@Int] should trigger an overlap error
 [
   # Define a simple class
-  TestClass: [class [let TestClass a]
+  TestClass: [class [let a]
     m: [Fn@Bool [a]]]
 
   # Define overlapping instances - both arms match Int

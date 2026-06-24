@@ -12,7 +12,7 @@ fn unify_sync<'a>(
     state: &'a mut crate::types::InferState,
     constraints: &'a mut Vec<crate::types::Constraint>,
     span: crate::ast::Span,
-) -> Result<(), crate::type_errors::TypeError> {
+) -> Result<(), crate::TypeError> {
     crate::async_rt::block_on_anywhere(unify(a, b, subst, state, constraints, span))
 }
 use crate::ast::Span;
@@ -2265,7 +2265,7 @@ fn test_unify_tycon_expand_symmetric() {
     let tycon = Type::TyCon("Color".to_string());
 
     // (TyCon, NominalVariant) direction
-    let r1 = unify(
+    let r1 = unify_sync(
         &tycon,
         &red,
         &mut subst,
@@ -2274,7 +2274,7 @@ fn test_unify_tycon_expand_symmetric() {
         span.clone(),
     );
     // (NominalVariant, TyCon) direction
-    let r2 = unify(&red, &tycon, &mut subst, &mut state, &mut Vec::new(), span);
+    let r2 = unify_sync(&red, &tycon, &mut subst, &mut state, &mut Vec::new(), span);
 
     assert!(
         r1.is_ok(),

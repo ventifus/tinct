@@ -26,10 +26,11 @@ fn surf_ann_entry_tc(
     )
 }
 
-fn check(input: &str) -> Result<(), Vec<TypeError>> {
+async fn check(input: &str) -> Result<(), Vec<TypeError>> {
     let mut program = crate::parse(input).unwrap().program;
     crate::desugar::desugar_surface_program(&mut program);
-    let (errors, _table, _inferred) = typecheck_surface_program_annotation_table(&program);
+    let (errors, _table, _inferred) =
+        typecheck_surface_program_annotation_table(&program).await;
     if errors.is_empty() {
         Ok(())
     } else {
@@ -37,11 +38,11 @@ fn check(input: &str) -> Result<(), Vec<TypeError>> {
     }
 }
 
-fn check_err(input: &str) -> Vec<TypeError> {
-    check(input).unwrap_err()
+async fn check_err(input: &str) -> Vec<TypeError> {
+    check(input).await.unwrap_err()
 }
 
-fn infer(input: &str) -> Type {
+async fn infer(input: &str) -> Type {
     let mut program = crate::parse(input).unwrap().program;
     crate::desugar::desugar_surface_program(&mut program);
     let env = crate::imports::build_prelude_env();
@@ -52,18 +53,26 @@ fn infer(input: &str) -> Type {
         crate::ast::SurfaceItem::Expr(n) => n,
         _ => panic!("expected expression item"),
     };
-    infer_surface_expr(node, &env, &mut state, &mut Vec::new(), &mut None).unwrap()
+    infer_surface_expr(
+        node,
+        &env,
+        &mut state,
+        &mut Vec::new(),
+        &mut None,
+    )
+    .await
+    .unwrap()
 }
 
-fn doc_env(input: &str) -> Rc<TypeEnv> {
-    doc_env_with_prelude(input)
+async fn doc_env(input: &str) -> Rc<TypeEnv> {
+    doc_env_with_prelude(input).await
 }
 
-fn doc_env_with_builtins(input: &str) -> Rc<TypeEnv> {
-    doc_env_with_prelude(input)
+async fn doc_env_with_builtins(input: &str) -> Rc<TypeEnv> {
+    doc_env_with_prelude(input).await
 }
 
-fn doc_env_with_prelude(input: &str) -> Rc<TypeEnv> {
+async fn doc_env_with_prelude(input: &str) -> Rc<TypeEnv> {
     let mut program = crate::parse(input).unwrap().program;
     crate::desugar::desugar_surface_program(&mut program);
     let env = crate::imports::build_prelude_env();
@@ -83,20 +92,21 @@ fn doc_env_with_prelude(input: &str) -> Rc<TypeEnv> {
         &mut None,
         &empty_pipeline,
         &named_types,
-    );
+    )
+    .await;
     if !errors.is_empty() {
         panic!("doc_env_with_prelude: typecheck error: {:?}", errors);
     }
     result_env
 }
 
-fn result_type(input: &str) -> Type {
-    let env = doc_env(input);
+async fn result_type(input: &str) -> Type {
+    let env = doc_env(input).await;
     env.get("%").unwrap().body.clone()
 }
 
-fn result_field(input: &str, field: &str) -> Type {
-    match result_type(input) {
+async fn result_field(input: &str, field: &str) -> Type {
+    match result_type(input).await {
         Type::Record(Row { fields, .. }) => fields.get(field).cloned().unwrap(),
         other => panic!("expected Record for %, got {other}"),
     }
@@ -135,11 +145,11 @@ fn assert_has_field(ty: &Type, field: &str, expected: &Type) {
     }
 }
 
-fn file_env(input: &str) -> Rc<TypeEnv> {
-    file_env_impl(input)
+async fn file_env(input: &str) -> Rc<TypeEnv> {
+    file_env_impl(input).await
 }
 
-fn file_env_impl(input: &str) -> Rc<TypeEnv> {
+async fn file_env_impl(input: &str) -> Rc<TypeEnv> {
     let mut program = crate::parse(input).unwrap().program;
     crate::desugar::desugar_surface_program(&mut program);
     let mut env = crate::imports::build_prelude_env();
@@ -161,7 +171,8 @@ fn file_env_impl(input: &str) -> Rc<TypeEnv> {
             &mut None,
             &pipeline_type,
             &named_types,
-        );
+        )
+        .await;
         if !errors.is_empty() {
             panic!("file_env: typecheck error: {:?}", errors);
         }
@@ -176,50 +187,50 @@ fn file_env_impl(input: &str) -> Rc<TypeEnv> {
 
 // -- Literal inference --
 
-#[test]
-fn test_literal_int() {
-    assert_eq!(infer("42"), Type::IntLiteral(42));
+#[tokio::test]
+async fn test_literal_int() {
+    assert_eq!(infer("42").await, Type::IntLiteral(42));
 }
 
-#[test]
-fn test_literal_float() {
-    assert_eq!(infer("3.14"), Type::Float);
+#[tokio::test]
+async fn test_literal_float() {
+    assert_eq!(infer("3.14").await, Type::Float);
 }
 
-#[test]
-fn test_literal_bool() {
-    assert_eq!(infer("true"), Type::Bool);
+#[tokio::test]
+async fn test_literal_bool() {
+    assert_eq!(infer("true").await, Type::Bool);
 }
 
-#[test]
-fn test_literal_string() {
+#[tokio::test]
+async fn test_literal_string() {
     // In new syntax, bare words are references (VarRef), not string literals.
     // String literals require quotes.
-    assert_eq!(infer("\"hello\""), Type::StringLiteral("hello".into()));
+    assert_eq!(infer("\"hello\"").await, Type::StringLiteral("hello".into()));
 }
 
 // -- VarRef --
 
-#[test]
-fn test_varref_in_scope_chain() {
+#[tokio::test]
+async fn test_varref_in_scope_chain() {
     // x has type IntLiteral(42), so $x has type IntLiteral(42)
-    assert_eq!(result_field("[x: 42]\n[y: $x]", "y"), Type::IntLiteral(42));
+    assert_eq!(result_field("[x: 42]\n[y: $x]", "y").await, Type::IntLiteral(42));
 }
 
-#[test]
-fn test_varref_undefined() {
-    let errors = check_err("$x");
+#[tokio::test]
+async fn test_varref_undefined() {
+    let errors = check_err("$x").await;
     assert_eq!(errors.len(), 1);
     assert!(errors[0].message().contains("undefined variable: x"));
 }
 
 // -- Record construction --
 
-#[test]
-fn test_dict_simple() {
+#[tokio::test]
+async fn test_dict_simple() {
     // In new syntax, string values must be quoted.
     // Dict fields preserve literal types.
-    let ty = infer("[a: 1  b: \"hello\"  c: true]");
+    let ty = infer("[a: 1  b: \"hello\"  c: true]").await;
     match ty {
         Type::Record(Row { fields, .. }) => {
             assert_eq!(fields.get("a"), Some(&Type::IntLiteral(1)));
@@ -230,13 +241,13 @@ fn test_dict_simple() {
     }
 }
 
-#[test]
-fn test_dict_auto_indexed() {
+#[tokio::test]
+async fn test_dict_auto_indexed() {
     // In new syntax, bare words are references. For a data sequence of quoted strings,
     // use string literals. A quoted string in head position → Dict, so
     // ["foo" "bar" "baz"] is a Dict with auto-indexed entries.
     // Dict fields preserve literal types.
-    let ty = infer("[\"foo\" \"bar\" \"baz\"]");
+    let ty = infer("[\"foo\" \"bar\" \"baz\"]").await;
     match ty {
         Type::Record(Row { fields, .. }) => {
             assert_eq!(fields.get("0"), Some(&Type::StringLiteral("foo".into())));
@@ -247,9 +258,9 @@ fn test_dict_auto_indexed() {
     }
 }
 
-#[test]
-fn test_dict_nested() {
-    let ty = infer("[outer: [inner: 42]]");
+#[tokio::test]
+async fn test_dict_nested() {
+    let ty = infer("[outer: [inner: 42]]").await;
     match ty {
         Type::Record(Row { fields, .. }) => {
             let inner = fields.get("outer").unwrap();
@@ -267,9 +278,9 @@ fn test_dict_nested() {
     }
 }
 
-#[test]
-fn test_dict_letrec_forward_ref() {
-    let ty = infer("[a: $b  b: 42]");
+#[tokio::test]
+async fn test_dict_letrec_forward_ref() {
+    let ty = infer("[a: $b  b: 42]").await;
     match ty {
         Type::Record(Row { fields, .. }) => {
             // Forward references unify: $b resolves to 42, so both a and b have IntLiteral(42).
@@ -282,9 +293,9 @@ fn test_dict_letrec_forward_ref() {
 
 // -- Dict error accumulation --
 
-#[test]
-fn test_dict_multiple_errors() {
-    let errors = check_err("[a: $undefined1  b: 42  c: $undefined2]");
+#[tokio::test]
+async fn test_dict_multiple_errors() {
+    let errors = check_err("[a: $undefined1  b: 42  c: $undefined2]").await;
     assert_eq!(errors.len(), 2, "should return all errors, got: {errors:?}");
     assert!(
         errors[0].message().contains("undefined1"),
@@ -308,7 +319,9 @@ fn test_dict_multiple_errors() {
         crate::ast::SurfaceItem::Expr(n) => n,
         _ => panic!("expected expression item"),
     };
-    let errs = infer_surface_expr(node, &env, &mut state, &mut Vec::new(), &mut None).unwrap_err();
+    let errs = infer_surface_expr(node, &env, &mut state, &mut Vec::new(), &mut None)
+        .await
+        .unwrap_err();
     assert_eq!(errs.len(), 2, "infer_expr should return all dict errors");
     assert!(errs[0].message().contains("undefined1"));
     assert!(errs[1].message().contains("undefined2"));
@@ -316,20 +329,21 @@ fn test_dict_multiple_errors() {
 
 // -- Dot access --
 
-#[test]
-fn test_dot_access_found() {
+#[tokio::test]
+async fn test_dot_access_found() {
     // In new syntax, string literals require quotes.
     assert_eq!(
         result_field(
             "[person: [name: \"Andrew\"  age: 30]]\n[result: $person.name]",
             "result"
-        ),
+        )
+        .await,
         Type::StringLiteral("Andrew".into()),
     );
 }
 
-#[test]
-fn test_dot_access_missing_field() {
+#[tokio::test]
+async fn test_dot_access_missing_field() {
     // BAS: accessing a field not in the static type returns Unknown (gradual typing).
     // Under BAS open-world semantics, we don't error statically for unknown fields
     // because the concrete value may have extra fields (width subtyping). Runtime will
@@ -338,16 +352,17 @@ fn test_dot_access_missing_field() {
     let ty = result_field(
         "[person: [name: \"Andrew\"]]\n[result: $person.age]",
         "result",
-    );
+    )
+    .await;
     assert!(
         matches!(ty, Type::Unknown),
         "BAS: missing field access returns Unknown (not an error), got {ty}"
     );
 }
 
-#[test]
-fn test_dot_access_non_record() {
-    let errors = check_err("[x: 42]\n[result: $x.field]");
+#[tokio::test]
+async fn test_dot_access_non_record() {
+    let errors = check_err("[x: 42]\n[result: $x.field]").await;
     assert!(errors
         .iter()
         .any(|e| e.message().contains("expected record type")));
@@ -355,15 +370,16 @@ fn test_dot_access_non_record() {
 
 // -- Dot access on Intersection and Negation types --
 
-#[test]
-fn test_dot_access_intersection_found() {
+#[tokio::test]
+async fn test_dot_access_intersection_found() {
     // `[@[[all [x: Int ...] [y: String ...]]] $rec].x` should return Int.
     // The TypeAssert produces Intersection([{x:Int,...ρ1},{y:String,...ρ2}]).
     // Our new Intersection arm searches members and returns Int from the {x:Int,...} member.
     let env = doc_env(
         "[rec: [x: 1  y: \"hello\"]]\
              [result: [@[[all [x: Int ...] [y: String ...]]] $rec].x]",
-    );
+    )
+    .await;
     match env.get("result").map(|s| &s.body) {
         Some(Type::Int) => {}
         Some(other) => panic!(
@@ -373,14 +389,15 @@ fn test_dot_access_intersection_found() {
     }
 }
 
-#[test]
-fn test_dot_access_intersection_missing_field_returns_unknown() {
+#[tokio::test]
+async fn test_dot_access_intersection_missing_field_returns_unknown() {
     // Accessing a field that is not in any member of the intersection should return Unknown
     // (not an error), because a member with an open row tail may accept the field dynamically.
     let result = check(
         "[rec: [x: 1  y: \"hello\"]]\
              [result: [@[[all [x: Int ...] [y: String ...]]] $rec].z]",
-    );
+    )
+    .await;
     // Should not fail — field z is not statically known in the intersection, so Unknown is returned
     assert!(
         result.is_ok(),
@@ -388,14 +405,14 @@ fn test_dot_access_intersection_missing_field_returns_unknown() {
     );
 }
 
-#[test]
-fn test_dot_access_negation_returns_unknown() {
+#[tokio::test]
+async fn test_dot_access_negation_returns_unknown() {
     // Accessing a field on a Negation type returns Unknown (not an error).
     // Negation restricts inhabitance, not field structure.
     // @[[without [x: Int ...]]] produces Negation(Record({x:Int},...)).
     // The conservative negation subtyping rule (_, Negation(_)) => true allows the check to pass.
     // Then .y on Negation(...) should return Unknown without error.
-    let result = check("[x: 42]\n[result: [@[[without [x: Int ...]]] $x].y]");
+    let result = check("[x: 42]\n[result: [@[[without [x: Int ...]]] $x].y]").await;
     // Should not error — Negation falls back to Unknown for field access
     assert!(
         result.is_ok(),
@@ -405,60 +422,61 @@ fn test_dot_access_negation_returns_unknown() {
 
 // -- Multi-field annotation as Intersection (BAS) --
 
-#[test]
-fn test_multi_field_annotation_produces_intersection() {
+#[tokio::test]
+async fn test_multi_field_annotation_produces_intersection() {
     // `@[x: Int  y: String]` resolves to Intersection([{x: Int, ...ρ1}, {y: String, ...ρ2}])
     // Single-field annotations still produce Record (unchanged behavior).
     // Verify multi-field annotations typecheck without error against matching dicts.
-    check("[p: [@[x: Int  y: String] [x: 1  y: \"hi\"]]]").unwrap();
+    check("[p: [@[x: Int  y: String] [x: 1  y: \"hi\"]]]").await.unwrap();
 }
 
-#[test]
-fn test_multi_field_annotation_rejects_wrong_field_type() {
+#[tokio::test]
+async fn test_multi_field_annotation_rejects_wrong_field_type() {
     // `@[x: Int  y: String]` rejects values where one field has the wrong type.
-    let errors = check_err("[p: [@[x: Int  y: String] [x: \"wrong\"  y: \"hi\"]]]");
+    let errors = check_err("[p: [@[x: Int  y: String] [x: \"wrong\"  y: \"hi\"]]]").await;
     assert!(!errors.is_empty(), "expected type error but got none");
 }
 
-#[test]
-fn test_multi_field_annotation_dot_access_works() {
+#[tokio::test]
+async fn test_multi_field_annotation_dot_access_works() {
     // Dot access on a value annotated with `@[x: Int  y: String]` should find fields.
     // The intersection-of-open-records form supports field access via the Intersection arm.
     let ty = result_field(
         "[p: [@[x: Int  y: String] [x: 1  y: \"hi\"]]]\n[rx: $p.x]",
         "rx",
-    );
+    )
+    .await;
     assert!(
         matches!(ty, Type::Int | Type::IntLiteral(_)),
         "expected Int-like for .x on multi-field annotation, got {ty}"
     );
 }
 
-#[test]
-fn test_multi_field_annotation_body_alias() {
+#[tokio::test]
+async fn test_multi_field_annotation_body_alias() {
     // Type alias with 2+ fields produces Intersection body.
     // The alias can be used as a TypeAssert annotation.
-    check("[Point: [type [x: Int  y: Int]]]\n[p: [@Point [x: 1  y: 2]]]").unwrap();
+    check("[Point: [type [x: Int  y: Int]]]\n[p: [@Point [x: 1  y: 2]]]").await.unwrap();
 }
 
-#[test]
-fn test_multi_field_annotation_single_field_stays_record() {
+#[tokio::test]
+async fn test_multi_field_annotation_single_field_stays_record() {
     // Under BAS width subtyping (RowVar step 2): a closed record with MORE fields is a
     // subtype of a closed annotation with fewer fields — width subtyping allows extra fields.
     // `{name: String, age: Int} <: {name: String}` is sound because the supertype only
     // constrains what it declares; extra fields in the subtype are irrelevant.
-    check("[@[name: String] [name: \"Alice\"  age: 30]]").unwrap();
+    check("[@[name: String] [name: \"Alice\"  age: 30]]").await.unwrap();
 }
 
-#[test]
-fn test_multi_field_annotation_with_rest_stays_record() {
+#[tokio::test]
+async fn test_multi_field_annotation_with_rest_stays_record() {
     // Multi-field annotation WITH `...` rest is still a Record (not Intersection).
     // The rest entry causes the annotation to keep the user-supplied RowTail.
-    check("[@[x: Int  y: String ...] [x: 1  y: \"hi\"  z: true]]").unwrap();
+    check("[@[x: Int  y: String ...] [x: 1  y: \"hi\"  z: true]]").await.unwrap();
 }
 
-#[test]
-fn test_multi_field_annotation_shared_typevar_stays_record() {
+#[tokio::test]
+async fn test_multi_field_annotation_shared_typevar_stays_record() {
     // `[type [a] [first: a  second: a]]` uses the SAME TypeVar `a` in both fields.
     // The shared-var guard fires, keeping the alias body as a Record (no Intersection).
     // Ensures unification doesn't bind `a` to two different values.
@@ -466,19 +484,20 @@ fn test_multi_field_annotation_shared_typevar_stays_record() {
         "[Pair: [type [let a] [first: a  second: a]]]\
              [p: [fn@[Pair Int] [let] [first: 1  second: 2]]]",
     )
+    .await
     .unwrap();
 }
 
 // -- Access chain constraint generation (doc/07 Part 5) --
 
-#[test]
+#[tokio::test]
 #[ignore = "open record annotation form no longer supported"]
-fn test_dot_access_open_record_extends_tail() {
+async fn test_dot_access_open_record_extends_tail() {
     // BAS: all records are closed (no RowVar tails). `@Open` with `...` becomes a
     // closed record. Accessing unknown fields returns Unknown (gradual typing), not TypeVar.
     // Width subtyping allows extra fields at runtime; static type doesn't track them.
     // In new syntax, string literals require quotes.
-    let env = doc_env("[Open: [type [name: String ...]]]\n[p: [@Open [name: \"Alice\"  score: 42]]]\n[r1: $p.score2  r2: $p.score3]");
+    let env = doc_env("[Open: [type [name: String ...]]]\n[p: [@Open [name: \"Alice\"  score: 42]]]\n[r1: $p.score2  r2: $p.score3]").await;
     // r1 and r2 should be Unknown (field not in static type, BAS returns Unknown)
     match env.get("r1").map(|s| &s.body) {
         Some(Type::Unknown) => {}
@@ -492,8 +511,8 @@ fn test_dot_access_open_record_extends_tail() {
     }
 }
 
-#[test]
-fn test_dot_access_constraint_generation_on_open_record_with_known_field() {
+#[tokio::test]
+async fn test_dot_access_constraint_generation_on_open_record_with_known_field() {
     // Task 5: Renamed from test_dot_access_open_record_infinite_row_cycle.
     // The original name promised "infinite row cycle" but the test actually exercises
     // TypeVar constraint generation on forward references, NOT the RowVar occurs-check path.
@@ -532,7 +551,7 @@ fn test_dot_access_constraint_generation_on_open_record_with_known_field() {
     // Under BAS, check_dot_access generates constraint γ_data → Record({unknown: β})
     // in state.subst, but unify_rows ignores non-shared fields (BAS width subtyping).
     // No type error is produced; the caller sees Unknown for the unknown field.
-    let result = check("[result: $data.unknown  data: [known: 1]]");
+    let result = check("[result: $data.unknown  data: [known: 1]]").await;
     assert!(
         result.is_ok(),
         "BAS: accessing unknown field on forward reference returns Unknown, not an error; \
@@ -552,8 +571,8 @@ fn test_dot_access_constraint_generation_on_open_record_with_known_field() {
     // 4. Pass 3b now verifies constraints against concrete types, detecting field absence
 }
 
-#[test]
-fn test_dot_access_typevar_generates_constraint_verified() {
+#[tokio::test]
+async fn test_dot_access_typevar_generates_constraint_verified() {
     // Task 6: Verifies that the constraint α = Record({name: β}, RowVar(ρ)) was generated
     // when dot-accessing a TypeVar target, and that β is now resolved via Pass 3b.
     //
@@ -603,7 +622,8 @@ fn test_dot_access_typevar_generates_constraint_verified() {
         &mut None,
         &empty_pipeline,
         &named_types,
-    );
+    )
+    .await;
     if !errors.is_empty() {
         panic!("typecheck should succeed, got errors: {:?}", errors);
     }
@@ -626,13 +646,13 @@ fn test_dot_access_typevar_generates_constraint_verified() {
         );
 }
 
-#[test]
+#[tokio::test]
 #[ignore = "open record annotation form no longer supported"]
-fn test_dot_access_open_record_extends_tail_distinct_vars() {
+async fn test_dot_access_open_record_extends_tail_distinct_vars() {
     // BAS: all records are closed. Unknown field accesses return Unknown (gradual typing).
     // Both r1 and r2 get Unknown for unknown fields — there are no distinct TypeVars for rows.
     // In new syntax, string literals require quotes.
-    let env = doc_env("[Open: [type [name: String ...]]]\n[p: [@Open [name: \"Alice\"  score: 42]]]\n[r1: $p.score2  r2: $p.score3]");
+    let env = doc_env("[Open: [type [name: String ...]]]\n[p: [@Open [name: \"Alice\"  score: 42]]]\n[r1: $p.score2  r2: $p.score3]").await;
 
     match env.get("r1").map(|s| &s.body) {
         Some(Type::Unknown) => {}
@@ -646,13 +666,13 @@ fn test_dot_access_open_record_extends_tail_distinct_vars() {
     }
 }
 
-#[test]
-fn test_typeassert_default_inference_error_propagation() {
+#[tokio::test]
+async fn test_typeassert_default_inference_error_propagation() {
     // Task 5: Test TypeAssert default inference-error propagation
     // resolve_type_assert in typecheck_annot.rs propagates Err(errs) when
     // the default expression itself fails to infer (e.g., references undefined variable).
 
-    let errors = check_err("[@[type: Number  default: $undefined_var] 42]");
+    let errors = check_err("[@[type: Number  default: $undefined_var] 42]").await;
 
     // Should have at least one error (from the undefined variable in default)
     assert!(
@@ -670,30 +690,30 @@ fn test_typeassert_default_inference_error_propagation() {
 
 // -- TypeAssert --
 
-#[test]
-fn test_type_assert_pass() {
-    let ty = infer("[@Number 42]");
+#[tokio::test]
+async fn test_type_assert_pass() {
+    let ty = infer("[@Number 42]").await;
     assert_eq!(ty, Type::Number);
 }
 
-#[test]
-fn test_type_assert_fail() {
+#[tokio::test]
+async fn test_type_assert_fail() {
     // In new syntax, bare words are references. Use a quoted string to test type mismatch.
-    let errors = check_err("[@Number \"hello\"]");
+    let errors = check_err("[@Number \"hello\"]").await;
     assert_eq!(errors.len(), 1);
     assert!(errors[0].message().contains("cannot unify"));
 }
 
-#[test]
-fn test_type_assert_int_not_string() {
-    let errors = check_err("[@String 42]");
+#[tokio::test]
+async fn test_type_assert_int_not_string() {
+    let errors = check_err("[@String 42]").await;
     assert_eq!(errors.len(), 1);
     assert!(errors[0].message().contains("cannot unify"));
 }
 
-#[test]
-fn test_type_assert_default_suppresses_mismatch() {
-    let result = check("[@[type: Number  default: 0] hello]");
+#[tokio::test]
+async fn test_type_assert_default_suppresses_mismatch() {
+    let result = check("[@[type: Number  default: 0] hello]").await;
     assert!(
         result.is_ok(),
         "TypeAssert with default: should not raise type error, got: {:?}",
@@ -701,10 +721,10 @@ fn test_type_assert_default_suppresses_mismatch() {
     );
 }
 
-#[test]
-fn test_type_assert_no_default_still_errors() {
+#[tokio::test]
+async fn test_type_assert_no_default_still_errors() {
     // In new syntax, string literals require quotes. "hello" infers as Str, not Number.
-    let errors = check_err("[@[type: Number] \"hello\"]");
+    let errors = check_err("[@[type: Number] \"hello\"]").await;
     assert!(
         errors.iter().any(|e| e.message().contains("cannot unify")),
         "TypeAssert without default: should still report type error, got: {:?}",
@@ -712,12 +732,12 @@ fn test_type_assert_no_default_still_errors() {
     );
 }
 
-#[test]
-fn test_typeassert_default_wrong_type_emits_error() {
+#[tokio::test]
+async fn test_typeassert_default_wrong_type_emits_error() {
     // [@Number default: "hello" expr] — default is Str, asserted type is Number
     // Should emit a default value type mismatch error
     // In new syntax, string literals require quotes.
-    let errors = check_err("[@[type: Number  default: \"hello\"] 42]");
+    let errors = check_err("[@[type: Number  default: \"hello\"] 42]").await;
     assert!(
         errors
             .iter()
@@ -727,11 +747,11 @@ fn test_typeassert_default_wrong_type_emits_error() {
     );
 }
 
-#[test]
-fn test_typeassert_default_correct_type_no_error() {
+#[tokio::test]
+async fn test_typeassert_default_correct_type_no_error() {
     // [@Number default: 0 expr] — default is IntLiteral(0) which is subtype of Number
     // Should not emit any error
-    let result = check("[@[type: Number  default: 0] 42]");
+    let result = check("[@[type: Number  default: 0] 42]").await;
     assert!(
         result.is_ok(),
         "TypeAssert with correct default type should not emit error, got: {:?}",
@@ -739,12 +759,12 @@ fn test_typeassert_default_correct_type_no_error() {
     );
 }
 
-#[test]
-fn test_typeassert_default_wrong_type_main_check_fails() {
+#[tokio::test]
+async fn test_typeassert_default_wrong_type_main_check_fails() {
     // [@Number default: "hello" wrong_expr] — both main and default are wrong
     // Should emit a default value type mismatch error
     // In new syntax, string literals require quotes.
-    let errors = check_err("[@[type: Number  default: \"hello\"] \"world\"]");
+    let errors = check_err("[@[type: Number  default: \"hello\"] \"world\"]").await;
     assert!(
             errors
                 .iter()
@@ -754,10 +774,10 @@ fn test_typeassert_default_wrong_type_main_check_fails() {
         );
 }
 
-#[test]
-fn test_typeassert_default_int_subtype_of_number() {
+#[tokio::test]
+async fn test_typeassert_default_int_subtype_of_number() {
     // [@Number default: 42 expr] — IntLiteral(42) <: Number — no error
-    let result = check("[@[type: Number  default: 42] hello]");
+    let result = check("[@[type: Number  default: 42] hello]").await;
     assert!(
         result.is_ok(),
         "TypeAssert with Int default for Number assertion should not emit error, got: {:?}",
@@ -765,11 +785,11 @@ fn test_typeassert_default_int_subtype_of_number() {
     );
 }
 
-#[test]
-fn test_typeassert_default_string_literal_subtype_of_str() {
+#[tokio::test]
+async fn test_typeassert_default_string_literal_subtype_of_str() {
     // [@String default: "ok" expr] — StringLiteral("ok") <: Str — no error
     // In new syntax, string literals require quotes.
-    let result = check("[@[type: String  default: \"ok\"] 42]");
+    let result = check("[@[type: String  default: \"ok\"] 42]").await;
     assert!(
         result.is_ok(),
         "TypeAssert with Str default for String assertion should not emit error, got: {:?}",
@@ -777,8 +797,8 @@ fn test_typeassert_default_string_literal_subtype_of_str() {
     );
 }
 
-#[test]
-fn test_typeassert_default_suppresses_main_error_but_propagates_ok() {
+#[tokio::test]
+async fn test_typeassert_default_suppresses_main_error_but_propagates_ok() {
     // Task 6: ASSERT-DEFAULT suppression — when a valid default is present, the
     // main-check error (hello is not a Number) is suppressed and typecheck returns Ok.
     //
@@ -788,7 +808,7 @@ fn test_typeassert_default_suppresses_main_error_but_propagates_ok() {
     //
     // The expression is wrapped in a dict so the result is observable via result_field.
     // `hello` is a bare word (StringLiteral type), not a Number → mismatch, suppressed.
-    let result = check("[result: [@[type: Number  default: 0] hello]]");
+    let result = check("[result: [@[type: Number  default: 0] hello]]").await;
     assert!(
         result.is_ok(),
         "TypeAssert with valid default should suppress main-check error (hello is not a Number), \
@@ -799,13 +819,14 @@ fn test_typeassert_default_suppresses_main_error_but_propagates_ok() {
 
 // -- TypeAlias --
 
-#[test]
-fn test_type_alias_record() {
+#[tokio::test]
+async fn test_type_alias_record() {
     // In new syntax, string literals require quotes.
     let ty = result_field(
         "[Person: [type [name: String  age: Number]]]\n[p: [@Person [name: \"Alice\"  age: 30]]]",
         "p",
-    );
+    )
+    .await;
     // The Person alias body `[name: String  age: Number]` is an Intersection of
     // open single-field records: [{name: String, ...ρ1}, {age: Number, ...ρ2}].
     // Use assert_has_field to check either Record or Intersection-of-Records form.
@@ -813,8 +834,8 @@ fn test_type_alias_record() {
     assert_has_field(&ty, "age", &Type::Number);
 }
 
-#[test]
-fn test_type_alias_cycle_resolves_to_unknown() {
+#[tokio::test]
+async fn test_type_alias_cycle_resolves_to_unknown() {
     // With two-pass registration, circular aliases resolve to Unknown.
     // The register_type_aliases path pre-registers both, so both resolve.
     // But infer_dict still uses the single-pass approach, so using a
@@ -825,8 +846,8 @@ fn test_type_alias_cycle_resolves_to_unknown() {
     // is treated as a nominal variant constructor tag (unit NominalVariant{tag:"B"}).
     // This means @A resolves to NominalVariant{tag:"B"} and checking 42 against it
     // produces a type mismatch error.
-    check("[A: [type B]  B: [type A]]").unwrap();
-    let errors = check_err("[A: [type B]  B: [type A]  x: [@A 42]]");
+    check("[A: [type B]  B: [type A]]").await.unwrap();
+    let errors = check_err("[A: [type B]  B: [type A]  x: [@A 42]]").await;
     assert!(
         !errors.is_empty(),
         "using circular type aliases in the same dict should produce errors"
@@ -837,8 +858,8 @@ fn test_type_alias_cycle_resolves_to_unknown() {
 
 // -- B-296: ADT constructor names exported as standalone bindings from [type ...] --
 
-#[test]
-fn test_b296_unit_constructors_exported_as_bindings() {
+#[tokio::test]
+async fn test_b296_unit_constructors_exported_as_bindings() {
     // B-296: Constructors from `[type ...]` must be visible as standalone names in the
     // enclosing dict's type environment — not just as sibling-scope entries during inference.
     // Before this fix, `Foo` and `Bar` would resolve as "undefined variable" in user code
@@ -846,14 +867,14 @@ fn test_b296_unit_constructors_exported_as_bindings() {
     //
     // Test: `Foo` and `Bar` are unit constructors from `MyType`. Using them as values should
     // typecheck without error.
-    check("[MyType: [type [Foo] [Bar]]  x: Foo  y: Bar]").unwrap();
+    check("[MyType: [type [Foo] [Bar]]  x: Foo  y: Bar]").await.unwrap();
 }
 
-#[test]
-fn test_b296_unit_constructor_has_nominal_variant_type() {
+#[tokio::test]
+async fn test_b296_unit_constructor_has_nominal_variant_type() {
     // B-296: Unit constructors exported by [type ...] should have type NominalVariant.
     // A unit constructor is a value (not a function), so its type is NominalVariant{tag, fields:{}}
-    let env = doc_env("[MyType: [type [Foo] [Bar]]]");
+    let env = doc_env("[MyType: [type [Foo] [Bar]]]").await;
     let foo_scheme = env.get("Foo").expect("Foo should be in the exported env");
     assert!(
         matches!(&foo_scheme.body, Type::NominalVariant { tag, .. } if tag == "Foo"),
@@ -868,11 +889,11 @@ fn test_b296_unit_constructor_has_nominal_variant_type() {
     );
 }
 
-#[test]
-fn test_b296_field_constructor_exported_as_function_type() {
+#[tokio::test]
+async fn test_b296_field_constructor_exported_as_function_type() {
     // B-296: Field constructors from [type ...] should have Function type.
     // [Circle r: Int] is a field constructor: its type is Function {params: [(Some("r"), Int)], ret: NominalVariant}
-    let env = doc_env("[Shape: [type [Circle r: Int] [Square s: Int]]]");
+    let env = doc_env("[Shape: [type [Circle r: Int] [Square s: Int]]]").await;
     let circle_scheme = env
         .get("Circle")
         .expect("Circle should be in the exported env");
@@ -883,26 +904,27 @@ fn test_b296_field_constructor_exported_as_function_type() {
     );
 }
 
-#[test]
-fn test_b296_field_constructor_callable_without_error() {
+#[tokio::test]
+async fn test_b296_field_constructor_callable_without_error() {
     // B-296: Field constructors should be callable at their correct types without type errors.
     // [Circle r: 5] calls the Circle constructor with r=5 — should typecheck cleanly.
     check("[Shape: [type [Circle r: Int] [Square s: Int]]  c: [Circle r: 5]  sq: [Square s: 10]]")
+        .await
         .unwrap();
 }
 
-#[test]
-fn test_b296_unit_constructor_usable_in_function() {
+#[tokio::test]
+async fn test_b296_unit_constructor_usable_in_function() {
     // B-296: Unit constructors should be usable inside function bodies as values.
     // Before the fix, Foo was "undefined variable" inside the function body.
-    check("[Status: [type [Active] [Inactive]]  get-active: [fn [] Active]]").unwrap();
+    check("[Status: [type [Active] [Inactive]]  get-active: [fn [] Active]]").await.unwrap();
 }
 
-#[test]
-fn test_b296_union_type_constructors_all_exported() {
+#[tokio::test]
+async fn test_b296_union_type_constructors_all_exported() {
     // B-296: ALL constructors in a Union ADT are exported, not just the first.
     // Transport: [type [Tcp] [Udp] [UnixStream]] → Tcp, Udp, UnixStream all visible.
-    let env = doc_env("[T: [type [A] [B] [C] [D]]]");
+    let env = doc_env("[T: [type [A] [B] [C] [D]]]").await;
     for name in &["A", "B", "C", "D"] {
         let scheme = env
             .get(name)
@@ -915,23 +937,24 @@ fn test_b296_union_type_constructors_all_exported() {
     }
 }
 
-#[test]
-fn test_type_alias_field_named_type() {
+#[tokio::test]
+async fn test_type_alias_field_named_type() {
     // Regression: type alias with a field named "type:" should not be
     // confused with the @[type: T] annotation shorthand.
     let ty = result_field(
         "[Thing: [type [type: String  id: Int]]]\n[t: [@Thing [type: \"widget\"  id: 1]]]",
         "t",
-    );
+    )
+    .await;
     assert_has_field(&ty, "type", &Type::Str);
     assert_has_field(&ty, "id", &Type::Int);
 }
 
-#[test]
-fn test_annotation_record_with_type_field() {
+#[tokio::test]
+async fn test_annotation_record_with_type_field() {
     // Test that @[type: String id: Int] as a direct annotation creates a record
     // with two fields, not a type expression shorthand.
-    let ty = result_field("[f: [fn [let data@[type: String id: Int]] $data]]", "f");
+    let ty = result_field("[f: [fn [let data@[type: String id: Int]] $data]]", "f").await;
     if let Type::Function { params, .. } = ty {
         assert_eq!(params.len(), 1);
         assert_has_field(&params[0].1, "type", &Type::Str);
@@ -943,9 +966,9 @@ fn test_annotation_record_with_type_field() {
 
 // -- Function inference --
 
-#[test]
-fn test_fn_unannotated() {
-    let ty = infer("[fn [let x] 42]");
+#[tokio::test]
+async fn test_fn_unannotated() {
+    let ty = infer("[fn [let x] 42]").await;
     match ty {
         Type::Function {
             params,
@@ -971,9 +994,9 @@ fn test_fn_unannotated() {
     }
 }
 
-#[test]
-fn test_fn_annotated_params() {
-    let ty = infer("[fn [let x@Number] $x]");
+#[tokio::test]
+async fn test_fn_annotated_params() {
+    let ty = infer("[fn [let x@Number] $x]").await;
     match ty {
         Type::Function {
             params,
@@ -988,29 +1011,29 @@ fn test_fn_annotated_params() {
     }
 }
 
-#[test]
-fn test_fn_return_annotation_match() {
-    let ty = infer("[fn@Number [let x@Number] $x]");
+#[tokio::test]
+async fn test_fn_return_annotation_match() {
+    let ty = infer("[fn@Number [let x@Number] $x]").await;
     match ty {
         Type::Function { ret, .. } => assert_eq!(*ret, Type::Number),
         other => panic!("expected Function, got {other}"),
     }
 }
 
-#[test]
-fn test_fn_return_annotation_mismatch() {
-    let errors = check_err("[fn@String [let x@Number] $x]");
+#[tokio::test]
+async fn test_fn_return_annotation_mismatch() {
+    let errors = check_err("[fn@String [let x@Number] $x]").await;
     assert_eq!(errors.len(), 1);
     assert!(errors[0].message().contains("cannot unify"));
 }
 
-#[test]
-fn test_fn_union_return_annotation_int_null() {
+#[tokio::test]
+async fn test_fn_union_return_annotation_int_null() {
     // Regression: fn@[Int Null] must route to union return type path.
     // Previously failed with "property dict annotation must be a dict expression"
     // because the parser rejected lowercase-headed implied calls in annotation position.
     // After fix: [Int Null] is two positional entries → Union(Int, Null).
-    let ty = infer("[fn@[Int Null] [let] []]");
+    let ty = infer("[fn@[Int Null] [let] []]").await;
     match ty {
         Type::Function { ret, .. } => {
             // Return type should be Union(Int, empty-record) — the Null type
@@ -1023,12 +1046,12 @@ fn test_fn_union_return_annotation_int_null() {
     }
 }
 
-#[test]
-fn test_fn_union_return_annotation_typevar_null() {
+#[tokio::test]
+async fn test_fn_union_return_annotation_typevar_null() {
     // Regression: fn@[a Null] must route to union return type path.
     // 'a' is a lowercase type variable name; 'Null' is the empty record type.
     // Both are positional entries → treated as union type members.
-    let ty = infer("[fn@[a Null] [let] []]");
+    let ty = infer("[fn@[a Null] [let] []]").await;
     match ty {
         Type::Function { ret, .. } => {
             // Return type is Union(TypeVar, Record({})) — the [a Null] union annotation.
@@ -1044,24 +1067,24 @@ fn test_fn_union_return_annotation_typevar_null() {
 
 // -- Call --
 
-#[test]
-fn test_call_returns_function_ret_type() {
+#[tokio::test]
+async fn test_call_returns_function_ret_type() {
     assert_eq!(
-        result_field("[f: [fn@Number [] 42]]\n[result: [call $f]]", "result"),
+        result_field("[f: [fn@Number [] 42]]\n[result: [call $f]]", "result").await,
         Type::Number,
     );
 }
 
-#[test]
-fn test_call_non_function() {
-    let errors = check_err("[x: 42]\n[result: [call $x]]");
+#[tokio::test]
+async fn test_call_non_function() {
+    let errors = check_err("[x: 42]\n[result: [call $x]]").await;
     assert!(errors
         .iter()
         .any(|e| e.message().contains("expected function type")));
 }
 
-#[test]
-fn test_check_call_with_scheme_non_function_scheme() {
+#[tokio::test]
+async fn test_check_call_with_scheme_non_function_scheme() {
     // Exercises the `_ => Err(not_a_function)` arm in check_call_with_scheme.
     //
     // check_call_with_scheme is only reached for polymorphic schemes (non-empty
@@ -1100,7 +1123,8 @@ fn test_check_call_with_scheme_non_function_scheme() {
         crate::ast::SurfaceItem::Expr(n) => n,
         _ => panic!("expected expression item"),
     };
-    let result = infer_surface_expr(node, &parent_env, &mut state, &mut Vec::new(), &mut None);
+    let result = infer_surface_expr(node, &parent_env, &mut state, &mut Vec::new(), &mut None)
+        .await;
 
     // Must produce a not_a_function error, not a panic.
     assert!(
@@ -1118,8 +1142,8 @@ fn test_check_call_with_scheme_non_function_scheme() {
 
 // -- Builtin sequence types --
 
-#[test]
-fn test_builtin_range_returns_seq_int() {
+#[tokio::test]
+async fn test_builtin_range_returns_seq_int() {
     // Regression test for type-seq sprint: $builtin-range should return App(TyCon("Seq"), Int).
     let input = "[result: [call $builtin-range 0 10]]";
     let mut program = crate::parse(input).unwrap().program;
@@ -1142,7 +1166,8 @@ fn test_builtin_range_returns_seq_int() {
         &mut None,
         &empty_pipeline,
         &named_types,
-    );
+    )
+    .await;
     if !errors.is_empty() {
         panic!("typecheck should succeed, got errors: {:?}", errors);
     }
@@ -1160,12 +1185,12 @@ fn test_builtin_range_returns_seq_int() {
     );
 }
 
-#[test]
-fn test_builtin_keys_returns_seq_str() {
+#[tokio::test]
+async fn test_builtin_keys_returns_seq_str() {
     // Regression test for type-seq sprint: keys (prelude wrapper) should return Seq(Int | Str).
     // keys is a prelude function wrapping builtin-keys; use doc_env_with_prelude so the
     // `keys` binding is in scope.
-    let env = doc_env_with_prelude("[d: [a: 1  b: 2]]\n[result: [call $keys $d]]");
+    let env = doc_env_with_prelude("[d: [a: 1  b: 2]]\n[result: [call $keys $d]]").await;
 
     let result_ty = env
         .get("result")
@@ -1182,8 +1207,8 @@ fn test_builtin_keys_returns_seq_str() {
     );
 }
 
-#[test]
-fn test_builtin_plus_does_not_return_seq() {
+#[tokio::test]
+async fn test_builtin_plus_does_not_return_seq() {
     // Negative test: $+ returns a numeric type (Addable a b c => a -> b -> c), not Seq.
     let input = "[result: [call $+ 1 2]]";
     let mut program = crate::parse(input).unwrap().program;
@@ -1206,7 +1231,8 @@ fn test_builtin_plus_does_not_return_seq() {
         &mut None,
         &empty_pipeline,
         &named_types,
-    );
+    )
+    .await;
     if !errors.is_empty() {
         panic!("typecheck should succeed, got errors: {:?}", errors);
     }
@@ -1226,11 +1252,11 @@ fn test_builtin_plus_does_not_return_seq() {
 
 // -- Seq and Null type annotations (Task 1) --
 
-#[test]
-fn test_seq_annotation_bare() {
+#[tokio::test]
+async fn test_seq_annotation_bare() {
     // Bare @Seq resolves to App(TyCon("Seq"), Unknown) in resolve_type_name
     // Test via parameter annotation which uses resolve_annotation
-    let ty = infer("[fn [let xs@Seq] $xs]");
+    let ty = infer("[fn [let xs@Seq] $xs]").await;
     match ty {
         Type::Function { params, .. } => {
             assert_eq!(
@@ -1242,8 +1268,8 @@ fn test_seq_annotation_bare() {
     }
 }
 
-#[test]
-fn test_seq_annotation_with_element_type() {
+#[tokio::test]
+async fn test_seq_annotation_with_element_type() {
     // Seq@String in a standalone Annotated expression.
     // The syntax `Seq@String` (bare identifier with ImmediateAt) parses as
     // Annotated{name:"Seq", annotation:Simple("String")}, which calls
@@ -1251,14 +1277,14 @@ fn test_seq_annotation_with_element_type() {
     // Note: `@Seq@String` (with leading @) is NOT valid standalone LLT syntax —
     // bare `@` at top level is only valid inside TypeAssert brackets `[@...]`.
     // The correct bare form is `Seq@String` (identifier followed by ImmediateAt).
-    let ty = infer("Seq@String");
+    let ty = infer("Seq@String").await;
     assert_eq!(ty, Type::seq(Type::Str));
 }
 
-#[test]
-fn test_null_annotation_bare() {
+#[tokio::test]
+async fn test_null_annotation_bare() {
     // Bare @Null resolves to Type::Record(Row::Empty) in resolve_type_name
-    let ty = infer("[fn [let x@Null] $x]");
+    let ty = infer("[fn [let x@Null] $x]").await;
     match ty {
         Type::Function { params, .. } => match &params[0].1 {
             Type::Record(Row { fields, .. }) => {
@@ -1270,10 +1296,10 @@ fn test_null_annotation_bare() {
     }
 }
 
-#[test]
-fn test_null_annotation_in_type_assert() {
+#[tokio::test]
+async fn test_null_annotation_in_type_assert() {
     // [@Null []] should succeed (empty dict matches Null)
-    let ty = infer("[@Null []]");
+    let ty = infer("[@Null []]").await;
     match ty {
         Type::Record(Row { fields, .. }) => {
             assert!(fields.is_empty());
@@ -1282,14 +1308,14 @@ fn test_null_annotation_in_type_assert() {
     }
 }
 
-#[test]
-fn test_null_return_annotation() {
+#[tokio::test]
+async fn test_null_return_annotation() {
     // [fn@Null [s@String] []] exercises the resolve_annotation(Simple("Null")) path
     // in infer_fn for the return annotation.
     // Null resolves to Type::Record(Row { fields: {} }), so check_expr checks
     // that the body [] (empty dict) satisfies that type.
     // The function return type should be the declared Null type (empty record).
-    let ty = result_field("[f: [fn@Null [let s@String] []]]", "f");
+    let ty = result_field("[f: [fn@Null [let s@String] []]]", "f").await;
     match ty {
         Type::Function { params, ret, .. } => {
             // Parameter should be String
@@ -1317,8 +1343,8 @@ fn test_null_return_annotation() {
     }
 }
 
-#[test]
-fn test_builtin_collect_returns_record_not_seq() {
+#[tokio::test]
+async fn test_builtin_collect_returns_record_not_seq() {
     // $builtin-collect returns Seq(T) — it materializes a lazy Seq to an integer-keyed Dict,
     // which is represented as Seq(T) at the type level.
     let input = "[s: [call $builtin-range 0 5]]\n[result: [call $builtin-collect $s]]";
@@ -1346,7 +1372,8 @@ fn test_builtin_collect_returns_record_not_seq() {
             &mut None,
             &pipeline_type,
             &named_types,
-        );
+        )
+        .await;
         if !errors.is_empty() {
             panic!("typecheck should succeed, got errors: {:?}", errors);
         }
@@ -1374,24 +1401,24 @@ fn test_builtin_collect_returns_record_not_seq() {
 
 // -- Document scope chain --
 
-#[test]
-fn test_scope_chain() {
+#[tokio::test]
+async fn test_scope_chain() {
     // x has type IntLiteral(42), so $x has type IntLiteral(42)
-    assert_eq!(result_field("[x: 42]\n[y: $x]", "y"), Type::IntLiteral(42));
+    assert_eq!(result_field("[x: 42]\n[y: $x]", "y").await, Type::IntLiteral(42));
 }
 
-#[test]
-fn test_intermediate_non_dict_error() {
-    let errors = check_err("42\n[x: 1]");
+#[tokio::test]
+async fn test_intermediate_non_dict_error() {
+    let errors = check_err("42\n[x: 1]").await;
     assert!(!errors.is_empty());
     assert!(errors[0].message().contains("expected record type"));
 }
 
 // -- % pipeline --
 
-#[test]
-fn test_pipeline_percent() {
-    let env = file_env("[x: 42]\n---\n[y: %]");
+#[tokio::test]
+async fn test_pipeline_percent() {
+    let env = file_env("[x: 42]\n---\n[y: %]").await;
     let result = env.get("%").unwrap().body.clone();
     match result {
         Type::Record(Row { fields, .. }) => {
@@ -1405,9 +1432,9 @@ fn test_pipeline_percent() {
     }
 }
 
-#[test]
-fn test_pipeline_percent_type() {
-    let env = file_env("[x: 1]\n---\n[y: %.x]");
+#[tokio::test]
+async fn test_pipeline_percent_type() {
+    let env = file_env("[x: 1]\n---\n[y: %.x]").await;
     let result = env.get("%").unwrap().body.clone();
     match result {
         Type::Record(Row { fields, .. }) => {
@@ -1425,8 +1452,8 @@ fn test_pipeline_percent_type() {
 
 // -- Annotation resolution --
 
-#[test]
-fn test_annotation_simple() {
+#[tokio::test]
+async fn test_annotation_simple() {
     let env = Rc::new(TypeEnv::new());
     let span = crate::test_util::test_span(1, 1, 1, 5);
     let mut c = Vec::new();
@@ -1441,13 +1468,14 @@ fn test_annotation_simple() {
             &mut None,
             None
         )
+        .await
         .unwrap(),
         Type::Int,
     );
 }
 
-#[test]
-fn test_annotation_type_var() {
+#[tokio::test]
+async fn test_annotation_type_var() {
     let env = Rc::new(TypeEnv::new());
     let span = crate::test_util::test_span(1, 1, 1, 5);
     // InferState::new() has level=0, so annotation-derived TypeVars start at level 0
@@ -1466,6 +1494,7 @@ fn test_annotation_type_var() {
         &mut None,
         None,
     )
+    .await
     .unwrap();
     // Should be a fresh TypeVar (not literally "a"), at level 0
     matches!(ty, Type::TypeVar(ref s, 0) if s.starts_with("_t"));
@@ -1473,8 +1502,8 @@ fn test_annotation_type_var() {
     assert_eq!(state.subst.name_counter.get(), 1);
 }
 
-#[test]
-fn test_resolve_type_name_outside_function_scope() {
+#[tokio::test]
+async fn test_resolve_type_name_outside_function_scope() {
     // Test resolve_type_name None path (ann_mapping is None) when used outside function scope.
     // With Fix 1 applied: outside function scope, each call to resolve_type_name creates a
     // genuinely fresh type variable (not the raw annotation name).
@@ -1532,8 +1561,8 @@ fn test_resolve_type_name_outside_function_scope() {
     assert_eq!(state.subst.name_counter.get(), 2);
 }
 
-#[test]
-fn test_resolve_type_name_outside_function_scope_monotonicity() {
+#[tokio::test]
+async fn test_resolve_type_name_outside_function_scope_monotonicity() {
     // With Fix 1: outside function scope each call gets a fresh var, so there is no
     // "second reference to the same annotation name" scenario — each use produces its
     // own fresh var. The monotonicity invariant (levels only decrease) still holds for
@@ -1587,14 +1616,14 @@ fn test_resolve_type_name_outside_function_scope_monotonicity() {
     );
 }
 
-#[test]
-fn test_ann_cross_kind_type_then_row_errors() {
+#[tokio::test]
+async fn test_ann_cross_kind_type_then_row_errors() {
     // BAS: row variables (RowVar) are removed. The `...a` rest annotation is syntactically
     // accepted but has no row variable semantics — it just sets has_rest=true.
     // Cross-kind collision detection (TypeVar vs RowVar) is no longer possible since
     // row_ann_mapping is always None. The annotation is valid and accepted.
     // `@[name: Int ...a]` resolves to Record({name: Int}) (closed, ...a ignored).
-    let result = check("[fn [let x@a y@[name: Int ...a]] $x]");
+    let result = check("[fn [let x@a y@[name: Int ...a]] $x]").await;
     assert!(
         result.is_ok(),
         "BAS: cross-kind annotations no longer error since row vars are removed; got: {:?}",
@@ -1606,8 +1635,8 @@ fn test_ann_cross_kind_type_then_row_errors() {
 
 // --- Fix 1: outer-scope annotation names create fresh vars ---
 
-#[test]
-fn test_fix1_outer_scope_annotations_are_independent() {
+#[tokio::test]
+async fn test_fix1_outer_scope_annotations_are_independent() {
     // Two TypeAssert annotations at the top level both using `@a`.
     // Before Fix 1, they shared TypeVar("a"): after resolving `[@a 42]` bound "a" to
     // IntLiteral(42), the second `[@a "hello"]` would fail with "cannot unify Int with String"
@@ -1617,7 +1646,7 @@ fn test_fix1_outer_scope_annotations_are_independent() {
     //
     // The key invariant: if there ARE errors, they must NOT be a "cannot unify Int with String"
     // or similar cross-type error caused by one entry contaminating the other.
-    let errors = check_err("[x: [@a 42]  y: [@a hello]]");
+    let errors = check_err("[x: [@a 42]  y: [@a hello]]").await;
     // Neither error should mention Int/String cross-contamination
     let has_cross_contamination = errors.iter().any(|e| {
         (e.message().contains("Int") || e.message().contains("Number"))
@@ -1631,14 +1660,14 @@ fn test_fix1_outer_scope_annotations_are_independent() {
     );
 }
 
-#[test]
-fn test_fix1_outer_scope_annotation_does_not_contaminate_siblings() {
+#[tokio::test]
+async fn test_fix1_outer_scope_annotation_does_not_contaminate_siblings() {
     // Concrete types in outer-scope TypeAssert shouldn't be affected by Fix 1 —
     // concrete type names (Number, Int, String) are resolved as concrete types, not
     // fresh TypeVars. Only lowercase annotation names get fresh vars.
     // Verify that concrete-type annotations still work correctly at the top level.
     // In new syntax, string literals require quotes.
-    let result = check("[x: [@Number 42]  y: [@String \"hello\"]]");
+    let result = check("[x: [@Number 42]  y: [@String \"hello\"]]").await;
     assert!(
         result.is_ok(),
         "concrete-type annotations at top level should work (not affected by Fix 1): {:?}",
@@ -1648,14 +1677,14 @@ fn test_fix1_outer_scope_annotation_does_not_contaminate_siblings() {
 
 // --- Fix 2: cross-kind collision row→type direction ---
 
-#[test]
-fn test_fix2_cross_kind_row_then_type_errors() {
+#[tokio::test]
+async fn test_fix2_cross_kind_row_then_type_errors() {
     // BAS: row variables (RowVar) are removed. The `...r` rest annotation has no row
     // variable semantics — it just sets has_rest=true.
     // Cross-kind collision detection (RowVar→TypeVar) no longer fires since row_ann_mapping
     // is always None. `y@r` creates a fresh TypeVar for `r`, and `...r` is silently ignored.
     // `@[name: Int ...r]` resolves to Record({name: Int}) (closed, ...r ignored).
-    let result = check("[fn [let x@[name: Int ...r] y@r] $x]");
+    let result = check("[fn [let x@[name: Int ...r] y@r] $x]").await;
     assert!(
         result.is_ok(),
         "BAS: cross-kind annotations no longer error since row vars are removed; got: {:?}",
@@ -1665,12 +1694,12 @@ fn test_fix2_cross_kind_row_then_type_errors() {
 
 // --- Fix 3: TypeAssert default type validation ---
 
-#[test]
-fn test_fix3_default_wrong_type_emits_error() {
+#[tokio::test]
+async fn test_fix3_default_wrong_type_emits_error() {
     // The main expression (42) satisfies the assertion (Number), but the default
     // value ("hello") does NOT — it's a String. This should be a type error.
     // In new syntax, string literals require quotes.
-    let errors = check_err("[@[type: Number  default: \"hello\"] 42]");
+    let errors = check_err("[@[type: Number  default: \"hello\"] 42]").await;
     assert!(
         errors
             .iter()
@@ -1680,12 +1709,12 @@ fn test_fix3_default_wrong_type_emits_error() {
     );
 }
 
-#[test]
-fn test_fix3_default_correct_type_no_error() {
+#[tokio::test]
+async fn test_fix3_default_correct_type_no_error() {
     // Main expression (hello as VarRef → undefined) does NOT satisfy Number, but default (0) DOES.
     // The type error for the main expression is suppressed, and the default is valid.
     // No error should be emitted (TypeAssert default suppression applies to undefined vars too).
-    let result = check("[@[type: Number  default: 0] hello]");
+    let result = check("[@[type: Number  default: 0] hello]").await;
     assert!(
         result.is_ok(),
         "TypeAssert with correct default type should not emit an error; got: {:?}",
@@ -1693,13 +1722,13 @@ fn test_fix3_default_correct_type_no_error() {
     );
 }
 
-#[test]
-fn test_fix3_default_wrong_type_main_also_wrong_emits_error() {
+#[tokio::test]
+async fn test_fix3_default_wrong_type_main_also_wrong_emits_error() {
     // Both the main expression (world) and the default (hello) fail the Number assertion.
     // The type error for the main expression would be suppressed (default present),
     // but the default itself is wrong — must emit a 'default value type mismatch' error.
     // In new syntax, string literals require quotes.
-    let errors = check_err("[@[type: Number  default: \"hello\"] \"world\"]");
+    let errors = check_err("[@[type: Number  default: \"hello\"] \"world\"]").await;
     assert!(
         errors
             .iter()
@@ -1709,9 +1738,9 @@ fn test_fix3_default_wrong_type_main_also_wrong_emits_error() {
     );
 }
 
-#[test]
-fn test_annotation_property_dict_with_type() {
-    let ty = infer("[fn [let x@[type: Number  default: 0]] $x]");
+#[tokio::test]
+async fn test_annotation_property_dict_with_type() {
+    let ty = infer("[fn [let x@[type: Number  default: 0]] $x]").await;
     match ty {
         Type::Function { params, .. } => {
             assert_eq!(params, vec![(Some("x".to_string()), Type::Number)])
@@ -1722,8 +1751,8 @@ fn test_annotation_property_dict_with_type() {
 
 // -- resolve_property_dict_as_record fallback paths --
 
-#[test]
-fn test_property_dict_non_str_key_falls_back_to_any() {
+#[tokio::test]
+async fn test_property_dict_non_str_key_falls_back_to_any() {
     let env = Rc::new(TypeEnv::new());
     let span = crate::test_util::test_span(1, 1, 1, 10);
     let ann = Annotation::PropertyDict(vec![surf_ann_entry_tc(
@@ -1742,13 +1771,14 @@ fn test_property_dict_non_str_key_falls_back_to_any() {
             &mut None,
             None
         )
+        .await
         .unwrap(),
         Type::Unknown
     );
 }
 
-#[test]
-fn test_property_dict_no_key_resolves_as_union() {
+#[tokio::test]
+async fn test_property_dict_no_key_resolves_as_union() {
     // Single positional entry resolves via union path; single-element union unwraps
     let env = Rc::new(TypeEnv::new());
     let span = crate::test_util::test_span(1, 1, 1, 10);
@@ -1772,6 +1802,7 @@ fn test_property_dict_no_key_resolves_as_union() {
             &mut None,
             None
         )
+        .await
         .unwrap(),
         Type::Int
     );
@@ -1779,8 +1810,8 @@ fn test_property_dict_no_key_resolves_as_union() {
 
 // --- HKT kind inference tests (hkt-kind-inference sprint) ---
 
-#[test]
-fn test_hkt_kind_operator_class_param_registration() {
+#[tokio::test]
+async fn test_hkt_kind_operator_class_param_registration() {
     // Test that Mappable class has Operator-kinded param registered in kind_env
     let mut program = crate::parse("[x: 1]").unwrap().program;
     crate::desugar::desugar_surface_program(&mut program);
@@ -1792,8 +1823,8 @@ fn test_hkt_kind_operator_class_param_registration() {
     assert_eq!(mappable.params[0].1, Kind::Operator);
 }
 
-#[test]
-fn test_hkt_rank1_restriction_rejects_nested_operator() {
+#[tokio::test]
+async fn test_hkt_rank1_restriction_rejects_nested_operator() {
     // Rank-1 restriction: [f g] where both f and g are Operator-kinded should error
     // This requires parser support for @Operator annotations, which is deferred.
     // For now, test that the rejection logic works when we manually construct
@@ -1803,8 +1834,8 @@ fn test_hkt_rank1_restriction_rejects_nested_operator() {
     // The restriction is implemented in resolve_type_dict for Task 3.
 }
 
-#[test]
-fn test_property_dict_unresolvable_type_propagates_error() {
+#[tokio::test]
+async fn test_property_dict_unresolvable_type_propagates_error() {
     let env = Rc::new(TypeEnv::new());
     let span = crate::test_util::test_span(1, 1, 1, 10);
     // Lowercase unresolvable type names produce an "undefined type" error.
@@ -1828,7 +1859,8 @@ fn test_property_dict_unresolvable_type_propagates_error() {
         &mut None,
         &mut None,
         None,
-    );
+    )
+    .await;
     // Uppercase unresolvable type names like "NoSuchType" become NominalVariants (unit constructors).
     // For this test we use "noSuchType" (lowercase) which does not match is_constructor_name
     // and instead creates a fresh TypeVar (since lowercase names outside a function scope
@@ -1844,8 +1876,8 @@ fn test_property_dict_unresolvable_type_propagates_error() {
     );
 }
 
-#[test]
-fn test_property_dict_literal_value_falls_back_to_any() {
+#[tokio::test]
+async fn test_property_dict_literal_value_falls_back_to_any() {
     let env = Rc::new(TypeEnv::new());
     let span = crate::test_util::test_span(1, 1, 1, 10);
     let ann = Annotation::PropertyDict(vec![surf_ann_entry_tc(
@@ -1864,13 +1896,14 @@ fn test_property_dict_literal_value_falls_back_to_any() {
             &mut None,
             None
         )
+        .await
         .unwrap(),
         Type::Unknown
     );
 }
 
-#[test]
-fn test_property_dict_fn_type_error_propagates() {
+#[tokio::test]
+async fn test_property_dict_fn_type_error_propagates() {
     let env = Rc::new(TypeEnv::new());
     let span = crate::test_util::test_span(1, 1, 1, 10);
     // [Fn@Int] -- function type pattern detected (Fn@ prefix) but wrong
@@ -1892,33 +1925,36 @@ fn test_property_dict_fn_type_error_propagates() {
         &mut None,
         &mut None,
         None,
-    );
+    )
+    .await;
     assert!(result.is_err());
     assert!(result.unwrap_err().message().contains("function type"));
 }
 
 // -- Type alias in scope --
 
-#[test]
-fn test_type_alias_in_scope_chain() {
+#[tokio::test]
+async fn test_type_alias_in_scope_chain() {
     let ty = result_field(
         "[Coord: [type [x: Number  y: Number]]]\n[p: [@Coord [x: 1  y: 2]]]",
         "p",
-    );
+    )
+    .await;
     // The Coord alias body `[x: Number  y: Number]` is now an Intersection of
     // open single-field records: [{x: Number, ...ρ1}, {y: Number, ...ρ2}].
     assert_has_field(&ty, "x", &Type::Number);
     assert_has_field(&ty, "y", &Type::Number);
 }
 
-#[test]
-fn test_type_alias_shadowing_allows_nested_redefinition() {
+#[tokio::test]
+async fn test_type_alias_shadowing_allows_nested_redefinition() {
     // Inner dict can shadow outer dict's type alias — lexical scoping
     // Type aliases are excluded from the record's fields, so we test via usage
     let ty = result_field(
         "[ID: [type Int]  outer: [@ID 42]  nested: [ID: [type String]  inner: [@ID \"text\"]]]",
         "nested",
-    );
+    )
+    .await;
     match ty {
         Type::Record(Row { fields, .. }) => {
             // nested.ID is a type alias, so it's NOT in fields (type aliases excluded from record)
@@ -1932,22 +1968,22 @@ fn test_type_alias_shadowing_allows_nested_redefinition() {
 
 // -- Error branch coverage --
 
-#[test]
+#[tokio::test]
 #[ignore = "pre-existing regression from runtime-v2 merge: [type ...] at top level is filtered as decl; check_err expects errors but gets none"]
-fn test_type_expr_non_bare_word_key() {
-    let errors = check_err("[type [$var: Int]]");
+async fn test_type_expr_non_bare_word_key() {
+    let errors = check_err("[type [$var: Int]]").await;
     assert!(errors
         .iter()
         .any(|e| e.message().contains("type record keys must be bare words")));
 }
 
-#[test]
-fn test_type_expr_auto_indexed_entries() {
+#[tokio::test]
+async fn test_type_expr_auto_indexed_entries() {
     // With ADT support, [type ["Int" "String"]] is now valid:
     // quoted strings in type position resolve as StringLiteral types,
     // and two positional entries create a union.
     // Verify it produces Union(StringLiteral("Int"), StringLiteral("String")).
-    let result = check("[type [\"Int\" \"String\"]]");
+    let result = check("[type [\"Int\" \"String\"]]").await;
     assert!(
         result.is_ok(),
         "auto-indexed string literals in type position should produce a union, got: {:?}",
@@ -1955,19 +1991,20 @@ fn test_type_expr_auto_indexed_entries() {
     );
 }
 
-#[test]
-fn test_annotation_type_value_invalid_expr() {
-    let errors = check_err("[fn [let x@[type: 42]] $x]");
+#[tokio::test]
+async fn test_annotation_type_value_invalid_expr() {
+    let errors = check_err("[fn [let x@[type: 42]] $x]").await;
     assert!(errors
         .iter()
         .any(|e| e.message().contains("invalid type expression")));
 }
 
-#[test]
-fn test_annotation_composite_function_type() {
+#[tokio::test]
+async fn test_annotation_composite_function_type() {
     let ty = infer(
         "[fn [let f@[type: [Fn@Number [Int]] default: [fn [let x] $x]]] [@Number [call $f 42]]]",
-    );
+    )
+    .await;
     match ty {
         Type::Function {
             params,
@@ -1994,11 +2031,12 @@ fn test_annotation_composite_function_type() {
     }
 }
 
-#[test]
-fn test_annotation_composite_record_type() {
+#[tokio::test]
+async fn test_annotation_composite_record_type() {
     let ty = infer(
         "[fn [let p@[type: [name: String  age: Number] default: [name: Alice  age: 30]]] $p.name]",
-    );
+    )
+    .await;
     match ty {
         Type::Function {
             params,
@@ -2019,13 +2057,14 @@ fn test_annotation_composite_record_type() {
     }
 }
 
-#[test]
-fn test_annotation_composite_type_in_type_assert() {
+#[tokio::test]
+async fn test_annotation_composite_type_in_type_assert() {
     // With fresh TypeVars for unannotated params, the default function needs annotations
     // to match the expected type Fn@Number [Int]
     let ty = infer(
         "[f: [fn [let x] $x]  result: [@[type: [Fn@Number [Int]] default: [fn [let x@Int] 0]] $f]]",
-    );
+    )
+    .await;
     let result_ty = match ty {
         Type::Record(row) => row.fields.get("result").cloned(),
         other => panic!("expected Record, got {other}"),
@@ -2045,15 +2084,16 @@ fn test_annotation_composite_type_in_type_assert() {
     }
 }
 
-#[test]
-fn test_annotation_nested_composite_higher_order_function() {
+#[tokio::test]
+async fn test_annotation_nested_composite_higher_order_function() {
     // Nested composite type: [type: [Fn@[Fn@Int [Int]] [Int]]]
     // Resolves to Fn(Int -> Fn(Int -> Int)) — a curried function.
     // Exercises recursive resolve_type_expr: the return type [Fn@Int [Int]] is
     // itself a Fn type expression that must be recursively resolved.
     let ty = infer(
             "[fn [let f@[type: [Fn@[Fn@Int [Int]] [Int]] default: [fn [let x] [fn [let y] $y]]]] [call $f 0]]",
-        );
+        )
+        .await;
     // f has type Fn(Int -> Fn(Int -> Int))
     // [call $f 0] has return type Fn(Int -> Int)
     match ty {
@@ -2107,8 +2147,8 @@ fn test_annotation_nested_composite_higher_order_function() {
     }
 }
 
-#[test]
-fn test_non_dict_record_open_row_scheme_preservation() {
+#[tokio::test]
+async fn test_non_dict_record_open_row_scheme_preservation() {
     // BAS: all records are closed. `@[x: Int ...]` resolves to Record({x: Int}) (closed).
     // `project: [fn [r@[x: Int ...]] $r.x]` has type Fn@Int [Record({x:Int})].
     // It is called with records that have extra fields — this works via BAS width subtyping:
@@ -2122,23 +2162,24 @@ fn test_non_dict_record_open_row_scheme_preservation() {
              r2: [call $project [x: 2  z: true]]]
         "#;
     // Both r1 and r2 should typecheck successfully — BAS width subtyping allows extra fields.
-    check(input).expect("BAS width subtyping: calls with extra fields should succeed");
+    check(input).await.expect("BAS width subtyping: calls with extra fields should succeed");
 }
 
-#[test]
-fn test_annotated_non_fn_resolves_annotation() {
-    let ty = infer("Config@Number");
+#[tokio::test]
+async fn test_annotated_non_fn_resolves_annotation() {
+    let ty = infer("Config@Number").await;
     assert_eq!(ty, Type::Number);
 }
 
 // -- Fn@Return [Params] type expression --
 
-#[test]
-fn test_fn_type_one_param() {
+#[tokio::test]
+async fn test_fn_type_one_param() {
     let ty = result_field(
         "[Mapper: [type [let a b] [Fn@b [a]]]]\n[x: [@[Mapper Int Str] [fn [let v@Int] \"result\"]]]",
         "x",
-    );
+    )
+    .await;
     match ty {
         // [fn [v] $v] is annotated with [@[Mapper Int Str]] where Mapper = [Fn@b [a]].
         // With concrete type arguments, the alias expands to [Fn@Str [Int]].
@@ -2166,12 +2207,13 @@ fn test_fn_type_one_param() {
     }
 }
 
-#[test]
-fn test_fn_type_two_params() {
+#[tokio::test]
+async fn test_fn_type_two_params() {
     let ty = result_field(
         "[BinOp: [type [let a b c] [Fn@c [a b]]]]\n[x: [@[BinOp Int Str Bool] [fn [let p@Int q@Str] true]]]",
         "x",
-    );
+    )
+    .await;
     match ty {
         // [fn [p q] $p] is annotated with [@[BinOp Int Str Bool]] where BinOp = [Fn@c [a b]].
         // With concrete type arguments, the alias expands to [Fn@Bool [Int Str]].
@@ -2205,12 +2247,13 @@ fn test_fn_type_two_params() {
     }
 }
 
-#[test]
-fn test_fn_type_concrete_types() {
+#[tokio::test]
+async fn test_fn_type_concrete_types() {
     let ty = result_field(
             "[Addable: [type [Fn@Number [Number Number]]]]\n[x: [@Addable [fn [let a@Number b@Number] $a]]]",
             "x",
-        );
+        )
+        .await;
     match ty {
         Type::Function {
             params,
@@ -2225,12 +2268,13 @@ fn test_fn_type_concrete_types() {
     }
 }
 
-#[test]
-fn test_fn_type_concrete_return_typevar_param() {
+#[tokio::test]
+async fn test_fn_type_concrete_return_typevar_param() {
     let ty = result_field(
         "[Pred: [type [let a] [Fn@Bool [a]]]]\n[x: [@[Pred Int] [fn [let v] true]]]",
         "x",
-    );
+    )
+    .await;
     match ty {
         // [@[Pred Int]] expands to [Fn@Bool [Int]].
         // Lambda checking mode enforces the expanded type: param is Int, ret is Bool.
@@ -2253,12 +2297,13 @@ fn test_fn_type_concrete_return_typevar_param() {
     }
 }
 
-#[test]
-fn test_fn_type_higher_order() {
+#[tokio::test]
+async fn test_fn_type_higher_order() {
     let ty = result_field(
         "[HO: [type [let a b c] [Fn@[Fn@c [b]] [a]]]]\n[x: [@[HO Int Str Bool] [fn [let v@Int] [fn [let w@Str] true]]]]",
         "x",
-    );
+    )
+    .await;
     match ty {
         // [@[HO Int Str Bool]] expands to [Fn@[Fn@Bool [Str]] [Int]].
         // Lambda checking mode enforces the expanded type:
@@ -2303,36 +2348,36 @@ fn test_fn_type_higher_order() {
     }
 }
 
-#[test]
+#[tokio::test]
 #[ignore = "pre-existing regression from runtime-v2 merge: [type ...] at top level is filtered as decl; check_err expects errors but gets none"]
-fn test_fn_type_missing_param_list() {
-    let errors = check_err("[type [Fn@b]]");
+async fn test_fn_type_missing_param_list() {
+    let errors = check_err("[type [Fn@b]]").await;
     assert!(errors
         .iter()
         .any(|e| e.message().contains("requires exactly 2 entries")));
 }
 
-#[test]
+#[tokio::test]
 #[ignore = "pre-existing regression from runtime-v2 merge: [type ...] at top level is filtered as decl; check_err expects errors but gets none"]
-fn test_fn_type_extra_entries() {
-    let errors = check_err("[type [Fn@b [a] extra]]");
+async fn test_fn_type_extra_entries() {
+    let errors = check_err("[type [Fn@b [a] extra]]").await;
     assert!(errors
         .iter()
         .any(|e| e.message().contains("requires exactly 2 entries")));
 }
 
-#[test]
+#[tokio::test]
 #[ignore = "pre-existing regression from runtime-v2 merge: [type ...] at top level is filtered as decl; check_err expects errors but gets none"]
-fn test_fn_type_param_list_not_bracket() {
-    let errors = check_err("[type [Fn@b a]]");
+async fn test_fn_type_param_list_not_bracket() {
+    let errors = check_err("[type [Fn@b a]]").await;
     assert!(errors.iter().any(|e| e
         .message()
         .contains("parameter list must be a bracket expression")));
 }
 
-#[test]
-fn test_fn_type_standalone_fn_annotation() {
-    let ty = infer("Fn@Number");
+#[tokio::test]
+async fn test_fn_type_standalone_fn_annotation() {
+    let ty = infer("Fn@Number").await;
     match ty {
         Type::Function {
             params,
@@ -2347,14 +2392,14 @@ fn test_fn_type_standalone_fn_annotation() {
     }
 }
 
-#[test]
-fn test_bare_fn_annotation_resolves_to_any() {
+#[tokio::test]
+async fn test_bare_fn_annotation_resolves_to_any() {
     // `@Fn` in parameter position resolves to `Function { params: [], ret: Top, variadic: true }`
     // — the top of the function lattice. This represents "any callable" and allows unification
     // with concrete function types (e.g. `Fn(Int, Str) -> Bool`), while still enforcing
     // callability at TypeAssert boundaries (e.g. `[@Fn 42]` correctly fails).
     // [fn [f@Fn] $f] should infer without type errors.
-    let ty = infer("[fn [let f@Fn] $f]");
+    let ty = infer("[fn [let f@Fn] $f]").await;
     // The outer lambda infers as a Function type whose first parameter is the
     // variadic-zero-param Function type (representing "any callable").
     match ty {
@@ -2378,13 +2423,13 @@ fn test_bare_fn_annotation_resolves_to_any() {
     }
 }
 
-#[test]
-fn test_bare_fn_annotation_no_false_type_error() {
+#[tokio::test]
+async fn test_bare_fn_annotation_no_false_type_error() {
     // Passing a concrete function to an @Fn-annotated parameter must not produce
     // spurious type errors from attempting to unify Type::Unknown with a concrete
     // Function type — the two are compatible under Any semantics.
     // [fn [pred@Fn] [pred 42]] applied with a concrete function for pred.
-    let result = check("[result: [[fn [let pred@Fn] [pred 42]] [fn [let x@Number] $x]]]");
+    let result = check("[result: [[fn [let pred@Fn] [pred 42]] [fn [let x@Number] $x]]]").await;
     // There should be no type errors — @Fn accepts any callable.
     assert!(
         result.is_ok(),
@@ -2393,12 +2438,13 @@ fn test_bare_fn_annotation_no_false_type_error() {
     );
 }
 
-#[test]
-fn test_fn_type_in_type_assert() {
+#[tokio::test]
+async fn test_fn_type_in_type_assert() {
     let ty = result_field(
         "[F: [type [Fn@Number [Number]]]]\n[x: [@F [fn [let n@Number] $n]]]",
         "x",
-    );
+    )
+    .await;
     match ty {
         Type::Function {
             params,
@@ -2413,8 +2459,8 @@ fn test_fn_type_in_type_assert() {
     }
 }
 
-#[test]
-fn test_fn_type_display_round_trip() {
+#[tokio::test]
+async fn test_fn_type_display_round_trip() {
     let ty = Type::Function {
         params: vec![
             (None, Type::TypeVar("a".into(), 0)),
@@ -2429,56 +2475,59 @@ fn test_fn_type_display_round_trip() {
 
 // -- Polymorphic call unification --
 
-#[test]
-fn test_call_polymorphic_identity() {
+#[tokio::test]
+async fn test_call_polymorphic_identity() {
     // Polymorphic identity call preserves literal type
     assert_eq!(
-        result_field("[id: [fn [let x@a] $x]]\n[result: [call $id 42]]", "result"),
+        result_field("[id: [fn [let x@a] $x]]\n[result: [call $id 42]]", "result").await,
         Type::IntLiteral(42),
     );
 }
 
-#[test]
-fn test_call_polymorphic_identity_string() {
+#[tokio::test]
+async fn test_call_polymorphic_identity_string() {
     // Polymorphic identity call preserves literal type
     assert_eq!(
         result_field(
             "[id: [fn [let x@a] $x]]\n[result: [call $id \"hello\"]]",
             "result"
-        ),
+        )
+        .await,
         Type::StringLiteral("hello".into()),
     );
 }
 
-#[test]
-fn test_call_polymorphic_two_type_vars() {
+#[tokio::test]
+async fn test_call_polymorphic_two_type_vars() {
     // Polymorphic call preserves literal type
     assert_eq!(
         result_field(
             "[f: [fn [let x@a y@b] $y]]\n[result: [call $f 42 \"hello\"]]",
             "result"
-        ),
+        )
+        .await,
         Type::StringLiteral("hello".into()),
     );
 }
 
-#[test]
-fn test_call_polymorphic_type_var_in_return_only() {
+#[tokio::test]
+async fn test_call_polymorphic_type_var_in_return_only() {
     // Polymorphic call preserves literal type
     assert_eq!(
         result_field(
             "[first: [fn [let x@a y@b] $x]]\n[result: [call $first 42 \"hello\"]]",
             "result"
-        ),
+        )
+        .await,
         Type::IntLiteral(42),
     );
 }
 
-#[test]
-fn test_call_polymorphic_multiple_calls_different_types() {
+#[tokio::test]
+async fn test_call_polymorphic_multiple_calls_different_types() {
     // In new syntax, string literals require quotes.
     // Polymorphic calls preserve literal types.
-    let ty = result_type("[id: [fn [let x@a] $x]]\n[r1: [call $id 42]  r2: [call $id \"hello\"]]");
+    let ty = result_type("[id: [fn [let x@a] $x]]\n[r1: [call $id 42]  r2: [call $id \"hello\"]]").await;
     match ty {
         Type::Record(Row { fields, .. }) => {
             assert_eq!(fields.get("r1"), Some(&Type::IntLiteral(42)));
@@ -2488,20 +2537,21 @@ fn test_call_polymorphic_multiple_calls_different_types() {
     }
 }
 
-#[test]
-fn test_call_monomorphic_no_unification() {
+#[tokio::test]
+async fn test_call_monomorphic_no_unification() {
     assert_eq!(
         result_field(
             "[f: [fn@Number [let x@Number] $x]]\n[result: [call $f 42]]",
             "result"
-        ),
+        )
+        .await,
         Type::Number,
     );
 }
 
-#[test]
-fn test_call_polymorphic_arity_mismatch_error() {
-    let errors = check_err("[f: [fn [let x@a y@b] $x]]\n[result: [call $f 42]]");
+#[tokio::test]
+async fn test_call_polymorphic_arity_mismatch_error() {
+    let errors = check_err("[f: [fn [let x@a y@b] $x]]\n[result: [call $f 42]]").await;
     assert!(
         errors
             .iter()
@@ -2511,9 +2561,9 @@ fn test_call_polymorphic_arity_mismatch_error() {
     );
 }
 
-#[test]
-fn test_call_monomorphic_arity_mismatch() {
-    let errors = check_err("[f: [fn@Number [let x@Number y@Number] $x]]\n[result: [call $f 42]]");
+#[tokio::test]
+async fn test_call_monomorphic_arity_mismatch() {
+    let errors = check_err("[f: [fn@Number [let x@Number y@Number] $x]]\n[result: [call $f 42]]").await;
     assert!(
         errors
             .iter()
@@ -2523,10 +2573,10 @@ fn test_call_monomorphic_arity_mismatch() {
     );
 }
 
-#[test]
-fn test_call_unification_error() {
+#[tokio::test]
+async fn test_call_unification_error() {
     // In new syntax, string literals require quotes. Both args must unify to same type.
-    let errors = check_err("[f: [fn [let x@a y@a] $x]]\n[result: [call $f 42 \"hello\"]]");
+    let errors = check_err("[f: [fn [let x@a y@a] $x]]\n[result: [call $f 42 \"hello\"]]").await;
     assert!(
         errors.iter().any(|e| e.message().contains("cannot unify")),
         "expected unification error, got: {:?}",
@@ -2536,8 +2586,8 @@ fn test_call_unification_error() {
 
 // -- Polymorphic call with named args --
 
-#[test]
-fn test_call_polymorphic_with_named_arg() {
+#[tokio::test]
+async fn test_call_polymorphic_with_named_arg() {
     // Polymorphic function called with only named args (no positional args).
     // The function has 1 param; 1 named arg fills it → total_supplied = 1 = params.len() → ok.
     // Multi-document form ensures $f is fully resolved before the call site is type-checked.
@@ -2545,7 +2595,8 @@ fn test_call_polymorphic_with_named_arg() {
         "[f: [fn [let x@a] $x]]
              ---
              [result: [call $f x: 42]]",
-    );
+    )
+    .await;
     assert!(
         result.is_ok(),
         "call with 1 named arg filling 1 param slot should not produce arity error, got: {:?}",
@@ -2557,7 +2608,8 @@ fn test_call_polymorphic_with_named_arg() {
         "[f: [fn [let x@Int] $x]]
              ---
              [result: [call $f x: \"wrong-type\"]]",
-    );
+    )
+    .await;
     assert!(
         errors
             .iter()
@@ -2571,7 +2623,8 @@ fn test_call_polymorphic_with_named_arg() {
         "[f: [fn [let x@Int] $x]]
              ---
              [result: [call $f z: 42]]",
-    );
+    )
+    .await;
     assert!(
         errors
             .iter()
@@ -2581,8 +2634,8 @@ fn test_call_polymorphic_with_named_arg() {
     );
 }
 
-#[test]
-fn test_call_polymorphic_positional_plus_named_arity_error() {
+#[tokio::test]
+async fn test_call_polymorphic_positional_plus_named_arity_error() {
     // Polymorphic function with 2 params called with 2 positional args AND 1 named arg.
     // total_supplied = 3 != params.len() = 2 → arity error.
     // At runtime this would also fail (C-NO-OVERLAP: named arg targets a positionally-bound param).
@@ -2590,7 +2643,8 @@ fn test_call_polymorphic_positional_plus_named_arity_error() {
         "[f: [fn [let x@a y@b] $x]]
              ---
              [result: [call $f 42 hello y: 77]]",
-    );
+    )
+    .await;
     assert!(
         errors
             .iter()
@@ -2600,8 +2654,8 @@ fn test_call_polymorphic_positional_plus_named_arity_error() {
     );
 }
 
-#[test]
-fn test_call_polymorphic_named_arg_bad_value_errors() {
+#[tokio::test]
+async fn test_call_polymorphic_named_arg_bad_value_errors() {
     // A named arg whose value references an undefined variable should produce
     // a type error. Use multi-document form so $f is fully resolved (CALL-MONO path)
     // before the call, avoiding the letrec TypeVar-arm bypass.
@@ -2610,7 +2664,8 @@ fn test_call_polymorphic_named_arg_bad_value_errors() {
         "[f: [fn [let x@Int y@Int] [call $+ $x $y]]]\n\
              ---\n\
              [result: [call $f 42 y: $missing]]",
-    );
+    )
+    .await;
     assert!(
         errors
             .iter()
@@ -2620,8 +2675,8 @@ fn test_call_polymorphic_named_arg_bad_value_errors() {
     );
 }
 
-#[test]
-fn test_call_polymorphic_positional_plus_named_arity_ok() {
+#[tokio::test]
+async fn test_call_polymorphic_positional_plus_named_arity_ok() {
     // Polymorphic function with 2 params called with 1 positional arg + 1 named arg.
     // total_supplied = args.len() + named_args.len() = 1 + 1 = 2 = params.len() → ok.
     // This is a regression test for the named arg arity counting fix.
@@ -2629,7 +2684,8 @@ fn test_call_polymorphic_positional_plus_named_arity_ok() {
         "[f: [fn [let a b] $a]]
              ---
              [result: [call $f 1 b: 2]]",
-    );
+    )
+    .await;
     result.expect(
         "call with 1 positional + 1 named arg filling 2 param slots should not produce arity error",
     );
@@ -2637,7 +2693,8 @@ fn test_call_polymorphic_positional_plus_named_arity_ok() {
         "[f: [fn [let a b] $a]]
              ---
              [result: [call $f 1 b: 2]]",
-    );
+    )
+    .await;
     let result_ty = env.get("result").expect("result should be in env");
     assert!(
         !matches!(&result_ty.body, Type::Error),
@@ -2648,14 +2705,15 @@ fn test_call_polymorphic_positional_plus_named_arity_ok() {
 
 // -- Function type expression with param list --
 
-#[test]
-fn test_fn_type_expr_with_params() {
+#[tokio::test]
+async fn test_fn_type_expr_with_params() {
     // [Identity: [type [let a] [Fn@a [a]]]] — identity-function type: param and return are same type.
     // Verify the alias works correctly by using it with concrete type args [@[Identity Int]].
     let ty = result_field(
         "[Identity: [type [let a] [Fn@a [a]]]]\n[x: [@[Identity Int] [fn [let v] $v]]]",
         "x",
-    );
+    )
+    .await;
     match ty {
         Type::Function {
             params,
@@ -2681,15 +2739,16 @@ fn test_fn_type_expr_with_params() {
     }
 }
 
-#[test]
-fn test_fn_type_expr_multi_params() {
+#[tokio::test]
+async fn test_fn_type_expr_multi_params() {
     // [Mapper: [type [let a b] [Fn@b [a b]]]] — map function type with 2 type params.
     // Verify the alias works correctly by using it with concrete type args [@[Mapper Int Str]].
     // The params[1] type and return type should match (both use `b`).
     let ty = result_field(
         "[Mapper: [type [let a b] [Fn@b [a b]]]]\n[x: [@[Mapper Int Str] [fn [let p q] $q]]]",
         "x",
-    );
+    )
+    .await;
     match ty {
         Type::Function {
             params,
@@ -2722,14 +2781,15 @@ fn test_fn_type_expr_multi_params() {
     }
 }
 
-#[test]
-fn test_fn_type_expr_concrete_params() {
+#[tokio::test]
+async fn test_fn_type_expr_concrete_params() {
     // [Addable: [type [Fn@Number [Number Number]]]] — non-parameterized function type alias.
     // Verify the alias works correctly by using it to annotate a function.
     let ty = result_field(
         "[Addable: [type [Fn@Number [Number Number]]]]\n[x: [@Addable [fn [let a@Number b@Number] $a]]]",
         "x",
-    );
+    )
+    .await;
     match ty {
         Type::Function {
             params,
@@ -2744,14 +2804,15 @@ fn test_fn_type_expr_concrete_params() {
     }
 }
 
-#[test]
-fn test_fn_type_expr_predicate() {
+#[tokio::test]
+async fn test_fn_type_expr_predicate() {
     // [Pred: [type [let a] [Fn@Bool [a]]]] — predicate type: param is type variable, return is Bool.
     // Verify the alias works correctly by using it with a concrete type arg [@[Pred Int]].
     let ty = result_field(
         "[Pred: [type [let a] [Fn@Bool [a]]]]\n[x: [@[Pred Int] [fn [let v] true]]]",
         "x",
-    );
+    )
+    .await;
     match ty {
         Type::Function {
             params,
@@ -2775,8 +2836,8 @@ fn test_fn_type_expr_predicate() {
 
 // -- Row polymorphism --
 
-#[test]
-fn test_type_expr_open_record() {
+#[tokio::test]
+async fn test_type_expr_open_record() {
     // BAS: all records are closed (RowTail::Empty). The "..." annotation in [type [name: String ...]]
     // is treated as user-explicit openness, but under BAS Step 1, multi-field annotations
     // use RowTail::Empty. Single-field open annotations also collapse to Empty.
@@ -2784,7 +2845,8 @@ fn test_type_expr_open_record() {
     let ty = result_field(
         "[Open: [type [name: String ...]]]\n[p: [@Open [name: \"Alice\"  age: 30]]]",
         "p",
-    );
+    )
+    .await;
     match ty {
         Type::Record(Row { fields, .. }) => {
             // BAS: all records are closed; field "name" should be String
@@ -2794,14 +2856,15 @@ fn test_type_expr_open_record() {
     }
 }
 
-#[test]
-fn test_type_expr_row_var_record() {
+#[tokio::test]
+async fn test_type_expr_row_var_record() {
     // BAS: named row variable "...rest" in type annotations — under BAS, all tails are Empty.
     // In new syntax, string literals require quotes.
     let ty = result_field(
         "[WithName: [type [name: String ...rest]]]\n[p: [@WithName [name: \"Alice\"]]]",
         "p",
-    );
+    )
+    .await;
     match ty {
         Type::Record(Row { fields, .. }) => {
             assert_eq!(fields.get("name"), Some(&Type::Str));
@@ -2810,32 +2873,33 @@ fn test_type_expr_row_var_record() {
     }
 }
 
-#[test]
-fn test_type_expr_closed_record() {
+#[tokio::test]
+async fn test_type_expr_closed_record() {
     // In new syntax, string literals require quotes.
     let ty = result_field(
         "[Closed: [type [name: String]]]\n[p: [@Closed [name: \"Alice\"]]]",
         "p",
-    );
+    )
+    .await;
     match ty {
         Type::Record(_) => {}
         other => panic!("expected Record, got {other}"),
     }
 }
 
-#[test]
-fn test_anonymous_open_record_annotations_get_fresh_vars() {
+#[tokio::test]
+async fn test_anonymous_open_record_annotations_get_fresh_vars() {
     // BAS: anonymous open record annotations "..." are treated as closed under BAS.
     // Both params are records (RowTail::Empty); the function type-checks correctly.
     let code = r#"
             [f: [fn [let x@[a: Int ...]  y@[b: String ...]]
                  [x: $x  y: $y]]]
         "#;
-    let result = check(code);
+    let result = check(code).await;
     assert!(result.is_ok(), "type check should succeed: {:?}", result);
 
     // Verify the inferred type has record params
-    let ty = result_field(code, "f");
+    let ty = result_field(code, "f").await;
     match ty {
         Type::Function { params, .. } => {
             // BAS: both params should be record types
@@ -2854,19 +2918,19 @@ fn test_anonymous_open_record_annotations_get_fresh_vars() {
     }
 }
 
-#[test]
-fn test_cross_function_anonymous_open_records_get_fresh_vars() {
+#[tokio::test]
+async fn test_cross_function_anonymous_open_records_get_fresh_vars() {
     // BAS: anonymous open record annotations are independent between functions.
     let code = r#"
             [f: [fn [let x@[a: Int ...]] $x.a]
              g: [fn [let y@[b: String ...]] $y.b]]
         "#;
-    let result = check(code);
+    let result = check(code).await;
     assert!(result.is_ok(), "type check should succeed: {:?}", result);
 
     // Under BAS: both f and g should have record params (RowTail::Empty)
-    let ty_f = result_field(code, "f");
-    let ty_g = result_field(code, "g");
+    let ty_f = result_field(code, "f").await;
+    let ty_g = result_field(code, "g").await;
 
     assert!(
         matches!(ty_f, Type::Function { .. }),
@@ -2878,15 +2942,15 @@ fn test_cross_function_anonymous_open_records_get_fresh_vars() {
     );
 }
 
-#[test]
-fn test_named_row_var_level_monotonicity() {
+#[tokio::test]
+async fn test_named_row_var_level_monotonicity() {
     // BAS: named row variables "...r" in type annotations are treated as closed (Empty).
     // This test verifies the function type-checks correctly even with named row vars.
     let code = r#"
             [f: [fn [let x@[a: Int ...r]  y@[b: String ...r]]
                  [x: $x  y: $y]]]
         "#;
-    let result = check(code);
+    let result = check(code).await;
     assert!(
         result.is_ok(),
         "type check should succeed with shared named row variable: {:?}",
@@ -2894,7 +2958,7 @@ fn test_named_row_var_level_monotonicity() {
     );
 
     // BAS: both parameters are record types (RowTail::Empty)
-    let ty = result_field(code, "f");
+    let ty = result_field(code, "f").await;
     match ty {
         Type::Function { params, .. } => {
             assert!(
@@ -2912,9 +2976,9 @@ fn test_named_row_var_level_monotonicity() {
     }
 }
 
-#[test]
+#[tokio::test]
 #[ignore = "open record annotation form no longer supported"]
-fn test_check_dot_access_unknown_field_returns_unknown() {
+async fn test_check_dot_access_unknown_field_returns_unknown() {
     // BAS: accessing a field not in the record's known fields returns Unknown.
     // Under BAS width subtyping, the field may be present in the concrete value.
     // No row bindings are created — BAS handles openness via is_subtype, not unification.
@@ -2925,7 +2989,7 @@ fn test_check_dot_access_unknown_field_returns_unknown() {
             [result: [inner: $p.unknown]]
         "#;
 
-    let result = check(code);
+    let result = check(code).await;
     assert!(
         result.is_ok(),
         "type check should succeed — unknown field access returns Unknown under BAS: {:?}",
@@ -2933,7 +2997,7 @@ fn test_check_dot_access_unknown_field_returns_unknown() {
     );
 
     // Verify that the `inner` field of `result` has type Unknown
-    let result_ty = result_field(code, "result");
+    let result_ty = result_field(code, "result").await;
     let inner_ty = match result_ty {
         Type::Record(Row { ref fields, .. }) => fields
             .get("inner")
@@ -2948,45 +3012,46 @@ fn test_check_dot_access_unknown_field_returns_unknown() {
     );
 }
 
-#[test]
-fn test_type_assert_open_record_accepts_extra_fields() {
+#[tokio::test]
+async fn test_type_assert_open_record_accepts_extra_fields() {
     // In new syntax, string literals require quotes.
-    check("[@[name: String ...] [name: \"Alice\"  age: 30]]").unwrap();
+    check("[@[name: String ...] [name: \"Alice\"  age: 30]]").await.unwrap();
 }
 
-#[test]
-fn test_type_assert_single_field_annotation_accepts_extra_fields() {
+#[tokio::test]
+async fn test_type_assert_single_field_annotation_accepts_extra_fields() {
     // BAS open semantics (Step 2): a single-field annotation @[name: String] is a closed
     // record {name: String} under BAS width subtyping. A record with extra fields
     // [name: "Alice" age: 30] satisfies this because all required fields are present.
     // Under BAS, structural annotations express "has AT LEAST these fields", so
     // {name: "Alice", age: 30} <: {name: String} holds via width subtyping.
-    check("[@[name: String] [name: \"Alice\"  age: 30]]").unwrap();
+    check("[@[name: String] [name: \"Alice\"  age: 30]]").await.unwrap();
 }
 
-#[test]
-fn test_type_assert_open_record_requires_fields() {
-    let errors = check_err("[@[name: String ...] [age: 30]]");
+#[tokio::test]
+async fn test_type_assert_open_record_requires_fields() {
+    let errors = check_err("[@[name: String ...] [age: 30]]").await;
     assert!(!errors.is_empty());
     assert!(errors[0].message().contains("cannot unify"));
 }
 
-#[test]
+#[tokio::test]
 #[ignore = "open record annotation form no longer supported"]
-fn test_dot_access_on_open_record_known_field() {
+async fn test_dot_access_on_open_record_known_field() {
     // In new syntax, string literals require quotes.
     assert_eq!(
             result_field(
                 "[Open: [type [name: String ...]]]\n[p: [@Open [name: \"Alice\"  age: 30]]]\n[result: $p.name]",
                 "result",
-            ),
+            )
+            .await,
             Type::Str,
         );
 }
 
-#[test]
+#[tokio::test]
 #[ignore = "open record annotation form no longer supported"]
-fn test_dot_access_on_open_record_unknown_field() {
+async fn test_dot_access_on_open_record_unknown_field() {
     // BAS: all records are closed. `@Open` with `...` resolves to Record({name: Str}).
     // Accessing `$p.unknown` (not in static type) returns Unknown (gradual typing).
     // Under BAS, no RowVar constraint generation — width subtyping handles openness.
@@ -2994,22 +3059,23 @@ fn test_dot_access_on_open_record_unknown_field() {
     let ty = result_field(
         "[Open: [type [name: String ...]]]\n[p: [@Open [name: \"Alice\"]]]\n[result: $p.unknown]",
         "result",
-    );
+    )
+    .await;
     assert!(
         matches!(ty, Type::Unknown),
         "BAS: expected Unknown for unknown field on closed record, got {ty}"
     );
 }
 
-#[test]
-fn test_data_dict_always_closed() {
-    let ty = infer("[a: 1  b: 2]");
+#[tokio::test]
+async fn test_data_dict_always_closed() {
+    let ty = infer("[a: 1  b: 2]").await;
     assert!(matches!(ty, Type::Record(_)), "expected Record, got {ty}");
 }
 
-#[test]
-fn test_rest_in_data_dict_ignored() {
-    let ty = infer("[a: 1 ...]");
+#[tokio::test]
+async fn test_rest_in_data_dict_ignored() {
+    let ty = infer("[a: 1 ...]").await;
     match ty {
         Type::Record(Row { fields, .. }) => {
             assert_eq!(fields.len(), 1);
@@ -3021,15 +3087,16 @@ fn test_rest_in_data_dict_ignored() {
 
 // -- Let-generalization tests --
 
-#[test]
-fn test_let_gen_varref_instantiation() {
+#[tokio::test]
+async fn test_let_gen_varref_instantiation() {
     // Each reference to $id should get a fresh instantiation
     // In new syntax, string literals require quotes.
     // Polymorphic calls preserve literal types.
     let ty = result_field(
         "[id: [fn [let x@a] $x]]\n[result: [a: [call $id 42]  b: [call $id \"hello\"]]]",
         "result",
-    );
+    )
+    .await;
     match ty {
         Type::Record(Row { fields, .. }) => {
             assert_eq!(fields.get("a"), Some(&Type::IntLiteral(42)));
@@ -3039,10 +3106,10 @@ fn test_let_gen_varref_instantiation() {
     }
 }
 
-#[test]
-fn test_let_gen_forward_ref_unification() {
+#[tokio::test]
+async fn test_let_gen_forward_ref_unification() {
     // Forward reference $b should unify with 42
-    let ty = infer("[a: $b  b: 42]");
+    let ty = infer("[a: $b  b: 42]").await;
     match ty {
         Type::Record(Row { fields, .. }) => {
             // Both a and b resolve to IntLiteral(42) via letrec unification
@@ -3053,8 +3120,8 @@ fn test_let_gen_forward_ref_unification() {
     }
 }
 
-#[test]
-fn test_let_gen_nested_dicts_level_increment() {
+#[tokio::test]
+async fn test_let_gen_nested_dicts_level_increment() {
     // Task 3: Verify state.level increments correctly for nested dict inference
     // and that inner dict entries generalize independently of outer
     // For [outer: [inner: 42]], outer dict runs at level 1, inner at level 2
@@ -3063,7 +3130,7 @@ fn test_let_gen_nested_dicts_level_increment() {
     // Test with a more complex example that shows level scoping:
     // [outer: [id: [fn [x@a] $x]]]
     // The `id` function should be polymorphic even when nested
-    let env = doc_env("[outer: [id: [fn [let x@a] $x]]]");
+    let env = doc_env("[outer: [id: [fn [let x@a] $x]]]").await;
     let outer_scheme = env.get("outer").expect("outer should be in env");
 
     match &outer_scheme.body {
@@ -3102,12 +3169,12 @@ fn test_let_gen_nested_dicts_level_increment() {
     }
 }
 
-#[test]
-fn test_let_gen_document_boundary_threading() {
+#[tokio::test]
+async fn test_let_gen_document_boundary_threading() {
     // Type schemes should thread across document boundaries.
     // Verify that a polymorphic function defined in one document can be used
     // in a subsequent document, and that its scheme has type variables.
-    let env = file_env("[id: [fn [let x@a] $x]]\n---\n[r: [call $id 42]]");
+    let env = file_env("[id: [fn [let x@a] $x]]\n---\n[r: [call $id 42]]").await;
 
     // Check that $id is available in the final environment
     let id_scheme = env.get("id").expect("id should be in scope");
@@ -3122,10 +3189,10 @@ fn test_let_gen_document_boundary_threading() {
     assert!(env.get("r").is_some(), "r should be in scope");
 }
 
-#[test]
-fn test_let_gen_mutual_recursion() {
+#[tokio::test]
+async fn test_let_gen_mutual_recursion() {
     // Mutual recursion within a dict should work with monomorphic inference
-    let ty = infer("[a: $b  b: $a  c: 42]");
+    let ty = infer("[a: $b  b: $a  c: 42]").await;
     match ty {
         Type::Record(Row { fields, .. }) => {
             assert!(fields.contains_key("a"));
@@ -3165,14 +3232,14 @@ fn test_let_gen_mutual_recursion() {
     }
 }
 
-#[test]
-fn test_let_gen_typevar_in_dot_access() {
+#[tokio::test]
+async fn test_let_gen_typevar_in_dot_access() {
     // Dot access on a TypeVar generates a constraint (TypeVar α case) which is now
     // fully resolved by Pass 3b (row-unification-h). When `$data` has an unknown type
     // during letrec pass 3, `$data.x` generates constraint α = Record({x: β}, RowVar(ρ))
     // and returns β. Pass 3b unifies the two α bindings (from check_dot_access and from
     // infer_dict processing `data: [x: 1]`), resolving β → IntLiteral(1).
-    let ty = infer("[result: $data.x  data: [x: 1]]");
+    let ty = infer("[result: $data.x  data: [x: 1]]").await;
     match ty {
         Type::Record(Row { fields, .. }) => {
             // result is the resolved type of x (IntLiteral(1)), not Any and not TypeVar.
@@ -3194,10 +3261,10 @@ fn test_let_gen_typevar_in_dot_access() {
 
 // --- Task 1: Core let-generalization unit tests ---
 
-#[test]
-fn test_let_gen_polymorphic_identity_generalizes() {
+#[tokio::test]
+async fn test_let_gen_polymorphic_identity_generalizes() {
     // [id: [fn [x@a] $x]] should generalize id to a polymorphic TypeScheme
-    let env = doc_env("[id: [fn [let x@a] $x]]");
+    let env = doc_env("[id: [fn [let x@a] $x]]").await;
     let id_scheme = env.get("id").expect("id should be in env");
 
     // The scheme should have non-empty vars (it's polymorphic)
@@ -3208,10 +3275,10 @@ fn test_let_gen_polymorphic_identity_generalizes() {
     );
 }
 
-#[test]
-fn test_let_gen_nested_dicts_level_correct() {
+#[tokio::test]
+async fn test_let_gen_nested_dicts_level_correct() {
     // Nested dict [outer: [inner: 42]] should infer correct types
-    let ty = result_field("[outer: [inner: 42]]\n[result: $outer]", "result");
+    let ty = result_field("[outer: [inner: 42]]\n[result: $outer]", "result").await;
     match ty {
         Type::Record(Row { fields, .. }) => {
             // inner field preserves literal type
@@ -3225,12 +3292,12 @@ fn test_let_gen_nested_dicts_level_correct() {
     }
 }
 
-#[test]
-fn test_let_gen_any_touched_not_generalized() {
+#[tokio::test]
+async fn test_let_gen_any_touched_not_generalized() {
     // With Unknown unannotated params, [fn [x] $x] is monomorphic: Unknown -> Unknown.
     // Unknown is the gradual typing escape hatch (Siek & Taha 2006); unification with
     // Unknown zeros the TypeVar's level, preventing generalization.
-    let env = doc_env("[id: [fn [let x] $x]]");
+    let env = doc_env("[id: [fn [let x] $x]]").await;
     let id_scheme = env.get("id").expect("id should be in env");
 
     // The scheme should have zero type variables (monomorphic: Unknown -> Unknown)
@@ -3259,30 +3326,30 @@ fn test_let_gen_any_touched_not_generalized() {
 
 // -- Bidirectional type checking tests --
 
-#[test]
-fn test_check_expr_basic_subsumption() {
+#[tokio::test]
+async fn test_check_expr_basic_subsumption() {
     // IntLiteral(42) should check against Int via subsumption
-    let ty = result_field("[x: [@Int 42]]", "x");
+    let ty = result_field("[x: [@Int 42]]", "x").await;
     assert_eq!(ty, Type::Int, "IntLiteral should subsume to Int");
 
     // IntLiteral(42) should check against Number via subsumption
-    let ty = result_field("[x: [@Number 42]]", "x");
+    let ty = result_field("[x: [@Number 42]]", "x").await;
     assert_eq!(ty, Type::Number, "IntLiteral should subsume to Number");
 
     // StringLiteral should subsume to String (use quoted string in new syntax)
-    let ty = result_field("[x: [@String \"hello\"]]", "x");
+    let ty = result_field("[x: [@String \"hello\"]]", "x").await;
     assert_eq!(ty, Type::Str, "StringLiteral should subsume to String");
 }
 
-#[test]
-fn test_call_mono_argument_checking() {
+#[tokio::test]
+async fn test_call_mono_argument_checking() {
     // Monomorphic function call should use check_expr for arguments
     // This should succeed: IntLiteral(42) <: Int
-    let ty = result_field("[f: [fn [let x@Int] $x]]\n[result: [call $f 42]]", "result");
+    let ty = result_field("[f: [fn [let x@Int] $x]]\n[result: [call $f 42]]", "result").await;
     assert_eq!(ty, Type::Int, "CALL-MONO should accept IntLiteral arg");
 
     // This should fail: String is not subtype of Int (use quoted string in new syntax)
-    let errors = check_err("[f: [fn [let x@Int] $x]]\n[result: [call $f \"hello\"]]");
+    let errors = check_err("[f: [fn [let x@Int] $x]]\n[result: [call $f \"hello\"]]").await;
     assert!(
         errors.iter().any(|e| e.message().contains("cannot unify")),
         "CALL-MONO should reject String arg for Int param, got: {:?}",
@@ -3290,8 +3357,8 @@ fn test_call_mono_argument_checking() {
     );
 }
 
-#[test]
-fn test_call_mono_lambda_arg_uses_check_expr() {
+#[tokio::test]
+async fn test_call_mono_lambda_arg_uses_check_expr() {
     // CALL-MONO with Expr::Fn argument: exercises the `Expr::Fn { .. }` branch at
     // typecheck_call.rs:~702 which dispatches to check_expr (lambda checking mode) instead
     // of infer_expr + subsumption.
@@ -3308,7 +3375,8 @@ fn test_call_mono_lambda_arg_uses_check_expr() {
     let result = check(
         "[apply-fn: [fn [let g@[type: [Fn@Int [Int]]]] [call $g 0]]]\n\
              [result: [call $apply-fn [fn [let x] [+ $x 1]]]]",
-    );
+    )
+    .await;
     assert!(
         result.is_ok(),
         "CALL-MONO lambda arg: compatible lambda should type-check, got: {:?}",
@@ -3320,7 +3388,8 @@ fn test_call_mono_lambda_arg_uses_check_expr() {
     let errors = check_err(
         "[apply-fn: [fn [let g@[type: [Fn@Int [Int]]]] [call $g 0]]]\n\
              [result: [call $apply-fn [fn [let x] \"wrong\"]]]",
-    );
+    )
+    .await;
     assert!(
         errors
             .iter()
@@ -3330,11 +3399,11 @@ fn test_call_mono_lambda_arg_uses_check_expr() {
     );
 }
 
-#[test]
-fn test_lambda_checking_mode_concrete() {
+#[tokio::test]
+async fn test_lambda_checking_mode_concrete() {
     // Lambda checked against concrete function type should propagate param types
     // Define a concrete function type alias first
-    let env = doc_env("[IntFn: [type [Fn@Int [Int]]]]\n[f: [@IntFn [fn [let x] $x]]]");
+    let env = doc_env("[IntFn: [type [Fn@Int [Int]]]]\n[f: [@IntFn [fn [let x] $x]]]").await;
     let f_scheme = env.get("f").unwrap();
     match &f_scheme.body {
         Type::Function {
@@ -3350,15 +3419,16 @@ fn test_lambda_checking_mode_concrete() {
     }
 }
 
-#[test]
-fn test_lambda_checking_mode_with_polymorphic_expected() {
+#[tokio::test]
+async fn test_lambda_checking_mode_with_polymorphic_expected() {
     // Lambda checked against parameterized function type alias with concrete args.
     // With parameterized aliases requiring explicit args, use [@[Mapper Int Str]] to get
     // concrete types. The lambda is checked against the expanded type [Fn@Str [Int]].
     let ty = result_field(
         "[Mapper: [type [let a b] [Fn@b [a]]]]\n[x: [@[Mapper Int Str] [fn [let v@Int] \"result\"]]]",
         "x",
-    );
+    )
+    .await;
     match ty {
         Type::Function {
             params,
@@ -3384,14 +3454,14 @@ fn test_lambda_checking_mode_with_polymorphic_expected() {
     }
 }
 
-#[test]
-fn test_type_assert_checking_mode() {
+#[tokio::test]
+async fn test_type_assert_checking_mode() {
     // TypeAssert should use check_expr for subsumption
-    let ty = result_field("[x: [@Int 42]]", "x");
+    let ty = result_field("[x: [@Int 42]]", "x").await;
     assert_eq!(ty, Type::Int, "TypeAssert should accept IntLiteral <: Int");
 
     // TypeAssert with default should suppress errors
-    let ty = result_field("[x: [@[type: Int  default: 0] hello]]", "x");
+    let ty = result_field("[x: [@[type: Int  default: 0] hello]]", "x").await;
     assert_eq!(
         ty,
         Type::Int,
@@ -3399,11 +3469,11 @@ fn test_type_assert_checking_mode() {
     );
 }
 
-#[test]
-fn test_call_poly_still_uses_unify() {
+#[tokio::test]
+async fn test_call_poly_still_uses_unify() {
     // Polymorphic function call should still use unification (not check_expr)
     // Polymorphic calls preserve literal types
-    let ty = result_field("[f: [fn [let x@a] $x]]\n[result: [call $f 42]]", "result");
+    let ty = result_field("[f: [fn [let x@a] $x]]\n[result: [call $f 42]]", "result").await;
     assert_eq!(
         ty,
         Type::IntLiteral(42),
@@ -3412,18 +3482,18 @@ fn test_call_poly_still_uses_unify() {
 
     // Multiple calls should get independent instantiations (use quoted string in new syntax)
     // Each call returns the literal type of its argument
-    let env = doc_env("[f: [fn [let x@a] $x]  r1: [call $f 42]  r2: [call $f \"hello\"]]");
+    let env = doc_env("[f: [fn [let x@a] $x]  r1: [call $f 42]  r2: [call $f \"hello\"]]").await;
     let r1 = env.get("r1").unwrap();
     let r2 = env.get("r2").unwrap();
     assert_eq!(r1.body, Type::IntLiteral(42));
     assert_eq!(r2.body, Type::StringLiteral("hello".into()));
 }
 
-#[test]
-fn test_function_return_annotation_checking() {
+#[tokio::test]
+async fn test_function_return_annotation_checking() {
     // Function with return annotation should check body via check_expr
     // Subsumption should work: IntLiteral(42) <: Int
-    let ty = result_field("[f: [fn@Int [] 42]]", "f");
+    let ty = result_field("[f: [fn@Int [] 42]]", "f").await;
     match ty {
         Type::Function { ret, .. } => {
             assert_eq!(*ret, Type::Int, "Return type should be declared type");
@@ -3432,7 +3502,7 @@ fn test_function_return_annotation_checking() {
     }
 
     // IntLiteral should subsume to Number in return annotation
-    let ty = result_field("[f: [fn@Number [] 42]]", "f");
+    let ty = result_field("[f: [fn@Number [] 42]]", "f").await;
     match ty {
         Type::Function { ret, .. } => {
             assert_eq!(*ret, Type::Number);
@@ -3441,7 +3511,7 @@ fn test_function_return_annotation_checking() {
     }
 
     // Type mismatch should fail (use quoted string in new syntax)
-    let errors = check_err("[f: [fn@Int [] \"hello\"]]");
+    let errors = check_err("[f: [fn@Int [] \"hello\"]]").await;
     assert!(
         errors.iter().any(|e| e.message().contains("cannot unify")),
         "Function body type mismatch should error, got: {:?}",
@@ -3449,8 +3519,8 @@ fn test_function_return_annotation_checking() {
     );
 }
 
-#[test]
-fn test_function_return_annotation_with_type_var() {
+#[tokio::test]
+async fn test_function_return_annotation_with_type_var() {
     // Function with polymorphic return annotation should use unification mode
     // [fn@a [x@a] 42] — return annotation contains TypeVar, so body type
     // should be unified with the declared type, binding the TypeVar.
@@ -3459,7 +3529,7 @@ fn test_function_return_annotation_with_type_var() {
     // returns false and the function is rejected.
     //
     // The key is that this should successfully type check (not error).
-    let result = check("[f: [fn@a [let x@a] 42]]");
+    let result = check("[f: [fn@a [let x@a] 42]]").await;
     assert!(
         result.is_ok(),
         "Function with polymorphic return annotation should type check: {:?}",
@@ -3467,7 +3537,7 @@ fn test_function_return_annotation_with_type_var() {
     );
 
     // Identity function with return annotation should also work
-    let result = check("[f: [fn@a [let x@a] $x]]");
+    let result = check("[f: [fn@a [let x@a] $x]]").await;
     assert!(
         result.is_ok(),
         "Identity function with polymorphic return annotation should type check: {:?}",
@@ -3478,7 +3548,7 @@ fn test_function_return_annotation_with_type_var() {
     // [fn@a [let x@b] 42] where a and b are different type variables
     // After unification: a gets bound to IntLiteral(42), but param is still b
     // This should succeed since there's no constraint linking a and b
-    let result = check("[f: [fn@a [let x@b] 42]]");
+    let result = check("[f: [fn@a [let x@b] 42]]").await;
     assert!(
         result.is_ok(),
         "Polymorphic function with different param/return type vars should type check: {:?}",
@@ -3486,8 +3556,8 @@ fn test_function_return_annotation_with_type_var() {
     );
 }
 
-#[test]
-fn test_function_return_annotation_with_type_var_error_path() {
+#[tokio::test]
+async fn test_function_return_annotation_with_type_var_error_path() {
     // Exercise the error path of the new unification-mode branch
     // (declared.has_inference_vars() = true) at typecheck_match.rs:~465.
     //
@@ -3499,7 +3569,7 @@ fn test_function_return_annotation_with_type_var_error_path() {
     // so we enter the unification-mode branch. The body `[call 42 1]`
     // attempts to call an integer literal as a function, which fails
     // infer_expr with "expected function type, got IntLiteral(42)".
-    let errors = check_err("[f: [fn@a [let x@a] [call 42 1]]]");
+    let errors = check_err("[f: [fn@a [let x@a] [call 42 1]]]").await;
     assert!(
         !errors.is_empty(),
         "Calling a non-function in a TypeVar-annotated fn body should produce type errors"
@@ -3513,14 +3583,14 @@ fn test_function_return_annotation_with_type_var_error_path() {
     );
 }
 
-#[test]
-fn test_lambda_checking_mode_annotated_param_incompatible() {
+#[tokio::test]
+async fn test_lambda_checking_mode_annotated_param_incompatible() {
     // Lambda with annotated param checked against expected function type where
     // the annotation is INCOMPATIBLE with the expected param type should error.
     // Expected: Fn(Int -> Int), lambda: [fn [x@String] $x]
     // The annotation String is incompatible: Int (expected) is not a subtype of String.
     // This tests the fix added in the bidirectional-typing fix pass (contravariant check).
-    let errors = check_err("[x: [@[Fn@Int [Int]] [fn [let x@String] $x]]]");
+    let errors = check_err("[x: [@[Fn@Int [Int]] [fn [let x@String] $x]]]").await;
     assert!(
         errors
             .iter()
@@ -3531,15 +3601,15 @@ fn test_lambda_checking_mode_annotated_param_incompatible() {
     );
 }
 
-#[test]
-fn test_lambda_checking_mode_return_annotation_and_expected_type() {
+#[tokio::test]
+async fn test_lambda_checking_mode_return_annotation_and_expected_type() {
     // Lambda with both a return annotation and an expected function type.
     // [@[Fn@Number [Int]] [fn@Int [x] $x]] — expected return Number, declared return Int.
     // Since Int <: Number, the check `declared <: expected_ret` passes (covariant return).
     // Body $x is checked against declared Int (passes since x gets type Int from expected).
     // The function type recorded in the type_map is the EXPECTED type (Fn(Int→Number))
     // because check_expr records expected.clone() at the lambda checking mode exit.
-    let ty = result_field("[f: [@[Fn@Number [Int]] [fn@Int [let x] $x]]]", "f");
+    let ty = result_field("[f: [@[Fn@Number [Int]] [fn@Int [let x] $x]]]", "f").await;
     match ty {
         Type::Function {
             params,
@@ -3565,7 +3635,7 @@ fn test_lambda_checking_mode_return_annotation_and_expected_type() {
 
     // Incompatible direction: expected return Int, declared return Number.
     // is_subtype(&Number, &Int) = false → should error.
-    let errors = check_err("[f: [@[Fn@Int [Int]] [fn@Number [let x] 42]]]");
+    let errors = check_err("[f: [@[Fn@Int [Int]] [fn@Number [let x] 42]]]").await;
     assert!(
         errors.iter().any(|e| e.message().contains("cannot unify")),
         "Declared return Number is not subtype of expected Int — should error, got: {:?}",
@@ -3573,8 +3643,8 @@ fn test_lambda_checking_mode_return_annotation_and_expected_type() {
     );
 }
 
-#[test]
-fn test_lambda_checking_mode_param_annotation_with_type_var() {
+#[tokio::test]
+async fn test_lambda_checking_mode_param_annotation_with_type_var() {
     // Task 1 fix: Lambda with @a-style param annotation checked against concrete function type.
     // When the annotation is a TypeVar, is_subtype fails (TypeVars only match reflexively).
     // The fix switches to unification mode when resolved.has_inference_vars().
@@ -3584,7 +3654,8 @@ fn test_lambda_checking_mode_param_annotation_with_type_var() {
     // Without fix: is_subtype(concrete, TypeVar("b")) = false → error.
     // With fix: unify(concrete, TypeVar("b")) binds b → success.
     let result =
-        check("[identity: [fn [let x@a] $x]]\n[result: [call $identity [fn@b [let y@b] $y]]]");
+        check("[identity: [fn [let x@a] $x]]\n[result: [call $identity [fn@b [let y@b] $y]]]")
+            .await;
     assert!(
         result.is_ok(),
         "Lambda with TypeVar param annotation in checking mode should unify, not subsume: {:?}",
@@ -3595,7 +3666,8 @@ fn test_lambda_checking_mode_param_annotation_with_type_var() {
     let ty = result_field(
             "[identity: [fn [let x@a] $x]]\n[result: [call $identity [fn@b [let y@b] $y]]]\n[test: [call $result 42]]",
             "test"
-        );
+        )
+        .await;
     assert_eq!(
         ty,
         Type::IntLiteral(42),
@@ -3603,8 +3675,8 @@ fn test_lambda_checking_mode_param_annotation_with_type_var() {
     );
 }
 
-#[test]
-fn test_lambda_checking_mode_return_annotation_with_type_var() {
+#[tokio::test]
+async fn test_lambda_checking_mode_return_annotation_with_type_var() {
     // Task 1 fix: Lambda with @a-style return annotation checked against concrete function type.
     // When the return annotation is a TypeVar, is_subtype fails (TypeVars only match reflexively).
     // The fix switches to unification mode when declared.has_inference_vars().
@@ -3612,7 +3684,7 @@ fn test_lambda_checking_mode_return_annotation_with_type_var() {
     // Pattern: [@[Fn@Int [Int]] [fn@c [x] 42]] — expected return Int, declared TypeVar("c").
     // Without fix: is_subtype(TypeVar("c"), Int) = false → error.
     // With fix: unify(TypeVar("c"), Int) binds c → success.
-    let result = check("[f: [@[Fn@Int [Int]] [fn@c [let x] 42]]]");
+    let result = check("[f: [@[Fn@Int [Int]] [fn@c [let x] 42]]]").await;
     assert!(
         result.is_ok(),
         "Lambda with TypeVar return annotation in checking mode should unify, not subsume: {:?}",
@@ -3620,7 +3692,7 @@ fn test_lambda_checking_mode_return_annotation_with_type_var() {
     );
 
     // Verify the recorded function type
-    let ty = result_field("[f: [@[Fn@Int [Int]] [fn@c [let x] $x]]]", "f");
+    let ty = result_field("[f: [@[Fn@Int [Int]] [fn@c [let x] $x]]]", "f").await;
     match ty {
         Type::Function {
             params,
@@ -3635,13 +3707,13 @@ fn test_lambda_checking_mode_return_annotation_with_type_var() {
     }
 }
 
-#[test]
-fn test_lambda_checking_mode_param_annotation_error_message() {
+#[tokio::test]
+async fn test_lambda_checking_mode_param_annotation_error_message() {
     // Verify that parameter annotation type mismatch error messages are correctly ordered.
     // When checking [@[Fn@Number [Int]] [fn [x@String] $x]], the expected param type is Int
     // (from the function type annotation) but the parameter annotation says String.
     // The error should say "cannot unify Int with String" (not "cannot unify String with Int").
-    let errors = check_err("[f: [@[Fn@Number [Int]] [fn [let x@String] $x]]]");
+    let errors = check_err("[f: [@[Fn@Number [Int]] [fn [let x@String] $x]]]").await;
     assert_eq!(errors.len(), 1, "should have exactly one error");
     let msg = errors[0].message();
     assert!(
@@ -3650,8 +3722,8 @@ fn test_lambda_checking_mode_param_annotation_error_message() {
     );
 }
 
-#[test]
-fn test_lambda_checking_mode_subst_apply_forward_compat_guard() {
+#[tokio::test]
+async fn test_lambda_checking_mode_subst_apply_forward_compat_guard() {
     // Forward-compatibility guard: check_expr lambda checking mode applies
     // state.subst to expected_ret before checking the body.
     //
@@ -3673,7 +3745,8 @@ fn test_lambda_checking_mode_subst_apply_forward_compat_guard() {
     let ty = result_field(
         "[data: [x: 42]]\n[f: [@[Fn@Int [Int]] [fn [let n] $n]]]",
         "f",
-    );
+    )
+    .await;
     match ty {
         Type::Function {
             params,
@@ -3688,7 +3761,7 @@ fn test_lambda_checking_mode_subst_apply_forward_compat_guard() {
     }
 
     // Also verify with a body that returns a literal subtype of the expected return type
-    let result = check("[f: [@[Fn@Int [Int]] [fn [let n] 42]]]");
+    let result = check("[f: [@[Fn@Int [Int]] [fn [let n] 42]]]").await;
     assert!(
         result.is_ok(),
         "Lambda body returning IntLiteral(42) should satisfy expected return type Int: {:?}",
@@ -3696,8 +3769,8 @@ fn test_lambda_checking_mode_subst_apply_forward_compat_guard() {
     );
 }
 
-#[test]
-fn test_lambda_checking_mode_subst_applied_to_expected() {
+#[tokio::test]
+async fn test_lambda_checking_mode_subst_applied_to_expected() {
     // Verify that the lambda checking mode guard applies state.subst to the
     // expected type before inspecting it for TypeVars.
     //
@@ -3711,7 +3784,7 @@ fn test_lambda_checking_mode_subst_applied_to_expected() {
     // mode is correctly skipped (falls through to synthesize + subsume).
     // The synthesize path handles this correctly by inferring the lambda's type
     // and checking it against the expected type via subsumption.
-    let result = check("[f: [@[Fn@a [a]] [fn [let x] $x]]]");
+    let result = check("[f: [@[Fn@a [a]] [fn [let x] $x]]]").await;
     assert!(
         result.is_ok(),
         "Polymorphic type annotation on lambda should succeed via synthesis: {:?}",
@@ -3719,7 +3792,7 @@ fn test_lambda_checking_mode_subst_applied_to_expected() {
     );
 
     // With concrete expected type, lambda checking mode fires as before
-    let ty = result_field("[f: [@[Fn@Int [Int]] [fn [let x] $x]]]", "f");
+    let ty = result_field("[f: [@[Fn@Int [Int]] [fn [let x] $x]]]", "f").await;
     match ty {
         Type::Function {
             params,
@@ -3738,7 +3811,8 @@ fn test_lambda_checking_mode_subst_applied_to_expected() {
     let ty = result_field(
         "[id: [fn [let x@a] $x]]\n[n: [call $id 42]]\n[f: [@[Fn@Int [Int]] [fn [let x] $x]]]",
         "f",
-    );
+    )
+    .await;
     match ty {
         Type::Function {
             params,
@@ -3753,8 +3827,8 @@ fn test_lambda_checking_mode_subst_applied_to_expected() {
     }
 }
 
-#[test]
-fn test_inline_lambda_with_polymorphic_return_annotation() {
+#[tokio::test]
+async fn test_inline_lambda_with_polymorphic_return_annotation() {
     // Task 2 fix: Inline lambda with polymorphic return annotation.
     // Pattern: [call [fn@a [x@a] $x] 42] — identity function with polymorphic annotation.
     //
@@ -3767,7 +3841,7 @@ fn test_inline_lambda_with_polymorphic_return_annotation() {
     // 5. unify tries to bind _t7, but the substitution for _t5 is lost → wrong type
     //
     // With fix: state.subst.apply() resolves _t5 before has_inference_vars() check.
-    let ty = result_field("[result: [call [fn@a [let x@a] $x] 42]]", "result");
+    let ty = result_field("[result: [call [fn@a [let x@a] $x] 42]]", "result").await;
     assert_eq!(
         ty,
         Type::IntLiteral(42),
@@ -3775,7 +3849,7 @@ fn test_inline_lambda_with_polymorphic_return_annotation() {
     );
 
     // Verify multi-arg case where all params share the same type variable
-    let ty = result_field("[result: [call [fn@a [let x@a y@a] $x] 1 1]]", "result");
+    let ty = result_field("[result: [call [fn@a [let x@a y@a] $x] 1 1]]", "result").await;
     assert_eq!(
         ty,
         Type::IntLiteral(1),
@@ -3788,7 +3862,7 @@ fn test_inline_lambda_with_polymorphic_return_annotation() {
     // Without the fix: CALL-POLY would fire, freshen the TypeVars, and produce incorrect types.
     // With the fix: state.subst.apply() resolves the function type to Fn(IntLiteral(42) -> IntLiteral(42)),
     // CALL-MONO fires, and the call succeeds with matching literal types.
-    let ty = result_field("[result: [call [fn@a [let x@a] 42] 42]]", "result");
+    let ty = result_field("[result: [call [fn@a [let x@a] 42] 42]]", "result").await;
     assert_eq!(
         ty,
         Type::IntLiteral(42),
@@ -3796,8 +3870,8 @@ fn test_inline_lambda_with_polymorphic_return_annotation() {
     );
 }
 
-#[test]
-fn test_zero_param_monomorphic_function_type() {
+#[tokio::test]
+async fn test_zero_param_monomorphic_function_type() {
     // Zero-param monomorphic functions work correctly with CALL-MONO.
     // The function type is inferred from the return type annotation.
     //
@@ -3814,7 +3888,7 @@ fn test_zero_param_monomorphic_function_type() {
     // This test verifies the zero-param CALL-MONO path (no type vars) works correctly.
 
     // Zero-param monomorphic function (CALL-MONO): the function type is correct.
-    let ty = result_field("[f: [fn@Int [] 42]]", "f");
+    let ty = result_field("[f: [fn@Int [] 42]]", "f").await;
     match ty {
         Type::Function {
             params,
@@ -3835,14 +3909,14 @@ fn test_zero_param_monomorphic_function_type() {
 
 // -- Task 1: CALL-MONO argument type checking verification --
 
-#[test]
-fn test_call_mono_argument_type_checking_verification() {
+#[tokio::test]
+async fn test_call_mono_argument_type_checking_verification() {
     // CALL-MONO uses check_expr for argument type checking
     // IntLiteral(42) <: Int succeeds
-    assert!(check("[f: [fn [let x@Int] $x]]\n[result: [call $f 42]]").is_ok());
+    assert!(check("[f: [fn [let x@Int] $x]]\n[result: [call $f 42]]").await.is_ok());
 
     // StringLiteral for Int param fails
-    let errors = check_err("[f: [fn [let x@Int] $x]]\n[result: [call $f \"hello\"]]");
+    let errors = check_err("[f: [fn [let x@Int] $x]]\n[result: [call $f \"hello\"]]").await;
     assert!(
         errors.iter().any(|e| e.message().contains("cannot unify")),
         "StringLiteral arg for Int param should error: {:?}",
@@ -3850,34 +3924,34 @@ fn test_call_mono_argument_type_checking_verification() {
     );
 
     // IntLiteral(42) <: Number succeeds (transitive subsumption)
-    assert!(check("[f: [fn [let x@Number] $x]]\n[result: [call $f 42]]").is_ok());
+    assert!(check("[f: [fn [let x@Number] $x]]\n[result: [call $f 42]]").await.is_ok());
 }
 
 // -- Task 3: Subsumption tests --
 
-#[test]
-fn test_subsumption_int_literal_to_int() {
+#[tokio::test]
+async fn test_subsumption_int_literal_to_int() {
     // IntLiteral(42) <: Int via [SUB] rule
-    assert!(check("[result: [@Int 42]]").is_ok());
+    assert!(check("[result: [@Int 42]]").await.is_ok());
 }
 
-#[test]
-fn test_subsumption_int_literal_to_number() {
+#[tokio::test]
+async fn test_subsumption_int_literal_to_number() {
     // IntLiteral(42) <: Int <: Number (transitive)
-    assert!(check("[result: [@Number 42]]").is_ok());
+    assert!(check("[result: [@Number 42]]").await.is_ok());
 }
 
-#[test]
-fn test_subsumption_string_literal_to_string() {
+#[tokio::test]
+async fn test_subsumption_string_literal_to_string() {
     // StringLiteral("hello") <: String
-    assert!(check("[result: [@String \"hello\"]]").is_ok());
+    assert!(check("[result: [@String \"hello\"]]").await.is_ok());
 }
 
-#[test]
-fn test_subsumption_direction_matters() {
+#[tokio::test]
+async fn test_subsumption_direction_matters() {
     // Int <: Number succeeds, but Number <: Int fails — direction matters
-    assert!(check("[result: [@Number 42]]").is_ok());
-    let errors = check_err("[f: [fn [let x@Int] $x]]\n[result: [@Int [call $f 3.14]]]");
+    assert!(check("[result: [@Number 42]]").await.is_ok());
+    let errors = check_err("[f: [fn [let x@Int] $x]]\n[result: [@Int [call $f 3.14]]]").await;
     assert!(
         errors.iter().any(|e| e.message().contains("cannot unify")),
         "Float should not be subtype of Int: {:?}",
@@ -3885,28 +3959,28 @@ fn test_subsumption_direction_matters() {
     );
 }
 
-#[test]
-fn test_subsumption_float_to_number() {
+#[tokio::test]
+async fn test_subsumption_float_to_number() {
     // Float <: Number
-    assert!(check("[result: [@Number 3.14]]").is_ok());
+    assert!(check("[result: [@Number 3.14]]").await.is_ok());
 }
 
 // -- Task 3: Lambda parameter inference tests --
 
-#[test]
-fn test_lambda_param_inference_from_context() {
+#[tokio::test]
+async fn test_lambda_param_inference_from_context() {
     // When checking lambda against Fn(Int → Int), unannotated param gets Int
     // Uses Fn@ReturnType [params] syntax to get a real function type, not Type::Unknown
-    assert!(check("[result: [@[Fn@Int [Int]] [fn [let x] $x]]]").is_ok());
+    assert!(check("[result: [@[Fn@Int [Int]] [fn [let x] $x]]]").await.is_ok());
 }
 
-#[test]
-fn test_lambda_param_inference_preserves_annotation() {
+#[tokio::test]
+async fn test_lambda_param_inference_preserves_annotation() {
     // Annotated param @Number matches expected Number exactly — no variance issue.
     // In new syntax, function types use [Fn@RetType [ParamType]] dict form (Fn@RetType is Annotated).
     // Note: @Int with expected Number is REJECTED (Int <: Number but function params are
     // checked for exact compatibility, not subtype). This test uses @Number to match exactly.
-    let result = check("[result: [@[Fn@Number [Number]] [fn [let x@Number] $x]]]");
+    let result = check("[result: [@[Fn@Number [Number]] [fn [let x@Number] $x]]]").await;
     assert!(
         result.is_ok(),
         "expected ok, got errors: {:?}",
@@ -3914,11 +3988,11 @@ fn test_lambda_param_inference_preserves_annotation() {
     );
 }
 
-#[test]
-fn test_lambda_param_inference_rejects_incompatible_annotation() {
+#[tokio::test]
+async fn test_lambda_param_inference_rejects_incompatible_annotation() {
     // @String is NOT compatible with expected Int param (Int <: String is false)
     // Uses Fn@ReturnType [params] syntax for function type annotation
-    let errors = check_err("[result: [@[Fn@Int [Int]] [fn [let x@String] $x]]]");
+    let errors = check_err("[result: [@[Fn@Int [Int]] [fn [let x@String] $x]]]").await;
     assert!(
         errors
             .iter()
@@ -3931,12 +4005,12 @@ fn test_lambda_param_inference_rejects_incompatible_annotation() {
 
 // -- Task 8: Zero-param polymorphic fix verification --
 
-#[test]
-fn test_zero_param_polymorphic_function_instantiation() {
+#[tokio::test]
+async fn test_zero_param_polymorphic_function_instantiation() {
     // Zero-param CALL-POLY must return *inst_ret* (instantiated), not *ret* (scheme-internal).
     // Without the fix, ret == inst_ret for concrete return types, but the instantiated copy
     // is the one whose type variables (if any) are fresh per-call-site.
-    let ty = result_field("[f: [fn@Int [] 42]]\n[result: [call $f]]", "result");
+    let ty = result_field("[f: [fn@Int [] 42]]\n[result: [call $f]]", "result").await;
     assert_eq!(
         ty,
         Type::Int,
@@ -3946,8 +4020,8 @@ fn test_zero_param_polymorphic_function_instantiation() {
 
 // -- Annotation fresh variable mapping per function --
 
-#[test]
-fn test_sibling_functions_with_shared_annotation_names() {
+#[tokio::test]
+async fn test_sibling_functions_with_shared_annotation_names() {
     // Bug: sibling functions in the same letrec dict that use the same annotation
     // name (e.g., @a) should NOT share type variables. Each function should get
     // its own fresh type variable for @a.
@@ -3959,7 +4033,7 @@ fn test_sibling_functions_with_shared_annotation_names() {
     //
     // After fix: f gets TypeVar("_t0", level) and g gets TypeVar("_t1", level).
     // Within each function, repeated uses of @a map to the same fresh var.
-    let result = check("[f: [fn [let x@a] $x]  g: [fn [let y@a] 42]]");
+    let result = check("[f: [fn [let x@a] $x]  g: [fn [let y@a] 42]]").await;
     assert!(
         result.is_ok(),
         "sibling functions with same annotation name should type check: {:?}",
@@ -3967,7 +4041,7 @@ fn test_sibling_functions_with_shared_annotation_names() {
     );
 
     // Verify that within a single function, repeated uses of @a map to the same variable
-    let result = check("[f: [fn [let x@a  y@a] $x]]");
+    let result = check("[f: [fn [let x@a  y@a] $x]]").await;
     assert!(
         result.is_ok(),
         "repeated annotation @a within single function should use same type variable: {:?}",
@@ -3975,8 +4049,8 @@ fn test_sibling_functions_with_shared_annotation_names() {
     );
 }
 
-#[test]
-fn test_annotation_fresh_vars_are_independent_across_siblings() {
+#[tokio::test]
+async fn test_annotation_fresh_vars_are_independent_across_siblings() {
     // Each sibling function should have independent type variables for its annotations.
     // This test ensures that type constraints in one function don't leak to another.
     //
@@ -3986,7 +4060,7 @@ fn test_annotation_fresh_vars_are_independent_across_siblings() {
     // const42 should be polymorphic: ∀a. Fn(a → Int)
     //
     // The @a in id and the @a in const42 must not interfere with each other.
-    let ty = infer("[id: [fn [let x@a] $x]  const42: [fn [let y@a] 42]]");
+    let ty = infer("[id: [fn [let x@a] $x]  const42: [fn [let y@a] 42]]").await;
     match ty {
         Type::Record(Row { fields, .. }) => {
             // Verify both functions exist
@@ -4010,8 +4084,8 @@ fn test_annotation_fresh_vars_are_independent_across_siblings() {
     }
 }
 
-#[test]
-fn test_annotation_level_monotonicity() {
+#[tokio::test]
+async fn test_annotation_level_monotonicity() {
     // Test that resolve_type_name respects level lowering monotonicity (Kiselyov 2013).
     // When the same annotation name is used multiple times in a function and unification
     // lowers the level between references, the level must not be reset.
@@ -4025,7 +4099,7 @@ fn test_annotation_level_monotonicity() {
     // were violated, generalization might fail or produce incorrect types.
 
     // Case 1: Two params share the same annotation name
-    let ty = infer("[f: [fn [let x@a y@a] $x]]");
+    let ty = infer("[f: [fn [let x@a y@a] $x]]").await;
     match ty {
         Type::Record(Row { fields, .. }) => {
             match fields.get("f") {
@@ -4046,7 +4120,7 @@ fn test_annotation_level_monotonicity() {
     }
 
     // Case 2: Return annotation reuses param annotation
-    let ty = infer("[f: [fn@a [let x@a] $x]]");
+    let ty = infer("[f: [fn@a [let x@a] $x]]").await;
     match ty {
         Type::Record(Row { fields, .. }) => {
             match fields.get("f") {
@@ -4069,7 +4143,7 @@ fn test_annotation_level_monotonicity() {
     }
 
     // Case 3: Generalization should succeed despite multiple uses of same annotation
-    let env = doc_env("[f: [fn [let x@a y@a] $x]]");
+    let env = doc_env("[f: [fn [let x@a y@a] $x]]").await;
     let f_scheme = env.get("f").expect("f should be in env");
     assert!(
         !f_scheme.type_vars.is_empty(),
@@ -4078,15 +4152,15 @@ fn test_annotation_level_monotonicity() {
     );
 }
 
-#[test]
-fn test_polymorphic_function_call_no_double_instantiation() {
+#[tokio::test]
+async fn test_polymorphic_function_call_no_double_instantiation() {
     // This test verifies that calling a polymorphic function from the environment
     // only instantiates once (not VAR-POLY + CALL-POLY double instantiation).
     // The optimization special-cases VarRef in Call expressions for polymorphic schemes.
 
     // Test with multiple calls to the same polymorphic function across documents
     // In new syntax, string literals require quotes.
-    let ty = result_type("[id: [fn [let x@a] $x]]\n[r1: [call $id 42]  r2: [call $id \"hello\"]]");
+    let ty = result_type("[id: [fn [let x@a] $x]]\n[r1: [call $id 42]  r2: [call $id \"hello\"]]").await;
 
     match ty {
         Type::Record(Row { fields, .. }) => {
@@ -4112,8 +4186,8 @@ fn test_polymorphic_function_call_no_double_instantiation() {
 
 // -- CALL-POLY state.subst constraint test --
 
-#[test]
-fn test_call_poly_end_to_end_dot_access_resolution() {
+#[tokio::test]
+async fn test_call_poly_end_to_end_dot_access_resolution() {
     // Task 7: Regression test for `state.subst.apply()` in the CALL-POLY arm of
     // check_call_with_scheme and check_call.
     //
@@ -4172,7 +4246,8 @@ fn test_call_poly_end_to_end_dot_access_resolution() {
     let ty = result_field(
         "[id: [fn [let x@a] $x]]\n[data: [name: \"hello\"]]\n[result: [call $id $data.name]]",
         "result",
-    );
+    )
+    .await;
     // Polymorphic call preserves literal type from dot-access
     assert_eq!(
             ty,
@@ -4183,8 +4258,8 @@ fn test_call_poly_end_to_end_dot_access_resolution() {
 
 // -- CALL-POLY state.subst isolation test (cross-document boundary) --
 
-#[test]
-fn test_call_poly_state_subst_isolation() {
+#[tokio::test]
+async fn test_call_poly_state_subst_isolation() {
     // Cross-document regression test for `state.subst.apply()` in the CALL-POLY arm.
     //
     // SCENARIO: Two documents separated by `---`. Document 1 contains a single dict with
@@ -4246,7 +4321,8 @@ fn test_call_poly_state_subst_isolation() {
     let env = file_env(
         // In new syntax, string literals require quotes.
         "[id: [fn [let x@a] $x]  data: [name: \"hello\"]]\n---\n[result: [call $id $data.name]]",
-    );
+    )
+    .await;
     let result_ty = env
         .get("result")
         .expect("result should be in env after document 2")
@@ -4262,8 +4338,8 @@ fn test_call_poly_state_subst_isolation() {
 
 // -- Type::Unknown callee positional arg type_map population --
 
-#[test]
-fn test_call_any_callee_populates_type_map_for_positional_args() {
+#[tokio::test]
+async fn test_call_any_callee_populates_type_map_for_positional_args() {
     // Regression test for the Type::Unknown arm in check_call and check_call_with_scheme.
     //
     // When the callee resolves to Type::Unknown (e.g., a variable bound to Any in the env),
@@ -4301,7 +4377,8 @@ fn test_call_any_callee_populates_type_map_for_positional_args() {
         &mut state,
         &mut Vec::new(),
         &mut Some(&mut type_map),
-    );
+    )
+    .await;
 
     // The call to an Any-typed function returns Any.
     assert_eq!(
@@ -4337,8 +4414,8 @@ fn test_call_any_callee_populates_type_map_for_positional_args() {
     );
 }
 
-#[test]
-fn test_check_call_mono_subst_apply_documented() {
+#[tokio::test]
+async fn test_check_call_mono_subst_apply_documented() {
     // Documents that CALL-MONO in check_call uses state.subst.apply(ret) for defensive
     // consistency (sprint row-unification-h), while check_call_with_scheme (which always
     // takes the CALL-POLY path) has always used it.
@@ -4367,7 +4444,7 @@ fn test_check_call_mono_subst_apply_documented() {
 
     // Verify current behavior: CALL-MONO in check_call with a monomorphic inline lambda
     // Function body IntLiteral(42) is preserved as the return type
-    let ty = result_field("[f: [fn [let x@Int] 42]]\n[result: [call $f 1]]", "result");
+    let ty = result_field("[f: [fn [let x@Int] 42]]\n[result: [call $f 1]]", "result").await;
     assert_eq!(
         ty,
         Type::IntLiteral(42),
@@ -4378,7 +4455,7 @@ fn test_check_call_mono_subst_apply_documented() {
     // (CALL-MONO was deleted from check_call_with_scheme in cycle-findings-c36-a Task 2,
     // since instantiate_scheme always produces fresh TypeVars making CALL-MONO unreachable)
     // Polymorphic calls preserve literal types
-    let ty = result_field("[id: [fn [let x@a] $x]]\n[result: [call $id 42]]", "result");
+    let ty = result_field("[id: [fn [let x@a] $x]]\n[result: [call $id 42]]", "result").await;
     assert_eq!(
         ty,
         Type::IntLiteral(42),
@@ -4388,8 +4465,8 @@ fn test_check_call_mono_subst_apply_documented() {
 
 // -- Variadic param type inference --
 
-#[test]
-fn test_variadic_param_type_is_any() {
+#[tokio::test]
+async fn test_variadic_param_type_is_any() {
     // Variadic params collect extra positional args into a Seq(T) where T is inferred.
     //
     // Grammar: variadic_param = @{ "..." ~ param_name } — no @annotation syntax.
@@ -4397,7 +4474,7 @@ fn test_variadic_param_type_is_any() {
     // Seq(TypeVar) for the variadic slot.
 
     // Basic variadic: single param, collects all positional args as a seq
-    let ty = result_field("[f: [fn [let ...rest] $rest]]", "f");
+    let ty = result_field("[f: [fn [let ...rest] $rest]]", "f").await;
     match ty {
         Type::Function { params, .. } => {
             assert_eq!(params.len(), 1, "variadic function should have 1 param");
@@ -4412,7 +4489,7 @@ fn test_variadic_param_type_is_any() {
 
     // Variadic with annotated params before it: non-variadic params keep their annotation,
     // variadic param is Any regardless
-    let ty = result_field("[f: [fn [let a@Int b@Int ...rest] $a]]", "f");
+    let ty = result_field("[f: [fn [let a@Int b@Int ...rest] $a]]", "f").await;
     match ty {
         Type::Function { params, .. } => {
             assert_eq!(params.len(), 3, "function should have 3 params");
@@ -4433,14 +4510,14 @@ fn test_variadic_param_type_is_any() {
     }
 }
 
-#[test]
-fn test_variadic_param_env_binding_is_any() {
+#[tokio::test]
+async fn test_variadic_param_env_binding_is_any() {
     // The env binding for a variadic param inside the function body is Seq(T).
     //
     // If the body references $rest, its inferred type comes from the env binding.
     // Returning $rest should give the function a Seq(T) return type.
 
-    let ty = result_field("[f: [fn [let x ...rest] $rest]]", "f");
+    let ty = result_field("[f: [fn [let x ...rest] $rest]]", "f").await;
     match ty {
         Type::Function { ret, .. } => {
             assert!(
@@ -4454,8 +4531,8 @@ fn test_variadic_param_env_binding_is_any() {
 
 // -- check_call_with_scheme substitution threading (Algorithm W) --
 
-#[test]
-fn test_call_poly_subst_seeded_and_merged() {
+#[tokio::test]
+async fn test_call_poly_subst_seeded_and_merged() {
     // Regression test for two Algorithm W substitution threading bugs in
     // check_call_with_scheme (Damas & Milner 1982, Theorem 2):
     //
@@ -4484,7 +4561,8 @@ fn test_call_poly_subst_seeded_and_merged() {
     let ty = result_field(
             "[id: [fn [let x@a] $x]]\n[data: [name: \"hello\"]]\n[result: [call $id $data]]\n[n: $result.name]",
             "n",
-        );
+        )
+        .await;
     // Polymorphic call preserves literal type through dot-access
     assert_eq!(
             ty,
@@ -4497,7 +4575,8 @@ fn test_call_poly_subst_seeded_and_merged() {
     let ty = result_field(
         "[id: [fn [let x@a] $x]]\n[data: [name: \"hello\"]]\n[result: [call $id $data]]",
         "result",
-    );
+    )
+    .await;
     match ty {
         Type::Record(Row { ref fields, .. }) => {
             // Polymorphic call preserves literal type for record fields
@@ -4511,8 +4590,8 @@ fn test_call_poly_subst_seeded_and_merged() {
     }
 }
 
-#[test]
-fn test_call_poly_subst_merge_constrains_forward_ref() {
+#[tokio::test]
+async fn test_call_poly_subst_merge_constrains_forward_ref() {
     // Test that check_call_with_scheme's substitution merge propagates constraints
     // from a polymorphic call to forward-referenced letrec entries.
     //
@@ -4527,7 +4606,8 @@ fn test_call_poly_subst_merge_constrains_forward_ref() {
     let ty = result_field(
         "[same: [fn [let x@a y@a] $x]]\n[result: [call $same $value 42]  value: 42]",
         "result",
-    );
+    )
+    .await;
     // Polymorphic call preserves literal type
     assert_eq!(
         ty,
@@ -4540,7 +4620,8 @@ fn test_call_poly_subst_merge_constrains_forward_ref() {
     let ty = result_field(
         "[same: [fn [let x@a y@a] $x]]\n[result: [call $same $value 42]  value: 42]",
         "value",
-    );
+    )
+    .await;
     assert_eq!(
         ty,
         Type::IntLiteral(42),
@@ -4548,8 +4629,8 @@ fn test_call_poly_subst_merge_constrains_forward_ref() {
     );
 }
 
-#[test]
-fn test_call_poly_subst_seed_resolves_access_chain() {
+#[tokio::test]
+async fn test_call_poly_subst_seed_resolves_access_chain() {
     // Test that check_call_with_scheme's seeded substitution correctly resolves
     // arg_ty through state.subst bindings from prior check_dot_access calls.
     //
@@ -4566,7 +4647,8 @@ fn test_call_poly_subst_seed_resolves_access_chain() {
     let ty = result_field(
             "[id: [fn [let x@a] $x]]\n[data: [name: \"hello\"]]\n[name: $data.name]\n[result: [call $id $name]]",
             "result",
-        );
+        )
+        .await;
     // Polymorphic call preserves literal type through access chain
     assert_eq!(
             ty,
@@ -4577,8 +4659,8 @@ fn test_call_poly_subst_seed_resolves_access_chain() {
 
 // -- check_call (non-scheme) CALL-POLY substitution threading (Algorithm W) --
 
-#[test]
-fn test_check_call_nonscheme_poly_subst_seeded_and_merged() {
+#[tokio::test]
+async fn test_check_call_nonscheme_poly_subst_seeded_and_merged() {
     // Mirror of test_call_poly_subst_seeded_and_merged for check_call's CALL-POLY path.
     //
     // check_call_with_scheme handles [call $varref ...] when $varref is a polymorphic
@@ -4597,7 +4679,8 @@ fn test_check_call_nonscheme_poly_subst_seeded_and_merged() {
     let ty = result_field(
         "[data: [name: \"hello\"]]\n[result: [call [fn [let x@a] $x] $data]]\n[n: $result.name]",
         "n",
-    );
+    )
+    .await;
     // Polymorphic call preserves literal type through cross-entry dot-access
     assert_eq!(
         ty,
@@ -4609,7 +4692,8 @@ fn test_check_call_nonscheme_poly_subst_seeded_and_merged() {
     let ty = result_field(
         "[data: [name: \"hello\"]]\n[result: [call [fn [let x@a] $x] $data]]",
         "result",
-    );
+    )
+    .await;
     match ty {
         Type::Record(Row { ref fields, .. }) => {
             // Polymorphic call preserves literal type in record field
@@ -4623,8 +4707,8 @@ fn test_check_call_nonscheme_poly_subst_seeded_and_merged() {
     }
 }
 
-#[test]
-fn test_check_call_nonscheme_poly_subst_seed_resolves_access_chain() {
+#[tokio::test]
+async fn test_check_call_nonscheme_poly_subst_seed_resolves_access_chain() {
     // Mirror of test_call_poly_subst_seed_resolves_access_chain for check_call's
     // CALL-POLY path.
     //
@@ -4643,7 +4727,8 @@ fn test_check_call_nonscheme_poly_subst_seed_resolves_access_chain() {
     let ty = result_field(
         "[data: [name: \"hello\"]]\n[name: $data.name]\n[result: [call [fn [let x@a] $x] $name]]",
         "result",
-    );
+    )
+    .await;
     // Polymorphic call preserves literal type through access-chain seed
     assert_eq!(
         ty,
@@ -4652,8 +4737,8 @@ fn test_check_call_nonscheme_poly_subst_seed_resolves_access_chain() {
     );
 }
 
-#[test]
-fn test_non_dict_record_preserves_polymorphic_schemes() {
+#[tokio::test]
+async fn test_non_dict_record_preserves_polymorphic_schemes() {
     let input = r#"
             [make-record: [fn [let] [id: [fn [let x@a] $x]]]]
             ---
@@ -4662,11 +4747,11 @@ fn test_non_dict_record_preserves_polymorphic_schemes() {
             [result: [call $id 42]]
         "#;
 
-    check(input).expect("should type-check successfully");
+    check(input).await.expect("should type-check successfully");
 }
 
-#[test]
-fn test_dict_vs_non_dict_scheme_preservation_parity() {
+#[tokio::test]
+async fn test_dict_vs_non_dict_scheme_preservation_parity() {
     let dict_input = r#"
             [id: [fn [let x@a] $x]]
             ---
@@ -4681,14 +4766,14 @@ fn test_dict_vs_non_dict_scheme_preservation_parity() {
             [result: [call $id 42]]
         "#;
 
-    check(dict_input).expect("dict case should type-check");
-    check(non_dict_input).expect("non-dict case should type-check");
+    check(dict_input).await.expect("dict case should type-check");
+    check(non_dict_input).await.expect("non-dict case should type-check");
 }
 
 // -- Level restoration on error --
 
-#[test]
-fn test_level_restored_after_non_dict_record_error() {
+#[tokio::test]
+async fn test_level_restored_after_non_dict_record_error() {
     // Regression test for level restoration in typecheck_document when infer_expr fails
     // in the Err branch of the non-Dict, non-last expression path in `typecheck_document`.
     //
@@ -4731,7 +4816,8 @@ fn test_level_restored_after_non_dict_record_error() {
         &mut None,
         &pipeline_type,
         &named_types,
-    );
+    )
+    .await;
     if !errors.is_empty() {
         panic!("first document should type-check, got errors: {:?}", errors);
     }
@@ -4749,7 +4835,8 @@ fn test_level_restored_after_non_dict_record_error() {
         &mut None,
         &pipeline_type,
         &named_types,
-    );
+    )
+    .await;
     assert!(!errors.is_empty(), "second document should fail");
     assert!(
         errors[0].message().contains("undefined variable"),
@@ -4771,7 +4858,8 @@ fn test_level_restored_after_non_dict_record_error() {
         &mut None,
         &pipeline_type,
         &named_types,
-    );
+    )
+    .await;
     if !errors.is_empty() {
         panic!(
             "third document should type-check correctly after level restoration, got errors: {:?}",
@@ -4788,11 +4876,11 @@ fn test_level_restored_after_non_dict_record_error() {
 
 // -- Malformed composite type annotations --
 
-#[test]
-fn test_annotation_malformed_function_missing_params() {
+#[tokio::test]
+async fn test_annotation_malformed_function_missing_params() {
     // Regression test for error handling of malformed Fn@ annotations.
     // [Fn@Int] has only 1 entry, but function types require exactly 2.
-    let errors = check_err("[fn [let f@[type: [Fn@Int]]] $f]");
+    let errors = check_err("[fn [let f@[type: [Fn@Int]]] $f]").await;
     assert!(
         errors
             .iter()
@@ -4802,11 +4890,11 @@ fn test_annotation_malformed_function_missing_params() {
     );
 }
 
-#[test]
-fn test_annotation_malformed_function_non_dict_params() {
+#[tokio::test]
+async fn test_annotation_malformed_function_non_dict_params() {
     // Function type with non-bracket parameter list should produce clear error.
     // [Fn@Int 42] — second entry is not a bracket expression.
-    let errors = check_err("[fn [let f@[type: [Fn@Int 42]]] $f]");
+    let errors = check_err("[fn [let f@[type: [Fn@Int 42]]] $f]").await;
     assert!(
         errors.iter().any(|e| e
             .message()
@@ -4815,11 +4903,11 @@ fn test_annotation_malformed_function_non_dict_params() {
     );
 }
 
-#[test]
-fn test_annotation_malformed_nested_record_int_literal() {
+#[tokio::test]
+async fn test_annotation_malformed_nested_record_int_literal() {
     // Nested record type with integer literal instead of type name should produce error.
     // IntLiteral (42) is not a valid type expression.
-    let errors = check_err("[fn [let p@[type: [outer: [inner: 42]]]] $p]");
+    let errors = check_err("[fn [let p@[type: [outer: [inner: 42]]]] $p]").await;
     assert!(
         errors.iter().any(|e| e
             .message()
@@ -4830,8 +4918,8 @@ fn test_annotation_malformed_nested_record_int_literal() {
 
 // -- Open-record subtype rejection --
 
-#[test]
-fn test_open_record_not_subtype_of_closed() {
+#[tokio::test]
+async fn test_open_record_not_subtype_of_closed() {
     // Under BAS width subtyping (RowVar step 2): an open record [x: Int, ...] IS allowed
     // as an argument to a function expecting closed [x: Int]. The BAS rule
     // (RowTail::RowVar, RowTail::Empty) => true means the open record satisfies the closed
@@ -4846,13 +4934,14 @@ fn test_open_record_not_subtype_of_closed() {
              ---
              [g: [fn [let r@[type: [x: Int ...]]] [call $f $r]]]",
     )
+    .await
     .unwrap();
 }
 
 // -- Arity-mismatch counting (positional + named) --
 
-#[test]
-fn test_arity_mismatch_shows_counts() {
+#[tokio::test]
+async fn test_arity_mismatch_shows_counts() {
     // Arity mismatch errors show positional and named arg counts separately.
     //
     // Uses multi-document input so f's type is fully resolved before the call site
@@ -4864,7 +4953,8 @@ fn test_arity_mismatch_shows_counts() {
         "[f: [fn [let x] $x]]
              ---
              [result: [call $f]]",
-    );
+    )
+    .await;
     assert!(
         errors
             .iter()
@@ -4873,8 +4963,8 @@ fn test_arity_mismatch_shows_counts() {
     );
 }
 
-#[test]
-fn test_arity_mismatch_named_args_counted() {
+#[tokio::test]
+async fn test_arity_mismatch_named_args_counted() {
     // Named args count toward arity: [call $f x: 1] with f: [fn [x] $x] has
     // 1 param, 0 positional args, 1 named arg → total_supplied = 1 = params.len() → no error.
     //
@@ -4883,7 +4973,8 @@ fn test_arity_mismatch_named_args_counted() {
         "[f: [fn [let x] $x]]
              ---
              [result: [call $f x: 42]]",
-    );
+    )
+    .await;
     // Named arg `x: 42` fills the one param slot — no arity error expected.
     assert!(
         result.is_ok(),
@@ -4896,7 +4987,8 @@ fn test_arity_mismatch_named_args_counted() {
         "[f: [fn [let x@Int] $x]]
              ---
              [result: [call $f x: \"wrong-type\"]]",
-    );
+    )
+    .await;
     assert!(
         errors
             .iter()
@@ -4908,13 +5000,13 @@ fn test_arity_mismatch_named_args_counted() {
 
 // -- check_call TypeVar arm (letrec forward references) --
 
-#[test]
-fn test_check_call_forward_ref_function() {
+#[tokio::test]
+async fn test_check_call_forward_ref_function() {
     // Letrec forward reference: $f is called before its definition is inferred.
     // During Pass 3, $f has type TypeVar (from Pass 1). Without the TypeVar arm
     // in check_call, this produces a spurious "expected function type" error.
     // With the fix, check_call returns Any for unbound TypeVar callees.
-    let result = check("[result: [call $f 42]  f: [fn [let x] $x]]");
+    let result = check("[result: [call $f 42]  f: [fn [let x] $x]]").await;
     assert!(
         result.is_ok(),
         "forward-reference function call should not produce type error, got: {:?}",
@@ -4922,11 +5014,11 @@ fn test_check_call_forward_ref_function() {
     );
 }
 
-#[test]
-fn test_check_call_forward_ref_mutual_recursion() {
+#[tokio::test]
+async fn test_check_call_forward_ref_mutual_recursion() {
     // Mutual recursion pattern: $g calls $f which is defined later.
     // Both are forward references during their respective inference passes.
-    let result = check("[g: [fn [let x] [call $f $x]]  f: [fn [let y] $y]]");
+    let result = check("[g: [fn [let x] [call $f $x]]  f: [fn [let y] $y]]").await;
     assert!(
         result.is_ok(),
         "mutual forward-reference calls should typecheck, got: {:?}",
@@ -4936,8 +5028,8 @@ fn test_check_call_forward_ref_mutual_recursion() {
 
 // -- Parameterized type aliases --
 
-#[test]
-fn test_parameterized_type_alias_single_param() {
+#[tokio::test]
+async fn test_parameterized_type_alias_single_param() {
     // [type [let a] [first: a  second: a]] with [@[Pair Int] ...]
     // Currently: parameterized type application in annotations produces App(TyCon("Pair"), Int)
     // which doesn't unify with the inferred record type. This is a known limitation.
@@ -4945,7 +5037,8 @@ fn test_parameterized_type_alias_single_param() {
     let result = check(
         "[Pair: [type [let a] [first: a  second: a]]
              pair: [fn@[Pair Int] [let] [first: 1  second: 2]]]",
-    );
+    )
+    .await;
     // If this produces a type error, that's expected current behavior.
     // If it passes, even better - parameterized alias expansion is working.
     assert!(
@@ -4954,27 +5047,29 @@ fn test_parameterized_type_alias_single_param() {
     );
 }
 
-#[test]
-fn test_parameterized_type_alias_multiple_params() {
+#[tokio::test]
+async fn test_parameterized_type_alias_multiple_params() {
     // [type [let a b] [first: a  second: b]] with [@[Pair Int String] ...]
     // Test that parameterized type alias with multiple parameters type-checks correctly.
     let result = check(
         "[Pair: [type [let a b] [first: a  second: b]]
              pair: [fn@[Pair Int String] [let] [first: 1  second: \"hello\"]]]",
-    );
+    )
+    .await;
     assert!(
         result.is_ok(),
         "parameterized alias with two params should type-check without errors, got: {result:?}"
     );
 }
 
-#[test]
-fn test_parameterized_type_alias_arity_mismatch() {
+#[tokio::test]
+async fn test_parameterized_type_alias_arity_mismatch() {
     // [Pair Int] when Pair expects 2 params should error
     let errors = check_err(
         "[Pair: [type [let a b] [first: a  second: b]]
              pair: [@[Pair Int] [first: 1  second: 2]]]",
-    );
+    )
+    .await;
     assert!(
         errors
             .iter()
@@ -4983,51 +5078,54 @@ fn test_parameterized_type_alias_arity_mismatch() {
     );
 }
 
-#[test]
-fn test_parameterized_type_alias_zero_params_backward_compat() {
+#[tokio::test]
+async fn test_parameterized_type_alias_zero_params_backward_compat() {
     // [type [first: Int  second: Int]] without params should work
     assert!(check(
         "[Pair: [type [first: Int  second: Int]]
              pair: [fn@Pair [let] [first: 1  second: 2]]]"
     )
+    .await
     .is_ok());
 }
 
-#[test]
-fn test_parameterized_type_alias_with_row_variable() {
+#[tokio::test]
+async fn test_parameterized_type_alias_with_row_variable() {
     // [type [let a] [name: String  ...a]] should allow row variable in tail.
     // Test that parameterized type alias with row variable type-checks correctly.
     let input = "[Extensible: [type [let a] [name: String  ...a]]
              make: [fn@[Extensible r] [let] [name: \"test\"  age: 42]]]";
     assert!(
-        check(input).is_ok(),
+        check(input).await.is_ok(),
         "parameterized alias with row variable should typecheck"
     );
 }
 
-#[test]
-fn test_parameterized_type_alias_nested_usage() {
+#[tokio::test]
+async fn test_parameterized_type_alias_nested_usage() {
     // Using a parameterized alias inside another parameterized alias
     // Test that nested parameterized type aliases type-check correctly.
     let result = check(
         "[Pair: [type [let a] [first: a  second: a]]
              Nested: [type [let b] [inner: [Pair b]  outer: b]]
              make: [fn@[Nested Int] [let] [inner: [first: 1  second: 2]  outer: 3]]]",
-    );
+    )
+    .await;
     assert!(
         result.is_ok(),
         "nested parameterized type aliases should type-check without errors, got: {result:?}"
     );
 }
 
-#[test]
-fn test_apply_type_alias_substitution_nominal_variant() {
+#[tokio::test]
+async fn test_apply_type_alias_substitution_nominal_variant() {
     // B-356: apply_type_alias_substitution must recurse into NominalVariant fields
     // [type [let t] [Some value: t] None] with t=Int should substitute Int for t in the field type
     let env = doc_env(
         "[Option: [type [let t] [Some value: t] None]
          x: [Some value: 42]]",
-    );
+    )
+    .await;
     let opt_alias = env
         .get_type_alias("Option")
         .expect("Option alias should exist");
@@ -5060,13 +5158,13 @@ fn test_apply_type_alias_substitution_nominal_variant() {
     }
 }
 
-#[test]
-fn test_apply_type_alias_substitution_preserves_row_tail_uniform() {
+#[tokio::test]
+async fn test_apply_type_alias_substitution_preserves_row_tail_uniform() {
     // B-356: apply_type_alias_substitution must preserve RowTail::Uniform (not hardcode Empty)
     // [type [let k v] {_@k: v}] should preserve the Uniform tail through substitution
     use crate::type_def::RowTail;
 
-    let env = doc_env("[MapLike: [type [let k v] [open: true  _@k: v]]]");
+    let env = doc_env("[MapLike: [type [let k v] [open: true  _@k: v]]]").await;
     let alias = env
         .get_type_alias("MapLike")
         .expect("MapLike alias should exist");
@@ -5096,19 +5194,19 @@ fn test_apply_type_alias_substitution_preserves_row_tail_uniform() {
     }
 }
 
-#[test]
-fn test_check_call_forward_ref_result_type() {
+#[tokio::test]
+async fn test_check_call_forward_ref_result_type() {
     // [fn [x] $x] has Unknown unannotated param. Calling it with 42 returns Unknown
     // (gradual semantics: Unknown propagates through calls).
-    let ty = result_field("[result: [call $f 42]  f: [fn [let x] $x]]", "result");
+    let ty = result_field("[result: [call $f 42]  f: [fn [let x] $x]]", "result").await;
     assert_eq!(ty, Type::Unknown);
 }
 
-#[test]
-fn test_check_call_bound_typevar_resolves_to_function() {
+#[tokio::test]
+async fn test_check_call_bound_typevar_resolves_to_function() {
     // [fn [x] $x] has Unknown unannotated param. Calling it with 42 returns Unknown
     // (gradual semantics: Unknown propagates through calls).
-    let ty = result_field("[f: [fn [let x] $x]  result: [call $f 42]]", "result");
+    let ty = result_field("[f: [fn [let x] $x]  result: [call $f 42]]", "result").await;
     assert_eq!(
         ty,
         Type::Unknown,
@@ -5118,8 +5216,8 @@ fn test_check_call_bound_typevar_resolves_to_function() {
 
 // -- Pass 3b or_insert unification --
 
-#[test]
-fn test_pass3b_state_subst_merge_unifies_overlapping_keys() {
+#[tokio::test]
+async fn test_pass3b_state_subst_merge_unifies_overlapping_keys() {
     // When state.subst and local subst both bind the same TypeVar (e.g., from
     // an access-chain constraint generated during value inference), the merge
     // should unify the two bindings instead of discarding the state.subst one.
@@ -5131,7 +5229,7 @@ fn test_pass3b_state_subst_merge_unifies_overlapping_keys() {
     // result must come FIRST to create a forward reference — if data comes first,
     // $data is already concrete when result is processed and no collision occurs.
     // In new syntax, string literals require quotes.
-    let ty = result_field("[result: $data.name  data: [name: \"hello\"]]", "result");
+    let ty = result_field("[result: $data.name  data: [name: \"hello\"]]", "result").await;
     assert_eq!(
         ty,
         Type::StringLiteral("hello".to_string()),
@@ -5141,8 +5239,8 @@ fn test_pass3b_state_subst_merge_unifies_overlapping_keys() {
 
 // -- resolve_type_assert state.subst.apply() regression --
 
-#[test]
-fn test_resolve_type_assert_subst_apply_is_load_bearing() {
+#[tokio::test]
+async fn test_resolve_type_assert_subst_apply_is_load_bearing() {
     // Regression test for `state.subst.apply(&expected)` at the end of resolve_type_assert.
     //
     // The apply at line ~1482 ensures that TypeVars inside `expected` are resolved through
@@ -5182,7 +5280,7 @@ fn test_resolve_type_assert_subst_apply_is_load_bearing() {
     // Case 1: TypeAssert with Int annotation returns Int (not IntLiteral(42))
     // This verifies the apply path returns the expected type (widening behavior).
     // Without apply (for concrete types), result is identical — but this exercises the code path.
-    let ty = result_field("[x: [@Int 42]]", "x");
+    let ty = result_field("[x: [@Int 42]]", "x").await;
     assert_eq!(
         ty,
         Type::Int,
@@ -5195,7 +5293,7 @@ fn test_resolve_type_assert_subst_apply_is_load_bearing() {
     // [@[type: Int  default: 42] $missing]: $missing is undefined, check_expr fails,
     // default 42 is inferred as IntLiteral(42), is_subtype(IntLiteral, Int) = true,
     // return apply(Int) = Int.
-    let ty = result_field("[x: [@[type: Int  default: 42] $missing]]", "x");
+    let ty = result_field("[x: [@[type: Int  default: 42] $missing]]", "x").await;
     assert_eq!(
             ty,
             Type::Int,
@@ -5209,7 +5307,7 @@ fn test_resolve_type_assert_subst_apply_is_load_bearing() {
     // is_subtype passes: {x:1, y:2} <: {x:Int, ...ρ1} (open row) AND <: {y:Int, ...ρ2}.
     // state.subst.apply() resolves the ρ row vars to their bound values.
     // The apply is idempotent — this guards against regression where apply corrupts types.
-    let ty = result_field("[p: [@[type: [x: Int  y: Int]] [x: 1  y: 2]]]", "p");
+    let ty = result_field("[p: [@[type: [x: Int  y: Int]] [x: 1  y: 2]]]", "p").await;
     // The returned type is the annotation (Intersection) after substitution.
     // Use assert_has_field to check for the annotated field types regardless of form.
     assert_has_field(&ty, "x", &Type::Int);
@@ -5218,8 +5316,8 @@ fn test_resolve_type_assert_subst_apply_is_load_bearing() {
 
 // -- check_call_with_scheme func span recording --
 
-#[test]
-fn test_check_call_with_scheme_records_func_span_in_type_map() {
+#[tokio::test]
+async fn test_check_call_with_scheme_records_func_span_in_type_map() {
     // Regression test for func span recording in check_call_with_scheme.
     //
     // When a polymorphic function is called via VarRef, infer_expr routes to
@@ -5261,7 +5359,8 @@ fn test_check_call_with_scheme_records_func_span_in_type_map() {
         &mut Some(&mut type_map),
         &pipeline_type,
         &named_types,
-    );
+    )
+    .await;
     if !errors.is_empty() {
         panic!("document 1 should type-check, got errors: {:?}", errors);
     }
@@ -5277,7 +5376,8 @@ fn test_check_call_with_scheme_records_func_span_in_type_map() {
         &mut Some(&mut type_map),
         &pipeline_type,
         &named_types,
-    );
+    )
+    .await;
     if !errors.is_empty() {
         panic!("document 2 should type-check, got errors: {:?}", errors);
     }
@@ -5351,8 +5451,8 @@ fn test_check_call_with_scheme_records_func_span_in_type_map() {
 
 // -- check_surface_expr lambda arity mismatch --
 
-#[test]
-fn test_check_expr_lambda_arity_mismatch() {
+#[tokio::test]
+async fn test_check_expr_lambda_arity_mismatch() {
     // Lambda with 2 params checked against a Fn type expecting 1 param triggers the
     // arity check inside check_surface_expr's lambda checking mode.
     //
@@ -5377,7 +5477,8 @@ fn test_check_expr_lambda_arity_mismatch() {
         &mut state,
         &mut Vec::new(),
         &mut None,
-    );
+    )
+    .await;
 
     assert!(
         result.is_err(),
@@ -5393,8 +5494,8 @@ fn test_check_expr_lambda_arity_mismatch() {
     );
 }
 
-#[test]
-fn test_double_typecheck_no_panic() {
+#[tokio::test]
+async fn test_double_typecheck_no_panic() {
     // Regression test for LSP double-typecheck panic risk.
     // resolve_type_assert creates no persistent state in the AST — the RefCell used
     // for write-once tracking is a local variable created fresh in each infer_surface_expr
@@ -5410,7 +5511,7 @@ fn test_double_typecheck_no_panic() {
 
     // First typecheck: should succeed
     let (errors1, type_map1, _doc_map1, _scheme_map1, _diagnostics1) =
-        typecheck_surface_program(&program, crate::imports::build_prelude_env());
+        typecheck_surface_program(&program, crate::imports::build_prelude_env()).await;
     assert!(
         errors1.is_empty() || errors1.iter().all(|e| !e.message().contains("panic")),
         "First typecheck should not panic"
@@ -5422,7 +5523,7 @@ fn test_double_typecheck_no_panic() {
 
     // Second typecheck on the same AST: should not panic — no shared mutable state in AST
     let (errors2, type_map2, _doc_map2, _scheme_map2, _diagnostics2) =
-        typecheck_surface_program(&program, crate::imports::build_prelude_env());
+        typecheck_surface_program(&program, crate::imports::build_prelude_env()).await;
     assert!(
         errors2.is_empty() || errors2.iter().all(|e| !e.message().contains("panic")),
         "Second typecheck should not panic"
@@ -5434,7 +5535,7 @@ fn test_double_typecheck_no_panic() {
 
     // Third typecheck to be extra sure
     let (errors3, _type_map3, _doc_map3, _scheme_map3, _diagnostics3) =
-        typecheck_surface_program(&program, crate::imports::build_prelude_env());
+        typecheck_surface_program(&program, crate::imports::build_prelude_env()).await;
     assert!(
         errors3.is_empty() || errors3.iter().all(|e| !e.message().contains("panic")),
         "Third typecheck should not panic"
@@ -5443,8 +5544,8 @@ fn test_double_typecheck_no_panic() {
 
 // -- Type::Error cascade prevention --
 
-#[test]
-fn test_error_recorded_in_type_map_on_failure() {
+#[tokio::test]
+async fn test_error_recorded_in_type_map_on_failure() {
     // When infer_expr fails on a sub-expression, Type::Error must be recorded in the
     // type_map for LSP hover so the parent expression sees <error> rather than nothing.
     //
@@ -5454,7 +5555,7 @@ fn test_error_recorded_in_type_map_on_failure() {
     let mut program = crate::parse(input).unwrap().program;
     crate::desugar::desugar_surface_program(&mut program);
     let (errors, type_map, _doc_map, _scheme_map, _diagnostics) =
-        typecheck_surface_program(&program, crate::imports::build_prelude_env());
+        typecheck_surface_program(&program, crate::imports::build_prelude_env()).await;
 
     // Must have an error (undefined variable)
     assert!(!errors.is_empty(), "expected type error for $undefined");
@@ -5469,15 +5570,15 @@ fn test_error_recorded_in_type_map_on_failure() {
     );
 }
 
-#[test]
-fn test_cascade_prevention_error_does_not_multiply_errors() {
+#[tokio::test]
+async fn test_cascade_prevention_error_does_not_multiply_errors() {
     // Cascade prevention: when a call argument fails inference, only the original
     // error should be reported — not a cascade of "wrong argument type" errors on top.
     //
     // [f: [fn [x@Int] $x]] called with $undefined (an undefined variable).
     // Without cascade prevention: two errors — (1) undefined variable, (2) arg type mismatch.
     // With cascade prevention: only one error — undefined variable.
-    let errors = check_err("[f: [fn [let x@Int] $x]]\n[result: [call $f $undefined]]");
+    let errors = check_err("[f: [fn [let x@Int] $x]]\n[result: [call $f $undefined]]").await;
 
     // Must have at least one error
     assert!(!errors.is_empty(), "expected at least one type error");
@@ -5504,8 +5605,8 @@ fn test_cascade_prevention_error_does_not_multiply_errors() {
     );
 }
 
-#[test]
-fn test_error_absorbed_in_unify_does_not_corrupt_substitution() {
+#[tokio::test]
+async fn test_error_absorbed_in_unify_does_not_corrupt_substitution() {
     // Verifies that unify(Error, TypeVar) does not bind the TypeVar, which would corrupt
     // subsequent inference. After cascade prevention records Error as an arg type, the
     // unification step must absorb it without touching the substitution.
@@ -5527,7 +5628,8 @@ fn test_error_absorbed_in_unify_does_not_corrupt_substitution() {
         &mut state,
         &mut constraints,
         span,
-    );
+    )
+    .await;
     assert!(result.is_ok(), "unify(TypeVar, Error) must succeed");
     assert!(
         subst.type_map.borrow().is_empty(),
@@ -5535,8 +5637,8 @@ fn test_error_absorbed_in_unify_does_not_corrupt_substitution() {
     );
 }
 
-#[test]
-fn test_calling_error_function_does_not_produce_t003() {
+#[tokio::test]
+async fn test_calling_error_function_does_not_produce_t003() {
     // B-180: calling a function typed as Error (e.g., because its definition failed
     // type-checking) should suppress the "expected function type, got <error>" T003
     // rather than cascading it to every call site. This tests the check_call path.
@@ -5553,7 +5655,7 @@ fn test_calling_error_function_does_not_produce_t003() {
     let mut program = crate::parse(input).unwrap().program;
     crate::desugar::desugar_surface_program(&mut program);
     let (errors, _type_map, _doc_map, _scheme_map, _diagnostics) =
-        typecheck_surface_program(&program, crate::imports::build_prelude_env());
+        typecheck_surface_program(&program, crate::imports::build_prelude_env()).await;
 
     // Should have an error about undefined variable inside `broken`
     let has_undefined = errors
@@ -5578,11 +5680,11 @@ fn test_calling_error_function_does_not_produce_t003() {
 
 // -- check_call_with_scheme error paths --
 
-#[test]
-fn test_check_call_with_scheme_arity_mismatch() {
+#[tokio::test]
+async fn test_check_call_with_scheme_arity_mismatch() {
     // Arity mismatch when calling a polymorphic scheme with wrong number of args.
     // The scheme has 2 params but we provide 1 positional arg → arity mismatch error.
-    let errors = check_err("[f: [fn [let x@a y@b] $x]]\n[result: [call $f 42]]");
+    let errors = check_err("[f: [fn [let x@a y@b] $x]]\n[result: [call $f 42]]").await;
     assert!(
         errors
             .iter()
@@ -5592,11 +5694,11 @@ fn test_check_call_with_scheme_arity_mismatch() {
     );
 }
 
-#[test]
-fn test_check_call_with_scheme_non_function_error() {
+#[tokio::test]
+async fn test_check_call_with_scheme_non_function_error() {
     // Calling a non-function scheme (type is Int, not Function).
     // check_call_with_scheme should produce "expected function type" error.
-    let errors = check_err("[x: 42]\n---\n[result: [call $x 1 2]]");
+    let errors = check_err("[x: 42]\n---\n[result: [call $x 1 2]]").await;
     assert!(
         errors
             .iter()
@@ -5608,8 +5710,8 @@ fn test_check_call_with_scheme_non_function_error() {
 
 // -- Builtin sequence types --
 
-#[test]
-fn test_builtin_seq_generators_return_seq_types() {
+#[tokio::test]
+async fn test_builtin_seq_generators_return_seq_types() {
     // Regression test for type-seq sprint: sequence-generating builtins should return App(TyCon("Seq"), ...).
     // Covers: $builtin-seq, $builtin-repeat, $builtin-cycle, $builtin-iterate, $builtin-unfold, $builtin-take
     // NOTE: $builtin-seq takes (head, tail) args — it's the primitive Seq cons operation.
@@ -5643,7 +5745,8 @@ fn test_builtin_seq_generators_return_seq_types() {
         &mut None,
         &empty_pipeline,
         &named_types,
-    );
+    )
+    .await;
     if !errors.is_empty() {
         panic!("typecheck should succeed, got errors: {:?}", errors);
     }
@@ -5693,12 +5796,12 @@ fn test_builtin_seq_generators_return_seq_types() {
 
 // -- merge/append RowVar regression --
 
-#[test]
-fn test_merge_no_rowvar_sharing_error() {
+#[tokio::test]
+async fn test_merge_no_rowvar_sharing_error() {
     // Regression test: merge [a: 1] [b: 2] should type-check without error.
     // Previous RowVar sharing bug would fail because the same row var appeared
     // in both params and return type of the builtin signature.
-    let result = check("[result: [merge [a: 1] [b: 2]]]");
+    let result = check("[result: [merge [a: 1] [b: 2]]]").await;
     assert!(
         result.is_ok(),
         "merge with simple records should type-check, got error: {:?}",
@@ -5706,12 +5809,12 @@ fn test_merge_no_rowvar_sharing_error() {
     );
 }
 
-#[test]
-fn test_append_no_rowvar_sharing_error() {
+#[tokio::test]
+async fn test_append_no_rowvar_sharing_error() {
     // Regression test: append [a: 1] [b: 2] should type-check without error.
     // Previous RowVar sharing bug would fail because the same row var appeared
     // in both param and return type of the builtin signature.
-    let result = check("[result: [append [a: 1] [b: 2]]]");
+    let result = check("[result: [append [a: 1] [b: 2]]]").await;
     assert!(
         result.is_ok(),
         "append with simple records should type-check, got error: {:?}",
@@ -5721,8 +5824,8 @@ fn test_append_no_rowvar_sharing_error() {
 
 // -- % pipeline variable binding --
 
-#[test]
-fn test_pipeline_percent_binding() {
+#[tokio::test]
+async fn test_pipeline_percent_binding() {
     // Test that % is bound to the pipeline type in each document
     let input = r#"
 [x: 1  y: 2]
@@ -5734,7 +5837,7 @@ fn test_pipeline_percent_binding() {
     let mut program = crate::parse(input).unwrap().program;
     crate::desugar::desugar_surface_program(&mut program);
 
-    let (errors, _table, _inferred) = typecheck_surface_program_annotation_table(&program);
+    let (errors, _table, _inferred) = typecheck_surface_program_annotation_table(&program).await;
     assert!(
         errors.is_empty(),
         "% pipeline binding should work, got error: {:?}",
@@ -5742,14 +5845,14 @@ fn test_pipeline_percent_binding() {
     );
 }
 
-#[test]
-fn test_pipeline_percent_pipeline_multi_field() {
+#[tokio::test]
+async fn test_pipeline_percent_pipeline_multi_field() {
     // Test that [+ %.x %.y] type-checks without errors in a multi-doc pipeline.
     // + is registered as Addable a b c => a -> b -> c.
     let input = "[x: 1  y: 2]\n---\n[z: [+ %.x %.y]]";
     let mut program = crate::parse(input).unwrap().program;
     crate::desugar::desugar_surface_program(&mut program);
-    let (errors, _table, _inferred) = typecheck_surface_program_annotation_table(&program);
+    let (errors, _table, _inferred) = typecheck_surface_program_annotation_table(&program).await;
     assert!(
         errors.is_empty(),
         "% multi-field pipeline should type-check without errors; got: {:?}",
@@ -5757,8 +5860,8 @@ fn test_pipeline_percent_pipeline_multi_field() {
     );
 }
 
-#[test]
-fn test_named_section_binding() {
+#[tokio::test]
+async fn test_named_section_binding() {
     // Test that named sections bind as %name
     let input = r#"
 --- %data
@@ -5771,7 +5874,7 @@ fn test_named_section_binding() {
     let mut program = crate::parse(input).unwrap().program;
     crate::desugar::desugar_surface_program(&mut program);
 
-    let (errors, _table, _inferred) = typecheck_surface_program_annotation_table(&program);
+    let (errors, _table, _inferred) = typecheck_surface_program_annotation_table(&program).await;
     assert!(
         errors.is_empty(),
         "named section binding should work, got error: {:?}",
@@ -5781,22 +5884,22 @@ fn test_named_section_binding() {
 
 // -- Diagnostic system tests --
 
-#[test]
-fn test_typecheck_returns_diagnostics() {
+#[tokio::test]
+async fn test_typecheck_returns_diagnostics() {
     // Verify that typecheck_surface_program_annotation_table returns no errors for a simple dict
     let input = "[x: 42]";
     let mut program = crate::parse(input).unwrap().program;
     crate::desugar::desugar_surface_program(&mut program);
 
-    let (errors, _table, _inferred) = typecheck_surface_program_annotation_table(&program);
+    let (errors, _table, _inferred) = typecheck_surface_program_annotation_table(&program).await;
     assert!(
         errors.is_empty(),
         "simple dict should typecheck without errors"
     );
 }
 
-#[test]
-fn test_typecheck_with_types_returns_diagnostics() {
+#[tokio::test]
+async fn test_typecheck_with_types_returns_diagnostics() {
     // Verify that typecheck_surface_program returns diagnostics in the tuple
     let input = "[x: 42]";
     let mut program = crate::parse(input).unwrap().program;
@@ -5804,7 +5907,7 @@ fn test_typecheck_with_types_returns_diagnostics() {
 
     let env = Rc::new(TypeEnv::new());
     let (errors, _type_map, _doc_map, _scheme_map, diagnostics) =
-        typecheck_surface_program(&program, env);
+        typecheck_surface_program(&program, env).await;
     assert!(
         errors.is_empty(),
         "simple dict should typecheck without errors"
@@ -5817,8 +5920,8 @@ fn test_typecheck_with_types_returns_diagnostics() {
 
 // -- row_ann_mapping threading in resolve_type_assert (Task 5) --
 
-#[test]
-fn test_type_assert_named_row_var_shared_within_annotation() {
+#[tokio::test]
+async fn test_type_assert_named_row_var_shared_within_annotation() {
     // Exercises resolve_type_assert's row_ann_mapping (typecheck_annot.rs:~78-137).
     //
     // A TypeAssert with a Fn-type annotation where the named row variable `...r`
@@ -5842,7 +5945,8 @@ fn test_type_assert_named_row_var_shared_within_annotation() {
     // If ...r is the SAME row var in both positions, unification constrains r consistently.
     let result = check(
             "[f: [@[Fn@[result: Int ...r] [[input: String ...r]]] [fn [let x@[input: String ...r]] [result: 42]]]]"
-        );
+        )
+        .await;
     assert!(
         result.is_ok(),
         "TypeAssert with shared named row variable in Fn annotation should type-check: {:?}",
@@ -5855,7 +5959,8 @@ fn test_type_assert_named_row_var_shared_within_annotation() {
     let ty = result_field(
             "[f: [@[Fn@[result: Int ...r] [[input: String ...r]]] [fn [let x@[input: String ...r]] [result: 42]]]]",
             "f"
-        );
+        )
+        .await;
     match ty {
         Type::Function { params, ret, .. } => {
             assert!(
@@ -5872,8 +5977,8 @@ fn test_type_assert_named_row_var_shared_within_annotation() {
     }
 }
 
-#[test]
-fn test_type_assert_named_row_var_independent_across_annotations() {
+#[tokio::test]
+async fn test_type_assert_named_row_var_independent_across_annotations() {
     // Companion to test_type_assert_named_row_var_shared_within_annotation.
     // Exercises that each TypeAssert gets its OWN independent row_ann_mapping scope:
     // two sibling TypeAsserts both using `...r` should NOT share the same row variable
@@ -5884,7 +5989,8 @@ fn test_type_assert_named_row_var_independent_across_annotations() {
     let result = check(
         "[x: [@[a: Int ...r] [a: 1  extra: true]]\
              \n y: [@[a: String ...r] [a: \"hello\"  other: 42]]]",
-    );
+    )
+    .await;
     assert!(
         result.is_ok(),
         "two independent TypeAsserts with ...r should both succeed independently: {:?}",
@@ -5918,8 +6024,8 @@ fn union_annotation(type_names: &[&str]) -> (Annotation, Span) {
     (Annotation::PropertyDict(entries), span)
 }
 
-#[test]
-fn test_union_annotation_basic() {
+#[tokio::test]
+async fn test_union_annotation_basic() {
     // Two positional entries → Union(Int, Str)
     let (ann, span) = union_annotation(&["Int", "String"]);
     let env = Rc::new(TypeEnv::new());
@@ -5933,6 +6039,7 @@ fn test_union_annotation_basic() {
         &mut None,
         None,
     )
+    .await
     .unwrap();
     match ty {
         Type::Union(members) => {
@@ -5944,8 +6051,8 @@ fn test_union_annotation_basic() {
     }
 }
 
-#[test]
-fn test_union_annotation_three_types() {
+#[tokio::test]
+async fn test_union_annotation_three_types() {
     // Three positional entries → Union(Int, Str, Bool)
     let (ann, span) = union_annotation(&["Int", "String", "Bool"]);
     let env = Rc::new(TypeEnv::new());
@@ -5959,6 +6066,7 @@ fn test_union_annotation_three_types() {
         &mut None,
         None,
     )
+    .await
     .unwrap();
     match ty {
         Type::Union(members) => {
@@ -5971,8 +6079,8 @@ fn test_union_annotation_three_types() {
     }
 }
 
-#[test]
-fn test_union_annotation_single_unwraps() {
+#[tokio::test]
+async fn test_union_annotation_single_unwraps() {
     // Single positional entry → unwraps to bare type
     let (ann, span) = union_annotation(&["Int"]);
     let env = Rc::new(TypeEnv::new());
@@ -5986,12 +6094,13 @@ fn test_union_annotation_single_unwraps() {
         &mut None,
         None,
     )
+    .await
     .unwrap();
     assert_eq!(ty, Type::Int);
 }
 
-#[test]
-fn test_union_annotation_with_metadata() {
+#[tokio::test]
+async fn test_union_annotation_with_metadata() {
     // Positional entries + keyed metadata: Union(Int, Str) with default
     let span = crate::test_util::test_span(1, 1, 1, 20);
     // Use VarRef for type names (unquoted identifiers) — Str is for string literal types
@@ -6026,6 +6135,7 @@ fn test_union_annotation_with_metadata() {
         &mut None,
         None,
     )
+    .await
     .unwrap();
     match ty {
         Type::Union(members) => {
@@ -6037,8 +6147,8 @@ fn test_union_annotation_with_metadata() {
     }
 }
 
-#[test]
-fn test_or_annotation_two_types() {
+#[tokio::test]
+async fn test_or_annotation_two_types() {
     // @[or Int Null] → resolve_annotation produces Union(Int, Record({}))
     // `or` is the type-stage keyword for union; `Null` is the empty record type.
     // Use resolve_annotation directly (same pattern as test_union_annotation_basic).
@@ -6078,6 +6188,7 @@ fn test_or_annotation_two_types() {
         &mut None,
         None,
     )
+    .await
     .unwrap();
     match ty {
         Type::Union(members) => {
@@ -6093,8 +6204,8 @@ fn test_or_annotation_two_types() {
     }
 }
 
-#[test]
-fn test_or_annotation_three_types() {
+#[tokio::test]
+async fn test_or_annotation_three_types() {
     // @[or Int Float Bool] → Union(Bool, Float, Int) (sorted by normalize_union)
     let ann = Annotation::PropertyDict(
         ["or", "Int", "Float", "Bool"]
@@ -6122,6 +6233,7 @@ fn test_or_annotation_three_types() {
         &mut None,
         None,
     )
+    .await
     .unwrap();
     match ty {
         Type::Union(members) => {
@@ -6136,11 +6248,11 @@ fn test_or_annotation_three_types() {
     }
 }
 
-#[test]
-fn test_or_in_type_alias_body() {
+#[tokio::test]
+async fn test_or_in_type_alias_body() {
     // [MyUnion: [type [or Int Null]]] registers a type alias whose body is Union(Int, Null).
     // Type aliases are dict entries whose value is a [type ...] form.
-    let env = doc_env("[MyUnion: [type [or Int Null]]  x: 42]");
+    let env = doc_env("[MyUnion: [type [or Int Null]]  x: 42]").await;
     let alias = env.get_type_alias("MyUnion");
     assert!(
         alias.is_some(),
@@ -6153,10 +6265,10 @@ fn test_or_in_type_alias_body() {
     );
 }
 
-#[test]
-fn test_or_annotation_in_fn_return() {
+#[tokio::test]
+async fn test_or_annotation_in_fn_return() {
     // fn@[return: [or Int Null]] — or in fn metadata return type
-    let ty = infer("[fn@[return: [or Int Null]] [] []]");
+    let ty = infer("[fn@[return: [or Int Null]] [] []]").await;
     match ty {
         Type::Function { ret, .. } => {
             assert!(
@@ -6168,8 +6280,8 @@ fn test_or_annotation_in_fn_return() {
     }
 }
 
-#[test]
-fn test_union_type_assert_success() {
+#[tokio::test]
+async fn test_union_type_assert_success() {
     // value_matches_type: Int matches Union(Int, Str)
     let union = Type::normalize_union(vec![Type::Int, Type::Str]);
     let env = std::sync::Arc::new(std::sync::RwLock::new(crate::value::Environment::new()));
@@ -6186,8 +6298,8 @@ fn test_union_type_assert_success() {
     ));
 }
 
-#[test]
-fn test_union_type_assert_failure() {
+#[tokio::test]
+async fn test_union_type_assert_failure() {
     // value_matches_type: Bool does NOT match Union(Int, Str)
     let union = Type::normalize_union(vec![Type::Int, Type::Str]);
     let env = std::sync::Arc::new(std::sync::RwLock::new(crate::value::Environment::new()));
@@ -6204,8 +6316,8 @@ fn test_union_type_assert_failure() {
     ));
 }
 
-#[test]
-fn test_union_in_function_signature() {
+#[tokio::test]
+async fn test_union_in_function_signature() {
     // resolve_annotation with Fn@ whose return type is a union (via PropertyDict)
     let span = crate::test_util::test_span(1, 1, 1, 20);
     // Build annotation: Fn@... where the annotation is a PropertyDict with positional entries
@@ -6238,6 +6350,7 @@ fn test_union_in_function_signature() {
         &mut None,
         None,
     )
+    .await
     .unwrap();
     match ret_ty {
         Type::Union(members) => {
@@ -6249,8 +6362,8 @@ fn test_union_in_function_signature() {
     }
 }
 
-#[test]
-fn test_union_nullable_pattern() {
+#[tokio::test]
+async fn test_union_nullable_pattern() {
     // Union(Int, Record(Empty)) — nullable integer pattern
     let null_type = Type::Record(Row {
         fields: BTreeMap::new(),
@@ -6267,8 +6380,8 @@ fn test_union_nullable_pattern() {
     }
 }
 
-#[test]
-fn test_union_deduplication() {
+#[tokio::test]
+async fn test_union_deduplication() {
     // Three positional entries with duplicate → deduplicated Union(Int, Str)
     let (ann, span) = union_annotation(&["Int", "String", "Int"]);
     let env = Rc::new(TypeEnv::new());
@@ -6282,6 +6395,7 @@ fn test_union_deduplication() {
         &mut None,
         None,
     )
+    .await
     .unwrap();
     match ty {
         Type::Union(members) => {
@@ -6293,8 +6407,8 @@ fn test_union_deduplication() {
     }
 }
 
-#[test]
-fn test_union_display_format() {
+#[tokio::test]
+async fn test_union_display_format() {
     // Union types display with " | " separator
     let union = Type::normalize_union(vec![Type::Int, Type::Str]);
     let display = format!("{}", union);
@@ -6305,10 +6419,10 @@ fn test_union_display_format() {
 
 // -- Path-Sensitive Narrowing Tests (narrowing-basic sprint) --
 
-#[test]
-fn test_narrowing_equality_literal_int() {
+#[tokio::test]
+async fn test_narrowing_equality_literal_int() {
     // After `[= x 42]`, the true branch knows `x : IntLiteral(42)`
-    let env = doc_env_with_builtins("[x: 30]\n[result: [if [= x 42] x 0]]");
+    let env = doc_env_with_builtins("[x: 30]\n[result: [if [= x 42] x 0]]").await;
     // The result type should be the LUB of IntLiteral(42) and IntLiteral(0), which is Int
     match env.get("result").map(|s| &s.body) {
         Some(Type::Int) => {}
@@ -6317,13 +6431,14 @@ fn test_narrowing_equality_literal_int() {
     }
 }
 
-#[test]
-fn test_narrowing_equality_literal_string() {
+#[tokio::test]
+async fn test_narrowing_equality_literal_string() {
     // After `[= x "hello"]`, the true branch knows `x` is Str-typed.
     // Use a Str-annotated parameter so both branches can type-check.
     let env = doc_env_with_prelude(
         "[f: [fn@String [let x@String] [if [= x \"hello\"] x \"world\"]]]\n[result: [f \"\"]]",
-    );
+    )
+    .await;
     match env.get("result").map(|s| &s.body) {
         Some(Type::Str) | Some(Type::StringLiteral(_)) => {}
         Some(other) => panic!("expected Str for narrowed if result, got {other}"),
@@ -6331,10 +6446,10 @@ fn test_narrowing_equality_literal_string() {
     }
 }
 
-#[test]
-fn test_narrowing_equality_literal_reversed_operands() {
+#[tokio::test]
+async fn test_narrowing_equality_literal_reversed_operands() {
     // Test that `[= 42 x]` works the same as `[= x 42]`
-    let env = doc_env_with_builtins("[x: 30]\n[result: [if [= 42 x] x 0]]");
+    let env = doc_env_with_builtins("[x: 30]\n[result: [if [= 42 x] x 0]]").await;
     match env.get("result").map(|s| &s.body) {
         Some(Type::Int) => {}
         Some(other) => panic!("expected Int for reversed operand narrowing, got {other}"),
@@ -6342,10 +6457,10 @@ fn test_narrowing_equality_literal_reversed_operands() {
     }
 }
 
-#[test]
-fn test_narrowing_type_of_int() {
+#[tokio::test]
+async fn test_narrowing_type_of_int() {
     // After `[= [type-of x] "Int"]`, the true branch knows `x : Int`
-    let env = doc_env_with_prelude("[x: 30]\n[result: [if [= [type-of x] \"Int\"] x 0]]");
+    let env = doc_env_with_prelude("[x: 30]\n[result: [if [= [type-of x] \"Int\"] x 0]]").await;
     match env.get("result").map(|s| &s.body) {
         Some(Type::Int) => {}
         Some(other) => panic!("expected Int for type-of narrowing, got {other}"),
@@ -6353,11 +6468,12 @@ fn test_narrowing_type_of_int() {
     }
 }
 
-#[test]
-fn test_narrowing_type_of_string() {
+#[tokio::test]
+async fn test_narrowing_type_of_string() {
     // After `[= [type-of x] "String"]`, the true branch knows `x : Str`
     let env =
-        doc_env_with_prelude("[x: \"\"]\n[result: [if [= [type-of x] \"String\"] x \"default\"]]");
+        doc_env_with_prelude("[x: \"\"]\n[result: [if [= [type-of x] \"String\"] x \"default\"]]")
+            .await;
     match env.get("result").map(|s| &s.body) {
         Some(Type::Str) => {}
         Some(other) => panic!("expected Str for type-of String narrowing, got {other}"),
@@ -6365,10 +6481,10 @@ fn test_narrowing_type_of_string() {
     }
 }
 
-#[test]
-fn test_narrowing_type_of_reversed() {
+#[tokio::test]
+async fn test_narrowing_type_of_reversed() {
     // Test that `[= "Int" [type-of x]]` works the same as `[= [type-of x] "Int"]`
-    let env = doc_env_with_prelude("[x: 30]\n[result: [if [= \"Int\" [type-of x]] x 0]]");
+    let env = doc_env_with_prelude("[x: 30]\n[result: [if [= \"Int\" [type-of x]] x 0]]").await;
     match env.get("result").map(|s| &s.body) {
         Some(Type::Int) => {}
         Some(other) => panic!("expected Int for reversed type-of, got {other}"),
@@ -6376,28 +6492,30 @@ fn test_narrowing_type_of_reversed() {
     }
 }
 
-#[test]
-fn test_narrowing_has_key() {
+#[tokio::test]
+async fn test_narrowing_has_key() {
     // After `[has? x "name"]`, the true branch knows `x` has at least a `name` field.
     // has? is defined locally because it is a prelude function, not a builtin with a type scheme.
     let result = check(
         "[has?: [fn [let xs k] true]]\n\
              [x: [age: 30]]\n\
              [result: [if [has? x \"name\"] $x.name \"unknown\"]]",
-    );
+    )
+    .await;
     // This should type-check — the narrowed type has a `name` field
     assert!(result.is_ok(), "has? narrowing should allow field access");
 }
 
-#[test]
-fn test_narrowing_conjunction_and() {
+#[tokio::test]
+async fn test_narrowing_conjunction_and() {
     // After `[and [= x 42] [has? y "name"]]`, both narrowings apply.
     // and and has? are prelude functions, not builtins, so define locally.
     let env = doc_env_with_builtins(
         "[and: [fn [let a b] [if a b false]]  has?: [fn [let xs k] true]]\n\
              [x: 30  y: []]\n\
              [result: [if [and [= x 42] [has? y \"name\"]] [+ x $y.age] 0]]",
-    );
+    )
+    .await;
     // This should type-check without errors. The result type is the union of the
     // then-branch ([+ x $y.age] = fresh TypeVar from unknown field access) and the
     // else-branch (IntLiteral(0)). Conjunction narrowing via user-defined `and` is
@@ -6409,12 +6527,13 @@ fn test_narrowing_conjunction_and() {
     );
 }
 
-#[test]
-fn test_narrowing_no_false_branch_narrowing() {
+#[tokio::test]
+async fn test_narrowing_no_false_branch_narrowing() {
     // The false branch does NOT get narrowing
     let env = doc_env_with_builtins(
         "[x: 30]\n[then_result: [if [= x 42] x 0]  else_result: [if [= x 42] 0 x]]",
-    );
+    )
+    .await;
     // In `else_result`, the else branch has `x` which should NOT be narrowed (still Int)
     match env.get("else_result").map(|s| &s.body) {
         Some(Type::Int) => {}
@@ -6423,35 +6542,37 @@ fn test_narrowing_no_false_branch_narrowing() {
     }
 }
 
-#[test]
-fn test_narrowing_nested_if() {
+#[tokio::test]
+async fn test_narrowing_nested_if() {
     // Nested if chains preserve narrowing in each branch
     let result = check(
         "[x: 30]\n\
              [result: [if [= x 42]\n\
                         [if [= x 42] x 0]\n\
                         0]]",
-    );
+    )
+    .await;
     assert!(
         result.is_ok(),
         "nested if with consistent narrowing should type-check"
     );
 }
 
-#[test]
-fn test_narrowing_not_leaking_across_branches() {
+#[tokio::test]
+async fn test_narrowing_not_leaking_across_branches() {
     // Narrowing in the true branch does not affect the else branch.
     // Use Str-typed binding to avoid literal type unification failure.
     let result = check(
         "[f: [fn@String [let x@String] [if [= x \"world\"] x x]]]\n\
              [result: [f \"hello\"]]",
-    );
+    )
+    .await;
     // Both branches return Str, should type-check
     assert!(result.is_ok(), "narrowing should not leak across branches");
 }
 
-#[test]
-fn test_narrowing_type_map_hover() {
+#[tokio::test]
+async fn test_narrowing_type_map_hover() {
     // Verify that the type map contains the narrowed type for LSP hover
     let mut program = crate::parse("[x: 30]\n[result: [if [= x 42] x 0]]")
         .unwrap()
@@ -6475,7 +6596,8 @@ fn test_narrowing_type_map_hover() {
         &mut Some(&mut type_map),
         &empty_pipeline,
         &named_types,
-    );
+    )
+    .await;
 
     // The type map should have entries for the narrowed `x` in the then branch
     // We can't easily check the exact span, but verify the type map is populated
@@ -6485,10 +6607,10 @@ fn test_narrowing_type_map_hover() {
     );
 }
 
-#[test]
-fn test_narrowing_unrecognized_condition_no_narrowing() {
+#[tokio::test]
+async fn test_narrowing_unrecognized_condition_no_narrowing() {
     // Unrecognized condition patterns don't narrow (< is not a narrowing pattern)
-    let result = check("[x: 30]\n[result: [if [< x 10] x 0]]");
+    let result = check("[x: 30]\n[result: [if [< x 10] x 0]]").await;
     // This should still type-check, just without narrowing
     assert!(
         result.is_ok(),
@@ -6496,10 +6618,10 @@ fn test_narrowing_unrecognized_condition_no_narrowing() {
     );
 }
 
-#[test]
-fn test_narrowing_type_of_dict() {
+#[tokio::test]
+async fn test_narrowing_type_of_dict() {
     // After `[= [type-of x] "Dict"]`, the true branch knows `x` is a Record
-    let result = check("[x: []]\n[result: [if [= [type-of x] \"Dict\"] $x.field 0]]");
+    let result = check("[x: []]\n[result: [if [= [type-of x] \"Dict\"] $x.field 0]]").await;
     // This should type-check — x is narrowed to an open Record, field access returns a TypeVar
     assert!(
         result.is_ok(),
@@ -6507,19 +6629,19 @@ fn test_narrowing_type_of_dict() {
     );
 }
 
-#[test]
-fn test_narrowing_type_of_number() {
+#[tokio::test]
+async fn test_narrowing_type_of_number() {
     // After `[= [type-of x] "Number"]`, the true branch knows `x : Number`
-    let result = check("[x: 30]\n[result: [if [= [type-of x] \"Number\"] x 0]]");
+    let result = check("[x: 30]\n[result: [if [= [type-of x] \"Number\"] x 0]]").await;
     assert!(result.is_ok(), "type-of Number narrowing should work");
 }
 
 // === Type Predicate Narrowing Tests (B5b) ===
 
-#[test]
-fn test_narrowing_int_predicate() {
+#[tokio::test]
+async fn test_narrowing_int_predicate() {
     // After `[int? x]`, the true branch knows `x : Int`
-    let env = doc_env_with_builtins("[x: 30]\n[result: [if [int? x] x 0]]");
+    let env = doc_env_with_builtins("[x: 30]\n[result: [if [int? x] x 0]]").await;
     match env.get("result").map(|s| &s.body) {
         Some(Type::Int) => {}
         Some(other) => panic!("expected Int for int? narrowing, got {other}"),
@@ -6527,10 +6649,10 @@ fn test_narrowing_int_predicate() {
     }
 }
 
-#[test]
-fn test_narrowing_str_predicate() {
+#[tokio::test]
+async fn test_narrowing_str_predicate() {
     // After `[str? x]`, the true branch knows `x : Str`
-    let env = doc_env_with_builtins("[x: \"\"]\n[result: [if [str? x] x \"default\"]]");
+    let env = doc_env_with_builtins("[x: \"\"]\n[result: [if [str? x] x \"default\"]]").await;
     match env.get("result").map(|s| &s.body) {
         Some(Type::Str) => {}
         Some(other) => panic!("expected Str for str? narrowing, got {other}"),
@@ -6538,10 +6660,10 @@ fn test_narrowing_str_predicate() {
     }
 }
 
-#[test]
-fn test_narrowing_bool_predicate() {
+#[tokio::test]
+async fn test_narrowing_bool_predicate() {
     // After `[bool? x]`, the true branch knows `x : Bool`
-    let env = doc_env_with_builtins("[x: true]\n[result: [if [bool? x] x false]]");
+    let env = doc_env_with_builtins("[x: true]\n[result: [if [bool? x] x false]]").await;
     match env.get("result").map(|s| &s.body) {
         Some(Type::Bool) => {}
         Some(other) => panic!("expected Bool for bool? narrowing, got {other}"),
@@ -6549,10 +6671,10 @@ fn test_narrowing_bool_predicate() {
     }
 }
 
-#[test]
-fn test_narrowing_float_predicate() {
+#[tokio::test]
+async fn test_narrowing_float_predicate() {
     // After `[float? x]`, the true branch knows `x : Float`
-    let env = doc_env_with_builtins("[x: 3.14]\n[result: [if [float? x] x 0.0]]");
+    let env = doc_env_with_builtins("[x: 3.14]\n[result: [if [float? x] x 0.0]]").await;
     match env.get("result").map(|s| &s.body) {
         Some(Type::Float) => {}
         Some(other) => panic!("expected Float for float? narrowing, got {other}"),
@@ -6560,10 +6682,10 @@ fn test_narrowing_float_predicate() {
     }
 }
 
-#[test]
-fn test_narrowing_num_predicate() {
+#[tokio::test]
+async fn test_narrowing_num_predicate() {
     // After `[num? x]`, the true branch knows `x : Number`
-    let env = doc_env_with_builtins("[x: 30]\n[result: [if [num? x] x 0]]");
+    let env = doc_env_with_builtins("[x: 30]\n[result: [if [num? x] x 0]]").await;
     match env.get("result").map(|s| &s.body) {
         Some(Type::Number) => {}
         Some(other) => panic!("expected Number for num? narrowing, got {other}"),
@@ -6571,10 +6693,10 @@ fn test_narrowing_num_predicate() {
     }
 }
 
-#[test]
-fn test_narrowing_dict_predicate() {
+#[tokio::test]
+async fn test_narrowing_dict_predicate() {
     // After `[dict? x]`, the true branch knows `x : Record(open)`
-    let env = doc_env_with_builtins("[x: [a: 1]]\n[result: [if [dict? x] x []]]");
+    let env = doc_env_with_builtins("[x: [a: 1]]\n[result: [if [dict? x] x []]]").await;
     match env.get("result").map(|s| &s.body) {
         Some(Type::Record(_)) => {}
         Some(other) => panic!("expected Record for dict? narrowing, got {other}"),
@@ -6582,17 +6704,17 @@ fn test_narrowing_dict_predicate() {
     }
 }
 
-#[test]
-fn test_narrowing_seq_predicate() {
+#[tokio::test]
+async fn test_narrowing_seq_predicate() {
     // After `[seq? x]`, the true branch knows `x : Seq(Unknown)`
-    let result = check("[x: [seq 1 2]]\n[result: [if [seq? x] x [seq 1 2]]]");
+    let result = check("[x: [seq 1 2]]\n[result: [if [seq? x] x [seq 1 2]]]").await;
     assert!(result.is_ok(), "seq? narrowing should work");
 }
 
-#[test]
-fn test_narrowing_null_predicate() {
+#[tokio::test]
+async fn test_narrowing_null_predicate() {
     // After `[null? x]`, the true branch knows `x : Record(Empty)` (Null = empty closed record)
-    let env = doc_env_with_builtins("[x: []]\n[result: [if [null? x] x []]]");
+    let env = doc_env_with_builtins("[x: []]\n[result: [if [null? x] x []]]").await;
     match env.get("result").map(|s| &s.body) {
         Some(Type::Record(_)) => {}
         Some(other) => panic!("expected closed Record for null? narrowing, got {other}"),
@@ -6600,10 +6722,11 @@ fn test_narrowing_null_predicate() {
     }
 }
 
-#[test]
-fn test_narrowing_fn_predicate() {
+#[tokio::test]
+async fn test_narrowing_fn_predicate() {
     // After `[fn? x]`, the true branch knows `x : Fn@Unknown []...` (any function).
-    let env = doc_env_with_builtins("[x: [fn [let] 1]]\n[result: [if [fn? x] x [fn [let] 0]]]");
+    let env = doc_env_with_builtins("[x: [fn [let] 1]]\n[result: [if [fn? x] x [fn [let] 0]]]")
+        .await;
 
     // Verify the result field exists and typechecks
     assert!(env.get("result").is_some(), "fn? narrowing should work");
@@ -6631,15 +6754,16 @@ fn test_narrowing_fn_predicate() {
     );
 }
 
-#[test]
-fn test_narrowing_predicate_with_conjunction() {
+#[tokio::test]
+async fn test_narrowing_predicate_with_conjunction() {
     // [and [int? x] [< x 100]] should apply int? narrowing in true branch
     // `and` and `>` are prelude functions, not builtins, so define `and` locally.
     let env = doc_env_with_builtins(
         "[and: [fn [let a b] [if a b false]]]\n\
              [x: 30]\n\
              [result: [if [and [int? x] [< x 100]] x 0]]",
-    );
+    )
+    .await;
     match env.get("result").map(|s| &s.body) {
         Some(Type::Int) => {}
         Some(other) => panic!("expected Int for int?+conjunction narrowing, got {other}"),
@@ -6647,10 +6771,10 @@ fn test_narrowing_predicate_with_conjunction() {
     }
 }
 
-#[test]
-fn test_narrowing_predicate_with_variable_binding() {
+#[tokio::test]
+async fn test_narrowing_predicate_with_variable_binding() {
     // Test that narrowing works correctly when variable is bound to another name
-    let env = doc_env_with_builtins("[x: 30]\n[y: x]\n[result: [if [int? y] y 0]]");
+    let env = doc_env_with_builtins("[x: 30]\n[y: x]\n[result: [if [int? y] y 0]]").await;
     match env.get("result").map(|s| &s.body) {
         Some(Type::Int) => {}
         Some(other) => panic!("expected Int for variable binding narrowing, got {other}"),
@@ -6660,11 +6784,11 @@ fn test_narrowing_predicate_with_variable_binding() {
 
 // ========== ADT Tests (C1 sprint) ==========
 
-#[test]
-fn test_adt_multi_entry_union_declaration() {
+#[tokio::test]
+async fn test_adt_multi_entry_union_declaration() {
     // Multi-entry [type T1 T2 ...] produces Type::Union.
     // [let a] declares the type parameter so T-951 enforcement does not reject `a` as undeclared.
-    let env = doc_env_with_builtins("[Result: [type [let a] [ok: a] [err: String]]]");
+    let env = doc_env_with_builtins("[Result: [type [let a] [ok: a] [err: String]]]").await;
     let alias = env
         .get_type_alias("Result")
         .expect("Result type alias not found");
@@ -6683,10 +6807,10 @@ fn test_adt_multi_entry_union_declaration() {
     }
 }
 
-#[test]
-fn test_adt_tag_only_variants() {
+#[tokio::test]
+async fn test_adt_tag_only_variants() {
     // String literals in type position → Type::StringLiteral
-    let env = doc_env_with_builtins("[Status: [type \"ok\" \"err\" \"pending\"]]");
+    let env = doc_env_with_builtins("[Status: [type \"ok\" \"err\" \"pending\"]]").await;
     let alias = env
         .get_type_alias("Status")
         .expect("Status type alias not found");
@@ -6710,12 +6834,13 @@ fn test_adt_tag_only_variants() {
     }
 }
 
-#[test]
-fn test_adt_mixed_variants() {
+#[tokio::test]
+async fn test_adt_mixed_variants() {
     // Mix of record and string literal variants
     let env = doc_env_with_builtins(
         "[Event: [type [click: [x: Int  y: Int]] [key: [code: String]] \"resize\"]]",
-    );
+    )
+    .await;
     let alias = env
         .get_type_alias("Event")
         .expect("Event type alias not found");
@@ -6738,10 +6863,10 @@ fn test_adt_mixed_variants() {
     }
 }
 
-#[test]
-fn test_adt_single_entry_unwrapped() {
+#[tokio::test]
+async fn test_adt_single_entry_unwrapped() {
     // Single-entry [type T] should remain a simple alias (not wrapped in Union)
-    let env = doc_env_with_builtins("[Name: [type String]]");
+    let env = doc_env_with_builtins("[Name: [type String]]").await;
     let alias = env
         .get_type_alias("Name")
         .expect("Name type alias not found");
@@ -6751,12 +6876,12 @@ fn test_adt_single_entry_unwrapped() {
     }
 }
 
-#[test]
-fn test_adt_type_assert_union_enforcement() {
+#[tokio::test]
+async fn test_adt_type_assert_union_enforcement() {
     // Type alias with union body can be referenced in annotations.
     // Verify the alias resolves to a 2-member union.
     // [let a] declares the type parameter so T-951 enforcement does not reject `a` as undeclared.
-    let env = doc_env_with_builtins("[Result: [type [let a] [ok: a] [err: String]]]");
+    let env = doc_env_with_builtins("[Result: [type [let a] [ok: a] [err: String]]]").await;
     let alias = env
         .get_type_alias("Result")
         .expect("Result type alias not found");
@@ -6778,8 +6903,8 @@ fn test_adt_type_assert_union_enforcement() {
     }
 }
 
-#[test]
-fn test_try_result_type() {
+#[tokio::test]
+async fn test_try_result_type() {
     // `try` (prelude wrapper around builtin-try) returns Top — not a structural union —
     // because the runtime returns nominal Value::Variant { tag: "Result.Ok"/"Result.Error" }.
     // A structural union {ok:T}|{err:Str} would cause T004 false positives when user code
@@ -6800,13 +6925,13 @@ fn test_try_result_type() {
     }
 }
 
-#[test]
-fn test_adt_parameterized_alias_registered() {
+#[tokio::test]
+async fn test_adt_parameterized_alias_registered() {
     // Parameterized union alias: [type [let a] [ok: a] [err: String]]
     // Verifies the alias is registered with a type parameter and a Union body.
     // `[let a]` declares the type parameter; T-951 enforcement requires explicit param
     // declaration for lowercase type variable names in alias bodies.
-    let env = doc_env_with_builtins("[Result: [type [let a] [ok: a] [err: String]]]");
+    let env = doc_env_with_builtins("[Result: [type [let a] [ok: a] [err: String]]]").await;
 
     // Alias must be registered
     let alias = env
@@ -6831,15 +6956,16 @@ fn test_adt_parameterized_alias_registered() {
     }
 }
 
-#[test]
-fn test_adt_dict_entry_and_sibling_fn() {
+#[tokio::test]
+async fn test_adt_dict_entry_and_sibling_fn() {
     // A [type ...] declaration as a dict entry value and a sibling function that
     // uses the alias name both live in the same dict. Verifies that the alias is
     // registered and sibling entries can reference it.
     // `[let a]` is required by T-951 enforcement for lowercase type variable names.
     let env = doc_env_with_builtins(
         "[Result: [type [let a] [ok: a] [err: String]]  f1: [fn [let x] x]  f2: [fn [let y] y]]",
-    );
+    )
+    .await;
 
     // Alias must be registered
     env.get_type_alias("Result")
@@ -6864,10 +6990,10 @@ fn test_adt_dict_entry_and_sibling_fn() {
 
 // ========== Exhaustiveness Checking Tests (C5 sprint) ==========
 
-#[test]
-fn test_exhaustive_match_int_string_complete() {
+#[tokio::test]
+async fn test_exhaustive_match_int_string_complete() {
     // Complete coverage: Int and String arms cover the union
-    let result = check("[match [@[Int String] 42] Int: \"int\" String: \"str\"]");
+    let result = check("[match [@[Int String] 42] Int: \"int\" String: \"str\"]").await;
     assert!(
         result.is_ok(),
         "Int+String should be exhaustive: {:?}",
@@ -6875,17 +7001,17 @@ fn test_exhaustive_match_int_string_complete() {
     );
 }
 
-#[test]
-fn test_exhaustive_match_wildcard_covers_all() {
+#[tokio::test]
+async fn test_exhaustive_match_wildcard_covers_all() {
     // Wildcard covers all variants
-    let result = check("[match [@[Int String] 42] _: \"any\"]");
+    let result = check("[match [@[Int String] 42] _: \"any\"]").await;
     assert!(result.is_ok(), "wildcard should cover all: {:?}", result);
 }
 
-#[test]
-fn test_non_exhaustive_match_missing_variant() {
+#[tokio::test]
+async fn test_non_exhaustive_match_missing_variant() {
     // Missing String variant
-    let result = check("[match [@[Int String] 42] Int: \"int\"]");
+    let result = check("[match [@[Int String] 42] Int: \"int\"]").await;
     assert!(
         result.is_err(),
         "should fail typecheck for missing variant, but got Ok"
@@ -6898,11 +7024,11 @@ fn test_non_exhaustive_match_missing_variant() {
     );
 }
 
-#[test]
-fn test_redundant_arm_detected() {
+#[tokio::test]
+async fn test_redundant_arm_detected() {
     // Third arm (Int) is redundant — already covered
     let result =
-        check("[match [@[Int String] 42] Int: \"int\" String: \"str\" Int: \"int-again\"]");
+        check("[match [@[Int String] 42] Int: \"int\" String: \"str\" Int: \"int-again\"]").await;
     assert!(
         result.is_err(),
         "should fail typecheck for redundant arm, but got Ok"
@@ -6915,10 +7041,10 @@ fn test_redundant_arm_detected() {
     );
 }
 
-#[test]
-fn test_inaccessible_arm_after_complete_coverage() {
+#[tokio::test]
+async fn test_inaccessible_arm_after_complete_coverage() {
     // Wildcard after complete Int+String coverage — inaccessible via ⊥
-    let result = check("[match [@[Int String] 42] Int: \"int\" String: \"str\" _: \"catch\"]");
+    let result = check("[match [@[Int String] 42] Int: \"int\" String: \"str\" _: \"catch\"]").await;
     assert!(
         result.is_err(),
         "should fail typecheck for inaccessible arm, but got Ok"
@@ -6931,8 +7057,8 @@ fn test_inaccessible_arm_after_complete_coverage() {
     );
 }
 
-#[test]
-fn test_exhaustive_match_dict_variants() {
+#[tokio::test]
+async fn test_exhaustive_match_dict_variants() {
     // Structural variants: [ok: _] | [err: _]
     // Use positional syntax @[[ok: Int] [err: String]] for inline union.
     // Bodies use literals (not pattern variables) since pattern bindings
@@ -6941,7 +7067,8 @@ fn test_exhaustive_match_dict_variants() {
         "[match [@[[ok: Int] [err: String]] [ok: 42]]\n\
                  [ok: _]:    \"ok\"\n\
                  [err: _]:   \"err\"]",
-    );
+    )
+    .await;
     assert!(
         result.is_ok(),
         "dict variants should be exhaustive: {:?}",
@@ -6949,13 +7076,14 @@ fn test_exhaustive_match_dict_variants() {
     );
 }
 
-#[test]
-fn test_non_exhaustive_match_dict_missing_variant() {
+#[tokio::test]
+async fn test_non_exhaustive_match_dict_missing_variant() {
     // Missing [err: _] variant
     let result = check(
         "[match [@[[ok: Int] [err: String]] [ok: 42]]\n\
                  [ok: _]: \"ok\"]",
-    );
+    )
+    .await;
     assert!(
         result.is_err(),
         "should fail typecheck for missing dict variant, but got Ok"
@@ -6968,15 +7096,16 @@ fn test_non_exhaustive_match_dict_missing_variant() {
     );
 }
 
-#[test]
-fn test_exhaustive_match_string_literal_variants() {
+#[tokio::test]
+async fn test_exhaustive_match_string_literal_variants() {
     // String literal variants: "ok" | "err" | "pending"
     let result = check(
         "[match [@[\"ok\" \"err\" \"pending\"] \"ok\"]\n\
                  \"ok\":      \"is-ok\"\n\
                  \"err\":     \"is-err\"\n\
                  \"pending\": \"is-pending\"]",
-    );
+    )
+    .await;
     assert!(
         result.is_ok(),
         "string literal variants should be exhaustive: {:?}",
@@ -6984,14 +7113,15 @@ fn test_exhaustive_match_string_literal_variants() {
     );
 }
 
-#[test]
-fn test_non_exhaustive_string_literal_missing() {
+#[tokio::test]
+async fn test_non_exhaustive_string_literal_missing() {
     // Missing "pending" variant
     let result = check(
         "[match [@[\"ok\" \"err\" \"pending\"] \"ok\"]\n\
                  \"ok\":  \"is-ok\"\n\
                  \"err\": \"is-err\"]",
-    );
+    )
+    .await;
     assert!(
         result.is_err(),
         "should fail typecheck for missing string literal, but got Ok"
@@ -7004,12 +7134,12 @@ fn test_non_exhaustive_string_literal_missing() {
     );
 }
 
-#[test]
-fn test_exhaustive_match_non_union_no_check() {
+#[tokio::test]
+async fn test_exhaustive_match_non_union_no_check() {
     // Non-union scrutinee — match is not checked for exhaustiveness.
     // This match has only Int arm with no wildcard, but since 42 doesn't
     // have a union type, no exhaustiveness error is raised.
-    let result = check("[match 42 Int: \"int\"]");
+    let result = check("[match 42 Int: \"int\"]").await;
     assert!(
         result.is_ok(),
         "non-union scrutinee should not trigger exhaustiveness: {:?}",
@@ -7019,11 +7149,11 @@ fn test_exhaustive_match_non_union_no_check() {
 
 // -- Recursive type aliases --
 
-#[test]
-fn test_recursive_type_alias_simple() {
+#[tokio::test]
+async fn test_recursive_type_alias_simple() {
     // Simple recursive type alias should register successfully.
     // Multi-field alias bodies now produce Intersection of open single-field records.
-    let env = doc_env("[List: [type [head: Int  tail: List]]]");
+    let env = doc_env("[List: [type [head: Int  tail: List]]]").await;
     let alias = env
         .get_type_alias("List")
         .expect("List type alias not found");
@@ -7039,10 +7169,10 @@ fn test_recursive_type_alias_simple() {
     );
 }
 
-#[test]
-fn test_recursive_type_alias_nested() {
+#[tokio::test]
+async fn test_recursive_type_alias_nested() {
     // Recursive alias with nested structure
-    let result = check("[Tree: [type [value: Int  left: Tree  right: Tree]]]");
+    let result = check("[Tree: [type [value: Int  left: Tree  right: Tree]]]").await;
     assert!(
         result.is_ok(),
         "recursive Tree type should register: {:?}",
@@ -7050,11 +7180,12 @@ fn test_recursive_type_alias_nested() {
     );
 }
 
-#[test]
-fn test_recursive_type_alias_usage() {
+#[tokio::test]
+async fn test_recursive_type_alias_usage() {
     let result = check(
         "[List: [type [head: Int  tail: List]]]\n[x@List: [head: 1  tail: [head: 2  tail: []]]]",
-    );
+    )
+    .await;
     assert!(
         result.is_ok(),
         "should be able to use recursive type alias in annotation: {:?}",
@@ -7062,10 +7193,10 @@ fn test_recursive_type_alias_usage() {
     );
 }
 
-#[test]
-fn test_mutual_recursion_two_aliases() {
+#[tokio::test]
+async fn test_mutual_recursion_two_aliases() {
     // Both aliases in the same dict: two-pass registration lets each see the other
-    let result = check("[A: [type [b_field: B]]  B: [type [a_field: A]]]");
+    let result = check("[A: [type [b_field: B]]  B: [type [a_field: A]]]").await;
     assert!(
         result.is_ok(),
         "mutually recursive type aliases should work: {:?}",
@@ -7073,13 +7204,13 @@ fn test_mutual_recursion_two_aliases() {
     );
 }
 
-#[test]
-fn test_recursive_type_depth_limit() {
+#[tokio::test]
+async fn test_recursive_type_depth_limit() {
     // Recursive type alias with a single keyed field: [next: Deep].
     // The recursion guard fires for the `Deep` VarRef in `next: Deep`, returning a fresh
     // TypeVar (the mu-variable) instead of expanding infinitely. The depth limit
     // (MAX_ALIAS_DEPTH = 256) guards against pathological expansion via expand_alias_body_guarded.
-    let result = check("[Deep: [type [next: Deep]]]");
+    let result = check("[Deep: [type [next: Deep]]]").await;
     assert!(
         result.is_ok(),
         "recursive type alias should register without error: {:?}",
@@ -7087,11 +7218,11 @@ fn test_recursive_type_depth_limit() {
     );
 }
 
-#[test]
-fn test_non_recursive_alias_unchanged() {
+#[tokio::test]
+async fn test_non_recursive_alias_unchanged() {
     // Non-recursive aliases should continue to work as before.
     // Multi-field alias bodies now produce Intersection of open single-field records.
-    let env = doc_env("[Point: [type [x: Int  y: Int]]]");
+    let env = doc_env("[Point: [type [x: Int  y: Int]]]").await;
     let alias = env
         .get_type_alias("Point")
         .expect("Point type alias not found");
@@ -7102,44 +7233,44 @@ fn test_non_recursive_alias_unchanged() {
 
 // ========== DocMap Extraction Tests ==========
 
-#[test]
-fn test_doc_extraction_from_param_annotation() {
+#[tokio::test]
+async fn test_doc_extraction_from_param_annotation() {
     // Test existing functionality: extract doc from parameter annotations
     let input = "[f: [fn [let x@[doc: \"The input value\"]] x]]";
     let mut program = crate::parse(input).unwrap().program;
     crate::desugar::desugar_surface_program(&mut program);
     let (_errors, _type_map, doc_map, _scheme_map, _diagnostics) =
-        typecheck_surface_program(&program, crate::imports::build_prelude_env());
+        typecheck_surface_program(&program, crate::imports::build_prelude_env()).await;
 
     assert_eq!(doc_map.get("x"), Some(&"The input value".to_string()));
 }
 
-#[test]
-fn test_doc_extraction_from_dict_entry_key() {
+#[tokio::test]
+async fn test_doc_extraction_from_dict_entry_key() {
     // Test Task 1: extract doc from dict entry key annotation
     let input = "[myFunc@[doc: \"My function\"]: [fn [let] 42]]";
     let mut program = crate::parse(input).unwrap().program;
     crate::desugar::desugar_surface_program(&mut program);
     let (_errors, _type_map, doc_map, _scheme_map, _diagnostics) =
-        typecheck_surface_program(&program, crate::imports::build_prelude_env());
+        typecheck_surface_program(&program, crate::imports::build_prelude_env()).await;
 
     assert_eq!(doc_map.get("myFunc"), Some(&"My function".to_string()));
 }
 
-#[test]
-fn test_doc_extraction_from_fn_return_annotation() {
+#[tokio::test]
+async fn test_doc_extraction_from_fn_return_annotation() {
     // Test Task 2: extract doc from function return annotation
     let input = "[count@[]: [fn@[type: Int  doc: \"Returns the count\"] [] 42]]";
     let mut program = crate::parse(input).unwrap().program;
     crate::desugar::desugar_surface_program(&mut program);
     let (_errors, _type_map, doc_map, _scheme_map, _diagnostics) =
-        typecheck_surface_program(&program, crate::imports::build_prelude_env());
+        typecheck_surface_program(&program, crate::imports::build_prelude_env()).await;
 
     assert_eq!(doc_map.get("count"), Some(&"Returns the count".to_string()));
 }
 
-#[test]
-fn test_doc_extraction_combined() {
+#[tokio::test]
+async fn test_doc_extraction_combined() {
     // Test all three extraction patterns together
     let input = r#"
 [helper@[doc: "Helper function"]: [fn@[doc: "Adds two numbers"] [let a@[doc: "First number"] b@[doc: "Second number"]] [+ a b]]]
@@ -7147,7 +7278,7 @@ fn test_doc_extraction_combined() {
     let mut program = crate::parse(input).unwrap().program;
     crate::desugar::desugar_surface_program(&mut program);
     let (_errors, _type_map, doc_map, _scheme_map, _diagnostics) =
-        typecheck_surface_program(&program, crate::imports::build_prelude_env());
+        typecheck_surface_program(&program, crate::imports::build_prelude_env()).await;
 
     // When both key annotation and return annotation have doc:, the return annotation
     // wins because it is extracted later during recursion (overwrite semantics).
@@ -7161,12 +7292,12 @@ fn test_doc_extraction_combined() {
 
 // ========== Match Arm Scope Tests (match-arm-scope sprint) ==========
 
-#[test]
-fn test_match_arm_pin_pattern_does_not_bind() {
+#[tokio::test]
+async fn test_match_arm_pin_pattern_does_not_bind() {
     // T-1154: bare lowercase names in pattern position are now Pin, not Variable.
     // [match 42 n: n] — `n` is Pin (unresolved → wildcard), NOT bound in body.
     // The body `n` is an undefined variable → type error.
-    let result = check("[x: [match 42 n: n]]");
+    let result = check("[x: [match 42 n: n]]").await;
     assert!(
         result.is_err(),
         "Pin pattern `n` must not bind; body `n` should be undefined: {:?}",
@@ -7174,12 +7305,12 @@ fn test_match_arm_pin_pattern_does_not_bind() {
     );
 }
 
-#[test]
-fn test_match_arm_dict_pin_pattern_does_not_bind() {
+#[tokio::test]
+async fn test_match_arm_dict_pin_pattern_does_not_bind() {
     // T-1154: `[ok: v]` uses Pin for `v`. Pin does not inject `v` into scope.
     // Body `v` is undefined → type error.
     // Use wildcard body `0` for the arm to type-check, then verify the variable arm fails.
-    let result = check("[x: [match [ok: 42] [ok: v]: v _: 0]]");
+    let result = check("[x: [match [ok: 42] [ok: v]: v _: 0]]").await;
     assert!(
         result.is_err(),
         "Pin pattern `v` in dict position must not bind; body `v` should be undefined: {:?}",
@@ -7187,10 +7318,10 @@ fn test_match_arm_dict_pin_pattern_does_not_bind() {
     );
 }
 
-#[test]
-fn test_match_arm_dict_pin_pattern_arithmetic_fails() {
+#[tokio::test]
+async fn test_match_arm_dict_pin_pattern_arithmetic_fails() {
     // T-1154: `[ok: v]` uses Pin. `v` not in scope → `[+ v 1]` is a type error.
-    let result = check("[x: [match [ok: 42] [ok: v]: [+ v 1] _: 0]]");
+    let result = check("[x: [match [ok: 42] [ok: v]: [+ v 1] _: 0]]").await;
     assert!(
         result.is_err(),
         "Pin pattern `v` in dict must not bind; body `[+ v 1]` should fail: {:?}",
@@ -7198,10 +7329,10 @@ fn test_match_arm_dict_pin_pattern_arithmetic_fails() {
     );
 }
 
-#[test]
-fn test_match_arm_wildcard_no_bindings() {
+#[tokio::test]
+async fn test_match_arm_wildcard_no_bindings() {
     // Pattern::Wildcard introduces no bindings — no undefined variable errors.
-    let result = check("[x: [match 42 _: 99]]");
+    let result = check("[x: [match 42 _: 99]]").await;
     assert!(
         result.is_ok(),
         "wildcard pattern with no bindings should type-check: {:?}",
@@ -7209,11 +7340,11 @@ fn test_match_arm_wildcard_no_bindings() {
     );
 }
 
-#[test]
-fn test_match_arm_nested_dict_pin_pattern_does_not_bind() {
+#[tokio::test]
+async fn test_match_arm_nested_dict_pin_pattern_does_not_bind() {
     // T-1154: `[a: v1  b: v2]` uses Pin patterns. Neither v1 nor v2 are bound.
     // Body `[+ v1 v2]` is a type error (both undefined).
-    let result = check("[x: [match [a: 1  b: 2] [a: v1  b: v2]: [+ v1 v2] _: 0]]");
+    let result = check("[x: [match [a: 1  b: 2] [a: v1  b: v2]: [+ v1 v2] _: 0]]").await;
     assert!(
         result.is_err(),
         "Pin patterns in nested dict must not bind; body should fail: {:?}",
@@ -7223,11 +7354,11 @@ fn test_match_arm_nested_dict_pin_pattern_does_not_bind() {
 
 // ========== Typecheck Completeness Tests ==========
 
-#[test]
-fn test_recursive_function_with_annotation_works() {
+#[tokio::test]
+async fn test_recursive_function_with_annotation_works() {
     // Task 1: Recursive functions WITH return annotations should work
     // Use a simple recursive function that returns a constant (doesn't actually recurse at runtime)
-    let result = check("[f: [fn@Int [let x@Int] 42]]");
+    let result = check("[f: [fn@Int [let x@Int] 42]]").await;
     assert!(
         result.is_ok(),
         "function with return annotation should type-check: {:?}",
@@ -7235,11 +7366,11 @@ fn test_recursive_function_with_annotation_works() {
     );
 }
 
-#[test]
-fn test_recursive_function_without_annotation_errors() {
+#[tokio::test]
+async fn test_recursive_function_without_annotation_errors() {
     // Task 1: Recursive functions WITHOUT return annotations should error
     // Use a simpler recursive function to avoid other type errors
-    let result = check("[f: [fn [let x] [$f $x]]]");
+    let result = check("[f: [fn [let x] [$f $x]]]").await;
     assert!(
         result.is_err(),
         "recursive function without return annotation should fail"
@@ -7256,8 +7387,8 @@ fn test_recursive_function_without_annotation_errors() {
     );
 }
 
-#[test]
-fn test_call_mono_poly_agree_on_literals() {
+#[tokio::test]
+async fn test_call_mono_poly_agree_on_literals() {
     // Task 2: CALL-MONO and CALL-POLY should give consistent results
     // Polymorphic function (CALL-POLY path) and monomorphic function (CALL-MONO path)
     // should both accept IntLiteral(42) for Int parameter
@@ -7266,7 +7397,8 @@ fn test_call_mono_poly_agree_on_literals() {
              id_int: [fn [let x@Int] $x]\n\
              poly_result: [$id 42]\n\
              mono_result: [$id_int 42]]",
-    );
+    )
+    .await;
     assert!(
         result.is_ok(),
         "both CALL-MONO and CALL-POLY should accept IntLiteral for Int param: {:?}",
@@ -7274,13 +7406,14 @@ fn test_call_mono_poly_agree_on_literals() {
     );
 }
 
-#[test]
-fn test_int_to_number_subsumption() {
+#[tokio::test]
+async fn test_int_to_number_subsumption() {
     // Task 2: Passing Int to Number param should work via subsumption
     let result = check(
         "[to_number: [fn [let x@Number] $x]\n\
              result: [$to_number 42]]",
-    );
+    )
+    .await;
     assert!(
         result.is_ok(),
         "Int should be accepted for Number parameter via subsumption: {:?}",
@@ -7290,8 +7423,8 @@ fn test_int_to_number_subsumption() {
 
 // -- SCC-based binding group analysis tests --
 
-#[test]
-fn test_scc_singleton_generalization() {
+#[tokio::test]
+async fn test_scc_singleton_generalization() {
     // Singleton SCCs (non-recursive entries) should be generalized before
     // dependent entries see them, allowing polymorphic use.
     // Use [fn [x@a] $x] (annotated TypeVar param) so `id` is genuinely polymorphic.
@@ -7303,7 +7436,8 @@ fn test_scc_singleton_generalization() {
         "[id: [fn [let x@a] $x]\n\
              result_int: [$id 42]\n\
              result_str: [$id \"hello\"]]",
-    );
+    )
+    .await;
     assert!(
         result.is_ok(),
         "id should be generalized and usable at both Int and Str: {:?}",
@@ -7314,7 +7448,8 @@ fn test_scc_singleton_generalization() {
         "[id: [fn [let x@a] $x]\n\
              result_int: [$id 42]\n\
              result_str: [$id \"hello\"]]",
-    );
+    )
+    .await;
     let id_scheme = env.get("id").expect("id must be in env");
     assert!(
         !id_scheme.type_vars.is_empty(),
@@ -7323,14 +7458,15 @@ fn test_scc_singleton_generalization() {
     );
 }
 
-#[test]
-fn test_scc_mutual_recursion_monomorphic() {
+#[tokio::test]
+async fn test_scc_mutual_recursion_monomorphic() {
     // Mutually recursive entries form an SCC and remain monomorphic within it.
     // even and odd both call each other, so they're in the same SCC.
     let result = check(
         "[even?: [fn [let n@Int] [if [= $n 0] true  [odd?  [- $n 1]]]]\n\
              odd?:  [fn [let n@Int] [if [= $n 0] false [even? [- $n 1]]]]]",
-    );
+    )
+    .await;
     assert!(
         result.is_ok(),
         "mutually recursive functions should type-check correctly: {:?}",
@@ -7338,15 +7474,16 @@ fn test_scc_mutual_recursion_monomorphic() {
     );
 }
 
-#[test]
-fn test_scc_nested_dict_generalization() {
+#[tokio::test]
+async fn test_scc_nested_dict_generalization() {
     // Nested dicts should also get SCC-based generalization.
     // Use [fn [x@a] $x] so the test detects SCC removal (Unknown would pass vacuously).
     let result = check(
         "[outer: [inner: [id: [fn [let x@a] $x]\n\
                              use_int: [$id 42]\n\
                              use_str: [$id \"hello\"]]]]",
-    );
+    )
+    .await;
     assert!(
         result.is_ok(),
         "nested dict entries should get SCC-based generalization: {:?}",
@@ -7354,8 +7491,8 @@ fn test_scc_nested_dict_generalization() {
     );
 }
 
-#[test]
-fn test_scc_dependency_chain() {
+#[tokio::test]
+async fn test_scc_dependency_chain() {
     // If a→b→c (dependency chain), each should be generalized before the next.
     // Use [fn [x@a] $x] so the test detects SCC removal (Unknown would pass vacuously).
     let result = check(
@@ -7364,7 +7501,8 @@ fn test_scc_dependency_chain() {
              a: [fn [let z@c_] [call $b $z]]\n\
              result_int: [call $a 42]\n\
              result_str: [call $a \"hello\"]]",
-    );
+    )
+    .await;
     assert!(
         result.is_ok(),
         "dependency chain should allow polymorphic use of final function: {:?}",
@@ -7372,8 +7510,8 @@ fn test_scc_dependency_chain() {
     );
 }
 
-#[test]
-fn test_scc_non_recursive_function_generalizes() {
+#[tokio::test]
+async fn test_scc_non_recursive_function_generalizes() {
     // A non-recursive function should be generalized even if it's defined
     // alongside other function entries.
     // Use [fn [x@a] $x] so the test detects SCC removal (Unknown would pass vacuously).
@@ -7382,7 +7520,8 @@ fn test_scc_non_recursive_function_generalizes() {
              const: [fn [let x@Int] $x]\n\
              use_id_int: [$id 42]\n\
              use_id_str: [$id \"hello\"]]",
-    );
+    )
+    .await;
     assert!(
         result.is_ok(),
         "non-recursive id should be generalized despite monomorphic const: {:?}",
@@ -7390,8 +7529,8 @@ fn test_scc_non_recursive_function_generalizes() {
     );
 }
 
-#[test]
-fn test_collect_pattern_bindings_pin() {
+#[tokio::test]
+async fn test_collect_pattern_bindings_pin() {
     // Unit test for collect_pattern_bindings: Pin pattern does not introduce bindings
     // (Pin compares against an existing variable in scope, does not bind a new name)
     let mut out = Vec::new();
@@ -7399,8 +7538,8 @@ fn test_collect_pattern_bindings_pin() {
     assert_eq!(out.len(), 0, "Pin pattern should not introduce bindings");
 }
 
-#[test]
-fn test_collect_pattern_bindings_dict_field_narrowed() {
+#[tokio::test]
+async fn test_collect_pattern_bindings_dict_field_narrowed() {
     // Unit test: Dict pattern on a concrete Record type — Pin sub-pattern produces no binding.
     // (Pin compares against an existing variable in scope; it does not introduce a new binding.)
     let scrutinee = Type::Record(Row {
@@ -7426,8 +7565,8 @@ fn test_collect_pattern_bindings_dict_field_narrowed() {
     assert_eq!(out.len(), 0, "Pin sub-pattern introduces no bindings");
 }
 
-#[test]
-fn test_collect_pattern_bindings_dict_missing_field_falls_back_to_unknown() {
+#[tokio::test]
+async fn test_collect_pattern_bindings_dict_missing_field_falls_back_to_unknown() {
     // Dict pattern with key not present in Record — Pin sub-pattern produces no binding.
     // (Verifies the Dict arm recurses without panic even when key is absent from Record.)
     let scrutinee = Type::Record(Row {
@@ -7449,16 +7588,16 @@ fn test_collect_pattern_bindings_dict_missing_field_falls_back_to_unknown() {
     assert_eq!(out.len(), 0, "Pin sub-pattern introduces no bindings");
 }
 
-#[test]
-fn test_collect_pattern_bindings_wildcard_no_bindings() {
+#[tokio::test]
+async fn test_collect_pattern_bindings_wildcard_no_bindings() {
     // Wildcard pattern introduces no bindings
     let mut out = Vec::new();
     collect_pattern_bindings(&Pattern::Wildcard, &Type::Int, &mut out);
     assert!(out.is_empty(), "wildcard should introduce no bindings");
 }
 
-#[test]
-fn test_collect_pattern_bindings_seq_head_tail() {
+#[tokio::test]
+async fn test_collect_pattern_bindings_seq_head_tail() {
     // Seq pattern: Pin sub-patterns introduce no bindings (Pin compares, does not bind).
     // Verifies the Seq arm recurses without panic; element/tail narrowing logic still runs.
     let scrutinee = Type::seq(Type::Int);
@@ -7474,8 +7613,8 @@ fn test_collect_pattern_bindings_seq_head_tail() {
     assert_eq!(out.len(), 0, "Pin sub-patterns introduce no bindings");
 }
 
-#[test]
-fn test_collect_pattern_bindings_or() {
+#[tokio::test]
+async fn test_collect_pattern_bindings_or() {
     // Or-pattern: only collects from first alternative
     let mut out = Vec::new();
     collect_pattern_bindings(
@@ -7493,8 +7632,8 @@ fn test_collect_pattern_bindings_or() {
     );
 }
 
-#[test]
-fn test_collect_pattern_bindings_constructor_unknown_fallback() {
+#[tokio::test]
+async fn test_collect_pattern_bindings_constructor_unknown_fallback() {
     // Constructor pattern with Int scrutinee: no matching NominalVariant, falls back to Unknown
     let mut out = Vec::new();
     collect_pattern_bindings(
@@ -7519,8 +7658,8 @@ fn test_collect_pattern_bindings_constructor_unknown_fallback() {
 
 // --- C-Var1/2 Constraint Rewriting ---
 
-#[test]
-fn test_c_var1_binds_typevar_in_union() {
+#[tokio::test]
+async fn test_c_var1_binds_typevar_in_union() {
     // C-Var1: unify(Int, Union([Str, TypeVar(a)])) → bind a = Int
     // because Int is not covered by the non-var member Str
     let mut state = InferState::new();
@@ -7537,7 +7676,8 @@ fn test_c_var1_binds_typevar_in_union() {
         &mut state,
         &mut constraints,
         Span::origin(),
-    );
+    )
+    .await;
     assert!(result.is_ok(), "C-Var1 should succeed: {result:?}");
     // a is bound to Int
     assert_eq!(
@@ -7547,8 +7687,8 @@ fn test_c_var1_binds_typevar_in_union() {
     );
 }
 
-#[test]
-fn test_c_var1_already_covered_no_binding() {
+#[tokio::test]
+async fn test_c_var1_already_covered_no_binding() {
     // C-Var1: unify(Int, Union([Int, TypeVar(a)])) → Int already covered, no binding needed
     let mut state = InferState::new();
     let mut subst = Substitution::new();
@@ -7564,7 +7704,8 @@ fn test_c_var1_already_covered_no_binding() {
         &mut state,
         &mut constraints,
         Span::origin(),
-    );
+    )
+    .await;
     assert!(
         result.is_ok(),
         "C-Var1 already covered should succeed: {result:?}"
@@ -7576,8 +7717,8 @@ fn test_c_var1_already_covered_no_binding() {
     );
 }
 
-#[test]
-fn test_c_var1_symmetric_union_on_left() {
+#[tokio::test]
+async fn test_c_var1_symmetric_union_on_left() {
     // C-Var1 symmetric: unify(Union([Str, TypeVar(a)]), Int) → bind a = Int
     let mut state = InferState::new();
     let mut subst = Substitution::new();
@@ -7593,7 +7734,8 @@ fn test_c_var1_symmetric_union_on_left() {
         &mut state,
         &mut constraints,
         Span::origin(),
-    );
+    )
+    .await;
     assert!(
         result.is_ok(),
         "C-Var1 symmetric should succeed: {result:?}"
@@ -7605,8 +7747,8 @@ fn test_c_var1_symmetric_union_on_left() {
     );
 }
 
-#[test]
-fn test_c_var2_binds_typevar_in_intersection() {
+#[tokio::test]
+async fn test_c_var2_binds_typevar_in_intersection() {
     // C-Var2: unify(Intersection([Str, TypeVar(a)]), Int) → bind a = Int
     // because Str alone doesn't satisfy Int
     let mut state = InferState::new();
@@ -7624,7 +7766,8 @@ fn test_c_var2_binds_typevar_in_intersection() {
         &mut state,
         &mut constraints,
         Span::origin(),
-    );
+    )
+    .await;
     assert!(result.is_ok(), "C-Var2 should succeed: {result:?}");
     assert_eq!(
         subst.get(&var_name),
@@ -7635,8 +7778,8 @@ fn test_c_var2_binds_typevar_in_intersection() {
 
 // --- @[[all A B]] and @[[without A]] annotation syntax ---
 
-#[test]
-fn test_annotation_all_produces_intersection() {
+#[tokio::test]
+async fn test_annotation_all_produces_intersection() {
     // @[[all Int Str]] → Type::Intersection([Int, Str])
     // Note: normalize_intersection sorts members
     let source = "[result: [@[[all Int Str]] 42]]";
@@ -7649,8 +7792,8 @@ fn test_annotation_all_produces_intersection() {
     let _ = result; // may succeed or fail, but should not panic
 }
 
-#[test]
-fn test_annotation_all_two_compatible_types() {
+#[tokio::test]
+async fn test_annotation_all_two_compatible_types() {
     // @[[all Int Number]] → Int & Number = Int (since Int <: Number)
     // Checking 42 against Int & Number should succeed since 42 : Int and Int <: Number
     let source = "[@[[all Int Number]] 42]";
@@ -7660,20 +7803,20 @@ fn test_annotation_all_two_compatible_types() {
     let _ = result;
 }
 
-#[test]
-fn test_annotation_without_produces_negation() {
+#[tokio::test]
+async fn test_annotation_without_produces_negation() {
     // @[[without Int]] → Type::Negation(Int)
     // Just ensure it parses and resolves without panic
     let source = "[@[[without Int]] \"hello\"]";
-    let result = check(source);
+    let result = check(source).await;
     // "hello" : Str — Str is not Int, so ~Int check passes
     let _ = result;
 }
 
-#[test]
-fn test_annotation_never_type_name() {
+#[tokio::test]
+async fn test_annotation_never_type_name() {
     // @Never should resolve to Type::Never
-    let env = doc_env_with_builtins("[T: [type Never]]");
+    let env = doc_env_with_builtins("[T: [type Never]]").await;
     let alias = env.get_type_alias("T").expect("T alias should exist");
     assert_eq!(
         alias.body,
@@ -7682,10 +7825,10 @@ fn test_annotation_never_type_name() {
     );
 }
 
-#[test]
-fn test_annotation_top_type_name() {
+#[tokio::test]
+async fn test_annotation_top_type_name() {
     // @Top should resolve to Type::Top
-    let env = doc_env_with_builtins("[T: [type Top]]");
+    let env = doc_env_with_builtins("[T: [type Top]]").await;
     let alias = env.get_type_alias("T").expect("T alias should exist");
     assert_eq!(
         alias.body,
@@ -7696,13 +7839,13 @@ fn test_annotation_top_type_name() {
 
 // --- False-branch narrowing ---
 
-#[test]
-fn test_false_branch_narrowing_int_predicate() {
+#[tokio::test]
+async fn test_false_branch_narrowing_int_predicate() {
     // In the false branch of [int? x], x should be narrowed to ~Int
     // We verify this by checking that the env_false has a Negation type for x
     // The simplest observable: if we shadow the result with the else branch value,
     // the type checker should not crash and the else-branch type is used.
-    let env = doc_env_with_builtins("[x: 42]\n[result: [if [int? x] 1 0]]");
+    let env = doc_env_with_builtins("[x: 42]\n[result: [if [int? x] 1 0]]").await;
     // Both branches have Int; result should be Int
     match env.get("result").map(|s| &s.body) {
         Some(Type::Int) | Some(Type::IntLiteral(_)) | Some(Type::Number) => {}
@@ -7711,8 +7854,8 @@ fn test_false_branch_narrowing_int_predicate() {
     }
 }
 
-#[test]
-fn test_false_branch_negation_inserted_in_env() {
+#[tokio::test]
+async fn test_false_branch_negation_inserted_in_env() {
     // Verify that the false branch env actually has a Negation type.
     // We do this by calling apply_negation_narrowings directly.
     use std::rc::Rc;
@@ -7737,8 +7880,8 @@ fn test_false_branch_negation_inserted_in_env() {
     );
 }
 
-#[test]
-fn test_false_branch_fn_predicate_negation() {
+#[tokio::test]
+async fn test_false_branch_fn_predicate_negation() {
     // Verify that fn? false-branch narrowing inserts Negation(Function{...}) into the env.
     // Model this on test_false_branch_negation_inserted_in_env which tests int?.
     use std::rc::Rc;
@@ -7771,32 +7914,32 @@ fn test_false_branch_fn_predicate_negation() {
 
 // --- I-Case3 in infer_match ---
 
-#[test]
-fn test_i_case3_match_arm_sees_narrowed_scrutinee() {
+#[tokio::test]
+async fn test_i_case3_match_arm_sees_narrowed_scrutinee() {
     // Match with literal string patterns — verify that match type-checks without errors.
     // The I-Case3 narrowing means the second arm sees remaining_scrutinee ∩ ~first-literal.
     let source = "[x: \"ok\"]\n[result: [match x\n    \"ok\": 1\n    \"err\": 2\n    _: 0]]";
-    let result = check(source);
+    let result = check(source).await;
     assert!(
         result.is_ok(),
         "match should type-check: {result:?}"
     );
 }
 
-#[test]
-fn test_i_case3_wildcard_remaining_is_never() {
+#[tokio::test]
+async fn test_i_case3_wildcard_remaining_is_never() {
     // After a wildcard arm, remaining_scrutinee becomes Never (catch-all consumed).
     // Any subsequent arm would be unreachable — but we just verify no panic.
     let source = "[x: 42]\n[result: [match x\n    _: 1\n    1: 2]]";
     // The second arm after wildcard should be flagged as unreachable (if coverage checking fires)
     // or just succeed. Either way, no panic.
-    let _ = check(source);
+    let _ = check(source).await;
 }
 
 // ========== Indexable typeclass Tests (get / get?) ==========
 
-#[test]
-fn test_check_get_map_returns_value_type() {
+#[tokio::test]
+async fn test_check_get_map_returns_value_type() {
     // [builtin-get key map] where map : Map[String Int] should return Int.
     // Seed TypeEnv directly with m : Map[String Int] since there is no Map literal syntax in LLT.
     // Resolved by Indexable MPTC FD: Map instance (K, V) → V.
@@ -7824,7 +7967,8 @@ fn test_check_get_map_returns_value_type() {
         &mut None,
         &empty_pipeline,
         &named_types,
-    );
+    )
+    .await;
     if !errors.is_empty() {
         panic!("typecheck should succeed, got errors: {:?}", errors);
     }
@@ -7835,8 +7979,8 @@ fn test_check_get_map_returns_value_type() {
     }
 }
 
-#[test]
-fn test_check_get_optional_map_returns_value_or_null() {
+#[tokio::test]
+async fn test_check_get_optional_map_returns_value_or_null() {
     // [get? key map] where map : Map[String Int] should return Int|Null.
     // Resolved by Indexable MPTC FD: Map instance (K, V) → V | Null.
     // Seed TypeEnv directly with m : Map[String Int].
@@ -7862,7 +8006,8 @@ fn test_check_get_optional_map_returns_value_or_null() {
         &mut None,
         &empty_pipeline,
         &named_types,
-    );
+    )
+    .await;
     if !errors.is_empty() {
         panic!("typecheck should succeed, got errors: {:?}", errors);
     }
@@ -7890,14 +8035,15 @@ fn test_check_get_optional_map_returns_value_or_null() {
     }
 }
 
-#[test]
-fn test_check_get_record_known_field_returns_field_type() {
+#[tokio::test]
+async fn test_check_get_record_known_field_returns_field_type() {
     // [builtin-get "a" rec] where rec : [a: Int] should return Int.
     // Resolved by Indexable MPTC FD: Record case routed through resolve_has_field.
     let env = doc_env_with_builtins(
         "[rec: [a: 42]]\n\
              [result: [builtin-get \"a\" rec]]",
-    );
+    )
+    .await;
     match env.get("result").map(|s| &s.body) {
         Some(Type::Int) | Some(Type::IntLiteral(_)) => {}
         Some(other) => panic!("expected Int from builtin-get on record [a: Int], got {other}"),
@@ -7905,13 +8051,14 @@ fn test_check_get_record_known_field_returns_field_type() {
     }
 }
 
-#[test]
-fn test_check_get_optional_record_known_field_returns_field_type_or_null() {
+#[tokio::test]
+async fn test_check_get_optional_record_known_field_returns_field_type_or_null() {
     // [get? "a" rec] where rec : [a: Int] should return Int|Null.
     let env = doc_env_with_builtins(
         "[rec: [a: 42]]\n\
              [result: [get? \"a\" rec]]",
-    );
+    )
+    .await;
     let null_ty = Type::Record(Row {
         fields: BTreeMap::new(),
         tail: crate::type_def::RowTail::Empty,
@@ -7937,20 +8084,21 @@ fn test_check_get_optional_record_known_field_returns_field_type_or_null() {
     }
 }
 
-#[test]
-fn test_check_get_unknown_type_falls_back_to_unknown() {
+#[tokio::test]
+async fn test_check_get_unknown_type_falls_back_to_unknown() {
     // [builtin-get key unknown_dict] where unknown_dict : unknown type should not error.
     // Indexable FD: no instance matches for unknown container → falls back to Unknown.
     let env = doc_env_with_builtins(
         "[d: [if true [] []]]\n\
              [result: [builtin-get \"x\" d]]",
-    );
+    )
+    .await;
     // We just verify it type-checks without error (returns Unknown or some type).
     let _ = env.get("result");
 }
 
-#[test]
-fn test_get_question_mark_registered_in_builtins() {
+#[tokio::test]
+async fn test_get_question_mark_registered_in_builtins() {
     // get? should be resolvable from the prelude environment without error.
     let env = crate::imports::build_prelude_env();
     assert!(
@@ -7959,14 +8107,15 @@ fn test_get_question_mark_registered_in_builtins() {
     );
 }
 
-#[test]
-fn test_check_get_seq_integer_key_returns_element_type() {
+#[tokio::test]
+async fn test_check_get_seq_integer_key_returns_element_type() {
     // [builtin-get N seq] where seq : Seq[Str] and N is an Int literal should return Str.
     // Regression test for bas-get-seq-unknown: [builtin-get 0 [split sep s]] → Str.
     let env = doc_env_with_prelude(
         "[parts: [split \"x\" \"a x b\"]]\n\
              [result: [builtin-get 0 parts]]",
-    );
+    )
+    .await;
     match env.get("result").map(|s| &s.body) {
         Some(Type::Str) | Some(Type::StringLiteral(_)) => {}
         Some(other) => panic!("expected Str from [builtin-get 0 Seq[Str]], got {other}"),
@@ -7974,15 +8123,16 @@ fn test_check_get_seq_integer_key_returns_element_type() {
     }
 }
 
-#[test]
-fn test_builtin_get_special_form_label_typevar_returns_field_type() {
+#[tokio::test]
+async fn test_builtin_get_special_form_label_typevar_returns_field_type() {
     // `builtin-get` uses the Indexable typeclass with FD improvement so that
     // Map and Seq indexing produce precise value types.
     // Scenario: [builtin-get "host" cfg] where cfg : [host: Str] → Str.
     let env = doc_env_with_builtins(
         "[cfg: [host: \"localhost\"]]\n\
              [result: [builtin-get \"host\" cfg]]",
-    );
+    )
+    .await;
     match env.get("result").map(|s| &s.body) {
         Some(Type::Str) | Some(Type::StringLiteral(_)) => {}
         Some(other) => panic!("expected Str from [builtin-get \"host\" rec], got {other}"),
@@ -7990,8 +8140,8 @@ fn test_builtin_get_special_form_label_typevar_returns_field_type() {
     }
 }
 
-#[test]
-fn test_builtin_get_integer_key_falls_back_to_unknown() {
+#[tokio::test]
+async fn test_builtin_get_integer_key_falls_back_to_unknown() {
     // `builtin-get` with a non-label, non-string-literal key (e.g. Int index
     // into an unknown collection) falls back to Unknown when no Indexable instance matches.
     // This is the common prelude-internal usage pattern.
@@ -7999,7 +8149,8 @@ fn test_builtin_get_integer_key_falls_back_to_unknown() {
         "[idx: 0]\n\
              [coll: [if true [] []]]\n\
              [result: [builtin-get idx coll]]",
-    );
+    )
+    .await;
     // No type error; result has some type (Unknown or more precise).
     let _ = env.get("result");
 }
@@ -8009,14 +8160,15 @@ fn test_builtin_get_integer_key_falls_back_to_unknown() {
 // via the Indexable MPTC FD path. imports.rs restores the authoritative Indexable-
 // constrained builtin scheme for `get` to ensure FD fires reliably at call sites.
 
-#[test]
-fn test_check_get_prelude_seq_integer_key_returns_element_type() {
+#[tokio::test]
+async fn test_check_get_prelude_seq_integer_key_returns_element_type() {
     // Regression: [get 1 [split "\n" s]] should return Str, not Unknown.
     // This is the exact pattern from samples/versions.llt line 63.
     let env = doc_env_with_prelude(
         "[parts: [split \"\\n\" \"a\\nb\\nc\"]]\n\
              [result: [get 1 parts]]",
-    );
+    )
+    .await;
     match env.get("result").map(|s| &s.body) {
         Some(Type::Str) | Some(Type::StringLiteral(_)) => {}
         Some(other) => panic!("expected Str from [get 1 Seq[Str]] via Indexable FD, got {other}"),
@@ -8024,13 +8176,14 @@ fn test_check_get_prelude_seq_integer_key_returns_element_type() {
     }
 }
 
-#[test]
-fn test_check_get_prelude_record_string_literal_key_returns_field_type() {
+#[tokio::test]
+async fn test_check_get_prelude_record_string_literal_key_returns_field_type() {
     // [get "host" cfg] where cfg : [host: Str] should return Str via Indexable MPTC FD.
     let env = doc_env_with_prelude(
         "[cfg: [host: \"localhost\"]]\n\
              [result: [get \"host\" cfg]]",
-    );
+    )
+    .await;
     match env.get("result").map(|s| &s.body) {
         Some(Type::Str) | Some(Type::StringLiteral(_)) => {}
         Some(other) => {
@@ -8040,14 +8193,15 @@ fn test_check_get_prelude_record_string_literal_key_returns_field_type() {
     }
 }
 
-#[test]
-fn test_check_get_prelude_integer_literal_key_into_seq_str() {
+#[tokio::test]
+async fn test_check_get_prelude_integer_literal_key_into_seq_str() {
     // [get 0 parts] where parts : Seq[Str] should return Str.
     // Literal integer key (IntLiteral(0)) into Seq(Str).
     let env = doc_env_with_prelude(
         "[parts: [split \" \" \"hello world\"]]\n\
              [result: [get 0 parts]]",
-    );
+    )
+    .await;
     match env.get("result").map(|s| &s.body) {
         Some(Type::Str) | Some(Type::StringLiteral(_)) => {}
         Some(other) => panic!("expected Str from [get 0 Seq[Str]] via Indexable FD, got {other}"),
@@ -8055,19 +8209,20 @@ fn test_check_get_prelude_integer_literal_key_into_seq_str() {
     }
 }
 
-#[test]
-fn test_check_get_prelude_unknown_collection_falls_back_to_unknown() {
+#[tokio::test]
+async fn test_check_get_prelude_unknown_collection_falls_back_to_unknown() {
     // [get "key" d] where d is Unknown should not error and return Unknown.
     let env = doc_env_with_prelude(
         "[d: [if true [] []]]\n\
              [result: [get \"key\" d]]",
-    );
+    )
+    .await;
     // No type error is the main assertion; result type may be Unknown or more precise.
     let _ = env.get("result");
 }
 
-#[test]
-fn test_split_returns_seq_str_type() {
+#[tokio::test]
+async fn test_split_returns_seq_str_type() {
     // split (prelude wrapper around builtin-split) is typed as Seq[Str], not Unknown.
     // `split` is a prelude function; use build_prelude_env() to look it up.
     let env = crate::imports::build_prelude_env();
@@ -8089,13 +8244,14 @@ fn test_split_returns_seq_str_type() {
 
 // HasField constraint tests (hkt-field-access sprint)
 
-#[test]
-fn test_get_concrete_string_key_on_record() {
+#[tokio::test]
+async fn test_get_concrete_string_key_on_record() {
     // [get "name" {name: "alice"}] → type is String
     let env = doc_env_with_prelude(
         "[user: [name: \"alice\"]]\n\
              [result: [get \"name\" user]]",
-    );
+    )
+    .await;
     match env.get("result").map(|s| &s.body) {
         Some(Type::Str) | Some(Type::StringLiteral(_)) => {}
         Some(other) => panic!("expected Str from get on record [name: Str], got {other}"),
@@ -8103,8 +8259,8 @@ fn test_get_concrete_string_key_on_record() {
     }
 }
 
-#[test]
-fn test_get_union_distribution() {
+#[tokio::test]
+async fn test_get_union_distribution() {
     // [get "port" (A | B)] → type is A.port | B.port
     // Create two record types with different field types
     let prelude_env = crate::imports::build_prelude_env();
@@ -8145,7 +8301,8 @@ fn test_get_union_distribution() {
         &mut None,
         &empty_pipeline,
         &named_types,
-    );
+    )
+    .await;
     if !errors.is_empty() {
         panic!("typecheck should succeed, got errors: {:?}", errors);
     }
@@ -8169,13 +8326,14 @@ fn test_get_union_distribution() {
     }
 }
 
-#[test]
-fn test_get_in_literal_path() {
+#[tokio::test]
+async fn test_get_in_literal_path() {
     // [get-in ["a" "b"] {a: {b: 42}}] → type is Int
     let env = doc_env_with_prelude(
         "[config: [a: [b: 42]]]\n\
              [result: [get-in [\"a\" \"b\"] config]]",
-    );
+    )
+    .await;
     match env.get("result").map(|s| &s.body) {
         Some(Type::Int) | Some(Type::IntLiteral(_)) => {}
         Some(other) => panic!("expected Int from get-in on nested record, got {other}"),
@@ -8183,13 +8341,14 @@ fn test_get_in_literal_path() {
     }
 }
 
-#[test]
-fn test_get_in_empty_path_returns_dict_unchanged() {
+#[tokio::test]
+async fn test_get_in_empty_path_returns_dict_unchanged() {
     // [get-in [] dict] → type is dict's type
     let env = doc_env_with_prelude(
         "[user: [name: \"alice\"]]\n\
              [result: [get-in [] user]]",
-    );
+    )
+    .await;
     match env.get("result").map(|s| &s.body) {
         Some(Type::Record(_)) => {}
         Some(other) => panic!("expected Record from get-in with empty path, got {other}"),
@@ -8197,14 +8356,15 @@ fn test_get_in_empty_path_returns_dict_unchanged() {
     }
 }
 
-#[test]
-fn test_get_in_variable_path_falls_back_to_unknown() {
+#[tokio::test]
+async fn test_get_in_variable_path_falls_back_to_unknown() {
     // [get-in path dict] where path is not a literal sequence → Unknown
     let env = doc_env_with_prelude(
         "[user: [name: \"alice\"]]\n\
              [path: [\"name\"]]\n\
              [result: [get-in path user]]",
-    );
+    )
+    .await;
     match env.get("result").map(|s| &s.body) {
         Some(Type::Unknown) => {}
         Some(other) => panic!("expected Unknown from get-in with variable path, got {other}"),
@@ -8212,8 +8372,8 @@ fn test_get_in_variable_path_falls_back_to_unknown() {
     }
 }
 
-#[test]
-fn test_union_narrowing_in_pattern() {
+#[tokio::test]
+async fn test_union_narrowing_in_pattern() {
     // B-375 tracks dict-pattern narrowing of union scrutinee types (matching [x: field]
     // against a Union should bind `field` to the common field type). After T-1154
     // (Pin migration), dict pattern value sub-patterns are Pins and do not introduce
@@ -8221,7 +8381,7 @@ fn test_union_narrowing_in_pattern() {
     //
     // This rewrite tests what DOES work: union type annotations are accepted by the
     // type checker, and a function with a union return annotation infers its return type.
-    let result = check("[myfn: [fn@[Int String] [let n@Int] $n]]");
+    let result = check("[myfn: [fn@[Int String] [let n@Int] $n]]").await;
     assert!(
         result.is_ok(),
         "function with union return annotation should typecheck, got: {:?}",
@@ -8229,7 +8389,7 @@ fn test_union_narrowing_in_pattern() {
     );
 
     // A function accepting a union-typed parameter passes the argument through.
-    let result = check("[myfn: [fn@[Int String] [let x@[Int String]] $x]]");
+    let result = check("[myfn: [fn@[Int String] [let x@[Int String]] $x]]").await;
     assert!(
         result.is_ok(),
         "function with union parameter annotation should typecheck, got: {:?}",
@@ -8237,25 +8397,26 @@ fn test_union_narrowing_in_pattern() {
     );
 }
 
-#[test]
-fn test_negation_subtyping_in_type_assert() {
+#[tokio::test]
+async fn test_negation_subtyping_in_type_assert() {
     // [@[[without Bool]] 42] should pass: Int is disjoint from Bool
-    let result = check("[@[[without Bool]] 42]");
+    let result = check("[@[[without Bool]] 42]").await;
     assert!(result.is_ok(), "Int <: ~Bool should hold");
 
     // [@[[without Int]] 42] should fail: Int is not disjoint from Int
-    let result = check("[@[[without Int]] 42]");
+    let result = check("[@[[without Int]] 42]").await;
     assert!(result.is_err(), "Int <: ~Int should not hold");
 }
 
-#[test]
-fn test_negation_subtyping_with_union() {
+#[tokio::test]
+async fn test_negation_subtyping_with_union() {
     // Union(String, Int) <: ~Bool should hold (all members disjoint from Bool)
     // Test via a function that takes Union(String, Int) and returns ~Bool
     let result = check(
         "[fn [let x@[String Int]]\n\
                [@[[without Bool]] $x]]",
-    );
+    )
+    .await;
     assert!(
         result.is_ok(),
         "Union(String, Int) <: ~Bool should hold: {:?}",
@@ -8263,8 +8424,8 @@ fn test_negation_subtyping_with_union() {
     );
 }
 
-#[test]
-fn test_scan_type_quality_detects_unknown() {
+#[tokio::test]
+async fn test_scan_type_quality_detects_unknown() {
     // Test that scan_type_quality emits a diagnostic for inferred Unknown.
     // This example produces 2 diagnostics:
     // 1. The field access r.y has type Unknown
@@ -8274,7 +8435,7 @@ fn test_scan_type_quality_detects_unknown() {
         .program;
     crate::desugar::desugar_surface_program(&mut program);
     let (errors, _type_map, _doc_map, _scheme_map, diagnostics) =
-        typecheck_surface_program(&program, Rc::new(TypeEnv::new()));
+        typecheck_surface_program(&program, Rc::new(TypeEnv::new())).await;
 
     // Should have no type errors
     assert!(
@@ -8294,15 +8455,15 @@ fn test_scan_type_quality_detects_unknown() {
     assert!(diagnostics.iter().all(|d| d.message.contains("Unknown")));
 }
 
-#[test]
-fn test_scan_type_quality_no_diagnostic_for_concrete_types() {
+#[tokio::test]
+async fn test_scan_type_quality_no_diagnostic_for_concrete_types() {
     // Test that scan_type_quality does NOT emit diagnostics for concrete types
     let mut program = crate::parse("[f: [fn@Int [let x@Int] $x]]")
         .unwrap()
         .program;
     crate::desugar::desugar_surface_program(&mut program);
     let (errors, _type_map, _doc_map, _scheme_map, diagnostics) =
-        typecheck_surface_program(&program, Rc::new(TypeEnv::new()));
+        typecheck_surface_program(&program, Rc::new(TypeEnv::new())).await;
 
     // Should have no type errors or diagnostics
     assert!(
@@ -8317,15 +8478,15 @@ fn test_scan_type_quality_no_diagnostic_for_concrete_types() {
     );
 }
 
-#[test]
-fn test_scan_type_quality_explicit_unknown_annotation() {
+#[tokio::test]
+async fn test_scan_type_quality_explicit_unknown_annotation() {
     // Test that explicit @Unknown produces Info diagnostic (T011), not Warn (T010)
     let mut program = crate::parse("[f: [fn@Unknown [let x] $x]]")
         .unwrap()
         .program;
     crate::desugar::desugar_surface_program(&mut program);
     let (errors, _type_map, _doc_map, _scheme_map, diagnostics) =
-        typecheck_surface_program(&program, Rc::new(TypeEnv::new()));
+        typecheck_surface_program(&program, Rc::new(TypeEnv::new())).await;
 
     // Should have no type errors
     assert!(
@@ -8355,13 +8516,13 @@ fn test_scan_type_quality_explicit_unknown_annotation() {
     );
 }
 
-#[test]
-fn test_scan_type_quality_typeassert_unknown() {
+#[tokio::test]
+async fn test_scan_type_quality_typeassert_unknown() {
     // Test that [@Unknown expr] produces Info diagnostic (T011)
     let mut program = crate::parse("[x: [@Unknown 42]]").unwrap().program;
     crate::desugar::desugar_surface_program(&mut program);
     let (errors, _type_map, _doc_map, _scheme_map, diagnostics) =
-        typecheck_surface_program(&program, Rc::new(TypeEnv::new()));
+        typecheck_surface_program(&program, Rc::new(TypeEnv::new())).await;
 
     // Should have no type errors
     assert!(
@@ -8391,15 +8552,15 @@ fn test_scan_type_quality_typeassert_unknown() {
     );
 }
 
-#[test]
-fn test_scan_type_quality_overbroad_number_annotation() {
+#[tokio::test]
+async fn test_scan_type_quality_overbroad_number_annotation() {
     // Test that fn@Number when body infers Int produces Info diagnostic (T012)
     let mut program = crate::parse("[f: [fn@Number [let x@Int] $x]]")
         .unwrap()
         .program;
     crate::desugar::desugar_surface_program(&mut program);
     let (errors, _type_map, _doc_map, _scheme_map, diagnostics) =
-        typecheck_surface_program(&program, Rc::new(TypeEnv::new()));
+        typecheck_surface_program(&program, Rc::new(TypeEnv::new())).await;
 
     // Should have no type errors
     assert!(
@@ -8430,15 +8591,15 @@ fn test_scan_type_quality_overbroad_number_annotation() {
     );
 }
 
-#[test]
-fn test_scan_type_quality_no_overbroad_for_matching_type() {
+#[tokio::test]
+async fn test_scan_type_quality_no_overbroad_for_matching_type() {
     // Test that fn@Int when body infers Int does NOT produce over-broad diagnostic
     let mut program = crate::parse("[f: [fn@Int [let x@Int] $x]]")
         .unwrap()
         .program;
     crate::desugar::desugar_surface_program(&mut program);
     let (errors, _type_map, _doc_map, _scheme_map, diagnostics) =
-        typecheck_surface_program(&program, Rc::new(TypeEnv::new()));
+        typecheck_surface_program(&program, Rc::new(TypeEnv::new())).await;
 
     // Should have no type errors or diagnostics
     assert!(
@@ -8457,10 +8618,10 @@ fn test_scan_type_quality_no_overbroad_for_matching_type() {
 
 // -- Label annotation tests --
 
-#[test]
-fn test_label_annotation_anonymous_form() {
+#[tokio::test]
+async fn test_label_annotation_anonymous_form() {
     // key@Label should create an anonymous Label-kinded TypeVar
-    let result = check("[f: [fn@a [let key@Label dict@d] dict]]");
+    let result = check("[f: [fn@a [let key@Label dict@d] dict]]").await;
     assert!(
         result.is_ok(),
         "key@Label annotation should be accepted: {:?}",
@@ -8468,10 +8629,10 @@ fn test_label_annotation_anonymous_form() {
     );
 }
 
-#[test]
-fn test_label_annotation_named_form() {
+#[tokio::test]
+async fn test_label_annotation_named_form() {
     // key@[label: l] should create a named Label-kinded TypeVar
-    let result = check("[f: [fn@a [let key@[label: l] dict@d] dict]]");
+    let result = check("[f: [fn@a [let key@[label: l] dict@d] dict]]").await;
     assert!(
         result.is_ok(),
         "key@[label: l] annotation should be accepted: {:?}",
@@ -8479,10 +8640,10 @@ fn test_label_annotation_named_form() {
     );
 }
 
-#[test]
-fn test_label_annotation_same_name_multiple_params() {
+#[tokio::test]
+async fn test_label_annotation_same_name_multiple_params() {
     // Using the same label name in multiple parameters should work
-    let result = check("[f: [fn@a [let key1@[label: l] key2@[label: l] dict@d] dict]]");
+    let result = check("[f: [fn@a [let key1@[label: l] key2@[label: l] dict@d] dict]]").await;
     assert!(
         result.is_ok(),
         "same label TypeVar in multiple params should work: {:?}",
@@ -8490,10 +8651,10 @@ fn test_label_annotation_same_name_multiple_params() {
     );
 }
 
-#[test]
-fn test_label_annotation_named_form_requires_lowercase() {
+#[tokio::test]
+async fn test_label_annotation_named_form_requires_lowercase() {
     // label: value must be a lowercase name
-    let result = check("[f: [fn@a [let key@[label: UpperCase] dict@d] dict]]");
+    let result = check("[f: [fn@a [let key@[label: UpperCase] dict@d] dict]]").await;
     assert!(
         result.is_err(),
         "label: value with uppercase name should be rejected"
@@ -8507,10 +8668,10 @@ fn test_label_annotation_named_form_requires_lowercase() {
     );
 }
 
-#[test]
-fn test_label_annotation_named_form_requires_bare_name() {
+#[tokio::test]
+async fn test_label_annotation_named_form_requires_bare_name() {
     // label: value must be a bare name, not a string literal
-    let result = check("[f: [fn@a [let key@[label: \"foo\"] dict@d] dict]]");
+    let result = check("[f: [fn@a [let key@[label: \"foo\"] dict@d] dict]]").await;
     assert!(
         result.is_err(),
         "label: value with string literal should be rejected"
@@ -8523,8 +8684,8 @@ fn test_label_annotation_named_form_requires_bare_name() {
     );
 }
 
-#[test]
-fn test_builtin_get_wrapper_with_label_typevar_returns_field_type() {
+#[tokio::test]
+async fn test_builtin_get_wrapper_with_label_typevar_returns_field_type() {
     // A wrapper function defined as `[fn [k@Label xs] [builtin-get k xs]]`
     // should propagate the label TypeVar through `builtin-get` (via Indexable FD improvement)
     // and produce a precise return type when called with a concrete string literal key.
@@ -8536,7 +8697,8 @@ fn test_builtin_get_wrapper_with_label_typevar_returns_field_type() {
         "[cfg: [host: \"localhost\"]]\n\
              [my-get: [fn [let k@Label xs] [builtin-get k xs]]]\n\
              [result: [my-get \"host\" cfg]]",
-    );
+    )
+    .await;
     // At minimum, the wrapper must not produce a type error.
     // The result type should be Str or Unknown (Unknown acceptable if
     // the prelude cache doesn't seed Equatable/etc. for the corpus check).
@@ -8549,8 +8711,8 @@ fn test_builtin_get_wrapper_with_label_typevar_returns_field_type() {
 
 // -- transfer_class_constraints unit test --
 
-#[test]
-fn test_transfer_class_constraints_via_typevar_unify() {
+#[tokio::test]
+async fn test_transfer_class_constraints_via_typevar_unify() {
     // Direct unit test for the transfer_class_constraints path in U-VAR-LEVEL.
     //
     // Setup: seed state.constraints with Constraint::Class { class: "Numeric", var: "alpha" },
@@ -8584,7 +8746,8 @@ fn test_transfer_class_constraints_via_typevar_unify() {
         &mut state,
         &mut constraints,
         Span::origin(),
-    );
+    )
+    .await;
     assert!(
         result.is_ok(),
         "TypeVar-TypeVar unify should succeed: {result:?}"
@@ -8606,8 +8769,8 @@ fn test_transfer_class_constraints_via_typevar_unify() {
 
 // -- Ambiguous constraint dropping tests (src/type_env.rs:485-540) --
 
-#[test]
-fn test_constraint_dropped_when_typevar_not_in_return_type() {
+#[tokio::test]
+async fn test_constraint_dropped_when_typevar_not_in_return_type() {
     // fn@[constraint: [a: Comparable] return: Int] [x] x
     //
     // TypeVar 'a' is declared in constraint: [a: Comparable] but never used in a parameter
@@ -8625,7 +8788,7 @@ fn test_constraint_dropped_when_typevar_not_in_return_type() {
     crate::desugar::desugar_surface_program(&mut program);
     let _ = crate::imports::build_prelude_env(); // populate PRELUDE_INSTANCE_CACHE
     let (errors, _type_map, _doc_map, _scheme_map, diagnostics) =
-        typecheck_surface_program(&program, Rc::new(TypeEnv::new()));
+        typecheck_surface_program(&program, Rc::new(TypeEnv::new())).await;
 
     assert!(
         errors.is_empty(),
@@ -8655,8 +8818,8 @@ fn test_constraint_dropped_when_typevar_not_in_return_type() {
     );
 }
 
-#[test]
-fn test_no_false_positive_warning_for_discharged_constraints() {
+#[tokio::test]
+async fn test_no_false_positive_warning_for_discharged_constraints() {
     // Regression test for false-positive ambiguous constraint warnings.
     // A dict with [id: [fn [x] x], n: [+ 1 2]] should NOT emit warnings during
     // generalization of `id`, even though the Numeric constraint on `n` is in
@@ -8667,7 +8830,7 @@ fn test_no_false_positive_warning_for_discharged_constraints() {
         .program;
     crate::desugar::desugar_surface_program(&mut program);
     let (errors, _type_map, _doc_map, _scheme_map, diagnostics) =
-        typecheck_surface_program(&program, crate::imports::build_prelude_env());
+        typecheck_surface_program(&program, crate::imports::build_prelude_env()).await;
 
     assert!(
         errors.is_empty(),
@@ -8690,8 +8853,8 @@ fn test_no_false_positive_warning_for_discharged_constraints() {
 
 // --- Boundary guard collection tests (gradual typing) ---
 
-#[test]
-fn test_boundary_guard_collection_stub() {
+#[tokio::test]
+async fn test_boundary_guard_collection_stub() {
     // Verify that boundary guards are collected when Unknown crosses a concrete-typed
     // function parameter boundary. The eval-side wiring (eval.rs maybe_wrap_guard)
     // inserts ThunkState::Guarded at thunk creation time for any span in this map.
@@ -8764,12 +8927,12 @@ fn test_boundary_guard_collection_stub() {
 
 // -- LetDecl, CaseArm, and Placeholder (unified-bindings sprint) --
 
-#[test]
-fn test_let_decl_in_expression_position_is_error() {
+#[tokio::test]
+async fn test_let_decl_in_expression_position_is_error() {
     // Task 3: Expr::LetDecl in expression position must emit a type error.
     // The parser produces LetDecl from [let ...]; outside a binding context it is invalid.
     // The type checker at typecheck.rs:~1838 must catch this and produce an error.
-    let errors = check_err("[f: [fn [let x] [let x y]]]");
+    let errors = check_err("[f: [fn [let x] [let x y]]]").await;
     assert!(
         !errors.is_empty(),
         "LetDecl in expression position should produce a type error"
@@ -8786,8 +8949,8 @@ fn test_let_decl_in_expression_position_is_error() {
     );
 }
 
-#[test]
-fn test_placeholder_has_type_unknown() {
+#[tokio::test]
+async fn test_placeholder_has_type_unknown() {
     // Task 4: Expr::Placeholder (the `...` expression) has type Unknown.
     // This is the gradual typing escape hatch — ... satisfies any type constraint.
     // Verify via direct infer call. Since `...` is a Placeholder token, we parse it.
@@ -8799,7 +8962,9 @@ fn test_placeholder_has_type_unknown() {
         crate::ast::SurfaceItem::Expr(n) => n,
         _ => panic!("expected expression item"),
     };
-    let ty = infer_surface_expr(node, &env, &mut state, &mut Vec::new(), &mut None).unwrap();
+    let ty = infer_surface_expr(node, &env, &mut state, &mut Vec::new(), &mut None)
+        .await
+        .unwrap();
     assert_eq!(
         ty,
         Type::Unknown,
@@ -8807,11 +8972,11 @@ fn test_placeholder_has_type_unknown() {
     );
 }
 
-#[test]
-fn test_placeholder_in_function_body_typechecks() {
+#[tokio::test]
+async fn test_placeholder_in_function_body_typechecks() {
     // Task 4: ... in a function body satisfies any return type annotation.
     // [fn@Int [x@Int] ...] should type-check without error because ... : Unknown ~ Int.
-    let result = check("[f: [fn@Int [let x@Int] ...]]");
+    let result = check("[f: [fn@Int [let x@Int] ...]]").await;
     assert!(
         result.is_ok(),
         "... in function body should satisfy any return type annotation; got: {:?}",
@@ -8819,8 +8984,8 @@ fn test_placeholder_in_function_body_typechecks() {
     );
 }
 
-#[test]
-fn test_case_arm_plain_binding_gets_scrutinee_type() {
+#[tokio::test]
+async fn test_case_arm_plain_binding_gets_scrutinee_type() {
     // T-1151: 2-arg [case [let n] body] now requires 3 positional args.
     // Parser rejects it before the typechecker sees it.
     // The new 3-arg form is [case [let bindings] pattern body].
@@ -8831,8 +8996,8 @@ fn test_case_arm_plain_binding_gets_scrutinee_type() {
     let _ = result; // test now documents the expected behavior change post-T-1151
 }
 
-#[test]
-fn test_case_arm_typed_binding_intersects_scrutinee() {
+#[tokio::test]
+async fn test_case_arm_typed_binding_intersects_scrutinee() {
     // T-1151: 2-arg [case [let n@Int] body] now requires 3 positional args.
     // Parser rejects it before the typechecker sees it.
     // The new 3-arg form is [case [let bindings] pattern body].
@@ -8840,38 +9005,38 @@ fn test_case_arm_typed_binding_intersects_scrutinee() {
     let _ = result; // test updated to document behavior change post-T-1151
 }
 
-#[test]
-fn test_case_arm_wildcard_no_binding() {
+#[tokio::test]
+async fn test_case_arm_wildcard_no_binding() {
     // T-1151: 2-arg [case [let _] 42] now requires 3 positional args.
     // Parser rejects it before the typechecker sees it.
     let result = check("[result: [case [let _] 42]]");
     let _ = result; // test updated to document behavior change post-T-1151
 }
 
-#[test]
-fn test_case_arm_exact_value_match() {
+#[tokio::test]
+async fn test_case_arm_exact_value_match() {
     // T-1151: 2-arg [case 42 true] now requires 3 positional args.
     // Parser rejects it before the typechecker sees it.
     let result = check("[result: [case 42 true]]");
     let _ = result; // test updated to document behavior change post-T-1151
 }
 
-#[test]
-fn test_case_arm_returns_body_type() {
+#[tokio::test]
+async fn test_case_arm_returns_body_type() {
     // T-1151: 3-arg [case [let bindings] pattern body] form.
     // A match with a single wildcard case arm whose body is an Int literal:
     // the inferred type of the whole match expression is Int.
     // The body literal `99` infers to IntLiteral(99); the key test is that
     // a 3-arg case arm typechecks without error.
-    let ty = infer("[match 42 [case [let _] _ 99]]");
+    let ty = infer("[match 42 [case [let _] _ 99]]").await;
     assert!(
         matches!(ty, Type::IntLiteral(_) | Type::Int),
         "match with case arm should infer an integer type, got {ty:?}"
     );
 }
 
-#[test]
-fn test_normalize_intersection_unknown_is_identity() {
+#[tokio::test]
+async fn test_normalize_intersection_unknown_is_identity() {
     // normalize_intersection treats Unknown as identity: T & ? = T.
     // This is the AGT gradual typing lift (Garcia et al. 2016).
     // When scrutinee_ty is Unknown and annotation is Int, the result is Int (not Int & ?).
@@ -8908,20 +9073,20 @@ fn test_normalize_intersection_unknown_is_identity() {
 
 // -- Inferred [do] form (hkt-do-inferred-fix sprint) --
 
-#[test]
-fn test_do_infer_rule1_from_expected_return() {
+#[tokio::test]
+async fn test_do_infer_rule1_from_expected_return() {
     // Rule 1: expected_return is a Result-like Record → resolve to "result".
     // We call eval_source which runs the full pipeline: parse → expand → desugar → typecheck → eval.
     // [do [ok: 42]] — first binding's RHS is {ok: 42}, a Result-like record.
     // check_do_infer should resolve "result" from it with no type error.
-    let result = crate::eval_source("[do [ok: 42]]");
+    let result = crate::eval_source("[do [ok: 42]]").await;
     // Should not panic or produce undefined-variable for %do-infer.
     // May produce type errors (T_DO_INFER) but should not panic.
     let _ = result;
 }
 
-#[test]
-fn test_do_infer_rule3_no_context_emits_error() {
+#[tokio::test]
+async fn test_do_infer_rule3_no_context_emits_error() {
     // Rule 3: when there's no expected_return and no recognizable first-binding type,
     // check_do_infer should emit T_DO_INFER.
     // We simulate by calling eval_source which runs the full pipeline.
@@ -8929,12 +9094,12 @@ fn test_do_infer_rule3_no_context_emits_error() {
     // Rule 1 also fails (no return annotation). Should get T_DO_INFER or
     // a runtime error about undefined %do-infer.
     // We just verify no panic occurs.
-    let result = crate::eval_source("[do [x: 42] x]");
+    let result = crate::eval_source("[do [x: 42] x]").await;
     let _ = result;
 }
 
-#[test]
-fn test_do_infer_resolve_monad_from_record_with_ok_field() {
+#[tokio::test]
+async fn test_do_infer_resolve_monad_from_record_with_ok_field() {
     // Unit test for resolve_monad_from_type: a Record with 'ok' field → "result".
     let mut fields = BTreeMap::new();
     fields.insert("ok".to_string(), Type::Int);
@@ -8951,8 +9116,8 @@ fn test_do_infer_resolve_monad_from_record_with_ok_field() {
     );
 }
 
-#[test]
-fn test_do_infer_resolve_monad_from_record_with_err_field() {
+#[tokio::test]
+async fn test_do_infer_resolve_monad_from_record_with_err_field() {
     // Unit test for resolve_monad_from_type: a Record with 'err' field → "result".
     let mut fields = BTreeMap::new();
     fields.insert("err".to_string(), Type::Str);
@@ -8969,16 +9134,16 @@ fn test_do_infer_resolve_monad_from_record_with_err_field() {
     );
 }
 
-#[test]
-fn test_do_infer_resolve_monad_from_int_returns_none() {
+#[tokio::test]
+async fn test_do_infer_resolve_monad_from_int_returns_none() {
     // Unit test for resolve_monad_from_type: Int is not a monad → None.
     let state = InferState::new();
     let resolved = resolve_monad_from_type(&Type::Int, &state);
     assert_eq!(resolved, None, "Int type should not resolve to any monad");
 }
 
-#[test]
-fn test_do_infer_resolve_monad_from_union_with_ok_member() {
+#[tokio::test]
+async fn test_do_infer_resolve_monad_from_union_with_ok_member() {
     // resolve_monad_from_type on Union([Record{ok: Int}, Str]) → "result" (first match).
     let mut ok_fields = BTreeMap::new();
     ok_fields.insert("ok".to_string(), Type::Int);
@@ -8998,8 +9163,8 @@ fn test_do_infer_resolve_monad_from_union_with_ok_member() {
     );
 }
 
-#[test]
-fn test_do_infer_resolve_monad_from_operator_result() {
+#[tokio::test]
+async fn test_do_infer_resolve_monad_from_operator_result() {
     // resolve_monad_from_type on Operator("Result") → "result".
     let state = InferState::new();
     let resolved = resolve_monad_from_type(&Type::Operator("Result".to_string()), &state);
@@ -9010,8 +9175,8 @@ fn test_do_infer_resolve_monad_from_operator_result() {
     );
 }
 
-#[test]
-fn test_do_infer_resolve_monad_from_expr_qualified_constructor() {
+#[tokio::test]
+async fn test_do_infer_resolve_monad_from_expr_qualified_constructor() {
     // Unit test for resolve_monad_from_surface (T-956): [Result.Ok x] → "Result".
     // Qualified dot-access constructors are resolved by extracting the TyCon name.
     let node = crate::parser::parse_surface_expression("[Result.Ok 1]").expect("parse failed");
@@ -9024,8 +9189,8 @@ fn test_do_infer_resolve_monad_from_expr_qualified_constructor() {
     );
 }
 
-#[test]
-fn test_do_infer_resolve_monad_from_expr_qualified_error_constructor() {
+#[tokio::test]
+async fn test_do_infer_resolve_monad_from_expr_qualified_error_constructor() {
     // Unit test for resolve_monad_from_surface (T-956): [Result.Error "msg"] → "Result".
     let node = crate::parser::parse_surface_expression("[Result.Error msg]").expect("parse failed");
     let env = crate::types::TypeEnv::new();
@@ -9037,8 +9202,8 @@ fn test_do_infer_resolve_monad_from_expr_qualified_error_constructor() {
     );
 }
 
-#[test]
-fn test_do_infer_resolve_monad_from_expr_unqualified_empty_env_returns_result() {
+#[tokio::test]
+async fn test_do_infer_resolve_monad_from_expr_unqualified_empty_env_returns_result() {
     // Unqualified constructor [Ok x] with empty TypeEnv uses the hardcoded fallback.
     // The hardcoded "Ok" | "Error" → "Result.Ok" → rfind('.') → "result" path (T-1030)
     // means bare [Ok 1] always resolves to "result" regardless of TypeEnv state.
@@ -9053,8 +9218,8 @@ fn test_do_infer_resolve_monad_from_expr_unqualified_empty_env_returns_result() 
     );
 }
 
-#[test]
-fn test_do_infer_resolve_monad_from_expr_non_constructor() {
+#[tokio::test]
+async fn test_do_infer_resolve_monad_from_expr_non_constructor() {
     // Unit test for resolve_monad_from_surface: bare VarRef → None.
     let node = crate::parser::parse_surface_expression("$Ok").expect("parse failed");
     let env = crate::types::TypeEnv::new();
@@ -9065,8 +9230,8 @@ fn test_do_infer_resolve_monad_from_expr_non_constructor() {
     );
 }
 
-#[test]
-fn test_do_infer_resolve_monad_from_expr_explicit_call_no_match() {
+#[tokio::test]
+async fn test_do_infer_resolve_monad_from_expr_explicit_call_no_match() {
     // Unit test for resolve_monad_from_surface: [call $Ok 1] with implied: false → None.
     //
     // The surface fallback only recognizes implied constructor syntax ([Result.Ok 1] → implied: true).
@@ -9090,8 +9255,8 @@ fn test_do_infer_resolve_monad_from_expr_explicit_call_no_match() {
 // through build_prelude_env) and inspect the final_env for the get/+ schemes.
 // This tells us whether the constraint is lost during inference (Bug 2 confirmed) or
 // whether the workaround is just defensive (Bug 2 not actually occurring).
-#[test]
-fn test_b398_bug2_raw_prelude_inference_get_scheme() {
+#[tokio::test]
+async fn test_b398_bug2_raw_prelude_inference_get_scheme() {
     // Run prelude type-checking directly, bypassing the imports.rs workaround.
     // This reproduces the exact conditions of prelude inference and checks if `get`'s
     // Indexable constraint survives in final_env.
@@ -9103,7 +9268,7 @@ fn test_b398_bug2_raw_prelude_inference_get_scheme() {
     let _ = crate::imports::build_prelude_env(); // ensure PRELUDE_INSTANCE_CACHE is seeded
 
     let (_errors, _type_map, _doc_map, _scheme_map, _diagnostics, _state, final_env, _ann_table) =
-        typecheck_surface_program_with_env(&program, builtins_env, false, true, None);
+        typecheck_surface_program_with_env(&program, builtins_env, false, true, None).await;
 
     // Check the `get` scheme in final_env (before imports.rs workaround).
     let get_scheme = final_env.get("get");
@@ -9129,8 +9294,8 @@ fn test_b398_bug2_raw_prelude_inference_get_scheme() {
     }
 }
 
-#[test]
-fn test_b398_bug2_raw_prelude_inference_plus_scheme() {
+#[tokio::test]
+async fn test_b398_bug2_raw_prelude_inference_plus_scheme() {
     // B-398 Bug 2 regression test — class method synthesis fix (S-886).
     //
     // With class method synthesis, the Addable class declaration injects the `+` scheme
@@ -9144,7 +9309,7 @@ fn test_b398_bug2_raw_prelude_inference_plus_scheme() {
     let _ = crate::imports::build_prelude_env();
 
     let (_errors, _type_map, _doc_map, _scheme_map, _diagnostics, _state, final_env, _ann_table) =
-        typecheck_surface_program_with_env(&program, builtins_env, false, true, None);
+        typecheck_surface_program_with_env(&program, builtins_env, false, true, None).await;
 
     let scheme = final_env
         .get("+")
@@ -9168,8 +9333,8 @@ fn test_b398_bug2_raw_prelude_inference_plus_scheme() {
     );
 }
 
-#[test]
-fn test_b398_bug2_prelude_get_scheme_has_indexable_constraint() {
+#[tokio::test]
+async fn test_b398_bug2_prelude_get_scheme_has_indexable_constraint() {
     // Build the prelude env (includes the workaround).
     let prelude_env = crate::imports::build_prelude_env();
 
@@ -9193,8 +9358,8 @@ fn test_b398_bug2_prelude_get_scheme_has_indexable_constraint() {
     );
 }
 
-#[test]
-fn test_b398_bug2_prelude_arithmetic_scheme_has_addable_constraint() {
+#[tokio::test]
+async fn test_b398_bug2_prelude_arithmetic_scheme_has_addable_constraint() {
     let prelude_env = crate::imports::build_prelude_env();
 
     let plus_scheme = prelude_env.get("+");
@@ -9221,8 +9386,8 @@ fn test_b398_bug2_prelude_arithmetic_scheme_has_addable_constraint() {
     );
 }
 
-#[test]
-fn test_b398_bug2_fd_constraint_survives_generalization_single_scc() {
+#[tokio::test]
+async fn test_b398_bug2_fd_constraint_survives_generalization_single_scc() {
     // B-398 Bug 2 investigation: FD constraint for a polymorphic function using `+`
     // must survive generalization. When `f: [fn@a [let x@a y@a] [+ x y]]` is
     // inferred in a single SCC, the Addable constraint on `a` must appear in the
@@ -9242,7 +9407,8 @@ fn test_b398_bug2_fd_constraint_survives_generalization_single_scc() {
             false,
             false,
             None,
-        );
+        )
+        .await;
 
     // No type errors should occur — this is a valid polymorphic arithmetic function.
     assert!(
@@ -9278,8 +9444,8 @@ fn test_b398_bug2_fd_constraint_survives_generalization_single_scc() {
     );
 }
 
-#[test]
-fn test_b398_bug2_fd_constraint_multi_scc_two_entries() {
+#[tokio::test]
+async fn test_b398_bug2_fd_constraint_multi_scc_two_entries() {
     // B-398 Bug 2: two-SCC dict where SCC-2's function uses `+`.
     // SCC-1 defines a concrete binding `n: 42`. SCC-2 defines `f: [fn@a [let x@a y@a] [+ x y]]`.
     // After SCC-1 processes and merges its TypeVars into state.subst, SCC-2's constraint
@@ -9299,7 +9465,8 @@ fn test_b398_bug2_fd_constraint_multi_scc_two_entries() {
             false,
             false,
             None,
-        );
+        )
+        .await;
 
     assert!(
         errors.is_empty(),
@@ -9331,8 +9498,8 @@ fn test_b398_bug2_fd_constraint_multi_scc_two_entries() {
     );
 }
 
-#[test]
-fn test_b398_bug2_indexable_constraint_survives_get_wrapper() {
+#[tokio::test]
+async fn test_b398_bug2_indexable_constraint_survives_get_wrapper() {
     // B-398 Bug 2: the `get: [fn@[return: a] [let key@k dict@d] [builtin-get key dict]]`
     // pattern (as used in the prelude) must preserve the Indexable FD constraint in its
     // TypeScheme. This test uses builtin-get directly.
@@ -9353,7 +9520,8 @@ fn test_b398_bug2_indexable_constraint_survives_get_wrapper() {
             false,
             false,
             None,
-        );
+        )
+        .await;
 
     // The key signal is that no T013 is emitted for the Indexable constraint vars.
     let t013_warnings: Vec<_> = diagnostics
@@ -9388,100 +9556,101 @@ fn test_b398_bug2_indexable_constraint_survives_get_wrapper() {
 
 /// Helper: type-check a single-document with the full prelude environment and return
 /// the type of the named field. Panics if the field is absent or parsing fails.
-fn infer_with_builtins(input: &str, field: &str) -> Type {
-    let env = doc_env_with_prelude(input);
+async fn infer_with_builtins(input: &str, field: &str) -> Type {
+    let env = doc_env_with_prelude(input).await;
     env.get(field)
         .unwrap_or_else(|| panic!("field '{field}' not found in env"))
         .body
         .clone()
 }
 
-#[test]
-fn test_arithmetic_add_int_int_returns_int() {
+#[tokio::test]
+async fn test_arithmetic_add_int_int_returns_int() {
     // [+ 1 2]: both args are IntLiteral → refined to Int (not Number) via Addable MPTC FD.
-    let ty = infer_with_builtins("[x: [+ 1 2]]", "x");
+    let ty = infer_with_builtins("[x: [+ 1 2]]", "x").await;
     assert!(
         matches!(ty, Type::Int | Type::IntLiteral(_)),
         "[+ 1 2] should infer Int (not Number), got {ty}"
     );
 }
 
-#[test]
-fn test_arithmetic_add_float_int_returns_float() {
+#[tokio::test]
+async fn test_arithmetic_add_float_int_returns_float() {
     // [+ 1.0 2]: one Float arg → Float
-    let ty = infer_with_builtins("[x: [+ 1.0 2]]", "x");
+    let ty = infer_with_builtins("[x: [+ 1.0 2]]", "x").await;
     assert_eq!(ty, Type::Float, "[+ 1.0 2] should infer Float, got {ty}");
 }
 
-#[test]
-fn test_arithmetic_add_int_float_returns_float() {
+#[tokio::test]
+async fn test_arithmetic_add_int_float_returns_float() {
     // [+ 1 2.0]: other arg is Float → Float
-    let ty = infer_with_builtins("[x: [+ 1 2.0]]", "x");
+    let ty = infer_with_builtins("[x: [+ 1 2.0]]", "x").await;
     assert_eq!(ty, Type::Float, "[+ 1 2.0] should infer Float, got {ty}");
 }
 
-#[test]
-fn test_arithmetic_sub_int_int_returns_int() {
+#[tokio::test]
+async fn test_arithmetic_sub_int_int_returns_int() {
     // [- 10 3]: both Int → Int
-    let ty = infer_with_builtins("[x: [- 10 3]]", "x");
+    let ty = infer_with_builtins("[x: [- 10 3]]", "x").await;
     assert!(
         matches!(ty, Type::Int | Type::IntLiteral(_)),
         "[- 10 3] should infer Int (not Number), got {ty}"
     );
 }
 
-#[test]
-fn test_arithmetic_mul_int_int_returns_int() {
+#[tokio::test]
+async fn test_arithmetic_mul_int_int_returns_int() {
     // [* 3 4]: both Int → Int
-    let ty = infer_with_builtins("[x: [* 3 4]]", "x");
+    let ty = infer_with_builtins("[x: [* 3 4]]", "x").await;
     assert!(
         matches!(ty, Type::Int | Type::IntLiteral(_)),
         "[* 3 4] should infer Int (not Number), got {ty}"
     );
 }
 
-#[test]
-fn test_arithmetic_div_int_int_returns_float() {
+#[tokio::test]
+async fn test_arithmetic_div_int_int_returns_float() {
     // [/ 7 2]: division always yields Float (IEEE semantics)
-    let ty = infer_with_builtins("[x: [/ 7 2]]", "x");
+    let ty = infer_with_builtins("[x: [/ 7 2]]", "x").await;
     assert_eq!(ty, Type::Float, "[/ 7 2] should infer Float, got {ty}");
 }
 
-#[test]
-fn test_arithmetic_div_float_int_returns_float() {
+#[tokio::test]
+async fn test_arithmetic_div_float_int_returns_float() {
     // [/ 1.0 2]: Float dividend → Float
-    let ty = infer_with_builtins("[x: [/ 1.0 2]]", "x");
+    let ty = infer_with_builtins("[x: [/ 1.0 2]]", "x").await;
     assert_eq!(ty, Type::Float, "[/ 1.0 2] should infer Float, got {ty}");
 }
 
-#[test]
-fn test_arithmetic_builtin_add_alias_refines() {
+#[tokio::test]
+async fn test_arithmetic_builtin_add_alias_refines() {
     // [builtin-add 1 2] via the stable alias should also refine to Int
-    let ty = infer_with_builtins("[x: [builtin-add 1 2]]", "x");
+    let ty = infer_with_builtins("[x: [builtin-add 1 2]]", "x").await;
     assert!(
         matches!(ty, Type::Int | Type::IntLiteral(_)),
         "[builtin-add 1 2] should infer Int, got {ty}"
     );
 }
 
-#[test]
-fn test_arithmetic_add_number_number_stays_number() {
+#[tokio::test]
+async fn test_arithmetic_add_number_number_stays_number() {
     // [+ n m] where both are annotated Number → Number (no further refinement possible)
     let ty = infer_with_builtins(
         "[f: [fn [let n@Number m@Number] [+ n m]]]\n[x: [f 1 2]]",
         "x",
-    );
+    )
+    .await;
     assert!(
         matches!(ty, Type::Number | Type::Int | Type::IntLiteral(_)),
         "[+ n m] with Number params should infer Number or more precise, got {ty}"
     );
 }
 
-#[test]
-fn test_arithmetic_add_int_int_through_prelude_refinement() {
+#[tokio::test]
+async fn test_arithmetic_add_int_int_through_prelude_refinement() {
     // The original motivating case: [+ 1 2] with both IntLiteral args should refine to Int.
     // Resolved by Addable MPTC FD: instance (Int, Int) → Int via lookup_arithmetic_instance.
-    let ty = infer_with_builtins("[result: [+ 1 2]]", "result");
+    let ty = infer_with_builtins("[result: [+ 1 2]]", "result").await;
     assert!(
         matches!(ty, Type::Int | Type::IntLiteral(_)),
         "[+ 1 2] should refine to Int via Addable MPTC FD, got {ty}"
@@ -9542,8 +9711,8 @@ fn make_builtin_tycon(param: &str, discriminant: &str) -> Arc<crate::type_def::T
 }
 
 /// T-1066a: body_contains_tycon_ref returns false for primitive types.
-#[test]
-fn test_body_contains_tycon_ref_primitives() {
+#[tokio::test]
+async fn test_body_contains_tycon_ref_primitives() {
     assert!(!body_contains_tycon_ref(&Type::Int));
     assert!(!body_contains_tycon_ref(&Type::Float));
     assert!(!body_contains_tycon_ref(&Type::Str));
@@ -9556,14 +9725,14 @@ fn test_body_contains_tycon_ref_primitives() {
 }
 
 /// T-1066b: body_contains_tycon_ref returns true for bare TyCon.
-#[test]
-fn test_body_contains_tycon_ref_tycyon() {
+#[tokio::test]
+async fn test_body_contains_tycon_ref_tycyon() {
     assert!(body_contains_tycon_ref(&Type::TyCon("Seq".to_string())));
 }
 
 /// T-1066c: body_contains_tycon_ref returns true for App(TyCon, _).
-#[test]
-fn test_body_contains_tycon_ref_app_tycyon() {
+#[tokio::test]
+async fn test_body_contains_tycon_ref_app_tycyon() {
     let ty = Type::App(
         Box::new(Type::TyCon("Seq".to_string())),
         Box::new(Type::Int),
@@ -9572,8 +9741,8 @@ fn test_body_contains_tycon_ref_app_tycyon() {
 }
 
 /// T-1066d: body_contains_tycon_ref walks Union members.
-#[test]
-fn test_body_contains_tycon_ref_union() {
+#[tokio::test]
+async fn test_body_contains_tycon_ref_union() {
     // Union([Int, TyCon("Foo")]) → true
     let ty = Type::normalize_union(vec![Type::Int, Type::TyCon("Foo".to_string())]);
     assert!(body_contains_tycon_ref(&ty));
@@ -9584,8 +9753,8 @@ fn test_body_contains_tycon_ref_union() {
 }
 
 /// T-1066e: contains_recvar detects TypeVar with matching name.
-#[test]
-fn test_contains_recvar_basic() {
+#[tokio::test]
+async fn test_contains_recvar_basic() {
     let var = "𝜇ꜱʏᴍ⧼List⧽42";
     assert!(contains_recvar(&Type::TypeVar(var.to_string(), 0), var));
     assert!(!contains_recvar(&Type::TypeVar("_t0".to_string(), 0), var));
@@ -9593,8 +9762,8 @@ fn test_contains_recvar_basic() {
 }
 
 /// T-1066f: contains_recvar walks nested structures.
-#[test]
-fn test_contains_recvar_nested() {
+#[tokio::test]
+async fn test_contains_recvar_nested() {
     let var = "𝜇ꜱʏᴍ⧼List⧽42";
     // Union containing the recvar
     let ty = Type::normalize_union(vec![Type::Int, Type::TypeVar(var.to_string(), 0)]);
@@ -9602,8 +9771,8 @@ fn test_contains_recvar_nested() {
 }
 
 /// T-1066g: expand_named returns None for unknown type name.
-#[test]
-fn test_expand_named_unknown_type() {
+#[tokio::test]
+async fn test_expand_named_unknown_type() {
     let (env, mut state) = make_expand_env();
     let mut stack = crate::typecheck::typecheck_annot::ExpansionStack::new();
     let result = expand_named("UnknownType", &[], &mut stack, &env, &mut state);
@@ -9611,8 +9780,8 @@ fn test_expand_named_unknown_type() {
 }
 
 /// T-1066h: expand_named returns the body directly for a zero-param, no-TyCon alias.
-#[test]
-fn test_expand_named_zero_param_primitive_body() {
+#[tokio::test]
+async fn test_expand_named_zero_param_primitive_body() {
     let (mut env, mut state) = make_expand_env();
     // Register "MyInt" as an alias for Type::Int
     let def = make_tycon_def_zero(Type::Int);
@@ -9624,8 +9793,8 @@ fn test_expand_named_zero_param_primitive_body() {
 }
 
 /// T-1066i: expand_named expands a zero-param alias with a TyCon body.
-#[test]
-fn test_expand_named_zero_param_tycyon_body() {
+#[tokio::test]
+async fn test_expand_named_zero_param_tycyon_body() {
     let (mut env, mut state) = make_expand_env();
     // Register "Wrapper" as an alias for Int (via a TyCon body that resolves)
     // Register "Inner" as alias for Int
@@ -9647,8 +9816,8 @@ fn test_expand_named_zero_param_tycyon_body() {
 }
 
 /// T-1066j: expand_named handles builtin-opaque types (no structural expansion).
-#[test]
-fn test_expand_named_builtin_opaque() {
+#[tokio::test]
+async fn test_expand_named_builtin_opaque() {
     let (mut env, mut state) = make_expand_env();
     let def = make_builtin_tycon("a", "Seq");
     env.insert_tycon_def("Seq".to_string(), def);
@@ -9668,8 +9837,8 @@ fn test_expand_named_builtin_opaque() {
 }
 
 /// T-1066k: expand_named detects cycles via Arc::ptr_eq and returns TypeVar sentinel.
-#[test]
-fn test_expand_named_cycle_detection() {
+#[tokio::test]
+async fn test_expand_named_cycle_detection() {
     let (mut env, mut state) = make_expand_env();
 
     // Register "List" as alias for Union([Int, TyCon("List")])
@@ -9708,8 +9877,8 @@ fn test_expand_named_cycle_detection() {
 }
 
 /// T-1066l: expand_named with one param substitution.
-#[test]
-fn test_expand_named_one_param() {
+#[tokio::test]
+async fn test_expand_named_one_param() {
     let (mut env, mut state) = make_expand_env();
 
     // Register "Box" as alias for param "a" — i.e., `type Box = [let a] a`
@@ -9724,8 +9893,8 @@ fn test_expand_named_one_param() {
 }
 
 /// T-1067a: expand_all_tycon_apps is a no-op for primitive types.
-#[test]
-fn test_expand_all_tycon_apps_primitive() {
+#[tokio::test]
+async fn test_expand_all_tycon_apps_primitive() {
     let (env, mut state) = make_expand_env();
     let mut stack = crate::typecheck::typecheck_annot::ExpansionStack::new();
 
@@ -9744,8 +9913,8 @@ fn test_expand_all_tycon_apps_primitive() {
 }
 
 /// T-1067b: expand_all_tycon_apps expands a TyCon that is registered.
-#[test]
-fn test_expand_all_tycon_apps_registered_tycyon() {
+#[tokio::test]
+async fn test_expand_all_tycon_apps_registered_tycyon() {
     let (mut env, mut state) = make_expand_env();
     let def = make_tycon_def_zero(Type::Int);
     env.insert_tycon_def("MyInt".to_string(), def);
@@ -9761,8 +9930,8 @@ fn test_expand_all_tycon_apps_registered_tycyon() {
 }
 
 /// T-1067c: expand_all_tycon_apps preserves unknown TyCon (fallback).
-#[test]
-fn test_expand_all_tycon_apps_unknown_tycyon_preserved() {
+#[tokio::test]
+async fn test_expand_all_tycon_apps_unknown_tycyon_preserved() {
     let (env, mut state) = make_expand_env();
     let mut stack = crate::typecheck::typecheck_annot::ExpansionStack::new();
     // UnknownType not in env — should be preserved as-is
@@ -9772,8 +9941,8 @@ fn test_expand_all_tycon_apps_unknown_tycyon_preserved() {
 }
 
 /// T-1067d: expand_all_tycon_apps expands App(TyCon, arg).
-#[test]
-fn test_expand_all_tycon_apps_app_tycyon() {
+#[tokio::test]
+async fn test_expand_all_tycon_apps_app_tycyon() {
     let (mut env, mut state) = make_expand_env();
 
     // Register "Wrapper" as a one-param alias for the param itself
@@ -9791,8 +9960,8 @@ fn test_expand_all_tycon_apps_app_tycyon() {
 }
 
 /// T-1067e: expand_all_tycon_apps recurses into Union members.
-#[test]
-fn test_expand_all_tycon_apps_union() {
+#[tokio::test]
+async fn test_expand_all_tycon_apps_union() {
     let (mut env, mut state) = make_expand_env();
 
     // Register "MyFloat" as alias for Float
@@ -9818,8 +9987,8 @@ fn test_expand_all_tycon_apps_union() {
 ///
 /// Regression guard: if builtins_core.rs Map registration ever reverts to Unknown placeholders,
 /// expand_named Step 5 param substitution would silently fail for Map[K, V] annotations.
-#[test]
-fn test_map_tycondef_body_uses_typevars_not_unknown() {
+#[tokio::test]
+async fn test_map_tycondef_body_uses_typevars_not_unknown() {
     let env = crate::imports::build_prelude_env();
 
     let def = env
@@ -9864,8 +10033,8 @@ fn test_map_tycondef_body_uses_typevars_not_unknown() {
 /// Current behavior: returns Some(Union([Int, TypeVar(binder, 0)])) — not Type::Recursive.
 /// The TypeVar sentinel IS present (proving cycle detection worked), but the Recursive
 /// wrapper is absent (contractiveness check prevented it).
-#[test]
-fn test_expand_named_produces_recursive_wrapper() {
+#[tokio::test]
+async fn test_expand_named_produces_recursive_wrapper() {
     let (mut env, mut state) = make_expand_env();
 
     // Register "Self" as an alias with body Union([Int, TyCon("Self")]).
@@ -9931,8 +10100,8 @@ fn test_expand_named_produces_recursive_wrapper() {
 /// T-1172 tracks wiring expand_named into the annotation resolver (S-862).
 /// Current behavior: Some(Union([Int, TypeVar(binder_even)])) — cycle detected (TypeVar
 /// present), Recursive wrapper absent (contractiveness check failed).
-#[test]
-fn test_expand_named_mutual_recursion_wraps_at_origin() {
+#[tokio::test]
+async fn test_expand_named_mutual_recursion_wraps_at_origin() {
     let (mut env, mut state) = make_expand_env();
 
     // Register two mutually-recursive aliases:
@@ -9997,13 +10166,13 @@ fn test_expand_named_mutual_recursion_wraps_at_origin() {
     }
 }
 
-#[test]
-fn test_arithmetic_mul_number_float_returns_float() {
+#[tokio::test]
+async fn test_arithmetic_mul_number_float_returns_float() {
     // [* n 1.0] where n@Number: Number * Float → Float (not Number).
     // Regression test: before the (Number, Float) → Float table fix, the Multipliable FD
     // returned Number for (Number, Float), causing "cannot unify Float with Number" T003
     // in stdlib/math.llt functions like deg->rad and rad->deg.
-    let ty = infer_with_builtins("[f: [fn [let n@Number] [* n 1.0]]]\n[x: [f 2]]", "x");
+    let ty = infer_with_builtins("[f: [fn [let n@Number] [* n 1.0]]]\n[x: [f 2]]", "x").await;
     assert_eq!(
         ty,
         Type::Float,
@@ -10011,10 +10180,10 @@ fn test_arithmetic_mul_number_float_returns_float() {
     );
 }
 
-#[test]
-fn test_arithmetic_add_number_float_returns_float() {
+#[tokio::test]
+async fn test_arithmetic_add_number_float_returns_float() {
     // [+ n 1.0] where n@Number: Number + Float → Float (not Number).
-    let ty = infer_with_builtins("[f: [fn [let n@Number] [+ n 1.0]]]\n[x: [f 2]]", "x");
+    let ty = infer_with_builtins("[f: [fn [let n@Number] [+ n 1.0]]]\n[x: [f 2]]", "x").await;
     assert_eq!(
         ty,
         Type::Float,
@@ -10022,10 +10191,10 @@ fn test_arithmetic_add_number_float_returns_float() {
     );
 }
 
-#[test]
-fn test_arithmetic_div_number_float_returns_float() {
+#[tokio::test]
+async fn test_arithmetic_div_number_float_returns_float() {
     // [/ n 1.0] where n@Number: Number / Float → Float (not Number).
-    let ty = infer_with_builtins("[f: [fn [let n@Number] [/ n 1.0]]]\n[x: [f 2]]", "x");
+    let ty = infer_with_builtins("[f: [fn [let n@Number] [/ n 1.0]]]\n[x: [f 2]]", "x").await;
     assert_eq!(
         ty,
         Type::Float,
@@ -10035,14 +10204,14 @@ fn test_arithmetic_div_number_float_returns_float() {
 
 // -- S-783 regression tests (parser fix + annotation fix) --
 
-#[test]
-fn test_annotation_key_normalization() {
+#[tokio::test]
+async fn test_annotation_key_normalization() {
     // Verify that [return: [a Null]] in an annotation dict produces Str("return") key
     // (not VarRef("return")) after parse_annotation processes it.
     // If keys remain as VarRef, has_fn_key check fails and resolve_fn_metadata is not called.
     let input = "[fn@[return: [a Null]] [let x] x]";
     // The test itself: fn@[return: [a Null]] should typecheck
-    let result = crate::typecheck_source_errors_only(input);
+    let result = crate::typecheck_source_errors_only(input).await;
     assert!(
         result.is_ok(),
         "fn@[return: [a Null]] should typecheck: {:?}",
@@ -10050,11 +10219,11 @@ fn test_annotation_key_normalization() {
     );
 }
 
-#[test]
-fn test_annotation_key_normalization_with_doc() {
+#[tokio::test]
+async fn test_annotation_key_normalization_with_doc() {
     // Test with doc: annotation too
     let input = "[fn@[return: [a Null] doc: \"test doc\"] [let x] x]";
-    let result = crate::typecheck_source_errors_only(input);
+    let result = crate::typecheck_source_errors_only(input).await;
     assert!(
         result.is_ok(),
         "fn@[return: [a Null] doc: \"test doc\"] should typecheck: {:?}",
@@ -10062,14 +10231,15 @@ fn test_annotation_key_normalization_with_doc() {
     );
 }
 
-#[test]
-fn test_cond_like_function_typechecks() {
+#[tokio::test]
+async fn test_cond_like_function_typechecks() {
     // Test a function similar to cond: has return: annotation with multi-line doc and complex body
     // Note: this doesn't use cond from the prelude — it uses a simplified version
     let result = crate::typecheck_source_errors_only(
             "[cond-impl2: [fn@Any [let pairs@Dict i@Int]\n  i]\n \
              my-cond: [fn@[return: [a Null] doc: \"Multi-branch conditional\"] [let pairs@Dict] [cond-impl2 pairs 0]]]"
-        );
+        )
+        .await;
     assert!(
         result.is_ok(),
         "cond-like fn should typecheck: {:?}",
@@ -10077,8 +10247,8 @@ fn test_cond_like_function_typechecks() {
     );
 }
 
-#[test]
-fn test_filter_type_in_prelude_env() {
+#[tokio::test]
+async fn test_filter_type_in_prelude_env() {
     let env = crate::imports::build_prelude_env();
     let range_scheme = env.get("range");
     assert!(range_scheme.is_some(), "range must be in prelude env");
@@ -10098,8 +10268,8 @@ fn test_filter_type_in_prelude_env() {
     );
 }
 
-#[test]
-fn test_exact_cond_annotation() {
+#[tokio::test]
+async fn test_exact_cond_annotation() {
     // Test with the EXACT same annotation as the prelude's cond function
     // Uses a triple-quoted doc string like the prelude
     let input = r#"[
@@ -10111,7 +10281,7 @@ Example: [cond [[[> x 10] "big"] [[> x 0] "positive"] [true "other"]]]
 
 Note: Takes a list of condition-result pairs.
 """] [let pairs@Dict] [cond-impl pairs 0]]]"#;
-    let result = crate::typecheck_source_errors_only(input);
+    let result = crate::typecheck_source_errors_only(input).await;
     assert!(
         result.is_ok(),
         "exact cond-like function should typecheck: {:?}",
@@ -10119,8 +10289,8 @@ Note: Takes a list of condition-result pairs.
     );
 }
 
-#[test]
-fn test_prelude_cond_type_after_fix() {
+#[tokio::test]
+async fn test_prelude_cond_type_after_fix() {
     // After all fixes, cond should be correctly typed in the prelude env as Function, not Error.
     let env = crate::imports::build_prelude_env();
     let cond_scheme = env.get("cond");
@@ -10135,8 +10305,8 @@ fn test_prelude_cond_type_after_fix() {
     );
 }
 
-#[test]
-fn test_cond_annotation_parsing() {
+#[tokio::test]
+async fn test_cond_annotation_parsing() {
     // Verify that cond's annotation in the prelude is correctly parsed.
     // Specifically, check that 'return' is a Str key (not VarRef) after adjust_surface_entries.
     let prelude_source = include_str!("../stdlib/prelude.llt");
@@ -10181,8 +10351,8 @@ fn test_cond_annotation_parsing() {
     assert!(found_cond, "Should have found cond function in prelude");
 }
 
-#[test]
-fn test_prelude_typecheck_cond_isolation() {
+#[tokio::test]
+async fn test_prelude_typecheck_cond_isolation() {
     // Type-check the prelude to find what error cond produces.
     // Uses typecheck_source_errors_only which loads the prelude env via build_prelude_env().
     let _prelude_source = include_str!("../stdlib/prelude.llt");
@@ -10209,7 +10379,7 @@ Note: Takes a list of [condition result] pairs.
 """] [let pairs@Dict] [cond-impl pairs 0]]
 ]
 "#;
-    let result = crate::typecheck_source_errors_only(simplified_prelude_cond);
+    let result = crate::typecheck_source_errors_only(simplified_prelude_cond).await;
     assert!(
         result.is_ok(),
         "simplified prelude cond should typecheck: {:?}",
@@ -10217,8 +10387,8 @@ Note: Takes a list of [condition result] pairs.
     );
 }
 
-#[test]
-fn test_cond_impl_type_in_prelude_env() {
+#[tokio::test]
+async fn test_cond_impl_type_in_prelude_env() {
     let env = crate::imports::build_prelude_env();
     let cond_impl_scheme = env.get("cond-impl");
     let cond_check_scheme = env.get("cond-check");
@@ -10242,8 +10412,8 @@ fn test_cond_impl_type_in_prelude_env() {
     }
 }
 
-#[test]
-fn test_when_unless_cond_types_in_prelude_env() {
+#[tokio::test]
+async fn test_when_unless_cond_types_in_prelude_env() {
     let env = crate::imports::build_prelude_env();
     let when_scheme = env.get("when");
     let unless_scheme = env.get("unless");
@@ -10283,8 +10453,8 @@ fn test_when_unless_cond_types_in_prelude_env() {
     }
 }
 
-#[test]
-fn test_cond_type_in_prelude_env() {
+#[tokio::test]
+async fn test_cond_type_in_prelude_env() {
     // Check what type cond has in the prelude env
     let env = crate::imports::build_prelude_env();
     let cond_scheme = env.get("cond");
@@ -10301,14 +10471,15 @@ fn test_cond_type_in_prelude_env() {
     );
 }
 
-#[test]
-fn test_cond_prelude_function_typechecks() {
+#[tokio::test]
+async fn test_cond_prelude_function_typechecks() {
     // Regression test: cond must have a valid return type (Union[a, Null]),
     // not Error. If cond's [return: [a Null]] annotation fails to resolve,
     // cond is typed as Error and calling it produces "expected function type, got <error>".
     let result = crate::typecheck_source_errors_only(
         "[f: [fn [let x] [cond [[[= x 1] \"one\"] [true \"other\"]]]]]",
-    );
+    )
+    .await;
     assert!(
         result.is_ok(),
         "cond must typecheck correctly; its [return: [a Null]] annotation must resolve. \
@@ -10317,15 +10488,16 @@ fn test_cond_prelude_function_typechecks() {
     );
 }
 
-#[test]
-fn test_polymorphic_prelude_types_typechecks() {
+#[tokio::test]
+async fn test_polymorphic_prelude_types_typechecks() {
     // Regression test: map/filter/fold must typecheck correctly.
     let result = crate::typecheck_source_errors_only(
         "[add-one: [fn [let x@Int] [+ x 1]]\n\
              mapped:   [map add-one [1 2 3]]\n\
              filtered: [filter [fn [let x] [< x 3]] [range 1 6]]\n\
              sum:      [fold [fn [let acc x] [+ acc x]] 0 [1 2 3 4 5]]]",
-    );
+    )
+    .await;
     assert!(
         result.is_ok(),
         "map/filter/fold should typecheck without errors. Got: {:?}",
@@ -10335,8 +10507,8 @@ fn test_polymorphic_prelude_types_typechecks() {
 
 // -- Appendable constraint regression test (S-783) --
 
-#[test]
-fn test_instance_decl_parsed_correctly() {
+#[tokio::test]
+async fn test_instance_decl_parsed_correctly() {
     // Verify that `[instance Appendable [let a@Dict]: {...}]` is parsed as
     // SurfaceExpression::Decl(InstanceDecl{...}), not as a Call or other expression.
     // If this fails, the parser is not recognizing the instance declaration form.
@@ -10389,8 +10561,8 @@ fn test_instance_decl_parsed_correctly() {
         );
 }
 
-#[test]
-fn test_instance_let_annotated_pattern_typechecks() {
+#[tokio::test]
+async fn test_instance_let_annotated_pattern_typechecks() {
     // Regression test for B-385: `[instance Cls [let a@Type]: ...]` must typecheck without errors.
     // The `[let a@String]` form uses SurfaceExpression::LetDecl { bindings: [Annotated] },
     // which must be accepted by extract_pattern_types (typecheck_narrow.rs).
@@ -10402,7 +10574,7 @@ fn test_instance_let_annotated_pattern_typechecks() {
     my-method: [fn [let x] x]]
   result: [MyClassStr.my-method "hello"]
 ]"#;
-    let result = crate::typecheck_source_errors_only(input);
+    let result = crate::typecheck_source_errors_only(input).await;
     assert!(
         result.is_ok(),
         "[instance MyClass [let a@String]: ...] must typecheck without errors (B-385); got: {:?}",
@@ -10410,13 +10582,13 @@ fn test_instance_let_annotated_pattern_typechecks() {
     );
 }
 
-#[test]
-fn test_appendable_constraint_merge_typechecks() {
+#[tokio::test]
+async fn test_appendable_constraint_merge_typechecks() {
     // Regression test for S-783: [merge [a: 1] [b: 2]] must typecheck without errors.
     // The Appendable constraint on `merge` must be satisfied via the prelude's AppendableDict
     // instance. If PRELUDE_INSTANCE_CACHE is not populated or seeding fails, this produces
     // "type [a: 1] does not satisfy constraint Appendable".
-    let result = crate::typecheck_source_errors_only("[merge [a: 1] [b: 2]]");
+    let result = crate::typecheck_source_errors_only("[merge [a: 1] [b: 2]]").await;
     assert!(
             result.is_ok(),
             "[merge [a: 1] [b: 2]] should typecheck without errors (AppendableDict instance must be seeded); got: {:?}",
@@ -10424,8 +10596,8 @@ fn test_appendable_constraint_merge_typechecks() {
         );
 }
 
-#[test]
-fn test_prelude_parses_successfully() {
+#[tokio::test]
+async fn test_prelude_parses_successfully() {
     // Verify that parser::parse(prelude_source) succeeds.
     // If this fails, typecheck_and_merge_stdlib_module returns Err(()) and
     // PRELUDE_INSTANCE_CACHE is never populated.
@@ -10438,8 +10610,8 @@ fn test_prelude_parses_successfully() {
     );
 }
 
-#[test]
-fn test_prelude_instance_cache_seeds_appendable() {
+#[tokio::test]
+async fn test_prelude_instance_cache_seeds_appendable() {
     // Directly verify that seed_infer_state_from_prelude_cache populates the Appendable instance.
     // If this test fails, the prelude instance cache is not being populated correctly.
     let _ = crate::imports::build_prelude_env(); // side-effect: populate PRELUDE_INSTANCE_CACHE
@@ -10475,6 +10647,7 @@ fn test_prelude_instance_cache_seeds_appendable() {
     let inst_env_clone = state.instance_env.clone();
     let found = inst_env_clone
         .resolve_instance("Appendable", &target_ty, &mut state)
+        .await
         .expect("resolve_instance should not error")
         .is_some();
     assert!(
@@ -10489,9 +10662,9 @@ fn test_prelude_instance_cache_seeds_appendable() {
 
 // -- B-275: letrec TypeVar shadowing outer-scope prelude functions --
 
-#[test]
+#[tokio::test]
 #[ignore = "B-275: known false positive — same-dict key named after prelude fn causes T003"]
-fn test_b275_letrec_typevar_does_not_shadow_prelude_function() {
+async fn test_b275_letrec_typevar_does_not_shadow_prelude_function() {
     // A dict entry whose key name collides with a prelude function (e.g., `trim`) causes
     // T003 "expected function type, got String" when a sibling entry calls `trim` as a
     // function. This is a false positive: `trim` should resolve to the prelude `Fn[Str→Str]`,
@@ -10521,7 +10694,7 @@ fn test_b275_letrec_typevar_does_not_shadow_prelude_function() {
   f: [fn@String [let s@String] [trim s]]
 ]"#;
     // Currently produces T003: remove #[ignore] and change is_err() to is_ok() when fixed.
-    let result = check(input);
+    let result = check(input).await;
     assert!(
         result.is_err(),
         "B-275 regression: expected T003 false positive (known bug), got no error — \
@@ -10537,8 +10710,8 @@ fn test_b275_letrec_typevar_does_not_shadow_prelude_function() {
 
 /// T-1078a: μa.{x: a} <: μb.{x: b} — isomorphic recursive types are subtypes
 /// and the check TERMINATES (S-Assum prevents infinite loop via the sigma set).
-#[test]
-fn test_is_subtype_recursive_isomorphic_terminates() {
+#[tokio::test]
+async fn test_is_subtype_recursive_isomorphic_terminates() {
     // μa.{x: a} — infinite record {x: {x: {x: ...}}}
     let rec_a = Type::Recursive {
         var: "a".to_string(),
@@ -10567,8 +10740,8 @@ fn test_is_subtype_recursive_isomorphic_terminates() {
 /// T-1078b: Type::Recursive on either side of TypeVar — gradual typing arm returns true.
 /// The TypeVar arm fires AFTER S-Exp, so a Recursive type paired with a TypeVar goes
 /// through S-Exp first (unfolding the Recursive), then hits the TypeVar arm.
-#[test]
-fn test_is_subtype_recursive_vs_typevar_gradual() {
+#[tokio::test]
+async fn test_is_subtype_recursive_vs_typevar_gradual() {
     // μa.Int — a trivially-guarding recursive type (body is a leaf)
     let rec = Type::Recursive {
         var: "a".to_string(),
@@ -10590,8 +10763,8 @@ fn test_is_subtype_recursive_vs_typevar_gradual() {
 
 /// T-1078a-2: μa.(Int | {x: a}) <: μb.(Int | {x: b}) — union-body recursive types
 /// are subtypes and the check TERMINATES (S-Assum prevents divergence on the union body).
-#[test]
-fn test_is_subtype_recursive_union_terminates() {
+#[tokio::test]
+async fn test_is_subtype_recursive_union_terminates() {
     // μa.(Int | {x: a})
     let rec_a = Type::Recursive {
         var: "a".to_string(),
@@ -10625,8 +10798,8 @@ fn test_is_subtype_recursive_union_terminates() {
 
 /// T-1078c: unfold_once(μa.{x: a}) = {x: μa.{x: a}}
 /// The self-reference TypeVar is replaced by the full Recursive type — one unfolding step.
-#[test]
-fn test_unfold_once_basic() {
+#[tokio::test]
+async fn test_unfold_once_basic() {
     let rec = Type::Recursive {
         var: "a".to_string(),
         body: Box::new(Type::Record(crate::type_def::Row {
@@ -10659,8 +10832,8 @@ fn test_unfold_once_basic() {
 
 /// T-1165a: μa.{x: Int, y: a} NOT <: μb.{x: Str, y: b} — different field types.
 /// S-Assum should terminate and return false (Int incompatible with Str).
-#[test]
-fn test_is_subtype_recursive_incompatible_returns_false() {
+#[tokio::test]
+async fn test_is_subtype_recursive_incompatible_returns_false() {
     // μa.{x: Int, y: a}
     let rec_a = Type::Recursive {
         var: "a".to_string(),
@@ -10695,8 +10868,8 @@ fn test_is_subtype_recursive_incompatible_returns_false() {
 
 /// T-1165b: μa.Int NOT <: μb.{x: b} — completely different structure.
 /// S-Assum should terminate and return false (leaf type vs record type).
-#[test]
-fn test_is_subtype_recursive_structural_mismatch_returns_false() {
+#[tokio::test]
+async fn test_is_subtype_recursive_structural_mismatch_returns_false() {
     // μa.Int — wraps a leaf type
     let rec_a = Type::Recursive {
         var: "a".to_string(),
@@ -10720,8 +10893,8 @@ fn test_is_subtype_recursive_structural_mismatch_returns_false() {
 
 /// T-1169a: μa.{x: a} NOT <: μb.{y: b} — different field names.
 /// Isomorphic in structure but distinct field names means NOT subtypes.
-#[test]
-fn test_is_subtype_recursive_different_field_names_returns_false() {
+#[tokio::test]
+async fn test_is_subtype_recursive_different_field_names_returns_false() {
     // μa.{x: a}
     let rec_a = Type::Recursive {
         var: "a".to_string(),
@@ -10753,8 +10926,8 @@ fn test_is_subtype_recursive_different_field_names_returns_false() {
 
 /// T-1166a: is_contractive_type(&Type::TypeVar("a"), "a") → false
 /// Rule 1: bare self-reference μa.a is NOT contractive.
-#[test]
-fn test_is_contractive_type_bare_selfref_false() {
+#[tokio::test]
+async fn test_is_contractive_type_bare_selfref_false() {
     let ty = Type::TypeVar("a".to_string(), 0);
     let result = crate::typecheck::typecheck_annot::is_contractive_type(&ty, "a");
     assert!(
@@ -10765,8 +10938,8 @@ fn test_is_contractive_type_bare_selfref_false() {
 
 /// T-1166b: is_contractive_type(&Type::Union([TypeVar("a"), Int]), "a") → false
 /// Rule 2: union with a bare self-reference member is NOT contractive.
-#[test]
-fn test_is_contractive_type_union_with_selfref_false() {
+#[tokio::test]
+async fn test_is_contractive_type_union_with_selfref_false() {
     let ty = Type::Union(vec![Type::TypeVar("a".to_string(), 0), Type::Int]);
     let result = crate::typecheck::typecheck_annot::is_contractive_type(&ty, "a");
     assert!(
@@ -10778,8 +10951,8 @@ fn test_is_contractive_type_union_with_selfref_false() {
 
 /// T-1166c: is_contractive_type(&Type::Union([Int, Str]), "a") → true
 /// Rule 2: union with NO self-reference is contractive (vacuously true).
-#[test]
-fn test_is_contractive_type_union_no_selfref_true() {
+#[tokio::test]
+async fn test_is_contractive_type_union_no_selfref_true() {
     let ty = Type::Union(vec![Type::Int, Type::Str]);
     let result = crate::typecheck::typecheck_annot::is_contractive_type(&ty, "a");
     assert!(
@@ -10791,8 +10964,8 @@ fn test_is_contractive_type_union_no_selfref_true() {
 
 /// T-1166d: is_contractive_type(&Type::Record({x: TypeVar("a")}), "a") → true
 /// Rule 3: Record is a guarding constructor, so even with a self-ref field it's contractive.
-#[test]
-fn test_is_contractive_type_record_with_selfref_true() {
+#[tokio::test]
+async fn test_is_contractive_type_record_with_selfref_true() {
     let ty = Type::Record(crate::type_def::Row {
         fields: [("x".to_string(), Type::TypeVar("a".to_string(), 0))].into(),
         tail: crate::type_def::RowTail::Empty,
@@ -10807,8 +10980,8 @@ fn test_is_contractive_type_record_with_selfref_true() {
 
 // -- T-1197: Class names in annotation position (@C) --
 
-#[test]
-fn test_class_name_in_annotation_position_returns_constrained_typevar() {
+#[tokio::test]
+async fn test_class_name_in_annotation_position_returns_constrained_typevar() {
     // T-1197: When a class name appears in annotation position, resolve_type_name should
     // return a fresh TypeVar with a Constraint::Class entry rather than an undefined_type error.
     // Use the Comparable class which is registered in InferState::new().
@@ -10820,7 +10993,8 @@ fn test_class_name_in_annotation_position_returns_constrained_typevar() {
 
     let result = resolve_annotation(
         &ann, &env, span, &mut state, &mut c, &mut None, &mut None, None,
-    );
+    )
+    .await;
     assert!(
         result.is_ok(),
         "Class name 'Comparable' in annotation position should succeed, not produce undefined_type; got: {:?}",
@@ -10851,8 +11025,8 @@ fn test_class_name_in_annotation_position_returns_constrained_typevar() {
     );
 }
 
-#[test]
-fn test_class_name_annotation_each_occurrence_independent() {
+#[tokio::test]
+async fn test_class_name_annotation_each_occurrence_independent() {
     // T-1197: Two occurrences of @Comparable in the same function must produce TWO DISTINCT
     // TypeVars (each independently constrained). Class names are not in the type variable
     // namespace (unlike lowercase @a which is deduplicated via ann_mapping).
@@ -10877,6 +11051,7 @@ fn test_class_name_annotation_each_occurrence_independent() {
         &mut None,
         None,
     )
+    .await
     .unwrap();
 
     // Second occurrence — must produce a different TypeVar
@@ -10890,6 +11065,7 @@ fn test_class_name_annotation_each_occurrence_independent() {
         &mut None,
         None,
     )
+    .await
     .unwrap();
 
     match (&ty1, &ty2) {
@@ -10913,12 +11089,12 @@ fn test_class_name_annotation_each_occurrence_independent() {
     );
 }
 
-#[test]
-fn test_class_name_in_param_annotation_no_error_on_builtin_class() {
+#[tokio::test]
+async fn test_class_name_in_param_annotation_no_error_on_builtin_class() {
     // T-1197 + T-1198: A function parameter annotated with a built-in class name
     // must not produce an "undefined type" error.
     // [fn [let x@Equatable] x] — Equatable is a registered class.
-    let result = check("[f: [fn [let x@Equatable] $x]]");
+    let result = check("[f: [fn [let x@Equatable] $x]]").await;
     assert!(
         result.is_ok(),
         "fn with @Equatable param annotation should typecheck without error; got: {:?}",
@@ -10926,11 +11102,11 @@ fn test_class_name_in_param_annotation_no_error_on_builtin_class() {
     );
 }
 
-#[test]
-fn test_class_name_in_param_annotation_constraint_satisfied() {
+#[tokio::test]
+async fn test_class_name_in_param_annotation_constraint_satisfied() {
     // T-1198: When @Comparable is used as a parameter annotation and the function is called
     // with Int (which satisfies Comparable), the call must succeed without error.
-    let result = check("[f: [fn [let x@Comparable] $x]  r: [f 42]]");
+    let result = check("[f: [fn [let x@Comparable] $x]  r: [f 42]]").await;
     assert!(
         result.is_ok(),
         "[fn [let x@Comparable] x] called with 42 (Int/Comparable) must typecheck; got: {:?}",
@@ -10938,12 +11114,12 @@ fn test_class_name_in_param_annotation_constraint_satisfied() {
     );
 }
 
-#[test]
-fn test_class_name_in_param_annotation_user_defined_class() {
+#[tokio::test]
+async fn test_class_name_in_param_annotation_user_defined_class() {
     // T-1197: A user-defined class name in annotation position must also produce a
     // constrained TypeVar rather than an undefined_type error, once the class is registered.
     // The class is declared as part of the same dict (Pass 0c pre-registers it).
-    let result = check("[MyClass: [class [let MyClass a]]  f: [fn [let x@MyClass] $x]  r: [f 42]]");
+    let result = check("[MyClass: [class [let MyClass a]]  f: [fn [let x@MyClass] $x]  r: [f 42]]").await;
     // Note: result may succeed or produce a constraint violation on Int vs MyClass,
     // depending on whether Int has a MyClass instance. The key property being tested
     // is that @MyClass does NOT produce "undefined type: MyClass" — it dispatches
@@ -10964,8 +11140,8 @@ fn test_class_name_in_param_annotation_user_defined_class() {
     }
 }
 
-#[test]
-fn test_class_name_annotation_numeric_builtin() {
+#[tokio::test]
+async fn test_class_name_annotation_numeric_builtin() {
     // T-1197: A built-in class name (Numeric) in annotation position must resolve to a
     // constrained TypeVar rather than an "undefined type" error.
     // Numeric is registered in InferState::new() but is NOT a type alias — it is only
@@ -10978,7 +11154,8 @@ fn test_class_name_annotation_numeric_builtin() {
 
     let result = resolve_annotation(
         &ann, &env, span, &mut state, &mut c, &mut None, &mut None, None,
-    );
+    )
+    .await;
     assert!(
         result.is_ok(),
         "Class name 'Numeric' must resolve to a constrained TypeVar, not undefined_type; got: {:?}",

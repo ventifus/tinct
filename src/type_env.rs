@@ -1872,8 +1872,8 @@ fn type_error_note_unification(expected: &str, got: &str) -> Option<String> {
 mod help_suggestion_tests {
     use super::*;
 
-    #[test]
-    fn test_resolve_instance_freshens_type_vars() {
+    #[tokio::test]
+    async fn test_resolve_instance_freshens_type_vars() {
         use crate::types::{InferState, InstanceDecl};
         use std::collections::HashMap;
 
@@ -1917,6 +1917,7 @@ mod help_suggestion_tests {
         let target = Type::seq(Type::Int);
         let resolved = inst_env
             .resolve_instance("Appendable", &target, &mut state)
+            .await
             .expect("resolve_instance should not error");
 
         assert!(resolved.is_some(), "should resolve Appendable for Seq[Int]");

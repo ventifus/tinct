@@ -2,7 +2,7 @@
 # Two arms with same determining positions (Int, Int) but different determined types (Int vs Float)
 [
   # Define a class with FD: (a, b) determines c
-  TestAdd: [class [let TestAdd a b c] [determines: [[[a b] c]]]
+  TestAdd: [class [let a b c] [determines: [[[a b] c]]]
     op: [Fn@c [a b]]]
 
   # Define instances that violate consistency

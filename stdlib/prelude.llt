@@ -2286,6 +2286,11 @@ MappableDict@[doc: "Mappable instance for Dict: fmap = builtin-map"]:
 Appendable@[doc: "Type class for appendable types (String, Dict, Seq)"]:
   [class [let a]]
 
+# 3-parameter concatenation with functional dependency (a, b) → c
+# Built-in instances (Seq, Record, Str, Bytes) are pre-seeded in type_infer.rs.
+Concatable@[doc: "Type class for types that can be concatenated (3-parameter: a <> b → c)"]:
+  [class [let a b c] [determines: [[[a b] c]]]]
+
 # Appendable instance for String type
 AppendableStr@[doc: "Appendable instance for String: append-one = str, empty = empty string"]:
   [instance Appendable
