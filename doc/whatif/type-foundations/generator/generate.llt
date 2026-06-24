@@ -1,0 +1,129 @@
+# generator/generate.llt — Generate Rust TypeScheme registrations from tinct type annotations.
+#
+# Usage: tinct run --cap-fs gendir=doc/whatif/type-foundations/generator:rwl generate.llt
+#
+# Walks each builtin_*.llt file in %gendir, type-checks the declarations,
+# and emits a corresponding builtin_*.rs file with Rust TypeScheme/TyConDef registrations.
+#
+# The tinct declaration IS the spec. The Rust output is derived from it.
+#
+# NOTE: This is the type-foundations generator. It reads typed declarations for
+# all builtin groups (core, dict, seq, math, io, async, meta, datetime, net)
+# and generates Rust TypeScheme/TyConDef registrations for the type-foundations target state.
+
+--- caps: [%gendir: @DirCap]
+[
+  # parse-comments: extract name → [Seq String] mapping from source text.
+  # Uses an immediately-invoked lambda to avoid intermediate dict args in if.
+  parse-comments: [fn [let source]
+    [lines: [collect [split "\n" source]]]
+    [state: [reduce
+      [fn [let state line]
+        [trimmed: [trim line]]
+        [if [starts-with? "#" trimmed]
+          [merge state [pending: [cons [trim [str-slice trimmed 1 [str-length trimmed]]] state.pending]]]
+          [[fn [let nm]
+            [if [and [str-contains? trimmed ":"] [and [> [str-length nm] 0] [not [starts-with? "[" nm]]]]
+              [merge state [pending: [] comments: [set state.comments nm state.pending]]]
+              [merge state [pending: []]]]]
+           [trim [get 0 [split ":" trimmed]]]]]]
+      [pending: []  comments: []]
+      lines]]
+    [get "comments" state]]
+
+  # format-comments: convert # comments to Rust // comments.
+  format-comments: [fn [let comment-lines indent]
+    [if [empty? comment-lines]
+      ""
+      [join "\n" [map [fn [let c] [str indent "// " c]] comment-lines]]]]
+
+  # typevar-decls: collect TypeVar names from a TypeNode.
+  typevar-decls: [fn [let node]
+    [collect [flat-map [fn [let child]
+      [match child
+        [TypeNode.TypeVar p]: [cons p.name []]
+        _: []]]
+      [TypeNode.children node]]]]
+
+  # typenode-to-rust: convert a TypeNode to a Rust Type::* expression string.
+  typenode-to-rust: [fn [let node vars]
+    [match node
+      [TypeNode.Int]:     "Type::TyCon(\"Int\".into())"
+      [TypeNode.Float]:   "Type::TyCon(\"Float\".into())"
+      [TypeNode.Never]:   "Type::Never"
+      [TypeNode.Unknown]: "Type::Unknown"
+      [TypeNode.TypeConstructor p]:
+        [str "Type::TyCon(\"" p.name "\".into())"]
+      [TypeNode.TypeVar p]:
+        [str p.name ".clone()"]
+      [TypeNode.App p]:
+        [str "Type::App(Box::new(" [typenode-to-rust p.ctor vars]
+             "), Box::new(" [typenode-to-rust p.arg vars] "))"]
+      [TypeNode.Arrow p]:
+        [params: [join ", " [map [fn [let param]
+          [str "(None, " [typenode-to-rust param vars] ")"]]
+          [collect p.params]]]]
+        [str "Type::Function { params: vec![" params "], "
+             "ret: Box::new(" [typenode-to-rust p.result vars] "), "
+             "variadic: false, required_count: " [str [length [collect p.params]]] " }"]
+      _: [str "Type::Any  /* " [builtin-tag-of node] " */"]]]
+
+  # fn-to-scheme: convert a function TypeNode to a Rust TypeScheme registration.
+  fn-to-scheme: [fn [let name node comments]
+    [tvars: [typevar-decls node]]
+    [decls: [join "\n    " [map [fn [let v]
+      [str "let " v " = fresh_type_var(\"" v "\");"]]
+      tvars]]]
+    [vars-vec: [str "vec![" [join ", " [map [fn [let v]
+      [str "extract_var_id(&" v ")"]] tvars]] "]"]]
+    [comment-block: [format-comments comments ""]]
+    [prefix: [if [= comment-block ""] "" [str comment-block "\n"]]]
+    [str
+      prefix
+      [if [= decls ""] "" [str "    " decls "\n"]]
+      "env.insert_scheme(\n"
+      "    \"" name "\",\n"
+      "    TypeScheme {\n"
+      "        vars: " vars-vec ",\n"
+      "        ty: " [typenode-to-rust node tvars] ",\n"
+      "    }\n"
+      ");"]]
+
+  tycon-to-rust: [fn [let name comments]
+    [comment-block: [format-comments comments ""]]
+    [prefix: [if [= comment-block ""] "" [str comment-block "\n"]]]
+    [str prefix "env.insert_tycon_def(\"" name "\", TyConDef::rust_backed(\"" name "\"));"]]
+
+  # NOTE: process-decls requires a "source → TypeEnv dict" API that doesn't yet exist.
+  # eval-types is a type-stage evaluator (for TypeNode expressions), not a runtime type-checker.
+  # Runtime function declarations (fn@ReturnType) don't evaluate correctly in the type-stage env.
+  # The .llt input files capture the design intent; this generator is a design artifact.
+  # TODO: implement builtin-typecheck-source: String → Dict when the API exists.
+  process-decls: [fn [let source path]
+    [str "// TODO: process " path]]
+]
+
+# Main: the document IS the force-reduce — a call expression, not a dict.
+# This ensures the reduce is forced as the document's return value,
+# executing all file writes before the output formatter runs.
+[reduce
+  [fn [let count f]
+    [path: f.name]
+    [in-handle: [open %gendir path Readable]]
+    [source: [str [builtin-read-all in-handle]]]
+    # Note: input handle GC'd after source is read (builtin-close not in scope here)
+    [base: [get 0 [split "." path]]]
+    [out-path: [str base ".rs"]]
+    [content: [process-decls source path]]
+    # builtin-write: (DirCap, String path, String content) -> Int
+    # Simpler than handle API — no open/flush/close needed
+    [written: [builtin-write %gendir out-path [str content "\n"]]]
+    [if [>= written 0]
+        [+ count 1]
+        count]]
+  0
+  [filter
+    [fn [let f] [and [= f.type "file"]
+                     [and [starts-with? "builtin_" f.name]
+                          [ends-with? ".llt" f.name]]]]
+    [values [collect [list-dir %gendir "."]]]]]

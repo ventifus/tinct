@@ -1,0 +1,1049 @@
+# doc/whatif/type-foundations/prelude.llt
+#
+# Proposed prelude reflecting the type-foundations end state.
+# Sections marked [EXISTING] are unchanged from the current prelude.
+# New sections replace Rust-primitive implementations with tinct declarations.
+#
+# Exports a single dict. (Two-dict convention would be ideal but all helpers
+# reference types declared in the same dict — see the note at the dict entry.)
+#
+# Naming convention: ALL core builtins use the builtin-* prefix (builtin-if,
+# builtin-channel, builtin-send, builtin-raise, builtin-bytes, etc.). Prelude
+# re-exports them under user-facing names at the bottom of this dict. User code
+# never sees builtin-* names and never needs --- uses: ["core"].
+# Prelude's own internal code uses builtin-* directly.
+# Exception: `match` is a parser keyword (special form) — renaming to
+# builtin-match requires removing it from the keyword list and defining it as a
+# macro. Deferred. All other [if ...], [raise ...], [send ...] in internal
+# prelude code should use the builtin-* form.
+#
+# Principle: Value::Dict is the only collection primitive Rust knows about.
+# Boolean, Seq, Map, List and all standard library operations over them are
+# defined here in tinct — not in Rust.
+#
+# Syntax notes:
+#   [CURRENT] — valid in current tinct
+#   [PROPOSED] — requires language extension not yet implemented:
+#     - Superclass constraints in [class ...] — NOT YET IMPLEMENTED; the parser rejects
+#       any second positional expression in [class ...] that is not a structural metadata Dict.
+#       Superclass requirements are expressed as comments only until this is implemented.
+#     - Constrained type params e.g. [type [let k@Hashable v] ...]
+#     - builtin-map (new builtin — type-level Dict constructor)
+
+--- stage: type
+# ============================================================================
+# Type-Stage Prelude — [EXISTING, abbreviated]
+# ============================================================================
+
+[
+  # ... [EXISTING type-stage content unchanged] ...
+]
+
+---
+# ============================================================================
+# Prelude — single exported dict
+# ============================================================================
+#
+# Two-dict convention note: the private-helpers dict would normally appear first,
+# but ALL helper functions here (ft-to-seq, seq-map-lazy, etc.) reference types
+# declared in THIS dict (Seq, FingerTree, FNode, Digit). Since the first dict
+# evaluates before the second, those types would not be in scope.
+#
+# Resolution: a single exported dict. Helper functions prefixed with `ft-` and
+# `seq-` are internal — callers should not depend on them. Only the documented
+# public API (map, filter, each, collect, push-right, cons, head, tail, ...) is
+# stable. This is a standard tradeoff in self-hosted standard libraries.
+
+[
+  # ============================================================================
+  # Typeclass design principle
+  # ============================================================================
+  # Typeclasses in tinct are complexity promises, not possibility predicates.
+  # If an operation is a typeclass method, it is O(log n) or better.
+  # Operations that require O(n) traversal (map, filter, reduce, collect,
+  # length of Seq) are plain prelude functions, not typeclass methods.
+  # You can "search for an element" in a Seq but that doesn't make it Indexable.
+
+  # ============================================================================
+  # Boolean — replaces Value::Bool
+  # ============================================================================
+  # Rust's `if` builtin dispatches on the Variant tag "Boolean.True"/"Boolean.False".
+  # true/false literals desugar to True/False at parse time.
+
+  Boolean: [type True False]
+
+  # ============================================================================
+  # Seq — lazy deferred generator
+  # ============================================================================
+  # A recursive nominal ADT. Laziness is automatic — every field is a thunk,
+  # so the tail is never forced until accessed. Seq.Cons/Seq.End are
+  # Value::Variant like any other nominal type; Value::Seq is deleted.
+  #
+  # Seq deliberately has NO Indexable instance. [get i seq] is a type error.
+  # This is intentional: Seq is a generator/stream, not a random-access
+  # collection. Callers who need indexing must first [collect] into a List.
+  # The absence of Indexable communicates "this value is deferred; accessing
+  # by position requires full or partial materialization."
+  #
+  # Seq vs List:
+  #   Seq   — O(1) head/tail, potentially infinite, no random access
+  #   List  — O(log n) access, O(1) amortized append, lazy finger tree
+
+  Seq: [type [let a]
+    [Cons head: a  tail: [Seq a]]
+    End]
+
+  # ── Internal Seq helpers (not stable API — prefixed with seq-/ft- by convention) ──
+
+  # seq-reverse-step: tail-recursive reverse accumulator.
+  seq-reverse-step: [fn [let acc s]
+    [match s
+      [Seq.Cons p]: [seq-reverse-step [Seq.Cons head: p.head  tail: acc] p.tail]
+      Seq.End:      acc]]
+
+  # seq-map-lazy: cons-recursive — returns Seq.Cons immediately, safe on infinite Seqs.
+  # The recursive call is in the lazy tail position of Seq.Cons, so each consumer pull
+  # adds exactly one CEK continuation frame, then returns. Stack depth is O(1).
+  seq-map-lazy: [fn [let f s]
+    [match s
+      [Seq.Cons p]: [Seq.Cons head: [f p.head]  tail: [seq-map-lazy f p.tail]]
+      Seq.End:      Seq.End]]
+
+  # seq-filter-lazy: cons-recursive filter.
+  # The predicate [f p.head] is evaluated eagerly (required to decide inclusion).
+  # The failing branch recurses directly — each consecutive failing element adds one
+  # Cont::PendingCallDispatch entry to the heap continuation stack. TCO fires when the
+  # result thunk has Arc::strong_count == 1, keeping heap growth O(1) in that case.
+  # For sequences with many consecutive failures, prefer collect → filter-on-List → each.
+  seq-filter-lazy: [fn [let f s]
+    [match s
+      [Seq.Cons p]:
+        [if [f p.head]
+          [Seq.Cons head: p.head  tail: [seq-filter-lazy f p.tail]]
+          [seq-filter-lazy f p.tail]]
+      Seq.End: Seq.End]]
+
+  # ft-to-seq: lazy left-to-right traversal of a finger tree.
+  # O(log n) amortized per element consumed. Defined here (inside exported dict)
+  # because it references FingerTree/FNode/Digit/Seq — all in this dict.
+  ft-to-seq: [fn [let t]
+    [match t
+      FingerTree.FTEmpty:      Seq.End
+      [FingerTree.FTSingle p]: [Seq.Cons head: p.value  tail: Seq.End]
+      [FingerTree.FTDeep p]:
+        [ft-digit-seq p.prefix
+          [ft-spine-seq p.spine
+            [ft-digit-seq p.suffix Seq.End]]]]]
+
+  ft-digit-seq: [fn [let d rest]
+    [match d
+      [Digit.One   p]: [Seq.Cons head: p.a  tail: rest]
+      [Digit.Two   p]: [Seq.Cons head: p.a  tail: [Seq.Cons head: p.b  tail: rest]]
+      [Digit.Three p]: [Seq.Cons head: p.a  tail: [Seq.Cons head: p.b  tail: [Seq.Cons head: p.c  tail: rest]]]
+      [Digit.Four  p]: [Seq.Cons head: p.a  tail: [Seq.Cons head: p.b  tail: [Seq.Cons head: p.c  tail: [Seq.Cons head: p.d  tail: rest]]]]]]
+
+  # ft-spine-seq: flatten spine (FingerTree of FNode) into a lazy Seq of leaf elements.
+  ft-spine-seq: [fn [let spine rest]
+    [match [ft-to-seq spine]
+      Seq.End: rest
+      [Seq.Cons np]:
+        [match np.head
+          [FNode.FNode2 n]: [Seq.Cons head: n.left  tail: [Seq.Cons head: n.right  tail: [ft-spine-seq-tail np.tail rest]]]
+          [FNode.FNode3 n]: [Seq.Cons head: n.left  tail: [Seq.Cons head: n.mid    tail: [Seq.Cons head: n.right tail: [ft-spine-seq-tail np.tail rest]]]]]]]
+
+  ft-spine-seq-tail: [fn [let spine-seq rest]
+    [match spine-seq
+      Seq.End: rest
+      [Seq.Cons np]:
+        [match np.head
+          [FNode.FNode2 n]: [Seq.Cons head: n.left  tail: [Seq.Cons head: n.right  tail: [ft-spine-seq-tail np.tail rest]]]
+          [FNode.FNode3 n]: [Seq.Cons head: n.left  tail: [Seq.Cons head: n.mid    tail: [Seq.Cons head: n.right tail: [ft-spine-seq-tail np.tail rest]]]]]]]
+
+  # ============================================================================
+  # Seq standard library — tinct-defined, no Rust builtins for sequences
+  # ============================================================================
+  #
+  # map, filter, reduce, and other O(n) traversals operate on Seq and return Seq.
+  # To apply them to a List, first call `each` to get a lazy Seq view of the List.
+  # `collect` then materializes the result back into a List if needed.
+  #
+  # This makes the O(n) cost visible and voluntary:
+  #   [filter pred list]                          — type error: List has no filter
+  #   [filter pred [each list]]                   — returns Seq (lazy, O(1) per step)
+  #   [collect [filter pred [each list]]]         — returns List (O(n) explicit)
+  #   [my-list | each | [filter pred] | collect]  — pipeline form
+
+  cons@[return: [Seq a]  doc: "Prepend an element to a Seq"]:
+    [fn [let x@a rest@[Seq a]] [Seq.Cons head: x  tail: rest]]
+
+  head@[return: a  doc: "First element; raises on empty"]:
+    [fn [let s@[Seq a]]
+      [match s  [Seq.Cons p]: p.head  Seq.End: [raise "head: empty sequence"]]]
+
+  tail@[return: [Seq a]  doc: "All elements after the first; raises on empty"]:
+    [fn [let s@[Seq a]]
+      [match s  [Seq.Cons p]: p.tail  Seq.End: [raise "tail: empty sequence"]]]
+
+  # ============================================================================
+  # Iterable — typeclass for collections that produce a lazy Seq view
+  # ============================================================================
+  # each is the single dispatch point. The element type is determined by the
+  # collection type via functional dependency.
+  #
+  # Seq has NO Iterable instance — Seq IS already the streaming form.
+  # Applying each to a Seq is a category error; use the Seq directly.
+
+  Iterable@[doc: "Types that can be converted to a lazy left-to-right Seq"]:
+    [class [let Iterable c a] [determines: [[[c] a]]  resolver: IterResult]
+      each: [Fn@[Seq a] [c]]]
+
+  # List instance: O(1) to initiate, O(log n) amortized per element consumed.
+  [instance Iterable [let c@[List a] a]:
+    [each: [fn [let list] [ft-to-seq list]]]]
+
+  # Map/Dict instance: each produces a Seq of [key: k  value: v] entry records.
+  # keys and values are derived from this — no separate iteration primitives needed.
+  [instance Iterable [let c@[Map k v] [key: k  value: v]]:
+    [each: [fn [let d] [entries d]]]]
+
+  # keys and values are plain functions derived from [each dict]:
+  keys@[return: [Seq k]  doc: "Lazy Seq of dict keys in insertion order"]:
+    [fn [let d@[Map k v]] [map [fn [let e] e.key]   [each d]]]
+
+  values@[return: [Seq v]  doc: "Lazy Seq of dict values in insertion order"]:
+    [fn [let d@[Map k v]] [map [fn [let e] e.value] [each d]]]
+
+  map@[return: [Seq b]  doc: "Apply f to each element — lazy, safe on infinite Seqs"]:
+    [fn [let f@[Fn@b [a]] s@[Seq a]]
+      [seq-map-lazy f s]]
+
+  filter@[return: [Seq a]  doc: "Keep elements satisfying predicate — lazy, cons-recursive"]:
+    [fn [let f@[Fn@Boolean [a]] s@[Seq a]]
+      [seq-filter-lazy f s]]
+
+  # reduce: tail-recursive. Seq is entirely tinct-defined — no Rust Seq dispatch.
+  # TCO fires when the result thunk has Arc::strong_count==1 (the common case),
+  # keeping the fold O(1) heap. The recursive call is in tail position.
+  reduce@[return: b  doc: "Fold left with accumulator"]:
+    [fn [let f@[Fn@b [b a]] init@b s@[Seq a]]
+      [match s
+        Seq.End: init
+        [case [let p] [Seq.Cons p] [reduce f [f init p.head] p.tail]]]]
+
+  reverse@[return: [Seq a]  doc: "Reverse a Seq"]:
+    [fn [let s@[Seq a]] [seq-reverse-step Seq.End s]]
+
+  take@[return: [Seq a]  doc: "First n elements"]:
+    [fn [let n@Int s@[Seq a]]
+      [if [= n 0] Seq.End
+        [match s
+          [Seq.Cons p]: [Seq.Cons head: p.head  tail: [take [- n 1] p.tail]]
+          Seq.End:      Seq.End]]]
+
+  drop@[return: [Seq a]  doc: "Skip first n elements"]:
+    [fn [let n@Int s@[Seq a]]
+      [if [= n 0] s
+        [match s
+          [Seq.Cons p]: [drop [- n 1] p.tail]
+          Seq.End:      Seq.End]]]
+
+  range@[return: [Seq Int]  doc: "Lazy half-open integer range [start, end)"]:
+    [fn [let start@Int end@Int]
+      [if [>= start end] Seq.End
+        [Seq.Cons head: start  tail: [range [+ start 1] end]]]]
+
+  repeat@[return: [Seq a]  doc: "Infinite Seq of the same value"]:
+    [fn [let x@a] [Seq.Cons head: x  tail: [repeat x]]]
+
+  iterate@[return: [Seq a]  doc: "Seq generated by repeatedly applying f to init"]:
+    [fn [let f@[Fn@a [a]] init@a]
+      [Seq.Cons head: init  tail: [iterate f [f init]]]]
+
+  concat@[return: [Seq a]  doc: "Concatenate two Seqs — O(n), plain prelude function (not a typeclass method)"]:
+    [fn [let a@[Seq a] b@[Seq a]]
+      [match a
+        [Seq.Cons p]: [Seq.Cons head: p.head  tail: [concat p.tail b]]
+        Seq.End:      b]]
+
+  # ============================================================================
+  # Collection typeclasses — complexity-promise hierarchy
+  # ============================================================================
+  # Each typeclass is a complexity promise: every method is O(log n) or better.
+  # A type that is both Prependable AND Appendable is a deque — no separate
+  # Dequeable class needed.
+  #
+  # Instance table:
+  #   Seq a    — Prependable only (O(1) exact)
+  #   List a   — Prependable + Appendable + Concatenable + Indexable
+  #   Dict     — Concatenable + Indexable
+  #
+  # NOT typeclasses (O(n), live as plain prelude functions):
+  #   map, filter, reduce, collect, sort, concat-on-seq, length-of-seq
+
+  Prependable@[doc: "O(1) amortized push-left, peek-left, pop-left"]:
+    [class [let Prependable c a]
+      push-left: [Fn@c      [a c]]
+      peek-left: [Fn@a      [c]]
+      pop-left:  [Fn@c      [c]]]
+
+  # Seq a is Prependable: O(1) exact (lazy cons-cell construction)
+  [instance Prependable [let c@[Seq a] a]:
+    [push-left: [fn [let x s] [Seq.Cons head: x  tail: s]]
+     peek-left: [fn [let s] [match s [Seq.Cons p]: p.head  Seq.End: [raise "peek-left: empty"]]]
+     pop-left:  [fn [let s] [match s [Seq.Cons p]: p.tail  Seq.End: [raise "pop-left: empty"]]]]]
+
+  Appendable@[doc: "O(1) amortized push-right, peek-right, pop-right"]:
+    [class [let Appendable c a]
+      push-right: [Fn@c      [c a]]
+      peek-right: [Fn@a      [c]]
+      pop-right:  [Fn@c      [c]]]
+
+  Concatenable@[doc: "O(log n) or better join of two collections"]:
+    [class [let Concatenable c]
+      <>: [Fn@c [c c]]]
+
+  # ============================================================================
+  # List — finger tree implementation
+  # ============================================================================
+  # List is a 2-3 finger tree (Hinze & Paterson 2006): O(1) amortized push,
+  # O(log n) index access. Purely tinct — no Rust builtins required.
+  # This replaces both builtin-collect and the mutable builder.
+
+  # Size annotations on every node enable O(1) length and O(log n) index access.
+  # Each node precomputes the total count of leaf elements in its subtree.
+
+  Digit: [type [let a]
+    [One   a: a]
+    [Two   a: a  b: a]
+    [Three a: a  b: a  c: a]
+    [Four  a: a  b: a  c: a  d: a]]
+
+  # FNode carries precomputed subtree size
+  FNode: [type [let a]
+    [FNode2 size: Int  left: a  right: a]
+    [FNode3 size: Int  left: a  mid: a  right: a]]
+
+  # FTDeep carries total element count in this tree
+  FingerTree: [type [let a]
+    FTEmpty
+    [FTSingle value: a]
+    [FTDeep size: Int  prefix: [Digit a]  spine: [FingerTree [FNode a]]  suffix: [Digit a]]]
+
+  List@[doc: "Ordered lazy sequence with O(1) length and O(log n) index access"]:
+    [type [let a] [FingerTree a]]
+
+  # ── Size helpers ────────────────────────────────────────────────────────────
+
+  # ft-size: O(1) — read precomputed size from root
+  ft-size: [fn [let t@[FingerTree a]]
+    [match t
+      FingerTree.FTEmpty:      0
+      [FingerTree.FTSingle _]: 1
+      [FingerTree.FTDeep p]:   p.size]]
+
+  # fnode-size: O(1) — read precomputed size from FNode
+  fnode-size: [fn [let n@[FNode a]]
+    [match n
+      [FNode.FNode2 p]: p.size
+      [FNode.FNode3 p]: p.size]]
+
+  # digit-size: O(1) — count elements in Digit using their sizes
+  digit-size: [fn [let d elem-size]
+    [match d
+      [Digit.One   p]: [elem-size p.a]
+      [Digit.Two   p]: [+ [elem-size p.a] [elem-size p.b]]
+      [Digit.Three p]: [+ [elem-size p.a] [+ [elem-size p.b] [elem-size p.c]]]
+      [Digit.Four  p]: [+ [elem-size p.a] [+ [elem-size p.b] [+ [elem-size p.c] [elem-size p.d]]]]]]
+
+  # ── Construction ────────────────────────────────────────────────────────────
+
+  # push-right: public API — each leaf element counts as 1.
+  push-right@[return: [List a]  doc: "O(1) amortized — append to right end"]:
+    [fn [let x@a t@[List a]]
+      [ft-push-right-sized x 1 t]]
+
+  # ft-push-right-sized: internal — x-size is the leaf count x contributes.
+  # For outermost level: x-size = 1 (x is a leaf).
+  # For spine level: x-size = fnode-size(x) (x is an FNode covering 2–3 leaves).
+  # This maintains the invariant: FTDeep.size = total leaf count at every level.
+  ft-push-right-sized: [fn [let x x-size t]
+    [match t
+      FingerTree.FTEmpty:
+        [FingerTree.FTSingle value: x]
+      [FingerTree.FTSingle p]:
+        [FingerTree.FTDeep
+          size:   [+ 1 x-size]
+          prefix: [Digit.One a: p.value]
+          spine:  FingerTree.FTEmpty
+          suffix: [Digit.One a: x]]
+      [FingerTree.FTDeep p]:
+        [match p.suffix
+          [Digit.Four s]:
+            # FNode3 covers 3 leaves — push into spine with x-size=3, not 1.
+            [FingerTree.FTDeep
+              size:   [+ p.size x-size]
+              prefix: p.prefix
+              spine:  [ft-push-right-sized [FNode.FNode3 size: 3  left: s.a  mid: s.b  right: s.c] 3 p.spine]
+              suffix: [Digit.Two a: s.d  b: x]]
+          _:
+            [FingerTree.FTDeep
+              size:   [+ p.size x-size]
+              prefix: p.prefix
+              spine:  p.spine
+              suffix: [digit-push-right x p.suffix]]]]]
+
+  digit-push-right: [fn [let x d]
+    [match d
+      [Digit.One   s]: [Digit.Two   a: s.a  b: x]
+      [Digit.Two   s]: [Digit.Three a: s.a  b: s.b  c: x]
+      [Digit.Three s]: [Digit.Four  a: s.a  b: s.b  c: s.c  d: x]
+      _: [raise "digit-push-right: digit is full (Four)"]]]
+
+  # ── Index access ─────────────────────────────────────────────────────────────
+
+  # ft-index: O(log n) — navigate using precomputed size annotations.
+  #
+  # Invariant: FTDeep.size stores the TOTAL LEAF COUNT at every level.
+  # For the outermost tree, each element is 1 leaf.
+  # For the spine (FingerTree of FNode), each FNode.size gives its leaf count.
+  # This invariant must be maintained by push-left/push-right/ft-concat.
+  ft-index: [fn [let i@Int t@[FingerTree a]]
+    [ft-index-by-size i t [fn [let _] 1] [fn [let x _] x]]]
+
+  # ft-index-by-size: generalized O(log n) index with per-element size function.
+  # elem-size: a → Int (how many leaves does this element cover)
+  # elem-get:  a → Int → leaf  (navigate into element to find leaf at offset i)
+  ft-index-by-size: [fn [let i t elem-size elem-get]
+    [match t
+      FingerTree.FTEmpty:      [raise "ft-index: index out of bounds"]
+      [FingerTree.FTSingle p]: [elem-get p.value i]
+      [FingerTree.FTDeep p]:   [ft-index-deep i p elem-size elem-get]]]
+
+  # elem-size-at-level: leaf count for an element that may be FNode or leaf.
+  # FNode2/FNode3 have a precomputed size field; leaf values contribute 1.
+  elem-size-at-level: [fn [let x]
+    [match x
+      [FNode.FNode2 p]: p.size
+      [FNode.FNode3 p]: p.size
+      _:               1]]
+
+  # fnode-elem-get: self-similar descent through nested FNodes to reach a leaf.
+  # Correct for any spine depth. At depth 1, FNode.{left,mid,right} are leaf values
+  # and are returned by the `_: node` arm. At depth 2+, they are FNodes and we recurse.
+  fnode-elem-get: [fn [let node i]
+    [match node
+      [FNode.FNode2 fn2]: [fnode2-elem-get fn2.left fn2.right i]
+      [FNode.FNode3 fn3]: [fnode3-elem-get fn3.left fn3.mid fn3.right i]
+      _:                  node]]   # leaf value: i must be 0; return it directly
+
+  fnode2-elem-get: [fn [let left right i]
+    [ls: [elem-size-at-level left]]
+    [if [< i ls]
+      [fnode-elem-get left i]
+      [fnode-elem-get right [- i ls]]]]
+
+  fnode3-elem-get: [fn [let left mid right i]
+    [ls: [elem-size-at-level left]]
+    [ms: [elem-size-at-level mid]]
+    [i2: [- i ls]]
+    [if [< i ls]
+      [fnode-elem-get left i]
+      [if [< i2 ms]
+        [fnode-elem-get mid i2]
+        [fnode-elem-get right [- i2 ms]]]]]
+
+  # ft-index-deep: navigate into an FTDeep node.
+  # Spine navigation always uses elem-size-at-level and fnode-elem-get — these are
+  # self-similar and correct at any depth. Digit navigation uses the caller-supplied
+  # elem-size/elem-get (1/identity at the outermost level).
+  ft-index-deep: [fn [let i p elem-size elem-get]
+    [pre-size:         [digit-size p.prefix elem-size]]
+    [suf-size:         [digit-size p.suffix elem-size]]
+    [spine-leaf-count: [- p.size [+ pre-size suf-size]]]
+    [i2:               [- i pre-size]]
+    [if [< i pre-size]
+      [digit-index i p.prefix elem-size elem-get]
+      [if [< i2 spine-leaf-count]
+        [ft-index-by-size i2 p.spine elem-size-at-level fnode-elem-get]
+        [digit-index [- i2 spine-leaf-count] p.suffix elem-size elem-get]]]]
+
+  # digit-index: O(log n) — find element within a Digit by size-guided navigation.
+  # All intermediate bindings are computed at function-body top level.
+  # With lazy evaluation, unused bindings (e.g. sc for Digit.Two) are not forced.
+  digit-index-two: [fn [let i a b elem-size elem-get]
+    [sa: [elem-size a]]
+    [if [< i sa] [elem-get a i] [elem-get b [- i sa]]]]
+
+  digit-index-three: [fn [let i a b c elem-size elem-get]
+    [sa: [elem-size a]]
+    [sb: [elem-size b]]
+    [i2: [- i sa]]
+    [if [< i sa]
+      [elem-get a i]
+      [if [< i2 sb] [elem-get b i2] [elem-get c [- i2 sb]]]]]
+
+  digit-index-four: [fn [let i a b c d elem-size elem-get]
+    [sa: [elem-size a]]
+    [sb: [elem-size b]]
+    [sc: [elem-size c]]
+    [i2: [- i sa]]
+    [i3: [- i2 sb]]
+    [if [< i sa]
+      [elem-get a i]
+      [if [< i2 sb]
+        [elem-get b i2]
+        [if [< i3 sc]
+          [elem-get c i3]
+          [elem-get d [- i3 sc]]]]]]
+
+  digit-index: [fn [let i d elem-size elem-get]
+    [match d
+      [Digit.One   p]: [elem-get p.a i]
+      [Digit.Two   p]: [digit-index-two   i p.a p.b         elem-size elem-get]
+      [Digit.Three p]: [digit-index-three i p.a p.b p.c     elem-size elem-get]
+      [Digit.Four  p]: [digit-index-four  i p.a p.b p.c p.d elem-size elem-get]]]
+
+  # ── Materialization ──────────────────────────────────────────────────────────
+
+  # collect: O(n) — fold Seq into finger tree via push-right.
+  # Not a typeclass method — O(n) prelude function.
+  # Uses the tinct reduce wrapper. TCO makes this heap-stable for long Seqs.
+  collect@[return: [List a]  doc: "Materialize lazy Seq into List (O(n))"]:
+    [fn [let s@[Seq a]]
+      [reduce [fn [let tree x] [push-right x tree]] FingerTree.FTEmpty s]]
+
+  # ── List typeclass instances ──────────────────────────────────────────────────
+
+  # List is a deque: both Prependable AND Appendable (finger tree O(1) amortized)
+  [instance Prependable [let c@[List a] a]:
+    [push-left: [fn [let x t] [ft-push-left x t]]
+     peek-left: [fn [let t]
+       [match t
+         [case [let _] FingerTree.FTEmpty      [raise "peek-left: empty"]]
+         [case [let p] [FingerTree.FTSingle p] p.value]
+         [case [let p] [FingerTree.FTDeep p]   [digit-first p.prefix]]]]
+     pop-left:  [fn [let t] [ft-pop-left t]]]]
+
+  [instance Appendable [let c@[List a] a]:
+    [push-right: push-right    # defined above — O(1) amortized
+     peek-right: [fn [let t]
+       [match t
+         [case [let _] FingerTree.FTEmpty      [raise "peek-right: empty"]]
+         [case [let p] [FingerTree.FTSingle p] p.value]
+         [case [let p] [FingerTree.FTDeep p]   [digit-last p.suffix]]]]
+     pop-right:  [fn [let t] [ft-pop-right t]]]]
+
+  [instance Concatenable [let c@[List a]]:
+    [<>: [fn [let a b] [ft-concat a b]]]]   # finger tree catenation, O(log n)
+
+  # ── finger tree push-left helper ─────────────────────────────────────────────
+
+  digit-push-left: [fn [let x d]
+    [match d
+      [Digit.One   s]: [Digit.Two   a: x  b: s.a]
+      [Digit.Two   s]: [Digit.Three a: x  b: s.a  c: s.b]
+      [Digit.Three s]: [Digit.Four  a: x  b: s.a  c: s.b  d: s.c]
+      _: [raise "digit-push-left: digit is full (Four)"]]]
+
+  digit-first: [fn [let d]
+    [match d
+      [Digit.One   p]: p.a
+      [Digit.Two   p]: p.a
+      [Digit.Three p]: p.a
+      [Digit.Four  p]: p.a]]
+
+  digit-last: [fn [let d]
+    [match d
+      [Digit.One   p]: p.a
+      [Digit.Two   p]: p.b
+      [Digit.Three p]: p.c
+      [Digit.Four  p]: p.d]]
+
+  ft-push-left: [fn [let x@a t@[List a]]
+    [ft-push-left-sized x 1 t]]
+
+  ft-push-left-sized: [fn [let x x-size t]
+    [match t
+      FingerTree.FTEmpty:
+        [FingerTree.FTSingle value: x]
+      [FingerTree.FTSingle p]:
+        [FingerTree.FTDeep
+          size:   [+ x-size 1]
+          prefix: [Digit.One a: x]
+          spine:  FingerTree.FTEmpty
+          suffix: [Digit.One a: p.value]]
+      [FingerTree.FTDeep p]:
+        [match p.prefix
+          [Digit.Four s]:
+            [FingerTree.FTDeep
+              size:   [+ p.size x-size]
+              prefix: [Digit.Two a: x  b: s.a]
+              spine:  [ft-push-left-sized [FNode.FNode3 size: 3  left: s.b  mid: s.c  right: s.d] 3 p.spine]
+              suffix: p.suffix]
+          _:
+            [FingerTree.FTDeep
+              size:   [+ p.size x-size]
+              prefix: [digit-push-left x p.prefix]
+              spine:  p.spine
+              suffix: p.suffix]]]]
+
+  # ft-concat-sized: catenation with explicit element-size function.
+  # Used at the outermost level (elem-size = [fn[_]1]) and recursively at spine
+  # level from ft-add-nodes (elem-size = fnode-size). The elem-size function
+  # determines how many leaves each element contributes when pushed into the tree.
+  ft-concat-sized: [fn [let a b elem-size]
+    [match a
+      FingerTree.FTEmpty: b
+      [FingerTree.FTSingle pa]:
+        [ft-push-left-sized pa.value [elem-size pa.value] b]
+      [FingerTree.FTDeep pa]:
+        [match b
+          FingerTree.FTEmpty: a
+          [FingerTree.FTSingle pb]:
+            [ft-push-right-sized pb.value [elem-size pb.value] a]
+          [FingerTree.FTDeep pb]:
+            [FingerTree.FTDeep
+              size:   [+ pa.size pb.size]
+              prefix: pa.prefix
+              spine:  [ft-add-digits pa.spine [digit-to-seq pa.suffix] [digit-to-seq pb.prefix] pb.spine]
+              suffix: pb.suffix]]]]
+
+  # ft-concat: public API — outermost level, each element is 1 leaf.
+  ft-concat: [fn [let a@[List a] b@[List a]]
+    [ft-concat-sized a b [fn [let _] 1]]]
+
+  digit-to-seq: [fn [let d]
+    [match d
+      [Digit.One   p]: [Seq.Cons head: p.a  tail: Seq.End]
+      [Digit.Two   p]: [Seq.Cons head: p.a  tail: [Seq.Cons head: p.b  tail: Seq.End]]
+      [Digit.Three p]: [Seq.Cons head: p.a  tail: [Seq.Cons head: p.b  tail: [Seq.Cons head: p.c  tail: Seq.End]]]
+      [Digit.Four  p]: [Seq.Cons head: p.a  tail: [Seq.Cons head: p.b  tail: [Seq.Cons head: p.c  tail: [Seq.Cons head: p.d  tail: Seq.End]]]]]]
+
+  # chunk-fnodes: group a Seq of elements into FNode2/FNode3 values.
+  # Rules (derived from H&P): prefer FNode3 when exactly 3 remain; otherwise FNode2.
+  # Total elements from two digits is 4–8, so chunking always terminates cleanly.
+  chunk-fnodes: [fn [let s]
+    [match s
+      Seq.End: Seq.End
+      [Seq.Cons p1]:
+        [match p1.tail
+          Seq.End: [raise "chunk-fnodes: lone element — digit sizes must be 2–4"]
+          [Seq.Cons p2]:
+            [match p2.tail
+              Seq.End:
+                [Seq.Cons head: [FNode.FNode2 size: 2  left: p1.head  right: p2.head]
+                          tail: Seq.End]
+              [Seq.Cons p3]:
+                [match p3.tail
+                  Seq.End:
+                    [Seq.Cons head: [FNode.FNode3 size: 3  left: p1.head  mid: p2.head  right: p3.head]
+                              tail: Seq.End]
+                  _:
+                    [Seq.Cons head: [FNode.FNode2 size: 2  left: p1.head  right: p2.head]
+                              tail: [chunk-fnodes p2.tail]]]]]]
+
+  # ft-add-digits: the spine-level inner-concat from Hinze & Paterson 2006.
+  # Takes: left-spine × left-suffix-as-seq × right-prefix-as-seq × right-spine.
+  # Chunks middle elements into FNodes, folds them into the left spine, then
+  # recursively catenates the grown left spine with the right spine.
+  ft-add-digits: [fn [let left left-sf right-pf right]
+    [mids:  [concat left-sf right-pf]]
+    [nodes: [chunk-fnodes mids]]
+    [ft-add-nodes left nodes right]]
+
+  # ft-add-nodes: fold FNodes into left spine, then catenate with right spine.
+  # FNodes pushed into the spine use fnode-size (2–3), not 1, to maintain the
+  # leaf-count size invariant at the spine level.
+  # The base-case spine catenation uses ft-concat-sized with fnode-size, since
+  # elements at the spine level are FNodes (not leaves).
+  ft-add-nodes: [fn [let left nodes right]
+    [match nodes
+      Seq.End:
+        [match left
+          FingerTree.FTEmpty: right
+          _:
+            [match right
+              FingerTree.FTEmpty: left
+              _: [ft-concat-sized left right fnode-size]]]
+      [Seq.Cons p]:
+        [ft-add-nodes [ft-push-right-sized p.head [fnode-size p.head] left] p.tail right]]]
+
+  # ── viewL / viewR — Hinze & Paterson 2006 ────────────────────────────────────
+  #
+  # digit-tail-or-null: remove leftmost element from a Digit.
+  # Returns the remaining Digit, or [] (null) if the Digit had only one element.
+  digit-tail-or-null: [fn [let d]
+    [match d
+      [case [let _] [Digit.One   _] []]
+      [case [let p] [Digit.Two   p] [Digit.One   a: p.b]]
+      [case [let p] [Digit.Three p] [Digit.Two   a: p.b  b: p.c]]
+      [case [let p] [Digit.Four  p] [Digit.Three a: p.b  b: p.c  c: p.d]]]]
+
+  # digit-init-or-null: remove rightmost element from a Digit.
+  # Returns the remaining Digit, or [] (null) if the Digit had only one element.
+  digit-init-or-null: [fn [let d]
+    [match d
+      [case [let _] [Digit.One   _] []]
+      [case [let p] [Digit.Two   p] [Digit.One   a: p.a]]
+      [case [let p] [Digit.Three p] [Digit.Two   a: p.a  b: p.b]]
+      [case [let p] [Digit.Four  p] [Digit.Three a: p.a  b: p.b  c: p.c]]]]
+
+  # fnode-to-digit: convert an FNode into a Digit of its children.
+  # Self-similar: works at any spine depth (children may be leaves or inner FNodes).
+  fnode-to-digit: [fn [let node]
+    [match node
+      [case [let p] [FNode.FNode2 p] [Digit.Two   a: p.left  b: p.right]]
+      [case [let p] [FNode.FNode3 p] [Digit.Three a: p.left  b: p.mid   c: p.right]]]]
+
+  # digit-to-tree: rebuild a FingerTree from a Digit when the spine is empty.
+  # Used during viewL/viewR when the spine has been exhausted.
+  # elem-size is passed through to maintain the size invariant at any depth.
+  digit-to-tree: [fn [let d elem-size]
+    [match d
+      [case [let p] [Digit.One   p]
+        [FingerTree.FTSingle value: p.a]]
+      [case [let p] [Digit.Two   p]
+        [FingerTree.FTDeep
+          size:   [+ [elem-size p.a] [elem-size p.b]]
+          prefix: [Digit.One a: p.a]
+          spine:  FingerTree.FTEmpty
+          suffix: [Digit.One a: p.b]]]
+      [case [let p] [Digit.Three p]
+        [FingerTree.FTDeep
+          size:   [+ [elem-size p.a] [+ [elem-size p.b] [elem-size p.c]]]
+          prefix: [Digit.Two a: p.a  b: p.b]
+          spine:  FingerTree.FTEmpty
+          suffix: [Digit.One a: p.c]]]
+      [case [let p] [Digit.Four  p]
+        [FingerTree.FTDeep
+          size:   [+ [elem-size p.a] [+ [elem-size p.b] [+ [elem-size p.c] [elem-size p.d]]]]
+          prefix: [Digit.Two a: p.a  b: p.b]
+          spine:  FingerTree.FTEmpty
+          suffix: [Digit.Two a: p.c  b: p.d]]]]]
+
+  # ft-view-left-sized: viewL — peel the leftmost element from a FingerTree.
+  # Returns [elem: a  rest: [FingerTree a]]. Raises on empty tree.
+  # Recursive spine call uses fnode-size as elem-size (FNodes at spine level).
+  ft-view-left-sized: [fn [let t elem-size]
+    [match t
+      [case [let _] FingerTree.FTEmpty
+        [raise "pop-left: empty List"]]
+      [case [let p] [FingerTree.FTSingle p]
+        [elem: p.value  rest: FingerTree.FTEmpty]]
+      [case [let p] [FingerTree.FTDeep p]
+        [head:     [digit-first p.prefix]]
+        [tail-dig: [digit-tail-or-null p.prefix]]
+        [elem-sz:  [elem-size head]]
+        [if [not [null? tail-dig]]
+          # Prefix still has elements — simple reconstruction.
+          [elem: head
+           rest: [FingerTree.FTDeep
+                   size:   [- p.size elem-sz]
+                   prefix: tail-dig
+                   spine:  p.spine
+                   suffix: p.suffix]]
+          # Prefix exhausted — borrow from spine.
+          [if [null? [ft-size p.spine]]
+            # Spine is empty — suffix becomes the whole remaining tree.
+            [elem: head
+             rest: [digit-to-tree p.suffix elem-size]]
+            # Borrow the leftmost FNode from the spine.
+            [spine-view: [ft-view-left-sized p.spine fnode-size]]
+            [elem: head
+             rest: [FingerTree.FTDeep
+                     size:   [- p.size elem-sz]
+                     prefix: [fnode-to-digit spine-view.elem]
+                     spine:  spine-view.rest
+                     suffix: p.suffix]]]]]]
+
+  # ft-view-right-sized: viewR — peel the rightmost element from a FingerTree.
+  # Symmetric to ft-view-left-sized.
+  ft-view-right-sized: [fn [let t elem-size]
+    [match t
+      [case [let _] FingerTree.FTEmpty
+        [raise "pop-right: empty List"]]
+      [case [let p] [FingerTree.FTSingle p]
+        [elem: p.value  rest: FingerTree.FTEmpty]]
+      [case [let p] [FingerTree.FTDeep p]
+        [last:     [digit-last p.suffix]]
+        [init-dig: [digit-init-or-null p.suffix]]
+        [elem-sz:  [elem-size last]]
+        [if [not [null? init-dig]]
+          [elem: last
+           rest: [FingerTree.FTDeep
+                   size:   [- p.size elem-sz]
+                   prefix: p.prefix
+                   spine:  p.spine
+                   suffix: init-dig]]
+          [if [null? [ft-size p.spine]]
+            [elem: last
+             rest: [digit-to-tree p.prefix elem-size]]
+            [spine-view: [ft-view-right-sized p.spine fnode-size]]
+            [elem: last
+             rest: [FingerTree.FTDeep
+                     size:   [- p.size elem-sz]
+                     prefix: p.prefix
+                     spine:  spine-view.rest
+                     suffix: [fnode-to-digit spine-view.elem]]]]]]]
+
+  ft-pop-left:  [fn [let t@[List a]] [ft-view-left-sized  t [fn [let _] 1]].rest]
+  ft-pop-right: [fn [let t@[List a]] [ft-view-right-sized t [fn [let _] 1]].rest]
+
+  # Dict has NO Concatenable instance.
+  # merge (right-biased union) is O(n) — it violates the Concatenable O(log n) promise.
+  # Dict users who need merge call it explicitly; the name `<>` is not overloaded for Dict.
+
+  # ============================================================================
+  # Hashable typeclass
+  # ============================================================================
+  # Replaces Key { Int, String } in Rust with a uniform typeclass constraint.
+  # Adding a new hashable type requires only a new instance here — no Rust changes.
+  # Float is NOT Hashable: NaN != NaN violates reflexivity.
+
+  # Hashable requires Equatable by convention: any Hashable type must also have an
+  # Equatable instance satisfying hash(a)==hash(b) whenever [= a b] is true.
+  # Superclass constraint syntax is not yet implemented — enforced by documentation.
+  # Hashable instance bodies include = alongside hash since there is no superclass
+  # delegation; callers who need equality on a Hashable value get it from the same dict.
+  Hashable@[doc: "Types usable as dict keys — hash consistent with ="]:
+    [class [let Hashable k]
+      hash: [Fn@Int [k]]]
+
+  # grapheme-hash and graphemes-hash are tinct-defined — pure arithmetic
+  # over code-point lists. Defined before Hashable instances so they're in scope.
+  grapheme-hash: [fn [let g@Grapheme]
+    [match g [Grapheme.Cluster p]:
+      [reduce [fn [let acc cp] [+ [* acc 31] cp]] 0 p.code-points]]]
+
+  # grapheme-eq: match arm bodies must be single expressions — no intermediate dicts.
+  # Inlined the `n` binding; code-points are short (typically 1–4), so no depth issue.
+  grapheme-eq: [fn [let a@Grapheme b@Grapheme]
+    [match a
+      [Grapheme.Cluster pa]:
+        [match b
+          [Grapheme.Cluster pb]:
+            [and [= [length pa.code-points] [length pb.code-points]]
+                 [reduce [fn [let ok i] [and ok [= [get i pa.code-points] [get i pb.code-points]]]]
+                         true
+                         [range 0 [length pa.code-points]]]]]]]
+
+  graphemes-hash: [fn [let gs@Graphemes]
+    [reduce [fn [let acc g] [+ [* acc 1000003] [grapheme-hash g]]] 0 gs]]
+
+  graphemes-eq: [fn [let a@Graphemes b@Graphemes]
+    [n: [length a]]
+    [and [= n [length b]]
+         [reduce [fn [let ok i] [and ok [grapheme-eq [get i a] [get i b]]]]
+                 true
+                 [range 0 n]]]]
+
+  [instance Hashable
+    [let k@Int]:
+      [=:    [fn [let a b] [builtin-int-eq a b]]
+       hash: [fn [let a] a]]   # Int is its own hash
+
+    [let k@Graphemes]:
+      [=:    [fn [let a b] [graphemes-eq a b]]
+       hash: [fn [let a] [graphemes-hash a]]]
+
+    [let k@Grapheme]:
+      [=:    [fn [let a b] [grapheme-eq a b]]
+       hash: [fn [let a] [grapheme-hash a]]]
+
+    [let k@Boolean]:
+      [=:    [fn [let a b]
+                [match a
+                  Boolean.True:  [match b  Boolean.True: true   _: false]
+                  Boolean.False: [match b  Boolean.False: true  _: false]]]
+       hash: [fn [let a] [match a  Boolean.True: 1  Boolean.False: 0]]]]
+
+  # ============================================================================
+  # Sortable typeclass
+  # ============================================================================
+
+  # Sortable deliberately does NOT imply Equatable.
+  # Float is Sortable (< is defined for floats) but NOT Equatable (NaN != NaN breaks
+  # reflexivity). Treating them as orthogonal avoids a soundness hole.
+  Sortable@[doc: "Types supporting strict total ordering"]:
+    [class [let Sortable k]
+      <: [Fn@Boolean [k k]]]
+
+  # grapheme-cluster-lt: compare two Grapheme.Cluster payloads lexicographically
+  # by code-point integer values. All intermediate bindings at function-body top level.
+  # hash values must NOT be used for ordering — they are not monotonic.
+  grapheme-cluster-lt: [fn [let pa pb]
+    [na:   [length pa.code-points]]
+    [nb:   [length pb.code-points]]
+    [n:    [min na nb]]
+    [diff: [reduce
+      [fn [let r i]
+        [if [not [= r []]] r
+          [if [= [get i pa.code-points] [get i pb.code-points]]
+            []
+            [< [get i pa.code-points] [get i pb.code-points]]]]]
+      []
+      [range 0 n]]]
+    [if [= diff []] [< na nb] diff]]
+
+  # grapheme-lt: single-expression match arms — delegates to grapheme-cluster-lt.
+  grapheme-lt: [fn [let a@Grapheme b@Grapheme]
+    [match a
+      [Grapheme.Cluster pa]:
+        [match b
+          [Grapheme.Cluster pb]:
+            [grapheme-cluster-lt pa pb]]]]
+
+  # graphemes-lt: lexicographic over grapheme clusters.
+  graphemes-lt: [fn [let a@Graphemes b@Graphemes]
+    [na: [length a]  nb: [length b]  n: [min na nb]]
+    [diff: [reduce
+      [fn [let r i]
+        [if [not [= r []]] r
+          [if [grapheme-eq [get i a] [get i b]] []
+            [grapheme-lt [get i a] [get i b]]]]]
+      []
+      [range 0 n]]]
+    [if [= diff []] [< na nb] diff]]
+
+  # Float has NO Sortable instance. IEEE 754 < with NaN is a strict partial order,
+  # not a strict total order — NaN is incomparable to everything including itself.
+  # A Sortable instance would silently violate the typeclass contract (trichotomy).
+  # Use builtin-float-lt with explicit NaN handling for float comparisons.
+  [instance Sortable
+    [let k@Int]:       [<: [fn [let a b] [builtin-lt a b]]]
+    [let k@Graphemes]: [<: [fn [let a b] [graphemes-lt a b]]]]
+
+  # ============================================================================
+  # Map and List — prelude-level type constructors
+  # ============================================================================
+  # Rust knows nothing about these names. They resolve to Value::Dict at runtime.
+
+  Map@[doc: "Homogeneous collection keyed by any Hashable type"]:
+    [type [let k@Hashable v] [builtin-map k v]]
+
+  # (List is declared above, near FingerTree, where it is first used in type annotations.)
+
+  # ============================================================================
+  # Indexable — the contract for types supporting keyed random access
+  # ============================================================================
+  # Indexable[c k v] means: collection c supports O(log n) or better access
+  # by key k returning value v.
+  #
+  # Seq intentionally has NO Indexable instance. This is a design invariant,
+  # not an omission. The type error on [get i seq] is the feature:
+  # it tells the caller "you must collect first."
+
+  Indexable@[doc: "Types supporting O(log n) or better access by key"]:
+    [class [let Indexable c k v]
+      get:    [Fn@v      [k c]]
+      length: [Fn@Int    [c]]]
+
+  # List (finger tree): O(1) length, O(log n) index access
+  [instance Indexable [let c@[List a] k@Int v@a]:
+    [get:    [fn [let i t] [ft-index i t]]
+     length: [fn [let t]   [ft-size t]]]]    # O(1) — reads precomputed size
+
+  # Map k v: O(1) by any Hashable key.
+  # Dict = Map Graphemes Any — covered by this instance when k@Graphemes.
+  # There is NO separate raw Dict instance: that would overlap Map and create ambiguity.
+  [instance Indexable [let c@[Map k v] k v]:
+    [get:    [fn [let k d] [builtin-get k d]]
+     length: [fn [let d]   [builtin-length d]]]]
+
+  # Graphemes and Bytes inherit via their List definitions (Graphemes = List Grapheme,
+  # Bytes = List UInt8). Seq: no Indexable instance — [get i seq] is a type error.
+
+  # ============================================================================
+  # IO typeclasses
+  # ============================================================================
+
+  # ByteStream: byte I/O using Bytes (= List UInt8), not Seq.
+  # Bytes is a concrete List — provides O(1) length and O(log n) random access.
+  # Using Seq would lose size information needed by most I/O protocols.
+  ByteStream@[doc: "Abstract interface for ordered, reliable byte streams"]:
+    [class [let ByteStream h]
+      read:  [Fn@Bytes [h Int]]    # reads up to n bytes; returns Bytes (may be fewer)
+      write: [Fn@h     [h Bytes]]]
+
+  SeekFrom: [type
+    [Start   offset: Int]
+    [End     offset: Int]
+    [Current offset: Int]]
+
+  # Seekable extends ByteStream by convention — any Seekable handle must also have
+  # a ByteStream instance. Superclass constraint syntax not yet implemented.
+  Seekable@[doc: "Random-access extension of ByteStream"]:
+    [class [let Seekable h]
+      seek: [Fn@h [h Int SeekFrom]]]
+
+  Datagram@[doc: "Unordered, packet-based I/O"]:
+    [class [let Datagram h]
+      send-to:   [Fn@h     [h Bytes SocketAddress]]
+      recv-from: [Fn@Bytes [h]]]
+
+  Codec@[doc: "Composable data transformation: input → output"]:
+    [class [let Codec c i o]
+      encode: [Fn@o [c i]]
+      decode: [Fn@i [c o]]]
+
+  [instance ByteStream
+    [let h@Handle]:
+      [read:  [fn [let handle n] [builtin-read-chunk handle n]]
+       write: [fn [let handle bytes] [builtin-write handle bytes]]]]
+
+  # ============================================================================
+  # Number — extensible marker class for numeric types
+  # ============================================================================
+  # Zero methods — exists purely to declare membership in the numeric type set.
+  # The type checker checks constraint satisfaction via instance existence in TypeEnv.
+  # Future numeric types (BigInt, UInt128, etc.) simply add an instance here.
+  # Replaces Type::Number in the Rust Type enum — that variant is deleted.
+
+  Number@[doc: "Superclass for all numeric types — Int, Float, and any future numeric type"]:
+    [class [let Number n]]
+
+  [instance Number [let n@Int]:   []]
+  [instance Number [let n@Float]: []]
+
+  # ============================================================================
+  # [EXISTING] — Equatable, Comparable, Printable, Showable, Addable, etc.
+  # ============================================================================
+  # Already declared in current prelude (S-884/S-885/S-886). Unchanged.
+
+  # ... [EXISTING typeclass declarations and instances] ...
+
+  # ============================================================================
+  # [EXISTING] — remaining prelude functions
+  # ============================================================================
+  # flat-map, zip, group-by, sort, sort-by, partition, str, join, split,
+  # merge, keys, get, set, has?, entries, identity, compose, etc.
+
+  # ... [EXISTING standard library] ...
+
+  # ============================================================================
+  # User-facing re-exports of core primitives
+  # ============================================================================
+  # All core builtins use the builtin-* prefix. Prelude re-exports them under
+  # the names user code expects, so no --- uses: declaration is ever needed.
+  # User code writes [if ...], [raise ...], [channel], [send ch v] etc.
+  # and gets them from prelude scope (threaded in by the loader pipeline).
+  #
+  # Note on parser keywords: `match`, `fn`, `let`, `type`, `class`, `instance`, `macro`
+  # are parser syntax — always available, never looked up in scope, not builtins.
+  # They do not go through the `builtin-*` → prelude re-export path at all.
+  # `if` is NOT a keyword — [if cond then else] is a function call to builtin-if.
+
+  if:      builtin-if       # [if cond then else] — dispatches on Boolean variants
+  raise:   builtin-raise    # [raise msg] — terminate with error
+  channel: builtin-channel  # [channel] — create a new async channel
+  send:    builtin-send     # [send ch v] — send value to channel
+  recv:    builtin-recv     # [recv ch] — receive value from channel (blocks)
+  bytes:   builtin-bytes    # [bytes] — empty Bytes value
+
+  # Arithmetic and comparison: user code writes [+ a b], [= a b] etc.
+  # These dispatch through the Addable/Equatable/Sortable typeclass instances
+  # already declared above — not direct re-exports of single builtins.
+
+  # merge, reduce, get, length, open, str are already defined as tinct functions
+  # in the [EXISTING] section above that wrap/delegate to builtin-* variants.
+]

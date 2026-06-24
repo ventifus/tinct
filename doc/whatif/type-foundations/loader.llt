@@ -1,0 +1,251 @@
+# doc/whatif/type-foundations/loader.llt
+#
+# Proposed loader.llt reflecting the type-foundations end state.
+#
+# This is the tinct "main function" — the first tinct code evaluated at startup.
+# The invoker (CLI, LSP, literate runner, ...) provides an initial dictionary
+# environment, as though it evaluated a tinct dict before this file runs:
+#
+#   [
+#     %cwd:      <DirCap — working directory, fixed for the lifetime of execution>
+#     %libdir:   <DirCap — stdlib, ReadOnly>
+#     %stdout:   <Handle>
+#     %args:     {output: "json", strict: true, ...}
+#     %programs: {0: ProgramItem.File{...}, 1: ...}
+#     %myfs:     <DirCap — user said --cap myfs=/some/path>
+#     ...        # anything the invoker decides; %prefix is convention, not type
+#   ]
+#
+# This dict IS the initial scope. Every entry is accessible as a bare name in
+# loader.llt and in all closures captured from loader.llt's scope.
+# No named reference to the whole dict is needed — entries are just in scope.
+#
+# What threads through the pipeline explicitly:
+#   include-dir — the DirCap to resolve relative [include ...] calls against.
+#                 Starts as %cwd but eval-file overrides it per-file to the
+#                 containing directory of each file being processed. %cwd itself
+#                 is fixed and accessible directly from the closure.
+#   prelude     — runtime value of prelude.llt, merged into every user doc's scope.
+#                 Also used via [builtin-get-type-context prelude] to guarantee
+#                 TypeContext is populated before type-checking user files.
+#   emit-ch     — the shared channel for emitting values to the output formatter.
+#
+# Known initial-env entries (%cwd, %libdir, %stdout, %args) are included in every
+# user document's scope by eval-document-runtime referencing them from its closure.
+# User-specified caps declared via --- caps: headers are handled during that
+# processing step — not threaded here.
+#
+# Naming convention: ALL core module exports use the builtin-* prefix.
+# Prelude re-exports them as user-facing names (if, channel, send, bytes, ...).
+# Parser keywords (fn, match, let, type, class, instance, macro) are always
+# available as syntax — not module exports.
+#
+# Structure — THREE DICTS IN ONE DOCUMENT (no --- separators):
+#   Dict 1: private helpers (core builtins only)
+#   Dict 2: core types + full pipeline (sees dict 1 and initial env)
+#   Dict 3: load prelude + run (sees dicts 1 and 2)
+#
+# Irreducible builtins used (the minimal set):
+#   Control: builtin-if
+#   I/O:     builtin-read-chunk, builtin-open, builtin-channel, builtin-send
+#   Bytes:   builtin-bytes, builtin-bytes-concat, builtin-length
+#   AST:     builtin-parse, builtin-expand, builtin-resolve, builtin-typecheck
+#   Type:    builtin-get-type-context, builtin-make-type-ctx, builtin-fork-type-ctx
+#   Meta:    builtin-module, builtin-eval
+#   Dict:    builtin-reduce, builtin-merge, builtin-get, builtin-str, builtin-str-bytes
+#   Path:    builtin-path-dir (String → DirCap; extracts dir from a file path)
+#
+# Eliminated (reducible):
+#   builtin-bytes-empty?  → [builtin-if [= [builtin-length x] 0] ...]
+#   builtin-map           → fused into builtin-reduce in uses-scope
+#   builtin-dict-get      → builtin-get
+#   builtin-dict-length   → eliminated by passing formatter separately
+#   builtin-walk-expand   → folded into builtin-expand
+#   builtin-expand-one    → eliminated with builtin-walk-expand
+
+--- uses: ["core"]
+
+# ============================================================================
+# Dict 1 — Private helpers
+# ============================================================================
+
+[
+  read-handle: [fn [let handle acc]
+    [chunk: [builtin-read-chunk handle 65536]]
+    [builtin-if [= [builtin-length chunk] 0]
+      acc
+      [read-handle handle [builtin-bytes-concat acc chunk]]]]
+]
+
+# ============================================================================
+# Dict 2 — Core types and full pipeline
+# ============================================================================
+# Sees dict 1 and the initial environment. All closures capture the initial
+# environment — %cwd, %libdir, %stdout, %args etc. are bare names here.
+
+[
+  # ── Foundation ────────────────────────────────────────────────────────────
+  # Boolean is declared in prelude.llt — that is the single source.
+  # loader.llt uses builtin-if which dispatches on Variant tag strings
+  # "Boolean.True"/"Boolean.False" directly — no Boolean alias needed here.
+
+  DocName: [type [Named name: String]  Unnamed]
+
+  # ProgramItem: discriminated union for %programs entries.
+  # Rust constructs these using qualified tag names — a bootstrapping contract.
+  ProgramItem: [type
+    [File path: String  handle: Handle]
+    [Expr src:  String]
+  ]
+
+  # ── Module injection ──────────────────────────────────────────────────────
+  # Fused map+reduce: fold g z (map f xs) = fold (g . f) z xs  (Gill et al. 1993)
+
+  uses-scope: [fn [let doc]
+    [builtin-reduce
+      [fn [let acc name] [builtin-merge acc [builtin-module name]]]
+      []
+      doc.uses]]
+
+  # ── Named section accumulation ────────────────────────────────────────────
+
+  update-named: [fn [let state val doc]
+    [match doc.name
+      [case [let p] [DocName.Named p]
+        [builtin-merge state.named [[builtin-str "%" p.name]: val]]]
+      DocName.Unnamed:
+        state.named]]
+
+  # ── Macro expansion ───────────────────────────────────────────────────────
+
+  expand: [fn [let ast] [builtin-expand ast]]
+
+  # ── File loading ──────────────────────────────────────────────────────────
+  # Stage 1: builtin-parse    — Bytes + path → raw AST
+  # Stage 2: expand           — macro expansion
+  # Stage 3: builtin-resolve  — name resolution
+  # Stage 4: builtin-typecheck — type checking (updates TypeContext in-place)
+  # Stage 5: builtin-eval     — execution
+  #
+  # include does NOT take include-dir or prelude — it IS what loads prelude.
+  # Uses zero-arg [builtin-get-type-context] (it is building the context).
+
+  include: [fn [let cap path]
+    [handle:   [builtin-open cap path Readable]]
+    [bytes:    [read-handle handle [builtin-bytes]]]
+    [raw:      [builtin-parse bytes path]]
+    [expanded: [expand raw]]
+    [resolved: [builtin-resolve expanded]]
+    [typed:    [builtin-typecheck resolved [builtin-get-type-context]]]
+    [builtin-eval typed]]
+
+  # ── Document-level evaluation ─────────────────────────────────────────────
+  # Builds the scope for one user document. Known initial-env entries (%cwd,
+  # %libdir, %stdout, %args) are referenced directly from the closure — they
+  # are in scope because this function is defined in the initial environment.
+  # %include-dir is threaded as a parameter because it changes per-file.
+  #
+  # Scope priority (highest → lowest, right-biased merge):
+  #   uses-scope    — module builtins from --- uses: header
+  #   state.named   — named sections from --- %name headers
+  #   emit/channel  — loader-injected; cannot be overridden
+  #   %include-dir  — per-file include resolution directory
+  #   known init    — %cwd, %libdir, %stdout, %args from closure
+  #   prelude       — standard library (lowest; shadowed by everything above)
+
+  eval-document-runtime: [fn [let state doc include-dir prelude emit-ch]
+    [emit-fn: [fn [let v] [builtin-send emit-ch v]]]
+    [val: [builtin-eval
+      doc.expressions
+      scope:   [builtin-merge
+                  prelude
+                  [builtin-merge
+                    [%cwd:          %cwd
+                     %libdir:       %libdir
+                     %stdout:       %stdout
+                     %args:         %args
+                     %include-dir:  include-dir
+                     emit:          emit-fn
+                     %emit-channel: emit-ch]
+                    [builtin-merge state.named [uses-scope doc]]]]
+      program: doc
+      expects: doc.expects
+      %:       state.percent]]
+    [builtin-merge state
+      [percent: val
+       named:   [update-named state val doc]]]]
+
+  # ── Pipeline item dispatch ────────────────────────────────────────────────
+
+  eval-pipeline-item: [fn [let item prev include-dir prelude emit-ch]
+    [match item
+      [ProgramItem.File p]:
+        [eval-file p prev include-dir prelude emit-ch]
+      [ProgramItem.Expr p]:
+        [eval-expr p.src prev include-dir prelude emit-ch]]]
+
+  eval-file: [fn [let item prev include-dir prelude emit-ch]
+    # %include-dir for this file's documents = the directory containing item.path.
+    # %cwd is fixed (CLI working directory) and comes from the closure unchanged.
+    # builtin-path-dir: String → DirCap
+    [file-include-dir: [builtin-path-dir item.path]]
+    [bytes:    [read-handle item.handle [builtin-bytes]]]
+    [raw:      [builtin-parse bytes item.path]]
+    [expanded: [expand raw]]
+    [resolved: [builtin-resolve expanded]]
+    # Forces prelude before type-checking — TypeContext is updated as a side effect.
+    [typed:    [builtin-typecheck resolved [builtin-get-type-context prelude]]]
+    [state:    [builtin-reduce
+                  [fn [let state doc]
+                    [eval-document-runtime state doc file-include-dir prelude emit-ch]]
+                  [percent: prev  named: []]
+                  typed.documents]]
+    state.percent]
+
+  eval-expr: [fn [let src prev include-dir prelude emit-ch]
+    [bytes:    [builtin-str-bytes src]]
+    [raw:      [builtin-parse bytes "<expr>"]]
+    [expanded: [expand raw]]
+    [resolved: [builtin-resolve expanded]]
+    [typed:    [builtin-typecheck resolved [builtin-get-type-context prelude]]]
+    [state:    [builtin-reduce
+                  [fn [let state doc]
+                    [eval-document-runtime state doc include-dir prelude emit-ch]]
+                  [percent: prev  named: []]
+                  typed.documents]]
+    state.percent]
+
+  # ── CLI pipeline ──────────────────────────────────────────────────────────
+  # Threads include-dir, prelude, and emit-ch — the only things that vary.
+  # %cwd, %libdir, %stdout, %args flow via closure, not as parameters.
+  # The formatter is passed separately and run last.
+
+  cli-pipeline: [fn [let programs formatter initial include-dir prelude emit-ch]
+    [result: [builtin-reduce
+      [fn [let prev item]
+        [eval-pipeline-item item prev include-dir prelude emit-ch]]
+      initial
+      programs]]
+    [eval-pipeline-item formatter result include-dir prelude emit-ch]]
+]
+
+# ============================================================================
+# Dict 3 — Load prelude, then run the CLI pipeline
+# ============================================================================
+# %cwd, %libdir, %stdout, %args, %programs and any invoker-defined names are
+# all in scope here as bare names from the initial environment.
+
+[
+  _prelude: [include %libdir "prelude.llt"]
+
+  emit-ch: [builtin-channel]
+
+  out-fmt:    [builtin-get "output" %args]
+  out-path:   [builtin-str "cli/out/" out-fmt ".llt"]
+  out-handle: [builtin-open %libdir out-path Readable]
+  formatter:  [ProgramItem.File path: out-path  handle: out-handle]
+
+  # %cwd is the initial include-dir for top-level programs.
+  # Each file overrides it with its own directory in eval-file.
+  [cli-pipeline %programs formatter [] %cwd _prelude emit-ch]
+]

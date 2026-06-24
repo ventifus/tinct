@@ -1,0 +1,279 @@
+# stdlib/prelude.llt — stage:type section (string-redesign proposed changes)
+#
+# This excerpt shows only the stage:type section changes.
+# Key changes from current prelude.llt:
+#
+#   - Any: [builtin-variant "TypeNode.Unknown"]
+#     → Any: [builtin-variant "TypeNode.Any"]
+#     (TypeNode.Any is the sound top type; TypeNode.Unknown remains the gradual type)
+#
+#   - Str: [builtin-variant "TypeNode.String"] — REMOVED (String is deleted)
+#   - Bool: [builtin-variant "TypeNode.Bool"]  — REMOVED (Boolean is a tinct type now)
+#
+#   - Any, Null, Dict are ALSO declared in loader.llt's stage:type (as minimal
+#     unit variants) so loader can use @Any, @Null, @Dict in its own annotations.
+#     Prelude's declarations here are the richer forms (using TypeNode ADT constructors)
+#     and OVERRIDE loader's simpler unit variants via parent-chain shadowing.
+#
+#   - Everything else in this section is unchanged from current prelude.llt.
+
+--- stage: type  uses: ["core"]
+[
+  # TypeNode unit constructors (builtin-variant, no payload)
+  Int:     [builtin-variant "TypeNode.Int"]
+  Float:   [builtin-variant "TypeNode.Float"]
+  Never:   [builtin-variant "TypeNode.Never"]
+
+  # Any = the sound top type (τ <: Any for all τ).
+  # CHANGED from TypeNode.Unknown — see string-redesign whatif de-primitisation.
+  Any:     [builtin-variant "TypeNode.Any"]
+
+  # Unknown = the gradual "?" type (consistency ~, not subtyping).
+  # Kept distinct from Any. Users who need gradual typing write @Unknown.
+  Unknown: [builtin-variant "TypeNode.Unknown"]
+
+  # Boolean type — declared in both stage:type and runtime (same as IncludeCacheEntry)
+  # so that True/False are available for stage:type expressions (e.g. open: False
+  # in Record constructors). Value::Bool is removed by this whatif.
+  Boolean: [type True False]
+  True:    Boolean.True
+  False:   Boolean.False
+
+  # Named-field TypeNode constructors (richer than loader's unit-variant forms)
+  # These shadow loader's simpler TypeNode.Null / TypeNode.Dict unit variants.
+  # Record, TypeConstructor, TypeApplication, Union, Intersect, Negation, as-typenode:
+  # injected by the TypeNode ADT declaration later in this same stage:type section
+  # (unchanged from current prelude.llt — not shown in this excerpt).
+  Null:    [Record fields: []  open: False]
+  Dict:    [TypeConstructor name: "Dict"]
+
+  Seq:     [fn [let elem]
+    [TypeApplication
+      ctor: [TypeConstructor name: "Seq"]
+      args: [builtin-seq elem [builtin-variant "Seq.Nil"]]]]
+  Map:     [fn [let key val]
+    [TypeApplication
+      ctor: [TypeConstructor name: "Map"]
+      args: [builtin-seq key [builtin-seq val [builtin-variant "Seq.Nil"]]]]]
+  union:   [fn [let ...types] [Union     types: [builtin-collect types]]]
+  all:     [fn [let ...types] [Intersect types: [builtin-collect types]]]
+  without: [fn [let inner]    [Negation  inner: [as-typenode inner]]]
+
+  # Arithmetic type-stage resolvers — unchanged from current prelude.llt
+  AddResult: [fn [let a b]
+    [if [= [builtin-tag-of a] "TypeNode.Float"] Float
+      [if [= [builtin-tag-of b] "TypeNode.Float"] Float
+        [if [= [builtin-tag-of a] "TypeNode.Int"]
+          [if [= [builtin-tag-of b] "TypeNode.Int"] Int Any]
+          Any]]]]
+  SubResult: [fn [let a b]
+    [if [= [builtin-tag-of a] "TypeNode.Float"] Float
+      [if [= [builtin-tag-of b] "TypeNode.Float"] Float
+        [if [= [builtin-tag-of a] "TypeNode.Int"]
+          [if [= [builtin-tag-of b] "TypeNode.Int"] Int Any]
+          Any]]]]
+  MulResult: [fn [let a b]
+    [if [= [builtin-tag-of a] "TypeNode.Float"] Float
+      [if [= [builtin-tag-of b] "TypeNode.Float"] Float
+        [if [= [builtin-tag-of a] "TypeNode.Int"]
+          [if [= [builtin-tag-of b] "TypeNode.Int"] Int Any]
+          Any]]]]
+  DivResult: [fn [let a b] Float]
+
+  # object-map: map f over dict values, preserving keys. Used by map-children.
+  # Uses only core builtins — no runtime prelude aliases available here.
+  object-map: [fn [let obj f]
+    [builtin-reduce
+      [fn [let acc k] [builtin-merge acc [$k: [f k [builtin-get k obj]]]]]
+      []
+      [builtin-keys obj]]]
+
+  # TypeNode nominal ADT — primary type representation (unchanged from current prelude.llt)
+  TypeNode: [type
+    [Int@[as-type: [fn [let t] t]      guarding: True]]
+    [Float@[as-type: [fn [let t] t]    guarding: True]]
+    [Bool@[as-type: [fn [let t] t]     guarding: True]]
+    [Absent@[as-type: [fn [let t] t]   guarding: True]]
+    [Unknown@[as-type: [fn [let t] t]  guarding: True]]
+    [Never@[as-type: [fn [let t] t]    guarding: True]]
+    [Record@[as-type: [fn [let r] r]   guarding: True]
+      fields@Child: [Map String TypeNode]
+      open:         Boolean]
+    [Union@[as-type: [fn [let u] u]    guarding: False]
+      types@Child: [Seq TypeNode]]
+    [Intersect@[as-type: [fn [let i] i] guarding: False]
+      types@Child: [Seq TypeNode]]
+    [Negation@[as-type: [fn [let n] n] guarding: False]
+      inner@Child: TypeNode]
+    [TypeConstructor@[as-type: [fn [let t] t] guarding: True]
+      name: Graphemes]
+    [TypeApplication@[as-type: [fn [let a] a] guarding: True]
+      ctor@Child: TypeNode
+      args@Child: [Seq TypeNode]]
+    [Arrow@[as-type: [fn [let a] a]    guarding: True]
+      params@Child: [Seq TypeNode]
+      result@Child: TypeNode]
+    [Recursive@[as-type: [fn [let r] r] guarding: True]
+      var:         Graphemes
+      body@Child:  TypeNode]
+    [RecursiveRef@[as-type: [fn [let r] r] guarding: False]
+      name: Graphemes]
+    [TypeVar@[as-type: [fn [let t] t]  guarding: False]
+      name:  Graphemes
+      level: Int]]
+
+  # TypeNode traversal helpers (unchanged from current prelude.llt)
+  TypeNode-ctor: [fn [let t]
+    [builtin-get [builtin-last [builtin-split "." [builtin-tag-of t]]] TypeNode]]
+
+  child-fields: [fn [let ctor]
+    [let ann [builtin-annotation-of ctor]]
+    [let fa [get? "field-annotations" ann]]
+    [if [= [builtin-type-of fa] "Absent"] [] [builtin-keys fa]]]
+
+  child-role: [fn [let ctor field]
+    [builtin-get "role"
+      [builtin-get field [builtin-get "field-annotations" [builtin-annotation-of ctor]]]]]
+
+  child-field?: [fn [let ctor field]
+    [let ann [builtin-annotation-of ctor]]
+    [let fa [get? "field-annotations" ann]]
+    [if [= [builtin-type-of fa] "Absent"] False
+      [if [= [builtin-type-of [get? field fa]] "Absent"] False True]]]
+]
+
+# Second stage:type dict — TypeNode protocol merge, TypeNodeResolve, mu
+[
+  TypeNode: [merge TypeNode [
+    children: [fn [let t]
+      [let ctor [TypeNode-ctor t]]
+      [builtin-reduce
+        [fn [let acc field]
+          [let val [builtin-get field t]]
+          [builtin-concat acc
+            [match [child-role ctor field]
+              "One":       [builtin-seq val [builtin-variant "Seq.Nil"]]
+              "Seq":       val
+              "MapValues": [builtin-each val]]]]
+        [builtin-variant "Seq.Nil"]
+        [child-fields ctor]]]
+
+    map-children: [fn [let f t]
+      [let ctor [TypeNode-ctor t]]
+      [let fields [child-fields ctor]]
+      [if [= [builtin-length fields] 0]
+        t
+        [builtin-variant [builtin-tag-of t]
+          [object-map t [fn [let field val]
+            [if [child-field? ctor field]
+              [match [child-role ctor field]
+                "One":       [f val]
+                "Seq":       [builtin-map f val]
+                "MapValues": [object-map val [fn [let k v] [f v]]]]
+              val]]]]]]
+
+    as-type: [fn [let t]
+      [let ann [builtin-annotation-of [TypeNode-ctor t]]]
+      [let as-type-fn [get? "as-type" ann]]
+      [if [= [builtin-type-of as-type-fn] "Absent"] t [as-type-fn t]]]]]
+
+  # as-typenode: normalize a value to a TypeNode via the as-type protocol.
+  # FIX: this was referenced by `without` but never defined — latent bug in current prelude.
+  as-typenode: [fn [let t] [TypeNode.as-type t]]
+
+  TypeNodeResolve: [class [let t]
+    as-type: [fn [let _] ...]]
+  TypeNodeResolveAll:
+    [instance TypeNodeResolve
+      [let t@TypeNode]: [as-type: [fn [let t] t]]]
+
+  mu: [fn [let f]
+    [let var  [builtin-gensym "𝜇" "rec"]]
+    [let body [f [RecursiveRef name: var]]]
+    [if [builtin-is-contractive body]
+      [Recursive var: var  body: body]
+      [builtin-raise [print "non-contractive recursive type: " var]]]]
+]
+
+# Runtime section — private helpers (redefined from loader.llt with type annotations)
+# Loader.llt defines these for bootstrapping prelude itself. Prelude's versions
+# shadow loader's and give the type checker well-typed definitions, eliminating
+# the Unknown cascade through eval-document-runtime → include.
+[
+  uses-scope: [fn@Dict [let doc@Document]
+    [builtin-reduce builtin-merge []
+      [builtin-map builtin-module doc.uses]]]
+
+  update-named: [fn@Dict [let state@Dict val@Any doc@Document]
+    [match doc.name
+      [case [let n] [Named n]
+        [builtin-merge state.named [[builtin-str "%" n]: val]]]
+      [case [let _] [Unnamed]
+        state.named]]]
+]
+
+# Runtime section — include machinery
+# Changes from current prelude.llt:
+#   - path@String → path@Graphemes (String is gone)
+#   - [str ...] → [print ...] (str is removed)
+[
+  # IncludeCacheEntry: runtime declaration injects qualified constructor names
+  # (IncludeCacheEntry.Missing etc.) for pattern matching. Under unified annotation
+  # resolution, @IncludeCacheEntry also resolves via this TyConDef — no stage:type
+  # entry needed.
+  IncludeCacheEntry: [type Missing Pending [Cached Any]]
+
+  eval-document-runtime: [fn@[return: Dict] [let state@Dict doc@Document include-dir@DirCap]
+    [prev-val: state.prev]
+    [result: [eval
+      doc.expressions
+      %:   prev-val
+      env: [merge
+             [merge [uses-scope doc]
+                    [merge [if [dict? prev-val] prev-val []] state.named]]
+             ["%include-dir": include-dir]]]]
+    [prev:  result
+     named: [update-named state result doc]]]
+
+  eval-document-pipeline: [fn@[return: Any] [let initial@Any docs include-dir@DirCap]
+    [get "prev"
+      [reduce
+        [fn@[return: Dict] [let state@Dict doc@Document]
+          [if [= [tag-of doc.stage] "DocStage.Type"]
+            state
+            [eval-document-runtime state doc include-dir]]]
+        [prev: initial  named: []]
+        docs]]]
+
+  eval-file: [fn@[return: Any] [let ast@Program initial@Any include-dir@DirCap]
+    [eval-document-pipeline initial ast.documents include-dir]]
+
+  include-cache-success: [fn@[return: Any] [let hash result@Any]
+    [include-cache-put hash [builtin-variant "IncludeCacheEntry.Cached" result]]
+    result]
+
+  include-cache-failure: [fn@[return: Never] [let hash e]
+    [include-cache-put hash IncludeCacheEntry.Missing]
+    [raise e]]
+
+  include-evaluate-and-cache: [fn@[return: Any]
+      [let source@Graphemes path@Graphemes hash cap@DirCap
+           integrity-hash@[default: Absent.Absent]]
+    [include-cache-put hash IncludeCacheEntry.Pending]
+    [program: [if [absent? integrity-hash]
+      [load source name: path]
+      [load source name: path hash: integrity-hash]]]
+    [match [try [fn [let] [eval-file [expand program] [] cap]]]
+      [case [let result] [Result.Ok result]    [include-cache-success hash result]]
+      [case [let e]      [Result.Error e]      [include-cache-failure hash e]]]]
+
+  include: [fn@[return: Any]
+      [let cap@DirCap path@Graphemes integrity-hash@[default: Absent.Absent]]
+    [source: [builtin-read-all [open cap path OpenFlag.Readable]]]
+    [hash:   [blake3 [print [cap-identity cap] "|" source]]]
+    [match [include-cache-get hash]
+      [case [let result] [IncludeCacheEntry.Cached result] result]
+      [IncludeCacheEntry.Pending]: [raise [print "circular include: " path]]
+      [IncludeCacheEntry.Missing]: [include-evaluate-and-cache source path hash cap
+                                     integrity-hash: integrity-hash]]]
+]

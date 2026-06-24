@@ -1,0 +1,47 @@
+# Arithmetic operators and math functions.
+# Arithmetic operators use typeclass constraints (Addable etc.) —
+# these survive the string-redesign unchanged.
+
+[
+  # Arithmetic operators (typeclass-constrained)
+  +: [fn@c [let a@a b@b  constraint: [a: Addable  b: Addable  c: Addable]] ...]
+  -: [fn@c [let a@a b@b  constraint: [a: Subtractable  b: Subtractable  c: Subtractable]] ...]
+  *: [fn@c [let a@a b@b  constraint: [a: Multipliable  b: Multipliable  c: Multipliable]] ...]
+  /: [fn@c [let a@a b@b  constraint: [a: Divisible    b: Divisible    c: Divisible]] ...]
+
+  # Comparison operators
+  =: [fn@Boolean [let a@a b@b  constraint: [a: Equatable  b: Equatable]] ...]
+  <: [fn@Boolean [let a@a b@b  constraint: [a: Sortable   b: Sortable]] ...]
+
+  # Bitwise operations (Int only)
+  builtin-band: [fn@Int [let a@Int b@Int] ...]
+  builtin-bor:  [fn@Int [let a@Int b@Int] ...]
+  builtin-bxor: [fn@Int [let a@Int b@Int] ...]
+  builtin-shl:  [fn@Int [let a@Int b@Int] ...]
+  builtin-shr:  [fn@Int [let a@Int b@Int] ...]
+
+  # Floating-point math
+  builtin-floor:   [fn@Int   [let x@Float] ...]
+  builtin-round:   [fn@Int   [let x@Float] ...]
+  builtin-pow:     [fn@Float [let base@Float exp@Float] ...]
+  builtin-sqrt:    [fn@Float [let x@Float] ...]
+  builtin-log:     [fn@Float [let x@Float] ...]
+  builtin-log2:    [fn@Float [let x@Float] ...]
+  builtin-log10:   [fn@Float [let x@Float] ...]
+  builtin-exp:     [fn@Float [let x@Float] ...]
+  builtin-sin:     [fn@Float [let x@Float] ...]
+  builtin-cos:     [fn@Float [let x@Float] ...]
+  builtin-tan:     [fn@Float [let x@Float] ...]
+  builtin-asin:    [fn@Float [let x@Float] ...]
+  builtin-acos:    [fn@Float [let x@Float] ...]
+  builtin-atan:    [fn@Float [let x@Float] ...]
+  builtin-atan2:   [fn@Float [let y@Float x@Float] ...]
+  builtin-nan?:    [fn@Boolean [let x@Float] ...]
+  builtin-inf?:    [fn@Boolean [let x@Float] ...]
+  builtin-finite?: [fn@Boolean [let x@Float] ...]
+
+  # Type conversions
+  builtin-float:    [fn@Float [let x@Any] ...]
+  builtin-to-int:   [fn@Int   [let x@Any] ...]
+  builtin-to-float: [fn@Float [let x@Any] ...]
+]

@@ -1,0 +1,51 @@
+# Meta/reflection builtins — introspection, variants, annotations, evaluation.
+# String-redesign: gensym/llt-repr return Graphemes (not String).
+
+[
+  # Evaluation
+  builtin-raise:       [fn@Never    [let msg@Graphemes] ...]
+  builtin-try:         [fn@Any      [let f@[Fn@a []]] ...]
+  builtin-if:          [fn@a        [let cond@Boolean then@a else@a] ...]
+  builtin-apply:       [fn@Any      [let f@Any args@Dict] ...]
+  materialize:         [fn@a        [let v@a] ...]
+
+  # Type introspection
+  builtin-type-of:     [fn@Graphemes [let v@Any] ...]
+  builtin-is-contractive: [fn@Boolean [let node@TypeNode] ...]
+
+  # Variant construction and inspection
+  builtin-variant:      [fn@Any    [let tag@Graphemes payload@[default: Absent.Absent]] ...]
+  builtin-tag-of:       [fn@Graphemes [let v@Any] ...]
+
+  # Annotations
+  builtin-annotation-of:  [fn@Dict [let v@Any] ...]
+  builtin-make-annotated: [fn@Any  [let v@Any ann@Dict] ...]
+
+  # Gensym — returns Graphemes (text identifier)
+  builtin-gensym: [fn@Graphemes [let prefix@Graphemes] ...]
+
+  # Representation
+  builtin-llt-repr: [fn@Graphemes [let v@Any] ...]
+
+  # Include cache
+  builtin-include-cache-get: [fn@Any [let key@Graphemes] ...]
+  builtin-include-cache-put: [fn@Boolean [let key@Graphemes v@Any] ...]
+
+  # Module system
+  builtin-module: [fn@Dict [let name@Graphemes] ...]
+
+  # Source loading and evaluation
+  builtin-load:       [fn@Program   [let source@Graphemes name@[default: Absent.Absent]] ...]
+  builtin-expand:     [fn@Program   [let prog@Program] ...]
+  builtin-eval-types: [fn@Dict      [let prog@Program] ...]
+
+  # Content-addressed hashing
+  builtin-blake3: [fn@Graphemes [let data@Bytes] ...]
+
+  # AST
+  builtin-ast-of: [fn@Dict [let v@Any] ...]
+
+  # Extended numeric types
+  builtin-decimal: [fn@Any [let v@Any] ...]
+  builtin-big-int: [fn@Any [let v@Any] ...]
+]

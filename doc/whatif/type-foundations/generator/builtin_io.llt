@@ -1,0 +1,39 @@
+# File I/O, filesystem, and capability operations.
+# String-redesign: path arguments are Graphemes (not String).
+# read-all/read-line return Bytes (not String) — callers decode explicitly.
+
+[
+  # File handles
+  builtin-open:        [fn@Handle [let cap@DirCap path@Graphemes flag@OpenFlag] ...]
+  builtin-read-all:    [fn@Bytes  [let h@Handle] ...]
+  builtin-read-chunk:  [fn@Bytes  [let h@Handle n@Int] ...]
+  builtin-read-line:   [fn@Bytes  [let h@Handle] ...]
+  builtin-write:       [fn@Int    [let h@Handle data@Bytes] ...]
+  builtin-write-atomic:[fn@Int    [let h@Handle data@Bytes tmp@Graphemes] ...]
+  builtin-flush:       [fn@Boolean [let h@Handle] ...]
+  builtin-close:       [fn@Boolean [let h@Handle] ...]
+  builtin-seek:        [fn@Boolean [let h@Handle pos@Int] ...]
+  builtin-seek-end:    [fn@Boolean [let h@Handle] ...]
+  builtin-position:    [fn@Int     [let h@Handle] ...]
+  builtin-string-handle: [fn@Handle [let s@Graphemes] ...]
+
+  # Filesystem operations (paths are Graphemes)
+  builtin-list-dir:    [fn@[Seq Dict] [let cap@DirCap path@Graphemes] ...]
+  builtin-stat:        [fn@Dict       [let cap@DirCap path@Graphemes] ...]
+  builtin-exists:      [fn@Boolean    [let cap@DirCap path@Graphemes] ...]
+  builtin-make-dir:    [fn@Boolean    [let cap@DirCap path@Graphemes] ...]
+  builtin-remove:      [fn@Boolean    [let cap@DirCap path@Graphemes] ...]
+  builtin-rename:      [fn@Boolean    [let cap@DirCap old@Graphemes new@Graphemes] ...]
+  builtin-copy-file:   [fn@Boolean    [let src-cap@DirCap src@Graphemes dst-cap@DirCap dst@Graphemes] ...]
+  builtin-read-link:   [fn@Graphemes  [let cap@DirCap path@Graphemes] ...]
+
+  # Capability operations
+  builtin-narrow:       [fn@DirCap   [let cap@DirCap path@Graphemes] ...]
+  builtin-cap-identity: [fn@Graphemes [let cap@DirCap] ...]
+
+  # Environment (returns Graphemes — env vars are text)
+  builtin-env: [fn@Graphemes [let name@Graphemes] ...]
+
+  # Emit channel
+  builtin-emit: [fn@Boolean [let ch@Any v@Any] ...]
+]

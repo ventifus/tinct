@@ -1,0 +1,44 @@
+# Async concurrency — tasks, channels, contexts, select.
+
+[
+  # Tasks
+  builtin-task:  [fn@Any [let f@[Fn@a []]] ...]
+  builtin-await: [fn@a   [let t@Any] ...]
+
+  # Channels
+  builtin-channel:           [fn@Any [let capacity@Int] ...]
+  builtin-send:              [fn@Boolean [let ch@Any v@Any] ...]
+  builtin-recv:              [fn@Any [let ch@Any] ...]
+  builtin-broadcast-channel: [fn@Any [let capacity@Int] ...]
+  builtin-oneshot-channel:   [fn@Any [] ...]
+  builtin-try-send:          [fn@Any [let ch@Any v@Any] ...]
+  builtin-signal-channel:    [fn@Any [] ...]
+  builtin-timer-channel:     [fn@Any [let ms@Int] ...]
+  builtin-watch-channel:     [fn@Any [] ...]
+
+  # Select
+  builtin-select-once: [fn@Any [let ctx@Any sources@Any] ...]
+
+  # Parallel execution
+  builtin-par:        [fn@a     [let f@[Fn@a []]] ...]
+
+  # Contexts and cancellation
+  builtin-context:         [fn@Any [] ...]
+  builtin-with-cancel:     [fn@Any [let ctx@Any] ...]
+  builtin-with-timeout:    [fn@Any [let ctx@Any ms@Int] ...]
+  builtin-with-deadline:   [fn@Any [let ctx@Any deadline@Int] ...]
+  builtin-cancelled?:      [fn@Boolean [let ctx@Any] ...]
+  builtin-cancel-task:     [fn@Boolean [let ctx@Any] ...]
+  builtin-non-cancellable: [fn@a [let f@[Fn@a []]] ...]
+  builtin-with-context:    [fn@a [let ctx@Any f@[Fn@a []]] ...]
+  builtin-cancel-root:     [fn@Boolean [] ...]
+  builtin-drain:           [fn@Boolean [] ...]
+
+  # Process control
+  builtin-exit-now: [fn@Never [let code@Int] ...]
+
+  # Reactive cells
+  builtin-reactive-cell: [fn@Any [let v@a] ...]
+  builtin-cell-get:      [fn@a   [let cell@Any] ...]
+  builtin-cell-set:      [fn@Boolean [let v@a cell@Any] ...]
+]

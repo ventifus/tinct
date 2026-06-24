@@ -1,0 +1,35 @@
+# Input declarations for builtin_core.rs generation.
+# Mix of [type ...] declarations (→ insert_tycon_def) and
+# [fn ...] declarations (→ insert_scheme). Same generator path for both.
+
+[
+  # Rust-backed primitive types
+  Int:     [type Int]
+  Float:   [type Float]
+  Bytes:   [type Bytes]
+
+  # Capability types — CLI injects these as %name variables
+  DirCap:  [type DirCap]
+  NetCap:  [type NetCap]
+  ClockCap:[type ClockCap]
+  Handle:  [type Handle]
+  Url:     [type Url]
+
+  # Lattice sentinels — special subtyping behavior enforced by is_subtype/is_consistent,
+  # not by name resolution; resolved via TyConDef like everything else
+  Any:     [type Any]
+  Unknown: [type Unknown]
+
+  # Core evaluation builtin — polymorphic return type inferred from expressions
+  builtin-eval: [fn@T [let exprs@[Seq Expression[T]]] ...]
+
+  # Control flow
+  builtin-raise: [fn@Never   [let msg@Graphemes] ...]
+  builtin-try:   [fn@Any     [let f@[Fn@a []]] ...]
+
+  # Sequence generators (core primitives, polymorphic forms in builtin_seq.llt)
+  builtin-seq:     [fn@[Seq a]   [let ...items@a] ...]
+  builtin-collect: [fn@[List a]  [let xs@[Seq a]] ...]
+  builtin-concat:  [fn@[Seq a]   [let a@[Seq a] b@[Seq a]] ...]
+  builtin-range:   [fn@[Seq Int] [let ...args@Int] ...]
+]

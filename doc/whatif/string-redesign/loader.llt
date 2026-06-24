@@ -1,0 +1,49 @@
+# stdlib/loader.llt — Bootstrap loader (string-redesign proposed version)
+#
+# Changes from current loader.llt:
+#   - make-entry helper removed — inlined as [[builtin-str "%" n]: val]
+#     (computed key syntax, available after T-1205)
+#   - No type annotations — loader.llt is a bootstrap file evaluated before
+#     the full type-stage machinery is in place. Annotations would be typed
+#     as Unknown by the type checker anyway since loader's TypeEnv is not
+#     visible to prelude's type-checking pipeline.
+
+--- uses: ["core"]
+[
+  uses-scope: [fn [let doc]
+    [builtin-reduce builtin-merge []
+      [builtin-map builtin-module doc.uses]]]
+
+  update-named: [fn [let state val doc]
+    [match doc.name
+      [case [let n] [Named n]
+        [builtin-merge state.named [[builtin-str "%" n]: val]]]
+      [case [let _] [Unnamed]
+        state.named]]]
+
+  eval-program: [fn [let prog initial-input emit-ch]
+    [emit-fn: [fn [let v] [builtin-send emit-ch v]]]
+    [state: [builtin-reduce
+      [fn [let state doc]
+        [val: [builtin-eval doc.expressions
+                 scope:   [builtin-merge
+                             [emit: emit-fn  %emit-channel: emit-ch]
+                             [builtin-merge state.named [uses-scope doc]]]
+                 program: prog
+                 expects: doc.expects
+                 %: state.percent]]
+        [builtin-merge state
+          [percent: val
+           named: [update-named state val doc]]]]
+      [percent: initial-input  named: []]
+      prog.documents]]
+    state.percent]
+
+  eval-programs: [fn [let programs initial-input]
+    [emit-ch: [builtin-channel 64]]
+    [builtin-reduce
+      [fn [let percent prog]
+        [eval-program prog percent emit-ch]]
+      initial-input
+      programs]]
+]

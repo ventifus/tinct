@@ -1,0 +1,24 @@
+# Dict primitives — keys, merge, get, set, build.
+
+[
+  builtin-keys:     [fn@[List Graphemes] [let d@Dict] ...]
+  builtin-length:   [fn@Int              [let d@Dict] ...]
+  builtin-merge:    [fn@Dict             [let a@Dict b@Dict] ...]
+  builtin-append:   [fn@Dict             [let x@Any d@Dict] ...]
+  builtin-get:      [fn@Any              [let k@Graphemes d@Dict] ...]
+  builtin-each:     [fn@[Seq Any]        [let d@Dict] ...]
+  builtin-each-key: [fn@[Seq Graphemes]  [let d@Dict] ...]
+  builtin-each-kv:  [fn@[Seq Any]        [let d@Dict] ...]
+  builtin-build-dict:[fn@Dict            [let xs@[Seq Any]] ...]
+  builtin-tag-of:   [fn@Graphemes        [let v@Any] ...]
+
+  # Mutable builder — opaque Rust type, Any as conservative bound
+  builtin-make-builder:     [fn@Any [let] ...]
+  builtin-builder-set:      [fn@Any [let k@Graphemes v@Any b@Any] ...]
+  builtin-builder-delete:   [fn@Any [let k@Graphemes b@Any] ...]
+  builtin-builder-has?:     [fn@Boolean [let k@Graphemes b@Any] ...]
+  builtin-builder-get:      [fn@Any [let k@Graphemes b@Any] ...]
+  builtin-builder-get-or:   [fn@Any [let k@Graphemes default@Any b@Any] ...]
+  builtin-builder-finish:   [fn@Dict [let b@Any] ...]
+  builtin-builder-snapshot: [fn@Dict [let b@Any] ...]
+]

@@ -1,0 +1,33 @@
+# Network builtins — TCP/TLS/QUIC/HTTP connections.
+# String-redesign: host/path/method args are Graphemes.
+
+[
+  # TCP/UDP connections
+  builtin-connect: [fn@Handle [let cap@NetCap transport@Any ...addr] ...]
+
+  # TLS
+  builtin-tls-layer:    [fn@Handle [let h@Handle hostname@Graphemes] ...]
+  builtin-tls-peer-cert:[fn@Dict   [let h@Handle] ...]
+
+  # Datagram
+  builtin-send-datagram: [fn@Int  [let h@Handle data@Bytes host@Graphemes port@Int] ...]
+  builtin-recv-datagram: [fn@Dict [let h@Handle maxsize@Int] ...]
+
+  # QUIC
+  builtin-quic-session:       [fn@Any [let cap@NetCap host@Graphemes port@Int ...opts] ...]
+  builtin-quic-open-stream:   [fn@Handle [let session@Any] ...]
+  builtin-quic-open-datagram: [fn@Handle [let session@Any] ...]
+
+  # HTTP sessions
+  builtin-http2-session: [fn@Any [let h@Handle ...opts] ...]
+  builtin-http3-session: [fn@Any [let h@Handle ...opts] ...]
+  builtin-http-request:  [fn@Dict [let session@Any method@Graphemes path@Graphemes headers@Dict body@Bytes] ...]
+
+  # ICMP
+  builtin-icmp-ping: [fn@Dict [let cap@NetCap host@Graphemes] ...]
+
+  # URI parsing
+  builtin-uri: [fn@Any [let s@Graphemes] ...]
+  builtin-url: [fn@Any [let s@Graphemes] ...]
+  builtin-urn: [fn@Any [let s@Graphemes] ...]
+]
