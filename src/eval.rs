@@ -156,7 +156,7 @@ pub(crate) async fn eval_document_exprs(
                 "document pipeline",
                 ctx,
                 node_span.clone(),
-            )?),
+            ).await?),
             _ => None,
         };
 
@@ -439,11 +439,11 @@ pub struct EvalConfig {
     /// When true, every `$include` call must supply an integrity hash.
     /// Hashless includes are rejected with `IncludeHashRequired`.
     pub require_integrity: bool,
-    /// Macro inject defaults: macro_name -> inject_default_name.
+    /// Macro inject names: macro_name -> Vec<inject_name>.
     /// Populated by the expansion pass, used by the `macro-injects` builtin.
     /// Only macros with `inject:` declarations have entries; macros without
     /// inject: (using only gensym hygiene) are absent from this map.
-    pub macro_injects_map: HashMap<String, String>,
+    pub macro_injects_map: HashMap<String, Vec<String>>,
     /// Source file path where evaluation started (if available).
     /// Propagated to FnAnnotation for LSP hover and diagnostics.
     pub source_file: Option<String>,
@@ -578,6 +578,21 @@ pub struct EvalContext {
     /// Propagated to child contexts (with_base_dir, with_cancel_token, with_explicit_cancel,
     /// with_timeout_ms) so nested includes and scoped cancellation see the same TyConEnv.
     pub tycon_env: std::sync::OnceLock<std::sync::Arc<crate::type_def::TyConEnv>>,
+    /// Optional sink for method arms registered during `eval_dict_core` pre-scan.
+    ///
+    /// When `Some`, every `RegisterMethods` arm that is inserted into `dict_env.methods`
+    /// is ALSO inserted (using the SAME `MethodArm`, same thunk with correct closure) into
+    /// this sink environment. Used exclusively during stdlib bootstrap so that prelude method
+    /// arms (Addable, Equatable, etc.) end up in `stdlib_env.methods` rather than in the
+    /// transient `dict_env` that is discarded after the prelude dict is materialised.
+    ///
+    /// After Phase 3 evaluation, `create_stdlib_env_inner` clears this field (sets to `None`)
+    /// to prevent leaking the stdlib env reference into user contexts created from the same
+    /// bootstrap context.
+    ///
+    /// `None` in all non-bootstrap contexts. Wrapped in `Mutex` for interior mutability so
+    /// that `create_stdlib_env_inner` can install the sink on a pre-existing `Arc<EvalContext>`.
+    pub methods_sink: Mutex<Option<Arc<RwLock<Environment>>>>,
 }
 
 impl EvalContext {
@@ -636,6 +651,7 @@ impl EvalContext {
             task_registry: Arc::new(Mutex::new(Vec::new())),
             profiling: None,
             tycon_env: std::sync::OnceLock::new(),
+            methods_sink: Mutex::new(None),
         })
     }
 
@@ -678,6 +694,7 @@ impl EvalContext {
             task_registry: Arc::new(Mutex::new(Vec::new())),
             profiling: None,
             tycon_env: std::sync::OnceLock::new(),
+            methods_sink: Mutex::new(None),
         })
     }
 
@@ -701,7 +718,7 @@ impl EvalContext {
         type_stage_env: Arc<RwLock<Environment>>,
         no_fs: bool,
         shared_arena: Arc<Mutex<ThunkArena>>,
-        macro_injects_map: HashMap<String, String>,
+        macro_injects_map: HashMap<String, Vec<String>>,
     ) -> Arc<Self> {
         Arc::new(Self {
             config: Arc::new(EvalConfig {
@@ -729,6 +746,7 @@ impl EvalContext {
             task_registry: Arc::new(Mutex::new(Vec::new())),
             profiling: None,
             tycon_env: std::sync::OnceLock::new(),
+            methods_sink: Mutex::new(None),
         })
     }
 
@@ -773,6 +791,10 @@ impl EvalContext {
                 }
                 child_lock
             },
+            // methods_sink is a bootstrap-only field; it must NOT be propagated to child
+            // contexts created during prelude evaluation (e.g., via $include). Only the
+            // top-level prelude dict's RegisterMethods arms should flow to stdlib_env.
+            methods_sink: Mutex::new(None),
         })
     }
 
@@ -817,6 +839,7 @@ impl EvalContext {
                 }
                 child_lock
             },
+            methods_sink: Mutex::new(None),
         });
         (child_ctx, child_token)
     }
@@ -855,6 +878,7 @@ impl EvalContext {
                 }
                 child_lock
             },
+            methods_sink: Mutex::new(None),
         })
     }
 
@@ -894,6 +918,7 @@ impl EvalContext {
                 }
                 child_lock
             },
+            methods_sink: Mutex::new(None),
         })
     }
 
@@ -977,6 +1002,31 @@ impl EvalContext {
         if let Some(config) = Arc::get_mut(&mut self.config) {
             config.source_file = file;
         }
+    }
+
+    /// Set the methods sink for stdlib bootstrap.
+    ///
+    /// Returns `self` with `methods_sink` set. Used exclusively by `create_stdlib_env_inner`
+    /// to wire `stdlib_env` as the sink so that prelude `RegisterMethods` arms end up in
+    /// `stdlib_env.methods` where user code's env chain can find them via `collect_method_arms`.
+    ///
+    /// This field is intentionally not propagated by any child-context constructor
+    /// (`with_base_dir`, `with_cancel_token`, `with_explicit_cancel`, `with_timeout_ms`)
+    /// because the sink must only receive arms from the top-level prelude dict, not from
+    /// nested dicts evaluated during prelude loading.
+    /// Set the methods sink on an `Arc<EvalContext>` after construction.
+    ///
+    /// Used by `create_stdlib_env_inner` to install `stdlib_env` as the sink on `loader_ctx`
+    /// before Phase 3 evaluation runs. The `Mutex` allows this even though `loader_ctx` is
+    /// already wrapped in `Arc`.
+    pub(crate) fn set_methods_sink(&self, sink: Arc<RwLock<Environment>>) {
+        *self.methods_sink.lock().unwrap() = Some(sink);
+    }
+
+    /// Clear the methods sink. Called by `create_stdlib_env_inner` after Phase 3 completes
+    /// to prevent the stdlib env reference from leaking into user code's evaluation contexts.
+    pub(crate) fn clear_methods_sink(&self) {
+        *self.methods_sink.lock().unwrap() = None;
     }
 }
 
@@ -1144,6 +1194,64 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Type, ctx: &EvalConte
     }
 
     Type::is_consistent_subtype(&ground_type_of(value), expected)
+}
+
+/// Exact type discrimination for Pattern::TypeAssert matching.
+///
+/// Unlike `value_matches_type` (consistent subtyping for TypeAssert expression validation),
+/// pattern matching needs exact dispatch: `[@Int _]:` must NOT match Builtin values even
+/// though `ground_type_of(Builtin)` is Unknown, which is consistent with everything.
+///
+/// Key differences from value_matches_type:
+/// - Seq: dispatches on "Seq." tag prefix of Variant values (Seq.Cons, Seq.Nil)
+/// - Fn (variadic, 0 required params): matches both Value::Function AND Value::Builtin
+/// - Proxy: exact match only (not Unknown ≥ Proxy via gradual typing)
+/// - Unknown/Top: always match (gradual escape hatch for --no-typecheck, macros)
+pub(crate) fn pattern_type_matches(
+    value: &Value,
+    expected: &Type,
+    ctx: &Arc<EvalContext>,
+) -> bool {
+    match expected {
+        Type::Int | Type::IntLiteral(_) => matches!(value, Value::Int(_) | Value::U64(_)),
+        Type::Float => matches!(value, Value::Float(_)),
+        Type::Str | Type::StringLiteral(_) => matches!(value, Value::String { .. }),
+        Type::Bool => matches!(value, Value::Bool(_)),
+        Type::Bytes => matches!(value, Value::Bytes { .. }),
+        Type::Number => matches!(value, Value::Int(_) | Value::Float(_) | Value::U64(_)),
+        Type::Proxy => matches!(value, Value::Proxy { .. }),
+        // Record / Dict: any dict-like value satisfies an empty record annotation.
+        Type::Record(_) => matches!(value, Value::Dict(_) | Value::Overlay(..)),
+        // @Fn (variadic, 0 required params): matches any callable including Builtin.
+        Type::Function { variadic, required_count, .. }
+            if *variadic && *required_count == 0 =>
+        {
+            matches!(value, Value::Function { .. } | Value::Builtin(_))
+        }
+        Type::Function { .. } => matches!(value, Value::Function { .. }),
+        // App(TyCon("Seq"), _): Seq.Cons and Seq.Nil are Variant values with "Seq." prefix.
+        // Type::seq(elem) = Type::App(TyCon("Seq"), elem) — match by tag prefix.
+        Type::App(f, _) if matches!(f.as_ref(), Type::TyCon(n) if n.as_str() == "Seq") => {
+            matches!(value, Value::Variant { tag, .. } if tag.starts_with("Seq."))
+        }
+        // Other TyCon / App: delegate to value_matches_type (handles user-defined nominal types).
+        Type::TyCon(_) | Type::App(_, _) => value_matches_type(value, expected, ctx),
+        // NominalVariant: exact tag or "Tag.*" prefix on Value::Variant.
+        Type::NominalVariant { tag, .. } => {
+            matches!(value, Value::Variant { tag: vtag, .. }
+                if vtag == tag
+                    || (vtag.starts_with(tag.as_str())
+                        && vtag.as_bytes().get(tag.len()) == Some(&b'.')))
+        }
+        // Unknown / Top: always match.
+        Type::Unknown | Type::Top => true,
+        Type::Union(members) => members.iter().any(|m| pattern_type_matches(value, m, ctx)),
+        Type::Intersection(members) => {
+            members.iter().all(|m| pattern_type_matches(value, m, ctx))
+        }
+        // Everything else: fall back to consistent subtyping.
+        _ => value_matches_type(value, expected, ctx),
+    }
 }
 
 /// Format a Type for error messages in TypeAssert.
@@ -1474,6 +1582,34 @@ async fn collect_seq_elements(
                 // Empty sequence (Seq.Nil) - we're done
                 break;
             }
+            Value::Dict(ref dict) => {
+                // Integer-keyed Dict: treat as ordered sequence (List a = Map Int a).
+                // Used when unquote-splice receives a Dict accumulator (e.g. from tmpl's
+                // append-based node list). Iterate keys 0, 1, 2, ... in insertion order.
+                let mut i = 0i64;
+                loop {
+                    match dict.get(&crate::value::Key::Int(i)) {
+                        Some(&thunk_id) => {
+                            let thunk = ctx.get_thunk(thunk_id);
+                            let val = materialize(&thunk, Some(&span), ctx).await?;
+                            elements.push(val);
+                            i += 1;
+                            if elements.len() >= MAX_COLLECT_SIZE {
+                                return Err(EvalError::resource_limit_exceeded(
+                                    format!(
+                                        "unquote-splice: too many elements (limit {})",
+                                        MAX_COLLECT_SIZE
+                                    ),
+                                    span,
+                                )
+                                .into());
+                            }
+                        }
+                        None => break,
+                    }
+                }
+                break;
+            }
             _ => {
                 return Err(EvalError::type_mismatch("Seq", current.type_name(), span).into());
             }
@@ -1763,7 +1899,7 @@ fn eval_quote_preprocess<'a>(
 /// bypassing the old Expr-based eval entry point. No Expr or ast_convert bridge needed.
 ///
 /// Returns the resulting `Value::Function` thunk, ready for use as a macro transformer.
-pub(crate) fn eval_surface_fn(
+pub(crate) async fn eval_surface_fn(
     params: Vec<Spanned<Param>>,
     body: &Arc<crate::ast::SurfaceNode>,
     span: Span,
@@ -1800,7 +1936,7 @@ pub(crate) fn eval_surface_fn(
         crate::ast::empty_resolution_table(),
         crate::ast::empty_type_annotation_table(),
     );
-    crate::async_rt::block_on_anywhere(eval_core_expr(&core_fn, &env, ctx))
+    eval_core_expr(&core_fn, &env, ctx).await
 }
 
 /// Wrap a thunk with a boundary guard if the span matches a guard in the context.
@@ -2158,6 +2294,12 @@ fn eval_core_expr<'a>(
                 span.clone(),
             )
             .into()),
+
+            // RegisterMethods: handled by pre-scan in eval_dict_core. If forced here, return null.
+            CoreExpr::RegisterMethods { .. } => Ok(Arc::new(Thunk::new_materialized(
+                crate::value::Value::Dict(indexmap::IndexMap::new()),
+                span.clone(),
+            ))),
         }
         .map(|thunk| maybe_wrap_guard(thunk, span, ctx))
     }) // end Box::pin(async move {
@@ -2682,26 +2824,111 @@ pub fn materialize<'a>(
                     thunk.set_materialized(result_val.clone());
                     Ok(result_val)
                 }
-                // ADT constructor called with a single named arg: [Circle r: 5] where Circle = [variant "Circle"].
-                // When a unit Variant is called with no positional args and exactly one named arg,
-                // use the named arg's value as the payload. This supports single-field ADT constructors
-                // declared via `[type Shape [Circle r: Int] ...]`.
-                // Pattern `[Circle binding]` then matches and binds `binding` to the payload value.
-                Value::Variant { tag, payload: None }
-                    if args.is_empty() && named.as_ref().is_some_and(|m| m.len() == 1) =>
-                {
-                    let named_map = named.expect("checked is_some above");
-                    let payload_thunk = named_map
-                        .into_values()
-                        .next()
-                        .expect("1 entry checked above");
-                    let payload_id = thunk_ctx.alloc_thunk(payload_thunk);
-                    let result_val = Value::Variant {
-                        tag,
-                        payload: Some(payload_id),
-                    };
-                    thunk.set_materialized(result_val.clone());
-                    Ok(result_val)
+                // Multi-method dispatch sentinel: mirrors eval_materialize.rs PendingCallDispatch.
+                // When the function is a MethodDispatcher, collect arms from the caller env
+                // and dispatch based on the runtime types of the positional arguments.
+                Value::MethodDispatcher(method_name) => {
+                    let all_arms =
+                        crate::value::Environment::collect_method_arms(&caller_env, &method_name);
+                    let max_tags = all_arms
+                        .iter()
+                        .map(|a| a.type_tags.len())
+                        .max()
+                        .unwrap_or(0);
+                    let n_to_check = max_tags.min(args.len());
+                    let mut arg_type_names: Vec<String> = Vec::with_capacity(n_to_check);
+                    for i in 0..n_to_check {
+                        match run(
+                            crate::eval_materialize::Action::Materialize {
+                                thunk: Arc::clone(&args[i]),
+                                mat_span: None,
+                            },
+                            &thunk_ctx,
+                        )
+                        .await
+                        .map_err(&decorate)
+                        {
+                            Ok(v) => {
+                                let raw = v.type_name();
+                                let prefix = raw.split_once('.').map(|(t, _)| t).unwrap_or(raw);
+                                arg_type_names.push(prefix.to_string());
+                            }
+                            Err(e) => {
+                                if e.kind.is_cacheable() {
+                                    thunk.cache_failure_once(&e);
+                                }
+                                return Err(e);
+                            }
+                        }
+                    }
+                    let winner = all_arms
+                        .into_iter()
+                        .enumerate()
+                        .filter(|(_, arm)| {
+                            arm.type_tags.iter().enumerate().all(|(i, tag)| {
+                                if i >= n_to_check {
+                                    return true;
+                                }
+                                match tag {
+                                    None => true,
+                                    Some(t) => {
+                                        arg_type_names.get(i).map(|n| n == t).unwrap_or(true)
+                                    }
+                                }
+                            })
+                        })
+                        .max_by_key(|(i, arm)| {
+                            let specificity = arm
+                                .type_tags
+                                .iter()
+                                .take(n_to_check)
+                                .filter(|t| t.is_some())
+                                .count();
+                            (specificity, usize::MAX - i)
+                        })
+                        .map(|(_, arm)| arm);
+
+                    match winner {
+                        Some(arm) => {
+                            // Dispatch: materialize via the arm body thunk.
+                            let dispatch_thunk = Arc::new(crate::value::Thunk::new_pending_call(
+                                Arc::clone(&arm.body),
+                                args,
+                                named.unwrap_or_default(),
+                                call_span.clone(),
+                                Arc::clone(&caller_env),
+                                call_span.clone(),
+                                None,
+                                Arc::clone(&thunk_ctx),
+                                original_call.clone(),
+                            ));
+                            run(
+                                crate::eval_materialize::Action::Materialize {
+                                    thunk: dispatch_thunk,
+                                    mat_span: mat_span.cloned(),
+                                },
+                                &thunk_ctx,
+                            )
+                            .await
+                            .map_err(&decorate)
+                            .and_then(|v| {
+                                thunk.set_materialized(v.clone());
+                                Ok(v)
+                            })
+                        }
+                        None => {
+                            let err = EvalError::no_method(
+                                &method_name,
+                                arg_type_names,
+                                call_span.clone(),
+                            );
+                            let decorated = decorate(Box::new(err));
+                            if decorated.kind.is_cacheable() {
+                                thunk.cache_failure_once(&decorated);
+                            }
+                            Err(decorated)
+                        }
+                    }
                 }
                 other => {
                     let err = EvalError::type_mismatch(
@@ -3122,25 +3349,7 @@ pub fn materialize<'a>(
     }) // end Box::pin(async move {
 }
 
-/// Synchronous compatibility wrapper around the async `materialize()`.
-///
-/// Used by genuinely synchronous call sites that cannot `.await`:
-/// - Sync closures (e.g., `sort_by` comparator)
-/// - Macro expansion helpers (`expand.rs`)
-/// - Test helper shadows inside `#[cfg(test)]` modules
-/// - Bootstrap code (stdlib loading before the async runtime is entered)
-///
-/// Uses `async_rt::block_on_anywhere()` which is safe to call both from
-/// outside any tokio runtime and from within an existing one.
-///
-/// New async code should call `materialize(...).await` directly.
-pub fn materialize_sync(
-    thunk: &Thunk,
-    mat_span: Option<&Span>,
-    ctx: &Arc<EvalContext>,
-) -> EvalResult<Value> {
-    crate::async_rt::block_on_anywhere(materialize(thunk, mat_span, ctx))
-}
+
 
 /// Collect all variable names bound by a pattern, recursing into sub-patterns.
 ///
@@ -3159,7 +3368,7 @@ pub fn materialize_sync(
 #[allow(clippy::only_used_in_recursion)]
 fn collect_pattern_variable_names(pattern: &Spanned<Pattern>, out: &mut Vec<(String, Span)>) {
     match &pattern.node {
-        Pattern::Wildcard | Pattern::Literal(_) | Pattern::Pin(_) | Pattern::TypeTag(_) => {
+        Pattern::Wildcard | Pattern::Literal(_) | Pattern::Pin(_) => {
             // No variable bindings — Pin compares against scope, does not bind
         }
         Pattern::TypeAssertPending { inner, .. } => {
@@ -3259,34 +3468,6 @@ pub(crate) fn match_pattern<'a>(
                 // Wildcard always matches, no bindings
                 Ok(Some(Arc::clone(env)))
             }
-            Pattern::TypeTag(tag) => {
-                // TypeTag pattern: match by runtime type name.
-                //
-                // Compares the value's runtime type name against `tag`. The special alias
-                // "Str" matches String values (Value::type_name() returns "String", but the
-                // prelude.llt and other stdlib code uses `Str:` as the pattern for strings).
-                //
-                // This pattern is NOT the same as Constructor (which matches Value::Variant
-                // by nominal tag) — TypeTag matches primitive/structural values by kind.
-                //
-                // TypeTag was removed in T-961 (S-844) but restored here because:
-                // 1. prelude.llt uses Seq:, Dict:, Int:, Str:, Bool:, Float:, Function:,
-                //    Builtin:, Proxy:, Bytes: extensively for type dispatch
-                // 2. The TypeAssert replacement path was not completed (evaluator stub
-                //    doesn't perform actual type checks; prelude not migrated to [@Type x] form)
-                // 3. Removing TypeTag breaks create_stdlib_env_with_arena() → expand_surface_program()
-                //    → build_prelude_env_inner() returns builtins-only env (no prelude exports)
-                // Migration: when TypeAssert evaluator is fully implemented and prelude.llt
-                // is migrated to [@Type x]: form, TypeTag can be removed again.
-                let runtime_name = value.type_name();
-                let matches = runtime_name == tag.as_str()
-                    || (tag.as_str() == "Str" && runtime_name == "String");
-                if matches {
-                    Ok(Some(Arc::clone(env)))
-                } else {
-                    Ok(None)
-                }
-            }
             Pattern::TypeAssertPending { annotation, inner } => {
                 // FALLBACK RUNTIME ELABORATION (B-338):
                 //
@@ -3356,19 +3537,12 @@ pub(crate) fn match_pattern<'a>(
                 resolved_type,
                 inner,
             } => {
-                // T-976: runtime type check for TypeAssert patterns.
-                //
-                // B-338 fix: This arm is now the PRIMARY runtime path for typed patterns.
-                // The type checker's `elaborate_pattern` result is persisted via
-                // `record_pattern_elaborations` → `TypeAnnotationTable.pattern_types` →
-                // `lower.rs:lower_pattern` which converts `TypeAssertPending → TypeAssert`
-                // when building `CoreMatchArm`. The resolved_type here is the fully-resolved
-                // type from the type checker (not a fragile runtime name lookup).
-                //
-                // The `TypeAssertPending` arm below remains as a fallback for:
-                // - Programs run with `--no-typecheck` (type checking skipped)
-                // - Macro-synthesized patterns that bypassed the type checker
-                if !value_matches_type(value, resolved_type, ctx) {
+                // Primary runtime path for typed patterns.
+                // lower.rs converts TypeAssertPending → TypeAssert (using annotation_name_to_type
+                // or the TypeAnnotationTable when populated by the type checker).
+                // Uses pattern_type_matches (exact dispatch) rather than value_matches_type
+                // (gradual subtyping) so that e.g. [@Int _]: never matches Value::Builtin.
+                if !pattern_type_matches(value, resolved_type, ctx) {
                     return Ok(None); // type mismatch — arm does not match
                 }
                 match inner {
@@ -3400,20 +3574,18 @@ pub(crate) fn match_pattern<'a>(
                 }
             }
             Pattern::Pin(name) => {
-                // Pin matches if the variable's value equals the scrutinee value.
-                //
-                // T-1154: Bare lowercase names in pattern position are now Pin patterns.
-                // If the name is not in scope (e.g., `v` in `[Ok v]: body` where `v` has no
-                // prior binding), treat it as a wildcard — always match, no binding introduced.
-                // This preserves the legibility of shorthand constructor patterns like
-                // `[Ok v]: body` (arm still fires), while making explicit that `v` is NOT
-                // bound in the body. Users must migrate to `[case [let v] [Ok $v] body]` to
-                // bind payload variables.
+                // Pin matches if the variable's current value equals the scrutinee value.
+                // Use $name syntax in patterns to pin against an existing variable.
+                // Bare lowercase names in shorthand arms are retired binding forms —
+                // if the name is not in scope it is an undefined variable error.
+                // Use [case [let v] pattern body] to introduce new bindings.
                 let var_thunk = match env.read().unwrap().get(name) {
                     Some(thunk) => thunk,
                     None => {
-                        // Name not in scope — act as wildcard: always match, no binding.
-                        return Ok(Some(Arc::clone(env)));
+                        return Err(Box::new(EvalError::undefined_variable(
+                            name.clone(),
+                            value_span.clone(),
+                        )));
                     }
                 };
                 let var_value = materialize(&var_thunk, Some(value_span), ctx).await?;
@@ -3508,7 +3680,8 @@ pub(crate) fn match_pattern<'a>(
                             "dict pattern match",
                             ctx,
                             value_span.clone(),
-                        )?;
+                        )
+                        .await?;
                         // Re-use the Value::Dict matching path by recursing with the flattened value.
                         match_pattern(
                             &Pattern::Dict {
@@ -3613,7 +3786,7 @@ pub(crate) fn match_pattern<'a>(
                                 //   Pattern::Variable with Pattern::Pin. Unresolved Pin acts as
                                 //   wildcard — the arm fires but the name is not bound. To bind
                                 //   the tail, use `[case [let t] [Seq $h $t] body]`.
-                                // - Anything else (TypeTag, Constructor, Dict, Literal, Seq, or
+                                // - Anything else (Constructor, Dict, Literal, Seq, or
                                 //   Pin with a name in scope for comparison):
                                 //   materialize the tail and recurse into match_pattern.
                                 match &tail.node {
@@ -9531,7 +9704,6 @@ mod tests {
 
         // Desugar (no macros in this source, but maintain pipeline invariant).
         crate::desugar::desugar_surface_program(&mut program);
-        crate::desugar::desugar_instance_decls_surface_program(&mut program);
 
         // Resolve variable references.
         let res = std::sync::Arc::new(crate::resolve::resolve_surface_program(&program));

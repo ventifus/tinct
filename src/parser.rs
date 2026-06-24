@@ -547,15 +547,21 @@ fn parse_annotation(
                     // Convert to PropertyDict with auto-indexed entries so the type resolver can
                     // detect parameterized alias applications (@[AliasName Arg]) and union return
                     // type syntax (@[a Null], @[Int Null]).
-                    // Applies to any implied call whose func is a VarRef (uppercase or lowercase).
-                    // Uppercase: parameterized type alias applications.
-                    // Lowercase: type variable names in union return type syntax (fn@[a Null]).
+                    // Applies to any implied call whose func is a VarRef (uppercase or lowercase)
+                    // OR an Annotated node (for [Fn@Return [Params]] function type expressions).
+                    // Uppercase VarRef: parameterized type alias applications.
+                    // Lowercase VarRef: type variable names in union return type syntax (fn@[a Null]).
+                    // Annotated: [Fn@Return [Params]] function type expressions (e.g. [Fn@String []]).
                     SurfaceExpression::Call {
                         implied: true,
                         func,
                         args,
                         ..
-                    } if matches!(&func.expr, SurfaceExpression::VarRef { .. }) => {
+                    } if matches!(
+                        &func.expr,
+                        SurfaceExpression::VarRef { .. } | SurfaceExpression::Annotated { .. }
+                    ) =>
+                    {
                         let base = bracket_start_span.start;
                         let mut entries: Vec<Spanned<SurfaceEntry>> = Vec::new();
                         // func as first auto-indexed entry
@@ -2720,13 +2726,47 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                 let colon_err: Option<ParseError> = match stack.last_mut() {
                     Some(StackFrame::Dict {
                         ref mut pending_key,
+                        ref mut entries,
+                        seen_keys: _,
                         ..
                     }) => {
                         if pending_key.is_none() {
-                            Some(ParseError {
-                                message: "`:` without a key (expected key before `:`)".to_string(),
-                                span: Some(span.clone()),
-                            })
+                            // No pending key — check if the last entry is an auto-indexed expression
+                            // that can be promoted to a computed key (e.g., `[[str "a" "b"]: val]`).
+                            if let Some(last_entry) = entries.last() {
+                                if last_entry.node.key.is_none() {
+                                    // This is an auto-indexed entry; promote it to pending_key.
+                                    let promoted = entries.pop().unwrap();
+                                    // Unwrap one bracket layer: [[expr]: val] → use [expr] as key.
+                                    // The promoted value is [[expr]] = Dict({0: expr}).
+                                    // Extract the inner expression so eval_key_core materializes
+                                    // the call/expression result rather than a Dict wrapper.
+                                    let key_node = match &promoted.node.value.expr {
+                                        SurfaceExpression::Dict(inner_entries)
+                                            if inner_entries.len() == 1
+                                                && inner_entries[0].node.key.is_none() =>
+                                        {
+                                            Arc::clone(&inner_entries[0].node.value)
+                                        }
+                                        _ => Arc::clone(&promoted.node.value),
+                                    };
+                                    *pending_key = Some(key_node);
+                                    None // Success: next expression will be the value
+                                } else {
+                                    // Last entry has a key — cannot promote it
+                                    Some(ParseError {
+                                        message: "`:` without a key (expected key before `:`)"
+                                            .to_string(),
+                                        span: Some(span.clone()),
+                                    })
+                                }
+                            } else {
+                                // No entries at all
+                                Some(ParseError {
+                                    message: "`:` without a key (expected key before `:`)".to_string(),
+                                    span: Some(span.clone()),
+                                })
+                            }
                         } else {
                             None // Pending key is set; next expression will be the value
                         }
@@ -4969,7 +5009,7 @@ fn collect_pattern_variables(pattern: &Pattern, vars: &mut std::collections::Has
                 collect_pattern_variables(&first.node, vars);
             }
         }
-        Pattern::Wildcard | Pattern::Literal(_) | Pattern::Pin(_) | Pattern::TypeTag(_) => {
+        Pattern::Wildcard | Pattern::Literal(_) | Pattern::Pin(_) => {
             // These don't bind variables
         }
         Pattern::TypeAssertPending { inner, .. } => {
@@ -5120,13 +5160,20 @@ fn surface_node_to_pattern_with_guard(
         SurfaceExpression::VarRef { name, .. }
             if name.chars().next().is_some_and(|c| c.is_uppercase()) =>
         {
-            // Bare uppercase identifier in pattern position: type tag pattern.
-            // Matches against the runtime type name of the scrutinee value (e.g., `Int:` matches
-            // Value::Int, `Str:` matches Value::String, `Seq:` matches Value::Seq).
-            // This is distinct from Constructor patterns (which match Value::Variant by tag)
-            // and is used in the prelude for type predicates like int?, str?, dict?, etc.
-            // Qualified constructor patterns ([Result.Ok v]) use the DotAccess arm below.
-            (Pattern::TypeTag(name.clone()), None)
+            // Bare uppercase identifier in pattern position: type assertion pattern.
+            // `Int:`, `Str:`, `Color:` — asks "does this value have this type?"
+            // Produces TypeAssertPending resolved by lower_pattern via annotation_name_to_type.
+            // Qualified constructor patterns ([Result.Ok v], Color.Red:) use the DotAccess arm.
+            (
+                Pattern::TypeAssertPending {
+                    annotation: Spanned::new(
+                        crate::ast::Annotation::Simple(name.clone()),
+                        span.clone(),
+                    ),
+                    inner: None,
+                },
+                None,
+            )
         }
         SurfaceExpression::VarRef { name, .. } => {
             // Other cases (e.g., names starting with special chars like %)
@@ -5651,13 +5698,21 @@ fn push_expr_to_parent(
                         })
                     }
                 } else if params.is_none() {
-                    // Second expression: params ([let ...])
-                    if matches!(node.expr, SurfaceExpression::LetDecl { .. }) {
+                    // Second expression: params ([let ...] or [@[inject: ...] [let ...]])
+                    // Accept bare LetDecl or TypeAssert wrapping a LetDecl (inject: annotation).
+                    let is_valid_params = matches!(node.expr, SurfaceExpression::LetDecl { .. })
+                        || matches!(
+                            &node.expr,
+                            SurfaceExpression::TypeAssert { expr, .. }
+                                if matches!(expr.expr, SurfaceExpression::LetDecl { .. })
+                        );
+                    if is_valid_params {
                         *params = Some(node);
                         Ok(())
                     } else {
                         Err(ParseError {
-                            message: "macro declaration params must be a LetDecl ([let ...])"
+                            message: "macro declaration params must be a LetDecl ([let ...]) or \
+                                      an annotated LetDecl ([@[inject: ...] [let ...]])"
                                 .to_string(),
                             span: Some(node.span.clone()),
                         })
@@ -6634,7 +6689,7 @@ fn stamp_pattern_spanned(pat: &mut Spanned<Pattern>, file: &Arc<SourceFile>) {
 /// Stamp all spans inside a `Pattern`.
 fn stamp_pattern(pat: &mut Pattern, file: &Arc<SourceFile>) {
     match pat {
-        Pattern::Wildcard | Pattern::Literal(_) | Pattern::Pin(_) | Pattern::TypeTag(_) => {}
+        Pattern::Wildcard | Pattern::Literal(_) | Pattern::Pin(_) => {}
 
         Pattern::TypeAssertPending { annotation, inner } => {
             annotation.span.file = Some(Arc::clone(file));

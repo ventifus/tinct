@@ -360,6 +360,23 @@ pub(crate) struct SequentialStepData {
     pub(crate) seq_span: Span,
 }
 
+/// Payload for Cont::VariantUnpackForSeq. Boxed to keep the Cont enum ≤96 bytes.
+///
+/// After materializing a Variant's payload in a SequentialStep context, this continuation
+/// unpacks the payload dict and proceeds with the sequential expression evaluation.
+pub(crate) struct VariantUnpackForSeqData {
+    /// Static keys extracted from the current sequential expression
+    pub(crate) static_key_set: HashSet<String>,
+    /// Index of the next expression to evaluate
+    pub(crate) next_idx: usize,
+    pub(crate) exprs: Arc<Vec<Arc<Spanned<CoreExpr>>>>,
+    pub(crate) env: Arc<RwLock<Environment>>,
+    pub(crate) ctx: Arc<EvalContext>,
+    pub(crate) seq_span: Span,
+    /// Span of the current expression (for error reporting)
+    pub(crate) current_expr_span: Span,
+}
+
 /// Payload for Cont::MatchDispatch. Boxed to keep the Cont enum ≤96 bytes.
 pub(crate) struct MatchDispatchData {
     /// The arms to try matching. Index starts at 0.
@@ -479,6 +496,10 @@ pub(crate) enum Cont {
     /// After an intermediate expression is materialized (and its dict bindings extracted),
     /// this continuation evaluates the next expression in the sequence.
     SequentialStep(Box<SequentialStepData>),
+    /// Unpack a Variant payload for sequential expression scope binding.
+    /// After materializing a Variant's payload thunk, this continuation calls require_dict
+    /// to extract the payload's dict entries and proceeds with SequentialStep logic.
+    VariantUnpackForSeq(Box<VariantUnpackForSeqData>),
     /// Dispatch to the next arm after materializing the scrutinee in a Match expression.
     /// Tries each arm pattern in order until one matches, then evaluates that arm's body.
     MatchDispatch(Box<MatchDispatchData>),
@@ -1790,35 +1811,127 @@ pub(crate) async fn apply_cont(
                             }
                             Action::Continue(Ok(result_val))
                         }
-                        // ADT constructor called with a single named arg: [Circle r: 5] where Circle = [variant "Circle"].
-                        // When a unit Variant is called with no positional args and exactly one named arg,
-                        // use the named arg's value as the payload. This supports single-field ADT constructors
-                        // declared via `[type Shape [Circle r: Int] ...]`.
-                        Value::Variant { tag, payload: None }
-                            if args.as_ref().is_some_and(|v| v.is_empty())
-                                && named
-                                    .as_ref()
-                                    .is_some_and(|m| m.as_ref().is_some_and(|b| b.len() == 1)) =>
-                        {
-                            let named_map = named
-                                .as_ref()
-                                .expect("checked Some above")
-                                .as_ref()
-                                .expect("checked Some above");
-                            let payload_thunk = named_map
-                                .values()
-                                .next()
-                                .expect("1 entry checked above")
-                                .clone();
-                            let payload_id = thunk_ctx.alloc_thunk(payload_thunk);
-                            let result_val = Value::Variant {
-                                tag,
-                                payload: Some(payload_id),
-                            };
-                            if !tail_hint {
-                                thunk.set_materialized(result_val.clone());
+                        // Multi-method dispatch sentinel: FreeVar found no regular binding but
+                        // method arms exist. Dispatch based on runtime argument types.
+                        Value::MethodDispatcher(method_name) => {
+                            let collected_args = args.as_ref().expect("args set above");
+                            // Collect all visible method arms from the caller's env chain.
+                            let all_arms = crate::value::Environment::collect_method_arms(
+                                &caller_env,
+                                &method_name,
+                            );
+                            let max_tags = all_arms
+                                .iter()
+                                .map(|a| a.type_tags.len())
+                                .max()
+                                .unwrap_or(0);
+                            let n_to_check = max_tags.min(collected_args.len());
+                            // Materialize only the args needed for dispatch.
+                            let mut arg_type_names: Vec<String> = Vec::with_capacity(n_to_check);
+                            for i in 0..n_to_check {
+                                match crate::eval::materialize(&collected_args[i], None, &thunk_ctx)
+                                    .await
+                                {
+                                    Ok(v) => {
+                                        let raw = v.type_name();
+                                        let prefix =
+                                            raw.split_once('.').map(|(t, _)| t).unwrap_or(raw);
+                                        arg_type_names.push(prefix.to_string());
+                                    }
+                                    Err(e) => {
+                                        let decorated = decorate(e);
+                                        if decorated.kind.is_cacheable() {
+                                            thunk.cache_failure_once(&decorated);
+                                        }
+                                        return Action::Continue(Err(decorated));
+                                    }
+                                }
                             }
-                            Action::Continue(Ok(result_val))
+                            // Select best arm: most Some(_) tags wins; innermost scope wins on ties.
+                            // collect_method_arms returns arms innermost-first, so index 0 = innermost.
+                            // We want: highest specificity first, then lowest index (innermost) on ties.
+                            // Use (specificity, usize::MAX - i) as the sort key so max_by_key picks
+                            // the innermost arm when specificities are equal.
+                            let winner = all_arms
+                                .into_iter()
+                                .enumerate()
+                                .filter(|(_, arm)| {
+                                    arm.type_tags.iter().enumerate().all(|(i, tag)| {
+                                        if i >= n_to_check {
+                                            return true;
+                                        } // beyond checked range
+                                        match tag {
+                                            None => true,
+                                            Some(t) => arg_type_names
+                                                .get(i)
+                                                .map(|n| n == t)
+                                                .unwrap_or(true),
+                                        }
+                                    })
+                                })
+                                .max_by_key(|(i, arm)| {
+                                    let specificity = arm
+                                        .type_tags
+                                        .iter()
+                                        .take(n_to_check)
+                                        .filter(|t| t.is_some())
+                                        .count();
+                                    (specificity, usize::MAX - i)
+                                })
+                                .map(|(_, arm)| arm);
+
+                            match winner {
+                                Some(arm) => {
+                                    // Dispatch: create a new PendingCall with the arm body as function.
+                                    // The arm body thunk (when forced) is a Value::Function.
+                                    let dispatch_thunk =
+                                        Arc::new(crate::value::Thunk::new_pending_call(
+                                            Arc::clone(&arm.body),
+                                            collected_args.to_vec(),
+                                            named
+                                                .take()
+                                                .expect("named set above")
+                                                .map(|b| *b)
+                                                .unwrap_or_default(),
+                                            call_span.clone(),
+                                            Arc::clone(&caller_env),
+                                            call_span.clone(),
+                                            None,
+                                            Arc::clone(&thunk_ctx),
+                                            original_call.clone(),
+                                        ));
+                                    let restore = RestoreState::CoreExpr {
+                                        expr: original_call.clone(),
+                                        env: caller_env,
+                                        ctx: Arc::clone(&thunk_ctx),
+                                    };
+                                    stack.push(Cont::Memoize(Box::new(MemoizeData {
+                                        thunk: Arc::clone(&thunk),
+                                        origin,
+                                        thunk_span: thunk_span.clone(),
+                                        mat_span: mat_span.clone(),
+                                        restore: Some(restore),
+                                        ctx: thunk_ctx,
+                                    })));
+                                    eval_stack_guard.disarm();
+                                    Action::Materialize {
+                                        thunk: dispatch_thunk,
+                                        mat_span,
+                                    }
+                                }
+                                None => {
+                                    let err = EvalError::no_method(
+                                        &method_name,
+                                        arg_type_names,
+                                        call_span.clone(),
+                                    );
+                                    let decorated = decorate(Box::new(err));
+                                    if decorated.kind.is_cacheable() {
+                                        thunk.cache_failure_once(&decorated);
+                                    }
+                                    Action::Continue(Err(decorated))
+                                }
+                            }
                         }
                         other => {
                             let err = EvalError::type_mismatch(
@@ -1909,7 +2022,9 @@ pub(crate) async fn apply_cont(
                                 "type guard",
                                 &guard_ctx,
                                 guard_span.clone(),
-                            ) {
+                            )
+                            .await
+                            {
                                 Ok(map) => Value::Dict(map),
                                 Err(e) => {
                                     let e = decorate(e);
@@ -2422,7 +2537,9 @@ pub(crate) async fn apply_cont(
                                 &format!(".{field_str}"),
                                 &ctx,
                                 access_span.clone(),
-                            ) {
+                            )
+                            .await
+                            {
                                 Ok(map) => Value::Dict(map),
                                 Err(mut e) => {
                                     e.push_frame(
@@ -2828,7 +2945,9 @@ pub(crate) async fn apply_cont(
                                     "type assert",
                                     &ctx,
                                     expr_span.clone(),
-                                ) {
+                                )
+                                .await
+                                {
                                     Ok(map) => Value::Dict(map),
                                     Err(e) => return Action::Continue(Err(e)),
                                 }
@@ -3066,7 +3185,9 @@ pub(crate) async fn apply_cont(
                                 "sequential expression",
                                 &ctx,
                                 current_expr.span.clone(),
-                            ) {
+                            )
+                            .await
+                            {
                                 Ok(map) => map,
                                 Err(e) => return Action::Continue(Err(e)),
                             },
@@ -3081,57 +3202,39 @@ pub(crate) async fn apply_cont(
 
                                 // Fast path: payload already materialized (common after earlier forcing).
                                 // Use the cached value directly — no executor re-entry needed.
-                                let payload_val =
-                                    if let Some(val) = payload_thunk.try_get_materialized() {
-                                        val
-                                    } else {
-                                        // Slow path: payload not yet forced.
-                                        //
-                                        // SAFETY: materialize_sync calls block_on_anywhere, which under a
-                                        // current-thread runtime uses poll_future_sync (a spin-poll loop on
-                                        // LocalSet::run_until). The CEK machine's run() loop is also on this
-                                        // LocalSet, so we are re-entering the LocalSet from within itself.
-                                        //
-                                        // This is safe in practice because:
-                                        //   1. The LocalSet is cooperative and single-threaded. No thread-
-                                        //      safety issue arises from re-entry on the same thread.
-                                        //   2. poll_future_sync drives the payload's materialize future to
-                                        //      completion synchronously, never suspending back to the outer
-                                        //      CEK loop frame. The outer frame is parked on the Rust call
-                                        //      stack while poll_future_sync spins; there is no interleaving.
-                                        //   3. Eval functions contain no genuine I/O suspension (see
-                                        //      async_rt.rs poll_future_sync contract), so the spin loop
-                                        //      always terminates.
-                                        //
-                                        // The latent hazard is stack depth: each nested block_on_anywhere
-                                        // call adds a Rust stack frame (poll_future_sync + run_until).
-                                        // In practice the payload is a single level of indirection (a
-                                        // Variant wrapping a Dict) so nesting depth is at most 1 here.
-                                        //
-                                        // TODO(B-396): replace with Action::Materialize continuation so
-                                        // the CEK machine forces the payload iteratively without re-entry.
-                                        // B-273 was closed after adding the fast path above; this slow
-                                        // path is now LOAD-BEARING (B-386 made SequentialStep the primary
-                                        // execution path). Tracked as B-396 with escalated priority.
-                                        match crate::eval::materialize_sync(
-                                            &payload_thunk,
-                                            Some(&current_expr.span),
-                                            &ctx,
-                                        ) {
-                                            Ok(v) => v,
-                                            Err(e) => return Action::Continue(Err(e)),
-                                        }
+                                if let Some(payload_val) = payload_thunk.try_get_materialized() {
+                                    match crate::builtins::require_dict(
+                                        "sequential expression",
+                                        payload_val,
+                                        current_expr.span.clone(),
+                                        &ctx,
+                                        current_expr.span.clone(),
+                                    )
+                                    .await
+                                    {
+                                        Ok(map) => map,
+                                        Err(e) => return Action::Continue(Err(e)),
+                                    }
+                                } else {
+                                    // Slow path: payload not yet forced. Push a continuation to unpack
+                                    // the payload after materialization, then force it through the CEK
+                                    // machine. This replaces the sync materialization call that bypassed the
+                                    // CEK continuation stack (B-396).
+                                    stack.push(Cont::VariantUnpackForSeq(Box::new(
+                                        VariantUnpackForSeqData {
+                                            static_key_set: static_key_set.clone(),
+                                            next_idx,
+                                            exprs: Arc::clone(&exprs),
+                                            env: Arc::clone(&env),
+                                            ctx: Arc::clone(&ctx),
+                                            seq_span: seq_span.clone(),
+                                            current_expr_span: current_expr.span.clone(),
+                                        },
+                                    )));
+                                    return Action::Materialize {
+                                        thunk: payload_thunk,
+                                        mat_span: Some(current_expr.span.clone()),
                                     };
-
-                                match crate::builtins::require_dict(
-                                    "sequential expression",
-                                    payload_val,
-                                    current_expr.span.clone(),
-                                    &ctx,
-                                    current_expr.span.clone(),
-                                ) {
-                                    Ok(map) => map,
-                                    Err(e) => return Action::Continue(Err(e)),
                                 }
                             }
                             _ => {
@@ -3196,6 +3299,73 @@ pub(crate) async fn apply_cont(
                             env,
                             ctx,
                         }
+                    }
+                }
+            }
+        }
+        Cont::VariantUnpackForSeq(data) => {
+            let VariantUnpackForSeqData {
+                static_key_set,
+                next_idx,
+                exprs,
+                env,
+                ctx,
+                seq_span,
+                current_expr_span,
+            } = *data;
+
+            // Result is the materialized payload value from the Variant
+            match result {
+                Err(e) => Action::Continue(Err(e)),
+                Ok(payload_val) => {
+                    // Unpack the payload dict using require_dict
+                    let map = match crate::builtins::require_dict(
+                        "sequential expression",
+                        payload_val,
+                        current_expr_span.clone(),
+                        &ctx,
+                        current_expr_span,
+                    )
+                    .await
+                    {
+                        Ok(map) => map,
+                        Err(e) => return Action::Continue(Err(e)),
+                    };
+
+                    // Insert static-key entries as lazy thunks into child_env.
+                    //
+                    // Sequential dict bindings use lazy semantics: named entries are
+                    // inserted as unevaluated thunks. They are forced only when accessed
+                    // by subsequent expressions. Dead bindings (never accessed) never fire,
+                    // which is the correct lazy evaluation behavior.
+                    let child_env =
+                        Arc::new(RwLock::new(Environment::with_parent(Arc::clone(&env))));
+
+                    {
+                        let mut env_write = child_env.write().unwrap();
+                        for (key, thunk_id) in map.into_iter() {
+                            if let Key::String(name) = key {
+                                if static_key_set.contains(name.as_ref()) {
+                                    let val_thunk = ctx.get_thunk(thunk_id);
+                                    env_write.insert(name.to_string(), val_thunk);
+                                }
+                            }
+                        }
+                    }
+
+                    // Proceed directly to the next expression with the populated child_env.
+                    let next_expr = &exprs[next_idx];
+                    stack.push(Cont::SequentialStep(Box::new(SequentialStepData {
+                        idx: next_idx,
+                        exprs: Arc::clone(&exprs),
+                        env: Arc::clone(&child_env),
+                        ctx: Arc::clone(&ctx),
+                        seq_span,
+                    })));
+                    Action::EvalCore {
+                        expr: Arc::clone(next_expr),
+                        env: child_env,
+                        ctx,
                     }
                 }
             }
@@ -3375,7 +3545,7 @@ pub(crate) async fn apply_cont(
 
                             // Pattern matched. If there is a guard, evaluate it.
                             if let Some(guard_expr) = &arm.guard {
-                                // Push a continuation to check the guard result
+                                // Push a continuation to check the guard result.
                                 stack.push(Cont::MatchGuardCheck(Box::new(MatchGuardCheckData {
                                     arm_idx: i,
                                     arms: Arc::clone(&arms),
@@ -3388,10 +3558,9 @@ pub(crate) async fn apply_cont(
                                     callable_invoked: false,
                                 })));
 
-                                // Evaluate the guard
                                 return Action::EvalCore {
                                     expr: Arc::clone(guard_expr),
-                                    env: final_env,
+                                    env: Arc::clone(&final_env),
                                     ctx,
                                 };
                             }
@@ -5337,7 +5506,8 @@ fn force_dict_tree_impl<'a>(
                     "force_dict_tree",
                     ctx,
                     crate::ast::Span::origin(),
-                )?;
+                )
+                .await?;
                 let dict_val = Value::Dict(flattened_map);
                 force_dict_tree_impl(&dict_val, ctx, visited).await
             }

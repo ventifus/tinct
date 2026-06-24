@@ -50,8 +50,6 @@ pub enum ConstructorTag {
     /// Structural variant — a dict with a single discriminant key.
     /// E.g., `[ok: v]` has tag `DictKey("ok")`.
     DictKey(String),
-    /// Type tag — matches by runtime type name (e.g., `Int`, `Str`).
-    TypeTag(String),
     /// Literal value — matches by exact value.
     LiteralInt(i64),
     LiteralBool(bool),
@@ -69,7 +67,6 @@ impl fmt::Display for ConstructorTag {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ConstructorTag::DictKey(k) => write!(f, "[{k}: _]"), // Used only in isolation; CoveragePattern::Display handles structured output
-            ConstructorTag::TypeTag(t) => write!(f, "{t}"),
             ConstructorTag::LiteralInt(n) => write!(f, "{n}"),
             ConstructorTag::LiteralBool(b) => write!(f, "{b}"),
             ConstructorTag::LiteralStr(s) => write!(f, "\"{s}\""),
@@ -245,8 +242,8 @@ impl ConstructorSignature {
     ///
     /// `tycon_env` is used to resolve `Type::TyCon(name)` and `Type::App(TyCon(name), _)`
     /// union members — e.g., `Seq[T]` or a user-defined type constructor. Builtin TyCons
-    /// with `builtin_type` set produce a `TypeTag` constructor; user-defined TyCons with
-    /// declared constructors produce `Variant` constructors. If `constructors` is empty
+    /// with `builtin_type` set produce a `Variant` constructor; user-defined TyCons with
+    /// declared constructors produce `Variant` constructors for each. If `constructors` is empty
     /// (pending population) and `builtin_type` is None, the member is treated as
     /// unrepresentable (skipped, returns `None`).
     pub fn from_union(members: &[Type], tycon_env: &TyConEnv) -> Option<Self> {
@@ -275,22 +272,22 @@ impl ConstructorSignature {
                         constructors.push((ConstructorTag::DictKey(combined), row.fields.len()));
                     }
                 }
-                Type::Int => constructors.push((ConstructorTag::TypeTag("Int".into()), 0)),
-                Type::Float => constructors.push((ConstructorTag::TypeTag("Float".into()), 0)),
-                Type::Str => constructors.push((ConstructorTag::TypeTag("String".into()), 0)),
+                Type::Int => constructors.push((ConstructorTag::Variant("Int".into()), 0)),
+                Type::Float => constructors.push((ConstructorTag::Variant("Float".into()), 0)),
+                Type::Str => constructors.push((ConstructorTag::Variant("String".into()), 0)),
                 Type::Bool => {
                     // Bool expands to two literal constructors — matches LiteralBool patterns.
-                    // TypeTag("Bool") would never match LiteralBool(true/false) patterns.
+                    // Variant("Bool") would never match LiteralBool(true/false) patterns.
                     constructors.push((ConstructorTag::LiteralBool(true), 0));
                     constructors.push((ConstructorTag::LiteralBool(false), 0));
                 }
                 Type::Number => {
                     // Number is not a constructor — it is a supertype of Int and Float.
-                    // Expand to the two concrete constructors so they match TypeTag("Int")
-                    // and TypeTag("Float") patterns (including the Number Or-pattern expansion
+                    // Expand to the two concrete constructors so they match Variant("Int")
+                    // and Variant("Float") patterns (including the Number Or-pattern expansion
                     // in ast_pattern_to_coverage).
-                    constructors.push((ConstructorTag::TypeTag("Int".into()), 0));
-                    constructors.push((ConstructorTag::TypeTag("Float".into()), 0));
+                    constructors.push((ConstructorTag::Variant("Int".into()), 0));
+                    constructors.push((ConstructorTag::Variant("Float".into()), 0));
                 }
                 Type::StringLiteral(s) => {
                     constructors.push((ConstructorTag::LiteralStr(s.clone()), 0));
@@ -332,7 +329,7 @@ impl ConstructorSignature {
                 }
                 // General TyCon / App(TyCon, _) handling: replaces the hardcoded Seq arm.
                 // Look up the type constructor name in tycon_env:
-                //   - Builtin TyCon (builtin_type is Some, e.g. "Seq", "Map"): emit TypeTag.
+                //   - Builtin TyCon (builtin_type is Some, e.g. "Seq", "Map"): emit Variant.
                 //   - User-defined TyCon with declared constructors: emit Variant for each.
                 //   - User-defined TyCon with no constructors (open type or nested dict type, see B-344): skip.
                 //   - Unknown TyCon (not in tycon_env): skip (open type, unrepresentable).
@@ -360,9 +357,9 @@ impl ConstructorSignature {
                         }
                         Some(def) if def.builtin_type.is_some() => {
                             // Builtin TyCon (e.g. Seq, Map, Handle) with no declared constructors.
-                            // Emit a TypeTag so TypeTag patterns (e.g. [Seq]:) can match it.
+                            // Emit a Variant so Variant patterns (e.g. [Seq]:) can match it.
                             let tag_name = def.builtin_type.as_deref().unwrap();
-                            constructors.push((ConstructorTag::TypeTag(tag_name.to_string()), 0));
+                            constructors.push((ConstructorTag::Variant(tag_name.to_string()), 0));
                         }
                         Some(_) => {
                             // TyCon found but constructors empty (open type or nested dict type, see B-344)
@@ -461,26 +458,108 @@ impl ConstructorSignature {
 ///
 /// Constructor patterns map to `Constructor { tag: Variant(tag), ... }`.
 /// Dict patterns map to `Constructor { tag: DictKey(key), sub_patterns: [payload_pat] }`.
-/// TypeAssertPending and TypeAssert patterns map to `Wildcard` (elaboration-pass concern).
-/// Wildcards, variables, and literals map to `Wildcard` or typed constructors.
+/// TypeAssert patterns for primitive types (Int, Float, Str, Bytes, Proxy) map to
+/// `Constructor { tag: Variant(...), arity: 0 }` — matching the constructors that
+/// `ConstructorSignature::from_union` produces for those same types. This keeps coverage
+/// analysis in sync so `[@Int _]: a  [@Float _]: b` is correctly seen as exhaustive for
+/// `Int | Float` without a trailing wildcard.
+/// TypeAssert patterns for nominal types (TyCon or App(TyCon, _)) are expanded to an
+/// Or of all their constructors when `tycon_env` is provided, enabling exhaustiveness
+/// checking for `n@TypeName` patterns in the same uniform way as explicit constructor patterns.
+/// TypeAssertPending and complex TypeAssert (records, unions, TypeVars) fall back to Wildcard.
 /// Guards are opaque — patterns with guards are treated as wildcards
 /// (Karachalias et al. 2015, §2.4).
-pub fn ast_pattern_to_coverage(pat: &ast::Pattern) -> CoveragePattern {
+pub fn ast_pattern_to_coverage(
+    pat: &ast::Pattern,
+    tycon_env: Option<&crate::type_def::TyConEnv>,
+) -> CoveragePattern {
     match pat {
         ast::Pattern::Wildcard | ast::Pattern::Pin(_) => CoveragePattern::Wildcard,
-        ast::Pattern::TypeTag(tag) => {
-            // TypeTag patterns match by runtime type name (Int, Str, Seq, Dict, etc.).
-            // Map to CoveragePattern::Constructor with ConstructorTag::TypeTag so the
-            // exhaustiveness checker can reason about disjoint type tags.
-            CoveragePattern::Constructor {
-                tag: ConstructorTag::TypeTag(tag.clone()),
-                sub_patterns: vec![],
-            }
+        ast::Pattern::TypeAssertPending { annotation, inner } => {
+            // Resolve the pending annotation the same way lower_pattern does,
+            // so coverage sees the actual type rather than treating it as wildcard.
+            let resolved_type = if let ast::Annotation::Simple(name) = &annotation.node {
+                crate::lower::annotation_name_to_type(name)
+            } else {
+                crate::type_def::Type::Unknown
+            };
+            ast_pattern_to_coverage(
+                &ast::Pattern::TypeAssert {
+                    resolved_type,
+                    inner: inner.clone(),
+                },
+                tycon_env,
+            )
         }
-        ast::Pattern::TypeAssertPending { .. } | ast::Pattern::TypeAssert { .. } => {
-            // TypeAssert/TypeAssertPending: treat as wildcard for coverage analysis.
-            // Full type-based exhaustiveness is deferred to the elaboration pass.
-            CoveragePattern::Wildcard
+        ast::Pattern::TypeAssert { resolved_type, inner } => {
+            let inner_sub = inner.as_ref().map_or_else(Vec::new, |p| {
+                vec![ast_pattern_to_coverage(&p.node, tycon_env)]
+            });
+
+            match resolved_type {
+                // Primitive builtin types: single Variant constructor tag matching from_union's output.
+                crate::type_def::Type::Int | crate::type_def::Type::IntLiteral(_) => {
+                    CoveragePattern::Constructor {
+                        tag: ConstructorTag::Variant("Int".into()),
+                        sub_patterns: inner_sub,
+                    }
+                }
+                crate::type_def::Type::Float => CoveragePattern::Constructor {
+                    tag: ConstructorTag::Variant("Float".into()),
+                    sub_patterns: inner_sub,
+                },
+                crate::type_def::Type::Str | crate::type_def::Type::StringLiteral(_) => {
+                    CoveragePattern::Constructor {
+                        tag: ConstructorTag::Variant("String".into()),
+                        sub_patterns: inner_sub,
+                    }
+                }
+                crate::type_def::Type::Bytes => CoveragePattern::Constructor {
+                    tag: ConstructorTag::Variant("Bytes".into()),
+                    sub_patterns: inner_sub,
+                },
+                crate::type_def::Type::Proxy => CoveragePattern::Constructor {
+                    tag: ConstructorTag::Variant("Proxy".into()),
+                    sub_patterns: inner_sub,
+                },
+                // Nominal type (TyCon or App(TyCon, _)): expand to Or of all constructors.
+                ty => {
+                    let tycon_name = match ty {
+                        crate::type_def::Type::TyCon(name) => Some(name.as_str()),
+                        crate::type_def::Type::App(f, _) => {
+                            if let crate::type_def::Type::TyCon(name) = f.as_ref() {
+                                Some(name.as_str())
+                            } else {
+                                None
+                            }
+                        }
+                        _ => None,
+                    };
+                    if let (Some(name), Some(env)) = (tycon_name, tycon_env) {
+                        if let Some(def) = env.get(name) {
+                            if !def.constructors.is_empty() {
+                                // Expand nominal type to Or of all its constructor variants.
+                                // TyConDef.constructors stores already-qualified tags
+                                // (e.g., "Result.Ok"), so use them directly.
+                                let branches: Vec<CoveragePattern> = def
+                                    .constructors
+                                    .iter()
+                                    .map(|(ctor, _arity)| CoveragePattern::Constructor {
+                                        tag: ConstructorTag::Variant(ctor.clone()),
+                                        sub_patterns: inner_sub.clone(),
+                                    })
+                                    .collect();
+                                if branches.len() == 1 {
+                                    return branches.into_iter().next().unwrap();
+                                }
+                                return CoveragePattern::Or(branches);
+                            }
+                        }
+                    }
+                    // Unknown TyCon or complex type (Union, Record, Function, etc.): Wildcard.
+                    CoveragePattern::Wildcard
+                }
+            }
         }
         ast::Pattern::Literal(lit) => {
             let tag = match lit {
@@ -503,7 +582,7 @@ pub fn ast_pattern_to_coverage(pat: &ast::Pattern) -> CoveragePattern {
                 let (key, sub_pat) = &fields[0];
                 CoveragePattern::Constructor {
                     tag: ConstructorTag::DictKey(key.clone()),
-                    sub_patterns: vec![ast_pattern_to_coverage(&sub_pat.node)],
+                    sub_patterns: vec![ast_pattern_to_coverage(&sub_pat.node, tycon_env)],
                 }
             } else if fields.is_empty() {
                 // Empty dict pattern — treat as wildcard (matches any dict)
@@ -519,7 +598,7 @@ pub fn ast_pattern_to_coverage(pat: &ast::Pattern) -> CoveragePattern {
                     .join("\x00");
                 let sub_pats: Vec<CoveragePattern> = sorted_fields
                     .iter()
-                    .map(|(_, p)| ast_pattern_to_coverage(&p.node))
+                    .map(|(_, p)| ast_pattern_to_coverage(&p.node, tycon_env))
                     .collect();
                 CoveragePattern::Constructor {
                     tag: ConstructorTag::DictKey(combined_key),
@@ -534,7 +613,7 @@ pub fn ast_pattern_to_coverage(pat: &ast::Pattern) -> CoveragePattern {
         }
         ast::Pattern::Constructor { tag, binding } => {
             let sub_patterns = match binding {
-                Some(inner) => vec![ast_pattern_to_coverage(&inner.node)],
+                Some(inner) => vec![ast_pattern_to_coverage(&inner.node, tycon_env)],
                 // D-1: [Tag]: with no binding is used for both unit variants (arity 0)
                 // and payload variants (arity 1). The sub_patterns vec is left empty here
                 // and will be fixed up by normalize_constructor_arities (called from
@@ -550,7 +629,7 @@ pub fn ast_pattern_to_coverage(pat: &ast::Pattern) -> CoveragePattern {
         ast::Pattern::Or(alternatives) => {
             let alts: Vec<CoveragePattern> = alternatives
                 .iter()
-                .map(|p| ast_pattern_to_coverage(&p.node))
+                .map(|p| ast_pattern_to_coverage(&p.node, tycon_env))
                 .collect();
             CoveragePattern::Or(alts)
         }
@@ -623,7 +702,7 @@ fn normalize_constructor_arities(
                     }
                 }
             } else {
-                // Non-Variant constructor (DictKey, TypeTag, Literal, Bottom) — recurse only.
+                // Non-Variant constructor (DictKey, Literal, Bottom) — recurse only.
                 CoveragePattern::Constructor {
                     tag: tag.clone(),
                     sub_patterns: sub_patterns
@@ -1418,12 +1497,12 @@ mod tests {
     #[test]
     fn test_type_tag_int_str_coverage() {
         let sig = sig(&[
-            (ConstructorTag::TypeTag("Int".into()), 0),
-            (ConstructorTag::TypeTag("String".into()), 0),
+            (ConstructorTag::Variant("Int".into()), 0),
+            (ConstructorTag::Variant("String".into()), 0),
         ]);
         let patterns = vec![
-            con(ConstructorTag::TypeTag("Int".into()), vec![]),
-            con(ConstructorTag::TypeTag("String".into()), vec![]),
+            con(ConstructorTag::Variant("Int".into()), vec![]),
+            con(ConstructorTag::Variant("String".into()), vec![]),
         ];
         let guards = vec![false, false];
         let result = check_coverage(&patterns, &sig, &guards);
@@ -1433,10 +1512,10 @@ mod tests {
     #[test]
     fn test_type_tag_missing() {
         let sig = sig(&[
-            (ConstructorTag::TypeTag("Int".into()), 0),
-            (ConstructorTag::TypeTag("String".into()), 0),
+            (ConstructorTag::Variant("Int".into()), 0),
+            (ConstructorTag::Variant("String".into()), 0),
         ]);
-        let patterns = vec![con(ConstructorTag::TypeTag("Int".into()), vec![])];
+        let patterns = vec![con(ConstructorTag::Variant("Int".into()), vec![])];
         let guards = vec![false];
         let result = check_coverage(&patterns, &sig, &guards);
         assert!(!result.exhaustive);
@@ -1448,7 +1527,7 @@ mod tests {
     #[test]
     fn test_ast_wildcard_to_coverage() {
         let pat = ast::Pattern::Wildcard;
-        let coverage = ast_pattern_to_coverage(&pat);
+        let coverage = ast_pattern_to_coverage(&pat, None);
         assert_eq!(coverage, CoveragePattern::Wildcard);
     }
 
@@ -1457,7 +1536,7 @@ mod tests {
         // T-1154: Pattern::Variable retired; bare names are now Pattern::Pin.
         // Pin patterns map to Wildcard for coverage purposes (same as before).
         let pat = ast::Pattern::Pin("x".to_string());
-        let coverage = ast_pattern_to_coverage(&pat);
+        let coverage = ast_pattern_to_coverage(&pat, None);
         assert_eq!(coverage, CoveragePattern::Wildcard);
     }
 
@@ -1485,7 +1564,7 @@ mod tests {
             },
             inner: None,
         };
-        let coverage = ast_pattern_to_coverage(&pat);
+        let coverage = ast_pattern_to_coverage(&pat, None);
         assert_eq!(coverage, CoveragePattern::Wildcard);
     }
 
@@ -1515,7 +1594,7 @@ mod tests {
             )],
             rest: true,
         };
-        let coverage = ast_pattern_to_coverage(&pat);
+        let coverage = ast_pattern_to_coverage(&pat, None);
         assert_eq!(
             coverage,
             CoveragePattern::Constructor {
@@ -1548,7 +1627,7 @@ mod tests {
                 span,
             })),
         };
-        let coverage = ast_pattern_to_coverage(&pat);
+        let coverage = ast_pattern_to_coverage(&pat, None);
         assert_eq!(
             coverage,
             CoveragePattern::Constructor {
@@ -1590,7 +1669,7 @@ mod tests {
                 span,
             },
         ]);
-        let coverage = ast_pattern_to_coverage(&pat);
+        let coverage = ast_pattern_to_coverage(&pat, None);
         match &coverage {
             CoveragePattern::Or(alts) => {
                 assert_eq!(alts.len(), 2);
@@ -1630,8 +1709,8 @@ mod tests {
                 .expect("all members are representable");
         assert_eq!(sig.constructors.len(), 2);
         let tags = sig.tags();
-        assert!(tags.contains(&ConstructorTag::TypeTag("Int".to_string())));
-        assert!(tags.contains(&ConstructorTag::TypeTag("String".to_string())));
+        assert!(tags.contains(&ConstructorTag::Variant("Int".to_string())));
+        assert!(tags.contains(&ConstructorTag::Variant("String".to_string())));
     }
 
     #[test]
@@ -1685,8 +1764,8 @@ mod tests {
             "Bool must produce LiteralBool(false)"
         );
         assert!(
-            !tags.contains(&ConstructorTag::TypeTag("Bool".to_string())),
-            "Bool must NOT produce TypeTag(\"Bool\") — patterns use LiteralBool"
+            !tags.contains(&ConstructorTag::Variant("Bool".to_string())),
+            "Bool must NOT produce Variant(\"Bool\") — patterns use LiteralBool"
         );
     }
 
@@ -1700,16 +1779,16 @@ mod tests {
                 .expect("Number is representable");
         let tags = sig.tags();
         assert!(
-            tags.contains(&ConstructorTag::TypeTag("Int".to_string())),
-            "Number must produce TypeTag(\"Int\")"
+            tags.contains(&ConstructorTag::Variant("Int".to_string())),
+            "Number must produce Variant(\"Int\")"
         );
         assert!(
-            tags.contains(&ConstructorTag::TypeTag("Float".to_string())),
-            "Number must produce TypeTag(\"Float\")"
+            tags.contains(&ConstructorTag::Variant("Float".to_string())),
+            "Number must produce Variant(\"Float\")"
         );
         assert!(
-            !tags.contains(&ConstructorTag::TypeTag("Number".to_string())),
-            "Number must NOT produce TypeTag(\"Number\") — no such constructor"
+            !tags.contains(&ConstructorTag::Variant("Number".to_string())),
+            "Number must NOT produce Variant(\"Number\") — no such constructor"
         );
     }
 

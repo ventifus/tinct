@@ -36,53 +36,69 @@ pub fn lower(
     Spanned::new(core_expr, span)
 }
 
-/// Lower a `Pattern`, converting `TypeAssertPending → TypeAssert` using the type annotation
-/// table populated by the type checker's elaboration pass (B-338).
+/// Resolve an annotation name to a Type for TypeAssertPending pattern lowering.
 ///
-/// Recursively walks all sub-patterns so nested `TypeAssertPending` nodes (e.g., inside
-/// `Or`, `Dict`, `Seq`, or `Constructor` bindings) are also converted.
+/// Mirrors typecheck_annot.rs::resolve_type_name for the builtin type names prelude
+/// uses in [@Type _]: patterns. Used when TypeAnnotationTable.pattern_types has no
+/// entry (which is always the case currently, as populate is not yet wired up).
+/// Unknown is the accept-all fallback for unrecognized names (--no-typecheck, macros).
+pub(crate) fn annotation_name_to_type(name: &str) -> crate::type_def::Type {
+    use crate::type_def::{Row, RowTail, Type};
+    match name {
+        "Int" => Type::Int,
+        "Float" => Type::Float,
+        "String" | "Str" => Type::Str,
+        "Bool" => Type::Bool,
+        "Number" | "Num" => Type::Number,
+        "Bytes" => Type::Bytes,
+        "Proxy" => Type::Proxy,
+        // Type::seq(Unknown) = Type::App(TyCon("Seq"), Unknown) — matches Seq.Cons/Seq.Nil.
+        "Seq" => Type::seq(Type::Unknown),
+        // Empty record = "any dict" under BAS width subtyping.
+        "Dict" | "Record" | "Null" => Type::Record(Row {
+            fields: std::collections::BTreeMap::new(),
+            tail: RowTail::Empty,
+        }),
+        // Variadic 0-required-param function = any callable (Function or Builtin).
+        "Fn" | "Function" | "Builtin" => Type::Function {
+            params: vec![],
+            ret: Box::new(Type::Top),
+            variadic: true,
+            required_count: 0,
+        },
+        _ => Type::Unknown,
+    }
+}
+
+/// Lower a `Pattern`, converting `TypeAssertPending → TypeAssert`.
 ///
-/// For `TypeAssertPending`:
-/// - Looks up `annotation.span` in `types.pattern_types` (populated by `record_pattern_elaborations`)
-/// - If found: produces `Pattern::TypeAssert { resolved_type, inner: lower(inner) }`
-/// - If not found (type checking was skipped, or macro-synthesized pattern): leaves as
-///   `TypeAssertPending` so the runtime fallback in `eval.rs` is still invoked for the
-///   simple-name cases it handles.
+/// TypeAssertPending is ALWAYS converted to TypeAssert — never left as-is.
+/// The TypeAnnotationTable.pattern_types is checked first (populated by the type
+/// checker when it elaborates patterns). If not found, annotation_name_to_type
+/// provides a direct name→Type mapping that mirrors what the type checker would
+/// produce. Unknown is the fallback for unrecognized names (accept-all).
 ///
-/// For all other pattern variants: returns a structurally identical pattern with any
-/// sub-patterns recursively lowered.
+/// Recursively walks all sub-patterns so nested TypeAssertPending nodes are
+/// also converted (e.g., inside Or, Dict, Seq, Constructor bindings).
 fn lower_pattern(pat: &Pattern, types: &TypeAnnotationTable) -> Pattern {
     match pat {
         Pattern::TypeAssertPending { annotation, inner } => {
-            // Look up the resolved type by annotation span.
-            match types.get_pattern(&annotation.span) {
-                Some(resolved_type) => {
-                    // Elaborate inner sub-pattern recursively.
-                    let elaborated_inner = inner.as_ref().map(|boxed| {
-                        Box::new(Spanned::new(
-                            lower_pattern(&boxed.node, types),
-                            boxed.span.clone(),
-                        ))
-                    });
-                    Pattern::TypeAssert {
-                        resolved_type: resolved_type.clone(),
-                        inner: elaborated_inner,
-                    }
+            let resolved_type = types.get_pattern(&annotation.span).cloned().unwrap_or_else(|| {
+                if let crate::ast::Annotation::Simple(name) = &annotation.node {
+                    annotation_name_to_type(name)
+                } else {
+                    crate::type_def::Type::Unknown
                 }
-                None => {
-                    // Type checking was skipped or this is a macro-synthesized pattern.
-                    // Keep as TypeAssertPending; the runtime fallback handles Simple names.
-                    let lowered_inner = inner.as_ref().map(|boxed| {
-                        Box::new(Spanned::new(
-                            lower_pattern(&boxed.node, types),
-                            boxed.span.clone(),
-                        ))
-                    });
-                    Pattern::TypeAssertPending {
-                        annotation: annotation.clone(),
-                        inner: lowered_inner,
-                    }
-                }
+            });
+            let lowered_inner = inner.as_ref().map(|boxed| {
+                Box::new(Spanned::new(
+                    lower_pattern(&boxed.node, types),
+                    boxed.span.clone(),
+                ))
+            });
+            Pattern::TypeAssert {
+                resolved_type,
+                inner: lowered_inner,
             }
         }
 
@@ -142,9 +158,7 @@ fn lower_pattern(pat: &Pattern, types: &TypeAnnotationTable) -> Pattern {
         },
 
         // Leaf patterns: no sub-patterns to lower.
-        Pattern::Wildcard | Pattern::Literal(_) | Pattern::Pin(_) | Pattern::TypeTag(_) => {
-            pat.clone()
-        }
+        Pattern::Wildcard | Pattern::Literal(_) | Pattern::Pin(_) => pat.clone(),
 
         // T-1140: Predicate patterns carry a SurfaceNode — passed through unchanged.
         // The SurfaceNode is lowered on demand inside MatchDispatch at eval time,
@@ -399,18 +413,35 @@ fn lower_expr(
         SurfaceExpression::Decl(decl) => {
             match decl.as_ref() {
                 crate::ast::SurfaceDeclaration::InstanceDecl { arms, .. } => {
-                    if !arms.is_empty() {
-                        let method_entries = &arms[0].1;
-                        let core_entries: Vec<Spanned<CoreEntry>> = method_entries
-                            .iter()
-                            .map(|me| {
-                                let key =
-                                    me.node.key.as_ref().map(|k| Arc::new(lower(k, res, types)));
-                                let value = Arc::new(lower(&me.node.value, res, types));
-                                Spanned::new(CoreEntry { key, value }, me.span.clone())
-                            })
-                            .collect();
-                        return CoreExpr::Dict(core_entries);
+                    // Emit RegisterMethods: all arms across ALL instance arms (not just arms[0]).
+                    // Named instances (e.g., `EquatableInt: [instance ...]`) produce null just
+                    // like anonymous ones — instances are purely dispatch registrations.
+                    let mut register_arms: Vec<(
+                        Vec<Option<String>>,
+                        String,
+                        Arc<Spanned<CoreExpr>>,
+                    )> = Vec::new();
+                    for (pattern, method_entries) in arms {
+                        let dispatch_tags = extract_dispatch_tags(&pattern.expr);
+                        for me in method_entries {
+                            // Extract method name from the entry key (e.g., "+:", "=:")
+                            let method_name = match me.node.key.as_ref() {
+                                Some(key_node) => match &key_node.expr {
+                                    SurfaceExpression::Str(s) => s.clone(),
+                                    SurfaceExpression::VarRef { name, .. } => name.clone(),
+                                    SurfaceExpression::Annotated { name, .. } => name.clone(),
+                                    _ => continue, // skip computed/unrecognized keys
+                                },
+                                None => continue, // skip positional entries
+                            };
+                            let lowered_body = Arc::new(lower(&me.node.value, res, types));
+                            register_arms.push((dispatch_tags.clone(), method_name, lowered_body));
+                        }
+                    }
+                    if !register_arms.is_empty() {
+                        return CoreExpr::RegisterMethods {
+                            arms: register_arms,
+                        };
                     }
                     CoreExpr::Placeholder
                 }
@@ -571,7 +602,49 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
         },
         CoreExpr::Error(span) => SurfaceExpression::Error(span.clone()),
         CoreExpr::Placeholder => SurfaceExpression::Placeholder,
+        CoreExpr::RegisterMethods { .. } => SurfaceExpression::Placeholder,
     }
+}
+
+/// Extract dispatch type tags from an instance arm pattern like `[let a@Int b@Float c]`.
+///
+/// Returns one `Option<String>` per binding:
+/// - `Some("Int")` if the binding has a concrete uppercase type annotation
+/// - `None` if unannotated or annotated with a TypeVar/complex annotation
+///
+/// Used by RegisterMethods emission in lower.rs to build the dispatch_tags for each arm.
+/// The dispatcher uses `min(dispatch_tags.len(), args.len())` at call time, so trailing
+/// None entries (like the return-type param `c` in Addable) are harmlessly ignored.
+pub(crate) fn extract_dispatch_tags(arm_pattern: &SurfaceExpression) -> Vec<Option<String>> {
+    let bindings = match arm_pattern {
+        SurfaceExpression::LetDecl { bindings } => bindings,
+        _ => return vec![],
+    };
+    bindings
+        .iter()
+        .map(|binding_spanned| {
+            // Each binding is Annotated { name, annotation } or VarRef { name } or Str(name)
+            match &binding_spanned.expr {
+                SurfaceExpression::Annotated { annotation, .. } => {
+                    // Extract the type name from Simple annotations with uppercase names.
+                    use crate::ast::Annotation;
+                    match &annotation.node {
+                        Annotation::Simple(type_name)
+                            if type_name
+                                .chars()
+                                .next()
+                                .map(|c| c.is_uppercase())
+                                .unwrap_or(false) =>
+                        {
+                            Some(type_name.clone())
+                        }
+                        _ => None,
+                    }
+                }
+                _ => None, // Unannotated binding
+            }
+        })
+        .collect()
 }
 
 /// Extract the type name from a dict entry key for TypeAlias qualified tags.
