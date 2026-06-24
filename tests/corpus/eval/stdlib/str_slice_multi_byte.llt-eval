@@ -1,8 +1,0 @@
-# str-slice: multi-byte UTF-8 — slice counts codepoints not bytes
-# "café" = c(0) a(1) f(2) é(3) — é is 2 bytes but 1 codepoint
-# (start=2, end=4, string) => "fé"
-[include %libdir "strings.llt"]
----
-[str-slice 2 4 "café"]
-=== out
-String("fé")

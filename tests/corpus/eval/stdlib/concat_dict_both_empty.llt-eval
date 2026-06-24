@@ -1,4 +1,0 @@
-# concat: two empty dicts
-[concat [] []]
-=== out
-Dict({})

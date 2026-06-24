@@ -70,7 +70,7 @@ fn main() {
         let input = input.trim();
 
         // Run typecheck (this handles parsing internally)
-        let typecheck_result = tinct::typecheck_source(input);
+        let typecheck_result = tinct::async_rt::block_on_anywhere(tinct::typecheck_source(input));
 
         if typecheck_result.is_ok() {
             // No warnings anymore — remove === warn section

@@ -1,4 +1,0 @@
-# or: returns first truthy bool value
-[or true false]
-=== out
-Bool(true)

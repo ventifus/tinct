@@ -133,7 +133,16 @@ For macros that follow the gensym convention — using `gensym` for every introd
 
 Macros that introduce literal binding names (e.g. `[quote [let [x: ...] ...]]` with a literal `x`) are **not** hygienic: the literal name `x` will capture any user variable of the same name in scope at the call site. The `inject:` escape hatch is the intentional form of this pattern — it deliberately introduces names into the caller's scope by convention, documented via `macro-injects`.
 
-`inject:` provides a controlled anaphoric escape hatch: `inject: it: default-expr` deliberately introduces `it` into the caller's scope by convention. The `macro-injects` builtin lets callers reflect on which bindings a macro will inject.
+`inject:` provides a controlled anaphoric escape hatch. Declare injected names via an annotation on the params: `[@[inject: it] [let ...]]` for a single name, or `[@[inject: ["it" "x"]] [let ...]]` for multiple names. The `macro-injects` builtin returns a `Seq` of the declared inject names, letting callers reflect on which bindings a macro will introduce into their scope.
+
+```tinct
+# Anaphoric `aif` — introduces `it` bound to the condition result
+[macro aif [@[inject: it] [let cond then else]]
+  [quote [let [it: [unquote cond]] [if it [unquote then] [unquote else]]]]]
+
+# Reflect: [macro-injects "aif"] => Seq("it")
+# Reflect: [macro-injects "when"] => Seq.Nil  (gensym-hygienic, no inject)
+```
 
 ### AST-as-Dict Representation
 

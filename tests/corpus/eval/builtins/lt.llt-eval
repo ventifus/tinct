@@ -1,4 +1,0 @@
-# < : less-than comparison
-[< 3 10]
-=== out
-Bool(true)

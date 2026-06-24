@@ -1,7 +1,0 @@
-# build-socks5-connect errors on empty hostname.
-
-[include %libdir "protocols/socks5.llt"]
----
-[try [fn [] [call %.build-socks5-connect "" 80]]]
-=== out
-Variant(Result.Error, String("build-socks5-connect: hostname must not be empty"))

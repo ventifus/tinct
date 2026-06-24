@@ -1,6 +1,0 @@
-# dirname: get directory portion of path
-[include %libdir "path.llt"]
----
-[call %.dirname "/foo/bar.txt"]
-=== out
-String("/foo")

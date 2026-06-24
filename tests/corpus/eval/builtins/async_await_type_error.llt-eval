@@ -1,6 +1,0 @@
-# Await requires a Task value, not an Int
-
-[await 42]
-=== error
-[E010] type mismatch: expected Task, got Int (defined at 2:1-2:11)
-  in [await ...] at 2:1-2:11

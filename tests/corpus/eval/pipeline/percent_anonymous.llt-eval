@@ -1,8 +1,0 @@
-# Test bare % — anonymous pipeline variable as passthrough.
-# The second document returns % directly (no field access), so the entire
-# first document value is forwarded unchanged.
-[x: 1]
----
-%
-=== out
-Dict({"x": Int(1)})

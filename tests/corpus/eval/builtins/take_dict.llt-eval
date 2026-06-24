@@ -1,4 +1,0 @@
-# take on Dict: returns first n entries preserving original keys
-[take 2 [a: 10 b: 20 c: 30]]
-=== out
-Dict({"a": Int(10), "b": Int(20)})

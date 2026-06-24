@@ -1,7 +1,0 @@
-# C-COVERAGE success: required param covered by name when positional doesn't reach it
-[
-  f: [fn [let a b@[default: 2] c] [+ a [+ b c]]]
-  result: [f 1 c: 5]
-]
-=== out
-Dict({"f": Function(a, b, c), "result": Int(8)})

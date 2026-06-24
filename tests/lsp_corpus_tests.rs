@@ -90,7 +90,7 @@ fn get_diagnostics_for_source(source: &str) -> Vec<Diagnostic> {
     use tinct::lsp::document::DocumentState;
 
     // Create minimal environment for LSP analysis
-    let stdlib_env = tinct::create_stdlib_env().expect("Failed to create stdlib environment");
+    let stdlib_env = tinct::async_rt::block_on_anywhere(tinct::create_stdlib_env()).expect("Failed to create stdlib environment");
     let type_stage_env = tinct::build_type_stage_env().unwrap_or_else(|| Arc::clone(&stdlib_env));
     let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
         .expect("Failed to open current directory");
@@ -270,7 +270,7 @@ fn test_lsp_unopened_document_hover() {
     let doc = load_doc_from_uri(&uri).expect("Failed to load unopened document");
 
     // Create eval context for macro expansion
-    let stdlib_env = tinct::create_stdlib_env().expect("Failed to create stdlib environment");
+    let stdlib_env = tinct::async_rt::block_on_anywhere(tinct::create_stdlib_env()).expect("Failed to create stdlib environment");
     let type_stage_env = tinct::build_type_stage_env().unwrap_or_else(|| Arc::clone(&stdlib_env));
     let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
         .expect("Failed to open current directory");

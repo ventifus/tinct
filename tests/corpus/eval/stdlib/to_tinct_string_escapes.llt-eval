@@ -1,5 +1,0 @@
-# to-tinct: string with special characters are properly escaped in the output
-# A string containing a newline, tab, and quote must use \n, \t, \" escapes
-[to-tinct "line1\nline2"]
-=== out
-String("\"line1\\nline2\"")

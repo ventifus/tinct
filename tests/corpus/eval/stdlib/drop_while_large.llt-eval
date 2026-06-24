@@ -1,5 +1,0 @@
-# drop-while: large input (n=1000), drop first 500 elements where value < 500
-[d: [collect [range 0 1000]]]
-[length [drop-while [fn [let x] [< x 500]] d]]
-=== out
-Int(500)

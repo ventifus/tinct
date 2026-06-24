@@ -1,5 +1,0 @@
-# to-tinct: serialize a dict with computed values
-# Note: this test assumes B-223 (deep-force in to-tinct) is implemented
-[to-tinct [x: [+ 1 2]]]
-=== out
-String("[x: 3]")

@@ -1,7 +1,0 @@
-# recv type error: non-Channel argument
-# Phase 3: ensures recv validates Channel type
-
-[recv 42]
-=== error
-[E010] type mismatch: expected Channel, BroadcastChannel, or OneshotReceiver, got Int (defined at 3:1-3:10)
-  in [recv ...] at 3:1-3:10

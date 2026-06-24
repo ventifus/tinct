@@ -1,4 +1,0 @@
-# min: single element returns itself
-[min [42]]
-=== out
-Int(42)

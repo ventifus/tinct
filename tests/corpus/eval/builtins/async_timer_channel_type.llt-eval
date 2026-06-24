@@ -1,7 +1,0 @@
-# timer-channel requires a %clock capability (ClockCap) and interval in ms.
-# This test verifies the timer-channel function is callable via type-of on the function itself.
-# Testing with actual %clock requires CLI --cap-clock injection, not available in corpus.
-
-[type-of timer-channel]
-=== out
-String("Function")

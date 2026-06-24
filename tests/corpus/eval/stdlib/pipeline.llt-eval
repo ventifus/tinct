@@ -1,4 +1,0 @@
-# pipeline: thread a value through a series of functions (5*2+1=11)
-[-> 5 [fn [let x] [* x 2]] [fn [let x] [+ x 1]]]
-=== out
-Int(11)

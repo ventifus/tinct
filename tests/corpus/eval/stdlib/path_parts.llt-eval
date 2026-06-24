@@ -1,6 +1,0 @@
-# path-parts: split path into components
-[include %libdir "path.llt"]
----
-[call %.path-parts "a/b/c.txt"]
-=== out
-Dict({0: String("a"), 1: String("b"), 2: String("c.txt")})

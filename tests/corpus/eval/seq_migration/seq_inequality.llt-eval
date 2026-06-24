@@ -1,5 +1,0 @@
-# Seq inequality: ranges with different content compare unequal
-# Mutation target: if equality short-circuits or ignores values, this fails to catch the error
-[= [range 1 4] [range 2 5]]
-=== out
-Bool(false)

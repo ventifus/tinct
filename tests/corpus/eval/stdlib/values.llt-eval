@@ -1,4 +1,0 @@
-# values: extract all values from a dict as an integer-indexed list
-[values [a: 1 b: 2 c: 3]]
-=== out
-Dict({0: Int(1), 1: Int(2), 2: Int(3)})

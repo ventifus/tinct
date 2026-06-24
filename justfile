@@ -35,8 +35,8 @@ tinct_max_memory := "10200547328"
 # Common container run flags
 # target/ is a bind mount so binaries land on the host (symlinkable from ~/.local/bin)
 # cargo registry cache stays a named volume — no need to expose it on the host
-run_flags := "--rm --memory " + container_memory + timeout_flag + " -v .:/workspace:z -v ./target:/workspace/target:z -v " + project_name + "-cargo:/usr/local/cargo/registry -w /workspace -e RUST_BACKTRACE=1"
-test_run_flags := "--rm --memory " + container_memory + test_timeout_flag + " -v .:/workspace:z -v ./target:/workspace/target:z -v " + project_name + "-cargo:/usr/local/cargo/registry -w /workspace -e RUST_BACKTRACE=1"
+run_flags := "--rm --memory " + container_memory + timeout_flag + " -v .:/workspace:z -v ./target:/workspace/target:z -v " + project_name + "-cargo:/usr/local/cargo/registry -w /workspace -e RUST_BACKTRACE=full"
+test_run_flags := "--rm --memory " + container_memory + test_timeout_flag + " -v .:/workspace:z -v ./target:/workspace/target:z -v " + project_name + "-cargo:/usr/local/cargo/registry -w /workspace -e RUST_BACKTRACE=full"
 
 # Default recipe - show available commands
 default:
@@ -366,6 +366,15 @@ versions:
     {{container}} run {{run_flags}} --network=host \
         -e RUST_VERSION={{rust_version}} \
         {{rust_image}} sh -c "ulimit -s unlimited && cargo run --bin tinct -- --max-memory {{tinct_max_memory}} run -o raw --cap-net nc=static.rust-lang.org:443 --cap-net nc=crates.io:443 --profile samples/versions-spans.llt-stream samples/versions.llt && (cargo run --release --bin tinct -- --max-memory {{tinct_max_memory}} run -i stream -o json scripts/profile/trace.llt < samples/versions-spans.llt-stream > samples/versions-trace.json 2>/dev/null || echo 'note: profiling trace skipped')"
+
+# Generate Rust builtin registration files from tinct type declarations.
+# Reads doc/whatif/string-redesign/generator/builtin_*.llt, emits corresponding *.rs files.
+# The tinct declarations are the authoritative source; Rust output is derived from them.
+# Uses the installed tinct release binary (tinct in $PATH) — not the in-tree build.
+generate-builtins:
+    {{container}} run {{run_flags}} {{rust_image}} cargo run --bin tinct -- --max-memory {{tinct_max_memory}} run -o raw \
+        --cap-fs gendir=doc/whatif/string-redesign/generator:rwl \
+        doc/whatif/string-redesign/generator/generate.llt
 
 # Generate stdlib API reference from @[doc: "..."] annotations.
 # Writes one file per module to doc/lib/<module>.md.

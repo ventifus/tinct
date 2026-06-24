@@ -1,5 +1,0 @@
-# foldr: right fold (fold over reversed list)
-# f receives (accumulator, element) just like reduce
-[foldr [fn [let acc x] [append x acc]] [] [1 2 3]]
-=== out
-Dict({0: Int(3), 1: Int(2), 2: Int(1)})

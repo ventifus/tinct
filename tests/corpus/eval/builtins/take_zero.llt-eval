@@ -1,4 +1,0 @@
-# take: taking zero elements returns empty dict
-[collect [take 0 [range 0]]]
-=== out
-Dict({})

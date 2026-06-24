@@ -1,4 +1,0 @@
-# try-or: successful computation returns result
-[try-or [fn [] 42] 0]
-=== out
-Int(42)

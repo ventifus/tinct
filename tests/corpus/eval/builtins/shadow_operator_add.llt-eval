@@ -1,9 +1,0 @@
-# Shadow + with a custom version that multiplies instead
-# The real + would return 7 for (3 + 4), but our version returns 12
---- uses: ["core"]
-[
-  +: [fn [let a b] [builtin-mul a b]]
-  result: [+ 3 4]
-]
-=== out
-Dict({"+": Function(a, b), "result": Int(12)})

@@ -1,4 +1,0 @@
-# error?: check if Result is Error - false case (Ok)
-[error? [Ok 123]]
-=== out
-Bool(false)

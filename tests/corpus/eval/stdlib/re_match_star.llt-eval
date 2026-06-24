@@ -1,9 +1,0 @@
-# Test star quantifier (not yet implemented - using literal match for now)
-[include %libdir "regex.llt"]
-
----
-
-[call %.re-match "aaa" "aaab"]
-
-=== out
-Bool(true)

@@ -107,7 +107,7 @@
   ipv6-canonical: [fn [let b@[Bytes 16]]
     # Extract 8 × 16-bit groups
     [groups: [collect [map [fn [let i]
-                 [uint16 NetworkEndian [slice b [* i 2] [+ [* i 2] 2]]]]
+                 [uint16 ByteOrder.Network [slice b [* i 2] [+ [* i 2] 2]]]]
                [range 0 8]]]]
     # Find the longest run of consecutive zero groups
     [best: [reduce [fn [let st i]
@@ -188,8 +188,7 @@
     [Loopback]]    # 127.0.0.0/8 or ::1
 
   # RFC 791 §2.1: all multi-byte fields in network protocols are transmitted MSB first.
-  # NetworkEndian is an alias for BigEndian (defined in prelude) for protocol code clarity.
-  NetworkEndian: BigEndian
+  # ByteOrder.Network is a first-class constructor (= ByteOrder.BigEndian by convention) — no alias needed.
 
   # 24-bit unsigned integer — used for HTTP/2 frame lengths (RFC 7540 §4.1).
   UInt24: [type Int@[is: [between 0 16777215]  repr: u32]]
@@ -315,8 +314,8 @@
   ip-is-link-local?: [fn [let addr@IpAddress]
     [match addr
       [IpAddress.Ipv4     b]:   [and [= [get b 0] 169] [= [get b 1] 254]]
-      [IpAddress.Ipv6     b]:   [= [band [uint16 NetworkEndian [slice b 0 2]] 0xFFC0] 0xFE80]
-      [IpAddress.Ipv6Zone b _]: [= [band [uint16 NetworkEndian [slice b 0 2]] 0xFFC0] 0xFE80]]]
+      [IpAddress.Ipv6     b]:   [= [band [uint16 ByteOrder.Network [slice b 0 2]] 0xFFC0] 0xFE80]
+      [IpAddress.Ipv6Zone b _]: [= [band [uint16 ByteOrder.Network [slice b 0 2]] 0xFFC0] 0xFE80]]]
 
   Url: [type
     [scheme:   String

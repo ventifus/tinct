@@ -9,6 +9,6 @@ use libfuzzer_sys::fuzz_target;
 //   - Open-record unification must not loop
 fuzz_target!(|data: &[u8]| {
     if let Ok(s) = std::str::from_utf8(data) {
-        let _ = tinct::typecheck_source(s);
+        let _ = tinct::async_rt::block_on_anywhere(tinct::typecheck_source(s));
     }
 });

@@ -1,4 +1,0 @@
-# filter on Dict where all entries fail predicate: returns empty Seq (empty dict terminal)
-[collect [filter [fn [let x] [> x 100]] [a: 1 b: 2 c: 3]]]
-=== out
-Dict({})

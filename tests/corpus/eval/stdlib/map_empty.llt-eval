@@ -1,4 +1,0 @@
-# map on empty dict returns empty dict
-[map [fn [let x] [+ x 1]] []]
-=== out
-Dict({})

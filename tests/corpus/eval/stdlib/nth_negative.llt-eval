@@ -1,4 +1,0 @@
-# nth: get element by negative index (-1 is last)
-[nth -1 ["a" "b" "c"]]
-=== out
-String("c")

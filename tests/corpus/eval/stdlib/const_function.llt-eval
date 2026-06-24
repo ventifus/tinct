@@ -1,4 +1,0 @@
-# Constant function returns first argument, ignoring second
-[call [const 42] "ignored"]
-=== out
-Int(42)

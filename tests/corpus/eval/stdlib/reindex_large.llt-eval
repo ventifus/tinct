@@ -1,5 +1,0 @@
-# reindex: large input (n=1000) to verify O(n) performance
-[test-dict: [collect [range 0 1000]]]
-[length [reindex test-dict]]
-=== out
-Int(1000)

@@ -1,4 +1,0 @@
-# get-in-or: returns value when path exists
-[get-in-or ["a" "b" "c"] 0 [a: [b: [c: 42]]]]
-=== out
-Int(42)

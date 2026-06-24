@@ -1,6 +1,0 @@
-# builder-get-or: key present -> returns existing value, ignores default
-[call [fn [let b]
-    [builder-get-or "x" 99 b]]
- [builder-set "x" 42 [make-builder]]]
-=== out
-Int(42)

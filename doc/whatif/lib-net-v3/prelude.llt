@@ -241,7 +241,8 @@ CodecInvalidHandler: [type [let input output] [Fn@{value: input  next: Int} [out
   UInt64: [type Int@[is: [>= _ 0]  repr: u64]]
 
   # Byte order for integer ↔ bytes conversions.
-  ByteOrder: [type BigEndian LittleEndian NativeEndian]
+  # Network is a first-class constructor (= BigEndian by convention, RFC 791).
+  ByteOrder: [type BigEndian  LittleEndian  NativeEndian  Network]
 
   # Seekable position argument. tell = [seek h [SeekFrom.Current 0]],
   # size = [seek h [SeekFrom.End 0]].

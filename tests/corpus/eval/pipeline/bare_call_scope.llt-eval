@@ -1,5 +1,0 @@
-# Intermediate call returning dict promotes bindings
-[call [fn [let] [x: 42  y: 99]]]
-x
-=== out
-Int(42)

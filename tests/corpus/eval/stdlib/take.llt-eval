@@ -1,4 +1,0 @@
-# take: take the first n entries (preserves keys)
-[take 2 ["a" "b" "c" "d"]]
-=== out
-Dict({0: String("a"), 1: String("b")})

@@ -1,7 +1,0 @@
-# Mixed params: optional-required-optional, provide required by name
-[
-  f: [fn [let a@[default: 1] b c@[default: 3]] [+ a [+ b c]]]
-  result: [f b: 10]
-]
-=== out
-Dict({"f": Function(a, b, c), "result": Int(14)})

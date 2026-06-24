@@ -1,6 +1,12 @@
 ## Architecture
 
-Tinct is a structured-data-first general purpose programming language with lazy evaluation and type inference. Remember we always want to do things the right way, never the easy way.
+Tinct is a structured-data-first general purpose programming language with lazy evaluation and type inference. 
+
+Axioms::
+- Do things the right way, never the easy way. Don't be lazy.
+- Correct and rigorous is better than fast. 
+- The Rust runtime must be genuinely agnostic to what prelude does. Prelude must work for the same reasons user code works — by being correct tinct, not by being hardwired.
+- Avoid multiple execution paths, fast paths, or special cases. Clean these up when you find them.
 
 Documentation:
 

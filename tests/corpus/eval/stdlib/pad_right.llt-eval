@@ -1,6 +1,0 @@
-# pad-right: right-pad a string to target width
-[include %libdir "strings.llt"]
----
-[call %.pad-right "hi" 5 " "]
-=== out
-String("hi   ")

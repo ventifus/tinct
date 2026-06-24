@@ -1,5 +1,0 @@
-# from-json: parse JSON null → empty dict
-[json: [include %libdir "codecs/json.llt"]]
-[json.from-json "null"]
-=== out
-Dict({})

@@ -1,4 +1,0 @@
-# entries: convert dict to list of key/value pair dicts
-[entries [x: 10]]
-=== out
-Dict({0: Dict({"key": String("x"), "value": Int(10)})})

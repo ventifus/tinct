@@ -1,5 +1,0 @@
-# from-json : parse JSON string into LLT value
-[json: [include %libdir "codecs/json.llt"]]
-[json.from-json "{\"x\": 1, \"y\": true}"]
-=== out
-Dict({"x": Int(1), "y": Bool(true)})

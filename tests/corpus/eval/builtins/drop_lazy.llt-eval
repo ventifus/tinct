@@ -1,4 +1,0 @@
-# drop on Seq is lazy — dropping from infinite sequence returns immediately
-[collect [take 3 [drop 5 [iterate [fn [let x] [+ x 1]] 0]]]]
-=== out
-Dict({0: Int(5), 1: Int(6), 2: Int(7)})

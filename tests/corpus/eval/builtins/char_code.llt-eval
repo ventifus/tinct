@@ -1,3 +1,0 @@
-[call $char-code "A"]
-=== out
-Int(65)

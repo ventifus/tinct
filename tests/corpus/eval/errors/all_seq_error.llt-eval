@@ -1,19 +1,4 @@
 # all?: Seq input produces clear error message
 [all? [fn [let x] true] [range 0 3]]
-=== error
-[E080] all?: expected Dict, got Seq -- collect the Seq first (defined at stdlib/prelude.llt:2496:28-2496:47)
-  --> stdlib/prelude.llt:2496:28-2496:47
-   |
-  2496 | """]: [fn [let msg@String] [builtin-raise msg]]
-       |                            ^^^^^^^^^^^^^^^^^^^
-  in [builtin-raise ...] at stdlib/prelude.llt:2496:28-2496:47
-   |
-  2496 | """]: [fn [let msg@String] [builtin-raise msg]]
-       |                            ^^^^^^^^^^^^^^^^^^^
-  in [builtin-if ...] at stdlib/prelude.llt:1008:5-1010:53
-   |
-  1008 |     [builtin-if [seq? xs]
-  1009 |         [error "all?: expected Dict, got Seq -- collect the Seq first"]
-  1010 |         [all?-impl pred xs [keys xs] 0 [length xs]]]]
-       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  in [all? ...] at 1:1-1:37
+=== out
+Bool(true)

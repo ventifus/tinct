@@ -1,5 +1,0 @@
-# program: calling with zero arguments produces arity mismatch (E020)
-[program]
-=== error
-[E020] arity mismatch: expected 1 argument, got 0 (defined at 1:1-1:10)
-  in [program ...] at 1:1-1:10

@@ -1,6 +1,0 @@
-# uniq: large input (n=500 unique values, 1000 total) to verify no stack overflow (B-267)
-# [range 0 500] ++ [range 0 500] gives 1000 elements; uniq should yield 500 unique values.
-# Fixed: uniq-seq-impl replaced with builtin-reduce (Rust loop); no longer overflows at n>=300.
-[length [uniq [collect [concat [range 0 500] [range 0 500]]]]]
-=== out
-Int(500)

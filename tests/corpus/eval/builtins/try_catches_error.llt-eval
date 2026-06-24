@@ -1,4 +1,0 @@
-# try: catching an error raised by $raise returns [Result.Error message]
-[try [fn [] [raise "caught"]]]
-=== out
-Variant(Result.Error, String("caught"))

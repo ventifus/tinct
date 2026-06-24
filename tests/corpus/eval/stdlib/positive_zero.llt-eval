@@ -1,4 +1,0 @@
-# positive: zero is not positive
-[positive 0]
-=== out
-Bool(false)

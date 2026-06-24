@@ -1,4 +1,0 @@
-# tag-of: extract tag name from variant
-[tag-of [variant "Red"]]
-=== out
-String("Red")

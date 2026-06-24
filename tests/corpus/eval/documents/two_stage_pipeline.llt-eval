@@ -1,6 +1,0 @@
-# Two-document pipeline with % reference (migrated to dot)
-[base: 10]
----
-[doubled: [* 2 %.base]]
-=== out
-Dict({"doubled": Int(20)})

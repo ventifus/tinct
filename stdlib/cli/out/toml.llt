@@ -91,6 +91,7 @@ toml@[doc: "Convert dict to TOML format (flat keys + tables)"]: [fn@String [let 
     [toml-impl d [toml-partition d [keys d] 0 [] []]]]]
 ]
 
+--- uses: ["async"]
 # TOML output formatter — concurrent drain/force/await contract.
 #
 # Produces TOML output for each emitted value and return value.
@@ -103,7 +104,7 @@ toml@[doc: "Convert dict to TOML format (flat keys + tables)"]: [fn@String [let 
 
 # 1. Drain the emit channel concurrently.
 [drain: [task
-  [loop-select [context]
+  [select [context]
     [seq [ch: %emit-channel  handler: [fn [let v]
       [write-handle %stdout [str [toml v] "\n"]]]] []]
     identity]]]

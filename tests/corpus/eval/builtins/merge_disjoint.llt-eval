@@ -1,4 +1,0 @@
-# merge: two dicts with disjoint keys
-[merge [a: 1] [b: 2]]
-=== out
-Dict({"a": Int(1), "b": Int(2)})

@@ -1,4 +1,0 @@
-# join on Seq of strings with custom separator (Seq path)
-[join " | " [take 3 [map [fn [let x] [str x]] [range 1]]]]
-=== out
-String("1 | 2 | 3")

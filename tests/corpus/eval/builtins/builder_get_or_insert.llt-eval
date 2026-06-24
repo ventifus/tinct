@@ -1,6 +1,0 @@
-# builder-get-or: key absent -> inserts default and returns it
-[call [fn [let b]
-    [builder-get-or "y" 99 b]]
- [builder-set "x" 42 [make-builder]]]
-=== out
-Int(99)

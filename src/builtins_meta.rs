@@ -1092,6 +1092,7 @@ pub(crate) fn builtin_llt_repr(
         )?;
         // value_to_display_string materializes nested values on demand via visit_value
         let display_str = crate::value_to_display_string(&val, &ctx, call_span.clone())
+            .await
             .map_err(|e| EvalError::internal(format!("llt-repr: {}", e.kind), call_span.clone()))?;
         ok_val(string_val(&display_str), call_span)
     })

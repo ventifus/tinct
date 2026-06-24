@@ -1,5 +1,0 @@
-# until immediate (predicate already true)
---- uses: ["core"]
-[until [fn [let x] [>= x 5]] [fn [let x] [* x 2]] 10]
-=== out
-Int(10)

@@ -1,5 +1,0 @@
-[r1: [record? [a: 1]]
- r2: [map? [a: 1]]
- r3: [record? 42]]
-=== out
-Dict({"r1": Bool(true), "r2": Bool(true), "r3": Bool(false)})

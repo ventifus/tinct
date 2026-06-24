@@ -1,4 +1,0 @@
-# get-in-or: returns default when intermediate key missing
-[get-in-or ["a" "c" "d"] "fallback" [a: [b: 42]]]
-=== out
-String("fallback")

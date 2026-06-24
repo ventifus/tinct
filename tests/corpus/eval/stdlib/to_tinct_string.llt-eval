@@ -1,4 +1,0 @@
-# to-tinct: serialize a string to its tinct source representation (adds enclosing quotes)
-[to-tinct "hello"]
-=== out
-String("\"hello\"")

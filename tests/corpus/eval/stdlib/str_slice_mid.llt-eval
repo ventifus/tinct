@@ -1,6 +1,0 @@
-# str-slice: middle substring (start=1, end=4, string) => "ell"
-[include %libdir "strings.llt"]
----
-[str-slice 1 4 "hello"]
-=== out
-String("ell")

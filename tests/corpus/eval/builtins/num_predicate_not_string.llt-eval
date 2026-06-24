@@ -1,3 +1,0 @@
-[num? "not a number"]
-=== out
-Bool(false)

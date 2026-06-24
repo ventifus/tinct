@@ -1,18 +1,6 @@
+# Guard pattern via case form — bind scrutinee to n, inline guard and body.
+# Uses [str ...] instead of i"..." to avoid tmpl macro dependency.
 [match 10
-    n@[is: [and [> n 5] [< n 15]]]:   i"in range: $n"
-    _:                                 "out of range"]
-
-=== error
-[E002] undefined variable: n (did you mean the string "n"? Use quotes.) (defined at 1:14-1:15) (called at stdlib/prelude.llt:1023:20-1023:36)
-  in [builtin-lt ...] at stdlib/prelude.llt:1023:20-1023:36
-   |
-  1023 | """] [let x@a y@a] [builtin-lt y x]]
-       |                    ^^^^^^^^^^^^^^^^
-  in materialized at stdlib/prelude.llt:973:16-973:38
-   |
-  973 | """] [let p b] [builtin-if p b false]]
-      |                ^^^^^^^^^^^^^^^^^^^^^^
-  in [builtin-if ...] at stdlib/prelude.llt:973:16-973:38
-   |
-  973 | """] [let p b] [builtin-if p b false]]
-      |                ^^^^^^^^^^^^^^^^^^^^^^
+    [case [let n] n [if [and [> n 5] [< n 15]] [str "in range: " [str n]] "out of range"]]]
+=== out
+String("in range: 10")

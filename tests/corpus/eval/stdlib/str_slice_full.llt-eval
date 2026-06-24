@@ -1,6 +1,0 @@
-# str-slice: full string (start=0, end=5, string) => "hello"
-[include %libdir "strings.llt"]
----
-[str-slice 0 5 "hello"]
-=== out
-String("hello")

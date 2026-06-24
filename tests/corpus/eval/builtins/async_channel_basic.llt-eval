@@ -1,6 +1,0 @@
-# Basic channel creation - creates a working channel with capacity 32
-# type-of returns "Channel" for the created channel value
-
-[type-of [channel 32]]
-=== out
-String("Channel")

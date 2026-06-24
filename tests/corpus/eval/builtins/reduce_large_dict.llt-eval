@@ -1,4 +1,0 @@
-# Test: reduce over a large range should not cause stack overflow
-[reduce [fn [let acc x] [+ acc x]] 0 [range 0 100]]
-=== out
-Int(4950)

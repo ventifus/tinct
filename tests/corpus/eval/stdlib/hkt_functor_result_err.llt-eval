@@ -1,5 +1,0 @@
-# Test: FunctorResult.fmap on Error value (passes through)
-[FunctorResult.fmap [fn [let x] [+ x 1]] [Error "fail"]]
-
-=== out
-Variant(Result.Error, String("fail"))

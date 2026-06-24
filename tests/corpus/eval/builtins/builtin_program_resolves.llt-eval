@@ -1,7 +1,0 @@
-# program (prelude alias for builtin-program) resolves to a Builtin value.
-# Documents are internal runtime values that cannot be constructed from user code,
-# so we cannot call program() with valid arguments in a corpus test.
-# This test verifies the name is bound and callable (arity check fires, not undefined-var).
-[type-of program]
-=== out
-String("Function")

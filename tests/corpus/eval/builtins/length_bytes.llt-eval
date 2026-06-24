@@ -1,4 +1,0 @@
-# length : counts bytes in a Bytes value (no type warning)
-[length [str-bytes "hi"]]
-=== out
-Int(2)

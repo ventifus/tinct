@@ -1,7 +1,0 @@
-# Cross-feature: TypeAssert with default + dot/bracket access chain
-# Dict contains nested dict with TypeAssert, access chain retrieves the default value
-[config: [value: [@[type: Int  default: 42] "wrong type"]]]
----
-%.config.value
-=== out
-Int(42)

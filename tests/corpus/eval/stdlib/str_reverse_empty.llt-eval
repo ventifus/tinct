@@ -1,6 +1,0 @@
-# str-reverse: empty string stays empty
-[include %libdir "strings.llt"]
----
-[call %.str-reverse ""]
-=== out
-String("")

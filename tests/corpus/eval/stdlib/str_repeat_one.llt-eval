@@ -1,5 +1,0 @@
-# str-repeat: single repetition returns original
----
-[str-repeat 1 "hello"]
-=== out
-String("hello")

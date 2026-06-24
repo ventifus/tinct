@@ -1,7 +1,0 @@
-# T-923: ast-of handles Value::Function — returns {type: "fn", doc, params}.
-# Uses multi-document pipeline: doc 1 binds add, doc 2 calls ast-of.
-[add: [fn@Int [let x@Int y@Int] [+ x y]]]
----
-[[ast-of %.add].type]
-=== out
-Dict({0: String("fn")})

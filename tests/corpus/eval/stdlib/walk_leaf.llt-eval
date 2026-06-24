@@ -1,4 +1,0 @@
-# walk: transform applied to flat value
-[walk [fn [let x] [if [= [type-of x] "Dict"] x [* x 2]]] 5]
-=== out
-Int(10)

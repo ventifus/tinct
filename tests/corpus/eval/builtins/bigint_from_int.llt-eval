@@ -1,4 +1,0 @@
-# big-int: create from integer
-[big-int 42]
-=== out
-BigInt(42)

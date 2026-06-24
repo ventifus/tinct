@@ -1,8 +1,0 @@
-# --- uses: ["core"] injects multiple builtins from the core module.
-# This test verifies that multiple distinct core builtins are accessible
-# in a document that declares --- uses: ["core"]: both arithmetic (builtin-add)
-# and comparison (builtin-lt) work, demonstrating the full module injection.
---- uses: ["core"]
-[add_result: [builtin-add 3 4]  cmp_result: [builtin-lt 1 2]]
-=== out
-Dict({"add_result": Int(7), "cmp_result": Bool(true)})

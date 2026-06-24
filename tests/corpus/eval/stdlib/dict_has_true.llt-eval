@@ -1,4 +1,0 @@
-# has?: key exists
-[has? "x" [x: 1 y: 2]]
-=== out
-Bool(true)

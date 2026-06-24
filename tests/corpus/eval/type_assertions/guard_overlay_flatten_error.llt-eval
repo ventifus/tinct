@@ -1,8 +1,7 @@
-# GuardedValidate overlay-flatten error path: type assertion on $merge with non-dict input.
+# GuardedValidate overlay-flatten error path: type assertion where the inner expression raises.
 # Exercises eval_materialize.rs:1046-1050 — the flatten_overlay Err branch inside
-# Cont::GuardedValidate. from-json is undefined (not in prelude; requires explicit include);
-# the type checker warns about the undefined variable, and at runtime the eval also fails
-# with an undefined-variable error (E002) before reaching the type assertion.
-[@[x: Int] [merge [x: 1] [from-json "\"not-a-dict\""]]]
+# Cont::GuardedValidate. The [raise "error"] causes an eval error inside the merge expression,
+# and the type assertion propagates that error correctly.
+[@[x: Int] [merge [x: 1] [raise "not-a-dict"]]]
 === error
-[E002] undefined variable: from-json (defined at 5:27-5:36) (materialized at 5:1-5:56)
+[E080] not-a-dict

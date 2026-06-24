@@ -415,7 +415,7 @@
 
 [
   # Verified: str-chars=✓ (builtin-str-chars), get?=✓ (core builtin)
-  # random-id: not in prelude; use [uint16 NetworkEndian [crypto-random 2]] — [Bytes 2] → UInt16
+  # random-id: not in prelude; use [uint16 ByteOrder.Network [crypto-random 2]] — [Bytes 2] → UInt16
 
   # Parse a string into the dnsName seq structure.
   # "example.com"  → ["example" "com"]           (relative)
@@ -474,8 +474,8 @@
   # Used by all EDNS option encoders (cookie, NSID, ECS, etc.).
   edns-opt-bytes: [fn [let code@Int data@Bytes]
     [concat
-      [bytes NetworkEndian [@UInt16 code]]
-      [bytes NetworkEndian [@UInt16 [length data]]]
+      [bytes ByteOrder.Network [@UInt16 code]]
+      [bytes ByteOrder.Network [@UInt16 [length data]]]
       data]]
 
   # ecs-opt-bytes: encode EDNS Client Subnet option (EdnsOption.Ecs, code 8, RFC 7871).
@@ -487,9 +487,9 @@
     [n-bytes:    [/ [+ cs.prefix-len 7] 8]]    # ceil(prefix-len / 8)
     [truncated:  [slice addr-bytes 0 n-bytes]]
     [edns-opt-bytes ednsOption.Ecs.code [concat
-      [bytes NetworkEndian [@UInt16 family]]    # FAMILY
-      [bytes NetworkEndian [@UInt8 cs.prefix-len]]  # SOURCE PREFIX-LEN
-      [bytes NetworkEndian [@UInt8 0]]          # SCOPE PREFIX-LEN (0 in queries)
+      [bytes ByteOrder.Network [@UInt16 family]]    # FAMILY
+      [bytes ByteOrder.Network [@UInt8 cs.prefix-len]]  # SOURCE PREFIX-LEN
+      [bytes ByteOrder.Network [@UInt8 0]]          # SCOPE PREFIX-LEN (0 in queries)
       truncated]]]
 
   # cookie-opt-bytes: encode EDNS Cookie option (EdnsOption.Cookie, code 10, RFC 7873).
@@ -581,7 +581,7 @@
   #   rd: [let v [get? "rd" opts]] [if [absent? v] true v]
   make-query: [fn [let name@String qtype@dnsQtype opts@dnsQueryOpts]
     [dnsQuery.dnsQuery
-      id:        [uint16 NetworkEndian [crypto-random 2]]
+      id:        [uint16 ByteOrder.Network [crypto-random 2]]
       name:      [parse-dns-name-str name]
       qtype:     qtype
       qclass:    opts.qclass
@@ -710,13 +710,13 @@
           [match [get? table suffix]
             [let ptr-off]:
               # Found! Emit prefix labels + 2-byte pointer.
-              [ptr: [bytes NetworkEndian [@UInt16 [bor 0xC000 ptr-off]]]]
+              [ptr: [bytes ByteOrder.Network [@UInt16 [bor 0xC000 ptr-off]]]]
               [full: [concat prefix-bytes ptr]]
               [bytes: full  table: [set name prefix-offset table]]
             [Absent.Absent]:
               # Register this suffix for future compression, then try shorter.
               [label:      [get labels i]]
-              [label-wire: [concat [bytes NetworkEndian [@UInt8 [length [str-bytes label]]]] [str-bytes label]]]
+              [label-wire: [concat [bytes ByteOrder.Network [@UInt8 [length [str-bytes label]]]] [str-bytes label]]]
               [new-prefix: [concat prefix-bytes label-wire]]
               [new-off:    [+ prefix-offset [length label-wire]]]
               [new-table:  [set suffix prefix-offset table]]
@@ -736,10 +736,10 @@
     # Owner name is "." (root) — single zero byte, no compression.
     [owner:   [0x00]]
     [header:  [concat owner
-                      [bytes NetworkEndian [@UInt16 rtype]]
-                      [bytes NetworkEndian [@UInt16 1]]          # class = IN
-                      [bytes NetworkEndian [duration->ttl ttl]]
-                      [bytes NetworkEndian [@UInt16 [length rdata]]]]]
+                      [bytes ByteOrder.Network [@UInt16 rtype]]
+                      [bytes ByteOrder.Network [@UInt16 1]]          # class = IN
+                      [bytes ByteOrder.Network [duration->ttl ttl]]
+                      [bytes ByteOrder.Network [@UInt16 [length rdata]]]]]
     [full: [concat header rdata]]
     [bytes: full  table: table]]
 
@@ -762,7 +762,7 @@
 
       [dnsRecord.MxRecord pref: pref name: name ttl: ttl]:
         [nr: [enc-name name [+ rdata-base 2] table]]
-        [rr-wire-compressed 15 ttl [concat [bytes NetworkEndian [@UInt16 pref]] nr.bytes] offset nr.table]
+        [rr-wire-compressed 15 ttl [concat [bytes ByteOrder.Network [@UInt16 pref]] nr.bytes] offset nr.table]
 
       [dnsRecord.NsRecord name: name ttl: ttl]:
         [nr: [enc-name name rdata-base table]]
@@ -770,7 +770,7 @@
 
       [dnsRecord.TxtRecord strings: strings ttl: ttl]:
         [rdata: [apply concat [map [fn [let s]
-          [concat [bytes NetworkEndian [@UInt8 [length s]]] s]] strings]]]
+          [concat [bytes ByteOrder.Network [@UInt8 [length s]]] s]] strings]]]
         [rr-wire-compressed 16 ttl rdata offset table]
 
       [dnsRecord.PtrRecord name: name ttl: ttl]:
@@ -779,9 +779,9 @@
 
       [dnsRecord.SrvRecord prio: prio weight: weight port: port target: target ttl: ttl]:
         [nr: [enc-name target [+ rdata-base 6] table]]
-        [rdata: [concat [bytes NetworkEndian [@UInt16 prio]]
-                        [bytes NetworkEndian [@UInt16 weight]]
-                        [bytes NetworkEndian [@UInt16 port]]
+        [rdata: [concat [bytes ByteOrder.Network [@UInt16 prio]]
+                        [bytes ByteOrder.Network [@UInt16 weight]]
+                        [bytes ByteOrder.Network [@UInt16 port]]
                         nr.bytes]]
         [rr-wire-compressed 33 ttl rdata offset nr.table]
 
@@ -789,16 +789,16 @@
                            refresh: refresh retry: retry expire: expire minimum: minimum ttl: ttl]:
         [mn: [enc-name mname rdata-base table]]
         [rn: [enc-name rname [+ rdata-base [length mn.bytes]] mn.table]]
-        [times: [concat [bytes NetworkEndian serial]
-                        [bytes NetworkEndian [duration->ttl refresh]]
-                        [bytes NetworkEndian [duration->ttl retry]]
-                        [bytes NetworkEndian [duration->ttl expire]]
-                        [bytes NetworkEndian [duration->ttl minimum]]]]
+        [times: [concat [bytes ByteOrder.Network serial]
+                        [bytes ByteOrder.Network [duration->ttl refresh]]
+                        [bytes ByteOrder.Network [duration->ttl retry]]
+                        [bytes ByteOrder.Network [duration->ttl expire]]
+                        [bytes ByteOrder.Network [duration->ttl minimum]]]]
         [rr-wire-compressed 6 ttl [concat mn.bytes rn.bytes times] offset rn.table]
 
       [dnsRecord.HttpsRecord prio: prio target: target params: _ ttl: ttl]:
         [nr: [enc-name target [+ rdata-base 2] table]]
-        [rr-wire-compressed 65 ttl [concat [bytes NetworkEndian [@UInt16 prio]] nr.bytes] offset nr.table]
+        [rr-wire-compressed 65 ttl [concat [bytes ByteOrder.Network [@UInt16 prio]] nr.bytes] offset nr.table]
 
       [dnsRecord.UnknownRecord qtype: qtype data: data ttl: ttl]:
         [rr-wire-compressed qtype ttl data offset table]]]
@@ -814,10 +814,10 @@
 [
   # Named domain types with fixed byte-order encodings per RFC 1035.
   # All DNS multi-byte integers are big-endian (network byte order) per RFC 1035 §2.3.2.
-  DnsId:       [type UInt16@[encoding: NetworkEndian]]   # RFC 1035 §4.1.1: 16-bit query ID
-  DnsQClass:   [type UInt16@[encoding: NetworkEndian]]   # RFC 1035 §3.2.4: 16-bit query class (e.g. IN=1)
-  DnsTtl:      [type UInt32@[encoding: NetworkEndian]]   # RFC 1035 §3.2.1: 32-bit TTL in seconds
-  DnsRdLength: [type UInt16@[encoding: NetworkEndian]]   # RFC 1035 §3.2.1: 16-bit RDATA length
+  DnsId:       [type UInt16@[encoding: ByteOrder.Network]]   # RFC 1035 §4.1.1: 16-bit query ID
+  DnsQClass:   [type UInt16@[encoding: ByteOrder.Network]]   # RFC 1035 §3.2.4: 16-bit query class (e.g. IN=1)
+  DnsTtl:      [type UInt32@[encoding: ByteOrder.Network]]   # RFC 1035 §3.2.1: 32-bit TTL in seconds
+  DnsRdLength: [type UInt16@[encoding: ByteOrder.Network]]   # RFC 1035 §3.2.1: 16-bit RDATA length
 
   # Re-export types under canonical PascalCase names.
   # (Defined with camelCase in the types dict above so internal helpers can access them.)
@@ -885,8 +885,8 @@
                  [if q.cd 0x0010 0x0000]]]  # bit 4: Checking Disabled
     [question: [concat
       [encode-dns-name q.name]
-      [bytes NetworkEndian [@UInt16 q.qtype.code]]
-      [bytes NetworkEndian [@UInt16 q.qclass.code]]]]
+      [bytes ByteOrder.Network [@UInt16 q.qtype.code]]
+      [bytes ByteOrder.Network [@UInt16 q.qclass.code]]]]
     [if q.edns
       # With EDNS0 OPT record (RFC 6891 §6):
       [block
@@ -906,26 +906,26 @@
             [let cs]:        [ecs-opt-bytes cs]]]]
         [opt-rdata-len: [length opt-options]]
         [opt-rr: [concat
-          [bytes NetworkEndian [@UInt8  0x00]]                   # root label (.)
-          [bytes NetworkEndian [@UInt16 41]]                     # type OPT
-          [bytes NetworkEndian [@UInt16 q.bufsize]]              # class = UDP payload size
-          [bytes NetworkEndian [@UInt8  0]]                      # extended RCODE = 0
-          [bytes NetworkEndian [@UInt8  0]]                      # EDNS version = 0
-          [bytes NetworkEndian [@UInt16 edns-flags]]             # extended flags (DO bit)
-          [bytes NetworkEndian [@UInt16 opt-rdata-len]]          # RDLENGTH
+          [bytes ByteOrder.Network [@UInt8  0x00]]                   # root label (.)
+          [bytes ByteOrder.Network [@UInt16 41]]                     # type OPT
+          [bytes ByteOrder.Network [@UInt16 q.bufsize]]              # class = UDP payload size
+          [bytes ByteOrder.Network [@UInt8  0]]                      # extended RCODE = 0
+          [bytes ByteOrder.Network [@UInt8  0]]                      # EDNS version = 0
+          [bytes ByteOrder.Network [@UInt16 edns-flags]]             # extended flags (DO bit)
+          [bytes ByteOrder.Network [@UInt16 opt-rdata-len]]          # RDLENGTH
           opt-options]]                                          # all EDNS options (cookie, NSID, ECS)
         [concat
-          [bytes NetworkEndian [@UInt16 q.id]]
-          [bytes NetworkEndian [@UInt16 flags]]
-          [bytes NetworkEndian [@UInt16 1]]  [bytes NetworkEndian [@UInt16 0]]  # QDCOUNT=1 ANCOUNT=0
-          [bytes NetworkEndian [@UInt16 0]]  [bytes NetworkEndian [@UInt16 1]]  # NSCOUNT=0 ARCOUNT=1
+          [bytes ByteOrder.Network [@UInt16 q.id]]
+          [bytes ByteOrder.Network [@UInt16 flags]]
+          [bytes ByteOrder.Network [@UInt16 1]]  [bytes ByteOrder.Network [@UInt16 0]]  # QDCOUNT=1 ANCOUNT=0
+          [bytes ByteOrder.Network [@UInt16 0]]  [bytes ByteOrder.Network [@UInt16 1]]  # NSCOUNT=0 ARCOUNT=1
           question opt-rr]]
       # Without EDNS0: plain RFC 1035 query
       [concat
-        [bytes NetworkEndian [@UInt16 q.id]]
-        [bytes NetworkEndian [@UInt16 flags]]
-        [bytes NetworkEndian [@UInt16 1]]  [bytes NetworkEndian [@UInt16 0]]    # QDCOUNT=1 ANCOUNT=0
-        [bytes NetworkEndian [@UInt16 0]]  [bytes NetworkEndian [@UInt16 0]]    # NSCOUNT=0 ARCOUNT=0
+        [bytes ByteOrder.Network [@UInt16 q.id]]
+        [bytes ByteOrder.Network [@UInt16 flags]]
+        [bytes ByteOrder.Network [@UInt16 1]]  [bytes ByteOrder.Network [@UInt16 0]]    # QDCOUNT=1 ANCOUNT=0
+        [bytes ByteOrder.Network [@UInt16 0]]  [bytes ByteOrder.Network [@UInt16 0]]    # NSCOUNT=0 ARCOUNT=0
         question]]]
 
   # RFC 1035 §4 DNS wire format decoder.
@@ -959,7 +959,7 @@
             [if [= [band len-byte 0xC0] 0xC0]
               # Pointer: next byte gives offset (RFC 1035 §4.1.4)
               [block
-                [ptr-offset: [band [uint16 NetworkEndian [slice b offset [+ offset 2]]] 0x3FFF]]
+                [ptr-offset: [band [uint16 ByteOrder.Network [slice b offset [+ offset 2]]] 0x3FFF]]
                 [target: [parse-dns-name b ptr-offset [- ptr-depth 1]]]
                 # next advances past the 2-byte pointer; pointer target's next is discarded
                 [name: target.name  next: [+ offset 2]]]
@@ -984,7 +984,7 @@
         [name-res: [parse-dns-name b offset 5]]
         [dnsRecord.CNameRecord  name: name-res.name  ttl: ttl]
       15: # MX — preference(2) + name
-        [pref: [uint16 NetworkEndian [slice b offset [+ offset 2]]]]
+        [pref: [uint16 ByteOrder.Network [slice b offset [+ offset 2]]]]
         [name-res: [parse-dns-name b [+ offset 2] 5]]
         [dnsRecord.MxRecord  pref: pref  name: name-res.name  ttl: ttl]
       2:  # NS — compressed name
@@ -1003,36 +1003,36 @@
         [name-res: [parse-dns-name b offset 5]]
         [dnsRecord.PtrRecord  name: name-res.name  ttl: ttl]
       33: # SRV — priority(2) weight(2) port(2) target
-        [prio: [uint16 NetworkEndian [slice b offset [+ offset 2]]]]
-        [wt:   [uint16 NetworkEndian [slice b [+ offset 2] [+ offset 4]]]]
-        [port: [uint16 NetworkEndian [slice b [+ offset 4] [+ offset 6]]]]
+        [prio: [uint16 ByteOrder.Network [slice b offset [+ offset 2]]]]
+        [wt:   [uint16 ByteOrder.Network [slice b [+ offset 2] [+ offset 4]]]]
+        [port: [uint16 ByteOrder.Network [slice b [+ offset 4] [+ offset 6]]]]
         [name-res: [parse-dns-name b [+ offset 6] 5]]
         [dnsRecord.SrvRecord  prio: prio  weight: wt  port: port  target: name-res.name  ttl: ttl]
       6:  # SOA — mname rname serial refresh retry expire minimum
         [mname-res: [parse-dns-name b offset 5]]
         [rname-res: [parse-dns-name b mname-res.next 5]]
         [p: rname-res.next]
-        [serial:  [@UInt32 [uint32 NetworkEndian [slice b p          [+ p 4]]]]]
-        [refresh: [seconds [uint32 NetworkEndian [slice b [+ p 4]    [+ p 8]]]]]
-        [retry:   [seconds [uint32 NetworkEndian [slice b [+ p 8]    [+ p 12]]]]]
-        [expire:  [seconds [uint32 NetworkEndian [slice b [+ p 12]   [+ p 16]]]]]
-        [minimum: [seconds [uint32 NetworkEndian [slice b [+ p 16]   [+ p 20]]]]]
+        [serial:  [@UInt32 [uint32 ByteOrder.Network [slice b p          [+ p 4]]]]]
+        [refresh: [seconds [uint32 ByteOrder.Network [slice b [+ p 4]    [+ p 8]]]]]
+        [retry:   [seconds [uint32 ByteOrder.Network [slice b [+ p 8]    [+ p 12]]]]]
+        [expire:  [seconds [uint32 ByteOrder.Network [slice b [+ p 12]   [+ p 16]]]]]
+        [minimum: [seconds [uint32 ByteOrder.Network [slice b [+ p 16]   [+ p 20]]]]]
         [dnsRecord.SoaRecord  mname: mname-res.name  rname: rname-res.name
                               serial: serial  refresh: refresh  retry: retry
                               expire: expire  minimum: minimum  ttl: ttl]
       65: # HTTPS (RFC 9460) — priority(2) target-name + SvcParams
-        [prio: [uint16 NetworkEndian [slice b offset [+ offset 2]]]]
+        [prio: [uint16 ByteOrder.Network [slice b offset [+ offset 2]]]]
         [target-res: [parse-dns-name b [+ offset 2] 5]]
         # Parse SvcParams: each is key(2)+value-len(2)+value-bytes
         [parse-svcparams: [fn [let pos params]
           [if [>= pos data-end]
             params
             [block
-              [key:     [uint16 NetworkEndian [slice b pos [+ pos 2]]]]
-              [vlen:    [uint16 NetworkEndian [slice b [+ pos 2] [+ pos 4]]]]
+              [key:     [uint16 ByteOrder.Network [slice b pos [+ pos 2]]]]
+              [vlen:    [uint16 ByteOrder.Network [slice b [+ pos 2] [+ pos 4]]]]
               [vdata:   [slice b [+ pos 4] [+ pos 4 vlen]]]
               [new-params: [match key
-                0:  [merge params [mandatory: [collect [map [fn [let i] [uint16 NetworkEndian [slice vdata [* i 2] [+ [* i 2] 2]]]] [range 0 [/ vlen 2]]]]]]
+                0:  [merge params [mandatory: [collect [map [fn [let i] [uint16 ByteOrder.Network [slice vdata [* i 2] [+ [* i 2] 2]]]] [range 0 [/ vlen 2]]]]]]
                 1:  # alpn: comma-separated protocol strings
                     [block
                       [parse-alpn: [fn [let p acc]
@@ -1043,7 +1043,7 @@
                             [proto: [bytes-str [slice vdata [+ p 1] [+ p 1 alen]]]]
                             [parse-alpn [+ p 1 alen] [append acc [list proto]]]]]]]
                       [merge params [alpn: [parse-alpn 0 []]]]]
-                3:  [merge params [port: [uint16 NetworkEndian vdata]]]
+                3:  [merge params [port: [uint16 ByteOrder.Network vdata]]]
                 5:  [merge params [ech: vdata]]
                 _:  params]]
               [parse-svcparams [+ pos 4 vlen] new-params]]]]]
@@ -1070,11 +1070,11 @@
       [block
         [name-res:  [parse-dns-name b offset 5]]
         [p:         name-res.next]
-        [rtype:     [uint16 NetworkEndian [slice b p          [+ p 2]]]]
-        [rclass:    [uint16 NetworkEndian [slice b [+ p 2]    [+ p 4]]]]
-        [ttl-raw:   [uint32 NetworkEndian [slice b [+ p 4]    [+ p 8]]]]
+        [rtype:     [uint16 ByteOrder.Network [slice b p          [+ p 2]]]]
+        [rclass:    [uint16 ByteOrder.Network [slice b [+ p 2]    [+ p 4]]]]
+        [ttl-raw:   [uint32 ByteOrder.Network [slice b [+ p 4]    [+ p 8]]]]
         [ttl:       [seconds ttl-raw]]
-        [rdlen:     [uint16 NetworkEndian [slice b [+ p 8]    [+ p 10]]]]
+        [rdlen:     [uint16 ByteOrder.Network [slice b [+ p 8]    [+ p 10]]]]
         [rdata-off: [+ p 10]]
         [rdata-end: [+ rdata-off rdlen]]
         [rr: [if [= rtype 41]
@@ -1085,8 +1085,8 @@
             [if [>= offset [length opt-bytes]]
               acc
               [block
-                [code: [uint16 NetworkEndian [slice opt-bytes offset        [+ offset 2]]]]
-                [olen: [uint16 NetworkEndian [slice opt-bytes [+ offset 2]  [+ offset 4]]]]
+                [code: [uint16 ByteOrder.Network [slice opt-bytes offset        [+ offset 2]]]]
+                [olen: [uint16 ByteOrder.Network [slice opt-bytes [+ offset 2]  [+ offset 4]]]]
                 [data: [slice opt-bytes [+ offset 4] [+ offset 4 olen]]]
                 [opts [+ offset 4 olen] [set acc code data]]]]]]]
           [dnsRecord.OptRecord
@@ -1102,12 +1102,12 @@
     [if [< [length b] 12]
       [dnsError.DecodeFailed "response too short"]
       [block
-        [id:        [uint16 NetworkEndian [slice b 0 2]]
-         flags:     [uint16 NetworkEndian [slice b 2 4]]
-         qdcount:   [uint16 NetworkEndian [slice b 4 6]]
-         ancount:   [uint16 NetworkEndian [slice b 6 8]]
-         nscount:   [uint16 NetworkEndian [slice b 8 10]]
-         arcount:   [uint16 NetworkEndian [slice b 10 12]]
+        [id:        [uint16 ByteOrder.Network [slice b 0 2]]
+         flags:     [uint16 ByteOrder.Network [slice b 2 4]]
+         qdcount:   [uint16 ByteOrder.Network [slice b 4 6]]
+         ancount:   [uint16 ByteOrder.Network [slice b 6 8]]
+         nscount:   [uint16 ByteOrder.Network [slice b 8 10]]
+         arcount:   [uint16 ByteOrder.Network [slice b 10 12]]
          rcode-int: [band flags 0x000F]
          aa:        [= [band [shr flags 10] 1] 1]   # bit 10: Authoritative Answer
          tc:        [= [band [shr flags  9] 1] 1]   # bit 9:  Truncated
@@ -1182,12 +1182,12 @@
   encode-dns-response: [fn [let resp@DnsResponse]
     [rcode-int: resp.rcode.rcode]
     [header: [concat
-      [bytes NetworkEndian [@UInt16 resp.id]]
-      [bytes NetworkEndian [@UInt16 [bor 0x8080 rcode-int]]]
-      [bytes NetworkEndian [@UInt16 0]]
-      [bytes NetworkEndian [@UInt16 [length resp.answers]]]
-      [bytes NetworkEndian [@UInt16 [length resp.authority]]]
-      [bytes NetworkEndian [@UInt16 [length resp.additional]]]]]
+      [bytes ByteOrder.Network [@UInt16 resp.id]]
+      [bytes ByteOrder.Network [@UInt16 [bor 0x8080 rcode-int]]]
+      [bytes ByteOrder.Network [@UInt16 0]]
+      [bytes ByteOrder.Network [@UInt16 [length resp.answers]]]
+      [bytes ByteOrder.Network [@UInt16 [length resp.authority]]]
+      [bytes ByteOrder.Network [@UInt16 [length resp.additional]]]]]
     # Thread compression table across all three sections — cross-section compression works.
     [an: [encode-section resp.answers    [length header] []]]
     [ns: [encode-section resp.authority  an.offset       an.table]]
@@ -1225,8 +1225,8 @@
 
   dns-framed-send: [fn@[bind: [h]  constraint: [h: ByteStream]] [let h@h q@DnsQuery]
     [wire: [encode-dns-wire q]]
-    [write h [concat [bytes NetworkEndian [@UInt16 [length wire]]] wire]]
-    [resp-len: [uint16 NetworkEndian [read h 2]]]
+    [write h [concat [bytes ByteOrder.Network [@UInt16 [length wire]]] wire]]
+    [resp-len: [uint16 ByteOrder.Network [read h 2]]]
     [match [decode-dns-wire [read h resp-len]]
       [Result.Ok r]:    r
       [Result.Error e]: [error [str "dns-framed: " e]]]]
@@ -1400,9 +1400,9 @@
                                                  [msg:     [if [empty? codec.msg] frame codec.msg]]
                                                  [name-res: [parse-dns-name msg 0 5]]
                                                  [p:       name-res.next]
-                                                 [rtype:   [uint16 NetworkEndian [slice frame p [+ p 2]]]]
-                                                 [ttl-raw: [uint32 NetworkEndian [slice frame [+ p 4] [+ p 8]]]]
-                                                 [rdlen:   [uint16 NetworkEndian [slice frame [+ p 8] [+ p 10]]]]
+                                                 [rtype:   [uint16 ByteOrder.Network [slice frame p [+ p 2]]]]
+                                                 [ttl-raw: [uint32 ByteOrder.Network [slice frame [+ p 4] [+ p 8]]]]
+                                                 [rdlen:   [uint16 ByteOrder.Network [slice frame [+ p 8] [+ p 10]]]]
                                                  [value: [parse-dns-rdata msg [+ p 10] rdlen rtype [seconds ttl-raw]]
                                                   next:  [+ offset p 10 rdlen]]]]]
 

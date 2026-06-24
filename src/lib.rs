@@ -245,8 +245,8 @@ fn attach_and_format_error(
 /// The output format recursively materializes all values (including dict entries)
 /// into a readable representation. Primarily used for testing and corpus validation.
 /// For JSON output, use [`visit_value`] with [`JsonVisitor`] after evaluation instead.
-pub fn eval_source(input: &str) -> Result<String, String> {
-    eval_source_with_config(input, false)
+pub async fn eval_source(input: &str) -> Result<String, String> {
+    eval_source_with_config(input, false).await
 }
 
 /// Parse and evaluate LLT source with configurable filesystem access.
@@ -254,7 +254,7 @@ pub fn eval_source(input: &str) -> Result<String, String> {
 /// This is a variant of [`eval_source`] that allows control over the `no_fs` flag.
 /// When `no_fs` is `true`, filesystem operations (like `include`) are disabled.
 /// Primarily used for corpus tests that require filesystem isolation.
-pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, String> {
+pub async fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, String> {
     #[cfg(test)]
     {
         thread_local! {
@@ -280,11 +280,12 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
     let expand_base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
         .map_err(|e| format!("cannot open cwd for macro expansion: {e}"))?;
     let mut program = parsed.program;
-    let expand_result = crate::async_rt::block_on_anywhere(expand::expand_surface_program(
+    let expand_result = expand::expand_surface_program(
         &mut program,
         no_fs,
         &expand_base_dir,
-    ))
+    )
+    .await
     .map_err(|e| format!("{e}"))?;
     // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
     desugar::desugar_surface_program(&mut program);
@@ -309,13 +310,14 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
         infer_state,
         _final_env,
         type_annotation_table,
-    ) = crate::async_rt::block_on_anywhere(typecheck::typecheck_surface_program_with_env(
+    ) = typecheck::typecheck_surface_program_with_env(
         &program,
         crate::imports::build_prelude_env(),
         false, // disable scheme_map (not needed for eval)
         false, // not in prelude load
         Some(&resolution_table),
-    ));
+    )
+    .await;
     let type_annotation_table = std::sync::Arc::new(type_annotation_table);
 
     // Use create_stdlib_env_with_arena so the eval context shares the stdlib's ThunkArena.
@@ -323,7 +325,7 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
     // ThunkIds from the stdlib's bootstrap_ctx arena via the eval ctx's empty arena,
     // causing an index-out-of-bounds panic.
     let (env, stdlib_arena) =
-        builtins::create_stdlib_env_with_arena().map_err(|e| format!("{e}"))?;
+        builtins::create_stdlib_env_with_arena().await.map_err(|e| format!("{e}"))?;
     // Build type-stage environment (for builtin_eval_types). Falls back to stdlib_env if unavailable.
     let type_stage_env = build_type_stage_env().unwrap_or_else(|| Arc::clone(&env));
     let base_dir_path = std::env::current_dir()
@@ -382,17 +384,20 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
             }
         }
     }
-    let thunk = crate::async_rt::block_on_anywhere(eval::eval_surface_file(
+    let thunk = eval::eval_surface_file(
         &program,
         Arc::clone(&env),
         &ctx,
         &resolution_table,
         &type_annotation_table,
-    ))
+    )
+    .await
     .map_err(|e| attach_and_format_error(e, &provenance))?;
-    let val = crate::async_rt::block_on_anywhere(eval::materialize(&thunk, None, &ctx))
+    let val = eval::materialize(&thunk, None, &ctx)
+        .await
         .map_err(|e| attach_and_format_error(e, &provenance))?;
     value_to_display_string(&val, &ctx, thunk.span.clone())
+        .await
         .map_err(|e| attach_and_format_error(e, &provenance))
 }
 
@@ -404,7 +409,7 @@ pub fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, Strin
 /// and `entry_string` is an allowlist entry string (same format as `--cap-net NAME=ENTRY`).
 ///
 /// Multiple entries with the same name accumulate into one NetCap allowlist.
-pub fn eval_source_with_cap_net(
+pub async fn eval_source_with_cap_net(
     input: &str,
     no_fs: bool,
     cap_net: &[(String, String)],
@@ -429,11 +434,12 @@ pub fn eval_source_with_cap_net(
     let expand_base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
         .map_err(|e| format!("cannot open cwd for macro expansion: {e}"))?;
     let mut program = parsed.program;
-    let expand_result = crate::async_rt::block_on_anywhere(expand::expand_surface_program(
+    let expand_result = expand::expand_surface_program(
         &mut program,
         no_fs,
         &expand_base_dir,
-    ))
+    )
+    .await
     .map_err(|e| format!("{e}"))?;
     // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
     desugar::desugar_surface_program(&mut program);
@@ -453,17 +459,18 @@ pub fn eval_source_with_cap_net(
         infer_state,
         _final_env,
         type_annotation_table,
-    ) = crate::async_rt::block_on_anywhere(typecheck::typecheck_surface_program_with_env(
+    ) = typecheck::typecheck_surface_program_with_env(
         &program,
         crate::imports::build_prelude_env(),
         false, // disable scheme_map (not needed for eval)
         false, // not in prelude load
         Some(&resolution_table),
-    ));
+    )
+    .await;
     let type_annotation_table = std::sync::Arc::new(type_annotation_table);
 
     let (env, stdlib_arena) =
-        builtins::create_stdlib_env_with_arena().map_err(|e| format!("{e}"))?;
+        builtins::create_stdlib_env_with_arena().await.map_err(|e| format!("{e}"))?;
     // Build type-stage environment BEFORE clone_for_child — it may add thunks to the stdlib arena.
     let type_stage_env = build_type_stage_env().unwrap_or_else(|| Arc::clone(&env));
 
@@ -513,17 +520,20 @@ pub fn eval_source_with_cap_net(
         let cap_thunk = Arc::new(Thunk::new_materialized(cap_val, Span::origin()));
         env.write().unwrap().insert(format!("%{}", name), cap_thunk);
     }
-    let thunk = crate::async_rt::block_on_anywhere(eval::eval_surface_file(
+    let thunk = eval::eval_surface_file(
         &program,
         Arc::clone(&env),
         &ctx,
         &resolution_table,
         &type_annotation_table,
-    ))
+    )
+    .await
     .map_err(|e| attach_and_format_error(e, &provenance))?;
-    let val = crate::async_rt::block_on_anywhere(eval::materialize(&thunk, None, &ctx))
+    let val = eval::materialize(&thunk, None, &ctx)
+        .await
         .map_err(|e| attach_and_format_error(e, &provenance))?;
     value_to_display_string(&val, &ctx, thunk.span.clone())
+        .await
         .map_err(|e| attach_and_format_error(e, &provenance))
 }
 
@@ -571,7 +581,7 @@ fn parse_net_cap_entry(s: &str) -> Result<crate::value::NetCapEntry, String> {
 /// diagnostic messages) and the valid corpus (which asserts zero warnings unless an
 /// `=== warn` section is present). For corpus tests that only care about type *errors*
 /// (not quality diagnostics), use [`typecheck_source_errors_only`] instead.
-pub fn typecheck_source(input: &str) -> Result<(), String> {
+pub async fn typecheck_source(input: &str) -> Result<(), String> {
     let parsed = parse(input).map_err(|e| format!("{e}"))?;
     // PIPELINE INVARIANT: parse -> expand_surface_program -> desugar -> typecheck.
     // Use expand_surface_program (not expand_macros) so SurfaceItem::Decl macros are seen.
@@ -581,18 +591,19 @@ pub fn typecheck_source(input: &str) -> Result<(), String> {
     let expand_base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
         .map_err(|e| format!("cannot open cwd for macro expansion: {e}"))?;
     let mut program = parsed.program;
-    crate::async_rt::block_on_anywhere(expand::expand_surface_program(
+    expand::expand_surface_program(
         &mut program,
         false,
         &expand_base_dir,
-    ))
+    )
+    .await
     .map_err(|e| format!("{e}"))?;
     // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
     desugar::desugar_surface_program(&mut program);
     // Type check the surface program with prelude-seeded environment.
     let env = imports::build_prelude_env();
     let (type_errors, _type_map, _doc_map, _scheme_map, diagnostics) =
-        crate::async_rt::block_on_anywhere(typecheck::typecheck_surface_program(&program, env));
+        typecheck::typecheck_surface_program(&program, env).await;
     if type_errors.is_empty() && diagnostics.is_empty() {
         Ok(())
     } else {
@@ -615,7 +626,7 @@ pub fn typecheck_source(input: &str) -> Result<(), String> {
 /// Used by the typecheck corpus (`tests/corpus/eval/typecheck/`) which validates that
 /// programs type-check without errors but may legitimately contain polymorphic or
 /// open-record patterns that produce `Unknown` in intermediate type-map entries.
-pub fn typecheck_source_errors_only(input: &str) -> Result<(), String> {
+pub async fn typecheck_source_errors_only(input: &str) -> Result<(), String> {
     let parsed = parse(input).map_err(|e| format!("{e}"))?;
     // PIPELINE INVARIANT: parse -> expand_surface_program -> desugar -> typecheck.
     // Use expand_surface_program (not expand_macros) so SurfaceItem::Decl macros are seen.
@@ -625,18 +636,19 @@ pub fn typecheck_source_errors_only(input: &str) -> Result<(), String> {
     let expand_base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
         .map_err(|e| format!("cannot open cwd for macro expansion: {e}"))?;
     let mut program = parsed.program;
-    crate::async_rt::block_on_anywhere(expand::expand_surface_program(
+    expand::expand_surface_program(
         &mut program,
         false,
         &expand_base_dir,
-    ))
+    )
+    .await
     .map_err(|e| format!("{e}"))?;
     // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
     desugar::desugar_surface_program(&mut program);
     // Type check the surface program with prelude-seeded environment.
     let env = imports::build_prelude_env();
     let (type_errors, _type_map, _doc_map, _scheme_map, _diagnostics) =
-        crate::async_rt::block_on_anywhere(typecheck::typecheck_surface_program(&program, env));
+        typecheck::typecheck_surface_program(&program, env).await;
     if type_errors.is_empty() {
         Ok(())
     } else {
@@ -722,13 +734,14 @@ pub trait ValueVisitor {
 /// # Panics
 ///
 /// Does not panic. All errors are propagated via `Result`.
-pub fn visit_value<V: ValueVisitor>(
-    val: &value::Value,
-    ctx: &Arc<eval::EvalContext>,
+pub fn visit_value<'a, V: ValueVisitor + 'a>(
+    val: &'a value::Value,
+    ctx: &'a Arc<eval::EvalContext>,
     depth: usize,
-    visitor: &V,
+    visitor: &'a V,
     span: ast::Span,
-) -> Result<V::Output, Box<error::EvalError>> {
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<V::Output, Box<error::EvalError>>> + 'a>> {
+    Box::pin(async move {
     if let Some(limit_result) = visitor.depth_limit_output(depth, span.clone()) {
         return limit_result;
     }
@@ -765,27 +778,26 @@ pub fn visit_value<V: ValueVisitor>(
             let mut entries = Vec::with_capacity(map.len());
             for (key, thunk_id) in map {
                 let thunk = ctx.get_thunk(*thunk_id);
-                let v = crate::async_rt::block_on_anywhere(eval::materialize(&thunk, None, ctx))?;
+                let v = eval::materialize(&thunk, None, ctx).await?;
                 let child_span = thunk.span.clone();
                 entries.push((
                     key.clone(),
-                    visit_value(&v, ctx, depth + 1, visitor, child_span)?,
+                    visit_value(&v, ctx, depth + 1, visitor, child_span).await?,
                 ));
             }
             Ok(visitor.visit_dict(entries))
         }
         value::Value::Overlay(l, r) => {
             // Flatten overlay to a concrete dict, then visit it.
-            let map = crate::async_rt::block_on_anywhere(builtins::flatten_overlay(l, r, "value serialization", ctx, span.clone()))?;
-            visit_value(&value::Value::Dict(map), ctx, depth, visitor, span)
+            let map = builtins::flatten_overlay(l, r, "value serialization", ctx, span.clone()).await?;
+            visit_value(&value::Value::Dict(map), ctx, depth, visitor, span).await
         }
         value::Value::Variant {
             ref tag,
             payload: Some(payload_id),
         } if tag == "Seq.Cons" => {
             let payload_thunk = ctx.get_thunk(*payload_id);
-            let payload_val =
-                crate::async_rt::block_on_anywhere(eval::materialize(&payload_thunk, None, ctx))?;
+            let payload_val = eval::materialize(&payload_thunk, None, ctx).await?;
             let head_id = if let value::Value::Dict(ref d) = payload_val {
                 *d.get(&value::Key::String("head".into()))
                     .expect("Seq.Cons must have head")
@@ -796,10 +808,9 @@ pub fn visit_value<V: ValueVisitor>(
                 )));
             };
             let head_thunk = ctx.get_thunk(head_id);
-            let head_val =
-                crate::async_rt::block_on_anywhere(eval::materialize(&head_thunk, None, ctx))?;
+            let head_val = eval::materialize(&head_thunk, None, ctx).await?;
             let head_span = head_thunk.span.clone();
-            let head_out = visit_value(&head_val, ctx, depth + 1, visitor, head_span.clone())?;
+            let head_out = visit_value(&head_val, ctx, depth + 1, visitor, head_span.clone()).await?;
             visitor.visit_seq_head(head_out, head_span)
         }
         value::Value::Variant {
@@ -838,10 +849,9 @@ pub fn visit_value<V: ValueVisitor>(
             let payload_output = match payload {
                 Some(thunk_id) => {
                     let thunk = ctx.get_thunk(*thunk_id);
-                    let v =
-                        crate::async_rt::block_on_anywhere(eval::materialize(&thunk, None, ctx))?;
+                    let v = eval::materialize(&thunk, None, ctx).await?;
                     let payload_span = thunk.span.clone();
-                    visit_value(&v, ctx, depth + 1, visitor, payload_span)?
+                    visit_value(&v, ctx, depth + 1, visitor, payload_span).await?
                 }
                 None => visitor.visit_null(),
             };
@@ -917,11 +927,12 @@ pub fn visit_value<V: ValueVisitor>(
             error::EvalError::value_not_serializable("OneshotReceiver".to_string(), span),
         )),
         // Annotated is transparent — delegate to inner value serialization.
-        value::Value::Annotated { inner, .. } => visit_value(inner, ctx, depth, visitor, span),
+        value::Value::Annotated { inner, .. } => visit_value(inner, ctx, depth, visitor, span).await,
         value::Value::MethodDispatcher(_) => Err(Box::new(
             error::EvalError::value_not_serializable("MethodDispatcher".to_string(), span),
         )),
     }
+    })
 }
 
 // --- JSON Visitor ---
@@ -1309,13 +1320,13 @@ impl ValueVisitor for DisplayVisitor {
 ///
 /// `depth` tracks recursion depth to prevent stack overflow from deeply nested
 /// dict-of-dicts structures. Uses `MAX_DISPLAY_DEPTH` (5 levels); truncates deeper nesting with `...`.
-pub fn value_to_display_string(
+pub async fn value_to_display_string(
     val: &value::Value,
     ctx: &Arc<eval::EvalContext>,
     span: ast::Span,
 ) -> Result<String, Box<error::EvalError>> {
     let depth = 0;
-    visit_value(val, ctx, depth, &DisplayVisitor, span)
+    visit_value(val, ctx, depth, &DisplayVisitor, span).await
 }
 
 #[allow(clippy::items_after_test_module)]
@@ -1328,6 +1339,33 @@ mod tests {
     use std::sync::RwLock;
     use test_util::test_span;
     use value::{string_val, Environment, Key, Thunk, Value};
+
+    // Sync wrappers for async public functions — test code stays sync.
+    fn eval_source(input: &str) -> Result<String, String> {
+        crate::async_rt::block_on_anywhere(super::eval_source(input))
+    }
+    fn typecheck_source(input: &str) -> Result<(), String> {
+        crate::async_rt::block_on_anywhere(super::typecheck_source(input))
+    }
+    fn typecheck_source_errors_only(input: &str) -> Result<(), String> {
+        crate::async_rt::block_on_anywhere(super::typecheck_source_errors_only(input))
+    }
+    fn visit_value<V: ValueVisitor>(
+        val: &value::Value,
+        ctx: &Arc<eval::EvalContext>,
+        depth: usize,
+        visitor: &V,
+        span: ast::Span,
+    ) -> Result<V::Output, Box<error::EvalError>> {
+        crate::async_rt::block_on_anywhere(super::visit_value(val, ctx, depth, visitor, span))
+    }
+    fn value_to_display_string(
+        val: &value::Value,
+        ctx: &Arc<eval::EvalContext>,
+        span: ast::Span,
+    ) -> Result<String, Box<error::EvalError>> {
+        crate::async_rt::block_on_anywhere(super::value_to_display_string(val, ctx, span))
+    }
 
     /// Helper: wrap a Value in a materialized thunk.
     fn thunk(val: Value) -> Arc<Thunk> {
@@ -1385,7 +1423,7 @@ mod tests {
 
     fn test_ctx() -> Arc<eval::EvalContext> {
         let base_dir = test_util::test_caps().root.try_clone().unwrap();
-        let stdlib_env = builtins::create_stdlib_env().expect("stdlib failed");
+        let stdlib_env = crate::async_rt::block_on_anywhere(builtins::create_stdlib_env()).expect("stdlib failed");
         let type_stage_env = build_type_stage_env().unwrap_or_else(|| Arc::clone(&stdlib_env));
         eval::EvalContext::new(base_dir, stdlib_env, type_stage_env, false)
     }
@@ -1861,7 +1899,7 @@ mod tests {
             (env, ext_ctx)
         } else {
             let (env, stdlib_arena) =
-                builtins::create_stdlib_env_with_arena().expect("stdlib failed");
+                crate::async_rt::block_on_anywhere(builtins::create_stdlib_env_with_arena()).expect("stdlib failed");
             let base_dir = test_util::test_caps().root.try_clone().unwrap();
             let type_stage_env = build_type_stage_env().unwrap_or_else(|| Arc::clone(&env));
             let ctx = eval::EvalContext::new_sharing_arena(
@@ -1969,7 +2007,7 @@ mod tests {
         let (_type_errors, type_annotation_table, _inferred) =
             crate::async_rt::block_on_anywhere(typecheck::typecheck_surface_program_annotation_table(&program));
         let type_annotation_table = std::sync::Arc::new(type_annotation_table);
-        let env = builtins::create_stdlib_env().expect("stdlib failed");
+        let env = crate::async_rt::block_on_anywhere(builtins::create_stdlib_env()).expect("stdlib failed");
         let ctx = test_ctx();
         let thunk = crate::async_rt::block_on_anywhere(eval::eval_surface_file(
             &program,
@@ -1997,7 +2035,7 @@ mod tests {
         let (_type_errors, type_annotation_table, _inferred) =
             crate::async_rt::block_on_anywhere(typecheck::typecheck_surface_program_annotation_table(&program));
         let type_annotation_table = std::sync::Arc::new(type_annotation_table);
-        let env = builtins::create_stdlib_env().expect("stdlib failed");
+        let env = crate::async_rt::block_on_anywhere(builtins::create_stdlib_env()).expect("stdlib failed");
         let ctx = test_ctx();
         let thunk = crate::async_rt::block_on_anywhere(eval::eval_surface_file(
             &program,
@@ -2191,7 +2229,7 @@ mod tests {
         let (_type_errors, type_annotation_table, _inferred) =
             crate::async_rt::block_on_anywhere(typecheck::typecheck_surface_program_annotation_table(&program));
         let type_annotation_table = std::sync::Arc::new(type_annotation_table);
-        let env = builtins::create_stdlib_env().expect("stdlib failed");
+        let env = crate::async_rt::block_on_anywhere(builtins::create_stdlib_env()).expect("stdlib failed");
         let ctx = test_ctx();
 
         // Evaluate: this should fail because $undefined_var is not defined.

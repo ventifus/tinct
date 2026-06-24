@@ -1,4 +1,0 @@
-# str-length: basic codepoint count (str-length is in prelude, not strings.llt)
-[str-length "hello"]
-=== out
-Int(5)

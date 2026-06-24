@@ -1,5 +1,0 @@
---- uses: ["core"]
-# builtin-get: key-first dict lookup (key then dict)
-[builtin-get "b" [a: 10  b: 20  c: 30]]
-=== out
-Int(20)

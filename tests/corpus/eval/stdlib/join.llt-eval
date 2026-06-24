@@ -1,4 +1,0 @@
-# join: join list elements into a string with separator
-[join ", " ["hello" "world"]]
-=== out
-String("hello, world")

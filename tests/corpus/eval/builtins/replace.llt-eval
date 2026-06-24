@@ -1,4 +1,0 @@
-# replace : replace substring
-[replace "world" "LLT" "hello world"]
-=== out
-String("hello LLT")

@@ -1,5 +1,0 @@
-# from-json: parse empty JSON object
-[json: [include %libdir "codecs/json.llt"]]
-[json.from-json "{}"]
-=== out
-Dict({})

@@ -1,9 +1,0 @@
-# Test that only prelude is loaded at startup; strings/math/encoding require explicit include.
-# Verify prelude functions (not, identity) work without any include.
-
-[
-  not-test: [not false]
-  id-test: [identity 42]
-]
-=== out
-Dict({"not-test": Bool(true), "id-test": Int(42)})

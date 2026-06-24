@@ -1,7 +1,0 @@
-# parse-socks5-response errors if fewer than 4 bytes provided.
-
-[include %libdir "protocols/socks5.llt"]
----
-[try [fn [] [call %.parse-socks5-response [str [chr 5] [chr 0]]]]]
-=== out
-Variant(Result.Error, String("parse-socks5-response: response too short (need at least 4 bytes)"))

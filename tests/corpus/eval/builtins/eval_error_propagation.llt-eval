@@ -1,5 +1,0 @@
-# eval propagates errors from evaluated expression
-[eval [load "[/ 1 0]"]]
-=== error
-[E010] eval: expected Seq, got Program (defined at 1:1-1:24)
-  in [eval ...] at 1:1-1:24

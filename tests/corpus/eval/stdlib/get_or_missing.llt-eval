@@ -1,4 +1,0 @@
-# get-or: returns default when key is missing
-[get-or "b" 99 [a: 1]]
-=== out
-Int(99)

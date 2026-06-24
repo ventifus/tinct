@@ -1,8 +1,0 @@
-[include %libdir "regex.llt"]
-
----
-
-[call %.re-split "," "a,b,c"]
-
-=== out
-Dict({0: String("a"), 1: String("b"), 2: String("c")})

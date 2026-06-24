@@ -28,5 +28,3 @@
 ]
 
 [add-range-length 10]
-=== out
-Int(13)

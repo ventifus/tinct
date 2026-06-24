@@ -1,4 +1,0 @@
-# non-cancellable : returns a Context value (type-of reports "Context")
-[type-of [non-cancellable]]
-=== out
-String("Context")

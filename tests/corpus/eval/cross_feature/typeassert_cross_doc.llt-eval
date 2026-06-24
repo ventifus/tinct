@@ -1,7 +1,0 @@
-# Cross-feature: TypeAssert across document boundaries
-# TypeAssert on a value from a previous document; tests that type guards work across doc scopes
-[value: 42]
----
-[checked: [@[type: Int  default: 0] %.value]]
-=== out
-Dict({"checked": Int(42)})

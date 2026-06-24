@@ -1,6 +1,0 @@
-# extension: get file extension
-[include %libdir "path.llt"]
----
-[call %.extension "file.tar.gz"]
-=== out
-String("gz")

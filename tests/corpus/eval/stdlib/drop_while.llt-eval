@@ -1,3 +1,0 @@
-[drop-while [fn [let x] [< x 5]] [1 2 3 4 5 6 7]]
-=== out
-Dict({4: Int(5), 5: Int(6), 6: Int(7)})

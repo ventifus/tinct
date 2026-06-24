@@ -1,5 +1,0 @@
-[include %libdir "math.llt"]
----
-%.e
-=== out
-Float(2.718281828459045)

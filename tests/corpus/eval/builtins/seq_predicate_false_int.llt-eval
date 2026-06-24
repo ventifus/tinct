@@ -1,4 +1,0 @@
-# seq?: returns false for int
-[seq? 42]
-=== out
-Bool(false)

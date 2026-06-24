@@ -1,3 +1,0 @@
-[emit "hello"]
-=== out
-Dict({})

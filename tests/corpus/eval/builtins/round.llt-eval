@@ -1,4 +1,0 @@
-# round : round a float to nearest integer
-[round 3.5]
-=== out
-Int(4)

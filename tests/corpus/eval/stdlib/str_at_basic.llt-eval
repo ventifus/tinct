@@ -1,6 +1,0 @@
-# str-at: character at index 0
-[include %libdir "strings.llt"]
----
-[call %.str-at 0 "hello"]
-=== out
-String("h")

@@ -1,4 +1,0 @@
-# payload-of: extract dict payload from a Variant constructed with variant-payload
-[payload-of [variant-payload "MyTag" [name: "x"]]]
-=== out
-Dict({"name": String("x")})

@@ -1,9 +1,0 @@
-# Range access with negative start/end: slice uses positional (drop/take) semantics.
-# [slice -2 -1 data]: builtin-drop(-2) is a no-op (n<=0 returns sequence unchanged),
-# then builtin-take((-1) - (-2) = 1) takes the first element from each-kv.
-# Result: first entry of data is key 0, value 10.
-[data: [10 20 30 40]]
-
-[slice -2 -1 data]
-=== out
-Dict({0: Int(10)})

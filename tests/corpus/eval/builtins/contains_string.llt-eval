@@ -1,4 +1,0 @@
-# contains? : dual-dispatch on string checks substring
-[contains? "ell" "hello"]
-=== out
-Bool(true)

@@ -1,8 +1,0 @@
-[include %libdir "regex.llt"]
-
----
-
-[call %.re-replace "o" "X" "hello world"]
-
-=== out
-String("hellX wXrld")

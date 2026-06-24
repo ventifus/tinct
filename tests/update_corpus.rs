@@ -50,9 +50,9 @@ fn eval_test(
     tinct::clear_stdlib_cache();
 
     let eval_result = if cap_net.is_empty() {
-        tinct::eval_source_with_config(input, no_fs)
+        tinct::async_rt::block_on_anywhere(tinct::eval_source_with_config(input, no_fs))
     } else {
-        tinct::eval_source_with_cap_net(input, no_fs, cap_net)
+        tinct::async_rt::block_on_anywhere(tinct::eval_source_with_cap_net(input, no_fs, cap_net))
     };
 
     let (output, error) = match eval_result {
@@ -60,7 +60,7 @@ fn eval_test(
         Err(e) => (None, Some(format!("{e}"))),
     };
 
-    let warnings = match tinct::typecheck_source_errors_only(input) {
+    let warnings = match tinct::async_rt::block_on_anywhere(tinct::typecheck_source_errors_only(input)) {
         Ok(()) => None,
         Err(type_errors) => Some(type_errors),
     };
@@ -463,7 +463,7 @@ fn update_valid_corpus() {
             Err(e) => (None, Some(format!("{e}"))),
         };
 
-        let warnings = match tinct::typecheck_source_errors_only(&test.input) {
+        let warnings = match tinct::async_rt::block_on_anywhere(tinct::typecheck_source_errors_only(&test.input)) {
             Ok(()) => None,
             Err(e) => Some(e),
         };
@@ -585,9 +585,9 @@ fn update_typecheck_warnings_corpus() {
         tinct::clear_stdlib_cache();
 
         let eval_result = if test.cap_net.is_empty() {
-            tinct::eval_source_with_config(&test.input, test.no_fs)
+            tinct::async_rt::block_on_anywhere(tinct::eval_source_with_config(&test.input, test.no_fs))
         } else {
-            tinct::eval_source_with_cap_net(&test.input, test.no_fs, &test.cap_net)
+            tinct::async_rt::block_on_anywhere(tinct::eval_source_with_cap_net(&test.input, test.no_fs, &test.cap_net))
         };
 
         let (output, eval_error) = match eval_result {
@@ -619,7 +619,7 @@ fn update_typecheck_warnings_corpus() {
             );
         }
 
-        let warnings = match tinct::typecheck_source(&test.input) {
+        let warnings = match tinct::async_rt::block_on_anywhere(tinct::typecheck_source(&test.input)) {
             Ok(()) => None,
             Err(e) => Some(e),
         };

@@ -247,6 +247,41 @@ pub(crate) async fn eval_dict_core(
     let mut letrec_slots: Vec<(u32, ThunkId)> = Vec::new();
 
     for entry in entries {
+        // Pre-scan: RegisterMethods entries register method dispatch arms eagerly into the
+        // dict's env frame before any lazy values are accessible. This ensures instance
+        // declarations are visible to all entries in this dict regardless of order.
+        if let CoreExpr::RegisterMethods { arms } = &entry.node.value.node {
+            if let Some(ref env) = dict_env {
+                let mut env_guard = env.write().unwrap();
+                for (dispatch_tags, method_name, body_expr) in arms {
+                    let body_thunk = Arc::new(crate::value::Thunk::new_unevaluated_core(
+                        Arc::clone(body_expr),
+                        Arc::clone(env),
+                        Arc::clone(ctx),
+                        body_expr.span.clone(),
+                    ));
+                    let arm = crate::value::MethodArm {
+                        type_tags: dispatch_tags.clone(),
+                        body: body_thunk,
+                        span: entry.span.clone(),
+                    };
+                    // Propagate the SAME arm (same thunk, same closure over dict_env) to the
+                    // methods sink when set. This is used during stdlib bootstrap so that prelude
+                    // method arms end up in stdlib_env.methods where user code can find them via
+                    // collect_method_arms. The thunk closes over dict_env (correct: has full
+                    // prelude scope including private helpers).
+                    if let Some(sink) = ctx.methods_sink.lock().unwrap().as_ref() {
+                        sink.write()
+                            .unwrap()
+                            .insert_method_arm(method_name.clone(), arm.clone());
+                    }
+                    env_guard.insert_method_arm(method_name.clone(), arm);
+                }
+            }
+            // Skip this entry from the dict map — RegisterMethods is side-effect only.
+            continue;
+        }
+
         // Determine if this entry has a static key (CoreExpr::Str or CoreExpr::Annotated).
         // Must match resolve.rs Resolver::walk_expr Dict arm exactly — use the shared predicate.
         let is_static_key = entry

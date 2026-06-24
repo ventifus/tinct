@@ -1,5 +1,0 @@
-# Test: None constructor
-None
-
-=== out
-Variant(Maybe.None, Null)

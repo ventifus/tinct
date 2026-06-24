@@ -8,11 +8,11 @@ What would it take to replace tinct's opaque UTF-8 `String` type with first-clas
 
 1. **Retire `String`.** Replace it with `Graphemes = [List Grapheme]` — a collected list of Unicode grapheme clusters providing O(1) indexed access at whole-grapheme boundaries. No `Value::String` in the runtime, no `Type::Str` in the type checker, no `Key::String` in the dict key enum.
 
-2. **Make constrained types and multiple-dispatch work correctly.** Define a typeclass hierarchy (`Equatable`, `Hashable`, `Sortable`, `Showable`) with lexically-scoped runtime dispatch via the environment chain. Instances are real runtime bindings, not type-checker annotations only.
-
-3. **Refine what `Dict`, `Map`, and `List` are.** Establish a coherent type hierarchy: `Dict` is the fundamental heterogeneous collection; `[Map k v]` is its homogeneous typed form; `List a = [Map Int a]` is the integer-keyed specialization. Define the `Indexed` contract for O(1) access.
-
 4. **Generic dict key constraint.** Any type satisfying `Hashable` can be a dict key — not just hardcoded `String` or `Int`. `[Map k v]` uniformly requires `k: Hashable`, enforced through the typeclass system.
+
+Goals 2, 3, and 5 (typeclass hierarchy / multiple dispatch; Dict/Map/List type hierarchy; remove prelude special cases) have moved to `doc/whatif/type-foundations.md`.
+
+Non-string-specific architectural changes (collection hierarchy, typeclass dispatch, bootstrap de-special-casing) are in `doc/whatif/type-foundations.md`.
 
 ## Current State
 
@@ -168,140 +168,34 @@ Access patterns on `GraphemeStream` (not Indexed):
 
 ### Key Constraints — Equatable, Hashable, Sortable
 
-Dict keys need `Hash + Eq` (IndexMap implementation). Three-typeclass hierarchy with multimethod dispatch:
+See `doc/whatif/type-foundations.md` for the general typeclass hierarchy design (`Equatable`, `Hashable`, `Sortable`), the `HashableValue` Rust enum, and dispatch semantics.
+
+The `Grapheme`- and `Graphemes`-specific typeclass instances are defined in `stdlib/prelude.llt`:
 
 ```tinct
-# ── Prelude catch-all for cross-type Equatable comparisons ───────────────────
-# Lower priority than any concrete Equatable instance.
-# Matches only when BOTH args satisfy Equatable — not for non-Equatable types.
-
-=: [fn@Boolean [let a@Equatable b@Equatable] False]  # cross-type Equatable × Equatable → False
-<: [fn@Boolean [let a@Sortable  b@Sortable]  False]  # cross-type Sortable × Sortable → False
-
-# Three outcomes for [= a b]:
-#   Same-type Equatable   → concrete instance fires → True or False
-#   Cross-type Equatable  → catch-all fires → False
-#   Non-Equatable type    → no match anywhere → type error: no = for types Foo and Bar
-
-# ── Typeclasses ───────────────────────────────────────────────────────────────
-
-[class [let Equatable k]
-  =: [Fn@Boolean [k k]]]    # same-type equality; instances override [=] for their type
-
-[class [let Hashable k]  [Equatable k]    # Hashable implies Equatable
-  hash: [Fn@Int [k]]]                     # consistent with =: [= a b] → [= [hash a] [hash b]]
-
-[class [let Sortable k]  [Equatable k]    # Sortable implies Equatable, NOT Hashable
-  <: [Fn@Boolean [k k]]]
-
-# ── Equatable instances (more specific → higher dispatch priority) ─────────────
-
-[instance Equatable [let k@Int]:
-  [=: [fn [let a@Int b@Int] [builtin-int-eq a b]]]]
-
-[instance Equatable [let k@Boolean]:
-  [=: [fn [let a@Boolean b@Boolean]
-    [match [a b]  [True True]: True  [False False]: True  _: False]]]]
-
 [instance Equatable [let k@Grapheme]:
   [=: [fn [let a@Grapheme b@Grapheme] [builtin-grapheme-eq a b]]]]
 
 [instance Equatable [let k@Graphemes]:
   [=: [fn [let a@Graphemes b@Graphemes] [builtin-graphemes-eq a b]]]]
 
-[instance Equatable [let k@Float]:
-  [=: [fn [let a@Float b@Float] [builtin-float-eq a b]]]]
-
-# ── Dispatch semantics ────────────────────────────────────────────────────────
-
-# [= a b] dispatch (most specific first):
-#   1. Equatable Int instance       — both Int              → True/False
-#   2. Equatable Graphemes instance — both Graphemes        → True/False
-#   3. ... other concrete instances ...
-#   4. Prelude catch-all            — both @Equatable       → False (cross-type)
-#   5. No match                     — non-Equatable type    → TYPE ERROR
-#
-# Examples:
-#   [= (Int 42) (Int 43)]    → step 1 → False
-#   [= (Int 42) "hello"]     → step 4 → False  (both are Equatable)
-#   [= fn1 fn2]              → step 5 → type error (Fn is not Equatable)
-#
-# Dict key lookup: [Map k v] requires k: Hashable (implies k: Equatable).
-# All keys in a lookup are the same type k — same-type comparison only.
-# HashableValue::PartialEq is called with same-type arguments; different variants
-# is an invariant violation (debug_assert), not a designed fallback.
-```
-
-**Cross-type handling:** `[=]` and `[<]` are Rust builtins. They were already Rust builtins — this is not a change. Their implementation explicitly handles cross-type comparison: if both values have the same type, dispatch to the `Equatable`/`Sortable` instance; if types differ, return `False` directly. This cross-type-returns-False behaviour cannot be expressed as a tinct function because there is no "dispatch with fallback" mechanism — a failed constraint dispatch is a type error, not a graceful `False`.
-
-The Rust backing of `[=]` receives only same-type arguments (the type checker prevents cross-type calls). The implementation:
-
-```rust
-// builtins_core.rs — [=] operator (called only with same-type, same-variant arguments)
-fn builtin_eq(a: HashableValue, b: HashableValue) -> bool {
-    debug_assert_eq!(std::mem::discriminant(&a), std::mem::discriminant(&b),
-        "invariant violation: [=] called with different HashableValue variants");
-    a == b  // uses manually-implemented PartialEq for HashableValue
-}
-```
-
-`[<]` is identical in structure via `Sortable`. **Correctness invariant:** the `PartialEq` impl on `HashableValue` must produce the same result as the `Equatable` instances — both define structural comparison. This is enforced by construction: the Equatable instances delegate to the same `builtin-*-eq` primitives that the `PartialEq` impl uses.
-
-Instances use the correct class parameter type `b@k` — the dispatch guarantees only same-type arguments reach an instance:
-
-**`[Map k v]` requires `k: Hashable`.** Instances correctly typed — `b: k` matches the class signature `[Fn@Boolean [k k]]`:
-
-```tinct
-[instance Hashable [let k@Int]:
-  [=:    [fn [let a@Int b@Int] [builtin-int-eq a b]]
-   hash: [fn [let a@Int]       a]]]              # Int IS its own hash — the integer value itself
-
 [instance Hashable [let k@Graphemes]:
   [=:    [fn [let a@Graphemes b@Graphemes] [builtin-graphemes-eq a b]]
    hash: [fn [let a@Graphemes]             [builtin-graphemes-hash a]]]]
-   # hash of Graphemes: commutative combiner over code points of each cluster
-   # consistent with =: structurally equal Graphemes produce equal hashes
 
 [instance Hashable [let k@Grapheme]:
   [=:    [fn [let a@Grapheme b@Grapheme] [builtin-grapheme-eq a b]]
    hash: [fn [let a@Grapheme]            [builtin-grapheme-hash a]]]]
 
-[instance Hashable [let k@Boolean]:
-  [=:    [fn [let a@Boolean b@Boolean] [match [a b]  [True True]: True  [False False]: True  _: False]]
-   hash: [fn [let a@Boolean]           [match a  True: 1  False: 0]]]]
-
-[instance Sortable [let k@Int]:
-  [<: [fn [let a@Int b@Int]      [builtin-int-lt a b]]]]
-
 [instance Sortable [let k@Graphemes]:
   [<: [fn [let a@Graphemes b@Graphemes] [builtin-graphemes-lt a b]]]]  # lexicographic
 ```
 
-`UInt8` similarly for `Hashable` and `Sortable`. **`Float` is `Equatable` and `Sortable` but NOT `Hashable`** — IEEE 754 `NaN != NaN` violates the reflexivity law (`[= a a]` must be `True`), and `+0.0 == -0.0` would require equal hashes for different bit patterns. `Float` therefore has no `Hashable` instance, no `HashableValue::Float` variant, and cannot be used as a dict key. When `[= a b]` is called, the type class dispatcher looks up `=` in the environment and selects the most specific matching `Equatable` instance for the argument types. If no concrete instance matches (cross-type or non-Equatable), the catch-all fires or a type error is raised — `[=]` is the dispatch target, not the dispatcher.
-
-**Sortable superclass delegation:** `Sortable` instances declare only `<:`. The `=` requirement (imposed by the `Equatable` superclass of `Sortable`) is satisfied by the independently-registered `Equatable` or `Hashable` instance for the same type. At runtime, `[=]` and `[<]` look up separate multi-valued bindings in the environment — there is no OOP-style inheritance. The type checker verifies that both an `Equatable` instance (for `=`) and a `Sortable` instance (for `<`) exist whenever a `Sortable` constraint is required. A type that has a `Sortable` instance but no `Equatable` instance is a type error at the class declaration level.
+`UInt8` similarly for `Hashable` and `Sortable`. **`Float` is `Equatable` and `Sortable` but NOT `Hashable`** — IEEE 754 `NaN != NaN` violates the reflexivity law, and `+0.0 == -0.0` would require equal hashes for different bit patterns. `Float` therefore has no `Hashable` instance and cannot be used as a dict key.
 
 ### Dict, Map, and List — The Type Hierarchy
 
-All tinct collections are instances of one general type constructor: `[Map k v]` where `k: Hashable`. The **universal constraint is `k: Hashable`** — this replaces the hardcoded `Key { Int, String }` enum with a uniform, user-extensible rule.
-
-Three named special cases:
-
-| Name | Definition | Key | Value | Notes |
-|------|-----------|-----|-------|-------|
-| `List a` | `[Map Int a]` | `Int` | uniform `a` | ordered sequences; `collect`, auto-indexed literals |
-| `Dict` | `[Map Graphemes Any]` | `Graphemes` | heterogeneous | named-field records; bare-word keys in source |
-| `[Map k v]` | general | any `k: Hashable` | uniform `v` | user-defined maps with typed keys |
-
-`Dict` is the named-field heterogeneous collection. Bare-word field names in tinct source (`[name: "Alice"  age: 30]`) produce a `Dict` whose keys are `Graphemes` values. Before this redesign, those keys were `Key::String(Rc<str>)`; after, they are `HashableValue::Dict(...)` representing the `Graphemes` for the field name.
-
-`List a = [Map Int a]` is a transparent type alias — the type checker treats `List Int` and `[Map Int Int]` identically. `collect`, auto-indexed literals, and range results all produce `List`.
-
-`[Seq a]` is NOT a `Map` — it is a lazy cons-list defined in tinct as a recursive algebraic type. It has no key type, is not `Indexed`, and the `k: Hashable` constraint does not apply.
-
-Runtime: all `Map` variants are `Value::Dict(IndexMap<HashableValue, ThunkId>)`. The key type determines the `HashableValue` variant — `HashableValue::Int` for `List`, `HashableValue::Dict(...)` (a Graphemes) for named `Dict`.
-
-`List` is `Indexed` (via the `[Map Int T]` instance since `List` is a transparent alias). `[Seq T]` is NOT `Indexed` — it has no `Indexed` instance. Types providing the `Indexed` contract (O(1) by-key access):
+See `doc/whatif/type-foundations.md` for the full type hierarchy design. The `Indexed` contract types relevant to text and bytes:
 
 | Type | Key | Key constraint | Value | Notes |
 |------|-----|----------------|-------|-------|
@@ -405,19 +299,7 @@ Utf8Graphemes: [type Utf8Graphemes]
 
 ## `collect`
 
-```tinct
-collect: [fn@[List a] [let s@[Seq a]] ...]
-```
-
-`collect` materializes a lazy `[Seq a]` into a `List a` = `Map Int a`. Cost: O(n) to scan the full sequence and build the integer-keyed dict. Post-collect, all accesses are O(1).
-
-Access patterns:
-
-| Pattern | How | Time | Memory |
-|---------|-----|------|--------|
-| Sequential | `head`, `tail`, `map`, `filter` | O(1) per step, lazy | O(1) |
-| Single element at position n | `[head [drop n s]]` | O(n) | O(1) — no materialisation |
-| Many accesses at different positions | `[ls: [collect s]]` then `[get ls i]` | O(n) once + O(1) each | O(n) |
+The general `collect` semantics (materializing `[Seq a]` → `[List a]`) are in `doc/whatif/type-foundations.md`.
 
 For `GraphemeStream` specifically: `collect` on `[each "hello"]` produces `[0: Grapheme.Cluster{code-points:[104]} ...]` — each value is a `Grapheme` variant (single code point per ASCII character).
 
@@ -459,34 +341,11 @@ The implementation is correct-first. No `Value::String` in the runtime.
 **`Bytes` IS `Value::Dict` (integer keys, UInt8 values).**
 **`GraphemeStream` and `ByteStream` are `Value::Variant`** (Seq.Cons/Seq.End — since `Seq` is a user-defined algebraic type, not a Rust primitive).
 
-**Runtime type annotations for nominal structural types.** `Grapheme`, `Graphemes`, `Bytes`, and other nominal types defined as `[type SomeStructure]` are transparent to generic operations — their runtime value is a plain `Value::Dict`. Every value of a nominal structural type carries `[type: TheType]` in its annotation dict, making it introspectable:
-
-```tinct
-[annotation-of "hello"]          # → [type: Graphemes]
-[annotation-of [nth 0 "hello"]]  # → [type: Grapheme]
-[annotation-of [read-chunk h n]] # → [type: Bytes]
-```
-
-**Annotation change:** `[@Type value]` currently asserts and passes the value through. **Proposed:** it additionally wraps the result in `Value::Annotated { inner: value, annotation: [type: Type] }`, making the annotation introspectable at runtime via `annotation-of`.
-
-```tinct
-[@Graphemes s]    # → Value::Annotated(s, [type: Graphemes])
-foo@Graphemes: s  # binding annotation — same wrapping applied at bind time
-```
-
-`[$s]@Graphemes` is unrelated: `[$s]` constructs a 1-element dict `{0: s}`; `@Graphemes` annotates that dict. `s` itself is not wrapped.
-
-`annotation-of` is backed by `Value::Annotated { inner, annotation }` in `value.rs` and the `make-annotated` builtin. All Value operations transparently unwrap `inner` — `annotation-of` is the only operation that observes the annotation. Infrastructure already in place; currently used for functions and unit constructors.
+**Runtime type annotations for nominal structural types.** The general annotation machinery (`Value::Annotated`, `annotation-of`, `[@Type value]` wrapping, and serializer dispatch) is described in `doc/whatif/type-foundations.md`. Text-specific annotation behavior:
 
 **Text literals carry `[type: Graphemes]` implicitly.** `"hello"` always evaluates to `Value::Annotated(Value::Dict(...), [type: Graphemes])` — no explicit annotation by the programmer required. Text IS Graphemes, so the annotation is unconditional and automatic at `eval_text_lit` time.
 
-**All serializers** (SCN, JSON, YAML, and any future format) dispatch on `annotation-of` to determine output format. This is the universal rule: before serializing any value, check its annotation:
-
-- `[type: Graphemes]` → serialize as a text string in the target format, encoding the grapheme clusters using the format's required encoding (UTF-8 for JSON/YAML/SCN, or whichever codec the format specifies)
-- `[type: Bytes]` → format-appropriate byte representation (hex, base64, raw, etc.)
-- anything else → structural output per the serializer's normal rules
-
-JSON example: a `Value::Annotated` with `[type: Graphemes]` serializes as a JSON string `"hello"`, not as a nested array of arrays of ints. YAML similarly. The annotation is the contract between the runtime value and any serializer — the serializer is responsible for applying the correct codec for its output encoding.
+**Serializer dispatch for text:** a `Value::Annotated` with `[type: Graphemes]` serializes as a text string in the target format, encoding the grapheme clusters using the format's required encoding (UTF-8 for JSON/YAML/SCN). A `Value::Annotated` with `[type: Bytes]` uses format-appropriate byte representation (hex, base64, raw, etc.).
 
 **Construction points that attach runtime annotations:**
 
@@ -531,126 +390,15 @@ print: [fn@Graphemes [let ...args@Showable]
 
 `show` converts one value to `Graphemes`; `print` applies `show` to each arg and concatenates. `Showable` instances are defined for `Int`, `Float`, `Boolean`, `Graphemes` (identity), `Grapheme`, `Bytes`, and user types.
 
-**`Seq` is defined in tinct, not Rust.** Because tinct is lazy by default, `tail` in the Cons case is a thunk — no Rust magic needed:
-
-```tinct
-Seq: [type [let a]
-  [Cons head@a  tail@[Seq a]]
-  End]
-
-head: [fn@[bind: [a]] [let s@[Seq a]]
-  [match s  [Seq.Cons p]: p.head  Seq.End: [raise "head: empty sequence"]]]
-
-tail: [fn@[bind: [a]] [let s@[Seq a]]
-  [match s  [Seq.Cons p]: p.tail  Seq.End: [raise "tail: empty sequence"]]]
-```
-
-`Seq.Cons` and `Seq.End` are used with the qualified name — no prelude aliases. User code uses library functions (`cons`, `range`, `map`, `filter`) for construction and `[Seq.Cons p]` / `Seq.End` in pattern matches.
-
-**`Boolean` is defined in tinct, not Rust:**
-
-```tinct
-Boolean: [type True False]
-True:    Boolean.True
-False:   Boolean.False
-```
-
-No auto-injection — the explicit bindings `True:` and `False:` are required. The tracker task implementing auto-injection of constructor names is rejected; that mechanism is a shortcut that bypasses correctness.
+`Seq` and `Boolean` de-primitisation is in `doc/whatif/type-foundations.md` (§What Would Change).
 
 **Builtins that currently accept `Value::String`:** Each builtin is updated to accept `Value::Dict` (for `Graphemes`) or `Value::Seq` (for `GraphemeStream`). Pattern matching on `Value::String` is removed from the Rust evaluator entirely.
 
 ### Value-Keyed Dict — Eliminating the `Key` Enum
 
-**Current Rust:** `Value::Dict(IndexMap<Key, ThunkId>)` where `Key` is:
+See `doc/whatif/type-foundations.md` for the full design of `HashableValue`, the `Hash`/`Eq` semantics, and computed key expressions in dict literals.
 
-```rust
-enum Key { Int(i64), String(Rc<str>) }
-```
-
-**Problem:** `Key::String` is a shortcut that only allows strings as dict field names. With Graphemes replacing String as the text type, replacing it with `Key::Graphemes(Graphemes)` would be the same mistake — still special-casing one type. The correct design: any Hashable tinct value can be a dict key.
-
-**Proposed Rust:** `Value::Dict(IndexMap<HashableValue, ThunkId>)` where `HashableValue` is:
-
-```rust
-/// A fully-materialised tinct value that implements Hash + Eq.
-/// Only these Value variants may appear as dict keys.
-#[derive(Clone, Debug)]
-enum HashableValue {
-    Int(i64),
-    Bool(bool),                    // Boolean.True / Boolean.False
-    Dict(Vec<(HashableValue, HashableValue)>),  // pairs in insertion order
-    Variant { tag: Rc<str>, payload: Option<Box<HashableValue>> },
-}
-```
-
-Note: `#[derive(Hash, PartialEq)]` is NOT used for `Dict` — see manual implementations below.
-
-**Why `HashableValue` rather than `Value` directly:** `Value` contains `Function`, `Handle`, `Task`, and lazy `Seq` variants that cannot be hashed (no structural identity). `HashableValue` is the hashable subset — finite, fully materialised, structurally defined.
-
-**`Hash` and `Eq` semantics — verifiable properties:**
-
-1. **Consistency with tinct `[=]`:** `hash(a) == hash(b)` whenever `[= a b]` is `True`. This follows from:
-   - `[= Int(m) Int(n)]` iff `m == n` in Rust → `hash(Int(m)) == hash(Int(n))` iff `m == n` ✓ (i64 Hash)
-   - `[= Dict(a) Dict(b)]` iff same key-value pairs regardless of insertion order → hash must be ORDER-INSENSITIVE
-
-2. **Order-insensitive hashing and equality for Dict keys:** Tinct dicts have a stable insertion order for iteration, but user-facing equality `[=]` is order-insensitive: `[= [0: "a"  1: "b"] [1: "b"  0: "a"]]` = `True`. Hash must be consistent with this. Use a commutative combiner:
-
-   ```text
-   hash(Dict(pairs)) = Σ mix(hash(k), hash(v)) for each (k, v) pair
-   ```
-
-   where `mix` is a fixed bijection (e.g. splitmix64 round). Sum is commutative — insertion order does not affect it. Dict keys are unique, so pair-cancellation (the XOR weakness) does not arise. This is the same technique used by Python's `frozenset` and Rust's `AHashSet` for unordered-collection hashing.
-
-   **Manual `PartialEq` for `HashableValue::Dict`:** `#[derive(PartialEq)]` compares `Vec`s lexicographically (order-sensitive). Since dict equality is order-insensitive, `PartialEq` must be implemented manually:
-
-   ```rust
-   impl PartialEq for HashableValue {
-       fn eq(&self, other: &Self) -> bool {
-           match (self, other) {
-               (HashableValue::Int(a), HashableValue::Int(b)) => a == b,
-               (HashableValue::Bool(a), HashableValue::Bool(b)) => a == b,
-               (HashableValue::Dict(a), HashableValue::Dict(b)) => {
-                   if a.len() != b.len() { return false; }
-                   // Both sides into a HashMap, compare key-by-key order-insensitively
-                   let map: HashMap<_, _> = a.iter().collect();
-                   b.iter().all(|(k, v)| map.get(k).map_or(false, |u| u == v))
-               }
-               (HashableValue::Variant { tag: t1, payload: p1 },
-                HashableValue::Variant { tag: t2, payload: p2 }) => t1 == t2 && p1 == p2,
-               _ => false, // different variants or cross-type
-           }
-       }
-   }
-   ```
-
-   `Eq` is derived from `PartialEq` (dict equality is reflexive, symmetric, transitive).
-
-   **`Hash` for all variants** — `Hash` must be manually implemented for the full enum to keep it consistent with the manual `PartialEq`:
-   - `Int(n)` → delegate to `i64::hash`
-   - `Bool(b)` → delegate to `bool::hash`
-   - `Dict(pairs)` → commutative sum (as above)
-   - `Variant { tag, payload }` → `mix(hash(tag), hash(payload))` where `hash(None) = 0`, `hash(Some(v)) = hash(v)`
-
-3. **Cross-type:** `HashableValue::Int(42)` and `HashableValue::Dict(...)` are never equal (different enum variants). The `_ => false` arm in the manual `PartialEq` enforces this. Hash discriminants naturally differ by variant. ✓
-
-4. **Key materialisation:** Dict keys are always fully forced before insertion. `HashableValue` has no `ThunkId` — it is only constructible from materialised values. The evaluator enforces this at dict construction time by converting the key expression to `HashableValue` before lookup/insert. If a key expression evaluates to a non-hashable `Value` variant (Function, Handle, lazy Seq), this is a runtime error: "value cannot be used as a dict key."
-
-**Computed key expressions in dict literals:**
-
-Because any `Hashable` value is a valid dict key, the parser supports arbitrary expressions in key position. An expression is eagerly evaluated before insertion; its result must be `Hashable`:
-
-```tinct
-[[builtin-str "%" n]: val]    # Graphemes key from string call
-[[+ base offset]: val]         # Int key from arithmetic
-[["fixed-string"]: val]        # Graphemes key from literal (same as [fixed-string: val])
-[$computed: val]               # variable reference — already valid
-```
-
-The key expression is delimited by `]:`  — the closing bracket of the expression followed by `:` unambiguously signals a computed key entry. The evaluator materialises the key before inserting the pair into the `IndexMap<HashableValue, ThunkId>`. This replaces the `[$k: val]` variable-reference trick and eliminates helper functions like `make-entry`.
-
-**Migration from `Key` enum:**
-
-Every use of `Key::Int(n)` becomes `HashableValue::Int(n)`. Every use of `Key::String(s)` becomes a `HashableValue::Dict(...)` representing the Graphemes for that string — the same conversion as text literal evaluation.
+The text-specific migration consequence: every use of `Key::String(s)` becomes a `HashableValue::Dict(...)` representing the `Graphemes` for that string — the same conversion as text literal evaluation.
 
 **C5 — Bare-word → Graphemes:** Bare-word field names follow the text literal path: UTF-8 bytes → `[List Grapheme]` via UAX#29 grapheme segmentation. This conversion is performed entirely in Rust — the `unicode-segmentation` crate (or equivalent) provides the algorithm directly to the evaluator. `text.llt` wraps this Rust algorithm as tinct-level functions (`grapheme?`, `gcb-property`, `gcb-boundary?`, etc.) for user code; it does not define the algorithm itself. There is no bootstrap circularity: bare-word field name segmentation is available from the first instruction, regardless of which stdlib files have loaded. Non-ASCII field names (`[日本語: "value"]`) work correctly at all times — three graphemes, each a single-codepoint `[List Int]`, produced by the same Rust call used for text literals.
 
@@ -736,6 +484,8 @@ Higher-level functions are pure tinct calling only the above:
 
 **`doc/whatif/lib-net-v3.md`** covers the `Codec` typeclass, `TextEncoding`, and encoding infrastructure.
 
+The type-checking bootstrap de-special-casing (`build_prelude_env_inner()`, `PRELUDE_CACHE`, incremental env accumulation) is in `doc/whatif/type-foundations.md` (§Bootstrap and Module Structure).
+
 ## What Would Change
 
 ### Value Representation
@@ -755,32 +505,6 @@ print: [fn@Graphemes [let ...args@Showable] [join "" [map show args]]]
 ```
 
 **Impact:** Major. All call sites of `str` become `print`. All `str-*` prefixed functions either become generic `Graphemes`/`List` operations (dropping the prefix) or are removed. Interpolated string literals `i"..."` currently desugar to `[str ...]`; they must now desugar to `[print ...]`.
-
-### `Boolean`
-
-**Current:** `Bool` is a primitive Rust type variant with `Value::Bool(true/false)`.
-**Proposed:** Removed. Replaced by a tinct algebraic type in the prelude:
-
-```tinct
-Boolean: [type True False]
-True:    Boolean.True
-False:   Boolean.False
-```
-
-`Value::Bool` is deleted. The `if` builtin dispatches on `Variant { tag: "Boolean.True" }` vs `Variant { tag: "Boolean.False" }`. Note: constructor auto-injection is rejected — `True`/`False` are introduced via explicit bindings only.
-**Impact:** Breaking. All `true`/`false` literals become `True`/`False`. The existing incomplete tracker task for constructor auto-injection is rejected.
-
-### `Seq` — Defined in Tinct
-
-**Current:** `Value::Seq` is a Rust-implemented lazy cons-cell structure.
-**Proposed:** `Seq` is defined as a recursive algebraic type in tinct. Laziness comes from tinct's default lazy evaluation — `tail` is a thunk automatically:
-
-```tinct
-Seq: [type [let a]  [Cons head@a  tail@[Seq a]]  End]
-```
-
-The Rust `Value::Seq` implementation is removed. The evaluator handles this like any other nominal variant type.
-**Impact:** The current builtin `Seq` variant is replaced by a stdlib-defined recursive type.
 
 ### Text Builtins
 
@@ -874,184 +598,6 @@ grapheme?: [fn@Boolean [let cps@[List Int]]
 
 **Impact:** Clean separation. The codec (segmentation) and the type constraint (validation) operate independently. The shared GCB primitives are the only common ground.
 
-### Type System — De-primitisation
-
-**Current:** `String`, `Int`, `Bool`, `Float`, `Bytes` etc. are distinct Rust enum variants in the `Type` enum. Type resolution has two separate paths: a primitive path (`resolve_type_name`, which pattern-matches on known names and returns the corresponding variant) and an alias path (`env.get_type_alias`). A hardcoded bypass list exempts primitive names from alias lookup, routing them to the primitive path unconditionally.
-
-**Proposed:** All primitive type variants are removed from the `Type` enum. Every former primitive becomes either a TyConDef in the root type scope, a prelude typeclass, or a prelude type declaration — resolved through the same lookup mechanism as all other types. The bypass list shrinks to a single entry. The root scope is seeded at startup with TyConDefs for `Int`, `Float`, `Bytes` (and others); prelude declares `Bool`, `Seq`, `Number`, and `Never` as tinct types.
-
-The bypass list entries, resolved:
-
-- `"String"` — removed entirely; `@String` is a type error
-- `"Bool"` — replaced by `Boolean: [type True False]` in prelude; `@Bool` removed
-- `"Seq"` — replaced by `Seq: [type [let a] [Cons head@a tail@[Seq a]] End]` in prelude
-- `"Number"` — replaced by `Number: [class [let Number n]]` in prelude with instances for `Int` and `Float`; `n@Number` is a constrained TypeVar
-- `"Never"` — replaced by `Never: [type]` (empty type, no constructors) in prelude; `raise` returns `Never`
-- `"Any"` — stays; maps to `Type::Top` (the sound lattice ceiling — `τ <: Any` for all τ); remains as the canonical user-facing name for "accepts any type"
-- `"Top"` — removed; it is a redundant internal alias for `Type::Top` that leaked into the bypass list; users write `@Any`, not `@Top`
-- `"Unknown"` — becomes a TyConDef entry like all others; its special behavior (consistency relation `~`) is enforced by `is_consistent`, not by name resolution; no reason to keep it in the bypass list
-- `"Int"`, `"Float"`, `"Bytes"`, `"Handle"`, `"Dict"`, `"Map"`, `"Record"`, `"Fn"` — become TyConDef entries in the root scope, backed by Rust implementations but resolved through the env
-
-This means:
-
-- All types resolve through a single env lookup path — no separate primitive path
-- `"String"` is removed from the root scope entirely; `@String` is a type error
-- `@Number` becomes a typeclass constraint, not a primitive type
-- `@Never` resolves to the prelude-declared empty type
-- `@Unknown` remains compiler-handled (gradual typing escape hatch)
-
-**Impact:** Fundamental to the type checker. Every match arm that dispatches on a primitive type variant in `typecheck.rs`, `type_unify.rs`, `typecheck_annot.rs`, `type_def.rs`, and `builtins_core.rs` must be updated to go through TyCon env lookup instead. **The bypass list is deleted entirely** — `resolve_type_name_with_guard` is removed. All type names including `Any` and `Unknown` resolve through the unified path. This is the correct foundation for a language where prelude and stdlib define what named types mean.
-
-### Type Environment Bootstrap
-
-The type system uses two distinct environments, constructed in sequence:
-
-**Environment 1 — Type-stage env** (`Arc<RwLock<Environment>>`, thread-local): TypeNode thunks produced by evaluating `--- stage: type` sections. Supports annotation resolution and type-level programming.
-
-**Environment 2 — TypeEnv** (`TypeEnv` struct, `Rc`-shared): TyConDef entries from `[type ...]` declarations, type schemes from function signatures. Supports type inference and checking.
-
-These are separate structures. `[type ...]` declarations populate TypeEnv only. The type-stage env and TypeEnv are connected only through annotation resolution (see below).
-
-**Full bootstrap-to-user-code sequence:**
-
-| Step | Trigger | File | Section | What happens |
-|------|---------|------|---------|--------------|
-| 1 | Rust bootstrap | loader.llt | uses: | process `--- uses: ["core"]` → inject `builtin_module("core")` thunks as root type-stage env |
-| 2 | Rust bootstrap | loader.llt | stage:type | evaluate stage:type docs → child type-stage env (currently empty; wired for future use) |
-| 3 | Rust bootstrap | loader.llt | runtime | evaluate runtime sections → define eval-programs |
-| 4 | eval-programs "prelude.llt" | prelude.llt | uses: | process `--- uses:` → inject any declared modules into child type-stage env |
-| 5 | eval-programs "prelude.llt" | prelude.llt | stage:type | evaluate stage:type docs → TypeNode values, combinators, arithmetic resolvers |
-| 6 | eval-programs "prelude.llt" | prelude.llt | runtime | evaluate runtime sections → prelude runtime bindings + TyConDefs active |
-| 7 | eval-programs user-code | user file | uses: | process `--- uses:` → inject any declared modules |
-| 8 | eval-programs user-code | user file | stage:type | evaluate stage:type docs → child of prelude type-stage env |
-| 9 | eval-programs user-code | user file | runtime | evaluate runtime sections → % threading, emit, output |
-| 10 | `[include ...]` | included file | uses: | process `--- uses:` → inject any declared modules |
-| 11 | `[include ...]` | included file | stage:type | evaluate stage:type docs → child of current type-stage env |
-| 12 | `[include ...]` | included file | runtime | evaluate runtime sections |
-
-Every file boundary follows the same three-phase pattern: uses: → stage:type → runtime. Steps 10–12 repeat for each included file, recursively.
-
-**Construction sequence — three phases at every file boundary:**
-
-Every file processed by the pipeline goes through the same three phases in order: `--- uses:` → stage:type → runtime. The phases are described below for each file.
-
-**Phase description:**
-
-*`--- uses:` phase:* The file's `--- uses:` declaration is read. For each declared module, `builtin_module(name)` returns `Vec<BuiltinDef>`. Each `BuiltinDef` is wrapped as `Value::Builtin(def)` → `Arc<Thunk::new_materialized(Value::Builtin(def), Span::origin())>` and inserted into the current type-stage env by name. The type-stage env is `Arc<RwLock<Environment>>` where `Environment.bindings: IndexMap<String, Arc<Thunk>>`. After this phase the env contains the declared module's callable Rust functions.
-
-*stage:type phase:* The file's `--- stage: type` documents are evaluated. Each expression item is evaluated **independently** against the current type-stage env (not chained as in normal document evaluation — independent evaluation ensures all dicts' bindings are exported, not just the last). Each expression returns a `Value::Dict`; its top-level bindings are inserted into the type-stage env as `Arc<Thunk>` values (lazily forced on first access). The resulting env becomes the **parent** for the next file's type-stage env — lexical parent-chain inheritance, same as runtime scope.
-
-*runtime phase:* The file's runtime sections are type-checked (building TyConDef entries in TypeEnv from `[type ...]` declarations, class entries from `[class ...]`, type schemes from function annotations) and evaluated (making runtime bindings active).
-
-**Per-file details:**
-
-**loader.llt** (steps 1–3, Rust bootstrap):
-
-- `--- uses: ["core"]` → inject `builtin_module("core")` thunks as the root type-stage env
-- stage:type → currently empty; wired uniformly for future use
-- runtime → evaluate: defines `eval-programs`
-
-**prelude.llt** (steps 4–6, driven by `eval-programs "prelude.llt"`):
-
-- `--- uses:` → inject any declared modules into a child of the loader type-stage env
-- stage:type → produces: `Int`, `Float`, `Never`, `Any: [builtin-variant "TypeNode.Any"]`, `Unknown: [builtin-variant "TypeNode.Unknown"]`, type combinators (`union`, `all`, `without`, `Seq`, `Map`, `mu`), TypeNode ADT with traversal protocol (`children`, `map-children`, `as-type`), arithmetic resolvers (`AddResult`, `SubResult`, `MulResult`, `DivResult`)
-- runtime → type-check registers TyConDefs (`Grapheme`, `Graphemes`, `Boolean`, `Seq`, `Absent`, `Never`, `Number` class, etc.) and constructor schemes (`Grapheme.Cluster`, `Boolean.True`, `Boolean.False`, `Seq.Cons`, `Seq.End`) in prelude TypeEnv; evaluate makes runtime bindings active. TypeEnv cached as `PRELUDE_CACHE`.
-
-**user file** (steps 7–9, driven by `eval-programs user-code`):
-
-- `--- uses:` → inject declared modules (e.g. `--- uses: ["text"]` injects text.llt following steps 10–12 for that file before continuing)
-- stage:type → evaluated in a child of the prelude type-stage env; user type-stage bindings shadow prelude's; all prelude type-stage bindings accessible via parent chain
-- runtime → type-check registers user TyConDefs in a child TypeEnv; evaluate produces output
-
-**included file** (steps 10–12, driven by `[include ...]`):
-
-- `--- uses:` → inject declared modules
-- stage:type → evaluated in a child of the current type-stage env
-- runtime → type-check and evaluate; exports merged into the including file's env
-
-**Annotation resolution — the unified path:**
-
-`@Name` in any annotation position resolves through a single two-step lookup:
-
-1. **Type-stage env lookup:** evaluate `Name` as an expression in the type-stage env. If found, the result is a TypeNode thunk; `typenode_value_to_type` converts it to `Type::*`. This handles `@Int`, `@Float`, `@Any`, `@union`, and any name declared in a `--- stage: type` section.
-
-2. **TypeEnv tycon_defs lookup (fallback):** if not found in the type-stage env, look up `Name` in `TypeEnv.tycon_defs`. If found, convert the TyConDef to `Type::TyCon("Name")`. This handles `@Grapheme`, `@Graphemes`, `@Boolean`, `@Absent`, `@Never`, and all user-declared types.
-
-3. **Error:** if not found in either, type error: "type `Name` is not defined."
-
-`@Unknown` resolves via the type-stage env like all other names — `Unknown: [builtin-variant "TypeNode.Unknown"]` in prelude's stage:type section. Its special behavior (consistency relation `~`) is enforced by `is_consistent`, not by how the name is resolved.
-
-`@String` hits neither step: `String` has no type-stage entry and no TyConDef. Result: type error. Correct.
-
-**loader.llt and the type system:**
-
-The prelude type-stage env (step 1) and prelude TypeEnv (step 2) are built in Rust before loader.llt executes. This is necessary because type-checking requires the prelude type-stage env, and type-checking runs before user programs execute.
-
-User `--- stage: type` sections are different: they are built on-demand per-file during type-checking of user programs, which is invoked by `eval-programs` (from loader.llt) as part of the normal program execution pipeline. `build_user_type_stage_env()` creates a child of the prelude type-stage env and evaluates the user's `--- stage: type` documents into it, including processing their `--- uses:` declarations. This happens after loader.llt has run.
-
-The three `--- uses:` wiring points:
-
-| Stage | Who wires it | When |
-|-------|-------------|------|
-| Prelude `--- stage: type` | `create_type_stage_env()` in Rust | Before loader.llt |
-| Prelude runtime-stage | `eval-programs` from loader.llt | During prelude runtime evaluation |
-| User `--- stage: type` | `build_user_type_stage_env()`, invoked by `eval-programs` | During user program type-checking |
-
-**User `--- stage: type` sections:**
-
-```tinct
---- stage: type
-[
-  NullableInt: [fn [] [union Int [TypeConstructor name: "Null"]]]
-]
-```
-
-Evaluated in a child environment whose parent is the prelude type-stage env. `union`, `Int`, `TypeConstructor`, and all other prelude type-stage bindings are accessible via the parent chain — the same way prelude runtime bindings are accessible to user runtime code. The resulting child env is used for annotation resolution in that file.
-
-### Unifying Annotation Resolution with the Type-Stage
-
-**The architectural split.** Today there are two completely separate type name resolution paths:
-
-**Path 1 — Annotation resolver** (`typecheck_annot.rs`): when the user writes `@Any`, `@Int`, `@Graphemes`, the resolver matches the name string against a hardcoded table (`resolve_type_name`) and returns a `Type::*` Rust enum value directly. No environment lookup occurs.
-
-**Path 2 — Type-stage evaluator**: when the user writes `Any`, `Int`, or `Graphemes` inside a type expression body (e.g. `[type [List Grapheme]]`), the tinct evaluator looks up the name in the type-stage environment, finds a `TypeNode.*` variant, and `typenode_value_to_type` converts it to `Type::*`.
-
-These two paths have diverged. The `Any` name is the clearest diagnostic: the annotation resolver maps `"Any"` → `Type::Top` (the sound supertype), while the type-stage prelude has `Any: [builtin-variant "TypeNode.Unknown"]` (the gradual type). Same name, different semantics depending on syntactic position. This divergence is a migration artifact — the `gradual-typing-split` sprint updated Path 1 but not Path 2.
-
-**The correct architecture.** There should be one resolution path. When the user writes `@Any`, the annotation resolver should look up `Any` in the type-stage environment — the same lookup that Path 2 uses. The type-stage env is the canonical namespace for type names. The hardcoded table in `resolve_type_name` is the architectural flaw.
-
-**Concrete deletions required:**
-
-In `src/typecheck_annot.rs`:
-
-- Delete the bypass list in `resolve_type_name_with_guard` (the long `match name { "Int" | "Float" | ... }` guard)
-- Delete `resolve_type_name` (the ~70-line hardcoded match returning `Type::Int`, `Type::Str`, etc.)
-- Replace with: look up the name in the type-stage env → if found, convert via `typenode_value_to_type` → if not found, type error
-
-In `src/type_def.rs` (the `Type` enum):
-
-- Delete `Type::Str` — `String` is gone; no replacement needed
-- Delete `Type::Bool` — replaced by `Boolean` nominal variant
-- Delete `Type::Number` — replaced by `Number` typeclass
-- Delete `Type::Seq(Box<Type>)` — replaced by prelude-declared recursive `Seq` type
-- Keep `Type::Int`, `Type::Float`, `Type::Bytes` as `Type::TyCon("Int")` etc. (TyConDef-backed)
-- **Rename `Type::Top` → `Type::Any`** — the internal Rust name must match the user-facing name; `Type::Top` leaks through debug output, diagnostic messages, LSP hover text, and any code path that doesn't go through the user-facing display function; after the rename there is no mismatch
-- Keep `Type::Unknown`, `Type::Never` — these are lattice positions, not nominal types
-
-In `stdlib/prelude.llt` (the type-stage namespace):
-
-- Fix `Any: [builtin-variant "TypeNode.Unknown"]` → `Any: [builtin-variant "TypeNode.Top"]`
-- Add `TypeNode.Top` as a new Rust-backed type-stage variant (the sound supertype)
-- Keep `Unknown: [builtin-variant "TypeNode.Unknown"]` as the explicit gradual-type name
-
-In `src/builtins.rs` — the type-stage preinterning list (`build_type_stage_env`, line ~1720):
-
-**Delete this list entirely.** The preinterning pre-materialises `TypeNode.*` thunks at startup to avoid forcing a prelude thunk on first access. That cost is nanoseconds — one `builtin-variant` call, memoised after first use. The "optimisation" is not worth its costs: a Rust-side list that must be manually kept in sync with the prelude, a source of naming conflicts (the `Any`/`Unknown` divergence arose because two definitions of the same name existed in two different places), and a third bypass mechanism alongside the two being deleted in `typecheck_annot.rs`.
-
-After deletion, the prelude's lazy evaluation handles type-stage lookups naturally: first access forces the thunk (nanoseconds), all subsequent accesses hit the memoised result in O(1). The prelude is the single source of truth — no parallel Rust-side registration.
-
-**After these deletions**, writing `@Any` and using `Any` in a type-stage expression both resolve through the same env lookup to the same `Type::Any` result. `Type::Top` is renamed `Type::Any` throughout the Rust codebase — the existing `Type::Top => "Any".to_string()` display conversion is deleted because the internal name already matches. The `Any` inconsistency disappears not by fixing the annotation resolver but by eliminating it — the type-stage env becomes the single source of truth for all type names.
-
 ### Text Literals
 
 **Current:** Parsed to `Ast::StringLit`, evaluated to `Value::String(Arc<str>)`.
@@ -1082,168 +628,30 @@ Text conversion from I/O is always explicit via a Codec:
 
 **Impact:** Moderate. Any caller reading text from I/O must insert an explicit decode step. `env` and `%args` callers receive `Graphemes` directly — no decode needed since they are already text, not raw bytes.
 
-### `List` — Type Alias for `[Map Int a]`
-
-```tinct
-List: [type [let a] [Map Int a]]   # transparent type alias; Int satisfies Hashable
-```
-
-**Future direction:** Once dict keys are typed by constraint rather than concrete type, `[Map k v]` where `k: Hashable` becomes the general form. `List a = [Map Int a]` and `Dict a = [Map Graphemes a]` are then special cases of the same type constructor — `List` where the key type is `Int` (satisfying `Hashable`). This unification depends on the general constraint annotation mechanism being in place.
-
-`List a` is a type alias for `[Map Int a]` — an ordered, integer-keyed, homogeneous map. Keys need not be dense or start at zero; the only requirements are that keys are `Int` and all values are type `a`. Iteration is in insertion order (IndexMap semantics).
-
-Auto-indexed literals `["a" "b" "c"]` produce `[List T]` = `[Map Int T]` with keys 0, 1, 2 in insertion order. `collect` produces the same. Operations that create gaps (like `set` with a new key) produce a valid `[List a]` with non-contiguous keys — this is fine.
-
-**Positional vs key access:**
-
-```tinct
-# [get list k] — access by key value, O(1)
-[get ["a" "b" "c"] 1]     # → "b"  (key 1)
-
-# [nth n list] — access by insertion-order position, O(n)  — already in prelude
-[nth 1 ["a" "b" "c"]]     # → "b"  (2nd inserted)
-# nth is already in prelude; works on any Dict including [List a] = [Map Int a]
-```
-
-For dense 0..n-1 lists, `[get list n]` and `[nth n list]` are equivalent. They differ only for sparse or reordered maps.
-
-**`reindex`: normalise to dense 0..n-1**
-
-When operations produce gaps (e.g., inserting at non-contiguous keys), `reindex` compacts to dense 0..n-1 in insertion order:
-
-```tinct
-reindex: [fn@[bind: [a]  return: [List a]] [let m@[List a]]
-  [collect [map [fn [let e] e.value] [entries m]]]]
-
-# [reindex [3: "a"  7: "b"  -5: "c"]] → [0: "a"  1: "b"  2: "c"]
-# Insertion order preserved, keys renumbered 0..n-1
-```
-
-`reindex` is proposed for the prelude. It composes from existing functions: `entries` yields key-value pairs in insertion order, `map` extracts values, `collect` materialises with fresh 0..n-1 keys.
-
 ### `Showable` Instances
 
-Canonical `show` implementations for built-in types:
+The full `Showable` instance set (including `Int`, `Float`, `Boolean`, `List a`, `Map k v`) is in `doc/whatif/type-foundations.md`. Text and bytes instances:
 
 ```tinct
-[instance Showable [let t@Int]:
-  [show: [fn [let n] [builtin-int-to-graphemes n]]]]       # "42", "-5"
-
-[instance Showable [let t@Float]:
-  [show: [fn [let f] [builtin-float-to-graphemes f]]]]     # "3.14", "1.0" (always includes .)
-
-[instance Showable [let t@Boolean]:
-  [show: [fn [let b] [match b  True: "True"  False: "False"]]]]
-
 [instance Showable [let t@Graphemes]:
   [show: [fn [let gs] gs]]]                                # identity
 
 [instance Showable [let t@Grapheme]:
-  [show: [fn [let g] [$g]]]]                                       # one-element auto-indexed dict = [List Grapheme]
+  [show: [fn [let g] [$g]]]]                              # one-element auto-indexed dict = [List Grapheme]
 
 [instance Showable [let t@Bytes]:
   [show: [fn [let b]
     [join " " [map [fn [let byte] [builtin-byte-to-hex byte]] [each b]]]]]]
   # → "48 65 6c 6c 6f" (lowercase hex pairs, space-separated)
-
-[instance@[bind: [a]  constraint: [a: Showable]] Showable [let t@[List a]]:
-  [show: [fn [let xs]
-    [join "" ["[" [join " " [map show xs]] "]"]]]]]
-
-[instance@[bind: [k v]  constraint: [k: Showable  v: Showable]] Showable [let t@[Map k v]]:
-  [show: [fn [let m]
-    [join "" ["[" [join "  " [map [fn [let e] [print e.key ": " e.value]] [entries m]]] "]"]]]]]
 ```
 
 `GraphemeStream` and `ByteStream` are NOT `Showable` — lazy potentially-infinite streams cannot be rendered to text. User-defined types implement `Showable` by declaring an instance.
 
-`builtin-int-to-graphemes`, `builtin-float-to-graphemes`, and `builtin-byte-to-hex` are new Rust primitives. `builtin-byte-to-hex: Fn@Graphemes [UInt8]` returns a two-character lowercase hex pair (`"0a"`, `"ff"`).
-
-## Runtime Typeclass Dispatch — Required Changes
-
-### The Fatal Gap
-
-User-defined typeclass instance method bodies are **never called at runtime today**. `[=]`, `[<]`, `[hash]`, `[show]` all dispatch via Rust builtins (`values_equal`, `builtin_lt`, etc.) that ignore user-defined instances entirely. Equatable/Hashable/Sortable/Showable instances are **type-checker annotations only** — they verify a matching instance exists at compile time, then are discarded. This must be fixed for this whatif to work.
-
-### Type-checker Gap: Two Independent TypeVars for `[=]`
-
-The current `=` signature uses the **same TypeVar** for both parameters: `[fn [let x@a y@a] ...]`. This means `[= (Int 42) (Graphemes "hello")]` fails unification (`Int ≠ Graphemes`) before constraint checking runs — the catch-all is never reached.
-
-**Required change:** Change `=` and `<` to use **two independent constrained TypeVars**:
-
-```tinct
-# Current (wrong — same TypeVar, cross-type fails at unification):
-=: [fn@Boolean [let x@a y@a] ...]
-
-# Required (correct — independent TypeVars, cross-type reaches catch-all):
-=: [fn@Boolean [let x@a y@b  constraint: [a: Equatable  b: Equatable]] ...]
-<: [fn@Boolean [let x@a y@b  constraint: [a: Sortable   b: Sortable]]  ...]
-```
-
-With independent TypeVars, `[= (Int 42) (Graphemes "hello")]`:
-
-1. `a = Int`, `b = Graphemes` — unification succeeds (different vars, no conflict)
-2. Constraint check: `Equatable Int` ✓, `Equatable Graphemes` ✓
-3. `resolve_instance` tries concrete instances: no `Equatable k` where k = both Int and Graphemes
-4. Finds catch-all `[fn [let a@Equatable b@Equatable] False]` — matches
-5. Returns `False`
-
-`resolve_instance` already scores by specificity (fewer unresolved TypeVars wins). The concrete `Equatable Int` instance scores 0 (no unresolved vars for Int×Int); the catch-all scores 2 (two unresolved vars). Concrete always wins for same-type; catch-all wins for cross-type. **No new machinery needed on the type-checker side beyond the TypeVar signature change.**
-
-### Runtime Gap: Instance Bindings in the Environment
-
-The evaluator must execute user-defined typeclass instance method bodies. The mechanism leverages **tinct's existing environment chain** — the same lexical scope mechanism used for all other bindings.
-
-**Instances are bindings in the environment:**
-
-When `[instance Equatable [let k@Int]: [=: [fn [let a@Int b@Int] ...]]]` is evaluated, it registers the `=` implementation as a **multi-valued binding** in the current environment — an ordered list of `(type-constraints, body)` pairs alongside the name `=`. Multiple instances contribute multiple entries to the same name.
-
-This is the correct scoping model:
-
-- Instances follow **lexical scope** automatically — the existing env chain handles shadowing and module isolation
-- A locally-defined instance in user code shadows the prelude instance within its scope
-- Different modules can have different instances for the same type without conflict
-- No global table, no separate instance registry — just the environment
-
-**Method dispatch at runtime:**
-
-When `[= a b]` is evaluated:
-
-1. Look up `=` in the environment chain — finds the ordered list of `(type-constraints, body)` pairs
-2. For each entry, check if the runtime types of `a` and `b` match the type constraints (using `HashableValue` variant tags for Hashable types, or evaluating the constraint predicate)
-3. Pick the **most specific** matching entry — same specificity scoring as `resolve_instance`: fewer unconstrained type positions = more specific
-4. Execute its body with `a` and `b` as arguments
-5. If no entry matches → type error
-
-**Example — `[= (Int 42) (Graphemes "hello")]`:**
-
-1. Env lookup for `=` → ordered list: `[Int×Int body, Graphemes×Graphemes body, catch-all body]`
-2. `Int×Int`: a is Int ✓, b must be Int — b is Graphemes ✗
-3. `Graphemes×Graphemes`: a must be Graphemes — a is Int ✗
-4. `catch-all @Equatable×@Equatable`: a is Int (Equatable ✓), b is Graphemes (Equatable ✓) → **match**
-5. Execute catch-all body → `False`
-
-**Changes required:**
-
-- `src/eval.rs` / `eval_dict.rs` — `[instance ...]` declarations populate the environment's multi-valued binding for the method name, ordered by specificity
-- `src/eval_call.rs` — method call dispatch searches the multi-valued binding list for the most specific matching entry, executes its body
-- `src/environment.rs` (or equivalent) — environment must support multi-valued bindings (ordered list of implementations) for method names alongside single-valued bindings for regular names
-- `src/builtins_math.rs` — `builtin_eq`, `builtin_lt` become the implementations called by the prelude `Equatable` instances (not called directly by the evaluator — the evaluator now calls instance bodies, which call the builtins)
-- `stdlib/prelude.llt` — `[instance Equatable ...]` bodies are now genuinely executed at runtime
-
-**Impact:** All typeclass methods (`=`, `<`, `hash`, `show`, `compare`) become genuinely user-extensible and properly scoped. The Equatable, Hashable, Sortable, Showable instances specified in this whatif become real runtime behaviors. Instance scoping follows lexical scope naturally — no separate coherence enforcement needed.
+`builtin-byte-to-hex: Fn@Graphemes [UInt8]` returns a two-character lowercase hex pair (`"0a"`, `"ff"`). `builtin-int-to-graphemes` and `builtin-float-to-graphemes` are new Rust primitives (defined in text-foundations context).
 
 ## Implementation Notes
 
-### `builtin-eval` Return Type
-
-`builtin-eval` currently has `ret: Box::new(Type::Unknown)` in `src/imports.rs`. This is wrong: `Type::Unknown` is the gradual type that propagates via the consistency relation `~` and disables type checking downstream. The correct return type is not a fixed annotation at all — it is inferred from the final expression of the evaluated sequence, the same way the type checker infers the return type of any tinct function body or document.
-
-The return type of `builtin-eval doc.expressions` is the type of the last dict expression in `doc.expressions` — the same type as `%` from that document, the same as the inferred return type of an equivalent function. The three-phase pipeline ensures the type checker has already traversed those expressions before `builtin-eval` is called on them, so the type is always known.
-
-**Fix:** remove the hardcoded `Type::Unknown` return type. The type checker infers `builtin-eval`'s return type at each call site from the expressions argument, exactly as it infers the return type of any expression. The fallback for genuinely unknown expressions is `Type::Any` (the sound top type), not `Type::Unknown`.
-
-This fix makes `include` return the correct type — the exported dict of the included file — without any special-casing of `include` in the type checker. The type flows naturally: `builtin-eval` → `eval-document-runtime` → `eval-document-pipeline` → `eval-file` → `include`.
+See also `doc/whatif/type-foundations.md` for `builtin-eval` return type fix and runtime typeclass dispatch required changes.
 
 ### Display Visitor and Corpus Tests
 

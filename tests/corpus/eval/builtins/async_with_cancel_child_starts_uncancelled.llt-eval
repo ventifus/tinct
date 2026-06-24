@@ -1,5 +1,0 @@
-# with-cancel creates a child context that starts uncancelled
-
-[cancelled? [with-cancel [context]].child-ctx]
-=== out
-Bool(false)

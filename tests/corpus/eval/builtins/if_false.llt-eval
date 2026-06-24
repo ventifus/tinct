@@ -1,4 +1,0 @@
-# if : selects false branch
-[if false 1 2]
-=== out
-Int(2)

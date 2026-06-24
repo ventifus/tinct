@@ -1,4 +1,0 @@
-# not: negation
-[not true]
-=== out
-Bool(false)

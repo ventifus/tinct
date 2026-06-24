@@ -1,4 +1,0 @@
-# decimal: convert integer to decimal
-[decimal 42]
-=== out
-Decimal(42)

@@ -270,7 +270,8 @@ fn collect_free_vars(
         | CoreExpr::Str(_)
         | CoreExpr::Placeholder
         | CoreExpr::Error(_)
-        | CoreExpr::Rest(_) => {}
+        | CoreExpr::Rest(_)
+        | CoreExpr::RegisterMethods { .. } => {}
 
         // Variable references — the decision point
         CoreExpr::Var { name, .. } | CoreExpr::FreeVar(name) => {
@@ -587,7 +588,8 @@ fn collect_free_vars_in_quote(
         | CoreExpr::Annotated { .. }
         | CoreExpr::Rest(_)
         | CoreExpr::Placeholder
-        | CoreExpr::Error(_) => {}
+        | CoreExpr::Error(_)
+        | CoreExpr::RegisterMethods { .. } => {}
     }
 }
 
@@ -617,7 +619,7 @@ fn collect_pattern_bindings(pattern: &Pattern, scope: &mut HashSet<String>) {
             }
         }
         // Non-binding patterns
-        Pattern::Wildcard | Pattern::Literal(_) | Pattern::Pin(_) | Pattern::TypeTag(_) => {}
+        Pattern::Wildcard | Pattern::Literal(_) | Pattern::Pin(_) => {}
         Pattern::TypeAssertPending { inner, .. } => {
             if let Some(inner_pat) = inner {
                 collect_pattern_bindings(&inner_pat.node, scope);
@@ -1020,6 +1022,7 @@ fn core_expr_to_tinct(
                 Ok(format!("[{}: {}]", pattern_str, body_str))
             }
         }
+        CoreExpr::RegisterMethods { .. } => Ok("[instance ...]".to_string()),
     }
 }
 
@@ -1382,6 +1385,7 @@ fn core_expr_to_tinct_raw(
                 Ok(format!("[{}: {}]", ps, bs))
             }
         }
+        CoreExpr::RegisterMethods { .. } => Ok("[instance ...]".to_string()),
     }
 }
 
@@ -1389,7 +1393,7 @@ fn core_expr_to_tinct_raw(
 fn serialize_pattern(pattern: &Pattern) -> Result<String, String> {
     match pattern {
         Pattern::Wildcard => Ok("_".to_string()),
-        Pattern::TypeTag(tag) => Ok(tag.clone()),
+
         Pattern::TypeAssertPending { annotation, inner } => {
             if let Some(inner_pat) = inner {
                 let inner_str = serialize_pattern(&inner_pat.node)?;
@@ -1821,6 +1825,9 @@ impl Value {
             Value::U64(n) => Ok(format!("{n}u")),
             // Annotated is transparent — delegate to inner value.
             Value::Annotated { inner, .. } => inner.to_tinct(ctx),
+            Value::MethodDispatcher(_) => {
+                Err(format!("no tinct representation for {}", self.type_name()))
+            }
         }
     }
 }

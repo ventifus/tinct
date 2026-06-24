@@ -577,7 +577,7 @@ pub(crate) fn builtin_recv(
                         // Channel closed
                         ok_val(
                             Value::Variant {
-                                tag: "Closed".to_string(),
+                                tag: "Closed.Closed".to_string(),
                                 payload: None,
                             },
                             call_span,
@@ -623,7 +623,7 @@ pub(crate) fn builtin_recv(
                         let count_thunk_id = ctx.alloc_thunk(count_thunk);
                         ok_val(
                             Value::Variant {
-                                tag: "Lagged".to_string(),
+                                tag: "Lagged.Lagged".to_string(),
                                 payload: Some(count_thunk_id),
                             },
                             call_span,
@@ -633,7 +633,7 @@ pub(crate) fn builtin_recv(
                         // Channel closed
                         ok_val(
                             Value::Variant {
-                                tag: "Closed".to_string(),
+                                tag: "Closed.Closed".to_string(),
                                 payload: None,
                             },
                             call_span,
@@ -680,7 +680,7 @@ pub(crate) fn builtin_recv(
                         // Sender dropped before sending
                         ok_val(
                             Value::Variant {
-                                tag: "Closed".to_string(),
+                                tag: "Closed.Closed".to_string(),
                                 payload: None,
                             },
                             call_span,
@@ -868,7 +868,7 @@ pub(crate) fn builtin_try_send(
                         // Channel full: return [Full]
                         ok_val(
                             Value::Variant {
-                                tag: "Full".to_string(),
+                                tag: "Full.Full".to_string(),
                                 payload: None,
                             },
                             call_span,
@@ -878,7 +878,7 @@ pub(crate) fn builtin_try_send(
                         // Channel closed: return [Closed] variant, consistent with recv/select-once
                         ok_val(
                             Value::Variant {
-                                tag: "Closed".to_string(),
+                                tag: "Closed.Closed".to_string(),
                                 payload: None,
                             },
                             call_span,
@@ -1089,7 +1089,7 @@ pub(crate) fn builtin_select_once(
                                     // All channels closed — return [Closed]
                                     return ok_val(
                                         Value::Variant {
-                                            tag: "Closed".to_string(),
+                                            tag: "Closed.Closed".to_string(),
                                             payload: None,
                                         },
                                         call_span,
@@ -1119,7 +1119,7 @@ pub(crate) fn builtin_select_once(
                                     // All channels closed — return [Closed]
                                     return ok_val(
                                         Value::Variant {
-                                            tag: "Closed".to_string(),
+                                            tag: "Closed.Closed".to_string(),
                                             payload: None,
                                         },
                                         call_span,
@@ -1147,7 +1147,7 @@ pub(crate) fn builtin_select_once(
                                 // All channels closed — return [Closed]
                                 return ok_val(
                                     Value::Variant {
-                                        tag: "Closed".to_string(),
+                                        tag: "Closed.Closed".to_string(),
                                         payload: None,
                                     },
                                     call_span,
@@ -1179,7 +1179,7 @@ pub(crate) fn builtin_select_once(
                                     // All channels closed — return [Closed]
                                     return ok_val(
                                         Value::Variant {
-                                            tag: "Closed".to_string(),
+                                            tag: "Closed.Closed".to_string(),
                                             payload: None,
                                         },
                                         call_span,

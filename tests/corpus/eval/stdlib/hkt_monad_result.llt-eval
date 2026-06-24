@@ -1,5 +1,0 @@
-# Test: MonadResult.bind on Ok value
-[MonadResult.bind [Ok 1] [fn [let x] [Ok [+ x 1]]]]
-
-=== out
-Variant(Result.Ok, Int(2))

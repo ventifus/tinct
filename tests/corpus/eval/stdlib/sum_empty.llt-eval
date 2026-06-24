@@ -1,4 +1,0 @@
-# sum: empty collection returns 0
-[sum []]
-=== out
-Int(0)

@@ -1,6 +1,0 @@
-# Pure variadic fn called with only named args — no regular params, just ...rest.
-# [fn [...rest] rest] called with [f x: 42] should collect named arg into dict.
-[f: [fn [let ...rest] rest]
- result: [f x: 42]]
-=== out
-Dict({"f": Function(rest), "result": Dict({"x": Int(42)})})

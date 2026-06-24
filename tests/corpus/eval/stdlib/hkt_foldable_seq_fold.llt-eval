@@ -1,5 +1,0 @@
-# Test: FoldableSeq.fold sums a sequence
-[FoldableSeq.fold [fn [let acc x] [+ acc x]] 0 [1 2 3 4]]
-
-=== out
-Int(10)

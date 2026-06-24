@@ -73,7 +73,8 @@ pub(crate) fn builtin_keys(
             args[0].span.clone(),
             &ctx,
             call_span.clone(),
-        )?;
+        )
+        .await?;
 
         let origin = call_span.clone();
         let mut result = IndexMap::with_capacity(map.len());
@@ -145,7 +146,8 @@ pub(crate) fn builtin_length(
                     args[0].span.clone(),
                     &ctx,
                     call_span.clone(),
-                )?;
+                )
+                .await?;
                 ok_val(Value::Int(map.len() as i64), call_span)
             }
         }
@@ -217,7 +219,8 @@ pub(crate) fn builtin_append(
             args[1].span.clone(),
             &ctx,
             call_span.clone(),
-        )?;
+        )
+        .await?;
 
         // Compute the next integer key: max existing int key + 1, or 0 if none.
         let next_key = map
@@ -306,7 +309,8 @@ pub(crate) fn builtin_get(
             args[1].span.clone(),
             &ctx,
             call_span.clone(),
-        )?;
+        )
+        .await?;
 
         // Look up the key
         match map.get(&key) {
@@ -387,7 +391,8 @@ pub(crate) fn builtin_get_optional(
             args[1].span.clone(),
             &ctx,
             call_span.clone(),
-        )?;
+        )
+        .await?;
 
         // Look up the key
         match map.get(&key) {
@@ -458,7 +463,8 @@ pub(crate) fn builtin_each(
             args[0].span.clone(),
             &ctx,
             call_span.clone(),
-        )?;
+        )
+        .await?;
 
         // Skip to current offset position in the dict.
         let remaining = map.len().saturating_sub(offset);
@@ -555,7 +561,8 @@ pub(crate) fn builtin_each_key(
             args[0].span.clone(),
             &ctx,
             call_span.clone(),
-        )?;
+        )
+        .await?;
 
         // Skip to current offset position in the dict.
         let remaining = map.len().saturating_sub(offset);
@@ -654,7 +661,8 @@ pub(crate) fn builtin_each_kv(
             args[0].span.clone(),
             &ctx,
             call_span.clone(),
-        )?;
+        )
+        .await?;
 
         // Skip to current offset position in the dict.
         let remaining = map.len().saturating_sub(offset);
@@ -874,7 +882,8 @@ pub(crate) fn builtin_build_dict(
                                 head_thunk.span.clone(),
                                 &ctx,
                                 call_span.clone(),
-                            )?;
+                            )
+                            .await?;
 
                             // Extract key and value from the entry dict.
                             let key_id = entry_map.get(&StrKey("key")).ok_or_else(|| {
@@ -971,7 +980,8 @@ pub(crate) fn builtin_build_dict(
                     args[0].span.clone(),
                     &ctx,
                     call_span.clone(),
-                )?;
+                )
+                .await?;
                 let mut result = IndexMap::with_capacity(map.len());
                 for (key, thunk_id) in &map {
                     result.insert(key.clone(), *thunk_id);

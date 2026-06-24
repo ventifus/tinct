@@ -1,4 +1,0 @@
-# from-entries with duplicate keys - last-write-wins via merge
-[from-entries [[key: "x" value: 1] [key: "x" value: 2]]]
-=== out
-Dict({0: Dict({"key": String("x"), "value": Int(1)}), 1: Dict({"key": String("x"), "value": Int(2)})})

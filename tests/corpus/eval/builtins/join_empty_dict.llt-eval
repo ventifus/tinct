@@ -1,4 +1,0 @@
-# join on Dict: no separator applied when only one element (Dict path, singleton)
-[join "-" ["only"]]
-=== out
-String("only")

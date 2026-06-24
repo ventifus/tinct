@@ -186,6 +186,18 @@ pub struct InferState {
     /// Set by `typecheck_surface_program_with_env` after evaluating the file's type-stage
     /// documents. `None` when type-stage env building fails or when no type-stage sections exist.
     pub type_stage_env: Option<Arc<RwLock<crate::value::Environment>>>,
+    /// Pending method scheme injections from `infer_class_decl_from_surface`.
+    ///
+    /// When a `[class ...]` declaration is processed, `infer_class_decl_from_surface` builds
+    /// a `TypeScheme` for each method signature and pushes them here instead of returning them
+    /// in the return value. The caller drains this vec after each class declaration and injects
+    /// the schemes into the active `TypeEnv` (the document `env` or `dict_env`).
+    ///
+    /// This ensures method schemes are always visible to subsequent entries regardless of
+    /// which call path reaches `infer_class_decl_from_surface`, including class declarations
+    /// in dict-entry position (infer_dict Pass 0c) and in top-level document position
+    /// (typecheck_surface_document).
+    pub pending_scheme_injections: Vec<(String, crate::types::TypeScheme)>,
 }
 
 impl InferState {
@@ -211,6 +223,7 @@ impl InferState {
             resolver: None,
             resolver_injective: false,
             prelude_origin: true,
+            method_signatures: vec![],
         });
 
         // Numeric: extends Equatable (primitive instances pre-seeded below for Int/Float/Number)
@@ -222,6 +235,7 @@ impl InferState {
             resolver: None,
             resolver_injective: false,
             prelude_origin: true,
+            method_signatures: vec![],
         });
 
         // Addable: 3-parameter type class with functional dependency (a,b) → c
@@ -237,6 +251,7 @@ impl InferState {
             resolver: None,
             resolver_injective: false,
             prelude_origin: true,
+            method_signatures: vec![],
         });
 
         // Subtractable: 3-parameter type class with functional dependency (a,b) → c
@@ -252,6 +267,7 @@ impl InferState {
             resolver: None,
             resolver_injective: false,
             prelude_origin: true,
+            method_signatures: vec![],
         });
 
         // Multipliable: 3-parameter type class with functional dependency (a,b) → c
@@ -267,6 +283,7 @@ impl InferState {
             resolver: None,
             resolver_injective: false,
             prelude_origin: true,
+            method_signatures: vec![],
         });
 
         // Divisible: 3-parameter type class with functional dependency (a,b) → c
@@ -282,6 +299,7 @@ impl InferState {
             resolver: None,
             resolver_injective: false,
             prelude_origin: true,
+            method_signatures: vec![],
         });
 
         // Comparable: extends Equatable (primitive instances pre-seeded below; prelude also declares instances)
@@ -293,6 +311,7 @@ impl InferState {
             resolver: None,
             resolver_injective: false,
             prelude_origin: true,
+            method_signatures: vec![],
         });
 
         // Showable: base class (primitive instances pre-seeded below; prelude also declares instances)
@@ -304,6 +323,7 @@ impl InferState {
             resolver: None,
             resolver_injective: false,
             prelude_origin: true,
+            method_signatures: vec![],
         });
 
         // Mappable: base class (instances defined in prelude.llt; no primitive pre-seeding needed)
@@ -316,6 +336,7 @@ impl InferState {
             resolver: None,
             resolver_injective: false,
             prelude_origin: true,
+            method_signatures: vec![],
         });
 
         // Appendable: base class. Seq instance pre-seeded below.
@@ -329,6 +350,7 @@ impl InferState {
             resolver: None,
             resolver_injective: false,
             prelude_origin: true,
+            method_signatures: vec![],
         });
 
         // Indexable: 3-parameter type class with functional dependency (container, key) → value
@@ -345,6 +367,7 @@ impl InferState {
             resolver: None,
             resolver_injective: false,
             prelude_origin: true,
+            method_signatures: vec![],
         });
 
         // Concatable: 3-parameter type class with functional dependency (a, b) → c
@@ -363,6 +386,7 @@ impl InferState {
             resolver: None,
             resolver_injective: false,
             prelude_origin: true,
+            method_signatures: vec![],
         });
 
         let mut instance_env = InstanceEnv::new();
@@ -720,6 +744,7 @@ impl InferState {
             type_annotation_table: crate::ast::TypeAnnotationTable::new(),
             expects_resolved: HashMap::new(),
             type_stage_env: None,
+            pending_scheme_injections: Vec::new(),
         }
     }
 

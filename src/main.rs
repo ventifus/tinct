@@ -1449,7 +1449,7 @@ fn run_eval(
     // Resource limits are now applied globally in main() before subcommand dispatch.
 
     // Create stdlib environment
-    let env = create_stdlib_env().map_err(|e| format!("{e}"))?;
+    let env = tinct::async_rt::block_on_anywhere(create_stdlib_env()).map_err(|e| format!("{e}"))?;
     // Build type-stage environment (for builtin_eval_types). Falls back to stdlib_env if unavailable.
     let type_stage_env = tinct::build_type_stage_env().unwrap_or_else(|| Arc::clone(&env));
 
@@ -2963,7 +2963,7 @@ fn run_literate_eval(tangled: &str, config: &LiterateConfig) -> Result<(), Strin
     let base_dir = cap_std::fs::Dir::open_ambient_dir(&base_dir_path, cap_std::ambient_authority())
         .map_err(|e| format!("cannot open base directory: {e}"))?;
 
-    let env = create_stdlib_env().map_err(|e| format!("{e}"))?;
+    let env = tinct::async_rt::block_on_anywhere(create_stdlib_env()).map_err(|e| format!("{e}"))?;
     // Build type-stage environment (for builtin_eval_types). Falls back to stdlib_env if unavailable.
     let type_stage_env = tinct::build_type_stage_env().unwrap_or_else(|| Arc::clone(&env));
 
@@ -3153,7 +3153,7 @@ fn run_literate_eval(tangled: &str, config: &LiterateConfig) -> Result<(), Strin
 
     // Always serialize to JSON (emit is purely additive)
     let json =
-        visit_value(&val, &eval_ctx, 0, &JsonVisitor, thunk.definition_span()).map_err(|e| {
+        tinct::async_rt::block_on_anywhere(visit_value(&val, &eval_ctx, 0, &JsonVisitor, thunk.definition_span())).map_err(|e| {
             let mut msg = format!("{e}");
             if let Some(snippet) = tinct::render_span_snippet(tangled, e.definition_span) {
                 msg.push('\n');
@@ -3305,7 +3305,7 @@ fn run_literate_weave(
         }
     };
 
-    let env = create_stdlib_env().map_err(|e| format!("{e}"))?;
+    let env = tinct::async_rt::block_on_anywhere(create_stdlib_env()).map_err(|e| format!("{e}"))?;
     // Build type-stage environment (for builtin_eval_types). Falls back to stdlib_env if unavailable.
     let type_stage_env = tinct::build_type_stage_env().unwrap_or_else(|| Arc::clone(&env));
 
@@ -3636,7 +3636,7 @@ fn run_literate_weave(
         };
 
         // Always serialize the result to JSON (emit is additive)
-        let json = visit_value(&val, &eval_ctx, 0, &JsonVisitor, thunk.definition_span())
+        let json = tinct::async_rt::block_on_anywhere(visit_value(&val, &eval_ctx, 0, &JsonVisitor, thunk.definition_span()))
             .map_err(|e| format!("error serializing code block {} result: {e}", i + 1))?;
         let output_str = json;
 

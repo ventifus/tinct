@@ -1,5 +1,0 @@
-# drop 0 returns collection unchanged
---- uses: ["core"]
-[collect [drop 0 [seq "a" [seq "b" [seq "c" [builtin-variant "Seq.Nil"]]]]]]
-=== out
-Dict({0: String("a"), 1: String("b"), 2: String("c")})

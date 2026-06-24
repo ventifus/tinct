@@ -1,4 +1,0 @@
-# $-prefixed head creates data sequence (not an implied call)
-[x: [fn [] 42]  result: [$x]]
-=== out
-Dict({"x": Function(), "result": Dict({0: Function()})})

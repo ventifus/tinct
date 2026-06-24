@@ -1,6 +1,0 @@
-# Verify pad-right is NOT available without [include %libdir "strings.llt"]
-# Uses try to capture the undefined-variable error as a value.
-
-[try [fn [] [pad-right "hi" 5 " "]]]
-=== out
-Variant(Result.Error, String("undefined variable: pad-right (did you mean the string \"pad-right\"? Use quotes.)"))

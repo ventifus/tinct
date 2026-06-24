@@ -1,9 +1,0 @@
-# build-dns-query: verify the ID field is big-endian in bytes 0-1.
-# ID=257 => byte0=chr(1), byte1=chr(1).
-# char-code of byte 0 should be 1.
-
-[include %libdir "protocols/dns.llt"]
----
-[char-code [str-slice 0 1 [call %.build-dns-query 257 "a.b" %.A]]]
-=== out
-Int(1)

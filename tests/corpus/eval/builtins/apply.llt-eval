@@ -1,6 +1,0 @@
-# apply : call a function with args from a dict
-[f: [fn [let x y] [+ x y]]]
-
-[apply f [0: 3  1: 4]]
-=== out
-Int(7)

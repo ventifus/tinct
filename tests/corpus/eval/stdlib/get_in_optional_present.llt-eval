@@ -1,4 +1,0 @@
-# get-in?: nested lookup returns value when all keys are present
-[get-in? [a: [b: [c: 42]]] ["a" "b" "c"]]
-=== out
-Int(42)

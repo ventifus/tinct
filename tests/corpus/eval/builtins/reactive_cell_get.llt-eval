@@ -1,5 +1,0 @@
-# cell-get reads the initial value from a reactive cell
-
-[cell-get [reactive-cell 42]]
-=== out
-Int(42)

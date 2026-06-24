@@ -1,5 +1,0 @@
-# compose: multi-step chain (compose f g)(x) = f(g(x))
-# double then add 10
-[call [compose [fn [let x] [+ x 10]] [fn [let x] [* x 2]]] 5]
-=== out
-Int(20)

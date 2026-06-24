@@ -1,4 +1,0 @@
-# pick: basic key selection from dict
-[pick ["a" "b"] [a: 1  b: 2  c: 3]]
-=== out
-Dict({"a": Int(1), "b": Int(2)})

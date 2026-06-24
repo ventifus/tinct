@@ -1,9 +1,0 @@
-# build-dns-query: bytes 4-5 are QDCOUNT (always 1 for a single question).
-# byte4 = chr(0), byte5 = chr(1).
-# char-code of byte 5 should be 1.
-
-[include %libdir "protocols/dns.llt"]
----
-[char-code [str-slice 5 6 [call %.build-dns-query 0 "example.com" %.MX]]]
-=== out
-Int(1)

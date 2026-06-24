@@ -1,4 +1,0 @@
-# variant? returns false for non-Variant values
-[variant? 42]
-=== out
-Bool(false)

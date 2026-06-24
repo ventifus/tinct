@@ -2,7 +2,7 @@
 
 What would it take to allow floating-point numbers as dict keys?
 
-TODO: make this be "any comparable" as dict keys.
+TODO: make this be "any Hashable" as dict keys. But that definition excludes Float. What do do?
 
 ## Current State
 

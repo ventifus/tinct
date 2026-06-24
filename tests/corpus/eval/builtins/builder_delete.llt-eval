@@ -1,8 +1,0 @@
-# builder-delete: removes a key from the builder (returns builder for chaining)
-[builder-finish
-    [builder-delete "x"
-        [builder-set "y" 2
-            [builder-set "x" 1
-                [make-builder]]]]]
-=== out
-Dict({"y": Int(2)})

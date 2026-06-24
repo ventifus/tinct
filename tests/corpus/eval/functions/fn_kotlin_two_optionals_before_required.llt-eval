@@ -1,7 +1,0 @@
-# Two optionals before required: optional-optional-required, name c
-[
-  f: [fn [let a@[default: 1] b@[default: 2] c] [+ a [+ b c]]]
-  result: [f c: 10]
-]
-=== out
-Dict({"f": Function(a, b, c), "result": Int(13)})

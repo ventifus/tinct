@@ -101,7 +101,7 @@ pub async fn format_source_tinct_with_dir(
     // same pattern as eval_source_with_config. With EvalContext::new (clone), ThunkIds
     // stored in prelude dicts are looked up in a separate arena vec and may be invalid.
     let (env, stdlib_arena) =
-        crate::builtins::create_stdlib_env_with_arena().map_err(|e| format!("{e}"))?;
+        crate::builtins::create_stdlib_env_with_arena().await.map_err(|e| format!("{e}"))?;
     let type_stage_env = crate::imports::build_type_stage_env().unwrap_or_else(|| Arc::clone(&env));
     let ctx = EvalContext::new_sharing_arena(
         base_dir,
@@ -167,6 +167,7 @@ pub async fn format_source_tinct_with_dir(
                 _ => {
                     let display_str =
                         crate::value_to_display_string(&ok_val, &ctx, payload_thunk.span.clone())
+                            .await
                             .unwrap_or_else(|_| "<error displaying value>".to_string());
                     Err(format!("formatter Ok value is not a string: {display_str}"))
                 }
@@ -179,6 +180,7 @@ pub async fn format_source_tinct_with_dir(
                     .await
                     .map_err(|e| format!("formatter Error materialize error: {e}"))?;
                 crate::value_to_display_string(&err_val, &ctx, err_thunk.span.clone())
+                    .await
                     .unwrap_or_else(|_| "<error displaying value>".to_string())
             } else {
                 "(no message)".to_string()
@@ -188,6 +190,7 @@ pub async fn format_source_tinct_with_dir(
         _ => {
             let display_str =
                 crate::value_to_display_string(&result_val, &ctx, formatter_thunk.span.clone())
+                    .await
                     .unwrap_or_else(|_| "<error displaying value>".to_string());
             Err(format!(
                 "formatter returned non-Result value: {display_str}"
@@ -903,7 +906,6 @@ impl<'a> Formatter<'a> {
         use crate::ast::{LiteralPattern, Pattern};
         match pattern {
             Pattern::Wildcard => 1,
-            Pattern::TypeTag(tag) => tag.len(),
             Pattern::Pin(name) => name.len(), // bare name (T-1154)
             Pattern::TypeAssertPending { annotation, inner } => {
                 // [@Ann inner] or [@Ann] — 3 for "[@" + "]", annotation width, optional inner
@@ -1296,7 +1298,6 @@ impl<'a> Formatter<'a> {
         use crate::ast::{LiteralPattern, Pattern};
         match &pattern.node {
             Pattern::Wildcard => self.output.push('_'),
-            Pattern::TypeTag(tag) => self.output.push_str(tag),
             Pattern::Pin(name) => {
                 // T-1154: bare lowercase names in pattern position are now Pin.
                 // Display as the bare name (without $); this round-trips correctly.

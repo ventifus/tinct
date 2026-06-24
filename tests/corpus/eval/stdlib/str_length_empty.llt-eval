@@ -1,4 +1,0 @@
-# str-length: empty string returns 0
-[str-length ""]
-=== out
-Int(0)

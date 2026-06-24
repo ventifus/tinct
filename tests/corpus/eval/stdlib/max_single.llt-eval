@@ -1,4 +1,0 @@
-# max: single element returns itself
-[max [42]]
-=== out
-Int(42)

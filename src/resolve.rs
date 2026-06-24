@@ -387,9 +387,21 @@ pub fn resolve_surface_program(program: &SurfaceProgram) -> ResolutionTable {
 /// Extract static string-keyed names from a SurfaceExpression::Dict's entries.
 /// Bare identifier keys are normalized to `Str` by the parser's `push_value` before this
 /// function is reached, so only `Str` and `Annotated` arms are needed here.
+///
+/// InstanceDecl entries are excluded: lower.rs emits RegisterMethods for them, and
+/// eval_dict_core skips them (continue) without allocating a letrec slot. Including
+/// their names here would shift all subsequent slot indices by one.
 fn surface_dict_static_keys(entries: &[Spanned<SurfaceEntry>]) -> Vec<String> {
     entries
         .iter()
+        .filter(|entry| {
+            // Skip InstanceDecl entries — they become RegisterMethods (no letrec slot).
+            !matches!(
+                &entry.node.value.expr,
+                SurfaceExpression::Decl(decl)
+                    if matches!(decl.as_ref(), SurfaceDeclaration::InstanceDecl { .. })
+            )
+        })
         .filter_map(|entry| {
             entry
                 .node
@@ -468,9 +480,6 @@ fn collect_pattern_bindings(pattern: &Pattern, out: &mut Vec<String>) {
         }
         Pattern::Literal(_) => {
             // Literal patterns bind no variables
-        }
-        Pattern::TypeTag(_) => {
-            // TypeTag patterns (Int:, Str:, Seq:, etc.) bind no variables — type-dispatch only
         }
         Pattern::TypeAssertPending { inner, .. } => {
             if let Some(inner_pat) = inner {

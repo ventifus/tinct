@@ -445,7 +445,9 @@ mod tests {
 
     #[test]
     fn test_placeholder_force_panics() {
-        use crate::eval::materialize_sync as materialize;
+        let materialize = |t: &crate::value::Thunk, s: Option<&crate::ast::Span>, c: &std::sync::Arc<crate::eval::EvalContext>| {
+            crate::async_rt::block_on_anywhere(crate::eval::materialize(t, s, c))
+        };
         use crate::eval::EvalContext;
         use crate::value::Environment;
 

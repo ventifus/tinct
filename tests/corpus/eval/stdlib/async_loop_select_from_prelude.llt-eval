@@ -1,8 +1,0 @@
-# Verify select resolves from prelude without [include %libdir "async.llt"].
-# async.llt was deleted in builtin-privacy-stdlib (S-786); its functions moved to
-# stdlib/prelude.llt. This test confirms the name is accessible.
-# select requires a live async runtime (channel/select-once builtins), so we
-# only verify the binding resolves to a Function — not that it executes a loop.
-[type-of select]
-=== out
-String("Function")

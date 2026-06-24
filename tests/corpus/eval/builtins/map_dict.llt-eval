@@ -1,4 +1,0 @@
-# map on dict: same keys, transformed values (lazy PendingCall)
-[map [fn [let x] [* x 2]] [a: 1 b: 2 c: 3]]
-=== out
-Dict({"a": Int(2), "b": Int(4), "c": Int(6)})

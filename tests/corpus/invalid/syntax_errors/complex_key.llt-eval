@@ -1,4 +1,6 @@
-# complex-expression dict key is a parse error (new-parser; pest parser accepted [[k]: v])
-[[complex key]: value]
+# An unclosed bracket is a parse error.
+# (Formerly tested that [[call]: value] was a parse error; that form is now
+# valid computed-key syntax — see missing_closing_bracket.llt-eval for canonical test.)
+[a: 1
 === out
-without a key
+unclosed bracket

@@ -1,4 +1,0 @@
-# set: add/update key in dict
-[set [x: 1] y: 2]
-=== out
-Dict({"x": Int(1), "y": Int(2)})

@@ -1,4 +1,0 @@
-# str-bytes then bytes-str: roundtrip UTF-8
-[bytes-str [str-bytes "Hello 世界"]]
-=== out
-String("Hello 世界")

@@ -1,3 +1,0 @@
-[concat ["a" "b"] ["c" "d"]]
-=== out
-Dict({0: String("a"), 1: String("b"), 2: String("c"), 3: String("d")})

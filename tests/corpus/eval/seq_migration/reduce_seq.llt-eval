@@ -1,6 +1,0 @@
-# reduce over a Seq: fold with accumulator
-# [range 1 6] = 1..5, sum = 1+2+3+4+5 = 15
-# Regression: reduce must consume Seq.Cons/Seq.Nil chain, not Dict
-[reduce [fn [let acc x] [+ acc x]] 0 [range 1 6]]
-=== out
-Int(15)

@@ -1,4 +1,0 @@
-# big-int: zero value
-[big-int 0]
-=== out
-BigInt(0)

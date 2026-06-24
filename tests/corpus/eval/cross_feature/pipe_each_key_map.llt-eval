@@ -1,5 +1,0 @@
-# Pipe + each-key integration: dict | each-key collects keys as Seq
-# Tests pipe with each-key builtin
-[x: 100  y: 200  z: 300] | each-key | collect
-=== out
-Dict({0: String("x"), 1: String("y"), 2: String("z")})

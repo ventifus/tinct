@@ -688,7 +688,7 @@ pub fn unfold_once(rec: &Type) -> Type {
 ///
 /// Arguments are returned in application order (left-to-right): the leftmost parameter of
 /// the original `[type Foo a b]` declaration is `args[0]`, the rightmost is `args[n-1]`.
-fn extract_tycon_spine(ty: &Type) -> Option<(&str, Vec<&Type>)> {
+pub(crate) fn extract_tycon_spine(ty: &Type) -> Option<(&str, Vec<&Type>)> {
     let mut args = Vec::new();
     let mut cur = ty;
     loop {

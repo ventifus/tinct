@@ -1,5 +1,0 @@
-# Integer dot access: .0 looks up Key::Int(0) in auto-indexed dicts
-# Auto-indexed dicts [v0 v1 v2] store entries as Key::Int(0), Key::Int(1), etc.
-[10 20 30].0
-=== out
-Int(10)

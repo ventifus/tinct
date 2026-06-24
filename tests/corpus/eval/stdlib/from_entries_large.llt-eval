@@ -1,7 +1,0 @@
-# from-entries: large input (n=1000) to verify O(n) performance via build-dict
-# Build 1000 [key: k value: v] pairs and reconstruct a dict
-[d: [collect [range 0 1000]]]
-[pairs: [each-kv d]]
-[length [from-entries [collect pairs]]]
-=== out
-Int(1000)

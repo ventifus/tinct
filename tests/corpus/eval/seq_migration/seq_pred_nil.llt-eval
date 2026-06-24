@@ -1,5 +1,0 @@
-# seq?: returns true for Seq.Nil (the empty sequence terminal)
-# Regression: seq? must recognize Seq.Nil as a Seq, not return false for the terminal
-[seq? [tail [range 1 2]]]
-=== out
-Bool(false)

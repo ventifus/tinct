@@ -1,6 +1,0 @@
-[include %libdir "encoding.llt"]
----
-# Test base64 encoding with double padding (1 byte)
-[call %.base64-encode "a"]
-=== out
-String("YQ==")

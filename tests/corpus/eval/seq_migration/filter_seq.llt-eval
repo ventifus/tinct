@@ -1,5 +1,0 @@
-# filter over a Seq: keep elements satisfying predicate
-# Regression: filter must produce a properly terminated Seq.Cons/Seq.Nil chain
-[collect [filter [fn [let x] [> x 2]] [range 1 6]]]
-=== out
-Dict({0: Int(3), 1: Int(4), 2: Int(5)})

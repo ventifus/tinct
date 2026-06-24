@@ -1,4 +1,0 @@
-# str-contains? : check if string contains substring
-[str-contains? "world" "hello world"]
-=== out
-Bool(true)

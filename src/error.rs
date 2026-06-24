@@ -1473,6 +1473,24 @@ impl EvalError {
         }
     }
 
+    pub fn no_method(method_name: &str, type_names: Vec<String>, definition_span: Span) -> Self {
+        let type_list = type_names.join(", ");
+        Self {
+            kind: ErrorKind::TypeMismatch {
+                context: Some(format!("calling `{method_name}`")),
+                expected: "a registered method arm".to_string(),
+                got: format!("no match for types [{type_list}]"),
+            },
+            definition_span,
+            materialization_span: None,
+            stack: SmallVec::new(),
+            secondary_span: None,
+            macro_expansion: None,
+            blame: None,
+            pipeline_stage: None,
+        }
+    }
+
     pub fn no_instance(class_name: &str, type_tags: Vec<String>, definition_span: Span) -> Self {
         Self {
             kind: ErrorKind::NoInstance {

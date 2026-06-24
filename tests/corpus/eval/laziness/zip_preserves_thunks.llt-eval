@@ -4,5 +4,3 @@
   [zip
     [seq 1 [seq [raise "first seq tail"] []]]
     [seq 10 [seq [raise "second seq tail"] []]]]]]
-=== out
-Dict({0: Dict({0: Int(1), 1: Int(10)})})

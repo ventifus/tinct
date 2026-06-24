@@ -220,7 +220,9 @@ pub fn instantiate_scheme(
         state.levels.insert(fresh_name.clone(), level);
         var_renaming.insert(scheme.type_vars[0].clone(), fresh_name.clone());
 
-        // Copy constraints with renamed variables
+        // Copy constraints with renamed variables.
+        // For Var positions, rename using var_renaming (as before).
+        // For Ground positions, pass through unchanged — the type is already concrete.
         for constraint in &scheme.constraints {
             match constraint {
                 Constraint::Class {
@@ -229,12 +231,27 @@ pub fn instantiate_scheme(
                     origin_name: constraint_origin_name,
                     origin_span: constraint_origin_span,
                 } => {
-                    // Rename all vars in the constraint
-                    let fresh_vars: Vec<String> = vars
+                    // Rename Var positions; pass Ground positions through unchanged.
+                    // A constraint is dropped only if a Var position has no entry in var_renaming
+                    // (meaning the variable was not generalized in this scheme — should not occur
+                    // for well-formed schemes, but guard defensively).
+                    let mut all_vars_renamed = true;
+                    let fresh_args: Vec<ConstraintArg> = vars
                         .iter()
-                        .filter_map(|v| var_renaming.get(v).cloned())
+                        .map(|arg| match arg {
+                            ConstraintArg::Var(v) => {
+                                if let Some(fresh) = var_renaming.get(v) {
+                                    ConstraintArg::Var(fresh.clone())
+                                } else {
+                                    all_vars_renamed = false;
+                                    ConstraintArg::Var(v.clone()) // placeholder; will be dropped
+                                }
+                            }
+                            ConstraintArg::Ground(t) => ConstraintArg::Ground(t.clone()),
+                        })
                         .collect();
-                    if fresh_vars.len() == vars.len() {
+
+                    if all_vars_renamed {
                         // Use constraint's origin info if present, otherwise use call-site origin
                         let final_origin_name = constraint_origin_name
                             .clone()
@@ -244,7 +261,7 @@ pub fn instantiate_scheme(
 
                         constraints.push(Constraint::Class {
                             class: Arc::clone(class),
-                            vars: fresh_vars,
+                            vars: fresh_args,
                             origin_name: final_origin_name,
                             origin_span: final_origin_span,
                         });
@@ -355,7 +372,9 @@ pub fn instantiate_scheme(
             .insert(var.clone(), instantiated_type);
     }
 
-    // Copy constraints with renamed variables (from both type_vars and kind_vars)
+    // Copy constraints with renamed variables (from both type_vars and kind_vars).
+    // For Var positions, rename using var_renaming.
+    // For Ground positions, pass through unchanged.
     for constraint in &scheme.constraints {
         match constraint {
             Constraint::Class {
@@ -364,11 +383,23 @@ pub fn instantiate_scheme(
                 origin_name: constraint_origin_name,
                 origin_span: constraint_origin_span,
             } => {
-                let fresh_vars: Vec<String> = vars
+                let mut all_vars_renamed = true;
+                let fresh_args: Vec<ConstraintArg> = vars
                     .iter()
-                    .filter_map(|v| var_renaming.get(v).cloned())
+                    .map(|arg| match arg {
+                        ConstraintArg::Var(v) => {
+                            if let Some(fresh) = var_renaming.get(v) {
+                                ConstraintArg::Var(fresh.clone())
+                            } else {
+                                all_vars_renamed = false;
+                                ConstraintArg::Var(v.clone()) // placeholder; will be dropped
+                            }
+                        }
+                        ConstraintArg::Ground(t) => ConstraintArg::Ground(t.clone()),
+                    })
                     .collect();
-                if fresh_vars.len() == vars.len() {
+
+                if all_vars_renamed {
                     // Use constraint's origin info if present, otherwise use call-site origin
                     let final_origin_name = constraint_origin_name
                         .clone()
@@ -377,7 +408,7 @@ pub fn instantiate_scheme(
 
                     constraints.push(Constraint::Class {
                         class: Arc::clone(class),
-                        vars: fresh_vars,
+                        vars: fresh_args,
                         origin_name: final_origin_name,
                         origin_span: final_origin_span,
                     });
@@ -529,14 +560,20 @@ fn emit_ambiguous_constraint_diagnostics(
                 origin_name,
                 origin_span,
             } => {
-                for var in vars {
+                for arg in vars {
+                    // Ground positions are not ambiguous — they're already resolved types.
+                    // Only Var positions can be ambiguous (undischarged free variables).
+                    let var = match arg {
+                        ConstraintArg::Var(v) => v.as_str(),
+                        ConstraintArg::Ground(_) => continue,
+                    };
                     if !is_discharged(var) {
                         // Use argument-level span when available (Task 4: origin_span set during
                         // instantiate_scheme at argument type-checking sites). Fall back to the
                         // call-site span passed to this function.
                         let diag_span = origin_span.clone().unwrap_or_else(|| span.clone());
                         // Deduplicate: only emit if this (var, diag_span) pair hasn't been seen
-                        if emitted.insert((var.clone(), diag_span.clone())) {
+                        if emitted.insert((var.to_string(), diag_span.clone())) {
                             let message = if let Some(name) = origin_name {
                                 // Better message: cite the origin function and constraint class.
                                 // Drops the internal TypeVar name — user doesn't know/care about _tN.
@@ -787,36 +824,139 @@ pub fn generalize_with_doc(
                     origin_name,
                     origin_span,
                 } => {
-                    // Resolve all vars through one substitution level
-                    let resolved_vars: Vec<String> =
-                        vars.iter().map(|v| resolve_var_name(v)).collect();
-                    // Keep constraint if ALL resolved vars are generalizable
-                    if resolved_vars.iter().all(|v| generalizable_vars.contains(v)) {
+                    // Resolve Var positions through the full substitution chain.
+                    // Ground positions pass through unchanged — they are already concrete types.
+                    let resolved_args: Vec<ConstraintArg> = vars
+                        .iter()
+                        .map(|arg| match arg {
+                            ConstraintArg::Var(name) => ConstraintArg::Var(resolve_var_name(name)),
+                            ConstraintArg::Ground(t) => ConstraintArg::Ground(t.clone()),
+                        })
+                        .collect();
+
+                    // Var positions need the generalizable/discharged analysis.
+                    // Ground positions are always kept as-is — they're already concrete.
+                    // Keeping Ground out of the predicates prevents pre-ground positions from
+                    // falsely inflating `some_discharged` and triggering the FD branch when
+                    // no Var position was actually substitution-discharged.
+                    // Use owned Strings so resolved_args can be moved into whichever branch fires.
+                    let var_positions: Vec<(usize, String)> = resolved_args
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(i, arg)| match arg {
+                            ConstraintArg::Var(v) => Some((i, v.clone())),
+                            ConstraintArg::Ground(_) => None,
+                        })
+                        .collect();
+
+                    // Determine which Var positions are generalizable vs discharged.
+                    // "Discharged" means the Var was bound to a concrete type during unification.
+                    // "Generalizable" means it is a free type variable at a higher level.
+                    let some_generalizable = var_positions
+                        .iter()
+                        .any(|(_, v)| generalizable_vars.contains(v.as_str()));
+                    let all_generalizable = var_positions
+                        .iter()
+                        .all(|(_, v)| generalizable_vars.contains(v.as_str()));
+                    // `some_discharged` and `all_non_generalizable_are_discharged` apply only to
+                    // Var positions — Ground positions are excluded (they're pre-resolved, not
+                    // substitution-discharged Var positions and must not affect the FD predicate).
+                    let _some_discharged = var_positions.iter().any(|(_, v)| is_discharged(v));
+                    // A non-generalizable Var position is "OK to keep" if it is:
+                    // (a) generalizable, OR (b) discharged to a concrete type, OR
+                    // (c) FD-covered: in a determined position of some FD whose determining
+                    //     positions are ALL generalizable. FD improvement at call sites will
+                    //     resolve the determined TypeVar from the generalizable determining vars.
+                    let is_fd_covered = |var_idx: usize| -> bool {
+                        class
+                            .determines
+                            .iter()
+                            .any(|(det_positions, ded_positions)| {
+                                ded_positions.contains(&var_idx)
+                                    && det_positions.iter().all(|&det_idx| {
+                                        var_positions
+                                            .iter()
+                                            .find(|(i, _)| *i == det_idx)
+                                            .map(|(_, dv)| generalizable_vars.contains(dv.as_str()))
+                                            .unwrap_or(false)
+                                    })
+                            })
+                    };
+                    let all_non_generalizable_ok = var_positions.iter().all(|(var_idx, v)| {
+                        generalizable_vars.contains(v.as_str())
+                            || is_discharged(v)
+                            || is_fd_covered(*var_idx)
+                    });
+
+                    // Keep the constraint if:
+                    // (a) ALL vars are generalizable (fully polymorphic constraint), or
+                    // (b) SOME vars are generalizable AND all non-generalizable vars are
+                    //     discharged OR FD-covered (B-398 fix: handles both Ground positions
+                    //     and FD-determined Var positions like the result TypeVar of `+`).
+                    if all_generalizable {
+                        // Standard case: all Var positions are generalizable.
+                        // Ground positions pass through unchanged.
                         generalizable_constraints.push(Constraint::Class {
                             class: Arc::clone(class),
-                            vars: resolved_vars,
+                            vars: resolved_args,
+                            origin_name: origin_name.clone(),
+                            origin_span: origin_span.clone(),
+                        });
+                    } else if some_generalizable && all_non_generalizable_ok {
+                        // FD case: some Var positions generalizable; non-generalizable positions
+                        // are discharged or FD-covered. Store discharged positions as Ground(type);
+                        // FD-covered Var positions stay as Var — FD improvement resolves them
+                        // at call sites. instantiate_scheme freshens Var positions as usual.
+                        let constraint_args: Vec<ConstraintArg> = resolved_args
+                            .into_iter()
+                            .enumerate()
+                            .map(|(idx, arg)| match arg {
+                                ConstraintArg::Ground(t) => ConstraintArg::Ground(t),
+                                ConstraintArg::Var(resolved) => {
+                                    if generalizable_vars.contains(resolved.as_str())
+                                        || is_fd_covered(idx)
+                                    {
+                                        // Generalizable or FD-covered — keep as Var for freshening.
+                                        ConstraintArg::Var(resolved)
+                                    } else {
+                                        // Discharged via substitution — store concrete type.
+                                        let concrete = subst_snapshot
+                                            .get(resolved.as_str())
+                                            .cloned()
+                                            .unwrap_or(Type::Error);
+                                        ConstraintArg::Ground(concrete)
+                                    }
+                                }
+                            })
+                            .collect();
+                        generalizable_constraints.push(Constraint::Class {
+                            class: Arc::clone(class),
+                            vars: constraint_args,
                             origin_name: origin_name.clone(),
                             origin_span: origin_span.clone(),
                         });
                     } else {
-                        // Diagnostic: ambiguous type variable in constraint
-                        // (appears in constraint but not in the type — constraint will be silently dropped)
-                        // T2 FIX: For MPTC constraints with FDs, only flag vars that are non-generalizable
-                        // AND not covered by a FD whose determining positions are all generalizable.
-                        for (var_idx, var) in resolved_vars.iter().enumerate() {
-                            if !generalizable_vars.contains(var) && !is_discharged(var) {
+                        // Constraint cannot be kept: either no generalizable vars or some
+                        // non-generalizable non-discharged Var positions (ambiguous).
+                        // Emit T013 diagnostics for genuinely ambiguous Var positions only.
+                        // Ground positions are excluded — they are already resolved, not ambiguous.
+                        for (var_idx, var) in &var_positions {
+                            if !generalizable_vars.contains(var.as_str()) && !is_discharged(var) {
                                 // Check if this var is covered by a FD with all determining positions generalizable
                                 let is_fd_covered = class.determines.iter().any(
                                     |(det_positions, ded_positions)| {
                                         // Is this var in a determined position?
-                                        if !ded_positions.contains(&var_idx) {
+                                        if !ded_positions.contains(var_idx) {
                                             return false;
                                         }
                                         // Are ALL determining positions generalizable?
                                         det_positions.iter().all(|&det_idx| {
-                                            resolved_vars
-                                                .get(det_idx)
-                                                .map(|v| generalizable_vars.contains(v))
+                                            var_positions
+                                                .iter()
+                                                .find(|(i, _)| *i == det_idx)
+                                                .map(|(_, v)| {
+                                                    generalizable_vars.contains(v.as_str())
+                                                })
                                                 .unwrap_or(false)
                                         })
                                     },
@@ -1942,7 +2082,7 @@ mod help_suggestion_tests {
     fn test_t013_origin_name_message_format() {
         use crate::ast::{Position, Span};
         use crate::error::DiagnosticLevel;
-        use crate::type_class::{ClassDecl, Constraint};
+        use crate::type_class::{ClassDecl, Constraint, ConstraintArg};
         use std::collections::{HashMap, HashSet};
         use std::sync::Arc;
 
@@ -1955,6 +2095,7 @@ mod help_suggestion_tests {
             resolver: None,
             resolver_injective: false,
             prelude_origin: false,
+            method_signatures: vec![],
         });
 
         // Constraint with origin_name="str" (as would be set by instantiate_scheme at a VarRef)
@@ -1973,7 +2114,7 @@ mod help_suggestion_tests {
         };
         let constraint_with_origin = Constraint::Class {
             class: Arc::clone(&class),
-            vars: vec!["_t42".to_string()],
+            vars: vec![ConstraintArg::Var("_t42".to_string())],
             origin_name: Some(Arc::from("str")),
             origin_span: Some(arg_span.clone()),
         };
@@ -2053,6 +2194,7 @@ mod help_suggestion_tests {
             resolver: None,
             resolver_injective: false,
             prelude_origin: false,
+            method_signatures: vec![],
         });
 
         // Constraint WITHOUT origin info (annotation-driven, as in existing tests)

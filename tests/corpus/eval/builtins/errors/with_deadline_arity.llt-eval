@@ -1,7 +1,0 @@
-# builtin-with-deadline: calling with 2 arguments instead of 3 produces a user error (E080)
-# The ClockCap gate requires 3 positional args: (ClockCap, Context, Timestamp).
---- uses: ["core"]
-[builtin-with-deadline [builtin-context] 1000]
-=== error
-[E080] with-deadline expects 3 arguments, got 2 (defined at 3:1-3:47)
-  in [builtin-with-deadline ...] at 3:1-3:47

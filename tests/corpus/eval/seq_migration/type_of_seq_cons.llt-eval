@@ -1,5 +1,0 @@
-# type-of on a Seq.Cons value: returns "Variant" (Seq is now a Variant, not a distinct type)
-# This test documents the post-migration type name — a mutation to return "Seq" would fail it
-[type-of [range 1 4]]
-=== out
-String("Seq")

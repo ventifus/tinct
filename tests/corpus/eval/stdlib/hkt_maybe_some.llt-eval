@@ -1,5 +1,0 @@
-# Test: Some constructor
-[Some 42]
-
-=== out
-Variant(Maybe.Some, Int(42))

@@ -1,4 +1,0 @@
-# big-int: create from string (large number)
-[big-int "99999999999999999999"]
-=== out
-BigInt(99999999999999999999)

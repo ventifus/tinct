@@ -25,8 +25,8 @@
   wg-timestamp: [fn []
     [now-ns: [timestamp-nanos [now %clock]]]
     [concat
-      [bytes BigEndian [@UInt64 [+ [/ now-ns 1000000000] 4611686018427387914]]]
-      [bytes BigEndian [@UInt32 [mod now-ns 1000000000]]]]]
+      [bytes ByteOrder.BigEndian [@UInt64 [+ [/ now-ns 1000000000] 4611686018427387914]]]
+      [bytes ByteOrder.BigEndian [@UInt32 [mod now-ns 1000000000]]]]]
 
   # Build a NoiseConfig for WireGuard's Noise_IKpsk2 handshake from a WireguardConfig.
   # pattern IKpsk2: initiator knows responder's static key; PSK injected at mix step 2.
@@ -48,8 +48,8 @@
   wg-frame-initiation: [fn [let cfg@WireguardConfig sender-index@WgSessionIndex noise-msg@Bytes]
     [mac1-key: [blake2s [concat [str-bytes wg-label-mac1] cfg.peer-key]]]
     [msg-body: [concat
-      [bytes LittleEndian [@WgMessageType 1]]
-      [bytes LittleEndian sender-index]
+      [bytes ByteOrder.LittleEndian [@WgMessageType 1]]
+      [bytes ByteOrder.LittleEndian sender-index]
       noise-msg]]
     [concat msg-body [wg-mac mac1-key msg-body] [bytes-zero 16]]]
 
@@ -60,9 +60,9 @@
   wg-frame-response: [fn [let cfg@WireguardConfig sender-index@WgSessionIndex receiver-index@WgSessionIndex noise-msg@Bytes]
     [mac1-key: [blake2s [concat [str-bytes wg-label-mac1] cfg.peer-key]]]
     [msg-body: [concat
-      [bytes LittleEndian [@WgMessageType 2]]
-      [bytes LittleEndian sender-index]
-      [bytes LittleEndian receiver-index]
+      [bytes ByteOrder.LittleEndian [@WgMessageType 2]]
+      [bytes ByteOrder.LittleEndian sender-index]
+      [bytes ByteOrder.LittleEndian receiver-index]
       noise-msg]]
     [concat msg-body [wg-mac mac1-key msg-body] [bytes-zero 16]]]
 
@@ -84,9 +84,9 @@
 [
   # Named domain types with fixed byte-order encodings per the WireGuard spec.
   # WireGuard uses little-endian for all integer fields (§5.4).
-  WgMessageType:  [type UInt32@[encoding: LittleEndian]]   # 4-byte LE message type (§5.4.2, §5.4.3, §5.4.6)
-  WgSessionIndex: [type UInt32@[encoding: LittleEndian]]   # 4-byte LE sender/receiver index (§5.4.2, §5.4.3)
-  WgNonce:        [type UInt64@[encoding: LittleEndian]]   # 8-byte LE nonce counter (§5.4.6)
+  WgMessageType:  [type UInt32@[encoding: ByteOrder.LittleEndian]]   # 4-byte LE message type (§5.4.2, §5.4.3, §5.4.6)
+  WgSessionIndex: [type UInt32@[encoding: ByteOrder.LittleEndian]]   # 4-byte LE sender/receiver index (§5.4.2, §5.4.3)
+  WgNonce:        [type UInt64@[encoding: ByteOrder.LittleEndian]]   # 8-byte LE nonce counter (§5.4.6)
 
   WireguardConfig: [type
     [private-key:   [Bytes 32]
@@ -152,9 +152,9 @@
     [h: [blake2s [concat h cfg.public-key]]]
     # Read Initiation message (148 bytes): type(4) sender-index(4) e(32) encrypted-s(48) encrypted-timestamp(28) mac1(16) mac2(16)
     [msg1: [read h 148]]
-    [msg1-type:     [@WgMessageType [uint32 LittleEndian [slice msg1 0 4]]]]
+    [msg1-type:     [@WgMessageType [uint32 ByteOrder.LittleEndian [slice msg1 0 4]]]]
     [if [not [= msg1-type 1]] [error "WireGuard: expected Initiation message (type 1)"] null]
-    [sender-idx:    [@WgSessionIndex [uint32 LittleEndian [slice msg1 4 8]]]]
+    [sender-idx:    [@WgSessionIndex [uint32 ByteOrder.LittleEndian [slice msg1 4 8]]]]
     [re-pub:        [slice msg1 8 40]]           # unencrypted-ephemeral (32 bytes)
     [enc-static:    [slice msg1 40 88]]          # encrypted-static (32 + 16 AEAD tag)
     [enc-timestamp: [slice msg1 88 116]]         # encrypted-timestamp (12 + 16 AEAD tag)
@@ -176,7 +176,7 @@
     [ck:     [slice both2 0  32]]
     [k-es:   [slice both2 32 64]]
     # Step 3: decrypt initiator static key
-    [nonce0: [concat [0 0 0 0] [bytes LittleEndian [@UInt64 0]]]]
+    [nonce0: [concat [0 0 0 0] [bytes ByteOrder.LittleEndian [@UInt64 0]]]]
     [rs-plain: [match [chacha20-poly1305-open k-es nonce0 enc-static h]
       [Result.Ok p]:    p
       [Result.Error _]: [error "WireGuard: failed to decrypt initiator static key"]]]
@@ -196,13 +196,13 @@
     [k-psk:  [slice all4 64 96]]
     [h: [blake2s [concat h psk-h]]]
     # Step 6: decrypt timestamp (validates message freshness)
-    [nonce1: [concat [0 0 0 0] [bytes LittleEndian [@UInt64 1]]]]
+    [nonce1: [concat [0 0 0 0] [bytes ByteOrder.LittleEndian [@UInt64 1]]]]
     [_: [match [chacha20-poly1305-open k-psk nonce1 enc-timestamp h]
       [Result.Ok _]:    null
       [Result.Error _]: [error "WireGuard: failed to decrypt timestamp"]]]
     [h: [blake2s [concat h enc-timestamp]]]
     # Build Response message (92 bytes): type(4)=2 sender-index(4) receiver-index(4) e(32) encrypted-nothing(16) mac1(16) mac2(16)
-    [my-sender-idx: [@WgSessionIndex [uint32 LittleEndian [crypto-random 4]]]]
+    [my-sender-idx: [@WgSessionIndex [uint32 ByteOrder.LittleEndian [crypto-random 4]]]]
     [eph-resp: [x25519-keypair]]
     # Mix responder ephemeral into ck, h
     [h: [blake2s [concat h eph-resp.public]]]
@@ -221,14 +221,14 @@
     [ck:    [slice both7 0  32]]
     [k-resp: [slice both7 32 64]]
     # Encrypt empty payload for Response "encrypted-nothing" field (16-byte AEAD tag)
-    [nonce2: [concat [0 0 0 0] [bytes LittleEndian [@UInt64 0]]]]
+    [nonce2: [concat [0 0 0 0] [bytes ByteOrder.LittleEndian [@UInt64 0]]]]
     [enc-nothing: [chacha20-poly1305-seal k-resp nonce2 [] h]]
     [h: [blake2s [concat h enc-nothing]]]
     # Build message 2 body (before mac1/mac2)
     [msg2-body: [concat
-      [bytes LittleEndian [@WgMessageType 2]]
-      [bytes LittleEndian my-sender-idx]
-      [bytes LittleEndian sender-idx]
+      [bytes ByteOrder.LittleEndian [@WgMessageType 2]]
+      [bytes ByteOrder.LittleEndian my-sender-idx]
+      [bytes ByteOrder.LittleEndian sender-idx]
       eph-resp.public
       enc-nothing]]
     # mac1 over msg2-body, keyed with hash("mac1----" || initiator-static)
@@ -262,7 +262,7 @@
     [h: [blake2s [concat h cfg.peer-key]]]
     # Generate ephemeral key pair and sender index
     [eph: [x25519-keypair]]
-    [sender-index: [@WgSessionIndex [uint32 LittleEndian [crypto-random 4]]]]
+    [sender-index: [@WgSessionIndex [uint32 ByteOrder.LittleEndian [crypto-random 4]]]]
     # Mix initiator ephemeral into ck, h
     [h: [blake2s [concat h eph.public]]]
     [ck-h1: [hkdf-extract [Blake2s] ck eph.public]]
@@ -275,7 +275,7 @@
     [ck:    [slice both2 0  32]]
     [k-es:  [slice both2 32 64]]
     # Encrypt initiator static key
-    [nonce0: [concat [0 0 0 0] [bytes LittleEndian [@UInt64 0]]]]
+    [nonce0: [concat [0 0 0 0] [bytes ByteOrder.LittleEndian [@UInt64 0]]]]
     [enc-static: [chacha20-poly1305-seal k-es nonce0 cfg.public-key h]]
     [h: [blake2s [concat h enc-static]]]
     # DH(initiator-static, responder-static) = ss
@@ -293,13 +293,13 @@
     [h: [blake2s [concat h psk-h]]]
     # Encrypt timestamp (TAI64N, 12 bytes)
     [ts: [wg-timestamp]]
-    [nonce1: [concat [0 0 0 0] [bytes LittleEndian [@UInt64 1]]]]
+    [nonce1: [concat [0 0 0 0] [bytes ByteOrder.LittleEndian [@UInt64 1]]]]
     [enc-timestamp: [chacha20-poly1305-seal k-psk nonce1 ts h]]
     [h: [blake2s [concat h enc-timestamp]]]
     # Build Initiation message body (116 bytes before mac1/mac2)
     [msg1-body: [concat
-      [bytes LittleEndian [@WgMessageType 1]]
-      [bytes LittleEndian sender-index]
+      [bytes ByteOrder.LittleEndian [@WgMessageType 1]]
+      [bytes ByteOrder.LittleEndian sender-index]
       eph.public
       enc-static
       enc-timestamp]]
@@ -310,7 +310,7 @@
     [write h msg1]
     # Read Response message (92 bytes): type(4)=2 sender-index(4) receiver-index(4) e(32) enc-nothing(16) mac1(16) mac2(16)
     [resp: [read h 92]]
-    [resp-type: [@WgMessageType [uint32 LittleEndian [slice resp 0 4]]]]
+    [resp-type: [@WgMessageType [uint32 ByteOrder.LittleEndian [slice resp 0 4]]]]
     [if [not [= resp-type 2]] [error "WireGuard: expected Response message (type 2)"] null]
     [re-pub: [slice resp 12 44]]   # unencrypted-ephemeral (bytes 12-44)
     [enc-nothing: [slice resp 44 60]]   # encrypted-nothing (0 + 16 AEAD tag)
@@ -331,7 +331,7 @@
     [ck:    [slice both7 0  32]]
     [k-resp: [slice both7 32 64]]
     # Decrypt enc-nothing to authenticate Response
-    [nonce2: [concat [0 0 0 0] [bytes LittleEndian [@UInt64 0]]]]
+    [nonce2: [concat [0 0 0 0] [bytes ByteOrder.LittleEndian [@UInt64 0]]]]
     [_: [match [chacha20-poly1305-open k-resp nonce2 enc-nothing h]
       [Result.Ok _]:    null
       [Result.Error _]: [error "WireGuard: failed to authenticate Response message"]]]
@@ -351,7 +351,7 @@
       [Result.Ok nonce]:
         [if [>= nonce 9223372036854775807] [error "WireGuard: nonce exhausted — rekey required"] null]
         [send conn.tx-nonce [+ nonce 1]]
-        [nonce-bytes: [bytes LittleEndian [@WgNonce nonce]]]   # WireGuard §5.4.6: nonce: WgNonce
+        [nonce-bytes: [bytes ByteOrder.LittleEndian [@WgNonce nonce]]]   # WireGuard §5.4.6: nonce: WgNonce
         [ciphertext: [chacha20-poly1305-seal conn.tx-key [concat [0 0 0 0] nonce-bytes] data []]]
         [write conn.underlying [concat [bytes 4] [0 0 0 0] nonce-bytes ciphertext]]]]
 
@@ -380,7 +380,7 @@
       [Result.Ok nonce]:
         [if [= nonce 18446744073709551615] [error "WgDataCodec.encode: nonce exhausted — rekey required"] null]
         [send conn.tx-nonce [+ nonce 1]]
-        [nonce-bytes: [bytes LittleEndian [@WgNonce nonce]]]
+        [nonce-bytes: [bytes ByteOrder.LittleEndian [@WgNonce nonce]]]
         [ciphertext:  [chacha20-poly1305-seal conn.tx-key [concat [0 0 0 0] nonce-bytes] plaintext []]]
         # type(1)=4, reserved(3)=0, receiver-index(4)=0 (simplified; index negotiated in handshake),
         # nonce(8) little-endian, ciphertext

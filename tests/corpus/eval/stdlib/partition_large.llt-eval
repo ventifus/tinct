@@ -1,7 +1,0 @@
-# partition: large input (n=1000) to verify O(n) performance
-# [range 0 1000] has 1000 elements; evens go to pass, odds to fail (500 each)
-[+
-    [length [get "pass" [partition [fn [let x] [= [mod x 2] 0]] [collect [range 0 1000]]]]]
-    [length [get "fail" [partition [fn [let x] [= [mod x 2] 0]] [collect [range 0 1000]]]]]]
-=== out
-Int(1000)

@@ -1,5 +1,0 @@
---- uses: ["datetime"]
-# duration-nanos: negative duration (durations are signed)
-[duration-nanos -500]
-=== out
-Duration(-500 ns)

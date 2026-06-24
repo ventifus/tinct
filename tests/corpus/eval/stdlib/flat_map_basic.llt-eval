@@ -1,5 +1,0 @@
-# flat-map: map a function returning lists, then flatten one level
-# f(x) returns [x, x*x]: flat-map gives [1 1 2 4 3 9]
-[flat-map [fn [let x] [$x [* x x]]] [1 2 3]]
-=== out
-Dict({0: Int(1), 1: Int(1), 2: Int(2), 3: Int(4), 4: Int(3), 5: Int(9)})

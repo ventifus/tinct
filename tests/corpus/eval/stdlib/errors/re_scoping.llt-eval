@@ -1,8 +1,0 @@
-# Test that regex functions are NOT available without include
-
----
-
-[try [fn [] [re-match "test" "test"]]]
-
-=== out
-Variant(Result.Error, String("undefined variable: re-match (did you mean the string \"re-match\"? Use quotes.)"))

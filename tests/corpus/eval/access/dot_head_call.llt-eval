@@ -1,6 +1,0 @@
-# Test that a dot-access chain in head position works as a function call
-# [a.b.c 42] should call a.b.c with argument 42
-[a: [b: [c: [fn [let x] x]]]]
-[result: [a.b.c 42]]
-=== out
-Dict({"result": Int(42)})

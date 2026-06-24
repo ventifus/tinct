@@ -1,7 +1,0 @@
-# builtin-* aliases are accessible via --- uses: ["core"]
---- uses: ["core"]
-[
-  a: [builtin-lt 1 2]
-]
-=== out
-Dict({"a": Bool(true)})

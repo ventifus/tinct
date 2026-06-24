@@ -1,9 +1,13 @@
-# Pattern::Dict matching a Variant with dict payload
-# When a Variant has a dict payload, a dict pattern should auto-unpack and match its fields
+# Non-case constructor arm does not bind the payload variable (T-1154).
+# [Shape.Circle payload]: fires (match succeeds) but payload is NOT bound.
+# Using payload.r in the body gives E002.
+# Correct form: [case [let payload] [Shape.Circle payload] payload.r]
 [
-  [type Config [ServerCfg host: Str port: Int] [LocalCfg]]
-  cfg: [ServerCfg host: "localhost" port: 8080]
-  [match cfg [host h  port p]: [str h ":" [str p]]]
+  Shape: [type [Circle r: Int]]
+  sh:    [Shape.Circle r: 5]
+  area:  [match sh
+    [Shape.Circle payload]: payload.r
+    _:                      0]
 ]
 === error
-[E002] undefined variable: ServerCfg (defined at 4:9-4:18)
+[E002] undefined variable: payload (did you mean the string "payload"? Use quotes.) (defined at 8:22-8:29) (accessed at 8:22-8:29)

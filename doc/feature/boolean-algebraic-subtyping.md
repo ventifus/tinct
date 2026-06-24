@@ -1,8 +1,6 @@
 # Boolean-Algebraic Subtyping
 
-Implemented 2026-05-09 (`bas-core` sprint). Replaces Rémy-style row variables with
-Boolean-Algebraic Subtyping (BAS); the type algebra becomes a distributive Boolean
-lattice of union, intersection, and negation types.
+Replaces Rémy-style row variables with Boolean-Algebraic Subtyping (BAS); the type algebra becomes a distributive Boolean lattice of union, intersection, and negation types.
 
 ## Overview
 

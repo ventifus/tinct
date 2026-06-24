@@ -1,4 +1,0 @@
-# range: empty sequence when start >= end
-[collect [range 5 5]]
-=== out
-Dict({})

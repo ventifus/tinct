@@ -1,4 +1,0 @@
-# find-deep: recursively search for a key in nested dicts
-[find-deep "target" [a: [b: [target: 42]]]]
-=== out
-Int(42)

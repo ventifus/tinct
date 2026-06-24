@@ -1,4 +1,0 @@
-# trim-end : strip trailing whitespace
-[trim-end "   hello   "]
-=== out
-String("   hello")

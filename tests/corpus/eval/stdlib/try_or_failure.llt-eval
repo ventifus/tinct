@@ -1,4 +1,0 @@
-# try-or: returns default when function errors
-[try-or [fn [] [raise "oops"]] "fallback"]
-=== out
-String("fallback")

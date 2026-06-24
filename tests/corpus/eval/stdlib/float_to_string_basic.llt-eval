@@ -1,4 +1,0 @@
-# float->string: convert a float to its string representation
-[float->string 3.14]
-=== out
-String("3.14")

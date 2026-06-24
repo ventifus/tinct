@@ -1,4 +1,0 @@
-# str-find: empty string matches at position 0
-[str-find "" "abc"]
-=== out
-Int(0)

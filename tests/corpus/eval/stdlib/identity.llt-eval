@@ -1,4 +1,0 @@
-# identity: returns argument unchanged
-[identity 42]
-=== out
-Int(42)

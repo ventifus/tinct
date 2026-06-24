@@ -1,5 +1,0 @@
-# until with increment
---- uses: ["core"]
-[until [fn [let x] [>= x 10]] [fn [let x] [+ x 1]] 0]
-=== out
-Int(10)

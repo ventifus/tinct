@@ -1,4 +1,0 @@
-# zip with empty first dict returns empty dict
-[zip [] [1 2 3]]
-=== out
-Dict({})

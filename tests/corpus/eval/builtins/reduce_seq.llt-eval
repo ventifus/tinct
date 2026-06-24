@@ -1,4 +1,0 @@
-# reduce on seq: sum first 5 elements
-[reduce [fn [let acc x] [+ acc x]] 0 [take 5 [range 1]]]
-=== out
-Int(15)

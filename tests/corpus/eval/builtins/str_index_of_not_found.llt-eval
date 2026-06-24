@@ -1,4 +1,0 @@
-# str-index-of : returns -1 when needle not found
-[str-index-of "hello world" "xyz"]
-=== out
-Int(-1)

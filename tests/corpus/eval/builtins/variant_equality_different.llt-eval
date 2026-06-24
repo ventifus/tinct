@@ -1,5 +1,0 @@
-# Variants with different tags are not equal
-[Red: [variant "Red"] Blue: [variant "Blue"]]
-[= Red Blue]
-=== out
-Bool(false)

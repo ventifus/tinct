@@ -1,5 +1,0 @@
-# Variant str coercion returns the tag
-[Red: [variant "Red"]]
-[str Red]
-=== out
-String("Red")

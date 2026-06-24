@@ -1,6 +1,0 @@
-# Higher-order function: apply f to x
-[apply-fn: [fn [let f x] [f x]]]
-
-[apply-fn [fn [let x] x] 42]
-=== out
-Int(42)

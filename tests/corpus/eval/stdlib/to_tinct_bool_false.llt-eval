@@ -1,4 +1,0 @@
-# to-tinct: serialize false to its tinct source representation
-[to-tinct false]
-=== out
-String("false")

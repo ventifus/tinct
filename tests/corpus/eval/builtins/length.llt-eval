@@ -1,4 +1,0 @@
-# length : number of entries in a dict
-[length [a: 1  b: 2  c: 3]]
-=== out
-Int(3)

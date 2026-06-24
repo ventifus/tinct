@@ -1613,7 +1613,7 @@ parse → expand_surface_program → desugar → resolve → typecheck → eval
 
 **`gensym`:** Produces names of the form `ℊꜱʏᴍ⧼prefix⧽N` (`ℊ` U+210A, `ꜱʏᴍ` small-cap letters, `⧼⧽` U+29FC/29FD angle brackets). These codepoints require deliberate IME input — collision with user-written identifiers is practically impossible. Names are unique but not stable across evaluation orders. Wrap the returned string with `ident` to obtain a `VarRef` AST node.
 
-**`macro-error`:** `[macro-error span-dict message]` terminates expansion with `ErrorKind::MacroError` (E012) at the given span. `[span-of expr]` extracts the source span from any AST node as a dict. Together they enable macros to report precise, call-site-attributed errors.
+**`macro-error`:** `[macro-error message]` or `[macro-error message node]` terminates expansion with `ErrorKind::MacroError` (E012). With one argument, uses the call site span. With two arguments and an AST node, uses the node's span. This enables macros to report precise, call-site-attributed errors.
 
 **`splice`:** A macro returns `SurfaceExpression::UnquoteSplice` to inject multiple forms into the surrounding dict context. `UnquoteSplice` in expression position is an expansion-time error.
 

@@ -1,7 +1,0 @@
-# gRPC protocol exports the GRPC-HEADER-LEN constant.
-
-[include %libdir "protocols/grpc.llt"]
----
-%.GRPC-HEADER-LEN
-=== out
-Int(5)

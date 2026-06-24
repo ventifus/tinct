@@ -1,4 +1,0 @@
-# nth: get element by positive index
-[nth 1 ["a" "b" "c"]]
-=== out
-String("b")

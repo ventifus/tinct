@@ -1,5 +1,0 @@
-# Test: MonadMaybe.bind on Some value
-[MonadMaybe.bind [Some 42] [fn [let x] [Some [+ x 1]]]]
-
-=== out
-Variant(Maybe.Some, Int(43))

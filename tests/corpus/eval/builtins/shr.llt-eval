@@ -1,3 +1,0 @@
-[call $shr 256 4]
-=== out
-Int(16)

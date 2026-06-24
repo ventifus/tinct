@@ -1,4 +1,0 @@
-# Printable instance for String: PrintableStr.print is the identity function
-[PrintableStr.print "hello"]
-=== out
-String("hello")

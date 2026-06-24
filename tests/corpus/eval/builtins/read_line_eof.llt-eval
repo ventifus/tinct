@@ -1,7 +1,0 @@
-# builtin-read-line: returns [] on EOF (empty string-handle)
---- uses: ["core"]
-[h: [string-handle ""]]
-[result: [builtin-read-line h]]
-[= result []]
-=== out
-Bool(true)

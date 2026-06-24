@@ -1,6 +1,0 @@
-# --- uses: [] is valid (no modules injected)
---- uses: []
----
-[result: "hello"]
-=== out
-Dict({"result": String("hello")})

@@ -1,4 +1,0 @@
-# remove: remove a key from a dict
-[remove "b" [a: 1 b: 2 c: 3]]
-=== out
-Dict({"a": Int(1), "c": Int(3)})

@@ -1,4 +1,0 @@
-# str-chars : convert string to sequence of characters
-[head [str-chars "abc"]]
-=== out
-String("a")

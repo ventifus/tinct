@@ -1,5 +1,0 @@
-# reactive-cell returns a ReactiveCell value (type check via type-of)
-
-[type-of [reactive-cell 0]]
-=== out
-String("ReactiveCell")

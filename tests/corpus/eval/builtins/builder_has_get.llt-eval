@@ -1,8 +1,0 @@
-# builder: builder-has? and builder-get on a live builder
-[call [fn [let b]
-    [has: [builder-has? "k" b]
-     val: [builder-get "k" b]
-     missing: [builder-has? "no-such-key" b]]]
- [builder-set "k" 7 [make-builder]]]
-=== out
-Dict({"has": Bool(true), "val": Int(7), "missing": Bool(false)})

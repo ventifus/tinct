@@ -1,5 +1,0 @@
-# Test that http2-session enforces arity (3 args: cap base_url opts)
-[http2-session "placeholder"]
-
-=== error
-[E002] undefined variable: http2-session (did you mean the string "http2-session"? Use quotes.) (defined at 1:2-1:15)

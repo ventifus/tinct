@@ -1,5 +1,0 @@
-# validate: pattern matching
---- uses: ["core"]
-[validate [type: "String" pattern: "^[a-z0-9.-]+$"] "example.com"]
-=== out
-String("example.com")

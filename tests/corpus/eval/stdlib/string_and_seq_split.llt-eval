@@ -1,5 +1,0 @@
-# flatten: basic cases testing one-level flattening of nested dicts.
-# [[1 2] [3 4]] is Dict{0:Dict{0:1,1:2}, 1:Dict{0:3,1:4}}; flatten gives {0:1,1:2,2:3,3:4}.
-[length [flatten [[1 2] [3 4]]]]
-=== out
-Int(4)

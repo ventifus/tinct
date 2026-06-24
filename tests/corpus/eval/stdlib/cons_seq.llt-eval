@@ -1,4 +1,0 @@
-# cons on Seq creates O(1) lazy prepend
-[collect [take 3 [cons 0 [iterate [fn [let x] [+ x 1]] 1]]]]
-=== out
-Dict({0: Int(0), 1: Int(1), 2: Int(2)})

@@ -1,5 +1,0 @@
-# tail: returns Seq.Nil for single-element seq
---- uses: ["core"]
-[tail [seq 1 [builtin-variant "Seq.Nil"]]]
-=== out
-Dict({})

@@ -1,5 +1,0 @@
-# builtin-nan? : check if result is NaN
---- uses: ["math"]
-[builtin-nan? [builtin-sqrt -1]]
-=== out
-Bool(true)

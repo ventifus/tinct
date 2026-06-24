@@ -1,7 +1,0 @@
-# Range access returns a dict with keys in the specified range
-# Range is half-open: [start, end)
-[data: [0: "a"  1: "b"  2: "c"  3: "d"  4: "e"]]
-
-[slice 1 4 data]
-=== out
-Dict({1: String("b"), 2: String("c"), 3: String("d")})

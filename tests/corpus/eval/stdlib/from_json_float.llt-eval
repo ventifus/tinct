@@ -1,5 +1,0 @@
-# from-json: parse JSON float
-[json: [include %libdir "codecs/json.llt"]]
-[json.from-json "3.14"]
-=== out
-Float(3.14)

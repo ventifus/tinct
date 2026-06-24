@@ -1,9 +1,0 @@
-# Named arg with @[default: ...] annotation syntax
-# Positional arg x, named arg using @[default: N] annotation
-# Note: the original test used [fn [x ...rest default: 10] ...] which is rejected by
-# the parser ("parameter after variadic parameter"). This test uses @[default:] syntax
-# instead. A proper variadic+named integration test is tracked in TODO.md.
-[f: [fn [let x default@[default: 10]] [+ x default]]
- result: [f 5 default: 100]]
-=== out
-Dict({"f": Function(x, default), "result": Int(105)})

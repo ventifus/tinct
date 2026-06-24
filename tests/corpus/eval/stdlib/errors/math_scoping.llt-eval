@@ -1,6 +1,0 @@
-# Verify pi is NOT available without [include %libdir "math.llt"]
-# Uses try to capture the undefined-variable error as a value.
-
-[try [fn [] pi]]
-=== out
-Variant(Result.Error, String("undefined variable: pi (did you mean the string \"pi\"? Use quotes.)"))

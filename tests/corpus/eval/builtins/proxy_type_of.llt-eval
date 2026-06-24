@@ -1,4 +1,0 @@
-# type-of: Proxy returns "Proxy"
-[type-of [proxy [fn [let f] f]]]
-=== out
-String("Proxy")

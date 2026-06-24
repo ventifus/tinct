@@ -1,3 +1,0 @@
-[call $bxor 5 3]
-=== out
-Int(6)

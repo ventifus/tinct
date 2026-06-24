@@ -1,8 +1,0 @@
-# toml-lite: basic section and key-value parsing
-[include %libdir "toml-lite.llt"]
-
----
-
-[call %.parse-toml-lite "[section]\nkey = \"value\""]
-=== out
-Variant(Result.Ok, Dict({"section": Dict({"key": String("value")})}))

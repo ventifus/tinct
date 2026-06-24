@@ -1,4 +1,0 @@
-# join on dict with string values
-[join ", " ["hello" "world" "foo"]]
-=== out
-String("hello, world, foo")

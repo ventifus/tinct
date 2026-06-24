@@ -1,4 +1,0 @@
-# exists : check if a path exists within a DirCap
-[call $exists %cwd "Cargo.toml"]
-=== out
-Bool(true)

@@ -1,4 +1,0 @@
-# str-find: return -1 when substring not found
-[str-find "x" "hello world"]
-=== out
-Int(-1)

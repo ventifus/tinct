@@ -1,8 +1,0 @@
-# Test do-notation with MonadResult: desugars to MonadResult.bind calls
-# [do MonadResult [x: [Ok 1]] [Ok [+ x 1]]]
-# → [MonadResult.bind [Ok 1] [fn [x] [Ok [+ x 1]]]]
-# → [Ok 2]
-[do MonadResult [x: [Ok 1]] [Ok [+ x 1]]]
-
-=== out
-Variant(Result.Ok, Int(2))

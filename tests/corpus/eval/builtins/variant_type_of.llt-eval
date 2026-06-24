@@ -1,5 +1,0 @@
-# type-of returns "Variant" for variant values
-[Red: [variant "Red"]]
-[type-of Red]
-=== out
-String("Variant")

@@ -5,7 +5,9 @@
 
 use std::fs;
 use std::path::PathBuf;
-use tinct::typecheck_source;
+fn typecheck_source(input: &str) -> Result<(), String> {
+    tinct::async_rt::block_on_anywhere(tinct::typecheck_source(input))
+}
 
 fn main() {
     let errors_dir = PathBuf::from("tests/corpus/eval/errors");

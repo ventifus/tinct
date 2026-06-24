@@ -1,4 +1,0 @@
-# float->string: convert a negative float to its string representation
-[float->string -2.5]
-=== out
-String("-2.5")

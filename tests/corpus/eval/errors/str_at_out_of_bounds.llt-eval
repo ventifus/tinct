@@ -3,14 +3,14 @@
 ---
 [call %.str-at 10 "hello"]
 === error
-[E080] str-at: index 10 out of bounds for string of length 5 (defined at stdlib/prelude.llt:2496:28-2496:47)
-  --> stdlib/prelude.llt:2496:28-2496:47
+[E080] str-at: index 10 out of bounds for string of length 5 (defined at stdlib/prelude.llt:2471:28-2471:47)
+  --> stdlib/prelude.llt:2471:28-2471:47
    |
-  2496 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2471 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
-  in [builtin-raise ...] at stdlib/prelude.llt:2496:28-2496:47
+  in [builtin-raise ...] at stdlib/prelude.llt:2471:28-2471:47
    |
-  2496 | """]: [fn [let msg@String] [builtin-raise msg]]
+  2471 | """]: [fn [let msg@String] [builtin-raise msg]]
        |                            ^^^^^^^^^^^^^^^^^^^
   in materialized at 75:5-77:29
   in [if ...] at 75:5-77:29

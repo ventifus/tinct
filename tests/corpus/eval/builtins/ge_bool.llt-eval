@@ -1,5 +1,0 @@
-# >= : greater-than-or-equal on Bool (derived from <)
-# Runtime treats Bool as orderable; type checker does not (Bool not Comparable).
-[>= true true]
-=== out
-Bool(true)

@@ -1,6 +1,0 @@
-# Bracket access with integer key (migrated to get)
-[data: [0: "zero"  1: "one"  2: "two"]]
-
-[get 1 data]
-=== out
-String("one")

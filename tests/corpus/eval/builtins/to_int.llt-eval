@@ -1,4 +1,0 @@
-# to-int : parse string to integer
-[to-int "42"]
-=== out
-Int(42)

@@ -463,7 +463,7 @@ mod tests {
 
     fn test_ctx() -> Arc<EvalContext> {
         let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();
-        let stdlib_env = crate::builtins::create_stdlib_env().expect("stdlib failed");
+        let stdlib_env = crate::async_rt::block_on_anywhere(crate::builtins::create_stdlib_env()).expect("stdlib failed");
         crate::eval::EvalContext::new(base_dir, Arc::clone(&stdlib_env), stdlib_env, false)
     }
 

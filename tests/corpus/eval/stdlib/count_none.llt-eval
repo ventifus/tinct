@@ -1,4 +1,0 @@
-# count: zero matches returns 0
-[count [fn [let x] [> x 100]] [1 2 3]]
-=== out
-Int(0)

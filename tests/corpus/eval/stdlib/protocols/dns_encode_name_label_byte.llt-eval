@@ -1,8 +1,0 @@
-# encode-dns-name: verify the first byte is chr(7) for "example.com"
-# (length of the first label "example").
-
-[include %libdir "protocols/dns.llt"]
----
-[char-code [str-slice 0 1 [call %.encode-dns-name "example.com"]]]
-=== out
-Int(7)

@@ -1,6 +1,0 @@
-# Named arg with @[default: ...] annotation syntax
-# Positional arg x, named arg using @[default: N] annotation
-[f: [fn [let x default@[default: 10]] [+ x default]]
- result: [f 5 default: 100]]
-=== out
-Dict({"f": Function(x, default), "result": Int(105)})

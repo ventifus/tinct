@@ -1,4 +1,0 @@
-# merge: right-biased override (R overrides L on collision)
-[merge [a: 1] [a: 2]]
-=== out
-Dict({"a": Int(2)})

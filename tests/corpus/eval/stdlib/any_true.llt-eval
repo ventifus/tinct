@@ -1,4 +1,0 @@
-# any? - returns true when at least one element matches predicate
-[any? [fn [let x] [> x 3]] [1 2 5]]
-=== out
-Bool(true)

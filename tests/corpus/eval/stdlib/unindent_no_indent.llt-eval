@@ -1,7 +1,0 @@
-# unindent: no indentation (anchor line is empty)
-[unindent "
-line one
-line two
-"]
-=== out
-String("line one\nline two")

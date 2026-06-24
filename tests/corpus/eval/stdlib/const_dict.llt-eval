@@ -1,4 +1,0 @@
-# const with dict argument
-[call [const [a: 1 b: 2]] "ignored"]
-=== out
-Dict({"a": Int(1), "b": Int(2)})

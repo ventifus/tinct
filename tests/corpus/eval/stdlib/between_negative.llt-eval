@@ -1,4 +1,0 @@
-# between: negative value below range
-[call [between 0 255] -1]
-=== out
-Bool(false)

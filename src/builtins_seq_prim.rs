@@ -17,9 +17,6 @@ use indexmap::IndexMap;
 
 use crate::builtins::{expect_one_arg, ok_val, reject_named, MAX_COLLECT_SIZE};
 use crate::error::{EvalError, EvalResult};
-// builtin_collect uses synchronous materialization (spine-strict by design —
-// all Seq elements must be forced before constructing the Dict index).
-use crate::eval::materialize_sync as materialize;
 use crate::value::{make_seq_cons, BuiltinArgs, Key, Thunk, Value};
 
 /// `seq`: Low-level cons constructor for lazy linked-list sequences.
@@ -71,7 +68,7 @@ pub(crate) fn builtin_head(
             } if tag == "Seq.Cons" => {
                 // Materialize the payload dict to extract the "head" key
                 let payload_thunk = ctx.get_thunk(payload_id);
-                let payload_val = materialize(&payload_thunk, None, &ctx)?;
+                let payload_val = crate::eval::materialize(&payload_thunk, None, &ctx).await?;
                 match payload_val {
                     Value::Dict(ref dict) => {
                         if let Some(head_id) = dict.get(&Key::String("head".into())) {
@@ -128,7 +125,7 @@ pub(crate) fn builtin_tail(
             } if tag == "Seq.Cons" => {
                 // Materialize the payload dict to extract the "tail" key
                 let payload_thunk = ctx.get_thunk(payload_id);
-                let payload_val = materialize(&payload_thunk, None, &ctx)?;
+                let payload_val = crate::eval::materialize(&payload_thunk, None, &ctx).await?;
                 match payload_val {
                     Value::Dict(ref dict) => {
                         if let Some(tail_id) = dict.get(&Key::String("tail".into())) {
@@ -223,7 +220,7 @@ pub(crate) fn builtin_collect(
                 } if tag == "Seq.Cons" => {
                     // Materialize the payload dict to extract head and tail
                     let payload_thunk = ctx.get_thunk(payload_id);
-                    let payload_val = materialize(&payload_thunk, None, &ctx)?;
+                    let payload_val = crate::eval::materialize(&payload_thunk, None, &ctx).await?;
                     match payload_val {
                         Value::Dict(ref dict) => {
                             let head_id =
@@ -264,7 +261,7 @@ pub(crate) fn builtin_collect(
 
                             // Materialize tail to check if we should continue
                             let tail_thunk = ctx.get_thunk(*tail_id);
-                            current = materialize(&tail_thunk, None, &ctx)?;
+                            current = crate::eval::materialize(&tail_thunk, None, &ctx).await?;
                         }
                         _ => {
                             return Err(EvalError::internal(

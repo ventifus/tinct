@@ -1,7 +1,0 @@
-# program: passing a non-Seq/Dict value produces a type mismatch (E010)
-# Documents are internal runtime values — they cannot be constructed from user code.
-# This test verifies that the type gate fires correctly when given an Int.
-[program 42]
-=== error
-[E010] builtin-program: expected Seq or Dict, got Int (defined at 3:1-3:13)
-  in [program ...] at 3:1-3:13

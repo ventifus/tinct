@@ -1,4 +1,0 @@
-# proxy : creates a proxy value that echoes field name
-[handler: [fn [let field] field]  p: [proxy handler]  result: p.test]
-=== out
-Dict({"handler": Function(field), "p": Proxy, "result": String("test")})

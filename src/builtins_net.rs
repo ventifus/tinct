@@ -40,7 +40,6 @@ use crate::ast::Span;
 use crate::builtins::{builtin, expect_one_arg, ok_val, reject_named, require_string};
 use crate::builtins_io::extract_dir_cap;
 use crate::error::{EvalError, EvalResult};
-use crate::eval::materialize_sync as materialize;
 use crate::types::{Row, Type, TypeAlias, TypeEnv};
 use crate::value::{string_val, BuiltinArgs, BuiltinDef, Key, Strictness, Thunk, Value};
 
@@ -768,7 +767,7 @@ impl std::io::Write for TlsWriter {
 }
 
 /// Build a rustls ClientConfig from the opts dict
-pub(crate) fn build_tls_config(
+pub(crate) async fn build_tls_config(
     opts_val: &Value,
     opts_span: Span,
     ctx: &Arc<crate::eval::EvalContext>,
@@ -799,7 +798,7 @@ pub(crate) fn build_tls_config(
         opts_dict.get(&crate::value::Key::String("no-system-roots".into()))
     {
         let thunk = ctx.get_thunk(*thunk_id);
-        let val = materialize(&thunk, Some(&opts_span), ctx)?;
+        let val = crate::eval::materialize(&thunk, Some(&opts_span), ctx).await?;
         match val {
             Value::Bool(b) => b,
             Value::Dict(ref d) if d.is_empty() => false, // Null
@@ -850,7 +849,7 @@ pub(crate) fn build_tls_config(
     let mozilla_roots =
         if let Some(thunk_id) = opts_dict.get(&crate::value::Key::String("mozilla-roots".into())) {
             let thunk = ctx.get_thunk(*thunk_id);
-            let val = materialize(&thunk, Some(&opts_span), ctx)?;
+            let val = crate::eval::materialize(&thunk, Some(&opts_span), ctx).await?;
             match val {
                 Value::Bool(b) => b,
                 Value::Dict(ref d) if d.is_empty() => false, // Null
@@ -875,7 +874,7 @@ pub(crate) fn build_tls_config(
     // Load ca-bundle if provided
     if let Some(thunk_id) = opts_dict.get(&crate::value::Key::String("ca-bundle".into())) {
         let thunk = ctx.get_thunk(*thunk_id);
-        let handle_val = materialize(&thunk, Some(&opts_span), ctx)?;
+        let handle_val = crate::eval::materialize(&thunk, Some(&opts_span), ctx).await?;
         let pem_bytes = slurp_handle_bytes(&handle_val, opts_span.clone())?;
 
         let mut cursor = std::io::Cursor::new(pem_bytes);
@@ -916,13 +915,13 @@ pub(crate) fn build_tls_config(
             .get(&crate::value::Key::String("client-cert".into()))
             .unwrap();
         let cert_thunk = ctx.get_thunk(*cert_thunk_id);
-        let cert_handle = materialize(&cert_thunk, Some(&opts_span), ctx)?;
+        let cert_handle = crate::eval::materialize(&cert_thunk, Some(&opts_span), ctx).await?;
 
         let key_thunk_id = opts_dict
             .get(&crate::value::Key::String("client-key".into()))
             .unwrap();
         let key_thunk = ctx.get_thunk(*key_thunk_id);
-        let key_handle = materialize(&key_thunk, Some(&opts_span), ctx)?;
+        let key_handle = crate::eval::materialize(&key_thunk, Some(&opts_span), ctx).await?;
 
         let cert_pem = slurp_handle_bytes(&cert_handle, opts_span.clone())?;
         let key_pem = slurp_handle_bytes(&key_handle, opts_span.clone())?;
@@ -970,8 +969,8 @@ pub(crate) fn build_tls_config(
     // Set ALPN protocols
     if let Some(thunk_id) = opts_dict.get(&crate::value::Key::String("alpn".into())) {
         let thunk = ctx.get_thunk(*thunk_id);
-        let alpn_val = materialize(&thunk, Some(&opts_span), ctx)?;
-        let alpn_protocols = extract_alpn_protocols(&alpn_val, opts_span, ctx)?;
+        let alpn_val = crate::eval::materialize(&thunk, Some(&opts_span), ctx).await?;
+        let alpn_protocols = extract_alpn_protocols(&alpn_val, opts_span, ctx).await?;
         config.alpn_protocols = alpn_protocols;
     } else {
         // Default ALPN: http/1.1
@@ -982,7 +981,7 @@ pub(crate) fn build_tls_config(
 }
 
 /// Extract ALPN protocol list from a Seq of Strings
-fn extract_alpn_protocols(
+async fn extract_alpn_protocols(
     val: &Value,
     span: Span,
     ctx: &Arc<crate::eval::EvalContext>,
@@ -1001,7 +1000,7 @@ fn extract_alpn_protocols(
                 payload: Some(payload_id),
             } if tag == "Seq.Cons" => {
                 let payload_thunk = ctx.get_thunk(payload_id);
-                let payload_val = materialize(&payload_thunk, Some(&span), ctx)?;
+                let payload_val = crate::eval::materialize(&payload_thunk, Some(&span), ctx).await?;
                 let (head, tail) = if let Value::Dict(ref d) = payload_val {
                     let h = *d
                         .get(&crate::value::Key::String("head".into()))
@@ -1020,7 +1019,7 @@ fn extract_alpn_protocols(
 
                 // Materialize head
                 let head_thunk = ctx.get_thunk(head);
-                let head_val = materialize(&head_thunk, Some(&span), ctx)?;
+                let head_val = crate::eval::materialize(&head_thunk, Some(&span), ctx).await?;
 
                 let protocol_str = match head_val {
                     Value::String { source, start, end } => source[start..end].to_string(),
@@ -1037,7 +1036,7 @@ fn extract_alpn_protocols(
                 protocols.push(protocol_str.into_bytes());
 
                 let tail_thunk = ctx.get_thunk(tail);
-                current = materialize(&tail_thunk, Some(&span), ctx)?;
+                current = crate::eval::materialize(&tail_thunk, Some(&span), ctx).await?;
             }
             other => {
                 return Err(EvalError::type_mismatch_ctx(
@@ -1076,7 +1075,7 @@ fn slurp_handle_bytes(val: &Value, span: Span) -> EvalResult<Vec<u8>> {
 }
 
 /// Validate SPKI pins against the peer certificate
-pub(crate) fn validate_spki_pins(
+pub(crate) async fn validate_spki_pins(
     conn: &rustls::ClientConnection,
     pins_val: &Value,
     span: Span,
@@ -1097,7 +1096,7 @@ pub(crate) fn validate_spki_pins(
                 payload: Some(payload_id),
             } if tag == "Seq.Cons" => {
                 let payload_thunk = ctx.get_thunk(payload_id);
-                let payload_val = materialize(&payload_thunk, Some(&span), ctx)?;
+                let payload_val = crate::eval::materialize(&payload_thunk, Some(&span), ctx).await?;
                 let (head, tail) = if let Value::Dict(ref d) = payload_val {
                     let h = *d
                         .get(&crate::value::Key::String("head".into()))
@@ -1115,11 +1114,11 @@ pub(crate) fn validate_spki_pins(
                 };
 
                 let head_thunk = ctx.get_thunk(head);
-                let pin_val = materialize(&head_thunk, Some(&span), ctx)?;
+                let pin_val = crate::eval::materialize(&head_thunk, Some(&span), ctx).await?;
                 pins.push(pin_val);
 
                 let tail_thunk = ctx.get_thunk(tail);
-                current = materialize(&tail_thunk, Some(&span), ctx)?;
+                current = crate::eval::materialize(&tail_thunk, Some(&span), ctx).await?;
             }
             other => {
                 return Err(EvalError::type_mismatch_ctx(
@@ -1182,7 +1181,7 @@ pub(crate) fn validate_spki_pins(
                 )
             })?;
         let algorithm_thunk = ctx.get_thunk(*algorithm_thunk_id);
-        let algorithm_val = materialize(&algorithm_thunk, Some(&span), ctx)?;
+        let algorithm_val = crate::eval::materialize(&algorithm_thunk, Some(&span), ctx).await?;
 
         let fingerprint_thunk_id = pin_dict
             .get(&crate::value::Key::String("fingerprint".into()))
@@ -1193,7 +1192,7 @@ pub(crate) fn validate_spki_pins(
                 )
             })?;
         let fingerprint_thunk = ctx.get_thunk(*fingerprint_thunk_id);
-        let fingerprint_val = materialize(&fingerprint_thunk, Some(&span), ctx)?;
+        let fingerprint_val = crate::eval::materialize(&fingerprint_thunk, Some(&span), ctx).await?;
 
         let algorithm_tag = match algorithm_val {
             Value::Variant { tag, .. } => tag,
@@ -1328,7 +1327,7 @@ fn extract_cn(name: &x509_parser::x509::X509Name) -> Option<String> {
 
 /// Extract Subject Alternative Names (SANs) from an X.509 certificate
 /// Returns a Seq of strings (DNS names, IPs, emails, URIs)
-fn extract_sans(
+async fn extract_sans(
     cert: &x509_parser::certificate::X509Certificate<'_>,
     span: Span,
     ctx: &Arc<crate::eval::EvalContext>,
@@ -1400,7 +1399,7 @@ fn extract_sans(
     }
 
     // Materialize the final Seq
-    materialize(&ctx.get_thunk(result), Some(&span), ctx)
+    crate::eval::materialize(&ctx.get_thunk(result), Some(&span), ctx).await
 }
 
 /// `tls-layer`: Layer TLS on an existing TCP Handle (STARTTLS use case).
@@ -1496,7 +1495,7 @@ pub(crate) fn builtin_tls_layer(
         })?;
 
         // Build TLS config
-        let tls_config = build_tls_config(&opts_val, args[1].span.clone(), &ctx)?;
+        let tls_config = build_tls_config(&opts_val, args[1].span.clone(), &ctx).await?;
 
         // Create TLS connection
         let server_name = rustls::pki_types::ServerName::try_from(sni.clone())
@@ -1536,13 +1535,15 @@ pub(crate) fn builtin_tls_layer(
         if let Value::Dict(opts_map) = &opts_val {
             if let Some(pins_thunk_id) = opts_map.get(&crate::value::Key::String("pins".into())) {
                 let pins_thunk = ctx.get_thunk(*pins_thunk_id);
-                let pins_val = materialize(&pins_thunk, Some(&call_span), &ctx)?;
+                let pins_val = crate::eval::materialize(&pins_thunk, Some(&call_span), &ctx).await?;
+                let stream_borrow_for_pins = shared_stream.borrow();
                 validate_spki_pins(
-                    &shared_stream.borrow().conn,
+                    &stream_borrow_for_pins.conn,
                     &pins_val,
                     call_span.clone(),
                     &ctx,
-                )?;
+                ).await?;
+                drop(stream_borrow_for_pins);
             }
         }
 
@@ -1661,7 +1662,7 @@ pub(crate) fn builtin_tls_peer_cert(
 
                 // Get the thunk and materialize it
                 let raw_der_thunk = ctx.get_thunk(*raw_der_thunk_id);
-                let raw_der_val = materialize(&raw_der_thunk, Some(&call_span), &ctx)?;
+                let raw_der_val = crate::eval::materialize(&raw_der_thunk, Some(&call_span), &ctx).await?;
                 let cert_der = match &raw_der_val {
                     Value::Bytes { source, start, end } => &source[*start..*end],
                     other => {
@@ -1696,7 +1697,7 @@ pub(crate) fn builtin_tls_peer_cert(
                 let not_after = cert.tbs_certificate.validity.not_after.timestamp();
 
                 // Extract SANs (Subject Alternative Names)
-                let sans = extract_sans(&cert, call_span.clone(), &ctx)?;
+                let sans = extract_sans(&cert, call_span.clone(), &ctx).await?;
 
                 // Compute SPKI SHA-256 hash
                 let spki_der = cert.tbs_certificate.subject_pki.raw;
@@ -2027,7 +2028,7 @@ pub(crate) fn builtin_quic_session(
 
         // Build rustls ClientConfig, then adapt it for QUIC via quinn's rustls adapter.
         // ALPN defaults to "h3" for QUIC sessions (RFC 9114 §3.1).
-        let mut tls_config = build_tls_config(&opts_val, args[3].span.clone(), &ctx)?;
+        let mut tls_config = build_tls_config(&opts_val, args[3].span.clone(), &ctx).await?;
 
         // Override ALPN to h3 unless caller specified explicit alpn in opts.
         // build_tls_config sets alpn_protocols to ["http/1.1"] by default; replace with h3.
@@ -2537,7 +2538,7 @@ pub(crate) fn builtin_http_request(
                         crate::value::Key::Int(i) => i.to_string(),
                     };
                     let thunk = ctx.thunk_arena.lock().unwrap().get(*val_id).clone();
-                    let val_materialized = materialize(&thunk, Some(&call_span), &ctx)?;
+                    let val_materialized = crate::eval::materialize(&thunk, Some(&call_span), &ctx).await?;
                     let val_str = require_string(
                         "http-request header value",
                         val_materialized,

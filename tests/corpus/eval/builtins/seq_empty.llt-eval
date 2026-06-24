@@ -1,5 +1,0 @@
-# collect: empty seq produces empty dict
---- uses: ["core"]
-[collect [builtin-variant "Seq.Nil"]]
-=== out
-Dict({})

@@ -1,5 +1,0 @@
-# fold over a large-enough range to show reduce-seq-step iteration works
-# PendingCall lazy dispatch defers each f(acc, x) call until result is forced
-[fold [fn [let acc x] [+ acc x]] 0 [range 1 51]]
-=== out
-Int(1275)

@@ -1,4 +1,0 @@
-# decimal: parse exact base-10 string
-[decimal "9.99"]
-=== out
-Decimal(9.99)

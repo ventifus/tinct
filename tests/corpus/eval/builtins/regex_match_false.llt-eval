@@ -1,4 +1,0 @@
-# regex-match? : returns false when pattern does not match
-[regex-match? "xyz" "hello world"]
-=== out
-Bool(false)

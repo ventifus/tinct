@@ -17,16 +17,16 @@
   # Used by Utf8Graphemes.encode to re-encode each code point in a Grapheme = [Seq Int].
   encode-cp: [fn [let cp@Int]
     [match cp
-      [ascii?]:   [bytes NetworkEndian [@UInt8 cp]]
-      [bmp1-cp?]: [concat [bytes NetworkEndian [@UInt8 [bor 0xC0 [shr cp 6]]]]
-                           [bytes NetworkEndian [@UInt8 [bor 0x80 [band cp 0x3F]]]]]
-      [bmp2-cp?]: [concat [bytes NetworkEndian [@UInt8 [bor 0xE0 [shr cp 12]]]]
-                           [bytes NetworkEndian [@UInt8 [bor 0x80 [band [shr cp 6] 0x3F]]]]
-                           [bytes NetworkEndian [@UInt8 [bor 0x80 [band cp 0x3F]]]]]
-      _:           [concat [bytes NetworkEndian [@UInt8 [bor 0xF0 [shr cp 18]]]]
-                            [bytes NetworkEndian [@UInt8 [bor 0x80 [band [shr cp 12] 0x3F]]]]
-                            [bytes NetworkEndian [@UInt8 [bor 0x80 [band [shr cp 6]  0x3F]]]]
-                            [bytes NetworkEndian [@UInt8 [bor 0x80 [band cp          0x3F]]]]]]]
+      [ascii?]:   [bytes ByteOrder.Network [@UInt8 cp]]
+      [bmp1-cp?]: [concat [bytes ByteOrder.Network [@UInt8 [bor 0xC0 [shr cp 6]]]]
+                           [bytes ByteOrder.Network [@UInt8 [bor 0x80 [band cp 0x3F]]]]]
+      [bmp2-cp?]: [concat [bytes ByteOrder.Network [@UInt8 [bor 0xE0 [shr cp 12]]]]
+                           [bytes ByteOrder.Network [@UInt8 [bor 0x80 [band [shr cp 6] 0x3F]]]]
+                           [bytes ByteOrder.Network [@UInt8 [bor 0x80 [band cp 0x3F]]]]]
+      _:           [concat [bytes ByteOrder.Network [@UInt8 [bor 0xF0 [shr cp 18]]]]
+                            [bytes ByteOrder.Network [@UInt8 [bor 0x80 [band [shr cp 12] 0x3F]]]]
+                            [bytes ByteOrder.Network [@UInt8 [bor 0x80 [band [shr cp 6]  0x3F]]]]
+                            [bytes ByteOrder.Network [@UInt8 [bor 0x80 [band cp          0x3F]]]]]]]
 ]
 
 # ── Utf8 Codec instances ──────────────────────────────────────────────────────
@@ -36,7 +36,7 @@
 # Byte view: Codec Utf8Bytes UInt8 Bytes — raw byte access, every byte is valid
 [instance@[bind: []] Codec
   [let c@Utf8Bytes input@UInt8 output@Bytes]:
-  [encode:     [fn [let _ b@UInt8] [bytes NetworkEndian [@UInt8 b]]]
+  [encode:     [fn [let _ b@UInt8] [bytes ByteOrder.Network [@UInt8 b]]]
    decode:     [fn [let _ buf@Bytes offset@Int
                     handler@[type: [or [CodecInvalidHandler UInt8 Bytes] Absent]  default: Absent.Absent]]
      [value: [get buf offset]  next: [+ offset 1]]]   # handler never called; all bytes valid UInt8

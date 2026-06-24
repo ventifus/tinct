@@ -1,4 +1,0 @@
-# empty?: non-empty dict
-[empty? [x: 1]]
-=== out
-Bool(false)

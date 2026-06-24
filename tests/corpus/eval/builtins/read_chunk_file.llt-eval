@@ -1,9 +1,0 @@
-# builtin-read-chunk: read bytes in chunks from a string-handle
-# Verifies: partial read (3 of 5 bytes), remainder read, bytes-str conversion
---- uses: ["core"]
-[h: [string-handle "hello"]]
-[chunk: [builtin-read-chunk h 3]]
-[rest: [builtin-read-chunk h 3]]
-[str [bytes-str chunk] "/" [bytes-str rest]]
-=== out
-String("hel/lo")

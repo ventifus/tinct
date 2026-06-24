@@ -634,7 +634,9 @@ mod tests {
     use super::*;
     use crate::ast::Span;
     use crate::error::ErrorKind;
-    use crate::eval::materialize_sync as materialize;
+    fn materialize(t: &crate::value::Thunk, s: Option<&crate::ast::Span>, ctx: &std::sync::Arc<crate::eval::EvalContext>) -> crate::error::EvalResult<crate::value::Value> {
+        crate::async_rt::block_on_anywhere(crate::eval::materialize(t, s, ctx))
+    }
     use crate::test_util::test_span;
     use crate::value::Environment;
     use crate::value::{BuiltinArgs, Thunk, Value};
@@ -1101,12 +1103,6 @@ pub(crate) fn builtin_str_map_chars(
         }
 
         // Build the result by calling f on each character.
-        // Note: func_val is Value (contains Rc) so we use sync materialize/invoke here
-        // to avoid holding a !Send Value across .await points. The outer Box::pin(async
-        // move { ... }) wrapper satisfies the BuiltinFn signature; the actual work is
-        // synchronous via block_on_anywhere.
-        let materialize_s = crate::eval::materialize_sync;
-        let invoke_s = crate::eval_call::invoke_function_sync;
         let mut result = String::with_capacity(s.len());
 
         for ch in s.chars() {
@@ -1126,7 +1122,7 @@ pub(crate) fn builtin_str_map_chars(
                     ..
                 } => {
                     let pos_args = vec![Arc::clone(&char_thunk)];
-                    invoke_s(&CallContext {
+                    crate::eval_call::invoke_function(&CallContext {
                         params,
                         body,
                         closure_env,
@@ -1136,7 +1132,7 @@ pub(crate) fn builtin_str_map_chars(
                         call_span: call_span.clone(),
                         origin: Some(Arc::from("str-map-chars")),
                         ctx: &ctx,
-                    })?
+                    }).await?
                 }
                 Value::Builtin(def) => {
                     let builtin_args = BuiltinArgs {
@@ -1145,7 +1141,7 @@ pub(crate) fn builtin_str_map_chars(
                         call_span: call_span.clone(),
                         ctx: Arc::clone(&ctx),
                     };
-                    crate::async_rt::block_on_anywhere((def.func)(builtin_args))?
+                    (def.func)(builtin_args).await?
                 }
                 other => {
                     return Err(EvalError::type_mismatch_ctx(
@@ -1159,7 +1155,7 @@ pub(crate) fn builtin_str_map_chars(
             };
 
             // Materialize the result and require it to be a String.
-            let mapped_val = materialize_s(&call_result_thunk, Some(&call_span), &ctx)?;
+            let mapped_val = materialize(&call_result_thunk, Some(&call_span), &ctx).await?;
             let mapped_str = require_string("str-map-chars", mapped_val, call_span.clone())?;
 
             // Guard against excessive output size.

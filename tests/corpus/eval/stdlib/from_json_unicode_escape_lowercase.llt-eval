@@ -1,5 +1,0 @@
-# from-json: \uXXXX Unicode escape with lowercase hex digits (e.g. é = é)
-[json: [include %libdir "codecs/json.llt"]]
-[json.from-json "\"\\u00e9\""]
-=== out
-String("é")

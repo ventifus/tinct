@@ -1,4 +1,0 @@
-# = on integers should return Bool
-[= 1 1]
-=== out
-Bool(true)

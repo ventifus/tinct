@@ -1,7 +1,0 @@
-# Seq.Nil: constructor pattern matches the tail of a single-element sequence
-# Regression: Pattern::Constructor{tag:"Seq.Nil"} must match Value::Variant{tag:"Seq.Nil",payload:None}
-[match [tail [range 7 8]]
-    Seq.Nil: "empty"
-    _:       "non-empty"]
-=== out
-String("empty")

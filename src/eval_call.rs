@@ -156,15 +156,6 @@ pub async fn invoke_function(ctx: &CallContext<'_>) -> EvalResult<Arc<Thunk>> {
     Ok(Arc::new(thunk))
 }
 
-/// Synchronous compatibility wrapper around the async `invoke_function()`.
-///
-/// Used by synchronous call sites (sort comparators, builtins, etc.) that cannot
-/// `.await`. Uses `async_rt::block_on_anywhere()` which is safe to call both outside
-/// any tokio runtime and from within one (e.g. from a builtin executing inside an
-/// outer `materialize` future).
-pub fn invoke_function_sync(ctx: &CallContext<'_>) -> EvalResult<Arc<Thunk>> {
-    crate::async_rt::block_on_anywhere(invoke_function(ctx))
-}
 
 /// TCO variant of `invoke_function` that returns the body expression and call environment
 /// directly instead of creating a thunk. This allows the caller to reuse the current
@@ -325,15 +316,14 @@ pub(crate) async fn bind_args_thunks(
         }
     }
 
-    // BIND-VARIADIC: Collect excess positional args + unmatched named args into a Dict.
+    // BIND-VARIADIC: Collect excess positional args + unmatched named args into the variadic binding.
     //
     // NEW (B-277): C-VARIADIC amended: Dict = integer-keyed positionals ∪ string-keyed unmatched named.
     // Empty variadic = Value::Dict({}).
     //
-    // For untyped variadic params, we build a mixed Dict directly (legacy behavior: Seq cons-list
-    // is still correct for PURE positional args, but once named args are present we need a Dict).
-    // For typed variadic params (future: type-annotated ...args), only positional args are collected
-    // into a Seq, and unmatched named args are rejected (not implemented yet, see doc/feature/inference-completeness.md).
+    // Representation depends on context:
+    //   - Mixed named+positional: always use Dict (string keys for named, integer keys for positional).
+    //   - Pure positional calls (no named): use Seq cons-list (lazy, O(1) head).
     if let Some(var_param) = variadic_param {
         let start = max_positional.min(positional.len());
         let variadic_positional = &positional[start..];
@@ -342,7 +332,8 @@ pub(crate) async fn bind_args_thunks(
         let has_named = unmatched_named.as_ref().is_some_and(|m| !m.is_empty());
 
         if has_named {
-            // Mixed Dict: integer keys for positional, string keys for named
+            // Dict representation: integer keys for positional, string keys for named.
+            // Mixed named+positional uses Dict.
             let mut dict: IndexMap<Key, ThunkId> = IndexMap::new();
 
             // Insert positional args with integer keys (0-based indexing)
@@ -351,7 +342,7 @@ pub(crate) async fn bind_args_thunks(
                 dict.insert(Key::Int(i as i64), id);
             }
 
-            // Merge unmatched named args with string keys
+            // Merge unmatched named args with string keys (non-macro calls with named args only)
             if let Some(named_map) = unmatched_named {
                 for (name, thunk) in named_map {
                     let id = ctx.alloc_thunk(thunk);
@@ -368,7 +359,7 @@ pub(crate) async fn bind_args_thunks(
                 .unwrap()
                 .insert(var_param.name.clone(), dict_thunk);
         } else {
-            // Pure positional: use Seq cons-list representation
+            // Pure positional call: use Seq cons-list representation (lazy, O(1) head access).
             let nil = Arc::new(Thunk::new_materialized(
                 crate::value::make_seq_nil(),
                 call_span.clone(),

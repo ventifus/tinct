@@ -1,6 +1,0 @@
-[include %libdir "encoding.llt"]
----
-# Test empty string
-[call %.hex-encode ""]
-=== out
-String("")

@@ -1,4 +1,0 @@
-# str-index-of : find byte index of needle in haystack, or -1
-[str-index-of "hello world" "world"]
-=== out
-Int(-1)

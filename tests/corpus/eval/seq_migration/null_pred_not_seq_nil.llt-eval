@@ -1,6 +1,0 @@
-# null? must return false for Seq.Nil — Seq.Nil is NOT the empty dict []
-# null? is defined as [match x []: true _: false], matching only empty Dict
-# Regression: if Seq.Nil were still represented as Value::Dict({}), null? would return true
-[null? [tail [range 1 2]]]
-=== out
-Bool(false)

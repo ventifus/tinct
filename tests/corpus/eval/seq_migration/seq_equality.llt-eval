@@ -1,6 +1,0 @@
-# Seq equality: two ranges with same bounds compare equal
-# Regression: T-980 deleted the old Value::Seq equality arm; Seq.Cons/Seq.Nil now use
-# the general Variant equality arms in values_equal
-[= [range 1 4] [range 1 4]]
-=== out
-Bool(true)

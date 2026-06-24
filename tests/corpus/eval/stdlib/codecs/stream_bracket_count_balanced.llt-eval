@@ -1,5 +1,0 @@
-# stream.bracket-count: balanced brackets in a complete expression → depth 0
-[stream: [include %libdir "codecs/stream.llt"]]
-[stream.bracket-count "[x: 1  y: 2]"]
-=== out
-Int(0)

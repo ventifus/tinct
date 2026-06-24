@@ -25,7 +25,7 @@
       WsFrame.Text.opcode:         [WsFrame.Text   [bytes-str payload]]
       WsFrame.Binary.opcode:       [WsFrame.Binary payload]
       WsFrame.Close.opcode:        [WsFrame.Close
-                                      [@WsCloseCode [if [>= [length payload] 2] [uint16 NetworkEndian [slice payload 0 2]] 1000]]
+                                      [@WsCloseCode [if [>= [length payload] 2] [uint16 ByteOrder.Network [slice payload 0 2]] 1000]]
                                       [if [> [length payload] 2] [bytes-str [slice payload 2 [length payload]]] ""]]
       WsFrame.Ping.opcode:         [WsFrame.Ping   payload]
       WsFrame.Pong.opcode:         [WsFrame.Pong   payload]
@@ -39,7 +39,7 @@
       [WsFrame.Continuation p]:     p.data
       [WsFrame.Text   p]:            [str-bytes p.data]
       [WsFrame.Binary p]:            p.data
-      [WsFrame.Close  p]:            [concat [bytes NetworkEndian p.code] [str-bytes p.reason]]
+      [WsFrame.Close  p]:            [concat [bytes ByteOrder.Network p.code] [str-bytes p.reason]]
       [WsFrame.Ping   p]:            p.data
       [WsFrame.Pong   p]:            p.data]]
     [opcode: opcode  payload: payload]]
@@ -112,7 +112,7 @@
               WsError.ProtocolViolation reason: "Binary frame in middle of fragmented message"]
           0x08:
             [WsFrame.Close
-              [@WsCloseCode [if [>= [length payload] 2] [uint16 NetworkEndian [slice payload 0 2]] 1000]]
+              [@WsCloseCode [if [>= [length payload] 2] [uint16 ByteOrder.Network [slice payload 0 2]] 1000]]
               [if [> [length payload] 2] [bytes-str [slice payload 2 [length payload]]] ""]]
           0x09: [WsFrame.Ping payload]
           0x0A: [WsFrame.Pong payload]
@@ -124,7 +124,7 @@
 [
   # RFC 6455 §7.4.2: valid close status codes are 1000–2999 (IANA), 3000–3999 (libraries),
   # 4000–4999 (private use). Codes 0–999 and 5000+ are prohibited in Close frames.
-  WsCloseCode: [type Int@[is: [between 1000 4999]  repr: u16  encoding: NetworkEndian]]
+  WsCloseCode: [type Int@[is: [between 1000 4999]  repr: u16  encoding: ByteOrder.Network]]
 
   WsFrame: [type
     [Text         opcode: 0x01  data@String]

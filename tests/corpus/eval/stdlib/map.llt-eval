@@ -1,4 +1,0 @@
-# map: apply a function to every element of a list
-[map [fn [let x] [* x 2]] [10 20 30]]
-=== out
-Dict({0: Int(20), 1: Int(40), 2: Int(60)})

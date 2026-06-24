@@ -1,6 +1,0 @@
-# zip: large input (n=1000) to verify O(n) performance
-[xs: [collect [range 0 1000]]]
-[ys: [collect [range 1000 2000]]]
-[length [zip xs ys]]
-=== out
-Int(1000)

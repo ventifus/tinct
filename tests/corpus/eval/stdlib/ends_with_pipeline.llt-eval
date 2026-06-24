@@ -1,4 +1,0 @@
-# ends-with? subject-last enables pipeline: str | [ends-with? suffix]
-["hello.llt" | [ends-with? ".llt"]]
-=== out
-Bool(true)

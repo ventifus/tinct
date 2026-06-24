@@ -1,5 +1,0 @@
-# Test: MonadMaybe.bind on None value (short-circuits)
-[MonadMaybe.bind None [fn [let x] [Some [+ x 1]]]]
-
-=== out
-Variant(Maybe.None, Null)

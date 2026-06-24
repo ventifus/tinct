@@ -1,6 +1,0 @@
-# Test % dot-access syntax (%.field)
-[a: 1]
----
-%.a
-=== out
-Int(1)

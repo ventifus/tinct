@@ -171,18 +171,18 @@ For macros that only reshape user-provided names (like the fn let-softening, whi
 
 Macros need to produce good compile errors when user code violates the macro's structural requirements — analogous to Rust's `compile_error!` or Racket's `raise-syntax-error`.
 
-**`[macro-error span message]`** — signal a compile-time error from within a macro body:
+**`[macro-error message node]`** — signal a compile-time error from within a macro body:
 
 ```tinct
 [defparse-macro pragma [name: expr  value: expr]
   [if [not [var-ref? name]]
-    [macro-error [span-of name] "pragma name must be a bare identifier"]
+    [macro-error "pragma name must be a bare identifier" name]
     [if [not [literal? value]]
-      [macro-error [span-of value] "pragma value must be a literal"]
+      [macro-error "pragma value must be a literal" value]
       [list 'pragma name value]]]]
 ```
 
-`span-of` extracts the source span from a parsed AST node. `macro-error` terminates the transformation pass with a type error at that span, surfaced to the user as a compilation error.
+`macro-error` terminates the transformation pass with a type error at the provided node's span, surfaced to the user as a compilation error. With one argument (message only), it uses the call site span.
 
 ### Multi-Form Splice — One Invocation, Multiple Output Forms
 
@@ -256,7 +256,8 @@ The macro body uses tinct primitives to construct and inspect AST:
 [gensym prefix]           # fresh unique identifier
 
 # Error signaling
-[macro-error span message] # terminate with compile error at span
+[macro-error message]         # terminate with compile error at call site
+[macro-error message node]    # terminate with compile error at node's span
 
 # Wrapping helpers (stdlib, implemented in tinct)
 [wrap-in-let flat-list]   # produce [let ...flat-list]

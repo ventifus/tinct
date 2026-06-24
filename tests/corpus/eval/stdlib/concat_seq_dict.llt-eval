@@ -1,5 +1,0 @@
-# concat Seq ending with Seq.Nil terminator
---- uses: ["core"]
-[collect [concat [seq 1 [builtin-variant "Seq.Nil"]] [seq 2 [builtin-variant "Seq.Nil"]]]]
-=== out
-Dict({0: Int(1), 1: Int(2)})

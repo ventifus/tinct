@@ -1,5 +1,0 @@
-[include %libdir "math.llt"]
----
-%.pi
-=== out
-Float(3.141592653589793)

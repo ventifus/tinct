@@ -78,15 +78,17 @@ impl From<Span> for SpanKey {
     }
 }
 
-/// Metadata for a registered macro — the transformer function, params pattern, and inject default.
+/// Metadata for a registered macro — the transformer function, params pattern, and inject names.
 #[derive(Debug, Clone)]
 struct MacroMetadata {
     /// The transformer function (as a Value::Function thunk).
     transformer: Arc<Thunk>,
     /// The params pattern (LetDecl SurfaceNode) for binding argument validation.
     params: Arc<SurfaceNode>,
-    /// Optional inject: default name for anaphoric macros.
-    inject_default: Option<String>,
+    /// Names deliberately introduced into the caller's scope by this macro (anaphoric injection).
+    /// Empty for hygienic macros (those using only gensym). Non-empty marks the macro as
+    /// intentionally anaphoric — these names are documented via `macro-injects`.
+    inject_names: Vec<String>,
 }
 
 /// Metadata for a registered syntax class — the pattern and error message.
@@ -153,13 +155,13 @@ impl MacroEnv {
         }
     }
 
-    /// Register a macro transformer with params pattern and inject default.
+    /// Register a macro transformer with params pattern and inject names.
     fn register_macro(
         &mut self,
         name: String,
         transformer: Arc<Thunk>,
         params: Arc<SurfaceNode>,
-        inject_default: Option<String>,
+        inject_names: Vec<String>,
         _span: Span,
     ) -> EvalResult<()> {
         self.macros.insert(
@@ -167,7 +169,7 @@ impl MacroEnv {
             MacroMetadata {
                 transformer,
                 params,
-                inject_default,
+                inject_names,
             },
         );
         Ok(())
@@ -230,17 +232,14 @@ impl MacroEnv {
         self.in_progress.remove(&call_site);
     }
 
-    /// Extract the macro inject defaults map for runtime access.
-    /// Returns a HashMap of macro_name -> inject_default_name for all macros
-    /// that have an `inject:` declaration. Macros without inject: are omitted.
-    fn get_inject_map(&self) -> HashMap<String, String> {
+    /// Extract the macro inject names map for runtime access.
+    /// Returns a HashMap of macro_name -> Vec<inject_name> for all macros
+    /// that have `inject:` declarations. Macros without inject: are omitted.
+    fn get_inject_map(&self) -> HashMap<String, Vec<String>> {
         self.macros
             .iter()
-            .filter_map(|(name, meta)| {
-                meta.inject_default
-                    .as_ref()
-                    .map(|inject| (name.clone(), inject.clone()))
-            })
+            .filter(|(_, meta)| !meta.inject_names.is_empty())
+            .map(|(name, meta)| (name.clone(), meta.inject_names.clone()))
             .collect()
     }
 }
@@ -249,10 +248,10 @@ impl MacroEnv {
 pub struct ExpandSurfaceResult {
     /// Provenance map: generated-node span → expansion origin (for dual-span error reporting).
     pub provenance: ProvenanceMap,
-    /// Macro inject defaults: `macro_name -> inject_default_name`.
+    /// Macro inject names: `macro_name -> Vec<inject_name>`.
     /// Populated from all macros with `inject:` declarations encountered during expansion.
     /// Used by the `macro-injects` builtin for runtime introspection.
-    pub macro_injects_map: HashMap<String, String>,
+    pub macro_injects_map: HashMap<String, Vec<String>>,
 }
 
 // Reentrance depth guard for expand_surface_program → create_stdlib_env calls.
@@ -329,7 +328,7 @@ pub async fn expand_surface_program(
     let depth = EXPAND_MACROS_DEPTH.get();
     let (stdlib_env, ctx) = if depth == 0 {
         let _depth_guard = DepthGuard::new();
-        match builtins::create_stdlib_env_with_arena() {
+        match builtins::create_stdlib_env_with_arena().await {
             Ok((env, arena)) => {
                 let type_stage_env =
                     crate::imports::build_type_stage_env().unwrap_or_else(|| Arc::clone(&env));
@@ -357,7 +356,7 @@ pub async fn expand_surface_program(
         // Using a fresh env with only core builtins would be wrong: macro bodies need prelude
         // functions. Using new_empty() would violate the arena invariant (stdlib ThunkIds
         // invalid in a fresh arena). Both bugs are silent and hard to diagnose.
-        let (env, arena) = builtins::create_stdlib_env_with_arena().unwrap_or_else(|_| {
+        let (env, arena) = builtins::create_stdlib_env_with_arena().await.unwrap_or_else(|_| {
             unreachable!(
                 "expand_surface_program at depth {} but STDLIB_RESULT_CACHE is empty; \
                  re-entrant expansion must always be nested inside a depth == 0 call \
@@ -1091,7 +1090,7 @@ async fn expand_macro_call_surface(
         .expect("macro name verified before call");
     let transformer = macro_metadata.transformer.clone();
     let params_pattern = macro_metadata.params.clone();
-    let inject_default = macro_metadata.inject_default.clone();
+    let inject_names = macro_metadata.inject_names.clone();
 
     env.enter_expansion(call_site_id, call_span_clone.clone())?;
     let guard = ExpansionGuard {
@@ -1099,8 +1098,16 @@ async fn expand_macro_call_surface(
         call_site_id,
     };
 
-    // Validate annotated params (surface-native variant detection)
-    let bindings: Vec<&Arc<SurfaceNode>> = match &params_pattern.expr {
+    // Validate annotated params (surface-native variant detection).
+    // params_pattern may be a bare LetDecl or a TypeAssert wrapping a LetDecl
+    // (the `[@[inject: ...] [let ...]]` annotation form).
+    let params_let_node: &Arc<SurfaceNode> =
+        if let crate::ast::SurfaceExpression::TypeAssert { expr, .. } = &params_pattern.expr {
+            expr
+        } else {
+            &params_pattern
+        };
+    let bindings: Vec<&Arc<SurfaceNode>> = match &params_let_node.expr {
         crate::ast::SurfaceExpression::LetDecl { bindings } => bindings.iter().collect(),
         _ => vec![],
     };
@@ -1134,7 +1141,10 @@ async fn expand_macro_call_surface(
         }
     }
 
-    // Pass each SurfaceNode argument as Value::Expression directly (no dict conversion needed)
+    // Pass each SurfaceNode argument as Value::Expression directly (no dict conversion needed).
+    // All args are pushed as individual positional thunks — bind_args_thunks will collect the
+    // excess positional args into a Seq cons-list (standard variadic representation).
+    // This is correct for both variadic and non-variadic macro params.
     let mut positional_thunks: Vec<Arc<Thunk>> = Vec::with_capacity(args.len());
     for arg in args {
         let arg_val = Value::Expression(Arc::clone(arg));
@@ -1144,11 +1154,12 @@ async fn expand_macro_call_surface(
         )));
     }
 
-    // Thread inject: binding
-    if inject_default.is_some() {
+    // Thread inject: binding — only for macros with inject: declarations.
+    // The `binding` extra param receives the dict-key name (or the first inject name as fallback).
+    if !inject_names.is_empty() {
         let binding_name = dict_key
             .map(|k| k.to_string())
-            .or_else(|| inject_default.clone())
+            .or_else(|| inject_names.first().cloned())
             .unwrap_or_default();
         let binding_node = Arc::new(SurfaceNode {
             expr: crate::ast::SurfaceExpression::VarRef {
@@ -1310,32 +1321,82 @@ async fn expand_macro_call_surface(
     expand_surface_expr(&expanded_node, env, ctx, stdlib_env).await
 }
 
-/// Extract the inject: default name from a macro params SurfaceNode.
+/// Extract inject: names from a macro params SurfaceNode.
 ///
-/// The inject: key appears as a Dict entry in the LetDecl bindings with key "inject"
-/// and a VarRef value. Returns Some(name) if found, None otherwise.
-fn extract_inject_default_surface(params: &Arc<SurfaceNode>) -> Option<String> {
-    use crate::ast::SurfaceExpression;
-    if let SurfaceExpression::LetDecl { bindings } = &params.expr {
-        for binding in bindings {
-            if let SurfaceExpression::Dict(entries) = &binding.expr {
+/// Handles the annotation form: `[@[inject: name] [let ...]]` or
+/// `[@[inject: [name1 name2]] [let ...]]` — the params LetDecl is wrapped in a
+/// `TypeAssert` whose annotation `PropertyDict` has an `inject:` key.
+///
+/// - `inject: name` (single VarRef) → returns `["name"]`
+/// - `inject: [name1 name2 ...]` (Dict of VarRefs) → returns `["name1", "name2", ...]`
+///
+/// Returns an empty Vec for bare `LetDecl` params (non-anaphoric macros).
+fn extract_inject_names_surface(params: &Arc<SurfaceNode>) -> Vec<String> {
+    use crate::ast::{Annotation, SurfaceExpression};
+
+    // TypeAssert wrapping LetDecl — `[@[inject: ...] [let ...]]`
+    if let SurfaceExpression::TypeAssert { annotation, expr } = &params.expr {
+        if matches!(expr.expr, SurfaceExpression::LetDecl { .. }) {
+            if let Annotation::PropertyDict(entries) = &annotation.node {
                 for entry in entries {
                     if let Some(key_node) = &entry.node.key {
-                        if let SurfaceExpression::Str(key_str) = &key_node.expr {
-                            if key_str == "inject" {
-                                if let SurfaceExpression::VarRef { name, .. } =
-                                    &entry.node.value.expr
-                                {
-                                    return Some(name.clone());
-                                }
-                            }
+                        if matches!(&key_node.expr, SurfaceExpression::Str(s) if s == "inject") {
+                            return extract_inject_names_from_value(&entry.node.value);
                         }
                     }
                 }
             }
         }
     }
-    None
+
+    vec![]
+}
+
+/// Extract inject name(s) from the value node of an `inject:` entry.
+///
+/// - `VarRef` → single-element Vec with the identifier name
+/// - `Str` → single-element Vec with the string value
+/// - `Dict` (auto-indexed sequence of VarRef or Str values) → Vec of names in index order
+///   - Use string literals for multi-name: `inject: ["x" "y"]`
+/// - Anything else → empty Vec
+fn extract_inject_names_from_value(value: &Arc<SurfaceNode>) -> Vec<String> {
+    use crate::ast::SurfaceExpression;
+    match &value.expr {
+        // Single name via identifier: `inject: it`
+        SurfaceExpression::VarRef { name, .. } => vec![name.clone()],
+        // Single name via string literal: `inject: "it"`
+        SurfaceExpression::Str(s) => vec![s.clone()],
+        // Multiple names: `inject: ["name1" "name2" ...]` — auto-indexed dict of string literals
+        // (NB: `["x" "y"]` is an auto-indexed dict, not a Call, because the first element
+        // is a string literal rather than a bare identifier — so it cannot be a call head)
+        SurfaceExpression::Dict(entries) => {
+            let mut names = Vec::new();
+            for entry in entries {
+                // Auto-indexed entries have no explicit key
+                if entry.node.key.is_none() {
+                    match &entry.node.value.expr {
+                        SurfaceExpression::VarRef { name, .. } => names.push(name.clone()),
+                        SurfaceExpression::Str(s) => names.push(s.clone()),
+                        _ => {}
+                    }
+                }
+                // Integer-keyed entries (e.g. from `[0: "x" 1: "y"]`) — ignore the key
+                // and extract the value string
+                else if let Some(key_node) = &entry.node.key {
+                    // Integer-keyed: key is Int
+                    if matches!(&key_node.expr, SurfaceExpression::Int(_)) {
+                        match &entry.node.value.expr {
+                            SurfaceExpression::VarRef { name, .. } => names.push(name.clone()),
+                            SurfaceExpression::Str(s) => names.push(s.clone()),
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            names
+        }
+        _ => vec![],
+    }
 }
 
 /// Register a macro or syntax-class from a SurfaceDeclaration.
@@ -1356,10 +1417,19 @@ async fn register_surface_macro_decl(
 
     match decl {
         SurfaceDeclaration::MacroDecl { name, params, body } => {
-            let inject_default = extract_inject_default_surface(params);
+            let inject_names = extract_inject_names_surface(params);
+
+            // Extract the actual LetDecl node — params may be a bare LetDecl or a TypeAssert
+            // wrapping a LetDecl (the `[@[inject: ...] [let ...]]` annotation form).
+            let let_decl_node: &Arc<SurfaceNode> =
+                if let SurfaceExpression::TypeAssert { expr, .. } = &params.expr {
+                    expr
+                } else {
+                    params
+                };
 
             // Convert LetDecl bindings to Vec<Spanned<Param>> for function construction.
-            let fn_params: Vec<Spanned<Param>> = match &params.expr {
+            let fn_params: Vec<Spanned<Param>> = match &let_decl_node.expr {
                 SurfaceExpression::LetDecl { bindings } => {
                     let mut out = Vec::with_capacity(bindings.len());
                     for b in bindings {
@@ -1418,7 +1488,7 @@ async fn register_surface_macro_decl(
 
             // Add implicit `binding` param for inject: macros
             let mut all_fn_params = fn_params;
-            if inject_default.is_some() {
+            if !inject_names.is_empty() {
                 all_fn_params.push(Spanned::new(
                     Param {
                         name: "binding".to_string(),
@@ -1436,13 +1506,14 @@ async fn register_surface_macro_decl(
                 decl_span.clone(),
                 Arc::clone(stdlib_env),
                 ctx,
-            )?;
+            )
+            .await?;
 
             env.register_macro(
                 name.clone(),
                 Arc::clone(&transformer_value),
                 params.clone(),
-                inject_default,
+                inject_names,
                 decl_span,
             )?;
             env.discovered_macros

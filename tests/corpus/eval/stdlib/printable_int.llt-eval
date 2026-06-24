@@ -1,4 +1,0 @@
-# Printable instance for Int: PrintableInt.print converts an Int to its decimal string
-[PrintableInt.print 99]
-=== out
-String("99")

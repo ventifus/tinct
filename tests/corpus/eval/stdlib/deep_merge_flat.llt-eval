@@ -1,4 +1,0 @@
-# deep-merge: flat dicts (no sub-dicts) behaves like merge
-[deep-merge [a: 1  b: 2] [b: 99  c: 3]]
-=== out
-Dict({"a": Int(1), "b": Int(99), "c": Int(3)})

@@ -1,5 +1,0 @@
-# has? subject-last enables pipeline: dict | [has? key]
-# B-295 fix: [[dict] | f] unwraps to return f(dict) directly, not {0: f(dict)}
-[[x: 1  y: 2] | [has? "x"]]
-=== out
-Bool(true)

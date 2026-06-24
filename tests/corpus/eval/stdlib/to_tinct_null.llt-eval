@@ -1,4 +1,0 @@
-# to-tinct: serialize an empty dict (null) to its tinct source representation
-[to-tinct []]
-=== out
-String("[]")

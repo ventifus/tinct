@@ -57,7 +57,7 @@
 
   # Noise spec §12: ChaCha20-Poly1305 nonce = 32 zero bits || little-endian 64-bit n.
   noise-nonce: [fn [let n@NoiseNonce]
-    [concat [0 0 0 0] [bytes LittleEndian n]]]  # n: NoiseNonce (LittleEndian per Noise spec §12)
+    [concat [0 0 0 0] [bytes ByteOrder.LittleEndian n]]]  # n: NoiseNonce (ByteOrder.LittleEndian per Noise spec §12)
 
   # noise-split: derive send/recv keys per Noise spec §5.2 HKDF(state.ck, empty, 2).
   # Single 64-byte expand per RFC 5869: T(1)||T(2); T(2) = HMAC(PRK, T(1)||0x02).
@@ -274,7 +274,7 @@
     [if [= remaining 0]
       [reduce concat [] acc]
       [block
-        [len: [uint16 BigEndian [read conn.underlying 2]]]
+        [len: [uint16 ByteOrder.BigEndian [read conn.underlying 2]]]
         [ct: [read conn.underlying len]]
         # recv-n channel holds exactly one value (atomic counter). Closed.Closed is impossible.
         [match [recv conn.recv-n]
@@ -301,7 +301,7 @@
 [
   # Named domain type for ChaCha20-Poly1305 nonce counters per Noise spec §12.
   # Nonce = 32 zero bits || little-endian 64-bit counter (ChaCha20-Poly1305, RFC 7539).
-  NoiseNonce: [type UInt64@[encoding: LittleEndian]]
+  NoiseNonce: [type UInt64@[encoding: ByteOrder.LittleEndian]]
 
   NoisePattern: [type
     [XX     name: "XX"]
@@ -380,7 +380,7 @@
       [Result.Ok n]:
         [send conn.send-n [+ n 1]]
         [ct: [chacha20-poly1305-seal conn.send-key [noise-nonce n] data []]]
-        [write conn.underlying [concat [bytes BigEndian [@UInt16 [length ct]]] ct]]]]
+        [write conn.underlying [concat [bytes ByteOrder.BigEndian [@UInt16 [length ct]]] ct]]]]
 
   noise-read: [fn [let conn@NoiseConnection wanted@Int]
     [noise-read-acc conn wanted []]]
@@ -399,10 +399,10 @@
       [Result.Ok n]:
         [send conn.send-n [+ n 1]]
         [ct: [chacha20-poly1305-seal conn.send-key [noise-nonce n] plaintext []]]
-        [concat [bytes BigEndian [@UInt16 [length ct]]] ct]]]
+        [concat [bytes ByteOrder.BigEndian [@UInt16 [length ct]]] ct]]]
   decode: [fn [let codec@[NoiseTransportCodec h] data@Bytes]
     [conn:  codec.conn]
-    [ct-len: [uint16 BigEndian [slice data 0 2]]]
+    [ct-len: [uint16 ByteOrder.BigEndian [slice data 0 2]]]
     [ct:     [slice data 2 [+ 2 ct-len]]]
     [match [recv conn.recv-n]
       [Closed.Closed]: [error "NoiseTransportCodec.decode: recv-n channel closed"]

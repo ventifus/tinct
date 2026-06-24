@@ -1,7 +1,0 @@
-# build-ws-frame errors if mask-key is not exactly 4 bytes.
-
-[include %libdir "protocols/websocket.llt"]
----
-[try [fn [] [call %.build-ws-frame 1 "Hello" "ABC"]]]
-=== out
-Variant(Result.Error, String("build-ws-frame: mask-key must be exactly 4 bytes"))

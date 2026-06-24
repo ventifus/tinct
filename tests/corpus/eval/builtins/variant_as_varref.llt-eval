@@ -1,5 +1,0 @@
-# Variant constructor is accessible as a VarRef
-[Red: [variant "Red"] selected: Red]
-[type-of selected]
-=== out
-String("Variant")

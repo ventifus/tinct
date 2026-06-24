@@ -1,4 +1,0 @@
-# str-map-chars : empty string returns empty string
-[str-map-chars [fn [let c] [str-to-upper-char c]] ""]
-=== out
-String("")

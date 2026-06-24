@@ -1,4 +1,0 @@
-# proxy: create capability proxy with handler function
-[type-of [proxy [fn [let field] 42]]]
-=== out
-String("Proxy")

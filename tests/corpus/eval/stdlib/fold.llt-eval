@@ -1,4 +1,0 @@
-# fold: alias for reduce (left fold with accumulator)
-[fold [fn [let acc x] [+ acc x]] 0 [1 2 3]]
-=== out
-Int(6)

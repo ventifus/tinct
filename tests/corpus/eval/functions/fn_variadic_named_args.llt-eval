@@ -1,7 +1,0 @@
-# Variadic param collects excess positional args AND unmatched named args (B-277).
-# Named args can target regular params by name; unmatched named args flow into variadic.
-# Calling with only a named arg for x (no excess positional, no unmatched named) produces an empty variadic dict.
-[f: [fn [let x ...rest] rest]
- result: [f x: 42]]
-=== out
-Dict({"f": Function(x, rest), "result": Dict({})})

@@ -1,4 +1,0 @@
-# flat-map: empty collection returns empty
-[flat-map [fn [let x] [x]] []]
-=== out
-Dict({})

@@ -1,7 +1,0 @@
-# Pipe left-associativity: $a | f | g = [g [f $a]]
-# [a: 1  b: 2  c: 3] | keys | length => 3
-[data: [a: 1  b: 2  c: 3]]
-
-data | keys | length
-=== out
-Int(3)

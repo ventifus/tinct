@@ -1,4 +1,0 @@
-# each on empty dict returns empty dict (end-of-Seq sentinel)
-[each []]
-=== out
-Dict({})

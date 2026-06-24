@@ -1,7 +1,0 @@
-# Cross-feature: Access chain on a value with TypeAssert guard
-# A nested dict with TypeAssert guard; access chain forces guard validation and retrieves nested value
-[config: [data: [@[type: [x: Int  y: Int]  default: [x: 0  y: 0]] [x: 1  y: 2]]]]
----
-%.config.data.x
-=== out
-Int(1)

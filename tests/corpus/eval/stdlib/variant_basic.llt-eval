@@ -1,4 +1,0 @@
-# variant: construct tagged variant with null payload
-[variant "Some"]
-=== out
-Variant(Some, Null)

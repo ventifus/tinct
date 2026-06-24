@@ -1,4 +1,0 @@
-# sum: sum all elements
-[sum [1 2 3 4 5]]
-=== out
-Int(15)

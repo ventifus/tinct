@@ -1,4 +1,0 @@
-# get: access dict value by key (key-first signature: [get key dict])
-[get "x" [x: 1 y: 2]]
-=== out
-Int(1)

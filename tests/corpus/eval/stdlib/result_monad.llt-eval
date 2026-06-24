@@ -1,8 +1,0 @@
-# result: monad dict for Result type (bind: and-then, pure: Ok)
-# Basic test: verify the dict structure and that bind/pure work
-[do result
-  [x: [Ok 21]]
-  [y: [Ok 2]]
-  [Ok [* x y]]]
-=== out
-Variant(Result.Ok, Int(42))

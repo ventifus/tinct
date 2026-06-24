@@ -1,4 +1,0 @@
-# str-bytes: produces bytes
-[bytes? [str-bytes "test"]]
-=== out
-Bool(true)

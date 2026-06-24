@@ -38,7 +38,7 @@ async fn recv_success_returns_ok_variant() {
   tag: $result.@
 ]
 "#;
-    let output = eval_source_with_config(source, false).expect("eval should succeed");
+    let output = eval_source_with_config(source, false).await.expect("eval should succeed");
 
     // Verify the result has tag "Ok".
     // DisplayVisitor format: Dict({"@": String("Ok"), "tag": String("Ok"), ...})
@@ -74,7 +74,7 @@ async fn recv_on_closed_channel_returns_closed_variant() {
   tag: $result.@
 ]
 "#;
-    let output = eval_source_with_config(source, false).expect("eval should succeed");
+    let output = eval_source_with_config(source, false).await.expect("eval should succeed");
 
     // Verify the result has tag "Ok" and payload 99.
     assert!(
@@ -101,7 +101,7 @@ async fn try_send_success_returns_ok_variant() {
   tag: $result.@
 ]
 "#;
-    let output = eval_source_with_config(source, false).expect("eval should succeed");
+    let output = eval_source_with_config(source, false).await.expect("eval should succeed");
 
     // Verify the result has tag "Ok".
     // DisplayVisitor format: Dict({"@": String("Ok"), ...})
@@ -122,7 +122,7 @@ async fn try_send_on_full_channel_returns_full_variant() {
   tag: $result.@
 ]
 "#;
-    let output = eval_source_with_config(source, false).expect("eval should succeed");
+    let output = eval_source_with_config(source, false).await.expect("eval should succeed");
 
     // Verify the result has tag "Full".
     // DisplayVisitor format: Dict({"@": String("Full"), ...})
@@ -149,7 +149,7 @@ async fn try_send_on_closed_channel_returns_closed_variant() {
   tag: $result.@
 ]
 "#;
-    let output = eval_source_with_config(source, false).expect("eval should succeed");
+    let output = eval_source_with_config(source, false).await.expect("eval should succeed");
 
     // Verify the result has tag "Full" — channel is at capacity.
     assert!(
@@ -182,7 +182,7 @@ async fn oneshot_channel_single_send_recv() {
   tag: $result.@
 ]
 "#;
-    let output = eval_source_with_config(source, false).expect("eval should succeed");
+    let output = eval_source_with_config(source, false).await.expect("eval should succeed");
 
     // recv should return [Ok 42]
     assert!(
@@ -220,7 +220,7 @@ async fn broadcast_channel_multi_subscriber() {
   tag: $result.@
 ]
 "#;
-    let output = eval_source_with_config(source, false).expect("eval should succeed");
+    let output = eval_source_with_config(source, false).await.expect("eval should succeed");
 
     // recv should return [Ok 42] — the subscriber received the broadcast message.
     assert!(
@@ -255,7 +255,7 @@ async fn broadcast_channel_late_subscriber_misses_early_messages() {
   tag: $result.@
 ]
 "#;
-    let output = eval_source_with_config(source, false).expect("eval should succeed");
+    let output = eval_source_with_config(source, false).await.expect("eval should succeed");
 
     // recv should return [Ok 77] — received the message sent by the concurrent task.
     assert!(
@@ -284,7 +284,7 @@ async fn select_once_success_returns_ok_variant() {
   tag: $result.@
 ]
 "#;
-    let output = eval_source_with_config(source, false).expect("eval should succeed");
+    let output = eval_source_with_config(source, false).await.expect("eval should succeed");
 
     // Verify the result has tag "Ok".
     // DisplayVisitor format: Dict({"@": String("Ok"), ...})
@@ -321,7 +321,7 @@ async fn select_once_all_closed_returns_closed_variant() {
   tag: $result.@
 ]
 "#;
-    let output = eval_source_with_config(source, false).expect("eval should succeed");
+    let output = eval_source_with_config(source, false).await.expect("eval should succeed");
 
     // Verify the result has tag "Ok" and payload 55.
     assert!(

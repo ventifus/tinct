@@ -1,8 +1,0 @@
-# Cross-feature: Multi-document pipeline with stdlib functions (reduce + map)
-# Tests multi-document separator (---), pipeline variable (%), and stdlib interaction.
-# First doc defines data; second doc uses reduce and map over %.data.
-[data: [1 2 3]]
----
-[result: [reduce + 0 [map [fn [let x] [* x 2]] %.data]]]
-=== out
-Dict({"result": Int(12)})

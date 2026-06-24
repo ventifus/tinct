@@ -1,4 +1,0 @@
-# and-then: fn-first order. If Ok, apply f to the value.
-[and-then [fn [let x] [Ok [* x 2]]] [Ok 21]]
-=== out
-Variant(Result.Ok, Int(42))

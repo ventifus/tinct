@@ -1,4 +1,0 @@
-# group-by: group integers by parity (mod 2)
-[group-by [fn [let x] [mod x 2]] [1 2 3 4 5]]
-=== out
-Dict({1: Dict({0: Int(1), 1: Int(3), 2: Int(5)}), 0: Dict({0: Int(2), 1: Int(4)})})

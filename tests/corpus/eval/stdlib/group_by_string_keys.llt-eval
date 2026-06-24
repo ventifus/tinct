@@ -1,4 +1,0 @@
-# group-by: group string elements by identity
-[group-by [fn [let x] x] ["a" "b" "a"]]
-=== out
-Dict({"a": Dict({0: String("a"), 1: String("a")}), "b": Dict({0: String("b")})})

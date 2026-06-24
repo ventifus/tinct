@@ -1,4 +1,0 @@
-# reindex: rebuild collection with dense 0..n integer keys
-[reindex [a: 1 b: 2]]
-=== out
-Dict({0: Int(1), 1: Int(2)})

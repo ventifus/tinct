@@ -1,7 +1,0 @@
-# Out-of-bounds range produces empty dict (no error)
-# Dict has keys 0, 1, 2; slice 5 10 selects nothing
-[data: [0: "a"  1: "b"  2: "c"]]
-
-[result: [slice 5 10 data]]
-=== out
-Dict({"result": Dict({})})

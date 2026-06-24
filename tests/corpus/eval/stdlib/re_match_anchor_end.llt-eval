@@ -1,9 +1,0 @@
-# Test end anchor (not yet implemented - using literal match for now)
-[include %libdir "regex.llt"]
-
----
-
-[call %.re-match "world" "hello world"]
-
-=== out
-Bool(true)

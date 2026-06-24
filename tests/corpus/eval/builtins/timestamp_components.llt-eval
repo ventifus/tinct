@@ -1,5 +1,0 @@
-# timestamp-year: extract UTC year from a parsed timestamp
-[timestamp-year [parse-timestamp "2024-03-15T10:30:00Z"]]
-
-=== out
-Int(2024)

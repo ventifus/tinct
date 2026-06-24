@@ -1,4 +1,0 @@
-# each-key on empty dict returns empty dict (end-of-Seq sentinel)
-[each-key []]
-=== out
-Dict({})

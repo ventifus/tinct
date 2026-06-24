@@ -51,7 +51,6 @@ use indexmap::IndexMap;
 use crate::ast::Span;
 use crate::builtins::{ok_val, reject_named, require_string};
 use crate::error::{EvalError, EvalResult};
-use crate::eval::materialize_sync as materialize;
 use crate::value::{string_val, BuiltinArgs, DirPerms, Thunk, Value};
 
 /// Extract DirCap from a Value, checking revocation and returning (dir, perms).
@@ -241,7 +240,7 @@ pub(crate) fn builtin_open(
         let mut has_seekable = false;
 
         for flag_arg in &args[2..] {
-            let flag_val = materialize(flag_arg, Some(&call_span), &ctx)?;
+            let flag_val = crate::eval::materialize(flag_arg, Some(&call_span), &ctx).await?;
 
             match flag_val {
                 Value::Variant { ref tag, .. } => {
@@ -543,7 +542,7 @@ pub(crate) fn builtin_narrow(
             };
 
             for flag_arg in &args[1..] {
-                let flag_val = materialize(flag_arg, Some(&call_span), &ctx)?;
+                let flag_val = crate::eval::materialize(flag_arg, Some(&call_span), &ctx).await?;
 
                 match flag_val {
                     Value::Variant { ref tag, .. } => {
@@ -944,7 +943,7 @@ pub(crate) fn builtin_read_chunk(
         reject_named("builtin-read-chunk", named.as_ref(), call_span.clone())?;
 
         // First arg: Handle
-        let handle_val = materialize(&args[0], Some(&call_span), &ctx)?; // H1: force_count migration pending
+        let handle_val = crate::eval::materialize(&args[0], Some(&call_span), &ctx).await?; // H1: force_count migration pending
         let handle = match handle_val {
             Value::Handle { inner, .. } => Rc::clone(&inner),
             other => {
@@ -959,7 +958,7 @@ pub(crate) fn builtin_read_chunk(
         };
 
         // Second arg: Int (chunk size)
-        let size_val = materialize(&args[1], Some(&call_span), &ctx)?; // H1: force_count migration pending
+        let size_val = crate::eval::materialize(&args[1], Some(&call_span), &ctx).await?; // H1: force_count migration pending
         let n = match size_val {
             Value::Int(i) => i,
             other => {

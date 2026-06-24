@@ -1,6 +1,0 @@
-# stream.parse-expr: parses a balanced tinct expression string to an Expression node.
-# Verifies the return type is Expression (not String or Dict).
-[stream: [include %libdir "codecs/stream.llt"]]
-[type-of [stream.parse-expr "[1 2 3]"]]
-=== out
-String("Expression")

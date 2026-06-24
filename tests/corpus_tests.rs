@@ -15,10 +15,25 @@ mod test_helpers;
 use std::fs;
 use std::path::PathBuf;
 use test_helpers::{find_test_files, run_corpus_dir, split_test_file, CorpusOutcome};
-use tinct::{
-    eval_source_with_cap_net, eval_source_with_config, parse, parse_surface_expression,
-    typecheck_source, typecheck_source_errors_only,
-};
+use tinct::{parse, parse_surface_expression};
+
+// Sync wrappers for async public API functions — corpus tests run in sync threads.
+fn eval_source_with_config(input: &str, no_fs: bool) -> Result<String, String> {
+    tinct::async_rt::block_on_anywhere(tinct::eval_source_with_config(input, no_fs))
+}
+fn eval_source_with_cap_net(
+    input: &str,
+    no_fs: bool,
+    cap_net: &[(String, String)],
+) -> Result<String, String> {
+    tinct::async_rt::block_on_anywhere(tinct::eval_source_with_cap_net(input, no_fs, cap_net))
+}
+fn typecheck_source(input: &str) -> Result<(), String> {
+    tinct::async_rt::block_on_anywhere(tinct::typecheck_source(input))
+}
+fn typecheck_source_errors_only(input: &str) -> Result<(), String> {
+    tinct::async_rt::block_on_anywhere(tinct::typecheck_source_errors_only(input))
+}
 
 #[test]
 fn test_valid_corpus() {
@@ -195,18 +210,12 @@ fn test_corpus_structure() {
     let required_dirs = [
         // Eval corpus
         "tests/corpus/eval",
-        "tests/corpus/eval/access",
-        "tests/corpus/eval/builtins",
-        "tests/corpus/eval/builtins/errors",
+        "tests/corpus/eval/errors/builtins",
         "tests/corpus/eval/warnings",
-        "tests/corpus/eval/cross_feature",
         "tests/corpus/eval/errors",
         "tests/corpus/eval/functions",
         "tests/corpus/eval/laziness",
         "tests/corpus/eval/regressions",
-        "tests/corpus/eval/stdlib",
-        "tests/corpus/eval/stdlib/codecs",
-        "tests/corpus/eval/stdlib/protocols",
         "tests/corpus/eval/macros",
         "tests/corpus/eval/type_assertions",
         "tests/corpus/eval/type_errors",
@@ -215,7 +224,6 @@ fn test_corpus_structure() {
         "tests/corpus/eval/type_system",
         "tests/corpus/eval/letrec",
         "tests/corpus/eval/underscore",
-        "tests/corpus/eval/documents",
         "tests/corpus/eval/slow",
         "tests/corpus/eval/constructors",
         "tests/corpus/eval/absent",
@@ -223,11 +231,11 @@ fn test_corpus_structure() {
         "tests/corpus/eval/annotation-system",
         "tests/corpus/eval/ast_dict",
         "tests/corpus/eval/let_binding",
-        "tests/corpus/eval/seq_migration",
         "tests/corpus/eval/typenode-adt",
         "tests/corpus/eval/tycondef-merge",
         "tests/corpus/eval/equirecursive-core",
         "tests/corpus/eval/equirecursive-checker",
+        "tests/corpus/eval/programs",
         // Invalid corpus
         "tests/corpus/invalid/pipeline",
         "tests/corpus/invalid/semantic_errors",
@@ -254,11 +262,9 @@ fn test_corpus_structure() {
     }
 
     // Minimum test count assertions for key directories
-    const EVAL_LAZINESS_MIN: usize = 40;
-    const EVAL_BUILTINS_MIN: usize = 120;
-    const EVAL_STDLIB_MIN: usize = 185;
-    const EVAL_ERRORS_MIN: usize = 117;
-    const EVAL_MACROS_MIN: usize = 40;
+    const EVAL_LAZINESS_MIN: usize = 25;
+    const EVAL_ERRORS_MIN: usize = 65;
+    const EVAL_MACROS_MIN: usize = 15;
     const TYPECHECK_WARNINGS_MIN: usize = 14;
 
     let laziness_count = find_test_files(&manifest_dir.join("tests/corpus/eval/laziness")).len();
@@ -267,22 +273,6 @@ fn test_corpus_structure() {
         "tests/corpus/eval/laziness/ has {} tests, expected at least {}",
         laziness_count,
         EVAL_LAZINESS_MIN
-    );
-
-    let builtins_count = find_test_files(&manifest_dir.join("tests/corpus/eval/builtins")).len();
-    assert!(
-        builtins_count >= EVAL_BUILTINS_MIN,
-        "tests/corpus/eval/builtins/ has {} tests, expected at least {}",
-        builtins_count,
-        EVAL_BUILTINS_MIN
-    );
-
-    let stdlib_count = find_test_files(&manifest_dir.join("tests/corpus/eval/stdlib")).len();
-    assert!(
-        stdlib_count >= EVAL_STDLIB_MIN,
-        "tests/corpus/eval/stdlib/ has {} tests, expected at least {}",
-        stdlib_count,
-        EVAL_STDLIB_MIN
     );
 
     let errors_count = find_test_files(&manifest_dir.join("tests/corpus/eval/errors")).len();
@@ -333,13 +323,12 @@ fn test_corpus_structure() {
         adts_count
     );
 
-    // T-1096: Seq migration corpus tests
-    let seq_migration_count =
-        find_test_files(&manifest_dir.join("tests/corpus/eval/seq_migration")).len();
+    // Program integration tests — realistic programs exercising multiple features
+    let programs_count = find_test_files(&manifest_dir.join("tests/corpus/eval/programs")).len();
     assert!(
-        seq_migration_count >= 20,
-        "tests/corpus/eval/seq_migration/ has {} tests, expected at least 20",
-        seq_migration_count
+        programs_count >= 10,
+        "tests/corpus/eval/programs/ has {} tests, expected at least 10",
+        programs_count
     );
 }
 

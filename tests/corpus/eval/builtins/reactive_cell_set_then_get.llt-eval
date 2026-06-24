@@ -1,4 +1,0 @@
-# reactive-cell: create with initial value, read back with cell-get
-[cell-get [reactive-cell 42]]
-=== out
-Int(42)

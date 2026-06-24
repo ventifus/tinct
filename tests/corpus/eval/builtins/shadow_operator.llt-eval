@@ -1,8 +1,0 @@
-# Shadow < with a custom version that always returns true
-# The real < would return false for (100 < 1), but our version returns true
-[
-  <: [fn [let a b] true]
-  result: [< 100 1]
-]
-=== out
-Dict({"<": Function(a, b), "result": Bool(true)})

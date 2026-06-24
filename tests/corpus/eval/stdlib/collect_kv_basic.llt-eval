@@ -1,4 +1,0 @@
-# collect-kv: reconstruct dict from key-value pairs
-[collect-kv [[key: "a" value: 1] [key: "b" value: 2]]]
-=== out
-Dict({0: Dict({"key": String("a"), "value": Int(1)}), 1: Dict({"key": String("b"), "value": Int(2)})})

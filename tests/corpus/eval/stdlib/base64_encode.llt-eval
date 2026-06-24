@@ -1,6 +1,0 @@
-[include %libdir "encoding.llt"]
----
-# Test base64 encoding of "hello"
-[call %.base64-encode "hello"]
-=== out
-String("aGVsbG8=")

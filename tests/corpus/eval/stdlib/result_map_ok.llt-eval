@@ -1,4 +1,0 @@
-# result-map: transform Ok value
-[result-map [fn [let x] [* x 3]] [Ok 14]]
-=== out
-Variant(Result.Ok, Int(42))

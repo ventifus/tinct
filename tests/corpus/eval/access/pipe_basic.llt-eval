@@ -1,6 +1,0 @@
-# Basic pipe: $x | f desugars to [f $x]
-[xs: [a: 1  b: 2  c: 3]]
-
-xs | keys
-=== out
-Dict({0: String("a"), 1: String("b"), 2: String("c")})

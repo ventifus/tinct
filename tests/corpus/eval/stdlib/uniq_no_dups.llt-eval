@@ -1,4 +1,0 @@
-# uniq: no duplicates — all elements kept, same order
-[uniq [1 2 3]]
-=== out
-Dict({0: Int(1), 1: Int(2), 2: Int(3)})

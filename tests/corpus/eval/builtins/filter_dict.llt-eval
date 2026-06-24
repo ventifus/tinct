@@ -1,4 +1,0 @@
-# filter on dict: returns seq of values passing predicate
-[collect [filter [fn [let x] [> x 2]] [a: 1 b: 3 c: 5]]]
-=== out
-Dict({0: Int(3), 1: Int(5)})

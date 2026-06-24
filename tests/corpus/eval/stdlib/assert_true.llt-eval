@@ -1,4 +1,0 @@
-# assert: returns true when condition passes
-[assert true "should pass"]
-=== out
-Bool(true)

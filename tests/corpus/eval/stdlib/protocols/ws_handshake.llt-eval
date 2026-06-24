@@ -1,8 +1,0 @@
-# build-ws-handshake: returns a valid HTTP/1.1 WebSocket upgrade request string.
-# All output is printable ASCII — safe to compare exactly.
-
-[include %libdir "protocols/websocket.llt"]
----
-[call %.build-ws-handshake "example.com" "/" "dGhlIHNhbXBsZQ=="]
-=== out
-String("GET / HTTP/1.1\r\nHost: example.com\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZQ==\r\n\r\n")

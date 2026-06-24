@@ -1,10 +1,8 @@
-# Number: is a TypeTag pattern but "Number" is not a runtime type name
-# (type_name() returns "Int" or "Float", never "Number"). Falls to wildcard.
-# Str: is a TypeTag alias for "String" — but 3.14 is Float, not String.
-# Both arms fall through; the wildcard _: matches.
+# Number: is a TypeAssertPending pattern — resolves to Type::Number (covers Int and Float).
+# 3.14 is Float, which IS a Number, so the Number: arm matches.
 [match 3.14
     Number:  "numeric"
     Str:     "text"
     _:       "other"]
 === out
-String("other")
+String("numeric")

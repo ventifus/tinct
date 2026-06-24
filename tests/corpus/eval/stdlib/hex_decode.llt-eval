@@ -1,6 +1,0 @@
-[include %libdir "encoding.llt"]
----
-# Round-trip test
-[call %.hex-decode [call %.hex-encode "hello"]]
-=== out
-String("hello")

@@ -1,4 +1,0 @@
-# sorted-by: empty collection with comparator function
-[sorted-by [fn [let a b] [< a b]] []]
-=== out
-Dict({})

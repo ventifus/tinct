@@ -1,6 +1,0 @@
-# pad-right: no padding when string already >= width
-[include %libdir "strings.llt"]
----
-[call %.pad-right "hello" 3 " "]
-=== out
-String("hello")

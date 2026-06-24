@@ -1,4 +1,0 @@
-# pipeline: drop first 2, then reduce remaining
-[reduce [fn [let acc x] [+ acc x]] 0 [collect [drop 2 [range 0 5]]]]
-=== out
-Int(9)

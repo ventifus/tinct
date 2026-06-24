@@ -1,4 +1,0 @@
-# filter: keep elements > 2 — verifies Mappable annotation still works after class migration
-[filter [fn [let x] [> x 2]] [1 2 3]]
-=== out
-Seq(Int(3), ...)

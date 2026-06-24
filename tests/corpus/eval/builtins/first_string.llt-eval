@@ -1,4 +1,0 @@
-# first : dual-dispatch on string returns first character
-[first "hello"]
-=== out
-String("h")

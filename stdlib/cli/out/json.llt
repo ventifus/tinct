@@ -12,9 +12,10 @@
 
 [json: [include %libdir "codecs/json.llt"]]
 
+--- uses: ["async"]
 # 1. Drain the emit channel concurrently.
 [drain: [task
-  [loop-select [context]
+  [select [context]
     [seq [ch: %emit-channel  handler: [fn [let v]
       [write-handle %stdout [str [call $json.to-json v] "\n"]]]] []]
     identity]]]

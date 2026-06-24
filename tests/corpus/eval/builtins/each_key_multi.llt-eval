@@ -1,5 +1,0 @@
-# each-key: Seq of original keys for 3+ entry dict (regression for tail-map key preservation bug)
-# Before fix: produced "a", 0, 1 instead of "a", "b", "c"
-[collect [each-key [a: 10  b: 20  c: 30]]]
-=== out
-Dict({0: String("a"), 1: String("b"), 2: String("c")})

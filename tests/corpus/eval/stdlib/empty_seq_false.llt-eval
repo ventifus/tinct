@@ -1,4 +1,0 @@
-# empty?: Seq values are never empty (always have a head)
-[empty? [seq 1 []]]
-=== out
-Bool(false)

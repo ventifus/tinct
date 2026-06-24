@@ -1,5 +1,0 @@
-# seq: single element
---- uses: ["core"]
-[collect [seq 99 [builtin-variant "Seq.Nil"]]]
-=== out
-Dict({0: Int(99)})

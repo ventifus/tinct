@@ -1,6 +1,0 @@
-# Test that http-request rejects non-session values with a type error
-# Passes a String as the session argument (not Http2Session or Http3Session)
-[http-request "not-a-session" "GET" "/" [] ""]
-
-=== error
-[E002] undefined variable: http-request (did you mean the string "http-request"? Use quotes.) (defined at 2:2-2:14)

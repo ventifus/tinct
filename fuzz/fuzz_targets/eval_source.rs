@@ -11,6 +11,6 @@ use libfuzzer_sys::fuzz_target;
 //   - Circular dependencies must return EvalError, not hang
 fuzz_target!(|data: &[u8]| {
     if let Ok(s) = std::str::from_utf8(data) {
-        let _ = tinct::eval_source_with_config(s, true /* no_fs */);
+        let _ = tinct::async_rt::block_on_anywhere(tinct::eval_source_with_config(s, true /* no_fs */));
     }
 });

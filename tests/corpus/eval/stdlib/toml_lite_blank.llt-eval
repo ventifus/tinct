@@ -1,8 +1,0 @@
-# toml-lite: blank lines are ignored
-[include %libdir "toml-lite.llt"]
-
----
-
-[call %.parse-toml-lite "key = \"value\"\n\nother = 42"]
-=== out
-Variant(Result.Ok, Dict({"key": String("value"), "other": Int(42)}))

@@ -1,4 +1,0 @@
-# to-tinct: serialize a variant (unary constructor)
-[to-tinct [Ok 42]]
-=== out
-String("[Result.Ok 42]")

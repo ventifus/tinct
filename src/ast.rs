@@ -164,17 +164,6 @@ pub enum Pattern {
     Wildcard,
     /// Literal pattern — int, float, bool, or string literal
     Literal(LiteralPattern),
-    /// Type tag pattern — uppercase bare word like `Int`, `Str`, `Dict`, `Seq`.
-    ///
-    /// Produced by the parser for bare uppercase identifiers in match arm position.
-    /// Matches by comparing the value's runtime type name (via `Value::type_name()`)
-    /// against the tag, with "Str" as an alias for "String".
-    ///
-    /// This pattern is distinct from `Constructor` (which matches `Value::Variant` by tag)
-    /// and from `TypeAssert` (which is the elaborated form of `[@Type expr]` patterns).
-    ///
-    /// Examples: `[match x Int: 1  Str: 2  _: 3]`
-    TypeTag(String),
     /// Pin pattern — bare lowercase name or `$name` in pattern position.
     ///
     /// T-1154: Previously, `$name` (escaped) was Pin and bare `name` was `Variable`.
@@ -522,7 +511,7 @@ impl fmt::Display for Pattern {
         match self {
             Pattern::Wildcard => write!(f, "_"),
             Pattern::Literal(lit) => write!(f, "{lit}"),
-            Pattern::TypeTag(tag) => write!(f, "{tag}"),
+
             Pattern::Pin(name) => write!(f, "{name}"),
             Pattern::TypeAssertPending { annotation, inner } => {
                 if let Some(inner) = inner {
@@ -1113,6 +1102,15 @@ pub enum CoreExpr {
     },
     Placeholder,
     Error(Span),
+    /// Register multi-method dispatch arms for one or more method names.
+    /// Emitted by lower.rs for InstanceDecl. At eval time, a pre-scan in eval_dict_core
+    /// registers these arms into env.methods before the dict's lazy values are accessible.
+    /// Evaluates to null (empty dict) as a side-effectful expression.
+    RegisterMethods {
+        /// Each entry: (dispatch_tags, method_name, body_expr)
+        /// dispatch_tags: one Option<String> per arm-pattern binding — None=unconstrained, Some("Int")=concrete.
+        arms: Vec<(Vec<Option<String>>, String, Arc<Spanned<CoreExpr>>)>,
+    },
 }
 
 /// A dict/list entry in a CoreExpr::Dict.

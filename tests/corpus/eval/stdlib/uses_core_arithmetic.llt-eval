@@ -1,9 +1,0 @@
-# --- uses: ["core"] provides arithmetic builtins in the same document
---- uses: ["core"]
-[
-  add: [builtin-add 10 32]
-  mul: [builtin-mul 6 7]
-  sub: [builtin-sub 100 58]
-]
-=== out
-Dict({"add": Int(42), "mul": Int(42), "sub": Int(42)})

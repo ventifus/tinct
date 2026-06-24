@@ -1,5 +1,0 @@
-# each-kv: collect all key-value pairs from a multi-entry dict
-# collect-kv reconstructs the dict from pairs produced by each-kv
-[collect-kv [each-kv [x: 1  y: 2  z: 3]]]
-=== out
-Dict({"x": Int(1), "y": Int(2), "z": Int(3)})

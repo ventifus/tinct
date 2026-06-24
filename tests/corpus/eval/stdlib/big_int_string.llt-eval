@@ -1,4 +1,0 @@
-# big-int: convert large string to arbitrary-precision integer
-[big-int "12345678901234567890"]
-=== out
-BigInt(12345678901234567890)

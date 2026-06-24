@@ -1,6 +1,6 @@
-# is: soft guard — predicate returns truthy, arm matches
+# Guard pattern via case form — bind scrutinee to x, check guard inline.
+# [case [let x] x body] binds scrutinee to x; guard check is inlined in the body.
 [match 42
-  x@[is: [fn [let n] [> n 0]]]: "yes"
-  _:                         "no"]
+  [case [let x] x [if [> x 0] "yes" "no"]]]
 === out
 String("yes")

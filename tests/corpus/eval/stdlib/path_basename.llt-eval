@@ -1,6 +1,0 @@
-# basename: get last component of path
-[include %libdir "path.llt"]
----
-[call %.basename "/foo/bar.txt"]
-=== out
-String("bar.txt")

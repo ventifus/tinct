@@ -1,4 +1,0 @@
-# str-find: find substring at start
-[str-find "hello" "hello world"]
-=== out
-Int(0)

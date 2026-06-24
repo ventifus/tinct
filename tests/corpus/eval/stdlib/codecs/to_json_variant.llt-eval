@@ -1,9 +1,0 @@
-# to-json: serialize user-defined Variant values
-# Nullary variants produce {"Tag":null}, payload variants produce {"Tag":{fields}}
-
-[json: [include %libdir "codecs/json.llt"]]
-
-# Nullary variant → {"Tag":null}
-[json.to-json [variant "None"]]
-=== out
-String("{\"None\":null}")

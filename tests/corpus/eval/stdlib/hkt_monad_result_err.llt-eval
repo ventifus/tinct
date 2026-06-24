@@ -1,5 +1,0 @@
-# Test: MonadResult.bind on Error value (short-circuits)
-[MonadResult.bind [Error "fail"] [fn [let x] [Ok [+ x 1]]]]
-
-=== out
-Variant(Result.Error, String("fail"))

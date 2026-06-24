@@ -1,7 +1,0 @@
-# Variadic with exactly zero excess args: BIND-VARIADIC should produce empty Dict
-[
-  f: [fn [let a ...rest] rest]
-  result: [f 42]
-]
-=== out
-Dict({"f": Function(a, rest), "result": Dict({})})

@@ -735,6 +735,11 @@ pub enum Value {
     /// Backed by `tokio::sync::watch::channel`. Stores both Sender and Receiver in an Arc
     /// so that `cell-get` can borrow the latest value without requiring exclusive access.
     ReactiveCell(Arc<ReactiveCellInner>),
+
+    /// Multi-method dispatcher sentinel. Returned from FreeVar lookup when no regular binding
+    /// exists but method arms are registered in env.methods for the given name.
+    /// The PendingCallDispatch continuation recognizes this and performs type-based dispatch.
+    MethodDispatcher(String),
 }
 
 /// State of an async task spawned via `task` builtin.
@@ -907,11 +912,12 @@ pub fn is_seq(val: &Value) -> bool {
 }
 
 impl Value {
-    /// Returns a human-readable type name for error messages and diagnostics.
+    /// Returns a human-readable type name for error messages, diagnostics, and dispatch.
     ///
-    /// **Error display only** — not for type checking. Runtime type validation uses
-    /// `is_consistent_subtype(ground_type_of(value), expected_type)`, not string comparison.
-    pub fn type_name(&self) -> &'static str {
+    /// For user-defined nominal types (variants), returns the full qualified tag
+    /// e.g. "Vec2.Vec2", "Color.Red", "Seq.Cons" — preserving the actual type identity.
+    /// Previously returned the useless string "Variant" for all variant values.
+    pub fn type_name(&self) -> &str {
         match self {
             Value::Int(_) => "Int",
             Value::U64(_) => "U64",
@@ -929,12 +935,10 @@ impl Value {
             Value::Handle { .. } => "Handle",
             Value::WriteHandle { .. } => "WriteHandle",
             Value::RevocableDirCap { .. } => "DirCap",
-            // Seq.Cons is a non-empty sequence — TypeTag("Seq") patterns match it.
-            // Seq.Nil is a unit variant — TypeTag patterns fall through to wildcard.
-            Value::Variant { tag, .. } if tag == "Seq.Cons" => "Seq",
-            // Absent.Absent should display as "Absent" for type error messages
-            Value::Variant { tag, .. } if tag == "Absent.Absent" => "Absent",
-            Value::Variant { .. } => "Variant",
+            // Return the full qualified tag — "Seq.Cons", "Vec2.Vec2", "Color.Red", etc.
+            // Preserves the actual type identity. Dispatch (S-884) strips the constructor
+            // suffix at match time, so @Seq matches Seq.Cons and @Vec2 matches Vec2.Vec2.
+            Value::Variant { tag, .. } => tag.as_str(),
             Value::Decimal(_) => "Decimal",
             Value::BigInt(_) => "BigInt",
             Value::Bytes { .. } => "Bytes",
@@ -960,6 +964,7 @@ impl Value {
             Value::ReactiveCell(_) => "ReactiveCell",
             // Annotated is transparent — delegate to the inner value's type.
             Value::Annotated { inner, .. } => inner.type_name(),
+            Value::MethodDispatcher(_) => "MethodDispatcher",
         }
     }
 
@@ -1062,6 +1067,7 @@ impl fmt::Debug for Value {
             Value::OneshotReceiver(_) => write!(f, "OneshotReceiver"),
             // Annotated is transparent — delegate to inner value's Debug.
             Value::Annotated { inner, .. } => write!(f, "{inner:?}"),
+            Value::MethodDispatcher(name) => write!(f, "MethodDispatcher({name})"),
         }
     }
 }
@@ -1170,6 +1176,7 @@ impl fmt::Display for Value {
             Value::OneshotReceiver(_) => write!(f, "<oneshot-receiver>"),
             // Annotated is transparent — delegate to inner value's Display.
             Value::Annotated { inner, .. } => write!(f, "{inner}"),
+            Value::MethodDispatcher(name) => write!(f, "<method-dispatcher:{name}>"),
         }
     }
 }
@@ -2162,6 +2169,18 @@ impl fmt::Debug for Thunk {
 /// The absence of cycles means `Environment::get()` always terminates. It also means
 /// environments form a tree rooted at the stdlib environment, enabling safe stack-free
 /// traversal via iterative parent-pointer walking.
+/// A single dispatch arm registered by `[instance ClassName [let a@T ...]: [method: body]]`.
+/// Arms are stored in env.methods and selected at call time by matching runtime argument types.
+#[derive(Debug, Clone)]
+pub struct MethodArm {
+    /// One tag per binding in the arm pattern. None = unconstrained, Some("Int") = concrete type.
+    /// Length may be less than the method's arg count — dispatch uses min(tags.len(), args.len()).
+    pub type_tags: Vec<Option<String>>,
+    /// Lazy body thunk — created at registration time, forced only when dispatched.
+    pub body: Arc<Thunk>,
+    pub span: Span,
+}
+
 #[derive(Debug, Clone)]
 pub struct Environment {
     /// Bindings map from name to thunk. Uses IndexMap to preserve insertion order for
@@ -2169,6 +2188,10 @@ pub struct Environment {
     /// O(1) positional access. Slot indices are assigned by the resolver in resolve.rs
     /// and used at the `CoreExpr::Var` call site in eval.rs.
     pub(crate) bindings: IndexMap<String, Arc<Thunk>>,
+    /// Multi-method dispatch arms registered by instance declarations.
+    /// Keyed by method name (e.g., "+", "="). NOT inherited from parent frames —
+    /// parent frames are walked by collect_method_arms at lookup time.
+    pub(crate) methods: HashMap<String, Vec<MethodArm>>,
     pub(crate) parent: Option<Arc<RwLock<Environment>>>,
 }
 
@@ -2195,6 +2218,7 @@ impl Environment {
     pub fn new() -> Self {
         Self {
             bindings: IndexMap::new(),
+            methods: HashMap::new(),
             parent: None,
         }
     }
@@ -2202,6 +2226,7 @@ impl Environment {
     pub fn with_parent(parent: Arc<RwLock<Environment>>) -> Self {
         Self {
             bindings: IndexMap::new(),
+            methods: HashMap::new(),
             parent: Some(parent),
         }
     }
@@ -2236,6 +2261,26 @@ impl Environment {
 
     pub fn insert(&mut self, name: String, thunk: Arc<Thunk>) {
         self.bindings.insert(name, thunk);
+    }
+
+    /// Register a method dispatch arm for the given method name.
+    pub fn insert_method_arm(&mut self, name: String, arm: MethodArm) {
+        self.methods.entry(name).or_default().push(arm);
+    }
+
+    /// Collect all method arms for `name` visible from this env frame, innermost-first.
+    /// Walks the full parent chain, accumulating arms from every frame.
+    pub fn collect_method_arms(env: &Arc<RwLock<Environment>>, name: &str) -> Vec<MethodArm> {
+        let mut result = Vec::new();
+        let mut current = Some(Arc::clone(env));
+        while let Some(frame) = current {
+            let guard = frame.read().unwrap();
+            if let Some(arms) = guard.methods.get(name) {
+                result.extend(arms.iter().cloned());
+            }
+            current = guard.parent.as_ref().map(Arc::clone);
+        }
+        result
     }
 
     /// O(1) slot-based lookup with De Bruijn level-based parent chain walking.
@@ -2481,8 +2526,8 @@ mod tests {
         )));
         let tail_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(make_seq_nil(), span)));
         let seq = make_seq_cons(head_id, tail_id, &ctx);
-        // Seq.Cons returns "Seq" from type_name() for TypeTag("Seq") pattern matching.
-        assert_eq!(seq.type_name(), "Seq");
+        // Seq.Cons returns its full qualified tag.
+        assert_eq!(seq.type_name(), "Seq.Cons");
     }
 
     #[test]

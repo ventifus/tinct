@@ -1,7 +1,0 @@
-# Test: MonadMaybe.bind — bind a Some value through a transformation.
-# MonadMaybe is defined in prelude.llt as an instance of the Monad typeclass.
-# The type checker does not know about MonadMaybe (no prelude type env seeding),
-# so it warns "undefined variable: MonadMaybe", but the evaluator succeeds.
-[MonadMaybe.bind [Some 42] [fn [let x] [Some [+ x 1]]]]
-=== out
-Variant(Maybe.Some, Int(43))

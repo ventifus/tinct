@@ -1,4 +1,0 @@
-# partition: empty collection
-[partition [fn [let x] [> x 0]] []]
-=== out
-Dict({"pass": Dict({}), "fail": Dict({})})

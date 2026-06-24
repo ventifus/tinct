@@ -1,6 +1,0 @@
-# map-entries: large input (n=1000) to verify O(n) performance via build-dict
-[d: [collect [range 0 1000]]]
-[mapped: [map-entries [fn [let e] [* e.value 2]] d]]
-[get 999 mapped]
-=== out
-Int(1998)

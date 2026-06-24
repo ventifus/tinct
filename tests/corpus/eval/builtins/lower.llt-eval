@@ -1,5 +1,0 @@
-# str-to-lower-char : convert a character to lowercase (single-char primitive)
-# upper/lower are now stdlib functions in strings.llt using str-map-chars
-[str-to-lower-char "H"]
-=== out
-String("h")

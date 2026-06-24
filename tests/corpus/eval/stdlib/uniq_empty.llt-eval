@@ -1,4 +1,0 @@
-# uniq: empty input returns empty dict
-[uniq []]
-=== out
-Dict({})

@@ -1,4 +1,0 @@
-# collect-kv: reconstruct dict from Seq of [key: K, value: V] pairs (each-kv roundtrip)
-[collect-kv [each-kv [a: 1  b: 2  c: 3]]]
-=== out
-Dict({"a": Int(1), "b": Int(2), "c": Int(3)})

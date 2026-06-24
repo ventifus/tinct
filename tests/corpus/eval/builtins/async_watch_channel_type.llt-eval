@@ -1,5 +1,0 @@
-# watch-channel returns a Channel value (type check via type-of)
-# cap_net
-[type-of [watch-channel %cwd "."]]
-=== out
-String("Channel")

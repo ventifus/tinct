@@ -1,4 +1,0 @@
-# Printable instance for Bool: PrintableBool.print converts true to "true"
-[PrintableBool.print true]
-=== out
-String("true")

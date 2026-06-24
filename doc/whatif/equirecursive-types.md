@@ -55,6 +55,12 @@ depth: [fn@Int [tree@TreeShape] ...]
 
 **External structural data.** Data from `from-json` and `from-yaml` arrives as plain structural values and cannot be wrapped in nominal constructors after the fact. For types that must be expressed structurally (because they round-trip through JSON), inline `mu` annotations express the recursive shape without requiring a separately declared nominal type.
 
+**An open, user-extensible type system — and a runtime agnostic to prelude.** This is the deeper goal that this whatif serves. The `TypeNode` ADT makes type constructors first-class tinct values carrying their own traversal (`@Child` annotations → `map-children` for free). The Rust runtime is blind to which constructors exist — type rules for built-in forms live in prelude alongside user-defined ones.
+
+The subtyping mechanism is **RDNF-based lattice inclusion** (S-883): `is_subtype(s, t) = is_empty(to_rdnf(s & ~t))`. RDNF normalization handles Union, Intersection, and Negation structurally as lattice operations — no per-constructor dispatch for these. Built-in structural atoms (Record, Function, App/TyCon, Recursive) are handled by `is_atom_subtype` with explicit arms. User-defined atoms participate via `as-type:` and `subtype:` annotations, dispatched from `is_atom_subtype`'s fallthrough — see §Extensibility.
+
+This is a direct consequence of the project axiom: **the Rust runtime must be genuinely agnostic to what prelude does**. Adding a new type form requires no Rust changes — only a new TypeNode constructor with the appropriate annotations.
+
 ## Design
 
 ### General Annotation Syntax
@@ -323,15 +329,13 @@ This requires three extensions, all specified in this proposal:
       as-type:   [fn [let t] t]             # identity if no normalization needed
       subtype:   [fn [let a b sigma]        # open subtyping rule
                    ...]
-      unify:     [fn [let a b subst]        # open unification rule
-                   ...]
     ]
       field@Child: TypeNode]]               # @Child marks TypeNode-typed fields
   ]]
 ]
 ```
 
-All traversal walkers (`children`, `map-children`, `walk_type`, `expand_all_tycon_apps`) pick up the new constructor automatically via `@Child` annotations. The semantic walkers (`is_subtype_inner`, `unify`) dispatch to the `subtype:` and `unify:` annotations for unknown constructors — no Rust changes required.
+All walkers — traversal (`children`, `map-children`, `walk_type`, `expand_all_tycon_apps`) and semantic (`is_subtype_inner`, `unify`, `Substitution::apply`) — handle the new constructor automatically via its annotations. No Rust changes required.
 
 **`TypeNode.TypeConstructor` has two roles** that must be distinguished:
 
@@ -347,8 +351,9 @@ The `TypeNode.children`, `TypeNode.map-children`, and `TypeNode.as-type` protoco
 - **`TypeNode.children`** — flattens all `@Child` fields into a Seq, used by `walk_type` for pure structural traversal. No per-constructor implementation; role (One/Seq/MapValues) inferred from declared field type.
 - **`TypeNode.map-children`** — applies `f` to each `@Child` field and reconstructs the same-shaped variant, used by `expand_all_tycon_apps`. No per-constructor implementation; uses the `variant` Rust builtin for generic reconstruction.
 - **`TypeNode.as-type`** — normalizes user-defined TypeNode constructors to an existing form. Built-in constructors return themselves (identity). For constructors with distinct subtyping semantics, `as-type` returns `t` unchanged and the `subtype:` annotation handles dispatch.
-- **`subtype:` annotation** — `Fn@[pair Bool sigma] [TypeNode TypeNode sigma]`. Registered on the constructor; looked up via `annotation-of` for unknown constructors in `is_subtype_inner`. Known BAS constructors (Union, Intersect, Record, Arrow, Recursive, TypeVar) remain as explicit Rust arms (fast path). Unknown constructors fall through to type-stage eval via `annotation-of(ctor)["subtype:"]`. Sigma is threaded as an immutable dict (pair → bool) when crossing the Rust/tinct boundary.
-- **`unify:` annotation** — `Fn@[pair Bool subst] [TypeNode TypeNode subst]`. Same pattern as `subtype:` for unification.
+- **`subtype:` annotation** — `Fn@[pair Bool sigma] [TypeNode TypeNode sigma]`. Registered on **user-defined TypeNode constructors only**. Built-in atoms (Int, Float, Record, Union, Intersect, Arrow, Recursive, TypeVar) are handled by `is_atom_subtype` with direct Rust pattern matching — they do not carry `subtype:` annotations. User-defined atoms that `as-type:` leaves unchanged fall through to `annotation-of(ctor)["subtype:"]`. Sigma is threaded as an immutable dict (pair → bool) when crossing the Rust/tinct boundary.
+
+There is no `unify:` annotation. Unification (`unify()`) is a fixed Rust function — it involves TypeVar binding, occurs checks, level management, and Recursive-type opening, none of which are per-constructor user-extensible operations. For user-defined atoms, unification is structural: same constructor tag + pairwise `@Child` field recursion. This is identical to how Record and App/TyCon already work. No case in the type theory literature (Robinson 1965, Dolan 2016, Parreaux & Chau 2022, Chau & Parreaux 2026) requires user-defined constructors to override the structural unification default.
 
 The Rust `walk_type` generic looks up `TypeNode.children` once at type-stage init time, then calls it per node:
 
@@ -380,20 +385,20 @@ fn has_inference_vars(node: &Value, env: &TypeStageEnv) -> bool {
 
 All existing type-stage combinators (`or`, `record`, `arrow`, `seq`, `map`, etc.) return the corresponding `TypeNode` constructor. Migration from `kind:`-keyed dicts is atomic — partial migration leaves the type checker in an inconsistent state.
 
-**Which walkers need explicit Rust arms** — significantly reduced now that TypeVar is a TypeNode constructor:
+**No walker needs explicit Rust arms for specific constructors in the walker-dispatch loop** — all traversal dispatch is uniform. (`is_atom_subtype` does have explicit Rust arms for built-in atoms, but that is atom-level comparison, not walker-loop dispatch.)
 
-| Walker | Explicit arm? | Arms needed | Reason |
-|--------|---------------|-------------|--------|
-| `collect_type_vars` | No | — | `walk_type` + `typenode_tag(t) == "TypeNode.TypeVar"` predicate |
-| `has_inference_vars` | No | — | Same |
-| `check_kind_wellformed` | No | — | Pure `walk_type` |
-| `unfold_once` | No | — | `typenode_map_children` + RecursiveRef name predicate |
-| `contains_recvar` | No | — | `walk_type` + RecursiveRef name predicate |
-| `body_contains_tycon_ref` | No | — | `walk_type` + bare TypeConstructor tag predicate |
-| `is_subtype_inner` | Yes (2) + fallthrough | TypeVar, Recursive (fast path); unknown → `annotation-of(ctor)["subtype:"]` | TypeVar: gradual typing; Recursive: S-Assum + S-Exp; unknown constructors: open dispatch to type-stage eval |
-| `unify` | Yes (2) + fallthrough | TypeVar, Recursive (fast path); unknown → `annotation-of(ctor)["unify:"]` | TypeVar: bind + occurs check; Recursive: 3 opening arms; unknown constructors: open dispatch |
-| `Substitution::apply` | Yes (1) | TypeVar only | Subst lookup — all others handled by `typenode_map_children` |
-| `PartialEq` | Yes (1) | Recursive only | Structural equality: same `.var` name + same `body` |
+| Walker | Explicit walker-dispatch arm? | Mechanism |
+|--------|---------------|-----------|
+| `collect_type_vars` | No | `walk_type` + `typenode_tag(t) == "TypeNode.TypeVar"` predicate |
+| `has_inference_vars` | No | Same |
+| `check_kind_wellformed` | No | Pure `walk_type` |
+| `unfold_once` | No | `typenode_map_children` + RecursiveRef name predicate |
+| `contains_recvar` | No | `walk_type` + RecursiveRef name predicate |
+| `body_contains_tycon_ref` | No | `walk_type` + TypeConstructor tag predicate |
+| `is_subtype` | No | RDNF lattice inclusion (`is_empty(to_rdnf(s & ~t))`); `is_atom_subtype` handles built-in atoms; user-defined atoms dispatch via `annotation-of(ctor)["subtype:"]` in `is_atom_subtype` fallthrough |
+| `unify` | Fixed Rust | TypeVar binding + occurs check + level management + Recursive opening; user-defined atoms use structural `@Child` pairwise recursion — no per-constructor extensibility |
+| `Substitution::apply` | No | All via `typenode_map_children`; TypeVar's `apply:` annotation handles subst lookup |
+| `PartialEq` | No | Structural TypeNode equality — field-by-field, no constructor special-cases |
 
 **`collect_type_vars` reads level from `state.levels[name]`**, not from `payload["level"]`. The payload carries the creation-time level (fixed at `fresh_type_var()` call time); `state.levels` is the authoritative mutable current level (updated by level lowering). DICT-GEN generalization checks `state.levels[name] > enclosing_level` — always use `state.levels`, never the payload.
 
@@ -401,9 +406,27 @@ All existing type-stage combinators (`or`, `record`, `arrow`, `seq`, `map`, etc.
 
 ### Extensibility
 
-Users can freely compose existing `TypeNode` constructors into new type-stage functions — `non-empty-list`, weighted unions, constrained aliases — and the resolver handles them without changes.
+Users can freely compose existing `TypeNode` constructors into new type-stage functions — `non-empty-list`, weighted unions, constrained aliases — and the resolver handles them without changes. Traversal (`walk_type`) picks up new constructors automatically via `@Child` annotations with no Rust changes.
 
-For genuinely new `TypeNode` constructors (new type forms with new semantics): declare the constructor with `@[children: fn  as-type: fn]` in the TypeNode ADT, then add explicit arms only to the four semantically-special walkers above. The `as-type` annotation is the soundness gate — a user-defined constructor can only reduce to existing TypeNode forms, preventing `TypeNode.AlwaysSubtype` or other invariant-violating forms. Traversal (`walk_type`) picks up the new constructor automatically via `TypeNode.children` with no Rust changes.
+For genuinely new `TypeNode` constructors that introduce new atoms (new type forms with novel static semantics — capability types, session types, unit types), three annotations govern participation in the type system:
+
+**`as-type:` (normalization to existing atoms).** If the user atom is definitionally equivalent to a combination of built-in types, `as-type:` maps it there. `to_rdnf` calls `as-type:` when it encounters a user-defined atom, reducing it before normalization. The mapping must be **monotone** (if A ≤ B in the user ordering, then `as-type(A)` ≤ `as-type(B)`) and **conservative** (`as-type(A)` is a supertype of `A`). Identity `as-type:` (returning the atom unchanged) signals an opaque atom with no further reduction.
+
+**`subtype:` (atom-level subtype rule).** When `is_atom_subtype` encounters a user-defined atom that `as-type:` left unchanged, it dispatches to `annotation-of(ctor)["subtype:"]`. Signature: `Fn@[pair Bool sigma] [TypeNode TypeNode sigma]`. The correct implementation pattern chains via `[is-subtype ExistingAtom other sigma]` to inherit full transitivity through built-in types without enumerating chains manually:
+
+```tinct
+# PositiveInt is a subtype of Int (and therefore Number, etc.) — inherits all transitivity
+subtype: [fn [let self other sigma]
+  [is-subtype Int other sigma]]
+```
+
+**Sigma must be threaded.** The `subtype:` function must forward the received sigma when calling `[is-subtype ...]` internally. Dropping sigma silently breaks coinductive checking for recursive types that appear in the supertype argument.
+
+**BAS §3.7 proof obligations.** These are user responsibilities — they cannot be mechanically enforced. Any `subtype:` implementation must satisfy: (1) **consistency preservation** — the rule must not make a consistent type inconsistent; (2) **depth decrease** — recursive application must terminate (no infinite subtype chains); (3) **equal-depth consistency** — types at the same depth remain consistent. A `subtype:` that violates transitivity or produces contradictory answers depending on the RDNF decomposition path breaks the Boolean algebra's unique complementation property (BAS Theorem 3.2).
+
+**Component disjointness default.** User-defined atoms belong to their own lattice component — disjoint from all built-in atoms and from each other by default (analogous to S-ClsBot for nominal class tags). `atoms_are_component_disjoint(UserAtom, AnyBuiltinAtom)` returns true unless the user's `as-type:` or `subtype:` establishes a relationship.
+
+**Conservative default.** A user atom with no `as-type:` or `subtype:` annotation is treated as opaque and nominally disjoint from everything except `Top`. This is correct: a new atom type is in its own component of the lattice (Dolan 2016, §3.2.3) until the user declares otherwise.
 
 ### Annotation Resolver
 
@@ -802,37 +825,68 @@ Explicit `mu` in annotation positions uses `[fn [let self] ...]` with `self` as 
 
 ### Architectural Note
 
-**The `Type` Rust enum is NOT replaced by `CheckerType`.** The type checker's internal state — `InferState`, `TypeScheme`, `TypeEnv.bindings`, `Substitution` — stays on the `Type` Rust enum. These require no thunk arenas and remain a pure Rust term algebra.
+**The `Type` Rust enum remains as the type checker's internal representation.** `InferState`, `TypeScheme`, `TypeEnv.bindings`, and `Substitution` continue to use `Type`. No internal migration is required.
 
-`CheckerType` is the permanent boundary: `from_type` converts `Type` → TypeNode tinct Value when type-stage code needs to inspect or manipulate a type; `typenode_value_to_type` converts back.
+**Dispatch architecture.** `is_subtype` uses RDNF lattice inclusion. Built-in atoms (Union, Intersect, Record, Arrow, TypeVar, Recursive) are handled by `is_atom_subtype` with direct Rust pattern matching — no arena, no annotation dispatch. User-defined atoms that `as-type:` leaves unchanged fall through to `annotation-of(ctor)["subtype:"]`; a call-local `ThunkArena` is allocated only at that fallthrough point to construct the TypeNode arguments. `unify()` is fixed Rust with structural `@Child` pairwise recursion for user-defined atoms — there is no `unify:` annotation. See §Dispatch Protocol for the full design.
 
-The original spec goal of "retire the `Type` enum" (T-1079–T-1082 in S-862) is **cancelled** — migrating InferState/Substitution to CheckerType was blocked by the arena access problem and is not needed for any user-facing feature.
+`typenode_value_to_type` converts TypeNode results back to `Type` for storage in `InferState`. Traversal (`@Child` → `map-children`) is equally uniform.
 
-**User extensibility is preserved via annotation-based open dispatch.** `is_subtype_inner` and `unify` keep Rust fast-path arms for known BAS constructors (Union, Intersect, Record, Arrow, Recursive, TypeVar). For unknown/user-defined constructors, they fall through to type-stage eval and look up `subtype:` / `unify:` from `annotation-of(ctor)`. Users define new TypeNode constructors with full subtyping and unification semantics entirely in tinct — no Rust required. This does not require InferState to use CheckerType; TypeNode values are only passed across the boundary for the dispatch call.
+**Two Rust checks remain as dispatch infrastructure** (not type rules, not migratable):
+- Depth guard: `if depth >= MAX_SUBTYPE_DEPTH { return false; }` — prevents stack overflow on pathological types
+- Error sentinel: `if matches!(sub | sup, Type::Error) { return false; }` — `Type::Error` is a Rust-internal sentinel for failed inference, not a user-visible TypeNode constructor
+
+### Dispatch Protocol
+
+**`is_subtype` needs no arena.** RDNF normalization (`to_rdnf`) decomposes only the Boolean skeleton of a type — it never constructs new TypeNode values and never calls tinct. Built-in atom comparison (`is_atom_subtype`) operates on `Type` values directly with Rust pattern matching. No `ThunkArena` is involved in the main subtype path.
+
+**Arena at `is_atom_subtype` fallthrough only.** When `is_atom_subtype` encounters a user-defined atom and dispatches to `annotation-of(ctor)["subtype:"]`, it must pass the atom as a TypeNode `Value::Variant` to the tinct function. A call-local `ThunkArena` is allocated at this point, used to construct the TypeNode argument, and discarded when the tinct call returns. Leaf atoms (Int, Float, Bool, etc.) have `payload: None` and bypass arena allocation.
+
+**`type_to_typenode_full`** — converts a `Type` atom to its TypeNode `Value::Variant` for passing into the user-defined `subtype:` tinct function. Called only at the `is_atom_subtype` fallthrough, not throughout `is_subtype`. Must satisfy `typenode_value_to_type(type_to_typenode_full(t)) == t` for all atom types.
+
+**Sigma wire format:** Sigma (the coinductive visited-pairs set) crosses the Rust/tinct boundary as a nested dict:
+
+```tinct
+# sigma: { v1 → { v2 → true } }
+sigma-has?: [fn [let sigma v1 v2] [get-or false v2 [get-or [] v1 sigma]]]
+sigma-add:  [fn [let sigma v1 v2]
+  [merge sigma [[[v1]: [merge [get-or [] v1 sigma] [[[v2]: true]]]]]]]
+```
+
+Sigma is always returned from `subtype:` functions — even on failure. S-Assum inserts a pair before the recursive call; discarding it on failure would allow a different recursive path to loop on the same pair.
+
+**`subtype:` function signature:** `Fn@[pair Bool sigma] [TypeNode TypeNode sigma]`
+
+**Re-entrant dispatch:** User-defined `subtype:` functions call `[is-subtype ExistingAtom other sigma]` to delegate to built-in subtype rules, inheriting full transitivity through the RDNF machinery. `is-subtype` is exposed as a Rust builtin in the type-stage environment. The tinct `subtype:` for `TypeNode.Recursive` similarly calls `[is-subtype ...]` for S-Exp unfolding. Depth is managed entirely on the Rust side.
+
+**`unify` is fixed Rust — no dispatch.** User-defined atoms unify structurally: same constructor tag + pairwise `@Child` field recursion. No custom `unify:` annotation exists. Research across the type theory literature found no case where user-defined constructors need non-structural unification (variance is a subtyping property, not a unification one; FDs are constraint-solver rules; GADTs emit pattern-typing equalities; TypeApplication is always normalized before reaching the unifier). The `unify()` function handles TypeVar binding, occurs checks, level management, and Recursive-type opening internally — these are built-in concerns not suitable for user extension.
+
+**Error reporting:** When a `subtype:` annotation crashes, returns malformed sigma, or returns a non-boolean, the type checker raises a `TypeRuleError` — a new named typed variant in `TypeErrorTyped` (defined in `src/type_errors.rs`), following the existing per-error-struct convention. Fields: `constructor: String`, `sub: Type`, `sup: Type`, `reason: String`, `span: Span`, `call_stack: Vec<TypeSpanFrame>`. This gives users a clear diagnostic pointing at the faulty annotation rather than an opaque eval error.
 
 ---
 
-**Current:** The type checker operates on a `Type` Rust enum with no equirecursive variants.
+**Current:** `is_subtype_inner` and `unify` use per-constructor Rust match arms for all built-in type forms.
 
-**Proposed:** Add two new variants to `Type`:
+**Proposed:** Two new `Type` variants (already added in S-860):
 
 ```rust
-// In src/type_def.rs — additions to the Type enum
 Type::Recursive { var: String, body: Box<Type> }
-// μ-binder. var is a globally unique gensym name (e.g. "𝜇ꜱʏᴍ⧼List⧽42").
-// body is a concrete Type tree with RecursiveRef(var) at recursive positions.
-
 Type::RecursiveRef(String)
-// Self-reference sentinel. The String is the var name of the enclosing Recursive.
-// Only appears inside a Recursive body; never reaches is_subtype_inner or unify
-// directly — unfolded by S-Exp before those sites are reached.
 ```
 
-Everything else in the type checker — `TypeScheme`, `TypeEnv.bindings`, `InferState.subst`, `Substitution`, `unify`, `is_subtype_inner`, builtin type signatures, the LSP TypeMap — continues to use `Type` unchanged.
+`TypeNode.Recursive` and `TypeNode.RecursiveRef` are full members of the TypeNode ADT:
 
-`is_subtype_inner` gains two new arms (S-Assum and S-Exp), each passing sigma. `unify` gains five new arms for the Recursive+TypeVar cases. `Substitution::apply` gains one new arm for TypeVar lookup; RecursiveRef passes through `typenode_map_children` correctly. `unfold_once` substitutes `RecursiveRef(var)` with the full `Recursive` node using `substitute_recvar`. All implemented in S-861 over `Type` directly.
+```tinct
+TypeNode: [type
+  ...
+  [Recursive@[guarding: true] var: String  body: TypeNode]
+  [RecursiveRef name: String]]
+```
 
-**Impact:** Two new match arms in every exhaustive match on `Type` (~20–30 sites). No arena access required. No migration of existing code.
+`is_subtype_inner` becomes pure dispatch: for every constructor, `is_atom_subtype` handles built-in atoms with explicit Rust arms; user-defined atoms fall through to `annotation-of(ctor)["subtype:"]`. `unify` remains fixed Rust — structural `@Child` pairwise recursion for user-defined atoms, no per-constructor dispatch.
+
+`Substitution::apply`, `collect_type_vars`, `has_inference_vars`, and all other walkers use `walk_type` with predicates via `map-children`. No per-constructor arms.
+
+**Impact:** All per-constructor Rust arms in `is_subtype_inner`, `unify`, and walker functions deleted. Call-local arena added at dispatch boundary. `Type` enum and internal state (`InferState`, `Substitution`, `TypeScheme`) unchanged.
 
 ### `src/type_env.rs` — Merged `TyConDef` (eliminates `TypeAlias`)
 
@@ -967,7 +1021,7 @@ Once equirecursive types land, `validate_value` in `src/builtins_meta.rs` (~267 
 ## Prerequisites
 
 - **user-type-constructors** — already accepted and in implementation (S-842–S-851). `TypeConstructor`, `TypeApplication`, `RowTail::Uniform`, and the scoped `TyConDef` registry (as TypeNode values / `Arc<TyConDef>`) are the baseline this feature builds on. Equirecursive types add `TypeNode.Recursive` and `TypeNode.RecursiveRef` — the two TypeNode constructors that cannot be expressed without equirecursive support — plus the coinductive subtype checking algorithm (S-Exp + S-Assum) and the `mu` combinator.
-All other infrastructure required by this proposal — annotation system, TypeNode ADT, TyConDef merge, CheckerType migration, eval_type_stage_expr, etc. — is fully specified in the §Design and §What Would Change sections above. It is part of this proposal's implementation, not a prerequisite.
+All other infrastructure required by this proposal — annotation system, TypeNode ADT, TyConDef merge, CheckerType boundary wiring (`from_type`, `typenode_value_to_type`), eval_type_stage_expr, etc. — is fully specified in the §Design and §What Would Change sections above. It is part of this proposal's implementation, not a prerequisite.
 
 ## References
 

@@ -73,7 +73,7 @@ Single-line strings use `"..."`. Multi-line strings use triple quotes — the cl
 ```tinct
 [
   name:  "Alice"
-  count: 42
+  count: "42"
 
   msg:   i"Hello $name, you have $count messages"
   # → "Hello Alice, you have 42 messages"
@@ -309,7 +309,7 @@ Type declarations and construction:
 [
   Color: [type Red Green Blue]   # dict-entry form; unit constructors are bare uppercase words
 
-  color: Red   # injected short name; variant tag is "Color.Red" internally
+  color: Color.Red   # qualified name — constructors are always accessed as TypeName.CtorName
 
   hex: [match color
     Color.Red:   "#ff0000"   # unit constructor patterns — qualified name, no brackets
@@ -324,13 +324,15 @@ Sum types with payloads use `try` in the standard library:
 
 ```tinct
 [
+  Result: [type [let a] [Ok value: a] [Error msg: String]]
+
   # try returns Variant(Result.Ok, value) on success, Variant(Result.Error, msg) on failure
   result: [try [fn [] [+ 1 2]]]
 
   # Pattern match on the result
   value: [match result
-    [Result.Ok v]:    v     # → 3
-    [Result.Error _]: 0]
+    [Ok payload]:    payload.value     # → 3
+    [Error _]:       0]
 ]
 ```
 
@@ -338,32 +340,32 @@ Sum types with payloads use `try` in the standard library:
 
 ## Nominal Variants
 
-`Name: [type ...]` declares a type and injects its constructors as bindings into the enclosing dict. Unit constructors are bare uppercase words; payload constructors are bracketed (`[CtorName field: Type ...]`). The injected binding names are short (e.g. `None`, `Red`); the internal variant tags are qualified (e.g. `Option.None`, `Color.Red`).
+`Name: [type ...]` declares a type and injects its constructors into the type dict. Unit constructors are bare uppercase words; payload constructors are bracketed (`[CtorName field: Type ...]`). Constructors are always accessed with their qualified name `TypeName.CtorName` — both in value position and in match patterns.
 
 ```tinct
 [
   Option: [type [let a]  [Some value: a]  None]   # parameterized; None is a bare unit constructor
 
-  # Constructors are injected into scope as short names
-  nothing: None
+  # Constructors are accessed via qualified name: TypeName.CtorName
+  nothing: Option.None
 
-  # Payload variant: call constructor (injected into scope from the type declaration)
-  something: [Some value: 42]
+  # Payload variant: call constructor with named args
+  something: [Option.Some value: 42]
 
   # Pattern match — [Tag binding] binds the payload DICT; access named fields with dot
   n: [match something
-        [Some p]: p.value   # p is the payload dict → p.value = 42
-        _:        0]        # wildcard fallback
+        [Option.Some payload]: payload.value   # payload is the payload dict → payload.value = 42
+        _:                     0]               # wildcard fallback
 ]
 ```
 
-**Constructors are injected into the enclosing dict scope** as short names (`Red`, not `Color.Red`). The internal variant tag is qualified (`Color.Red`), but the binding you reference in value position is the short name:
+Constructors live inside the type dict, accessible as `TypeName.CtorName`. The variant tag is the same qualified string (`Color.Red`, `Option.Some`):
 
 ```tinct
 [
   Color: [type Red Green Blue]
-  c: Red
-  is-red: [= c Red]   # → true
+  c: Color.Red
+  is-red: [= c Color.Red]   # → true
 ]
 ```
 
@@ -373,12 +375,12 @@ Sum types with payloads use `try` in the standard library:
 [
   Measure: [type [Length r: Float] Zero]
 
-  m: [Length r: 2.5]
+  m: [Measure.Length r: 2.5]
 
   desc: [match m
-    [Length p]: [str "length=" [str p.r]]   # p is the payload dict; p.r is the Float → 2.5
-    Zero:       "zero"                      # unit constructor: bare name, no brackets
-    _:          "unknown"]
+    [Measure.Length payload]: [str "length=" [str payload.r]]   # payload.r is the Float → 2.5
+    Measure.Zero:             "zero"
+    _:                        "unknown"]
   # → "length=2.5"
 ]
 ```
@@ -397,8 +399,8 @@ Patterns appear directly as `pattern: body` pairs inside `[match ...]`:
 
   # Structural dict match — destructures named fields into bindings
   url: [match data
-    [host: h  port: p]: [str h ":" [str p]]
-    _:                   "unknown"]
+    [case [let h p] [host: h  port: p] [str h ":" [str p]]]
+    [case [let _]   _                  "unknown"]]
   # → "localhost:8080"
 
   # Literal match
@@ -410,8 +412,8 @@ Patterns appear directly as `pattern: body` pairs inside `[match ...]`:
 
   # Nested dict destructuring
   city: [match [user: [name: "Alice"  city: "Portland"]]
-    [user: [city: c]]: c
-    _:                  "unknown"]
+    [case [let c] [user: [city: c]] c]
+    [case [let _] _                 "unknown"]]
   # → "Portland"
 ]
 ```
@@ -421,9 +423,9 @@ Patterns appear directly as `pattern: body` pairs inside `[match ...]`:
 ```tinct
 [
   Color: [type Red Green Blue]
-  color: Red   # injected short name; variant tag is "Color.Red" internally
+  color: Color.Red   # qualified name; variant tag is "Color.Red" internally
 
-  # Unit constructors — bare name or qualified dot notation, no brackets
+  # Unit constructors — always use qualified name in patterns
   hex: [match color
     Color.Red:   "#ff0000"
     Color.Green: "#00ff00"
@@ -433,12 +435,12 @@ Patterns appear directly as `pattern: body` pairs inside `[match ...]`:
 
   # Payload constructors — [Tag binding] binds the payload dict; access fields with dot
   Shape: [type [Circle r: Int] [Square s: Int]]
-  sh: [Circle r: 5]
+  sh: [Shape.Circle r: 5]
 
   area: [match sh
-    [Shape.Circle p]: [* 3 [* p.r p.r]]   # p is the payload dict; p.r is the Int → 3*5*5 = 75
-    [Shape.Square p]: [* p.s p.s]
-    _:                0]
+    [Shape.Circle payload]: [* 3 [* payload.r payload.r]]   # payload.r is the Int → 3*5*5 = 75
+    [Shape.Square payload]: [* payload.s payload.s]
+    _:                      0]
   # → 75
 ]
 ```
@@ -471,13 +473,15 @@ Patterns compose: a constructor pattern's binding can itself be a dict pattern, 
 
 ```tinct
 [
+  Result: [type [let a] [Ok value: a] [Err msg: String]]
+
   handle: [fn [let result]
     [match result
-      [case [let v]  [Result.Ok v]   [str "ok: " [str v]]]
-      [case [let _]  [Result.Err _]  "error"]]]
+      [case [let v] [Ok v]  [str "ok: " [str v.value]]]
+      [case [let _] [Err _] "error"]]]
 
-  r1: [handle [Result.Ok 42]]    # → "ok: 42"
-  r2: [handle [Result.Error ""]] # → "error"
+  r1: [handle [Ok value: 42]]    # → "ok: 42"
+  r2: [handle [Err msg: ""]]     # → "error"
 ]
 ```
 
@@ -548,6 +552,8 @@ Errors propagate automatically through the thunk graph. Unused values never erro
 
 ```tinct
 [
+  Result: [type [let a] [Ok value: a] [Error msg: String]]
+
   # raise — always errors, never returns
   validated: [fn [let port@Int]
     [if [and [>= port 1] [<= port 9999]]
@@ -556,13 +562,13 @@ Errors propagate automatically through the thunk graph. Unused values never erro
 
   # try catches runtime errors; returns Result.Ok or Result.Error
   value:   [match [try [fn [] [+ 1 2]]]
-    [Result.Ok v]:    v   # → 3
-    [Result.Error _]: 0]
+    [Ok payload]:    payload.value   # → 3
+    [Error _]:       0]
 
   # match on try result for fallback pattern
   safe:    [match [try [fn [] [/ 1 0]]]
-              [Result.Ok v]:    v
-              [Result.Error _]: 0]
+              [Ok payload]:    payload.value
+              [Error _]:       0]
   # → 0 (division error caught)
 ]
 ```
@@ -621,7 +627,7 @@ These functions are always available — no `include` needed.
 
 **I/O:** `emit`, `lines`, `open`, `write`, `flush`, `close`, `stat`, `exists`, `make-dir`, `rename`, `env`, `list-dir`, `narrow`, `string-handle`, `read-chunk`
 
-**Async:** `task`, `await`, `channel`, `send`, `recv`, `select-once`, `context`, `with-timeout`, `with-cancel`, `loop-select`, `retry`, `finally`, `exit`, `graceful-exit`, `await-all`, `recv-all`, `par-map`, `par-filter`
+**Async:** `task`, `await`, `channel`, `send`, `recv`, `select-once`, `context`, `with-timeout`, `with-cancel`, `select`, `retry`, `finally`, `exit`, `graceful-exit`, `await-all`, `recv-all`, `par-map`, `par-filter`
 
 ---
 

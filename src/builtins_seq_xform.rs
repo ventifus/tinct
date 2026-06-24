@@ -53,7 +53,7 @@ pub(crate) fn builtin_map(
         // Flatten Overlay to Dict before dispatch.
         let xs = match xs {
             Value::Overlay(l, r) => {
-                Value::Dict(flatten_overlay(&l, &r, "map", &ctx, call_span.clone())?)
+                Value::Dict(flatten_overlay(&l, &r, "map", &ctx, call_span.clone()).await?)
             }
             // Auto-unpack variant payload — but NOT Seq.Cons/Seq.Nil which are handled below.
             // Unit Variants (no payload) fall through to type error.
@@ -62,7 +62,7 @@ pub(crate) fn builtin_map(
                 payload: Some(payload_id),
             } if tag != "Seq.Cons" => {
                 let payload_thunk = ctx.get_thunk(payload_id);
-                crate::eval::materialize_sync(&payload_thunk, Some(&call_span), &ctx)?
+                crate::eval::materialize(&payload_thunk, Some(&call_span), &ctx).await?
             }
             // Bytes: treat as Seq of Int byte values
             Value::Bytes {
@@ -108,7 +108,7 @@ pub(crate) fn builtin_map(
                 // Seq path: head = f(head), tail = map(f, tail)
                 let payload_thunk = ctx.get_thunk(payload_id);
                 let payload_val =
-                    crate::eval::materialize_sync(&payload_thunk, Some(&call_span), &ctx)?;
+                    crate::eval::materialize(&payload_thunk, Some(&call_span), &ctx).await?;
                 let (head, tail) = if let Value::Dict(ref d) = payload_val {
                     let head = *d
                         .get(&Key::String("head".into()))
@@ -199,7 +199,7 @@ pub(crate) fn builtin_filter(
         // Flatten Overlay to Dict before dispatch.
         let xs = match xs {
             Value::Overlay(l, r) => {
-                Value::Dict(flatten_overlay(&l, &r, "filter", &ctx, call_span.clone())?)
+                Value::Dict(flatten_overlay(&l, &r, "filter", &ctx, call_span.clone()).await?)
             }
             // Auto-unpack variant payload — but NOT Seq.Cons/Seq.Nil which are handled below.
             // Unit Variants (no payload) fall through to type error.
@@ -208,7 +208,7 @@ pub(crate) fn builtin_filter(
                 payload: Some(payload_id),
             } if tag != "Seq.Cons" => {
                 let payload_thunk = ctx.get_thunk(payload_id);
-                crate::eval::materialize_sync(&payload_thunk, Some(&call_span), &ctx)?
+                crate::eval::materialize(&payload_thunk, Some(&call_span), &ctx).await?
             }
             // Bytes: treat as Seq of Int byte values
             Value::Bytes {
@@ -464,7 +464,7 @@ pub(crate) fn builtin_filter_seq_step(
                     // Extract head and tail from Seq.Cons payload
                     let payload_thunk = ctx.get_thunk(payload_id);
                     let payload_val =
-                        crate::eval::materialize_sync(&payload_thunk, Some(&call_span), &ctx)?;
+                        crate::eval::materialize(&payload_thunk, Some(&call_span), &ctx).await?;
                     let (head, tail) = if let Value::Dict(ref d) = payload_val {
                         let head = *d
                             .get(&Key::String("head".into()))
@@ -592,7 +592,7 @@ pub(crate) fn builtin_take(
         // Flatten Overlay to Dict, unpack Variant payload, and convert Bytes before dispatch.
         let xs = match xs {
             Value::Overlay(l, r) => {
-                Value::Dict(flatten_overlay(&l, &r, "take", &ctx, call_span.clone())?)
+                Value::Dict(flatten_overlay(&l, &r, "take", &ctx, call_span.clone()).await?)
             }
             // Auto-unpack variant payload — but NOT Seq.Cons/Seq.Nil which are handled below.
             // Unit Variants (no payload) fall through to type error.
@@ -601,7 +601,7 @@ pub(crate) fn builtin_take(
                 payload: Some(payload_id),
             } if tag != "Seq.Cons" => {
                 let payload_thunk = ctx.get_thunk(payload_id);
-                crate::eval::materialize_sync(&payload_thunk, Some(&call_span), &ctx)?
+                crate::eval::materialize(&payload_thunk, Some(&call_span), &ctx).await?
             }
             Value::Bytes {
                 ref source,
@@ -634,7 +634,7 @@ pub(crate) fn builtin_take(
                 // Seq: head = seq head, tail = take(n-1, seq tail)
                 let payload_thunk = ctx.get_thunk(payload_id);
                 let payload_val =
-                    crate::eval::materialize_sync(&payload_thunk, Some(&call_span), &ctx)?;
+                    crate::eval::materialize(&payload_thunk, Some(&call_span), &ctx).await?;
                 let (head, tail) = if let Value::Dict(ref d) = payload_val {
                     let head = *d
                         .get(&Key::String("head".into()))
@@ -751,7 +751,7 @@ pub(crate) fn builtin_take_seq_step(
                 // Extract head and tail, emit head, defer tail
                 let payload_thunk = ctx.get_thunk(payload_id);
                 let payload_val =
-                    crate::eval::materialize_sync(&payload_thunk, Some(&call_span), &ctx)?;
+                    crate::eval::materialize(&payload_thunk, Some(&call_span), &ctx).await?;
                 let (head, tail) = if let Value::Dict(ref d) = payload_val {
                     let head = *d
                         .get(&Key::String("head".into()))
@@ -844,7 +844,7 @@ pub(crate) fn builtin_drop(
         // Flatten Overlay to Dict, unpack Variant payload, and convert Bytes before dispatch.
         let xs = match xs {
             Value::Overlay(l, r) => {
-                Value::Dict(flatten_overlay(&l, &r, "drop", &ctx, call_span.clone())?)
+                Value::Dict(flatten_overlay(&l, &r, "drop", &ctx, call_span.clone()).await?)
             }
             // Auto-unpack variant payload — but NOT Seq.Cons/Seq.Nil which are handled below.
             // Unit Variants (no payload) fall through to type error.
@@ -853,7 +853,7 @@ pub(crate) fn builtin_drop(
                 payload: Some(payload_id),
             } if tag != "Seq.Cons" => {
                 let payload_thunk = ctx.get_thunk(payload_id);
-                crate::eval::materialize_sync(&payload_thunk, Some(&call_span), &ctx)?
+                crate::eval::materialize(&payload_thunk, Some(&call_span), &ctx).await?
             }
             Value::Bytes {
                 ref source,
@@ -886,7 +886,7 @@ pub(crate) fn builtin_drop(
                 // Seq: use lazy step function to drop remaining elements
                 let payload_thunk = ctx.get_thunk(payload_id);
                 let payload_val =
-                    crate::eval::materialize_sync(&payload_thunk, Some(&call_span), &ctx)?;
+                    crate::eval::materialize(&payload_thunk, Some(&call_span), &ctx).await?;
                 let tail = if let Value::Dict(ref d) = payload_val {
                     *d.get(&Key::String("tail".into()))
                         .expect("Seq.Cons must have tail")
@@ -989,7 +989,7 @@ pub(crate) fn builtin_drop_seq_step(
                 // Drop this element, continue with tail
                 let payload_thunk = ctx.get_thunk(payload_id);
                 let payload_val =
-                    crate::eval::materialize_sync(&payload_thunk, Some(&call_span), &ctx)?;
+                    crate::eval::materialize(&payload_thunk, Some(&call_span), &ctx).await?;
                 let tail = if let Value::Dict(ref d) = payload_val {
                     *d.get(&Key::String("tail".into()))
                         .expect("Seq.Cons must have tail")

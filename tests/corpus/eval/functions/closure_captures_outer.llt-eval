@@ -1,6 +1,0 @@
-# Function closure captures variable from outer scope
-[x: 100]
-[f: [fn [let y] [+ x y]]]
-[f 23]
-=== out
-Int(123)

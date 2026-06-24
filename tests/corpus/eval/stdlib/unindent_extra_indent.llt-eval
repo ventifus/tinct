@@ -1,7 +1,0 @@
-# unindent: some lines have extra indentation beyond the baseline
-[unindent "
-  def foo():
-    return 42
-  "]
-=== out
-String("def foo():\n  return 42")

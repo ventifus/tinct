@@ -1,9 +1,0 @@
-# Test optional quantifier (not yet implemented - using literal match for now)
-[include %libdir "regex.llt"]
-
----
-
-[call %.re-match "color" "color"]
-
-=== out
-Bool(true)

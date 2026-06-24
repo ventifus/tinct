@@ -458,7 +458,7 @@ impl DocumentStore {
     pub fn new() -> Result<Self, String> {
         // Load stdlib once. If it fails, fall back to an empty environment + empty arena
         // so the LSP can still provide parsing/type-checking diagnostics.
-        let (stdlib_env, stdlib_arena) = create_stdlib_env_with_arena().unwrap_or_else(|_| {
+        let (stdlib_env, stdlib_arena) = crate::async_rt::block_on_anywhere(create_stdlib_env_with_arena()).unwrap_or_else(|_| {
             (
                 Arc::new(RwLock::new(Environment::new())),
                 Arc::new(std::sync::Mutex::new(crate::arena::ThunkArena::new())),
@@ -710,7 +710,7 @@ pub fn load_doc_from_uri(uri: &Uri) -> Option<DocumentState> {
 
     // Create minimal environment for LSP analysis.
     // base_dir is the document's parent directory (Fix 6: replaces open_ambient_dir(".")).
-    let (stdlib_env, stdlib_arena) = create_stdlib_env_with_arena().ok()?;
+    let (stdlib_env, stdlib_arena) = crate::async_rt::block_on_anywhere(create_stdlib_env_with_arena()).ok()?;
     let type_stage_env =
         crate::imports::build_type_stage_env().unwrap_or_else(|| Arc::clone(&stdlib_env));
     // Clone the parent_dir handle to give ownership to the EvalContext
@@ -744,7 +744,7 @@ mod tests {
         Arc<RwLock<Environment>>,
         Arc<std::sync::Mutex<crate::arena::ThunkArena>>,
     ) {
-        create_stdlib_env_with_arena().unwrap()
+        crate::async_rt::block_on_anywhere(create_stdlib_env_with_arena()).unwrap()
     }
 
     fn test_env() -> Arc<RwLock<Environment>> {

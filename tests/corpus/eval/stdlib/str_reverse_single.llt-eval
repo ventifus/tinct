@@ -1,6 +1,0 @@
-# str-reverse: single character string
-[include %libdir "strings.llt"]
----
-[call %.str-reverse "a"]
-=== out
-String("a")

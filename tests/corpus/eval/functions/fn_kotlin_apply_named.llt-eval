@@ -1,8 +1,0 @@
-# $apply with named args: dict with string keys becomes named args
-[
-  f: [fn [let x y] [+ x y]]
-  args: [x: 10 y: 20]
-  result: [apply f args]
-]
-=== out
-Dict({"f": Function(x, y), "args": Dict({"x": Int(10), "y": Int(20)}), "result": Int(30)})

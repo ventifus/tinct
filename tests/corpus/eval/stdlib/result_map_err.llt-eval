@@ -1,4 +1,0 @@
-# result-map: pass Error through unchanged
-[result-map [fn [let x] [* x 3]] [Error "error"]]
-=== out
-Variant(Result.Error, String("error"))

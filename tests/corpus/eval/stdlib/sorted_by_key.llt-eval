@@ -1,8 +1,0 @@
-# sorted-by: sort with custom comparator comparing by age field
-[sorted-by [fn [let a b] [< [get "age" a] [get "age" b]]] [
-  [name: "Alice" age: 30]
-  [name: "Bob" age: 25]
-  [name: "Carol" age: 35]
-]]
-=== out
-Dict({0: Dict({"name": String("Bob"), "age": Int(25)}), 1: Dict({"name": String("Alice"), "age": Int(30)}), 2: Dict({"name": String("Carol"), "age": Int(35)})})

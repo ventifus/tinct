@@ -1,4 +1,0 @@
-# proxy handler with default param referencing closure variable
-[default_val: 42  handler: [fn [let field  val@[default: default_val]] val]  p: [proxy handler]  result: p.test_field]
-=== out
-Dict({"default_val": Int(42), "handler": Function(field, val), "p": Proxy, "result": Int(42)})

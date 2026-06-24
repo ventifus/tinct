@@ -693,12 +693,6 @@ fn dict_to_pattern(
             Pattern::Pin(name)
         }
 
-        "type_tag" => {
-            // TypeTag pattern: matches by runtime type name (Int, Str, Seq, Dict, etc.)
-            let tag = get_string_field(dict, "tag", path, ctx)?;
-            Pattern::TypeTag(tag)
-        }
-
         "pin" => {
             let name = get_string_field(dict, "name", path, ctx)?;
             Pattern::Pin(name)
@@ -1436,22 +1430,6 @@ fn pattern_to_thunk_id(
                     pattern_to_thunk_id(&inner_pat.node, inner_pat.span.clone(), ctx)?,
                 );
             }
-        }
-        Pattern::TypeTag(tag) => {
-            dict.insert(
-                Key::String("type".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    string_val("type_tag"),
-                    span.clone(),
-                ))),
-            );
-            dict.insert(
-                Key::String("tag".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    string_val(tag),
-                    span.clone(),
-                ))),
-            );
         }
         Pattern::Pin(name) => {
             dict.insert(

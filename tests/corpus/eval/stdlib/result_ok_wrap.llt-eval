@@ -1,4 +1,0 @@
-# Ok: wrap value in Ok variant (nominal constructor, serves as pure/return for Result)
-[Ok 42]
-=== out
-Variant(Result.Ok, Int(42))

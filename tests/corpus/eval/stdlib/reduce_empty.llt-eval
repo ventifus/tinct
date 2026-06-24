@@ -1,4 +1,0 @@
-# reduce on empty dict returns init
-[reduce [fn [let acc x] [+ acc x]] 0 []]
-=== out
-Int(0)

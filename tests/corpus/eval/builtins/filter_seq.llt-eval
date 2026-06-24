@@ -1,4 +1,0 @@
-# filter on seq: returns lazy seq of matching elements
-[head [filter [fn [let x] [> x 5]] [range 0 10]]]
-=== out
-Int(6)

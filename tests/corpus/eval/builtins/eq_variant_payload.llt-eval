@@ -1,9 +1,0 @@
-# Variant payload equality — recursive comparison via `=`
-[Some: [fn [let x] x]
- None: [variant "None"]
- r1: [= [Some 42] [Some 42]]
- r2: [= [Some 42] [Some 43]]
- r3: [= None None]
- r4: [= [Some 42] None]]
-=== out
-Dict({"Some": Function(x), "None": Variant(None, Null), "r1": Bool(true), "r2": Bool(false), "r3": Bool(true), "r4": Bool(false)})

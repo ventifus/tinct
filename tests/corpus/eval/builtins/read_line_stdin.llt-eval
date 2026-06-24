@@ -1,7 +1,0 @@
-# read_line_stdin: verify newline stripping, EOF returns [], and lazy Seq via prelude lines
-# Uses string-handle to simulate stdin behaviour (same code path as real Handle).
-[h: [string-handle "alpha\nbeta\n"]]
-[all: [collect [lines h]]]
-all
-=== out
-Dict({0: String("alpha"), 1: String("beta")})

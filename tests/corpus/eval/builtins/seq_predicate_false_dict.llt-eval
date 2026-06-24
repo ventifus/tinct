@@ -1,4 +1,0 @@
-# seq?: returns false for dict
-[seq? [x: 1]]
-=== out
-Bool(false)

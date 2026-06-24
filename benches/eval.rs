@@ -5,7 +5,7 @@ fn bench_map_10k(c: &mut Criterion) {
     // [take 10000 [map [fn [let x] [+ x 1]] [range 0]]]
     c.bench_function("map_10k", |b| {
         b.iter(|| {
-            tinct::eval_source("[take 10000 [map [fn [let x] [+ x 1]] [range 0]]]")
+            tinct::async_rt::block_on_anywhere(tinct::eval_source("[take 10000 [map [fn [let x] [+ x 1]] [range 0]]]"))
                 .expect("eval failed");
         })
     });
@@ -16,7 +16,7 @@ fn bench_dict_1k(c: &mut Criterion) {
     // [reduce [fn [let acc i] [merge acc [i: i]]] [] [range 1000]]
     c.bench_function("dict_1k", |b| {
         b.iter(|| {
-            tinct::eval_source("[reduce [fn [let acc i] [merge acc [i: i]]] [] [range 1000]]")
+            tinct::async_rt::block_on_anywhere(tinct::eval_source("[reduce [fn [let acc i] [merge acc [i: i]]] [] [range 1000]]"))
                 .expect("eval failed");
         })
     });
@@ -33,7 +33,7 @@ fn bench_deep_scope(c: &mut Criterion) {
 
     c.bench_function("deep_scope", |b| {
         b.iter(|| {
-            tinct::eval_source(&expr).expect("eval failed");
+            tinct::async_rt::block_on_anywhere(tinct::eval_source(&expr)).expect("eval failed");
         })
     });
 }

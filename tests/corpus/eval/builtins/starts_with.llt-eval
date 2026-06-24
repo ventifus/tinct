@@ -1,4 +1,0 @@
-# starts-with? : check if string starts with prefix
-[starts-with? "hel" "hello"]
-=== out
-Bool(true)

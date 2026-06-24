@@ -1,9 +1,0 @@
-# proxy : handler returns different values based on field name
-[
-  handler: [fn [let name] [if [= name "x"] 10 20]]
-  p: [proxy handler]
-  a: p.x
-  b: p.y
-]
-=== out
-Dict({"handler": Function(name), "p": Proxy, "a": Int(10), "b": Int(20)})

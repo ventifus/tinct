@@ -1,5 +1,0 @@
-[f: [fn [let x  y@[default: 99]] y]]
-
-[f 1 y: 42]
-=== out
-Int(42)

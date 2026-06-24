@@ -1,5 +1,0 @@
-# Test: FunctorSeq.fmap on a list (integer-keyed dict)
-[FunctorSeq.fmap [fn [let x] [* x 2]] [1 2 3]]
-
-=== out
-Dict({0: Int(2), 1: Int(4), 2: Int(6)})

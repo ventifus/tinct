@@ -1,4 +1,0 @@
-# cons: prepend an element to a list
-[cons 0 [1 2 3]]
-=== out
-Dict({0: Int(0), 1: Int(1), 2: Int(2), 3: Int(3)})

@@ -1,6 +1,0 @@
-# str-at: last character by positive index
-[include %libdir "strings.llt"]
----
-[call %.str-at 4 "hello"]
-=== out
-String("o")

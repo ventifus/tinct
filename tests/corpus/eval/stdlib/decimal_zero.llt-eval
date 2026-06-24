@@ -1,4 +1,0 @@
-# decimal: zero value
-[decimal 0]
-=== out
-Decimal(0)

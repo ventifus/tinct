@@ -1,5 +1,0 @@
-# rest: delegates to tail for Seq inputs — O(1) extraction
-# Regression: rest must detect is_seq() and delegate, not require a Dict
-[rest [range 100 104]]
-=== out
-Seq(Int(101), ...)

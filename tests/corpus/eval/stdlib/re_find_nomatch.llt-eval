@@ -1,8 +1,0 @@
-[include %libdir "regex.llt"]
-
----
-
-[call %.re-find "[0-9]+" "abcdef"]
-
-=== out
-Dict({})

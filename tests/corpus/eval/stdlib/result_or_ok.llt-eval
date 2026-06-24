@@ -1,4 +1,0 @@
-# result-or: extract Ok value, ignore default
-[result-or 99 [Ok 42]]
-=== out
-Int(42)

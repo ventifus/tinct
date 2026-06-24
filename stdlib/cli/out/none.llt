@@ -8,10 +8,11 @@
 # The forcing of % drives the full evaluation cascade (including any emit calls),
 # but nothing is written to stdout.
 
+--- uses: ["async"]
 # 1. Drain the emit channel concurrently, discarding all values.
 [drain: [task
-  [loop-select [context]
-    [seq [ch: %emit-channel  handler: [fn [let v] []]] [builtin-variant "Seq.Nil"]]
+  [select [context]
+    [seq [ch: %emit-channel  handler: [fn [let v] []]] []]
     identity]]]
 
 # 2. Force % to drive the evaluation cascade (for side effects).

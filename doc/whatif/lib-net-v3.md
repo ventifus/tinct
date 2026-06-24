@@ -65,18 +65,7 @@ There are no `with-*` wrappers, no `via` / `layer` adapters, no argument-flippin
 
 ### Error Philosophy
 
-Network operations fail in predictable, distinguishable ways. `try` in tinct is for exceptional and unexpected failures; expected protocol failure modes return typed discriminated unions that callers can pattern-match directly. This is the Rust/Haskell model: one typed error union per subsystem, no string matching.
-
-```tinct
-[match [lookup-ips cap DnsQtype.A host]
-  [Result.Ok addrs]:           [happy-connect cap port addrs]
-  [DnsError.NXDomain name]:    [error [str "no such host: " name]]
-  [DnsError.Timeout]:          [retry-with-tcp cap host]
-  [DnsError.Refused]:          [error "nameserver refused query"]
-  [DnsError.ServerFailure]:    [try-next-nameserver cap host]]
-```
-
-Each subsystem defines its own error type; callers handle only the failures relevant to their context and let others propagate. The error types:
+See `doc/whatif/type-foundations.md` for the general design of discriminated error unions per subsystem. The net-specific error types follow:
 
 | Error type | Defined in | Covers |
 |---|---|---|
@@ -224,116 +213,9 @@ The abstract IO interfaces. Protocol layers (Layer 4) implement these typeclasse
 
 ### Type-Level Lookup Tables
 
-Every protocol uses enumerations with associated wire codes: DNS record types carry QTYPE integers, HTTP/2 and HTTP/3 frames carry opcode bytes, TLS records carry content-type codes, WebSocket frames carry opcode nibbles. The naive approach produces paired lookup functions (`qtype->int` and `int->qtype`) that are verbose, error-prone, and separated from the type they serve.
+See `doc/whatif/type-foundations.md` for the general design of type-level lookup tables. The net-specific instances follow:
 
-**Type-level lookup tables** solve this by embedding compile-time constants directly into variant declarations. The constants travel with the type — they cannot get out of sync, and they eliminate all lookup functions.
-
-#### Syntax
-
-Variants may carry named compile-time constants (lowercase identifiers followed by `:` and a literal value) alongside or instead of runtime payload fields (names followed by `@Type`). Constants and payload fields may appear in any order in the same variant:
-
-```tinct
-DnsRcode: [type
-  [NoError  rcode: 0  description: "No Error"]
-  [FormErr  rcode: 1  description: "Format Error"]
-  [ServFail rcode: 2  description: "Server Failure"]
-  [NXDomain rcode: 3  description: "Non-Existent Domain"]
-  [NotImpl  rcode: 4  description: "Not Implemented"]
-  [Refused  rcode: 5  description: "Query Refused"]]
-```
-
-Variants may also mix constants with runtime payload fields:
-
-```tinct
-WsFrame: [type
-  [Text   opcode: 0x01  data@String]
-  [Binary opcode: 0x02  data@Bytes]
-  [Close  opcode: 0x08  code@WsCloseCode  reason@String]
-  [Ping   opcode: 0x09  data@Bytes]
-  [Pong   opcode: 0x0A  data@Bytes]]
-```
-
-#### Access Patterns
-
-**Forward lookup (constant from variant):** dot-access on a variant instance or on the type name itself:
-
-```tinct
-DnsRcode.ServFail.rcode         # → 2 (from type name: DnsRcode.VariantName.field)
-DnsRcode.ServFail.description   # → "Server Failure"
-some-rcode.rcode                # → the rcode constant for whatever variant some-rcode is
-frame.opcode                    # → 0x01 for Text, 0x02 for Binary, etc. — no match needed
-```
-
-**Reverse lookup (variant from constant):** a new form of `get` that takes a named-field query and a type name:
-
-```tinct
-[get rcode: 2 DnsRcode]         # → DnsRcode.ServFail
-[get rcode: 99 DnsRcode]        # → Absent.Absent (unknown value)
-[get opcode: 0x01 WsFrame]      # → WsFrame.Text (unit lookup — no payload fields resolved)
-```
-
-`[get field: value TypeName]` returns `Absent.Absent` for unknown constants, so callers use `[or ...]` or pattern match to handle that case.
-
-#### Wire Encoding
-
-Constants plug directly into existing byte-encoding primitives — no new magic:
-
-```tinct
-# Encode: use the constant directly
-[bytes NetworkEndian [@UInt16 DnsRcode.ServFail.rcode]]   # → [0x00 0x02]
-[bytes NetworkEndian [@UInt8 frame.type.code]]             # → opcode byte from H2FrameType variant
-
-# Decode: reverse lookup with fallback
-[rcode: [or [get rcode: [band flags 0x000F] DnsRcode] DnsRcode.ServFail]]
-[ct:    [or [get code: [get header 0] ContentType] [error "TLS: unknown content type"]]]
-```
-
-#### Eliminated Boilerplate
-
-Every `*->int` and `int->*` function across the protocol files is replaced by this pattern. The before/after for DNS:
-
-```tinct
-# Before — two lookup functions, risk of mismatch:
-qtype->int: [fn [let qt@DnsQtype]
-  [match qt
-    [DnsQtype.A]: 1    [DnsQtype.AAAA]: 28  ...]]
-
-int->rcode: [fn [let n@Int]
-  [match n  0: DnsRcode.NoError  1: DnsRcode.FormErr  ... _: DnsRcode.ServFail]]
-
-# After — zero lookup functions, constants live on the type:
-DnsQtype: [type [A code: 1] [AAAA code: 28] ...]
-DnsRcode: [type [NoError rcode: 0] [FormErr rcode: 1] ...]
-
-# Encode:
-[bytes NetworkEndian [@UInt16 q.qtype.code]]
-
-# Decode:
-[or [get rcode: rcode-int DnsRcode] DnsRcode.ServFail]
-```
-
-#### Generalised `Indexed`: Lookup by Any Key Type
-
-`[get field: value TypeName]` is not special syntax — it is a natural extension of the `Indexed` typeclass. `Indexed` was previously constrained to `Int` keys; this whatif generalises it to any key type `k`:
-
-```tinct
-[class [let Indexed s k v]
-  get:    [Fn@[or v Absent] [s k]]
-  slice:  [Fn@s [s Int Int]]
-  length: [Fn@Int [s]]]
-```
-
-The key type determines which instance fires:
-
-| Expression | `s` | `k` | Instance |
-|---|---|---|---|
-| `[get 0 seq]` | `[Seq T]` | `Int` | Seq by integer index |
-| `[get "key" dict]` | `Dict` | `String` | Dict by string key |
-| `[get rcode: 2 DnsRcode]` | `[Seq DnsRcode]` | `[Map String Any]` | Type lookup table |
-
-For type lookup tables, the type name evaluates at runtime to a Seq of all its variants (each carrying their compile-time constants as accessible fields). The named-argument dict `{rcode: 2}` is the key — `get` finds the first variant where all selector fields match. `Absent.Absent` for no match, consistent with `get?` on dicts.
-
-This unifies three previously separate concepts under one typeclass: sequential access, dictionary access, and enumeration lookup.
+Every network protocol uses this pattern: DNS record types carry QTYPE integers, HTTP/2 and HTTP/3 frames carry opcode bytes, TLS records carry content-type codes, WebSocket frames carry opcode nibbles. The net-specific type declarations using type-level lookup tables are defined in their respective `.llt` files — `DnsQtype` and `DnsRcode` in `dns.llt`, `WsFrame` opcodes in `websocket.llt`, `H2FrameType` in `http2.llt`, etc. Wire encoding uses `[bytes NetworkEndian [@UInt16 q.qtype.code]]` for encoding and `[or [get rcode: rcode-int DnsRcode] DnsRcode.ServFail]` for decoding with fallback.
 
 ---
 
@@ -341,15 +223,9 @@ Two typeclasses cover all network IO. Every transport, tunnel, and framing layer
 
 ### `ByteStream`
 
-An ordered, reliable, connection-oriented byte pipe. Reading and writing are symmetric; addressing was resolved at connection time.
+See `doc/whatif/type-foundations.md` for the general `ByteStream` typeclass design. The net-specific instances follow:
 
-```tinct
-[class [let ByteStream h]
-  read:  [Fn@Bytes [h Int]]
-  write: [Fn@Null  [h Bytes]]]
-```
-
-`Handle` is the opaque Rust I/O handle — the unified type for any sequential stream (TCP, file, pipe). It is the base `ByteStream` instance backed by `builtin-read-bytes`/`builtin-write-bytes`. `TcpHandle` and `FileHandle` are transparent tinct records that wrap `Handle` with visible metadata (`addr`, `path`, etc.). Every protocol layer above produces a new `ByteStream` instance — a tinct record wrapping the layer below:
+`Handle` is the opaque Rust I/O handle — the unified type for any sequential stream (TCP, file, pipe). `TcpHandle` and `FileHandle` are transparent tinct records that wrap `Handle` with visible metadata (`addr`, `path`, etc.). Every protocol layer above produces a new `ByteStream` instance — a tinct record wrapping the layer below:
 
 ```tinct
 # stdlib/net.llt
@@ -416,13 +292,7 @@ wireguard-accept: [fn@[bind: [t]  return: WireguardConnection  constraint: [t: B
 
 ### `Datagram`
 
-An unordered, unreliable packet socket. Each send and receive is a discrete unit with its own source/destination address. UDP, ICMP, the QUIC packet layer, and WireGuard's UDP transport are all `Datagram`.
-
-```tinct
-[class [Datagram d]
-  send: [Fn [d@d addr@SocketAddress data@Bytes] Null]
-  recv: [Fn [d@d] UdpDatagram]]
-```
+See `doc/whatif/type-foundations.md` for the general `Datagram` typeclass design. The net-specific instances follow:
 
 `UdpSocket` (from `udp-socket`) is the base instance:
 
@@ -607,35 +477,11 @@ The output formatter and the HTTP client are the same abstraction: a `MessageStr
 
 ## Layer 3 — Codecs
 
-Data transformations that sit between IO layers and protocol layers. Codecs enable encryption, compression, framing, and serialization — they are what protocol layers are *built with*. Every codec bridges two of the IO shapes defined in Layer 2: `ByteStream`, `Datagram`, `MessageStream`, or another `Codec` stage.
+See `doc/whatif/type-foundations.md` for the general `Codec` typeclass design and composition semantics. The net-specific instances follow:
 
-### `Codec`
-
-`Codec` is the bridge between IO shapes. A compression layer maps `Bytes` to `Bytes`; a serialization layer maps structured values to `Bytes`; an H2 framing layer maps `H2Frame` to `Bytes`; a DTLS layer maps `Datagram` to `Datagram`. All of these are `Codec` instances. The typeclass does not mandate what types are consumed or produced — those are determined by each concrete instance:
+The protocol layers (`tls`, `h2`, `ws`, etc.) are `Codec` implementations that compose with `ByteStream` instances via `encode`/`decode`. Each lives in its respective protocol file:
 
 ```tinct
-[class [Codec c input output]
-  encode: [Fn [c@c input] output]
-  decode: [Fn [c@c output] input]]
-```
-
-The `Codec` typeclass declaration lives in `stdlib/net.llt` alongside `ByteStream`, `Datagram`, and `MessageStream`.
-
-**Concrete instances:**
-
-```tinct
-# ByteStream ↔ MessageStream (Any → Bytes)
-# stdlib/codecs/json.llt
-[instance [Codec NdjsonCodec Any Bytes]
-  encode: [fn [let _ v] [bytes [str [json.to-json v] "\n"]]]
-  decode: [fn [let _ b] [json.from-json [str-from-bytes b]]]]
-
-# ByteStream ↔ ByteStream (Bytes → Bytes)
-# stdlib/compress.llt
-[instance [Codec GzipCodec Bytes Bytes]
-  encode: builtin-gzip-compress
-  decode: builtin-gzip-decompress]
-
 # TLS record framing (Bytes → Bytes)
 # stdlib/protocols/tls13.llt
 [instance [Codec TlsRecordCodec Bytes Bytes]
@@ -657,53 +503,17 @@ The `Codec` typeclass declaration lives in `stdlib/net.llt` alongside `ByteStrea
 [instance [Codec DtlsCodec Datagram Datagram]
   encode: dtls-protect
   decode: dtls-unprotect]
+
+# Compression (Bytes → Bytes) — stdlib/compress.llt
+[instance [Codec GzipCodec Bytes Bytes]
+  encode: builtin-gzip-compress
+  decode: builtin-gzip-decompress]
+
+# NDJSON serialization (Any → Bytes) — stdlib/codecs/json.llt
+[instance [Codec NdjsonCodec Any Bytes]
+  encode: [fn [let _ v] [bytes [str [json.to-json v] "\n"]]]
+  decode: [fn [let _ b] [json.from-json [str-from-bytes b]]]]
 ```
-
-**Codec is the bridge between IO shapes** — the `input` and `output` type parameters tell you which shapes are connected:
-
-| Instance | input | output | Bridge |
-|---|---|---|---|
-| `NdjsonCodec` | `Any` | `Bytes` | MessageStream → ByteStream |
-| `GzipCodec` | `Bytes` | `Bytes` | ByteStream → ByteStream |
-| `TlsRecordCodec` | `Bytes` | `Bytes` | ByteStream → ByteStream |
-| `HpackCodec` | `Headers` | `Bytes` | MessageStream → ByteStream |
-| `H2FrameCodec` | `H2Frame` | `Bytes` | MessageStream → ByteStream |
-| `DtlsCodec` | `Datagram` | `Datagram` | Datagram → Datagram |
-
-The existing protocol layers (`tls`, `h2`, `ws`, etc.) are `Codec` implementations — they just happen to compose with `ByteStream` instances via `encode`/`decode`. A `Codec` instance for compression sits between two `ByteStream` layers; one for NDJSON sits between a `MessageStream` and a `ByteStream` sink.
-
-**Codec layers compose by type** — the `output` type of one codec is the `input` type of the next. This enables separating framing from serialization into distinct composable stages. The `%emit → JSON → %stdout` path for example can be decomposed into two explicit codec stages:
-
-```tinct
-# Stage 1 — serialization: Any → String (JSON text)
-[instance [Codec JsonCodec Any String]
-  encode: json.to-json
-  decode: json.from-json]
-
-# Stage 2 — framing: String → Bytes (NDJSON: add \n, encode as bytes)
-[instance [Codec NdjsonFramer String Bytes]
-  encode: [fn [let _ s] [bytes [str s "\n"]]]
-  decode: [fn [let _ b] [str-from-bytes [str-trim-end b "\n"]]]]
-
-# Pipe pipeline — stages compose with | and read left to right:
-[rebind %emit
-  [%emit | [codec JsonCodec] | [codec NdjsonFramer] | [sink %stdout]]]
-```
-
-The two-stage decomposition enables independent swapping: replace `JsonCodec` with `CborCodec` for binary encoding while keeping NDJSON framing, or replace `NdjsonFramer` with `LengthPrefixFramer` for length-prefixed framing while keeping JSON. `NdjsonCodec` (the combined `Any → Bytes` codec) is a convenience that fuses both stages for the common case.
-
-Adding gzip is one more `| [codec ...]` stage:
-
-```tinct
-[rebind %emit
-  [%emit
-    | [codec JsonCodec]
-    | [codec NdjsonFramer]
-    | [codec GzipCodec]
-    | [sink %stdout]]]
-```
-
-The type chain: `MessageStream@Any → MessageStream@String → ByteStream → ByteStream → %stdout`. Each stage is independently swappable and the pipeline reads the same as the data flow.
 
 ### Summary: the four IO shapes
 
@@ -1409,34 +1219,9 @@ OS TCP send
 
 ## Fixed-Size Bytes: `[Bytes N]`
 
-This whatif introduces `[Bytes N]` as a new type form — a fixed-size byte sequence where `N` is a natural number literal in the type annotation. The need appears throughout this spec: `[Bytes 4]` for IPv4 addresses, `[Bytes 16]` for IPv6 addresses and AES-128 keys, `[Bytes 32]` for X25519/Ed25519 keys and SHA-256 output, `[Bytes 12]` for ChaCha20-Poly1305 nonces. Without it, all crypto primitive size contracts are documentation-only and every wrong-sized key is a runtime error rather than a type error.
+See `doc/whatif/type-foundations.md` for the general `[Bytes N]` design, type system change, and implementation details. The net-specific instances follow:
 
-### Conceptual foundation — the closed-Map interpretation
-
-A fixed-size byte string of length N is isomorphic to a closed Map from integer keys `{0, 1, …, N-1}` to `UInt8` values, or equivalently a Record with integer literal field names. This is the same structure as a C array: `uint8_t ip[4]` is a record `{ .0=uint8_t .1=uint8_t .2=uint8_t .3=uint8_t }`. The integer-key Record view justifies why `[Bytes N]` is not a wholly new concept: it is what you already get when you write a Record with `N` consecutive integer field names. `[Bytes N]` is notation for this concept with compact contiguous storage rather than a hash map of keys.
-
-The subtyping relationship is that of refinement types: `[Bytes N]` is `Bytes` refined by the constraint `length = N`. A more constrained type is a subtype of its base type — the same relationship as `UInt8 <: Int`. So `[Bytes N] <: Bytes` — a fixed-size byte sequence is a valid `Bytes` value and can be used anywhere variable-length `Bytes` are accepted.
-
-### Type system change
-
-`[Bytes N]` is implemented as a new TypeNode constructor declared entirely in tinct — no new Rust type variants, no new kind system extensions. The `SizedBytes` constructor carries `N` as a plain `Int` field, and a `supertype:` annotation (a direct TypeNode value reference, not a string) expresses the subtype relationship:
-
-```tinct
-# Added to the TypeNode ADT declaration alongside Recursive, TypeVar, etc.:
-[SizedBytes@[supertype: TypeNode.Bytes  as-type: [fn [let b] b]  guarding: false]
-  n: Int]
-```
-
-- `[Bytes 4]` in annotation position invokes `expand_named("Bytes", [4])` — `4` is a plain `Int` value in the type stage — producing `TypeNode.SizedBytes { n: 4 }`
-- `TypeNode.SizedBytes { n: N } <: TypeNode.Bytes` — the `supertype: TypeNode.Bytes` annotation carries an actual TypeNode value; the type checker reads it and applies the subtype rule generically, with no Rust special-case for `SizedBytes`
-- `TypeNode.SizedBytes { n: M }` is incompatible with `TypeNode.SizedBytes { n: N }` when `M ≠ N` — the generic TypeNode structural equality check compares the `n` field; `4 ≠ 16` → type error with no special unification arm needed
-- A `Bytes` value narrows to `[Bytes N]` at a `TypeAssert` boundary when the `is:` predicate validates the length — the same runtime validation mechanism used by `UInt8`, `Port`, etc.
-
-`N` is a plain `Int` value in the type stage — no `Kind::Nat` Rust enum variant is needed. `[Bytes N]` in annotation position is a type-stage function application: `Bytes` is a `TyConDef` whose body is `[fn [let n] TypeNode.SizedBytes n: n]`, applied to the integer literal `N`. Type-level arithmetic uses the existing type-stage evaluator's Int arithmetic: `[+ 32 32]` → `64` at type-check time. When `N` is unresolved (the caller passed a variable-length `Bytes`), it is an unbound `TypeNode.TypeVar`; the stuck application degrades to `TypeNode.Bytes` via the `supertype:` annotation. The `[instance [MessageStream [Channel t] t] ...]` declaration requires HKT instance head matching; this must be verified as supported or added.
-
-### How it cleans up this whatif's signatures
-
-The Crypto Primitives table above uses `[Bytes N]` throughout — wrong key sizes are type errors rather than runtime panics. `crypto-random` and `hkdf-expand` take a runtime `len` argument so their output is `Bytes`; callers annotate `@[Bytes N]` at the use site when the size is statically known.
+This whatif uses `[Bytes N]` throughout: `[Bytes 4]` for IPv4 addresses, `[Bytes 16]` for IPv6 addresses and AES-128 keys, `[Bytes 32]` for X25519/Ed25519 keys and SHA-256 output, `[Bytes 12]` for ChaCha20-Poly1305 nonces. The Crypto Primitives table above uses `[Bytes N]` throughout — wrong key sizes are type errors rather than runtime panics. `crypto-random` and `hkdf-expand` take a runtime `len` argument so their output is `Bytes`; callers annotate `@[Bytes N]` at the use site when the size is statically known.
 
 ### `UInt8`, `IpAddress`, `SocketAddress`, and `UdpDatagram`
 
@@ -1480,60 +1265,6 @@ UdpDatagram: [type
 ```
 
 `[uint32 BigEndian ip-bytes]` converts a `[Bytes 4]` to `UInt32` for IPv4 CIDR masking. The byte order is always explicit — no implicit native-endian conversion. IPv4 and all standard internet protocols use `BigEndian` (network byte order).
-
-### Construction and operations for `[Bytes N]`
-
-`[Bytes N]` values are constructed the same way as any other annotated value — the TypeAssert boundary validates the size using the existing `is:` predicate mechanism, exactly as `UInt8` and `Port` work:
-
-```tinct
-key@[Bytes 32]:  [192 168 1 1 ...]    # annotation validates: length = 32
-addr@[Bytes 4]:  [192 168 1 1]        # [Seq UInt8] narrows to [Bytes 4] at TypeAssert
-nonce:           [crypto-random 12]   # inferred as [Bytes 12] — dependent return type
-```
-
-No separate `bytes` constructor function — uppercase `[Bytes N]` is a type annotation, and seq literals with `@[Bytes N]` annotations handle construction uniformly.
-
-`get` and `slice` are generic indexed-access operations, shared with `String` and `[Seq T]` through the `Indexed` typeclass:
-
-```tinct
-[class [Indexed s e]
-  get:    [Fn [s@s i@Int] e]
-  slice:  [Fn [s@s start@Int len@Int] s]
-  length: [Fn [s@s] Int]]
-
-[instance [Indexed [Bytes N] UInt8] ...]
-[instance [Indexed String Char] ...]
-[instance [Indexed [Seq T] T] ...]
-```
-
-Integer ↔ bytes conversion always names the byte order explicitly — there is no way to create a multi-byte integer representation without specifying endianness. The type of the second argument to `bytes` determines the output width:
-
-```tinct
-[uint32 BigEndian ip-bytes]               # [Bytes 4] → UInt32 — IPv4 for CIDR masking
-[uint16 BigEndian snmp-length]            # [Bytes 2] → UInt16 — SNMP PDU length field
-[uint32 LittleEndian ble-bytes]           # [Bytes 4] → UInt32 — Bluetooth LE 32-bit value
-[bytes BigEndian [@UInt16 443]]           # UInt16 → [Bytes 2] — port in network byte order
-[bytes LittleEndian nonce@UInt64]         # UInt64 → [Bytes 8] — 64-bit little-endian counter
-```
-
-`concat` is variadic and works for all `Appendable` types — `String`, `Bytes`, `[Bytes N]`, and `[Seq T]`. No type-encoded name needed:
-
-```tinct
-concat: [fn@[bind: [t]  return: t  constraint: [t: Appendable]] [...args@t]
-  [reduce append empty args]]
-```
-
-`[concat a b]` where both `a: [Bytes 32]` and `b: [Bytes 32]` gives `[Bytes 64]` — the type-stage evaluator propagates ordinary Int arithmetic through the `append` reduction: `[+ 32 32]` → `64`, yielding `TypeNode.SizedBytes { n: 64 }`. `[concat a b c]` gives `[Bytes [+ [+ m n] k]]`. When any argument is variable-length `Bytes`, the result is `Bytes`. The same `concat` works for strings: `[concat "hello" " " "world"]` → `String`.
-
-### What changes in the implementation
-
-- **TypeNode ADT**: add `[SizedBytes@[supertype: TypeNode.Bytes  as-type: [fn [let b] b]  guarding: false]  n: Int]` to the `TypeNode` declaration in `stdlib/prelude.llt`; register `Bytes` as a `TyConDef` with `params: ["n"]` and body `[fn [let n] TypeNode.SizedBytes n: n]`; `expand_named("Bytes", [k])` produces `TypeNode.SizedBytes { n: k }` for any Int `k`; well-formedness check that `k` is a non-negative integer literal at annotation resolution time
-- **Parser**: `[Bytes N]` in annotation position — `N` is parsed as a type-stage Int expression (integer literal); no new syntax or kind annotation required
-- **Type checker**: the `supertype:` annotation on `SizedBytes` is read as a TypeNode value (`TypeNode.Bytes`) and applied generically by the subtype checker — no Rust special-case for `SizedBytes`; size inequality (`M ≠ N`) falls out of generic TypeNode structural equality on the `n` field
-- **Unification**: handled entirely by the generic TypeNode structural equality path — `SizedBytes { n: M }` vs `SizedBytes { n: N }` compares field `n` by value; `SizedBytes <: Bytes` via `supertype:` annotation
-- **Instance resolution**: verify or add support for HKT instance heads — `[instance [MessageStream [Channel t] t] ...]` requires matching `App(Operator("Channel"), TypeVar("t"))` during instance lookup.
-- **Eval/materialize**: no change — runtime representation is `Value::Bytes`; size is checked at `TypeAssert` boundaries via `is:` predicate on `bytes-length`
-- **Builtins**: update crypto primitive return type registrations; add `bytes-to-int`; add `Indexed` typeclass with `Handle`/`String`/`[Bytes N]`/`[Seq T]` instances (making `get`, `slice`, `length` work uniformly); `concat` already exists via `Appendable` — extend `Appendable` instance for `Bytes` if not present
 
 ---
 

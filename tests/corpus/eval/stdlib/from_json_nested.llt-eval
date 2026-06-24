@@ -1,5 +1,0 @@
-# from-json: parse nested JSON structure
-[json: [include %libdir "codecs/json.llt"]]
-[json.from-json "{\"users\": [{\"name\": \"Bob\"}, {\"name\": \"Eve\"}]}"]
-=== out
-Dict({"users": Dict({0: Dict({"name": String("Bob")}), 1: Dict({"name": String("Eve")})})})

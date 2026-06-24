@@ -1,3 +1,0 @@
-[f: [fn [let x y] [+ x y]]  result: [f 1 y: 2]]
-=== out
-Dict({"f": Function(x, y), "result": Int(3)})

@@ -1,5 +1,0 @@
-# builtin-sqrt : square root
---- uses: ["math"]
-[builtin-sqrt 4]
-=== out
-Float(2)

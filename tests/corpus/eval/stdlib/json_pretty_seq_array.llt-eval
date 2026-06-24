@@ -1,9 +1,0 @@
-# codecs/json: to-json-pretty handles Seq values as JSON arrays with indentation
-[include %libdir "codecs/json.llt"]
-
----
-
-[tags: ["admin" "editor" "user"]]
-[%.to-json-pretty tags]
-=== out
-String("[\n  \"admin\",\n  \"editor\",\n  \"user\"\n]")

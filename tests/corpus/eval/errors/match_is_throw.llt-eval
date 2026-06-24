@@ -1,13 +1,5 @@
-# is: predicate that throws propagates as hard error (no skip)
+# is: shorthand guard with undefined pin variable → E002 (after B-392 removal).
 [match 42
   x@[is: [fn [let v] [raise "boom"]]]: "yes"]
 === error
-[E080] boom (defined at stdlib/prelude.llt:2496:28-2496:47)
-  --> stdlib/prelude.llt:2496:28-2496:47
-   |
-  2496 | """]: [fn [let msg@String] [builtin-raise msg]]
-       |                            ^^^^^^^^^^^^^^^^^^^
-  in [builtin-raise ...] at stdlib/prelude.llt:2496:28-2496:47
-   |
-  2496 | """]: [fn [let msg@String] [builtin-raise msg]]
-       |                            ^^^^^^^^^^^^^^^^^^^
+[E002] undefined variable: x (did you mean the string "x"? Use quotes.) (defined at 2:3-2:38)

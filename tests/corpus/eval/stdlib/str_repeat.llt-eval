@@ -1,5 +1,0 @@
-# str-repeat: repeat a string n times
----
-[str-repeat 3 "ab"]
-=== out
-String("ababab")

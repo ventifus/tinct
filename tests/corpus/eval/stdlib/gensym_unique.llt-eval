@@ -1,5 +1,0 @@
-# gensym: generate unique symbol name
-# Note: exact output varies but should start with ℊꜱʏᴍ⧼gensym⧽
-[starts-with? "ℊꜱʏᴍ⧼gensym⧽" [gensym]]
-=== out
-Bool(true)

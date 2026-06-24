@@ -1,9 +1,0 @@
-# Test negated character class (not yet implemented - using literal match for now)
-[include %libdir "regex.llt"]
-
----
-
-[call %.re-match "abc" "abc"]
-
-=== out
-Bool(true)

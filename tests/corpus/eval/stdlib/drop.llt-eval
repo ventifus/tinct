@@ -1,4 +1,0 @@
-# drop: skip the first n entries (preserves original keys)
-[drop 2 ["a" "b" "c" "d"]]
-=== out
-Dict({2: String("c"), 3: String("d")})

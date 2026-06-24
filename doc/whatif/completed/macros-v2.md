@@ -47,7 +47,7 @@ Two structural gaps remain.
 
 **Structural macros become writable in tinct.** `derive`-style macros — one invocation produces multiple `instance` declarations — require multi-form output. Macros that generate nested `[match ...]`/`[case ...]` forms, macros that introduce hygienically-named intermediate bindings, macros that validate argument structure and emit precise compile errors — none are expressible today. All fall out directly from this proposal.
 
-**Macro errors become precise.** Today, a macro that receives wrong-shaped arguments either crashes at runtime with a confusing index error or produces malformed AST that fails at type-check with no connection to the macro call. `macro-error` and `span-of` let macros produce errors that point at the exact source location of the problem.
+**Macro errors become precise.** Today, a macro that receives wrong-shaped arguments either crashes at runtime with a confusing index error or produces malformed AST that fails at type-check with no connection to the macro call. `macro-error` lets macros produce errors that point at the exact source location of the problem by passing the problematic AST node.
 
 ## Design
 
@@ -333,31 +333,31 @@ At dict top level, each spliced form becomes a separate dict entry, each partici
 
 ---
 
-### `macro-error` and `span-of` — Compile-Time Error Signaling
+### `macro-error` — Compile-Time Error Signaling
 
 Macro bodies signal structured compile-time errors that point at source locations:
 
 ```tinct
-[macro-error span message]   # terminate transformation with compile error at span
-[span-of expr]               # extract source span from an AST node
+[macro-error message]         # terminate with compile error at call site
+[macro-error message node]    # terminate with compile error at node's span
 ```
 
 ```tinct
 [macro pragma [let name@Expr  value@Expr]
   [name-seq: [flatten-args name]]
   [match [length name-seq]
-    [case 0  [macro-error [span-of name] "pragma name must be a single bare identifier"]]
+    [case 0  [macro-error "pragma name must be a single bare identifier" name]]
     [case 1
       [match [first name-seq]
         [case [let _ : VarRef]
           [match value
             [case [let _ : Literal]  [quote [pragma [unquote [first name-seq]] [unquote value]]]]
-            [case [let _]            [macro-error [span-of value] "pragma value must be a literal"]]]]
-        [case [let _]  [macro-error [span-of name] "pragma name must be a bare identifier"]]]]
-    [case [let _]  [macro-error [span-of name] "pragma: exactly one name allowed"]]]]
+            [case [let _]            [macro-error "pragma value must be a literal" value]]]]
+        [case [let _]  [macro-error "pragma name must be a bare identifier" name]]]]
+    [case [let _]  [macro-error "pragma: exactly one name allowed" name]]]]
 ```
 
-`macro-error` raises a `MacroError` (a new `ErrorKind` variant) at the given span. It is surfaced before type-checking with the same formatting as other compile errors. When a macro body throws a runtime error (not via `macro-error`), the expander wraps it with `macro_expansion` provenance — the error includes both the definition-site location and the call-site span, so the user sees where in the macro body the failure occurred.
+`macro-error` raises a `MacroError` (a new `ErrorKind` variant). With one argument (message only), the error is reported at the `macro-error` call site. With two arguments (message and AST node), the error is reported at the node's source span. It is surfaced before type-checking with the same formatting as other compile errors. When a macro body throws a runtime error (not via `macro-error`), the expander wraps it with `macro_expansion` provenance — the error includes both the definition-site location and the call-site span, so the user sees where in the macro body the failure occurred.
 
 ---
 
@@ -382,8 +382,9 @@ Macro bodies inspect AST nodes using tinct predicates — the equivalent of Rack
 [first-or xs default]    # first element, or default if empty
 
 # Gensym and error
-[gensym prefix@Str]      # returns String ":prefix:N" — structurally unforgeable fresh name; wrap with do-var-node for VarRef
-[macro-error span msg]   # terminate transformation with MacroError at span (expansion-time, not type-check-time)
+[gensym prefix@Str]         # returns String ":prefix:N" — structurally unforgeable fresh name; wrap with do-var-node for VarRef
+[macro-error msg]           # terminate with MacroError at call site (expansion-time, not type-check-time)
+[macro-error msg node]      # terminate with MacroError at node's span
 
 # Stdlib helpers
 [wrap-in-let elems]      # produce Let(bindings: elems) AST node
@@ -840,11 +841,11 @@ For custom error messages, declare named syntax classes:
         [case [let _ : VarRef]
           [match value
             [case [let _ : Literal]  [quote [pragma [unquote [first name-seq]] [unquote value]]]]
-            [case [let _]            [macro-error [span-of value] "pragma value must be a literal"]]]]
+            [case [let _]            [macro-error "pragma value must be a literal" value]]]]
         [case [let _]
-          [macro-error [span-of [first name-seq]] "pragma name must be a bare identifier"]]]]
+          [macro-error "pragma name must be a bare identifier" [first name-seq]]]]]
     [case [let _]
-      [macro-error [span-of name] "pragma: exactly one name allowed"]]]]
+      [macro-error "pragma: exactly one name allowed" name]]]]
 ```
 
 Both versions produce errors at the exact offending source location. Syntax classes eliminate the dispatch boilerplate while keeping the same error quality.

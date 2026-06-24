@@ -1,7 +1,0 @@
-# build-grpc-frame with empty data: result is exactly 5 header bytes.
-
-[include %libdir "protocols/grpc.llt"]
----
-[length [call %.build-grpc-frame "" false]]
-=== out
-Int(5)

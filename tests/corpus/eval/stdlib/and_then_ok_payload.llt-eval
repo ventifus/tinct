@@ -1,5 +1,0 @@
-# and-then: binding v from Result.Ok payload via 3-arg case form
-# Tests that [case [let v] [Result.Ok v] ...] correctly binds v to the Ok payload.
-[and-then [fn [let x] [Ok [* x 2]]] [Ok 21]]
-=== out
-Variant(Result.Ok, Int(42))

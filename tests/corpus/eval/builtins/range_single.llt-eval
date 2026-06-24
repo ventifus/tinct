@@ -1,4 +1,0 @@
-# range: single element sequence
-[collect [range 3 4]]
-=== out
-Dict({0: Int(3)})

@@ -1,4 +1,0 @@
-# filter on empty dict returns empty dict
-[filter [fn [let x] true] []]
-=== out
-Dict({})

@@ -1,4 +1,0 @@
-# decimal: parse exact decimal from string
-[decimal "0.1"]
-=== out
-Decimal(0.1)

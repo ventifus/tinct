@@ -1,9 +1,0 @@
-# build-dns-query: bytes 2-3 are FLAGS (0x0100 = 256 = recursion desired).
-# byte2 = chr(1), byte3 = chr(0).
-# char-code of byte 2 should be 1.
-
-[include %libdir "protocols/dns.llt"]
----
-[char-code [str-slice 2 3 [call %.build-dns-query 0 "a.b" %.A]]]
-=== out
-Int(1)

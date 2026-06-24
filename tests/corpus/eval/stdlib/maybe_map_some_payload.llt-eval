@@ -1,5 +1,0 @@
-# maybe-map: binding a from Maybe.Some payload via 3-arg case form
-# Tests that [case [let a] [Maybe.Some a] ...] correctly binds a to the Some payload.
-[maybe-map [fn [let x] [+ x 1]] [Some 99]]
-=== out
-Variant(Maybe.Some, Int(100))

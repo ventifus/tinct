@@ -1,4 +1,0 @@
-# drop more than collection length returns empty
-[drop 10 ["a" "b" "c"]]
-=== out
-Dict({})

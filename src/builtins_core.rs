@@ -58,8 +58,8 @@ use crate::builtins_meta::{
     builtin_eval_types, builtin_expand, builtin_force, builtin_gensym, builtin_include_cache_get,
     builtin_include_cache_put, builtin_is_contractive, builtin_llt_repr, builtin_load,
     builtin_macro_error, builtin_macro_injects, builtin_make_annotated, builtin_program,
-    builtin_raise, builtin_tag_of, builtin_try, builtin_type_of, builtin_until, builtin_validate,
-    builtin_variant,
+    builtin_raise, builtin_span_of, builtin_tag_of, builtin_try, builtin_type_of, builtin_until,
+    builtin_validate, builtin_variant,
 };
 // I/O implementations.
 use crate::builtins_io::{
@@ -101,6 +101,7 @@ use crate::builtins_async::{
 use crate::value::{BuiltinDef, Strictness};
 
 // Imports for core_type_env() — T-714.
+use crate::type_class::ConstraintArg;
 use crate::types::{ClassDecl, Constraint, Kind, Row, Type, TypeAlias, TypeEnv, TypeScheme};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -118,16 +119,11 @@ use std::sync::Arc;
 pub fn core_builtins() -> Vec<BuiltinDef> {
     vec![
         // ── Arithmetic ────────────────────────────────────────────────────────────────
-        builtin!("+", builtin_add, [Strictness::Seq, Strictness::Seq], 2),
-        builtin!("-", builtin_sub, [Strictness::Seq, Strictness::Seq], 2),
-        builtin!("*", builtin_mul, [Strictness::Seq, Strictness::Seq], 2),
-        builtin!(
-            "/",
-            builtin_div_float,
-            [Strictness::Seq, Strictness::Seq],
-            2
-        ),
-        // Stable aliases (used internally by prelude to allow user shadowing of operator names)
+        // Note: +, -, *, / are NOT registered here — they are multi-method dispatch
+        // via Addable/Subtractable/Multipliable/Divisible instances in prelude.llt.
+        // Only the builtin-* stable aliases remain as raw Rust primitives used inside
+        // instance method bodies. (S-884: typeclass-env-dispatch)
+        // Stable aliases (used internally by instance bodies — no dispatch)
         builtin!(
             "builtin-add",
             builtin_add,
@@ -153,8 +149,9 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             2
         ),
         // ── Comparison ───────────────────────────────────────────────────────────────
-        builtin!("=", builtin_eq, [Strictness::Seq, Strictness::Seq], 2),
-        builtin!("<", builtin_lt, [Strictness::Seq, Strictness::Seq], 2),
+        // Note: =, <, >, <=, >= are NOT registered here — they dispatch via
+        // Equatable/Comparable instances in prelude.llt. (S-885)
+        // Only builtin-* stable aliases remain as raw Rust primitives.
         // Stable aliases
         builtin!(
             "builtin-eq",
@@ -469,8 +466,7 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
         builtin!(
             "builtin-macro-error",
             builtin_macro_error,
-            [Strictness::Seq, Strictness::Seq],
-            2
+            [Strictness::Seq, Strictness::Id]
         ),
         builtin!("builtin-try", builtin_try, [Strictness::Id], 1),
         builtin!(
@@ -842,6 +838,7 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
         builtin!("builtin-llt-repr", builtin_llt_repr, [Strictness::Seq]),
         builtin!("builtin-to-tinct", builtin_to_tinct, [Strictness::Seq], 1),
         builtin!("builtin-tag-of", builtin_tag_of, [Strictness::Seq]),
+        builtin!("builtin-span-of", builtin_span_of, [Strictness::Seq]),
         builtin!(
             "builtin-variant",
             builtin_variant,
@@ -905,85 +902,8 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
 /// same registrations for the core subset. Callers of the old `with_builtins()` now use
 /// `crate::builtins::build_builtins_type_env()` which delegates to this function.
 pub fn core_type_env(env: &mut TypeEnv) {
-    // ── Type class declarations ────────────────────────────────────────────────
-    // These match the declarations registered in InferState::new().
-
-    let addable_class = Arc::new(ClassDecl {
-        name: "Addable".to_string(),
-        params: vec![
-            ("a".to_string(), Kind::Type),
-            ("b".to_string(), Kind::Type),
-            ("c".to_string(), Kind::Type),
-        ],
-        superclasses: vec![],
-        determines: vec![(vec![0, 1], vec![2])], // (a,b) → c
-        resolver: None,
-        resolver_injective: false,
-        prelude_origin: true,
-    });
-
-    let subtractable_class = Arc::new(ClassDecl {
-        name: "Subtractable".to_string(),
-        params: vec![
-            ("a".to_string(), Kind::Type),
-            ("b".to_string(), Kind::Type),
-            ("c".to_string(), Kind::Type),
-        ],
-        superclasses: vec![],
-        determines: vec![(vec![0, 1], vec![2])], // (a,b) → c
-        resolver: None,
-        resolver_injective: false,
-        prelude_origin: true,
-    });
-
-    let multipliable_class = Arc::new(ClassDecl {
-        name: "Multipliable".to_string(),
-        params: vec![
-            ("a".to_string(), Kind::Type),
-            ("b".to_string(), Kind::Type),
-            ("c".to_string(), Kind::Type),
-        ],
-        superclasses: vec![],
-        determines: vec![(vec![0, 1], vec![2])], // (a,b) → c
-        resolver: None,
-        resolver_injective: false,
-        prelude_origin: true,
-    });
-
-    let divisible_class = Arc::new(ClassDecl {
-        name: "Divisible".to_string(),
-        params: vec![
-            ("a".to_string(), Kind::Type),
-            ("b".to_string(), Kind::Type),
-            ("c".to_string(), Kind::Type),
-        ],
-        superclasses: vec![],
-        determines: vec![(vec![0, 1], vec![2])], // (a,b) → c
-        resolver: None,
-        resolver_injective: false,
-        prelude_origin: true,
-    });
-
-    let equatable_class = Arc::new(ClassDecl {
-        name: "Equatable".to_string(),
-        params: vec![("a".to_string(), Kind::Type)],
-        superclasses: vec![],
-        determines: vec![],
-        resolver: None,
-        resolver_injective: false,
-        prelude_origin: true,
-    });
-
-    let comparable_class = Arc::new(ClassDecl {
-        name: "Comparable".to_string(),
-        params: vec![("a".to_string(), Kind::Type)],
-        superclasses: vec![("Equatable".to_string(), vec!["a".to_string()])],
-        determines: vec![],
-        resolver: None,
-        resolver_injective: false,
-        prelude_origin: true,
-    });
-
+    // These ClassDecl Arcs are used below for builtin-concat, builtin-get, get, and get? schemes.
+    // They must carry full FD information so constraint improvement fires correctly at call sites.
     let indexable_class = Arc::new(ClassDecl {
         name: "Indexable".to_string(),
         params: vec![
@@ -996,6 +916,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
         resolver: None,
         resolver_injective: false,
         prelude_origin: true,
+        method_signatures: vec![],
     });
 
     let concatable_class = Arc::new(ClassDecl {
@@ -1010,248 +931,14 @@ pub fn core_type_env(env: &mut TypeEnv) {
         resolver: None,
         resolver_injective: false,
         prelude_origin: true,
+        method_signatures: vec![],
     });
 
-    // ── Arithmetic ────────────────────────────────────────────────────────────
-    // Addition: Addable a b c => a -> b -> c
-    env.insert_scheme(
-        "+".to_string(),
-        TypeScheme {
-            type_vars: vec!["a".to_string(), "b".to_string(), "c".to_string()],
-            constraints: vec![Constraint::Class {
-                class: Arc::clone(&addable_class),
-                vars: vec!["a".to_string(), "b".to_string(), "c".to_string()],
-                origin_name: None,
-                origin_span: None,
-            }],
-            body: Type::Function {
-                params: vec![
-                    (None, Type::TypeVar("a".to_string(), 0)),
-                    (None, Type::TypeVar("b".to_string(), 0)),
-                ],
-                ret: Box::new(Type::TypeVar("c".to_string(), 0)),
-                variadic: false,
-                required_count: 2,
-            },
-            label_vars: vec![],
-            kind_vars: Vec::new(),
-            doc: None,
-            inner_schemes: None,
-        },
-    );
-
-    // Subtraction: Subtractable a b c => a -> b -> c
-    env.insert_scheme(
-        "-".to_string(),
-        TypeScheme {
-            type_vars: vec!["a".to_string(), "b".to_string(), "c".to_string()],
-            constraints: vec![Constraint::Class {
-                class: Arc::clone(&subtractable_class),
-                vars: vec!["a".to_string(), "b".to_string(), "c".to_string()],
-                origin_name: None,
-                origin_span: None,
-            }],
-            body: Type::Function {
-                params: vec![
-                    (None, Type::TypeVar("a".to_string(), 0)),
-                    (None, Type::TypeVar("b".to_string(), 0)),
-                ],
-                ret: Box::new(Type::TypeVar("c".to_string(), 0)),
-                variadic: false,
-                required_count: 2,
-            },
-            label_vars: vec![],
-            kind_vars: Vec::new(),
-            doc: None,
-            inner_schemes: None,
-        },
-    );
-
-    // Multiplication: Multipliable a b c => a -> b -> c
-    env.insert_scheme(
-        "*".to_string(),
-        TypeScheme {
-            type_vars: vec!["a".to_string(), "b".to_string(), "c".to_string()],
-            constraints: vec![Constraint::Class {
-                class: Arc::clone(&multipliable_class),
-                vars: vec!["a".to_string(), "b".to_string(), "c".to_string()],
-                origin_name: None,
-                origin_span: None,
-            }],
-            body: Type::Function {
-                params: vec![
-                    (None, Type::TypeVar("a".to_string(), 0)),
-                    (None, Type::TypeVar("b".to_string(), 0)),
-                ],
-                ret: Box::new(Type::TypeVar("c".to_string(), 0)),
-                variadic: false,
-                required_count: 2,
-            },
-            label_vars: vec![],
-            kind_vars: Vec::new(),
-            doc: None,
-            inner_schemes: None,
-        },
-    );
-
-    // Division: Divisible a b c => a -> b -> c
-    env.insert_scheme(
-        "/".to_string(),
-        TypeScheme {
-            type_vars: vec!["a".to_string(), "b".to_string(), "c".to_string()],
-            constraints: vec![Constraint::Class {
-                class: Arc::clone(&divisible_class),
-                vars: vec!["a".to_string(), "b".to_string(), "c".to_string()],
-                origin_name: None,
-                origin_span: None,
-            }],
-            body: Type::Function {
-                params: vec![
-                    (None, Type::TypeVar("a".to_string(), 0)),
-                    (None, Type::TypeVar("b".to_string(), 0)),
-                ],
-                ret: Box::new(Type::TypeVar("c".to_string(), 0)),
-                variadic: false,
-                required_count: 2,
-            },
-            label_vars: vec![],
-            kind_vars: Vec::new(),
-            doc: None,
-            inner_schemes: None,
-        },
-    );
-
-    // Equality: Equatable a => a -> a -> Bool
-    env.insert_scheme(
-        "=".to_string(),
-        TypeScheme {
-            type_vars: vec!["a".to_string()],
-            constraints: vec![Constraint::new(Arc::clone(&equatable_class), "a")],
-            body: Type::Function {
-                params: vec![
-                    (None, Type::TypeVar("a".to_string(), 0)),
-                    (None, Type::TypeVar("a".to_string(), 0)),
-                ],
-                ret: Box::new(Type::Bool),
-                variadic: false,
-                required_count: 2,
-            },
-            label_vars: vec![],
-            kind_vars: Vec::new(),
-            doc: None,
-            inner_schemes: None,
-        },
-    );
-
-    // Less-than: Comparable a => a -> a -> Bool
-    env.insert_scheme(
-        "<".to_string(),
-        TypeScheme {
-            type_vars: vec!["a".to_string()],
-            constraints: vec![Constraint::new(Arc::clone(&comparable_class), "a")],
-            body: Type::Function {
-                params: vec![
-                    (None, Type::TypeVar("a".to_string(), 0)),
-                    (None, Type::TypeVar("a".to_string(), 0)),
-                ],
-                ret: Box::new(Type::Bool),
-                variadic: false,
-                required_count: 2,
-            },
-            label_vars: vec![],
-            kind_vars: Vec::new(),
-            doc: None,
-            inner_schemes: None,
-        },
-    );
-
-    // Greater-than: Comparable a => a -> a -> Bool
-    env.insert_scheme(
-        ">".to_string(),
-        TypeScheme {
-            type_vars: vec!["a".to_string()],
-            constraints: vec![Constraint::new(Arc::clone(&comparable_class), "a")],
-            body: Type::Function {
-                params: vec![
-                    (None, Type::TypeVar("a".to_string(), 0)),
-                    (None, Type::TypeVar("a".to_string(), 0)),
-                ],
-                ret: Box::new(Type::Bool),
-                variadic: false,
-                required_count: 2,
-            },
-            label_vars: vec![],
-            kind_vars: Vec::new(),
-            doc: None,
-            inner_schemes: None,
-        },
-    );
-
-    // Greater-than-or-equal: Comparable a => a -> a -> Bool
-    env.insert_scheme(
-        ">=".to_string(),
-        TypeScheme {
-            type_vars: vec!["a".to_string()],
-            constraints: vec![Constraint::new(Arc::clone(&comparable_class), "a")],
-            body: Type::Function {
-                params: vec![
-                    (None, Type::TypeVar("a".to_string(), 0)),
-                    (None, Type::TypeVar("a".to_string(), 0)),
-                ],
-                ret: Box::new(Type::Bool),
-                variadic: false,
-                required_count: 2,
-            },
-            label_vars: vec![],
-            kind_vars: Vec::new(),
-            doc: None,
-            inner_schemes: None,
-        },
-    );
-
-    // Less-than-or-equal: Comparable a => a -> a -> Bool
-    env.insert_scheme(
-        "<=".to_string(),
-        TypeScheme {
-            type_vars: vec!["a".to_string()],
-            constraints: vec![Constraint::new(Arc::clone(&comparable_class), "a")],
-            body: Type::Function {
-                params: vec![
-                    (None, Type::TypeVar("a".to_string(), 0)),
-                    (None, Type::TypeVar("a".to_string(), 0)),
-                ],
-                ret: Box::new(Type::Bool),
-                variadic: false,
-                required_count: 2,
-            },
-            label_vars: vec![],
-            kind_vars: Vec::new(),
-            doc: None,
-            inner_schemes: None,
-        },
-    );
-
-    // ── Control flow ──────────────────────────────────────────────────────────
-    // if takes Bool and two branches, returns Top (type depends on branches)
-    env.insert(
-        "if".to_string(),
-        Type::fn_type(
-            vec![
-                (Some("condition".to_string()), Type::Bool),
-                (Some("then_".to_string()), Type::Top),
-                (Some("else_".to_string()), Type::Top),
-            ],
-            Type::Top,
-            false,
-        ),
-    );
-
     // ── Dict primitives ───────────────────────────────────────────────────────
-    // keys: Record({}) → Seq(Int | Str)
-    // Dict keys are Int (integer-indexed / Seq) or Str (string-keyed). Both cases must be
-    // reflected in the return type; Seq(Str) was wrong for integer-keyed dicts.
+    // builtin-keys: Record({...}) → Seq(Int | Str)
+    // Dict keys can be either integer (seq-style) or string (record-style).
     env.insert(
-        "keys".to_string(),
+        "builtin-keys".to_string(),
         Type::Function {
             params: vec![(
                 None,
@@ -1260,47 +947,37 @@ pub fn core_type_env(env: &mut TypeEnv) {
                     tail: crate::type_def::RowTail::Empty,
                 }),
             )],
-            ret: Box::new(Type::seq(Type::Union(vec![Type::Int, Type::Str]))),
+            ret: Box::new(Type::seq(Type::normalize_union(vec![Type::Int, Type::Str]))),
             variadic: false,
             required_count: 1,
         },
     );
+    // builtin-length: Top → Int
+    // Accepts Seq, Dict, Str, or Bytes. Using Top avoids false-positive type errors.
     env.insert(
-        "length".to_string(),
+        "builtin-length".to_string(),
         Type::Function {
-            // builtin_length dispatches on Value::Dict, Value::String, Value::Bytes,
-            // and integer-keyed Dicts (which are represented as Seq at the type level).
-            params: vec![(
-                None,
-                Type::Union(vec![
-                    Type::Record(Row {
-                        fields: BTreeMap::new(),
-                        tail: crate::type_def::RowTail::Empty,
-                    }),
-                    Type::Str,
-                    Type::Bytes,
-                    Type::seq(Type::Top),
-                ]),
-            )],
+            params: vec![(None, Type::Top)],
             ret: Box::new(Type::Int),
             variadic: false,
             required_count: 1,
         },
     );
-    // merge: Dict → Dict → Dict
+    // builtin-merge: Record({}) → Record({}) → Record({})
+    // Right-biased merge of two dicts.
     env.insert(
-        "merge".to_string(),
+        "builtin-merge".to_string(),
         Type::Function {
             params: vec![
                 (
-                    Some("dict1".to_string()),
+                    None,
                     Type::Record(Row {
                         fields: BTreeMap::new(),
                         tail: crate::type_def::RowTail::Empty,
                     }),
                 ),
                 (
-                    Some("dict2".to_string()),
+                    None,
                     Type::Record(Row {
                         fields: BTreeMap::new(),
                         tail: crate::type_def::RowTail::Empty,
@@ -1315,18 +992,20 @@ pub fn core_type_env(env: &mut TypeEnv) {
             required_count: 2,
         },
     );
+    // builtin-append: Record({}) → Top → Record({})
+    // Appends a value to a dict (integer-indexed).
     env.insert(
-        "append".to_string(),
+        "builtin-append".to_string(),
         Type::Function {
             params: vec![
-                (Some("value".to_string()), Type::Top),
                 (
-                    Some("dict".to_string()),
+                    None,
                     Type::Record(Row {
                         fields: BTreeMap::new(),
                         tail: crate::type_def::RowTail::Empty,
                     }),
                 ),
+                (None, Type::Top),
             ],
             ret: Box::new(Type::Record(Row {
                 fields: BTreeMap::new(),
@@ -1336,162 +1015,79 @@ pub fn core_type_env(env: &mut TypeEnv) {
             required_count: 2,
         },
     );
+    // builtin-each: Top → Seq(Top)
+    // Converts a Dict or Seq to a Seq of its values for iteration. Uses Top → Seq(Top)
+    // because the element type depends on the runtime structure of the container.
+    env.insert(
+        "builtin-each".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Top)],
+            ret: Box::new(Type::seq(Type::Top)),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-each-key: Top → Seq(Int | Str)
+    // Returns a Seq of keys (integer or string) for a dict.
+    env.insert(
+        "builtin-each-key".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Top)],
+            ret: Box::new(Type::seq(Type::normalize_union(vec![Type::Int, Type::Str]))),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-each-kv: Top → Seq({key: Top, value: Top})
+    // Returns a Seq of {key, value} records for a dict.
+    {
+        let mut kv_fields = BTreeMap::new();
+        kv_fields.insert(
+            "key".to_string(),
+            Type::normalize_union(vec![Type::Int, Type::Str]),
+        );
+        kv_fields.insert("value".to_string(), Type::Top);
+        env.insert(
+            "builtin-each-kv".to_string(),
+            Type::Function {
+                params: vec![(None, Type::Top)],
+                ret: Box::new(Type::seq(Type::Record(Row {
+                    fields: kv_fields,
+                    tail: crate::type_def::RowTail::Empty,
+                }))),
+                variadic: false,
+                required_count: 1,
+            },
+        );
+    }
 
     // ── Builder primitives ────────────────────────────────────────────────────
-    // Transient mutable dict builders. Canonical names for per-file *_builtin_types() alias resolution.
-    // Parameter order follows T-777 (key-first, builder-last).
-    // make-builder: () → Unknown
+    // Canonical builder operations deleted per T-1104. These are now provided by prelude wrappers.
+
+    // ── Reactive cells (T-831) ────────────────────────────────────────────────
+    // Canonical reactive cell operations deleted per T-1104. These are now provided by prelude wrappers.
+
+    // ── String operations ─────────────────────────────────────────────────────
+    // builtin-str: variadic Top... → Str
+    // Accepts any number of arguments (stringifies each and concatenates).
     env.insert(
-        "make-builder".to_string(),
+        "builtin-str".to_string(),
         Type::Function {
             params: vec![],
-            ret: Box::new(Type::Unknown), // Builder — opaque mutable container
-            variadic: false,
+            ret: Box::new(Type::Str),
+            variadic: true,
             required_count: 0,
         },
     );
-    // builder-set: (key, value, builder) → Top
-    // T-777 parameter order: key-first, builder-last (was builder-first)
+    // builtin-split: Str → Str → Seq(Str)
+    // Args: separator, input string. Returns a Seq of the split substrings.
     env.insert(
-        "builder-set".to_string(),
+        "builtin-split".to_string(),
         Type::Function {
-            params: vec![
-                (None, Type::Top), // key
-                (None, Type::Top), // value
-                (None, Type::Top), // builder
-            ],
-            ret: Box::new(Type::Top), // builder (mutated in-place)
-            variadic: false,
-            required_count: 3,
-        },
-    );
-    // builder-delete: (key, builder) → Top
-    env.insert(
-        "builder-delete".to_string(),
-        Type::Function {
-            params: vec![
-                (None, Type::Top), // key
-                (None, Type::Top), // builder
-            ],
-            ret: Box::new(Type::Top), // builder
+            params: vec![(None, Type::Str), (None, Type::Str)],
+            ret: Box::new(Type::seq(Type::Str)),
             variadic: false,
             required_count: 2,
-        },
-    );
-    // builder-has?: (key, builder) → Bool
-    env.insert(
-        "builder-has?".to_string(),
-        Type::Function {
-            params: vec![
-                (None, Type::Top), // key
-                (None, Type::Top), // builder
-            ],
-            ret: Box::new(Type::Bool),
-            variadic: false,
-            required_count: 2,
-        },
-    );
-    // builder-get: (key, builder) → Top
-    env.insert(
-        "builder-get".to_string(),
-        Type::Function {
-            params: vec![
-                (None, Type::Top), // key
-                (None, Type::Top), // builder
-            ],
-            ret: Box::new(Type::Top), // value — opaque
-            variadic: false,
-            required_count: 2,
-        },
-    );
-    // builder-get-or: (key, default, builder) → Top
-    env.insert(
-        "builder-get-or".to_string(),
-        Type::Function {
-            params: vec![
-                (None, Type::Top), // key
-                (None, Type::Top), // default
-                (None, Type::Top), // builder
-            ],
-            ret: Box::new(Type::Top), // value or default
-            variadic: false,
-            required_count: 3,
-        },
-    );
-    // builder-finish: (builder) → Top
-    env.insert(
-        "builder-finish".to_string(),
-        Type::Function {
-            params: vec![(None, Type::Top)], // builder
-            ret: Box::new(Type::Top),        // Dict — shape unknown statically
-            variadic: false,
-            required_count: 1,
-        },
-    );
-    // builder-snapshot: (builder) → Top
-    env.insert(
-        "builder-snapshot".to_string(),
-        Type::Function {
-            params: vec![(None, Type::Top)], // builder
-            ret: Box::new(Type::Top),        // Dict snapshot
-            variadic: false,
-            required_count: 1,
-        },
-    );
-
-    // ── Reactive cells (T-831) ────────────────────────────────────────────────
-    // ReactiveCell is opaque — all params and return are Unknown.
-    // Canonical names for per-file *_builtin_types() alias resolution.
-    // reactive-cell: T → ReactiveCell@T
-    env.insert(
-        "reactive-cell".to_string(),
-        Type::Function {
-            params: vec![(None, Type::Top)], // initial value
-            ret: Box::new(Type::Top),        // ReactiveCell — opaque
-            variadic: false,
-            required_count: 1,
-        },
-    );
-    // cell-get: ReactiveCell@T → T
-    env.insert(
-        "cell-get".to_string(),
-        Type::Function {
-            params: vec![(None, Type::Top)], // ReactiveCell
-            ret: Box::new(Type::Top),        // current value — opaque
-            variadic: false,
-            required_count: 1,
-        },
-    );
-    // cell-set: T → ReactiveCell@T → Null
-    env.insert(
-        "cell-set".to_string(),
-        Type::Function {
-            params: vec![(None, Type::Top), (None, Type::Top)], // val, cell
-            ret: Box::new(Type::Record(Row {
-                fields: BTreeMap::new(),
-                tail: crate::type_def::RowTail::Empty,
-            })), // Null = empty record
-            variadic: false,
-            required_count: 2,
-        },
-    );
-
-    // ── String operations ─────────────────────────────────────────────────────
-    // str: Showable a => a -> Str
-    env.insert_scheme(
-        "str".to_string(),
-        TypeScheme {
-            type_vars: vec!["a".to_string()],
-            constraints: vec![Constraint::new_by_name("Showable", "a")],
-            body: Type::fn_type(
-                vec![(None, Type::TypeVar("a".to_string(), 0))],
-                Type::Str,
-                true,
-            ),
-            label_vars: vec![],
-            kind_vars: Vec::new(),
-            doc: None,
-            inner_schemes: None,
         },
     );
     // int->string: Int -> Str  (primitive backing Printable; no typeclass constraint)
@@ -1528,90 +1124,6 @@ pub fn core_type_env(env: &mut TypeEnv) {
             required_count: 2,
         },
     );
-    env.insert(
-        "split".to_string(),
-        Type::Function {
-            params: vec![(None, Type::Str), (None, Type::Str)],
-            // split returns an integer-keyed Dict of Strings. Typed as Seq[Str] so
-            // that `[get N [split sep s]]` returns Str via Indexable MPTC FD (Seq[T], Int → T).
-            ret: Box::new(Type::seq(Type::Str)),
-            variadic: false,
-            required_count: 2,
-        },
-    );
-    env.insert(
-        "replace".to_string(),
-        Type::Function {
-            params: vec![(None, Type::Str), (None, Type::Str), (None, Type::Str)],
-            ret: Box::new(Type::Str),
-            variadic: false,
-            required_count: 3,
-        },
-    );
-    for name in ["trim", "trim-start", "trim-end"] {
-        env.insert(
-            name.to_string(),
-            Type::Function {
-                params: vec![(None, Type::Str)],
-                ret: Box::new(Type::Str),
-                variadic: false,
-                required_count: 1,
-            },
-        );
-    }
-    // str-to-upper-char / str-to-lower-char: String → String (single-char primitives)
-    for name in ["str-to-upper-char", "str-to-lower-char"] {
-        env.insert(
-            name.to_string(),
-            Type::Function {
-                params: vec![(None, Type::Str)],
-                ret: Box::new(Type::Str),
-                variadic: false,
-                required_count: 1,
-            },
-        );
-    }
-    // str-map-chars: (String → String) → String → String
-    env.insert(
-        "str-map-chars".to_string(),
-        Type::Function {
-            params: vec![
-                (
-                    None,
-                    Type::Function {
-                        params: vec![(None, Type::Str)],
-                        ret: Box::new(Type::Str),
-                        variadic: false,
-                        required_count: 1,
-                    },
-                ),
-                (None, Type::Str),
-            ],
-            ret: Box::new(Type::Str),
-            variadic: false,
-            required_count: 2,
-        },
-    );
-    // str-index-of: String → String → Int
-    env.insert(
-        "str-index-of".to_string(),
-        Type::Function {
-            params: vec![(None, Type::Str), (None, Type::Str)],
-            ret: Box::new(Type::Int),
-            variadic: false,
-            required_count: 2,
-        },
-    );
-    // regex-match?: String → String → Bool
-    env.insert(
-        "regex-match?".to_string(),
-        Type::Function {
-            params: vec![(None, Type::Str), (None, Type::Str)],
-            ret: Box::new(Type::Bool),
-            variadic: false,
-            required_count: 2,
-        },
-    );
     // builtin-json-parse: String → Top (parsed JSON value, type is dynamic)
     env.insert(
         "builtin-json-parse".to_string(),
@@ -1622,89 +1134,6 @@ pub fn core_type_env(env: &mut TypeEnv) {
             required_count: 1,
         },
     );
-    // String operations returning Bool
-    for name in ["starts-with?", "ends-with?", "str-contains?"] {
-        env.insert(
-            name.to_string(),
-            Type::Function {
-                params: vec![(None, Type::Str), (None, Type::Str)],
-                ret: Box::new(Type::Bool),
-                variadic: false,
-                required_count: 2,
-            },
-        );
-    }
-    // str-chars: String → Seq[Str]
-    env.insert(
-        "str-chars".to_string(),
-        Type::Function {
-            params: vec![(None, Type::Str)],
-            ret: Box::new(Type::seq(Type::Str)),
-            variadic: false,
-            required_count: 1,
-        },
-    );
-    // char-code: String → Int
-    env.insert(
-        "char-code".to_string(),
-        Type::Function {
-            params: vec![(None, Type::Str)],
-            ret: Box::new(Type::Int),
-            variadic: false,
-            required_count: 1,
-        },
-    );
-    // chr: Int → String
-    env.insert(
-        "chr".to_string(),
-        Type::Function {
-            params: vec![(None, Type::Int)],
-            ret: Box::new(Type::Str),
-            variadic: false,
-            required_count: 1,
-        },
-    );
-    // str-bytes: String → Bytes
-    env.insert(
-        "str-bytes".to_string(),
-        Type::Function {
-            params: vec![(None, Type::Str)],
-            ret: Box::new(Type::Bytes),
-            variadic: false,
-            required_count: 1,
-        },
-    );
-    // bytes-str: Bytes → String
-    env.insert(
-        "bytes-str".to_string(),
-        Type::Function {
-            params: vec![(None, Type::Bytes)],
-            ret: Box::new(Type::Str),
-            variadic: false,
-            required_count: 1,
-        },
-    );
-    // str-slice: Int → Int → String → String
-    env.insert(
-        "str-slice".to_string(),
-        Type::Function {
-            params: vec![(None, Type::Int), (None, Type::Int), (None, Type::Str)],
-            ret: Box::new(Type::Str),
-            variadic: false,
-            required_count: 3,
-        },
-    );
-    // str-length: String → Int
-    env.insert(
-        "str-length".to_string(),
-        Type::Function {
-            params: vec![(None, Type::Str)],
-            ret: Box::new(Type::Int),
-            variadic: false,
-            required_count: 1,
-        },
-    );
-
     // ── Bytes ─────────────────────────────────────────────────────────────────
     // bytes: variadic Bytes → Bytes (concat)
     env.insert(
@@ -1758,17 +1187,6 @@ pub fn core_type_env(env: &mut TypeEnv) {
     );
 
     // ── Numeric operations ────────────────────────────────────────────────────
-    for name in ["floor", "round"] {
-        env.insert(
-            name.to_string(),
-            Type::Function {
-                params: vec![(None, Type::Number)],
-                ret: Box::new(Type::Int),
-                variadic: false,
-                required_count: 1,
-            },
-        );
-    }
     // Math functions: 1-arg (Number -> Float)
     for name in [
         "sqrt", "log", "log2", "log10", "exp", "sin", "cos", "tan", "asin", "acos", "atan",
@@ -1807,8 +1225,8 @@ pub fn core_type_env(env: &mut TypeEnv) {
             },
         );
     }
-    // Bitwise operations (Int -> Int -> Int)
-    for name in ["band", "bor", "bxor", "shl", "shr"] {
+    // Bitwise shift operations (Int -> Int -> Int) — shl/shr kept; band/bor/bxor deleted per T-1104
+    for name in ["shl", "shr"] {
         env.insert(
             name.to_string(),
             Type::Function {
@@ -1819,31 +1237,28 @@ pub fn core_type_env(env: &mut TypeEnv) {
             },
         );
     }
-    // Parsing
-    env.insert(
-        "to-int".to_string(),
-        Type::Function {
-            params: vec![(None, Type::Str)],
-            ret: Box::new(Type::Int),
-            variadic: false,
-            required_count: 1,
-        },
-    );
-    env.insert(
-        "to-float".to_string(),
-        Type::Function {
-            params: vec![(None, Type::Str)],
-            ret: Box::new(Type::Float),
-            variadic: false,
-            required_count: 1,
-        },
-    );
     // float: Number → Float (converts Int or Float to Float)
     env.insert(
         "float".to_string(),
         Type::Function {
             params: vec![(None, Type::Number)],
             ret: Box::new(Type::Float),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+
+    // ── Error handling ────────────────────────────────────────────────────────
+    // builtin-try: Top → Top
+    // Takes a zero-arg function, evaluates it, catches runtime errors.
+    // Returns a nominal variant Result.Ok(value) or Result.Error(message).
+    // Return type is Top (not structural union) to avoid T004 false positives when
+    // user code matches on constructor patterns [Result.Ok v] / [Result.Error msg].
+    env.insert(
+        "builtin-try".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Top)],
+            ret: Box::new(Type::Top),
             variadic: false,
             required_count: 1,
         },
@@ -1859,8 +1274,52 @@ pub fn core_type_env(env: &mut TypeEnv) {
             required_count: 1,
         },
     );
+
+    // ── Control flow — builtin-if ─────────────────────────────────────────────
+    // builtin-if: Bool → Top → Top → Top
+    // Three-argument conditional: condition, then-branch, else-branch.
+    // Return type is Top (union of branch types depends on runtime choice).
     env.insert(
-        "raise".to_string(),
+        "builtin-if".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Bool), (None, Type::Top), (None, Type::Top)],
+            ret: Box::new(Type::Top),
+            variadic: false,
+            required_count: 3,
+        },
+    );
+
+    // ── Type introspection — builtin-type-of, builtin-tag-of ─────────────────
+    // builtin-type-of: Top → Str
+    // Returns the runtime type name of any value as a string.
+    env.insert(
+        "builtin-type-of".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Top)],
+            ret: Box::new(Type::Str),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-tag-of: Top → Str
+    // Returns the variant tag string from a Variant or Expression value.
+    // Not in meta_builtin_types (that module copies from core_type_env).
+    // Must be here so prelude's `tag-of` body type-checks correctly.
+    env.insert(
+        "builtin-tag-of".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Top)],
+            ret: Box::new(Type::Str),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+
+    // ── Error raising — builtin-raise ────────────────────────────────────────
+    // builtin-raise: Str → Never
+    // Raises a user error with the given message. Never returns.
+    env.insert(
+        "builtin-raise".to_string(),
         Type::Function {
             params: vec![(None, Type::Str)],
             ret: Box::new(Type::Never),
@@ -1868,75 +1327,48 @@ pub fn core_type_env(env: &mut TypeEnv) {
             required_count: 1,
         },
     );
-    // try: takes 1 arg — a zero-argument function. Returns Ok(v) or Error(String).
-    // Return type is Top (not a structural union) to avoid triggering T004 exhaustiveness
-    // checking — the runtime returns nominal Value::Variant, not a struct dict.
+
+    // ── Output — builtin-emit ─────────────────────────────────────────────────
+    // builtin-emit: Top → {}
+    // Writes value to stdout. Side effect; returns null (empty dict).
+    let null_ty = Type::Record(Row {
+        fields: BTreeMap::new(),
+        tail: crate::type_def::RowTail::Empty,
+    });
     env.insert(
-        "try".to_string(),
+        "builtin-emit".to_string(),
         Type::Function {
-            params: vec![(
-                None,
-                Type::Function {
-                    params: vec![],
-                    ret: Box::new(Type::Top),
-                    variadic: false,
-                    required_count: 0,
-                },
-            )],
-            ret: Box::new(Type::Top),
+            params: vec![(None, Type::Top)],
+            ret: Box::new(null_ty.clone()),
             variadic: false,
             required_count: 1,
         },
     );
+
+    // ── Environment — builtin-env ─────────────────────────────────────────────
+    // builtin-env: Str → Str | {}
+    // Reads an environment variable by name. Returns null (empty dict) if unset.
+    let env_ret = Type::normalize_union(vec![Type::Str, null_ty]);
     env.insert(
-        "apply".to_string(),
+        "builtin-env".to_string(),
         Type::Function {
-            // apply accepts any function (variadic or otherwise) and any dict.
-            // Using Unknown for both params preserves gradual typing — the caller
-            // provides a concrete function and the callee applies it positionally.
-            params: vec![(None, Type::Unknown), (None, Type::Unknown)],
-            ret: Box::new(Type::Unknown),
+            params: vec![(None, Type::Str)],
+            ret: Box::new(env_ret),
             variadic: false,
-            required_count: 2,
+            required_count: 1,
         },
     );
-    // Convergence loop: until(pred, f, init) applies f until pred holds
-    // ∀T. (T → Bool) → (T → T) → T → T
-    env.insert_scheme(
-        "until".to_string(),
-        TypeScheme {
-            type_vars: vec!["T".to_string()],
-            constraints: vec![],
-            body: Type::Function {
-                params: vec![
-                    (
-                        None,
-                        Type::Function {
-                            params: vec![(None, Type::TypeVar("T".to_string(), 0))],
-                            ret: Box::new(Type::Bool),
-                            variadic: false,
-                            required_count: 1,
-                        },
-                    ),
-                    (
-                        None,
-                        Type::Function {
-                            params: vec![(None, Type::TypeVar("T".to_string(), 0))],
-                            ret: Box::new(Type::TypeVar("T".to_string(), 0)),
-                            variadic: false,
-                            required_count: 1,
-                        },
-                    ),
-                    (None, Type::TypeVar("T".to_string(), 0)),
-                ],
-                ret: Box::new(Type::TypeVar("T".to_string(), 0)),
-                variadic: false,
-                required_count: 3,
-            },
-            label_vars: vec![],
-            kind_vars: Vec::new(),
-            doc: None,
-            inner_schemes: None,
+
+    // ── Function application — builtin-apply ──────────────────────────────────
+    // builtin-apply: Top → Top → Top
+    // Applies a function to a dict of arguments. Return type is Top (dynamic dispatch).
+    env.insert(
+        "builtin-apply".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Top), (None, Type::Top)],
+            ret: Box::new(Type::Top),
+            variadic: false,
+            required_count: 2,
         },
     );
 
@@ -1964,24 +1396,19 @@ pub fn core_type_env(env: &mut TypeEnv) {
     );
 
     // ── Macro support ─────────────────────────────────────────────────────────
-    // builtin-macro-error: takes a span dict and a message string, raises a
-    // compile-time error at the given source location. Never returns.
+    // builtin-macro-error: takes a message string and an optional AST node,
+    // raises a compile-time error. If node is provided and is an Expression,
+    // uses its span; otherwise uses call site span. Never returns.
     env.insert(
         "builtin-macro-error".to_string(),
         Type::Function {
             params: vec![
-                (
-                    None,
-                    Type::Record(Row {
-                        fields: BTreeMap::new(),
-                        tail: crate::type_def::RowTail::Empty,
-                    }),
-                ),
                 (None, Type::Str),
+                (None, Type::Unknown), // optional AST node
             ],
             ret: Box::new(Type::Never),
             variadic: false,
-            required_count: 2,
+            required_count: 1,
         },
     );
     // builtin-macro-injects: takes a macro name (any value, looked up at
@@ -1999,50 +1426,12 @@ pub fn core_type_env(env: &mut TypeEnv) {
     // ── Type introspection ────────────────────────────────────────────────────
     // These accept any value (Top), return Str
     env.insert(
-        "type-of".to_string(),
-        Type::Function {
-            params: vec![(None, Type::Top)],
-            ret: Box::new(Type::Str),
-            variadic: false,
-            required_count: 1,
-        },
-    );
-    env.insert(
         "to-tinct".to_string(),
         Type::Function {
             params: vec![(None, Type::Top)],
             ret: Box::new(Type::Str),
             variadic: false,
             required_count: 1,
-        },
-    );
-    env.insert(
-        "llt-repr".to_string(),
-        Type::Function {
-            params: vec![(None, Type::Top)],
-            ret: Box::new(Type::Str),
-            variadic: false,
-            required_count: 1,
-        },
-    );
-    env.insert(
-        "tag-of".to_string(),
-        Type::Function {
-            params: vec![(None, Type::Top)],
-            ret: Box::new(Type::Str),
-            variadic: false,
-            required_count: 1,
-        },
-    );
-    // variant: variadic (1 arg: tag, or 2+ args: tag + payload fields)
-    // Returns Top — can't express dependent types (tag determines return type).
-    env.insert(
-        "variant".to_string(),
-        Type::Function {
-            params: vec![],
-            ret: Box::new(Type::Top),
-            variadic: true,
-            required_count: 0,
         },
     );
     // annotation-of: takes any value, returns its annotation dict (or {} if none).
@@ -2068,15 +1457,6 @@ pub fn core_type_env(env: &mut TypeEnv) {
             required_count: 2,
         },
     );
-    env.insert(
-        "eval-ast".to_string(),
-        Type::Function {
-            params: vec![(None, Type::Top)],
-            ret: Box::new(Type::Top),
-            variadic: false,
-            required_count: 1,
-        },
-    );
     // builtin-module: returns a dict of builtins for the named module.
     env.insert(
         "builtin-module".to_string(),
@@ -2091,16 +1471,6 @@ pub fn core_type_env(env: &mut TypeEnv) {
     // Return type is Top — genuinely opaque (output depends on runtime values).
     env.insert(
         "builtin-eval".to_string(),
-        Type::Function {
-            params: vec![(None, Type::Top)],
-            ret: Box::new(Type::Top),
-            variadic: true,
-            required_count: 1,
-        },
-    );
-    // eval-types: evaluate the type-stage of a Document/Program.
-    env.insert(
-        "eval-types".to_string(),
         Type::Function {
             params: vec![(None, Type::Top)],
             ret: Box::new(Type::Top),
@@ -2169,36 +1539,6 @@ pub fn core_type_env(env: &mut TypeEnv) {
             required_count: 2,
         },
     );
-    env.insert(
-        "gensym".to_string(),
-        Type::Function {
-            params: vec![(None, Type::Str)],
-            ret: Box::new(Type::Str),
-            variadic: true, // 0 or 1 args (optional prefix)
-            required_count: 1,
-        },
-    );
-    env.insert(
-        "decimal".to_string(),
-        Type::Function {
-            params: vec![(None, Type::Top)],
-            // Genuinely unknown: Returns Decimal type (not yet in Type enum)
-            ret: Box::new(Type::Unknown),
-            variadic: false,
-            required_count: 1,
-        },
-    );
-    env.insert(
-        "big-int".to_string(),
-        Type::Function {
-            params: vec![(None, Type::Top)],
-            // Genuinely unknown: Returns BigInt type (not yet in Type enum)
-            ret: Box::new(Type::Unknown),
-            variadic: false,
-            required_count: 1,
-        },
-    );
-
     // ── Type predicates ───────────────────────────────────────────────────────
     // Accept any value (Top), return Bool
     for name in [
@@ -2233,59 +1573,6 @@ pub fn core_type_env(env: &mut TypeEnv) {
         })
     }
 
-    env.insert(
-        "emit".to_string(),
-        Type::Function {
-            params: vec![(None, Type::Str)],
-            // Null — Type::Record(Row::Empty), see doc/whatif/null-semantics.md
-            ret: Box::new(Type::Record(Row {
-                fields: BTreeMap::new(),
-                tail: crate::type_def::RowTail::Empty,
-            })),
-            variadic: false,
-            required_count: 1,
-        },
-    );
-    env.insert(
-        "env".to_string(),
-        Type::Function {
-            params: vec![(None, Type::Str)],
-            // Returns Str when set; Null (empty dict) when unset, --no-env active, or not in allowlist
-            ret: Box::new(Type::normalize_union(vec![
-                Type::Str,
-                Type::Record(Row {
-                    fields: BTreeMap::new(),
-                    tail: crate::type_def::RowTail::Empty,
-                }),
-            ])),
-            variadic: false,
-            required_count: 1,
-        },
-    );
-    // `open` is SPECIAL-CASED in the type checker (typecheck.rs `check_open`).
-    // Fallback: Handle(Unknown) for cases where flag names are not statically known.
-    env.insert(
-        "open".to_string(),
-        Type::Function {
-            params: vec![
-                (None, Type::DirCap),
-                (None, Type::Str),
-                (None, Type::seq(Type::Top)),
-            ],
-            ret: Box::new(Type::handle(Type::Unknown)),
-            variadic: true,
-            required_count: 3,
-        },
-    );
-    env.insert(
-        "string-handle".to_string(),
-        Type::Function {
-            params: vec![(None, Type::Str)],
-            ret: Box::new(Type::handle(cap_flag("readable"))),
-            variadic: false,
-            required_count: 1,
-        },
-    );
     env.insert(
         "builtin-read-line".to_string(),
         Type::Function {
@@ -2332,95 +1619,6 @@ pub fn core_type_env(env: &mut TypeEnv) {
         },
     );
     env.insert(
-        "narrow".to_string(),
-        Type::Function {
-            params: vec![(None, Type::DirCap), (None, Type::Str)],
-            ret: Box::new(Type::DirCap),
-            variadic: false,
-            required_count: 2,
-        },
-    );
-    env.insert(
-        "write".to_string(),
-        Type::Function {
-            params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Str)],
-            // Null — Type::Record(Row::Empty)
-            ret: Box::new(Type::Record(Row {
-                fields: BTreeMap::new(),
-                tail: crate::type_def::RowTail::Empty,
-            })),
-            variadic: false,
-            required_count: 3,
-        },
-    );
-    env.insert(
-        "write-atomic".to_string(),
-        Type::Function {
-            params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Str)],
-            // Null — Type::Record(Row::Empty)
-            ret: Box::new(Type::Record(Row {
-                fields: BTreeMap::new(),
-                tail: crate::type_def::RowTail::Empty,
-            })),
-            variadic: false,
-            required_count: 3,
-        },
-    );
-    env.insert(
-        "revocable".to_string(),
-        Type::Function {
-            params: vec![(None, Type::DirCap)],
-            ret: Box::new(Type::Record(Row {
-                fields: BTreeMap::from([
-                    ("cap".to_string(), Type::DirCap),
-                    (
-                        "revoke".to_string(),
-                        Type::Function {
-                            params: vec![],
-                            ret: Box::new(Type::Record(Row {
-                                fields: BTreeMap::new(),
-                                tail: crate::type_def::RowTail::Empty,
-                            })), // Null
-                            variadic: false,
-                            required_count: 0,
-                        },
-                    ),
-                ]),
-                tail: crate::type_def::RowTail::Empty,
-            })),
-            variadic: false,
-            required_count: 1,
-        },
-    );
-    env.insert(
-        "revoke-cap".to_string(),
-        Type::Function {
-            params: vec![(None, Type::DirCap)],
-            // Null — Type::Record(Row::Empty)
-            ret: Box::new(Type::Record(Row {
-                fields: BTreeMap::new(),
-                tail: crate::type_def::RowTail::Empty,
-            })),
-            variadic: false,
-            required_count: 1,
-        },
-    );
-    env.insert(
-        "cap-data".to_string(),
-        Type::Function {
-            params: vec![
-                // Accepts any handle — cap-data extracts metadata, not I/O operation
-                (None, Type::handle(Type::Unknown)),
-                (None, Type::Str),
-            ],
-            // Genuinely unknown: cap-data returns the value stored in the Handle's
-            // capability map, which can be any type (cap name is a dynamic string key).
-            ret: Box::new(Type::Unknown),
-            variadic: false,
-            required_count: 2,
-        },
-    );
-    env.insert(
         "write-handle".to_string(),
         Type::Function {
             params: vec![
@@ -2428,106 +1626,6 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 (None, Type::normalize_union(vec![Type::Str, Type::Bytes])),
             ],
             ret: Box::new(Type::handle(cap_flag("writable"))),
-            variadic: false,
-            required_count: 2,
-        },
-    );
-    env.insert(
-        "flush".to_string(),
-        Type::Function {
-            // Use Top so any concrete Handle type satisfies it (is_subtype(Cap, Top) = true).
-            // Unknown would fail for handles with explicit capability rows because
-            // is_subtype(Cap, Unknown) = false (Unknown is not a supertype in BAS).
-            params: vec![(None, Type::handle(Type::Top))],
-            ret: Box::new(Type::handle(Type::Top)),
-            variadic: false,
-            required_count: 1,
-        },
-    );
-    env.insert(
-        "close".to_string(),
-        Type::Function {
-            // Accepts any handle regardless of capabilities (close is always valid)
-            params: vec![(None, Type::handle(Type::Unknown))],
-            // Null — Type::Record(Row::Empty)
-            ret: Box::new(Type::Record(Row {
-                fields: BTreeMap::new(),
-                tail: crate::type_def::RowTail::Empty,
-            })),
-            variadic: false,
-            required_count: 1,
-        },
-    );
-    env.insert(
-        "raw-create".to_string(),
-        Type::Function {
-            params: vec![(None, Type::DirCap), (None, Type::Str)],
-            // raw-create always creates a write-only handle
-            ret: Box::new(Type::handle(cap_flag("writable"))),
-            variadic: false,
-            required_count: 2,
-        },
-    );
-    env.insert(
-        "seek".to_string(),
-        Type::Function {
-            params: vec![(None, Type::handle(Type::Unknown)), (None, Type::Int)],
-            // Legitimately Unknown: seek preserves input handle's capabilities.
-            // Without dependent types (Handle[C] → Handle[C]), Unknown is the closest
-            // approximation.
-            ret: Box::new(Type::handle(Type::Unknown)),
-            variadic: false,
-            required_count: 2,
-        },
-    );
-    env.insert(
-        "seek-end".to_string(),
-        Type::Function {
-            params: vec![(None, Type::handle(Type::Unknown))],
-            // Legitimately Unknown: seek-end preserves input handle's capabilities.
-            ret: Box::new(Type::handle(Type::Unknown)),
-            variadic: false,
-            required_count: 1,
-        },
-    );
-    env.insert(
-        "position".to_string(),
-        Type::Function {
-            // Accepts any handle (position query doesn't require specific capabilities)
-            params: vec![(None, Type::handle(Type::Unknown))],
-            ret: Box::new(Type::Int),
-            variadic: false,
-            required_count: 1,
-        },
-    );
-    env.insert(
-        "list-dir".to_string(),
-        Type::Function {
-            params: vec![(None, Type::DirCap), (None, Type::Str)],
-            ret: Box::new(Type::seq(Type::Record(Row {
-                fields: BTreeMap::from([
-                    ("name".to_string(), Type::Str),
-                    ("kind".to_string(), Type::Str),
-                    ("size".to_string(), Type::Int),
-                ]),
-                tail: crate::type_def::RowTail::Empty,
-            }))),
-            variadic: false,
-            required_count: 2,
-        },
-    );
-    env.insert(
-        "stat".to_string(),
-        Type::Function {
-            params: vec![(None, Type::DirCap), (None, Type::Str)],
-            ret: Box::new(Type::Record(Row {
-                fields: BTreeMap::from([
-                    ("name".to_string(), Type::Str),
-                    ("kind".to_string(), Type::Str),
-                    ("size".to_string(), Type::Int),
-                ]),
-                tail: crate::type_def::RowTail::Empty,
-            })),
             variadic: false,
             required_count: 2,
         },
@@ -2668,19 +1766,6 @@ pub fn core_type_env(env: &mut TypeEnv) {
         },
     );
     env.insert(
-        "make-dir".to_string(),
-        Type::Function {
-            params: vec![(None, Type::DirCap), (None, Type::Str)],
-            // Null — Type::Record(Row::Empty)
-            ret: Box::new(Type::Record(Row {
-                fields: BTreeMap::new(),
-                tail: crate::type_def::RowTail::Empty,
-            })),
-            variadic: false,
-            required_count: 2,
-        },
-    );
-    env.insert(
         "builtin-remove".to_string(),
         Type::Function {
             params: vec![(None, Type::DirCap), (None, Type::Str)],
@@ -2694,41 +1779,6 @@ pub fn core_type_env(env: &mut TypeEnv) {
         },
     );
     env.insert(
-        "rename".to_string(),
-        Type::Function {
-            params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Str)],
-            // Null — Type::Record(Row::Empty)
-            ret: Box::new(Type::Record(Row {
-                fields: BTreeMap::new(),
-                tail: crate::type_def::RowTail::Empty,
-            })),
-            variadic: false,
-            required_count: 3,
-        },
-    );
-    env.insert(
-        "link".to_string(),
-        Type::Function {
-            params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Str)],
-            // Null — Type::Record(Row::Empty)
-            ret: Box::new(Type::Record(Row {
-                fields: BTreeMap::new(),
-                tail: crate::type_def::RowTail::Empty,
-            })),
-            variadic: false,
-            required_count: 3,
-        },
-    );
-    env.insert(
-        "read-link".to_string(),
-        Type::Function {
-            params: vec![(None, Type::DirCap), (None, Type::Str)],
-            ret: Box::new(Type::Str), // Returns target path as String
-            variadic: false,
-            required_count: 2,
-        },
-    );
-    env.insert(
         "from-json".to_string(),
         Type::Function {
             params: vec![(
@@ -2737,6 +1787,29 @@ pub fn core_type_env(env: &mut TypeEnv) {
             )],
             // Top: JSON parse output can be any JSON value (object, array,
             // string, number, bool, null). A precise type requires schema information.
+            ret: Box::new(Type::Top),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+
+    // builtin-narrow: DirCap → Top → DirCap  (attenuate capability to subdirectory or permissions)
+    // Second argument is String (subdirectory path) or DirCapFlag (permission restriction).
+    // Top covers both cases. Prelude aliases this as `narrow`.
+    env.insert(
+        "builtin-narrow".to_string(),
+        Type::Function {
+            params: vec![(None, Type::DirCap), (None, Type::Top)],
+            ret: Box::new(Type::DirCap),
+            variadic: true,
+            required_count: 2,
+        },
+    );
+    // builtin-revocable: DirCap → Top  (wrap a DirCap in a revocable wrapper)
+    env.insert(
+        "builtin-revocable".to_string(),
+        Type::Function {
+            params: vec![(None, Type::DirCap)],
             ret: Box::new(Type::Top),
             variadic: false,
             required_count: 1,
@@ -2945,20 +2018,16 @@ pub fn core_type_env(env: &mut TypeEnv) {
     );
 
     // ── Sequences: transforms ─────────────────────────────────────────────────
-    // map: ∀(f: Operator) a b. Mappable f ⇒ (a → b) → f a → f b
-    // HKT type scheme with Operator-kinded variable f.
-    // The UNIFY-APP-OPERATOR-SEQ rule (type_unify.rs) enables unification of
-    // App(Operator(f), a) with concrete collection types like Seq(T).
+    // builtin-map: ∀a b. (a → b) → Seq(a) → Seq(b)
     env.insert_scheme(
-        "map".to_string(),
+        "builtin-map".to_string(),
         TypeScheme {
             type_vars: vec!["a".to_string(), "b".to_string()],
-            kind_vars: vec![("f".to_string(), Kind::Operator)],
             constraints: vec![],
             body: Type::Function {
                 params: vec![
                     (
-                        Some("fn".to_string()),
+                        None,
                         Type::Function {
                             params: vec![(None, Type::TypeVar("a".to_string(), 0))],
                             ret: Box::new(Type::TypeVar("b".to_string(), 0)),
@@ -2966,49 +2035,9 @@ pub fn core_type_env(env: &mut TypeEnv) {
                             required_count: 1,
                         },
                     ),
-                    (
-                        Some("xs".to_string()),
-                        Type::App(
-                            Box::new(Type::Operator("f".to_string())),
-                            Box::new(Type::TypeVar("a".to_string(), 0)),
-                        ),
-                    ),
+                    (None, Type::seq(Type::TypeVar("a".to_string(), 0))),
                 ],
-                ret: Box::new(Type::App(
-                    Box::new(Type::Operator("f".to_string())),
-                    Box::new(Type::TypeVar("b".to_string(), 0)),
-                )),
-                variadic: false,
-                required_count: 2,
-            },
-            label_vars: vec![],
-            doc: None,
-            inner_schemes: None,
-        },
-    );
-    // filter: ∀a. (a → Bool) → Seq a → Seq a
-    env.insert_scheme(
-        "filter".to_string(),
-        TypeScheme {
-            type_vars: vec!["a".to_string()],
-            constraints: vec![],
-            body: Type::Function {
-                params: vec![
-                    (
-                        Some("pred".to_string()),
-                        Type::Function {
-                            params: vec![(None, Type::TypeVar("a".to_string(), 0))],
-                            ret: Box::new(Type::Bool),
-                            variadic: false,
-                            required_count: 1,
-                        },
-                    ),
-                    (
-                        Some("xs".to_string()),
-                        Type::seq(Type::TypeVar("a".to_string(), 0)),
-                    ),
-                ],
-                ret: Box::new(Type::seq(Type::TypeVar("a".to_string(), 0))),
+                ret: Box::new(Type::seq(Type::TypeVar("b".to_string(), 0))),
                 variadic: false,
                 required_count: 2,
             },
@@ -3018,18 +2047,26 @@ pub fn core_type_env(env: &mut TypeEnv) {
             inner_schemes: None,
         },
     );
-    // take: ∀T. Int → Seq(T) → Seq(T)
+    // builtin-filter: ∀a. (a → Bool) → Seq(a) → Seq(a)
     env.insert_scheme(
-        "take".to_string(),
+        "builtin-filter".to_string(),
         TypeScheme {
-            type_vars: vec!["T".to_string()],
+            type_vars: vec!["a".to_string()],
             constraints: vec![],
             body: Type::Function {
                 params: vec![
-                    (None, Type::Int),
-                    (None, Type::seq(Type::TypeVar("T".to_string(), 0))),
+                    (
+                        None,
+                        Type::Function {
+                            params: vec![(None, Type::TypeVar("a".to_string(), 0))],
+                            ret: Box::new(Type::Bool),
+                            variadic: false,
+                            required_count: 1,
+                        },
+                    ),
+                    (None, Type::seq(Type::TypeVar("a".to_string(), 0))),
                 ],
-                ret: Box::new(Type::seq(Type::TypeVar("T".to_string(), 0))),
+                ret: Box::new(Type::seq(Type::TypeVar("a".to_string(), 0))),
                 variadic: false,
                 required_count: 2,
             },
@@ -3060,9 +2097,9 @@ pub fn core_type_env(env: &mut TypeEnv) {
             inner_schemes: None,
         },
     );
-    // drop: ∀T. Int → Seq(T) → Seq(T)
+    // builtin-drop: ∀T. Int → Seq(T) → Seq(T)
     env.insert_scheme(
-        "drop".to_string(),
+        "builtin-drop".to_string(),
         TypeScheme {
             type_vars: vec!["T".to_string()],
             constraints: vec![],
@@ -3083,16 +2120,17 @@ pub fn core_type_env(env: &mut TypeEnv) {
     );
 
     // ── Sequences: reductions ─────────────────────────────────────────────────
-    // reduce: ∀a b. (b → a → b) → b → Seq a → b
+    // builtin-reduce: ∀a b. (b → a → b) → b → Seq(a) → b
+    // The standard left fold: (accumulator → element → accumulator) → initial → seq → result.
     env.insert_scheme(
-        "reduce".to_string(),
+        "builtin-reduce".to_string(),
         TypeScheme {
             type_vars: vec!["a".to_string(), "b".to_string()],
             constraints: vec![],
             body: Type::Function {
                 params: vec![
                     (
-                        Some("fn_".to_string()),
+                        None,
                         Type::Function {
                             params: vec![
                                 (None, Type::TypeVar("b".to_string(), 0)),
@@ -3103,11 +2141,8 @@ pub fn core_type_env(env: &mut TypeEnv) {
                             required_count: 2,
                         },
                     ),
-                    (Some("init".to_string()), Type::TypeVar("b".to_string(), 0)),
-                    (
-                        Some("xs".to_string()),
-                        Type::seq(Type::TypeVar("a".to_string(), 0)),
-                    ),
+                    (None, Type::TypeVar("b".to_string(), 0)),
+                    (None, Type::seq(Type::TypeVar("a".to_string(), 0))),
                 ],
                 ret: Box::new(Type::TypeVar("b".to_string(), 0)),
                 variadic: false,
@@ -3141,7 +2176,11 @@ pub fn core_type_env(env: &mut TypeEnv) {
             type_vars: vec!["a".to_string(), "b".to_string(), "c".to_string()],
             constraints: vec![Constraint::Class {
                 class: Arc::clone(&concatable_class),
-                vars: vec!["a".to_string(), "b".to_string(), "c".to_string()],
+                vars: vec![
+                    ConstraintArg::Var("a".to_string()),
+                    ConstraintArg::Var("b".to_string()),
+                    ConstraintArg::Var("c".to_string()),
+                ],
                 origin_name: None,
                 origin_span: None,
             }],
@@ -3279,6 +2318,13 @@ pub fn core_type_env(env: &mut TypeEnv) {
     );
 
     // ── builtin-get / get: Indexable c k v => k -> c -> v ────────────────────
+    // T-1104 NOTE: The canonical names `get`, `get?`, `builtin-get` MUST stay in core_type_env
+    // because they are used by the degraded scheme restoration loop in src/imports.rs:564.
+    // The prelude wrappers carry the Indexable constraint, but SCC-interaction issues in the
+    // constraint generalization machinery cause the FD to fail at call sites. The authoritative
+    // builtin scheme ensures `get 1 (Seq[String])` resolves the return type to `String` via
+    // Indexable FD machinery. Without these registrations, the restoration loop would find
+    // nothing to restore, breaking Indexable FD improvement. See B-384 fix and imports.rs:555-568.
     for get_name in ["builtin-get", "get"] {
         env.insert_scheme(
             get_name.to_string(),
@@ -3286,7 +2332,11 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 type_vars: vec!["c".to_string(), "k".to_string(), "v".to_string()],
                 constraints: vec![Constraint::Class {
                     class: Arc::clone(&indexable_class),
-                    vars: vec!["c".to_string(), "k".to_string(), "v".to_string()],
+                    vars: vec![
+                        ConstraintArg::Var("c".to_string()),
+                        ConstraintArg::Var("k".to_string()),
+                        ConstraintArg::Var("v".to_string()),
+                    ],
                     origin_name: None,
                     origin_span: None,
                 }],
@@ -3314,7 +2364,11 @@ pub fn core_type_env(env: &mut TypeEnv) {
             type_vars: vec!["c".to_string(), "k".to_string(), "v".to_string()],
             constraints: vec![Constraint::Class {
                 class: Arc::clone(&indexable_class),
-                vars: vec!["c".to_string(), "k".to_string(), "v".to_string()],
+                vars: vec![
+                    ConstraintArg::Var("c".to_string()),
+                    ConstraintArg::Var("k".to_string()),
+                    ConstraintArg::Var("v".to_string()),
+                ],
                 origin_name: None,
                 origin_span: None,
             }],
@@ -3332,91 +2386,6 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 ])),
                 variadic: false,
                 required_count: 2,
-            },
-            label_vars: vec![],
-            kind_vars: Vec::new(),
-            doc: None,
-            inner_schemes: None,
-        },
-    );
-
-    // ── Iteration builtins ────────────────────────────────────────────────────
-    // each: Record → Seq Top
-    env.insert_scheme(
-        "each".to_string(),
-        TypeScheme {
-            type_vars: vec![],
-            constraints: vec![],
-            body: Type::Function {
-                params: vec![(
-                    Some("xs".to_string()),
-                    Type::Record(Row {
-                        fields: BTreeMap::new(),
-                        tail: crate::type_def::RowTail::Empty,
-                    }),
-                )],
-                ret: Box::new(Type::seq(Type::Top)),
-                variadic: false,
-                required_count: 1,
-            },
-            label_vars: vec![],
-            kind_vars: Vec::new(),
-            doc: None,
-            inner_schemes: None,
-        },
-    );
-    // each-key: Record → Seq (Int | Str)
-    env.insert_scheme(
-        "each-key".to_string(),
-        TypeScheme {
-            type_vars: vec![],
-            constraints: vec![],
-            body: Type::Function {
-                params: vec![(
-                    Some("xs".to_string()),
-                    Type::Record(Row {
-                        fields: BTreeMap::new(),
-                        tail: crate::type_def::RowTail::Empty,
-                    }),
-                )],
-                ret: Box::new(Type::seq(Type::normalize_union(vec![Type::Int, Type::Str]))),
-                variadic: false,
-                required_count: 1,
-            },
-            label_vars: vec![],
-            kind_vars: Vec::new(),
-            doc: None,
-            inner_schemes: None,
-        },
-    );
-    // each-kv: Record → Seq [key: Int | Str, value: Top]
-    env.insert_scheme(
-        "each-kv".to_string(),
-        TypeScheme {
-            type_vars: vec![],
-            constraints: vec![],
-            body: Type::Function {
-                params: vec![(
-                    Some("xs".to_string()),
-                    Type::Record(Row {
-                        fields: BTreeMap::new(),
-                        tail: crate::type_def::RowTail::Empty,
-                    }),
-                )],
-                ret: Box::new(Type::seq({
-                    let mut kv_fields = BTreeMap::new();
-                    kv_fields.insert(
-                        "key".to_string(),
-                        Type::normalize_union(vec![Type::Int, Type::Str]),
-                    );
-                    kv_fields.insert("value".to_string(), Type::Top);
-                    Type::Record(Row {
-                        fields: kv_fields,
-                        tail: crate::type_def::RowTail::Empty,
-                    })
-                })),
-                variadic: false,
-                required_count: 1,
             },
             label_vars: vec![],
             kind_vars: Vec::new(),
@@ -3936,14 +2905,18 @@ pub fn core_type_env(env: &mut TypeEnv) {
 
     // ── builtin-* aliases for core operators ─────────────────────────────────
     // When a document declares `--- uses: ["core"]`, `type_env_module("core")`
-    // injects this env. User code may then use `builtin-if`, `builtin-add`, etc.
+    // injects this env. User code may then use `builtin-add`, `builtin-mul`, etc.
     // directly (bypassing prelude). These aliases must mirror the canonical forms
     // already registered above so that the type checker accepts them.
     //
+    // T-1104: Many canonical names were removed from core_type_env (now provided by
+    // prelude wrappers). The corresponding builtin-* alias entries were also removed
+    // from this loop. Only aliases whose canonical is still registered above remain.
+    //
     // Note: aliases that already have their own direct registrations above
-    // (e.g. `builtin-get`, `builtin-take`, `builtin-keys`, `builtin-each`, etc.)
-    // are NOT included here — the loop would overwrite them with the canonical
-    // form's TypeScheme instead of their own more-precise scheme.
+    // (e.g. `builtin-get`, `builtin-take`) are NOT included here — the loop would
+    // overwrite them with the canonical form's TypeScheme instead of their own
+    // more-precise scheme.
     for (alias, canonical) in [
         // Arithmetic operators
         ("builtin-add", "+"),
@@ -3956,39 +2929,10 @@ pub fn core_type_env(env: &mut TypeEnv) {
         ("builtin-gt", ">"),
         ("builtin-gte", ">="),
         ("builtin-lte", "<="),
-        // Control flow
-        ("builtin-if", "if"),
-        // Sequence transforms
-        ("builtin-filter", "filter"),
-        ("builtin-map", "map"),
-        ("builtin-reduce", "reduce"),
-        ("builtin-drop", "drop"),
-        // String operations
-        ("builtin-str", "str"),
+        // String operations (int->string and float->string retained as primitive printers)
         ("builtin-int->string", "int->string"),
         ("builtin-float->string", "float->string"),
-        ("builtin-split", "split"),
-        ("builtin-trim", "trim"),
-        ("builtin-trim-start", "trim-start"),
-        ("builtin-trim-end", "trim-end"),
-        ("builtin-replace", "replace"),
-        ("builtin-str-chars", "str-chars"),
-        ("builtin-char-code", "char-code"),
-        ("builtin-chr", "chr"),
-        ("builtin-str-bytes", "str-bytes"),
-        ("builtin-bytes-str", "bytes-str"),
-        ("builtin-str-index-of", "str-index-of"),
-        ("builtin-str-to-upper-char", "str-to-upper-char"),
-        ("builtin-str-to-lower-char", "str-to-lower-char"),
-        ("builtin-str-map-chars", "str-map-chars"),
-        ("builtin-str-length", "str-length"),
-        ("builtin-str-slice", "str-slice"),
-        ("builtin-regex-match?", "regex-match?"),
-        // Numeric
-        ("builtin-floor", "floor"),
-        ("builtin-round", "round"),
-        ("builtin-to-int", "to-int"),
-        ("builtin-to-float", "to-float"),
+        // Numeric math (still registered above)
         ("builtin-pow", "pow"),
         ("builtin-sqrt", "sqrt"),
         ("builtin-log", "log"),
@@ -4005,43 +2949,13 @@ pub fn core_type_env(env: &mut TypeEnv) {
         ("builtin-nan?", "nan?"),
         ("builtin-inf?", "inf?"),
         ("builtin-finite?", "finite?"),
-        ("builtin-band", "band"),
-        ("builtin-bor", "bor"),
-        ("builtin-bxor", "bxor"),
         ("builtin-shl", "shl"),
         ("builtin-shr", "shr"),
         ("builtin-float", "float"),
-        // Control/meta (non-direct registrations)
-        ("builtin-apply", "apply"),
-        ("builtin-try", "try"),
-        ("builtin-type-of", "type-of"),
-        ("builtin-raise", "raise"),
+        // Meta (bare-name forms still registered above)
         ("builtin-to-tinct", "to-tinct"),
-        ("builtin-llt-repr", "llt-repr"),
-        ("builtin-tag-of", "tag-of"),
-        ("builtin-eval-ast", "eval-ast"),
-        ("builtin-gensym", "gensym"),
-        ("builtin-decimal", "decimal"),
-        ("builtin-big-int", "big-int"),
-        ("builtin-variant", "variant"),
         ("builtin-annotation-of", "annotation-of"),
         ("builtin-make-annotated", "make-annotated"),
-        // I/O (bare-name forms)
-        ("builtin-emit", "emit"),
-        ("builtin-env", "env"),
-        ("builtin-narrow", "narrow"),
-        ("builtin-write", "write"),
-        ("builtin-write-atomic", "write-atomic"),
-        ("builtin-flush", "flush"),
-        ("builtin-close", "close"),
-        ("builtin-stat", "stat"),
-        ("builtin-make-dir", "make-dir"),
-        ("builtin-rename", "rename"),
-        ("builtin-link", "link"),
-        ("builtin-read-link", "read-link"),
-        ("builtin-seek", "seek"),
-        ("builtin-list-dir", "list-dir"),
-        ("builtin-open", "open"),
     ] {
         if let Some(scheme) = env.get(canonical).cloned() {
             env.insert_scheme(alias.to_string(), scheme);
@@ -4056,6 +2970,741 @@ pub fn core_type_env(env: &mut TypeEnv) {
         Type::Function {
             params: vec![(None, Type::Top)],
             ret: Box::new(Type::Bool),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+
+    // ── Missing builtin-* type entries ────────────────────────────────────────
+    // The entries below were registered in core_builtins() but absent from this
+    // function, causing prelude functions that call them to receive <error> type,
+    // cascading to make those prelude functions invisible to user code.
+    //
+    // The alias loop at the bottom of this function maps e.g. "builtin-add" → "+"
+    // only if "+" is already in env.  But "+", "-", "*", "/", "=", "<", ">", "<=",
+    // ">=" come from prelude typeclass instances — they are never in the static
+    // core_type_env.  So arithmetic and comparison builtin-* names must be inserted
+    // directly.  All I/O, builder, string-ext, meta, and reactive-cell entries have
+    // the same problem.
+
+    // ── Arithmetic ────────────────────────────────────────────────────────────
+    // builtin-add / builtin-sub / builtin-mul / builtin-div: Top → Top → Top
+    // Using Top inputs: instance bodies annotate args with specific types (@Int, @Float)
+    // which provide precision via FD inference. Using Number would reject String args
+    // in user-defined instances and break type checking of annotated instance bodies.
+    for name in ["builtin-add", "builtin-sub", "builtin-mul", "builtin-div"] {
+        env.insert(
+            name.to_string(),
+            Type::Function {
+                params: vec![(None, Type::Top), (None, Type::Top)],
+                ret: Box::new(Type::Top),
+                variadic: false,
+                required_count: 2,
+            },
+        );
+    }
+
+    // ── Comparison ────────────────────────────────────────────────────────────
+    // All comparison builtins: Top → Top → Bool
+    // Using Top inputs: builtin-lt is called with String, Bool args by Comparable instances.
+    // Number would incorrectly reject those calls during prelude type-checking.
+    for name in [
+        "builtin-eq",
+        "builtin-lt",
+        "builtin-gt",
+        "builtin-lte",
+        "builtin-gte",
+    ] {
+        env.insert(
+            name.to_string(),
+            Type::Function {
+                params: vec![(None, Type::Top), (None, Type::Top)],
+                ret: Box::new(Type::Bool),
+                variadic: false,
+                required_count: 2,
+            },
+        );
+    }
+
+    // ── Numeric rounding / parsing ────────────────────────────────────────────
+    // builtin-floor / builtin-round: Number → Int
+    for name in ["builtin-floor", "builtin-round"] {
+        env.insert(
+            name.to_string(),
+            Type::Function {
+                params: vec![(None, Type::Number)],
+                ret: Box::new(Type::Int),
+                variadic: false,
+                required_count: 1,
+            },
+        );
+    }
+    // builtin-to-int: Top → Int  (parse string or truncate float)
+    env.insert(
+        "builtin-to-int".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Top)],
+            ret: Box::new(Type::Int),
+            variadic: true, // accepts optional named args
+            required_count: 1,
+        },
+    );
+    // builtin-to-float: Top → Float  (parse string or convert int)
+    env.insert(
+        "builtin-to-float".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Top)],
+            ret: Box::new(Type::Float),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+
+    // ── Bitwise ───────────────────────────────────────────────────────────────
+    // builtin-band / builtin-bor / builtin-bxor: Int → Int → Int
+    for name in ["builtin-band", "builtin-bor", "builtin-bxor"] {
+        env.insert(
+            name.to_string(),
+            Type::Function {
+                params: vec![(None, Type::Int), (None, Type::Int)],
+                ret: Box::new(Type::Int),
+                variadic: false,
+                required_count: 2,
+            },
+        );
+    }
+
+    // ── String operations ─────────────────────────────────────────────────────
+    // builtin-replace: Str → Str → Str → Str  (pattern, replacement, input)
+    env.insert(
+        "builtin-replace".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Str), (None, Type::Str), (None, Type::Str)],
+            ret: Box::new(Type::Str),
+            variadic: false,
+            required_count: 3,
+        },
+    );
+    // builtin-trim / builtin-trim-start / builtin-trim-end: Str → Str
+    for name in ["builtin-trim", "builtin-trim-start", "builtin-trim-end"] {
+        env.insert(
+            name.to_string(),
+            Type::Function {
+                params: vec![(None, Type::Str)],
+                ret: Box::new(Type::Str),
+                variadic: false,
+                required_count: 1,
+            },
+        );
+    }
+    // builtin-str-length: Str → Int
+    env.insert(
+        "builtin-str-length".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Str)],
+            ret: Box::new(Type::Int),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-str-slice: Str → Int → Int → Str  (string, start, end)
+    env.insert(
+        "builtin-str-slice".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Str), (None, Type::Int), (None, Type::Int)],
+            ret: Box::new(Type::Str),
+            variadic: false,
+            required_count: 3,
+        },
+    );
+    // builtin-str-chars: Str → Seq(Str)  (explode into individual chars)
+    env.insert(
+        "builtin-str-chars".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Str)],
+            ret: Box::new(Type::seq(Type::Str)),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-char-code: Str → Int  (Unicode codepoint of first char)
+    env.insert(
+        "builtin-char-code".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Str)],
+            ret: Box::new(Type::Int),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-chr: Int → Str  (Unicode codepoint to single-char string)
+    env.insert(
+        "builtin-chr".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Int)],
+            ret: Box::new(Type::Str),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-str-bytes: Str → Bytes  (UTF-8 encoding)
+    env.insert(
+        "builtin-str-bytes".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Str)],
+            ret: Box::new(Type::Bytes),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-bytes-str: Bytes → Str  (UTF-8 decode)
+    env.insert(
+        "builtin-bytes-str".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Bytes)],
+            ret: Box::new(Type::Str),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-str-index-of: Str → Str → Int  (needle, haystack → index or -1)
+    env.insert(
+        "builtin-str-index-of".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Str), (None, Type::Str)],
+            ret: Box::new(Type::Int),
+            variadic: false,
+            required_count: 2,
+        },
+    );
+    // builtin-str-to-upper-char / builtin-str-to-lower-char: Str → Str
+    for name in ["builtin-str-to-upper-char", "builtin-str-to-lower-char"] {
+        env.insert(
+            name.to_string(),
+            Type::Function {
+                params: vec![(None, Type::Str)],
+                ret: Box::new(Type::Str),
+                variadic: false,
+                required_count: 1,
+            },
+        );
+    }
+    // builtin-str-map-chars: (Str → Str) → Str → Str
+    env.insert(
+        "builtin-str-map-chars".to_string(),
+        Type::Function {
+            params: vec![
+                (
+                    None,
+                    Type::Function {
+                        params: vec![(None, Type::Str)],
+                        ret: Box::new(Type::Str),
+                        variadic: false,
+                        required_count: 1,
+                    },
+                ),
+                (None, Type::Str),
+            ],
+            ret: Box::new(Type::Str),
+            variadic: false,
+            required_count: 2,
+        },
+    );
+    // builtin-regex-match?: Str → Str → Bool  (pattern, input)
+    env.insert(
+        "builtin-regex-match?".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Str), (None, Type::Str)],
+            ret: Box::new(Type::Bool),
+            variadic: false,
+            required_count: 2,
+        },
+    );
+
+    // ── Builder operations ─────────────────────────────────────────────────────
+    // All builder ops use Top for the builder value (opaque runtime type).
+    // builtin-make-builder: () → Top  (create a new mutable builder)
+    env.insert(
+        "builtin-make-builder".to_string(),
+        Type::Function {
+            params: vec![],
+            ret: Box::new(Type::Top),
+            variadic: true,
+            required_count: 0,
+        },
+    );
+    // builtin-builder-set: Top → (Int|Str) → Top → Top  (builder, key, value → builder)
+    env.insert(
+        "builtin-builder-set".to_string(),
+        Type::Function {
+            params: vec![
+                (None, Type::Top),
+                (None, Type::normalize_union(vec![Type::Int, Type::Str])),
+                (None, Type::Top),
+            ],
+            ret: Box::new(Type::Top),
+            variadic: false,
+            required_count: 3,
+        },
+    );
+    // builtin-builder-delete: Top → (Int|Str) → Top  (builder, key → builder)
+    env.insert(
+        "builtin-builder-delete".to_string(),
+        Type::Function {
+            params: vec![
+                (None, Type::Top),
+                (None, Type::normalize_union(vec![Type::Int, Type::Str])),
+            ],
+            ret: Box::new(Type::Top),
+            variadic: false,
+            required_count: 2,
+        },
+    );
+    // builtin-builder-finish: Top → Record({})  (builder → immutable dict)
+    env.insert(
+        "builtin-builder-finish".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Top)],
+            ret: Box::new(Type::Record(Row {
+                fields: BTreeMap::new(),
+                tail: crate::type_def::RowTail::Empty,
+            })),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-builder-snapshot: Top → Record({})  (non-consuming snapshot)
+    env.insert(
+        "builtin-builder-snapshot".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Top)],
+            ret: Box::new(Type::Record(Row {
+                fields: BTreeMap::new(),
+                tail: crate::type_def::RowTail::Empty,
+            })),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-builder-has?: Top → (Int|Str) → Bool
+    env.insert(
+        "builtin-builder-has?".to_string(),
+        Type::Function {
+            params: vec![
+                (None, Type::Top),
+                (None, Type::normalize_union(vec![Type::Int, Type::Str])),
+            ],
+            ret: Box::new(Type::Bool),
+            variadic: false,
+            required_count: 2,
+        },
+    );
+    // builtin-builder-get: Top → (Int|Str) → Top
+    env.insert(
+        "builtin-builder-get".to_string(),
+        Type::Function {
+            params: vec![
+                (None, Type::Top),
+                (None, Type::normalize_union(vec![Type::Int, Type::Str])),
+            ],
+            ret: Box::new(Type::Top),
+            variadic: false,
+            required_count: 2,
+        },
+    );
+    // builtin-builder-get-or: Top → Top → (Int|Str) → Top  (builder, default, key)
+    env.insert(
+        "builtin-builder-get-or".to_string(),
+        Type::Function {
+            params: vec![
+                (None, Type::Top),
+                (None, Type::Top),
+                (None, Type::normalize_union(vec![Type::Int, Type::Str])),
+            ],
+            ret: Box::new(Type::Top),
+            variadic: false,
+            required_count: 3,
+        },
+    );
+
+    // ── I/O — missing entries ─────────────────────────────────────────────────
+    // Null type helper reused across multiple I/O return types.
+    let null_record = Type::Record(Row {
+        fields: BTreeMap::new(),
+        tail: crate::type_def::RowTail::Empty,
+    });
+
+    // builtin-open: DirCap → Str → Top → Handle  (cap, path, mode → handle)
+    // Mode is a flag value (Readable, Writable, etc.); Top covers flag unions.
+    env.insert(
+        "builtin-open".to_string(),
+        Type::Function {
+            params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Top)],
+            ret: Box::new(Type::Top), // Handle — mode-parameterized; opaque at this level
+            variadic: false,
+            required_count: 3,
+        },
+    );
+    // builtin-stat: DirCap → Str → {name: Str, kind: Str, size: Int, ...}
+    env.insert(
+        "builtin-stat".to_string(),
+        Type::Function {
+            params: vec![(None, Type::DirCap), (None, Type::Str)],
+            ret: Box::new(Type::Record(Row {
+                fields: BTreeMap::from([
+                    ("name".to_string(), Type::Str),
+                    ("kind".to_string(), Type::Str),
+                    ("size".to_string(), Type::Int),
+                ]),
+                tail: crate::type_def::RowTail::Empty,
+            })),
+            variadic: false,
+            required_count: 2,
+        },
+    );
+    // builtin-list-dir: DirCap → Str → Seq({name: Str, kind: Str})
+    env.insert(
+        "builtin-list-dir".to_string(),
+        Type::Function {
+            params: vec![(None, Type::DirCap), (None, Type::Str)],
+            ret: Box::new(Type::seq(Type::Record(Row {
+                fields: BTreeMap::from([
+                    ("name".to_string(), Type::Str),
+                    ("kind".to_string(), Type::Str),
+                ]),
+                tail: crate::type_def::RowTail::Empty,
+            }))),
+            variadic: false,
+            required_count: 2,
+        },
+    );
+    // builtin-write: DirCap → Str → (Str | Bytes) → Null
+    env.insert(
+        "builtin-write".to_string(),
+        Type::Function {
+            params: vec![
+                (None, Type::DirCap),
+                (None, Type::Str),
+                (None, Type::normalize_union(vec![Type::Str, Type::Bytes])),
+            ],
+            ret: Box::new(null_record.clone()),
+            variadic: false,
+            required_count: 3,
+        },
+    );
+    // builtin-write-atomic: DirCap → Str → (Str | Bytes) → Null
+    env.insert(
+        "builtin-write-atomic".to_string(),
+        Type::Function {
+            params: vec![
+                (None, Type::DirCap),
+                (None, Type::Str),
+                (None, Type::normalize_union(vec![Type::Str, Type::Bytes])),
+            ],
+            ret: Box::new(null_record.clone()),
+            variadic: false,
+            required_count: 3,
+        },
+    );
+    // builtin-write-handle: Handle → (Str | Bytes) → Handle  (returns handle for chaining)
+    env.insert(
+        "builtin-write-handle".to_string(),
+        Type::Function {
+            params: vec![
+                (None, Type::Top), // Handle — opaque at this level
+                (None, Type::normalize_union(vec![Type::Str, Type::Bytes])),
+            ],
+            ret: Box::new(Type::Top), // Handle
+            variadic: false,
+            required_count: 2,
+        },
+    );
+    // builtin-flush: Handle → Null
+    env.insert(
+        "builtin-flush".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Top)], // Handle — opaque
+            ret: Box::new(null_record.clone()),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-close: Handle → Null
+    env.insert(
+        "builtin-close".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Top)], // Handle — opaque
+            ret: Box::new(null_record.clone()),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-string-handle: Str → Handle
+    env.insert(
+        "builtin-string-handle".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Str)],
+            ret: Box::new(Type::Top), // ReadableHandle — opaque
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-make-dir: DirCap → Str → Null
+    env.insert(
+        "builtin-make-dir".to_string(),
+        Type::Function {
+            params: vec![(None, Type::DirCap), (None, Type::Str)],
+            ret: Box::new(null_record.clone()),
+            variadic: false,
+            required_count: 2,
+        },
+    );
+    // builtin-rename: DirCap → Str → Str → Null
+    env.insert(
+        "builtin-rename".to_string(),
+        Type::Function {
+            params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Str)],
+            ret: Box::new(null_record.clone()),
+            variadic: false,
+            required_count: 3,
+        },
+    );
+    // builtin-link: DirCap → Str → Str → Null  (target, link-cap, link-path)
+    env.insert(
+        "builtin-link".to_string(),
+        Type::Function {
+            params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Str)],
+            ret: Box::new(null_record.clone()),
+            variadic: false,
+            required_count: 3,
+        },
+    );
+    // builtin-read-link: DirCap → Str → Str
+    env.insert(
+        "builtin-read-link".to_string(),
+        Type::Function {
+            params: vec![(None, Type::DirCap), (None, Type::Str)],
+            ret: Box::new(Type::Str),
+            variadic: false,
+            required_count: 2,
+        },
+    );
+    // builtin-revoke-cap: Top → Null  (revoke a RevocableDirCap)
+    env.insert(
+        "builtin-revoke-cap".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Top)],
+            ret: Box::new(null_record.clone()),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-cap-data: Handle → Str → Top  (extract cap metadata by name)
+    env.insert(
+        "builtin-cap-data".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Top), (None, Type::Str)],
+            ret: Box::new(Type::Top),
+            variadic: false,
+            required_count: 2,
+        },
+    );
+    // builtin-raw-create: DirCap → Str → Handle  (create file with mode bits; variadic for mode)
+    env.insert(
+        "builtin-raw-create".to_string(),
+        Type::Function {
+            params: vec![(None, Type::DirCap), (None, Type::Str)],
+            ret: Box::new(Type::Top), // Handle
+            variadic: true,
+            required_count: 2,
+        },
+    );
+    // builtin-seek: Handle → Int → Top  (seek to byte offset; returns handle or Null)
+    env.insert(
+        "builtin-seek".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Top), (None, Type::Int)],
+            ret: Box::new(Type::Top),
+            variadic: false,
+            required_count: 2,
+        },
+    );
+    // builtin-seek-end: Handle → Top  (seek to end of file)
+    env.insert(
+        "builtin-seek-end".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Top)],
+            ret: Box::new(Type::Top),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-position: Handle → Int  (current byte offset)
+    env.insert(
+        "builtin-position".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Top)],
+            ret: Box::new(Type::Int),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+
+    // ── Meta / reflection — missing entries ───────────────────────────────────
+    // builtin-variant: Str → Top → Top  (tag, optional payload → Variant)
+    // Second arg (payload) is optional (variadic).
+    env.insert(
+        "builtin-variant".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Str)],
+            ret: Box::new(Type::Top), // Variant — opaque; tag determines structure
+            variadic: true,
+            required_count: 1,
+        },
+    );
+    // builtin-span-of: Top → Top  (extract span metadata from a value)
+    env.insert(
+        "builtin-span-of".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Top)],
+            ret: Box::new(Type::Top), // Span dict — runtime-determined shape
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-gensym: Str → Str → Str  (scope, prefix → unique identifier)
+    env.insert(
+        "builtin-gensym".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Str), (None, Type::Str)],
+            ret: Box::new(Type::Str),
+            variadic: false,
+            required_count: 2,
+        },
+    );
+    // builtin-llt-repr: Top → Str  (produce tinct source repr of a value)
+    env.insert(
+        "builtin-llt-repr".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Top)],
+            ret: Box::new(Type::Str),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-program: Top → Top  (construct a Program value from a seq of documents)
+    env.insert(
+        "builtin-program".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Top)],
+            ret: Box::new(Type::Top), // Program — opaque AST value
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-eval-types: Top → Top  (type-check a Program value and return type info)
+    env.insert(
+        "builtin-eval-types".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Top)],
+            ret: Box::new(Type::Top), // Type info dict — runtime-determined shape
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-decimal: Top → Decimal  (construct exact decimal from string or number)
+    env.insert(
+        "builtin-decimal".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Top)],
+            ret: Box::new(Type::Top), // Decimal — opaque numeric type
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-big-int: Top → BigInt  (construct arbitrary-precision integer)
+    env.insert(
+        "builtin-big-int".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Top)],
+            ret: Box::new(Type::Top), // BigInt — opaque numeric type
+            variadic: false,
+            required_count: 1,
+        },
+    );
+
+    // ── Reactive cells ────────────────────────────────────────────────────────
+    // builtin-reactive-cell: Top → Top  (create a reactive cell with initial value)
+    env.insert(
+        "builtin-reactive-cell".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Top)],
+            ret: Box::new(Type::Top), // ReactiveCell — opaque
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-cell-get: Top → Top  (read current value from a reactive cell)
+    env.insert(
+        "builtin-cell-get".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Top)],
+            ret: Box::new(Type::Top),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-cell-set: Top → Top → Top  (cell, new-value → Null or cell)
+    env.insert(
+        "builtin-cell-set".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Top), (None, Type::Top)],
+            ret: Box::new(Type::Top),
+            variadic: false,
+            required_count: 2,
+        },
+    );
+
+    // ── Control flow — bare `if` and `until` ─────────────────────────────────
+    // `if` is registered in core_builtins() as an alias for builtin-if.
+    // It must have a type entry so prelude code that calls `if` directly type-checks.
+    env.insert(
+        "if".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Bool), (None, Type::Top), (None, Type::Top)],
+            ret: Box::new(Type::Top),
+            variadic: false,
+            required_count: 3,
+        },
+    );
+    // `until` is registered in core_builtins() for iterative loops.
+    // Top → Top is the safe approximation (takes a thunk, returns its result).
+    env.insert(
+        "until".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Top)],
+            ret: Box::new(Type::Top),
+            variadic: true,
+            required_count: 1,
+        },
+    );
+
+    // ── builtin-proxy ─────────────────────────────────────────────────────────
+    // builtin-proxy: (Str → Top) → Proxy
+    // Registered in core_builtins() alongside bare "proxy" (which has its own entry above).
+    env.insert(
+        "builtin-proxy".to_string(),
+        Type::Function {
+            params: vec![(
+                None,
+                Type::Function {
+                    params: vec![(None, Type::Str)],
+                    ret: Box::new(Type::Top),
+                    variadic: false,
+                    required_count: 1,
+                },
+            )],
+            ret: Box::new(Type::Proxy),
             variadic: false,
             required_count: 1,
         },

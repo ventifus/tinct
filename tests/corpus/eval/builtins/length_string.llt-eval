@@ -1,4 +1,0 @@
-# length : dual-dispatch on string returns character count
-[length "hello"]
-=== out
-Int(5)

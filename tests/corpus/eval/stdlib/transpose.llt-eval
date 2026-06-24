@@ -1,3 +1,0 @@
-[transpose [[a: 1 b: 2] [a: 3 b: 4]]]
-=== out
-Dict({0: Dict({"key": String("a"), "value": Dict({0: Int(1), 1: Int(3)})}), 1: Dict({"key": String("b"), "value": Dict({0: Int(2), 1: Int(4)})})})

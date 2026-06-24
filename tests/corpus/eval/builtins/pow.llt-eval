@@ -1,5 +1,0 @@
-# builtin-pow : power function
---- uses: ["math"]
-[builtin-pow 2 3]
-=== out
-Float(8)

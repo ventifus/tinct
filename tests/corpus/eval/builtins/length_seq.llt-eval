@@ -1,4 +1,0 @@
-# length-narrow-type: length of a positional list type-checks without error
-[length [1 2 3]]
-=== out
-Int(3)

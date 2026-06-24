@@ -8,9 +8,10 @@
 # 2. Force %: write the return value (or each Seq element) as llt-repr
 # 3. Await drain task completion
 
+--- uses: ["async"]
 # 1. Drain the emit channel concurrently.
 [drain: [task
-  [loop-select [context]
+  [select [context]
     [seq [ch: %emit-channel  handler: [fn [let v]
       [write-handle %stdout [str [llt-repr v] "\n"]]]] []]
     identity]]]

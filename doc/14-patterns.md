@@ -176,7 +176,7 @@ Both arm forms can appear in the same `[match]` expression.
 | Constructor (no binding) | `Color.Red:` | Matches unit constructor variant, no binding |
 | Constructor (no binding) | `[Tag]` | Matches any nominal variant with that tag, regardless of payload — equivalent to `[Tag _]` |
 | TypeAssert | `[@Int x]` | Matches if value has type `Int`, binds to `x` |
-| TypeAssert (bare) | `Int:` | Primitive type pattern — matches if value has type `Int` *(S-845: currently produces `Pattern::TypeTag`, not `Pattern::TypeAssert`; the elaboration pass rewrite is not yet complete)* |
+| TypeAssert (bare) | `[@Int _]:` | Bare type assertion with wildcard binding — preferred form for type predicates |
 
 ### Constructor Pattern Qualification
 

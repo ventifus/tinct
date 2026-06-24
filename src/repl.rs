@@ -22,14 +22,10 @@ use indexmap::IndexMap;
 use crate::ast::Span;
 use crate::builtins::{create_stdlib_env_with_arena, MAX_FILE_SIZE};
 use crate::eval::eval_surface_file_with_input;
-fn materialize(t: &crate::value::Thunk, s: Option<&Span>, c: &std::sync::Arc<crate::eval::EvalContext>) -> crate::error::EvalResult<crate::value::Value> {
-    crate::async_rt::block_on_anywhere(crate::eval::materialize(t, s, c))
-}
 use crate::parser::parse;
 use crate::typecheck::{DocMap, TypeMap};
 use crate::types::TypeEnv;
 use crate::value::{Environment, Key, Thunk, Value};
-use crate::value_to_display_string;
 
 // ── Core types and logic (no rustyline dependency) ──────────────────────────
 
@@ -113,7 +109,7 @@ impl ReplSession {
     /// Returns an error if the stdlib fails to load (e.g., prelude parse error).
     pub fn new() -> Result<Self, String> {
         let (stdlib_env, stdlib_arena) =
-            create_stdlib_env_with_arena().map_err(|e| format!("{e}"))?;
+            crate::async_rt::block_on_anywhere(create_stdlib_env_with_arena()).map_err(|e| format!("{e}"))?;
         Self::with_env_and_arena(stdlib_env, stdlib_arena)
     }
 
@@ -127,7 +123,7 @@ impl ReplSession {
     /// arena control, use `with_env_and_arena()` instead.
     pub fn with_env(stdlib_env: Arc<RwLock<Environment>>) -> Result<Self, String> {
         // Rely on STDLIB_ARENA_CACHE for arena snapshot
-        let (_, stdlib_arena) = create_stdlib_env_with_arena().map_err(|e| format!("{e}"))?;
+        let (_, stdlib_arena) = crate::async_rt::block_on_anywhere(create_stdlib_env_with_arena()).map_err(|e| format!("{e}"))?;
         Self::with_env_and_arena(stdlib_env, stdlib_arena)
     }
 
@@ -279,7 +275,7 @@ impl ReplSession {
             error_str
         })?;
 
-        let val = materialize(&result_thunk, None, &self.ctx).map_err(|e| {
+        let val = crate::eval::materialize(&result_thunk, None, &self.ctx).await.map_err(|e| {
             let mut error_str = format!("{e}");
             if let Some(snippet) = crate::render_span_snippet(input, e.definition_span) {
                 error_str.push('\n');
@@ -288,7 +284,7 @@ impl ReplSession {
             error_str
         })?;
         let display =
-            value_to_display_string(&val, &self.ctx, result_thunk.span.clone()).map_err(|e| {
+            crate::value_to_display_string(&val, &self.ctx, result_thunk.span.clone()).await.map_err(|e| {
                 let mut error_str = format!("{e}");
                 if let Some(snippet) = crate::render_span_snippet(input, e.definition_span) {
                     error_str.push('\n');
@@ -445,7 +441,7 @@ pub fn run_repl() -> Result<(), String> {
     use rustyline::DefaultEditor;
 
     // Create the stdlib env once and share it between the session and $include context.
-    let (stdlib_env, stdlib_arena) = create_stdlib_env_with_arena().map_err(|e| format!("{e}"))?;
+    let (stdlib_env, stdlib_arena) = crate::async_rt::block_on_anywhere(create_stdlib_env_with_arena()).map_err(|e| format!("{e}"))?;
     let mut session = ReplSession::with_env_and_arena(Arc::clone(&stdlib_env), stdlib_arena)?;
 
     // The ReplSession already has an EvalContext set up with CWD as base_dir,

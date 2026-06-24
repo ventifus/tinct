@@ -186,8 +186,70 @@ async fn collect_seq_elements(
                 let tail_thunk = ctx.get_thunk(tail);
                 current = materialize(&tail_thunk, Some(&span), ctx).await?;
             }
+            Value::Dict(ref dict) => {
+                // Integer-keyed Dict (from macro variadic args) — collect elements in key order
+                // Validate that all keys are integers and sequential from 0
+                let mut int_entries: Vec<(i64, ThunkId)> = Vec::new();
+                for (key, thunk_id) in dict {
+                    if let Key::Int(i) = key {
+                        int_entries.push((*i, *thunk_id));
+                    } else {
+                        return Err(EvalError::type_mismatch(
+                            "Seq or integer-keyed Dict",
+                            "Dict with non-integer keys",
+                            span,
+                        )
+                        .into());
+                    }
+                }
+
+                // Sort by integer key
+                int_entries.sort_by_key(|(i, _)| *i);
+
+                // Validate sequential from 0
+                for (idx, (i, _)) in int_entries.iter().enumerate() {
+                    if *i != idx as i64 {
+                        return Err(EvalError::type_mismatch(
+                            "Seq or sequential integer-keyed Dict (0, 1, 2, ...)",
+                            &format!(
+                                "Dict with non-sequential keys (expected {}, found {})",
+                                idx, i
+                            ),
+                            span,
+                        )
+                        .into());
+                    }
+                }
+
+                // Materialize each element
+                for (_, thunk_id) in int_entries {
+                    let thunk = ctx.get_thunk(thunk_id);
+                    let value = materialize(&thunk, Some(&span), ctx).await?;
+                    elements.push(value);
+
+                    // Enforce size limit
+                    if elements.len() >= MAX_COLLECT_SIZE {
+                        return Err(EvalError::resource_limit_exceeded(
+                            format!(
+                                "unquote-splice: too many elements (limit {})",
+                                MAX_COLLECT_SIZE
+                            ),
+                            span,
+                        )
+                        .into());
+                    }
+                }
+
+                // Done — Dict is not recursive like Seq.Cons
+                break;
+            }
             _ => {
-                return Err(EvalError::type_mismatch("Seq", current.type_name(), span).into());
+                return Err(EvalError::type_mismatch(
+                    "Seq or integer-keyed Dict",
+                    current.type_name(),
+                    span,
+                )
+                .into());
             }
         }
     }
@@ -238,10 +300,10 @@ fn eval_quote_preprocess<'a>(
             }
 
             SurfaceExpression::UnquoteSplice(_) => {
-                // UnquoteSplice at non-list position is an error.
-                // Call args handle UnquoteSplice in their own loop below.
+                // UnquoteSplice outside of call args or dict entries is an error.
+                // Call args and dict entries handle UnquoteSplice in their own loops.
                 Err(EvalError::unimplemented(
-                    "unquote-splice must be in a list position (inside call args); dict entry splicing is not yet implemented"
+                    "unquote-splice must be in a list position (inside call args or dict entries)"
                         .to_string(),
                     span,
                 )
@@ -252,20 +314,121 @@ fn eval_quote_preprocess<'a>(
             SurfaceExpression::Dict(entries) => {
                 let mut processed_entries = Vec::with_capacity(entries.len());
                 for entry in entries {
-                    let processed_value =
-                        eval_quote_preprocess(Arc::clone(&entry.node.value), env, ctx).await?;
-                    let processed_key = if let Some(ref key_node) = entry.node.key {
-                        Some(eval_quote_preprocess(Arc::clone(key_node), env, ctx).await?)
+                    // Handle unquote-splicing in dict entry value position
+                    if let SurfaceExpression::UnquoteSplice(inner) = &entry.node.value.expr {
+                        // Evaluate the unquote-splice expression
+                        let core = crate::lower::lower(
+                            inner,
+                            crate::ast::empty_resolution_table(),
+                            crate::ast::empty_type_annotation_table(),
+                        );
+                        let thunk = eval_core_expr(&core, env, ctx).await?;
+                        let inner_span = inner.span.clone();
+                        let value = materialize(&thunk, Some(&inner_span), ctx).await?;
+
+                        // Value must be Dict or Seq for splicing
+                        match value {
+                            Value::Dict(ref dict) => {
+                                // Splice dict entries into the current dict
+                                for (key, value_thunk_id) in dict {
+                                    // Convert the thunk to a Value, then to a SurfaceNode
+                                    let value_thunk = ctx.get_thunk(*value_thunk_id);
+                                    let value_val =
+                                        materialize(&value_thunk, Some(&inner_span), ctx).await?;
+                                    let value_node =
+                                        value_to_surface_node(&value_val, inner_span.clone(), ctx)?;
+
+                                    // Convert the key to a SurfaceNode
+                                    let key_node = match key {
+                                        Key::Int(n) => Arc::new(SurfaceNode {
+                                            expr: SurfaceExpression::Int(*n),
+                                            span: inner_span.clone(),
+                                        }),
+                                        Key::String(s) => {
+                                            // Check if it looks like an identifier (alphanumeric + hyphens)
+                                            // If so, use VarRef; otherwise use Str
+                                            let is_ident = s.chars().all(|c| {
+                                                c.is_alphanumeric()
+                                                    || c == '-'
+                                                    || c == '_'
+                                                    || c == '?'
+                                            }) && !s.is_empty()
+                                                && !s.chars().next().unwrap().is_numeric();
+                                            if is_ident {
+                                                Arc::new(SurfaceNode {
+                                                    expr: SurfaceExpression::VarRef {
+                                                        name: s.to_string(),
+                                                        escaped: false,
+                                                    },
+                                                    span: inner_span.clone(),
+                                                })
+                                            } else {
+                                                Arc::new(SurfaceNode {
+                                                    expr: SurfaceExpression::Str(s.to_string()),
+                                                    span: inner_span.clone(),
+                                                })
+                                            }
+                                        }
+                                    };
+
+                                    processed_entries.push(Spanned::new(
+                                        SurfaceEntry {
+                                            key: Some(key_node),
+                                            value: value_node,
+                                        },
+                                        inner_span.clone(),
+                                    ));
+                                }
+                            }
+                            Value::Variant { .. } => {
+                                // Could be a Seq — collect elements and auto-index
+                                let elements =
+                                    collect_seq_elements(&value, inner_span.clone(), ctx).await?;
+                                for (idx, elem_value) in elements.into_iter().enumerate() {
+                                    let elem_node = value_to_surface_node(
+                                        &elem_value,
+                                        inner_span.clone(),
+                                        ctx,
+                                    )?;
+                                    let key_node = Arc::new(SurfaceNode {
+                                        expr: SurfaceExpression::Int(idx as i64),
+                                        span: inner_span.clone(),
+                                    });
+                                    processed_entries.push(Spanned::new(
+                                        SurfaceEntry {
+                                            key: Some(key_node),
+                                            value: elem_node,
+                                        },
+                                        inner_span.clone(),
+                                    ));
+                                }
+                            }
+                            _ => {
+                                return Err(EvalError::type_mismatch(
+                                    "Dict or Seq",
+                                    value.type_name(),
+                                    inner_span,
+                                )
+                                .into())
+                            }
+                        }
                     } else {
-                        None
-                    };
-                    processed_entries.push(Spanned::new(
-                        SurfaceEntry {
-                            key: processed_key,
-                            value: processed_value,
-                        },
-                        entry.span.clone(),
-                    ));
+                        // Regular entry - recursively process
+                        let processed_value =
+                            eval_quote_preprocess(Arc::clone(&entry.node.value), env, ctx).await?;
+                        let processed_key = if let Some(ref key_node) = entry.node.key {
+                            Some(eval_quote_preprocess(Arc::clone(key_node), env, ctx).await?)
+                        } else {
+                            None
+                        };
+                        processed_entries.push(Spanned::new(
+                            SurfaceEntry {
+                                key: processed_key,
+                                value: processed_value,
+                            },
+                            entry.span.clone(),
+                        ));
+                    }
                 }
                 Ok(make_node(SurfaceExpression::Dict(processed_entries)))
             }
@@ -651,11 +814,24 @@ pub(crate) fn eval_core_expr<'a>(
                         });
                     }
                 }
+                {
+                    let env_lock = env.read().unwrap();
+                    if let Some(thunk) = env_lock.get(name) {
+                        // Regular binding found — use it (shadows method dispatch).
+                        return Ok(thunk);
+                    }
+                }
+                // No regular binding — check for multi-method arms.
+                let arms = crate::value::Environment::collect_method_arms(env, name);
+                if !arms.is_empty() {
+                    // Return a dispatcher sentinel; PendingCallDispatch will do the dispatch.
+                    return Ok(Arc::new(Thunk::new_materialized(
+                        crate::value::Value::MethodDispatcher(name.clone()),
+                        span.clone(),
+                    )));
+                }
                 let name_owned = name.clone();
-                let env_lock = env.read().unwrap();
-                env_lock
-                    .get(name)
-                    .ok_or_else(|| EvalError::undefined_variable(name_owned, span.clone()).into())
+                Err(EvalError::undefined_variable(name_owned, span.clone()).into())
             }
 
             // DotAccess: wrap as a CoreExpr thunk directly.
@@ -893,6 +1069,13 @@ pub(crate) fn eval_core_expr<'a>(
                 span.clone(),
             )
             .into()),
+
+            // RegisterMethods: side-effectful arm registration happens in the eval_dict_core
+            // pre-scan. If forced individually (shouldn't happen), return null.
+            CoreExpr::RegisterMethods { .. } => Ok(Arc::new(Thunk::new_materialized(
+                crate::value::Value::Dict(indexmap::IndexMap::new()),
+                span.clone(),
+            ))),
         }
         .map(|thunk| maybe_wrap_guard(thunk, span, ctx))
     }) // end Box::pin(async move {

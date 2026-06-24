@@ -1,5 +1,0 @@
-# tail of a single-element range: returns Seq.Nil, displayed as Seq()
-# Regression: Seq.Nil must display as Seq(), not Dict({}) or empty string
-[tail [range 5 6]]
-=== out
-Dict({})

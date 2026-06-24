@@ -1,4 +1,0 @@
-# builder: make-builder + builder-set + builder-finish produces a Dict
-[builder-finish [builder-set "y" 99 [builder-set "x" 42 [make-builder]]]]
-=== out
-Dict({"x": Int(42), "y": Int(99)})

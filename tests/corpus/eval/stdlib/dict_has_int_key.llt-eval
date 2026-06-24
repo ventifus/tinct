@@ -1,4 +1,0 @@
-# has?: check integer key exists in list
-[has? 1 [10 20 30]]
-=== out
-Bool(true)

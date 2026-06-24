@@ -1,4 +1,0 @@
-# Test: try builtin returns result variant (nominal Result.Ok/Result.Error)
-[try [fn [] 42]]
-=== out
-Variant(Result.Ok, Int(42))

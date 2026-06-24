@@ -10,8 +10,8 @@
 [
   read-h2-frame: [fn@[bind: [h]  constraint: [h: ByteStream]] [let h@h]
     [header:  [read h 9]]
-    [len:     [@H2FrameLength [uint24 NetworkEndian [slice header 0 3]]]]  # RFC 7540 §4.1: 24-bit frame length
-    [sid:     [@H2StreamId [band [uint32 NetworkEndian [slice header 5 9]] 0x7FFFFFFF]]]  # 31-bit stream id
+    [len:     [@H2FrameLength [uint24 ByteOrder.Network [slice header 0 3]]]]  # RFC 7540 §4.1: 24-bit frame length
+    [sid:     [@H2StreamId [band [uint32 ByteOrder.Network [slice header 5 9]] 0x7FFFFFFF]]]  # 31-bit stream id
     [H2Frame [type:      [or [get code: [get header 3] H2FrameType] [error [str "HTTP/2: unknown frame type: " [get header 3]]]]
               flags:     [@UInt8 [get header 4]]
               stream-id: sid
@@ -21,10 +21,10 @@
     [len: [@H2FrameLength [length frame.payload]]]
     [write h
       [concat
-        [bytes NetworkEndian len]                                            # 24-bit frame length (H2FrameLength)
-        [bytes NetworkEndian [@UInt8 frame.type.code]]
-        [bytes NetworkEndian frame.flags]                                    # UInt8 (single byte)
-        [bytes NetworkEndian [@H2StreamId [band frame.stream-id 0x7FFFFFFF]]]  # 31-bit stream id
+        [bytes ByteOrder.Network len]                                            # 24-bit frame length (H2FrameLength)
+        [bytes ByteOrder.Network [@UInt8 frame.type.code]]
+        [bytes ByteOrder.Network frame.flags]                                    # UInt8 (single byte)
+        [bytes ByteOrder.Network [@H2StreamId [band frame.stream-id 0x7FFFFFFF]]]  # 31-bit stream id
         frame.payload]]]
 
   # HPACK static table (RFC 7541 Appendix A) — 61 entries, indexed 1–61.
@@ -161,7 +161,7 @@
                                [H2Frame type: H2FrameType.H2RstStream
                                         flags: [@UInt8 0]
                                         stream-id: frame.stream-id
-                                        payload: [bytes NetworkEndian [@H2ErrorCode 8]]]]]]]]  # CANCEL=8
+                                        payload: [bytes ByteOrder.Network [@H2ErrorCode 8]]]]]]]]  # CANCEL=8
                 [send out [connection: connection  request: request  stream: stream]]
               _: null]
             [step]]]]
@@ -188,11 +188,11 @@
 [
   # Named domain types with fixed byte-order encodings per RFC 7540.
   # All HTTP/2 multi-byte integers are big-endian (network byte order) per RFC 7540 §4.
-  H2StreamId:    [type UInt32@[is: [between 0 2147483647]  encoding: NetworkEndian]]  # RFC 7540 §5.1.1: 31-bit (MSB reserved)
-  H2FrameLength: [type UInt24@[encoding: NetworkEndian]]                               # RFC 7540 §4.1: 24-bit frame length
-  H2ErrorCode:   [type UInt32@[encoding: NetworkEndian]]                               # RFC 7540 §7: 32-bit error codes
-  H2SettingId:   [type UInt16@[encoding: NetworkEndian]]                               # RFC 7540 §6.5: 16-bit setting identifier
-  H2SettingValue:[type UInt32@[encoding: NetworkEndian]]                               # RFC 7540 §6.5: 32-bit setting value
+  H2StreamId:    [type UInt32@[is: [between 0 2147483647]  encoding: ByteOrder.Network]]  # RFC 7540 §5.1.1: 31-bit (MSB reserved)
+  H2FrameLength: [type UInt24@[encoding: ByteOrder.Network]]                               # RFC 7540 §4.1: 24-bit frame length
+  H2ErrorCode:   [type UInt32@[encoding: ByteOrder.Network]]                               # RFC 7540 §7: 32-bit error codes
+  H2SettingId:   [type UInt16@[encoding: ByteOrder.Network]]                               # RFC 7540 §6.5: 16-bit setting identifier
+  H2SettingValue:[type UInt32@[encoding: ByteOrder.Network]]                               # RFC 7540 §6.5: 32-bit setting value
 
   H2FrameType: [type
     [H2Data         code: 0]
@@ -319,8 +319,8 @@
     [apply concat [map-kv [fn [let k v]
       [k-bytes: [str-bytes k]  v-bytes: [str-bytes v]]
       [concat [0x00]
-              [bytes NetworkEndian [@UInt8 [length k-bytes]]] k-bytes
-              [bytes NetworkEndian [@UInt8 [length v-bytes]]] v-bytes]]
+              [bytes ByteOrder.Network [@UInt8 [length k-bytes]]] k-bytes
+              [bytes ByteOrder.Network [@UInt8 [length v-bytes]]] v-bytes]]
      headers]]]
 
   # RFC 7541 Appendix B: HPACK Huffman code table — [code, length] pairs for symbols 0..255 + EOS.
@@ -398,19 +398,19 @@
   h2-frame-serialize: [fn [let _ frame@H2Frame]
     [len: [@H2FrameLength [length frame.payload]]]
     [concat
-      [bytes NetworkEndian len]
-      [bytes NetworkEndian [@UInt8 frame.type.code]]
-      [bytes NetworkEndian frame.flags]
-      [bytes NetworkEndian [@H2StreamId [band frame.stream-id 0x7FFFFFFF]]]
+      [bytes ByteOrder.Network len]
+      [bytes ByteOrder.Network [@UInt8 frame.type.code]]
+      [bytes ByteOrder.Network frame.flags]
+      [bytes ByteOrder.Network [@H2StreamId [band frame.stream-id 0x7FFFFFFF]]]
       frame.payload]]
 
   h2-frame-parse: [fn [let _ data@Bytes offset@Int]
     [frame-data: [slice data offset [length data]]]
-    [payload-len: [@H2FrameLength [uint24 NetworkEndian [slice frame-data 0 3]]]]
+    [payload-len: [@H2FrameLength [uint24 ByteOrder.Network [slice frame-data 0 3]]]]
     [value: [H2Frame
       type:      [or [get code: [get frame-data 3] H2FrameType] [error [str "HTTP/2: unknown frame type: " [get frame-data 3]]]]
       flags:     [@UInt8 [get frame-data 4]]
-      stream-id: [@H2StreamId [band [uint32 NetworkEndian [slice frame-data 5 9]] 0x7FFFFFFF]]
+      stream-id: [@H2StreamId [band [uint32 ByteOrder.Network [slice frame-data 5 9]] 0x7FFFFFFF]]
       payload:   [slice frame-data 9 [+ 9 payload-len]]]
      next: [+ offset 9 payload-len]]]
 
@@ -558,7 +558,7 @@
     [push-id: [match [recv conn.next-stream] [Result.Ok n]: n  [Closed.Closed]: [error "H2: closed"]]]
     [send conn.next-stream [+ push-id 2]]
     # PUSH_PROMISE: reference stream-id + promised-stream-id + HPACK headers
-    [promise-payload: [concat [bytes NetworkEndian [@H2StreamId push-id]] [hpack-encode conn.hpack-send req.headers]]]
+    [promise-payload: [concat [bytes ByteOrder.Network [@H2StreamId push-id]] [hpack-encode conn.hpack-send req.headers]]]
     [write conn.handle [h2-frame-serialize null [H2Frame type: H2FrameType.H2PushPromise  flags: [@UInt8 0x04]  stream-id: stream-id  payload: promise-payload]]]
     # Send response on push-id stream
     [resp-headers: [hpack-encode conn.hpack-send resp.headers]]

@@ -1,6 +1,0 @@
-# Bracket access with string key (migrated to dot)
-[data: [name: "world"]]
-
-data.name
-=== out
-String("world")

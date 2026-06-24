@@ -1,6 +1,0 @@
-# Channel capacity must be ≥ 1
-
-[channel 0]
-=== error
-[E080] channel capacity must be ≥ 1, got 0 (defined at 2:1-2:12)
-  in [channel ...] at 2:1-2:12

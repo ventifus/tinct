@@ -73,7 +73,7 @@ fn process_files(test_files: &[PathBuf], manifest_dir: &Path) -> (usize, usize, 
         let source = extract_source(&content);
 
         // Run typecheck
-        match tinct::typecheck_source(&source) {
+        match tinct::async_rt::block_on_anywhere(tinct::typecheck_source(&source)) {
             Ok(()) => {
                 // Clean - no warnings
                 clean += 1;

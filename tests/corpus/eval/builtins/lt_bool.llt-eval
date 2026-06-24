@@ -1,5 +1,0 @@
-# < : less-than comparison on Bool (false < true)
-# Runtime treats Bool as orderable (false < true); type checker does not (Bool not Comparable).
-[< false true]
-=== out
-Bool(true)

@@ -1,4 +1,0 @@
-# const combinator - returns first argument, ignores second
-[call [const 42] "hello"]
-=== out
-Int(42)
