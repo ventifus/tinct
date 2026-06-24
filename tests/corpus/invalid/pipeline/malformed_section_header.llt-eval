@@ -4,4 +4,4 @@
 --- foo
 [y: 2]
 === out
-unexpected token in section header
+3:5: unexpected token in section header: Identifier("foo")

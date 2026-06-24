@@ -3,4 +3,4 @@
 # Int is not a subtype of the any-function type, so this is a type error.
 [@Fn 42]
 === out
-cannot unify
+[UnificationFailure] cannot unify Fn@Top [ ...] with 42

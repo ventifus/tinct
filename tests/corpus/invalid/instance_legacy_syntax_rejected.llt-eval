@@ -2,4 +2,6 @@
 # Parser should reject brackets after instance keyword (expecting VarRef for class name).
 [instance [Equatable Int] eq: [fn [let x y] [= x y]]]
 === out
-instance form expects class name (VarRef) after 'instance' keyword
+2:11: instance form expects class name (VarRef) after 'instance' keyword
+2:31: instance form expects class name (VarRef) after 'instance' keyword
+2:53: instance form has incomplete method (key without value)

@@ -1,4 +1,4 @@
 # Trailing underscore in number literal is invalid
 [1_]
 === out
-underscore must be followed by a digit
+1:2: invalid number literal: underscore must be followed by a digit

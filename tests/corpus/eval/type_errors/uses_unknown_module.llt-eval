@@ -4,4 +4,4 @@
 --- uses: ["typo"]
 []
 === out
-unknown native module: typo
+[TypeError] unknown native module: typo

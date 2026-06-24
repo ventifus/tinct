@@ -1,3 +1,4 @@
 [fn [let ...a ...b] a]
 === out
-only one variadic parameter
+1:5: only one variadic parameter (...name) is allowed per fn
+1:21: fn parameter list must use [let ...] form (e.g. [fn [let x y] body]); [fn [x y] body] without `let` is no longer valid

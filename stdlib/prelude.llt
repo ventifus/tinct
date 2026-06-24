@@ -1586,12 +1586,15 @@ contains?@[doc: "Check if collection contains element"]: [fn@Bool [let val xs]
                 [seq? [builtin-filter [fn [let e] [builtin-eq e val]] xs]]
                 [any? [fn [let e] [builtin-eq e val]] xs]]]]]
 
-uniq@[doc: "Remove duplicates (keep first occurrence). O(n²) due to O(n) contains-seq? per element, but uses builtin-reduce (Rust loop) for performance (B-267)."]: [fn@Any [let xs@Dict]
+uniq@[doc: "Remove duplicates (keep first occurrence). O(n²) due to O(n) contains-seq? per element, but uses builtin-reduce (Rust loop) for performance (B-267)."]: [fn@Any [let xs]
     [uniq-impl xs]]
 
 # Right fold: fold f over xs from the right, starting with acc.
 # Equivalent to fold(f, acc, reverse(xs)).
-foldr@[doc: "Right fold"]: [fn@Any [let f@Fn acc@Any xs@Dict] [builtin-reduce f acc [builtin-reverse xs]]]
+foldr@[doc: "Right fold: foldr f acc [x|xs] = f x (foldr f acc xs)"]: [fn@Any [let f@Fn acc@Any xs]
+    [match xs
+        [@Seq _]: [f [builtin-head xs] [foldr f acc [builtin-tail xs]]]
+        _:        acc]]
 
 # ============================================================================
 # Composition
@@ -1757,17 +1760,22 @@ contains-seq?: [fn@Bool [let seq val]
         false
         seq]]
 
-# uniq-reduce-step: One step of the builtin-reduce loop for uniq.
+# uniq-reduce-step: One step of builtin-reduce for uniq.
+# acc: {seen: Seq of already-included elements, result: Dict of unique elements in insertion order}
+# Appends v to result if not in seen; otherwise keeps acc unchanged.
 uniq-reduce-step: [fn [let acc v]
-    [builtin-if [contains-seq? acc v]
+    [if [contains-seq? [builtin-get "seen" acc] v]
         acc
-        [builtin-seq v acc]]]
+        [seen: [builtin-seq v [builtin-get "seen" acc]]
+         result: [builtin-append [builtin-get "result" acc] v]]]]
 
-# uniq-impl: collect unique elements using builtin-reduce.
-uniq-impl: [fn@Any [let xs@Dict]
-    [builtin-reverse
-        [builtin-collect
-            [@[Seq Any] [builtin-reduce uniq-reduce-step Seq.Nil xs]]]]]
+# uniq-impl: collect unique elements using builtin-reduce with forward-order Dict accumulation.
+# No reversal needed: builtin-append adds elements in insertion order.
+uniq-impl: [fn@Any [let xs]
+    [builtin-get "result"
+        [builtin-reduce uniq-reduce-step
+            [seen: Seq.Nil  result: []]
+            xs]]]
 
 # take-while-seq: Build a lazy Seq of entries while predicate holds.
 take-while-seq: [fn [let pred@Fn entries]

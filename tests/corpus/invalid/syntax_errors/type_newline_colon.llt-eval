@@ -1,4 +1,4 @@
 [type
 : something]
 === out
-can only appear in dict, call
+2:1: `:` can only appear in dict, call, class, instance, match, let, or syntax-class forms

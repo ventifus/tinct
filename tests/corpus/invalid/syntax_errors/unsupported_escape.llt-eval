@@ -2,4 +2,4 @@
 # The lexer only supports \n, \t, \", \\, \r — \x is invalid.
 "test \x41 invalid"
 === out
-invalid escape sequence
+2:1: invalid escape sequence: \x

@@ -1,4 +1,4 @@
 # macro form requires a body expression
 [macro double [let x]]
 === out
-macro form requires a body expression
+1:22: macro form requires a body expression

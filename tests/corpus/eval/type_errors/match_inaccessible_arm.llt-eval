@@ -3,4 +3,4 @@
     String:  "str"
     _:       "catch-all"]
 === out
-inaccessible match arm
+[TypeError] inaccessible match arm: reachable only via diverging (bottom) values

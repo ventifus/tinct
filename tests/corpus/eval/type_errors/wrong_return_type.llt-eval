@@ -1,3 +1,3 @@
 [f: [fn@String [let x@Int] x]]
 === out
-cannot unify
+[UnificationFailure] cannot unify String with Int

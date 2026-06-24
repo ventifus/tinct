@@ -1,4 +1,4 @@
 # Hexadecimal literal with invalid digit
 [0xg]
 === out
-invalid digit
+1:2: invalid digit `g` in hexadecimal literal

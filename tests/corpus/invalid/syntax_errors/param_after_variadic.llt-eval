@@ -1,3 +1,4 @@
 [fn [let ...rest x] x]
 === out
-variadic parameter (...name) must be the last parameter
+1:5: variadic parameter (...name) must be the last parameter
+1:21: fn parameter list must use [let ...] form (e.g. [fn [let x y] body]); [fn [x y] body] without `let` is no longer valid

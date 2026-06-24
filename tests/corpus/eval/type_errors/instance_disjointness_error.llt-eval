@@ -17,4 +17,4 @@
 
 %.result
 === out
-overlapping instance patterns
+[OverlappingInstancePatterns] overlapping instance patterns

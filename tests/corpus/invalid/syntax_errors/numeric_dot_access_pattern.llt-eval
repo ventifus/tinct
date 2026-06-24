@@ -3,4 +3,4 @@
 # so flatten_dot_access_to_tag returns None → parse error.
 [match x 1.bad: "yes" _: "no"]
 === out
-numeric index in dot-access
+3:10: invalid pattern: numeric index in dot-access constructor tag

@@ -2,4 +2,4 @@
 --- uses: ["core"
 [x: 1]
 === out
-expected module name (quoted string) in uses: list
+1:18: expected module name (quoted string) in uses: list

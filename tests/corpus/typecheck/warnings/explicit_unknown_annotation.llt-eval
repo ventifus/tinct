@@ -1,15 +1,13 @@
 # Explicit @Unknown annotation: should produce an Info diagnostic (T011)
 # The type checker detects explicit @Unknown and emits Info instead of Warn
 #
-# NOTE: T010 ("inferred type is Unknown") was intentionally removed from === warn.
-# Both T010 and T011 fire for this input, but warning ORDER is non-deterministic across runs
-# (the type checker's diagnostic list is not sorted before output). Using a single-line
-# substring match ("explicit @Unknown annotation") is stable: it matches T011 regardless
-# of whether T010 appears before or after it in the actual output. Asserting the exact
-# T010 line caused intermittent failures when the order flipped between runs.
+# Both T010 (inferred Unknown) and T011 (explicit @Unknown) fire for this input.
+# With exact matching, we assert the full diagnostic output. Diagnostics must be
+# sorted (by message) before output to ensure stability across runs.
 [f: [fn@Unknown [let x] x]]
 === out
 Dict({"f": Function(x)})
 
 === warn
+inferred type is Unknown — consider adding a type annotation
 explicit @Unknown annotation — type is not statically known

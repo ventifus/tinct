@@ -13,4 +13,4 @@
 Dict({"Result": Dict({"Ok": Variant(Result.Ok, Null), "Error": Variant(Result.Error, Null)}), "ok-val": Variant(Result.Ok, Null), "err-val": Variant(Result.Error, Null), "mismatch": Bool(false)})
 
 === warn
-[TypeError] type Fn@Ok [0: Error] does not satisfy constraint Equatable
+[UnificationFailure] cannot unify Error with String

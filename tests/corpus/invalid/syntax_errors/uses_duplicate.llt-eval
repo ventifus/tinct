@@ -2,4 +2,4 @@
 --- uses: ["core"] uses: ["net"]
 [x: 1]
 === out
-duplicate uses: pragma in header
+1:20: duplicate uses: pragma in header

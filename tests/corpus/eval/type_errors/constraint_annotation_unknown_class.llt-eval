@@ -2,4 +2,4 @@
 # Should emit a type error for unknown class name
 [fn@[constraint: [a: NonexistentClass]] [let x@a] x]
 === out
-NonexistentClass
+[TypeError] unknown constraint class 'NonexistentClass'

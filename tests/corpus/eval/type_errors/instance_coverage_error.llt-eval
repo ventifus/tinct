@@ -17,4 +17,4 @@
 
 %.result
 === out
-coverage violation
+[CoverageViolation] coverage violation

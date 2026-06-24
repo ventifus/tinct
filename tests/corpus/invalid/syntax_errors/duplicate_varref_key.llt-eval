@@ -2,4 +2,4 @@
 # Parse-time duplicate key detection covers escaped-ref keys (stored as bare name "k").
 [k: a  k: b]
 === out
-duplicate key
+2:8: duplicate key "k"

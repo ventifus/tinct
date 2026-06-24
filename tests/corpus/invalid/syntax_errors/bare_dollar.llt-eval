@@ -1,4 +1,4 @@
 # Bare $ (not followed by identifier) is a parse error
 $
 === out
-bare $ without identifier
+1:1: bare $ without identifier

@@ -3,4 +3,4 @@
 --- uses: "core"
 []
 === out
-expected '[' after 'uses:'
+2:11: expected '[' after 'uses:' — module list must be a bracket form

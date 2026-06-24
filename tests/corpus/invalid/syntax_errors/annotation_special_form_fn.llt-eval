@@ -1,4 +1,4 @@
 # Annotation bracket restriction - fn special form in annotation
 x@[fn [let a] a]
 === out
-property dict annotation must be a dict expression
+1:3: property dict annotation must be a dict expression, got: [fn [let a] a]

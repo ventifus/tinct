@@ -1,3 +1,3 @@
 [name: Alice  name: Bob]
 === out
-duplicate key
+1:15: duplicate key "name"

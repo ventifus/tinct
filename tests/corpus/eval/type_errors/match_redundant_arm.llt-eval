@@ -3,4 +3,4 @@
     String:  "str"
     Int:     "int-again"]
 === out
-unreachable match arm
+[TypeError] unreachable match arm: this pattern is already covered by prior arms

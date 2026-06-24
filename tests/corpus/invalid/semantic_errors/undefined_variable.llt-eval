@@ -2,4 +2,4 @@
 # (Runtime undefined variable errors are in tests/corpus/eval/errors/)
 [x: $]
 === out
-bare $ without identifier
+2:5: bare $ without identifier

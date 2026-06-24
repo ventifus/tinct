@@ -421,7 +421,7 @@ pub fn run_corpus_dir(
                         path: relative_path.to_path_buf(),
                         message: format!(
                             "expected eval failure (=== error), but eval succeeded\n\
-                             --- expected error substring ---\n{}\n\
+                             --- expected error ---\n{}\n\
                              --- actual output ---\n{}",
                             expected_error,
                             actual_output.trim()
@@ -445,13 +445,13 @@ pub fn run_corpus_dir(
             (None, Some(actual_error)) => {
                 // Eval failed
                 if let Some(expected_error) = &test.expectations.error {
-                    // === error present: check message contains expected substring
-                    if !actual_error.contains(expected_error) {
+                    // === error present: check message matches exactly (trimmed)
+                    if actual_error.trim() != expected_error.as_str() {
                         failed.push(Failure {
                             path: relative_path.to_path_buf(),
                             message: format!(
-                                "eval error mismatch\n--- expected substring ---\n{}\n--- actual error ---\n{}",
-                                expected_error, actual_error
+                                "eval error mismatch\n--- expected ---\n{}\n--- actual error ---\n{}",
+                                expected_error, actual_error.trim()
                             ),
                         });
                     }
@@ -507,13 +507,13 @@ pub fn run_corpus_dir(
         };
         match (&actual_warnings, &test.expectations.warn) {
             (Some(actual_warnings), Some(expected_warnings)) => {
-                // === warn present: typecheck must produce warnings matching the substring
-                if !actual_warnings.contains(expected_warnings) {
+                // === warn present: typecheck must produce warnings matching exactly (trimmed)
+                if actual_warnings.trim() != expected_warnings.as_str() {
                     failed.push(Failure {
                         path: relative_path.to_path_buf(),
                         message: format!(
-                            "typecheck warning mismatch\n--- expected substring ---\n{}\n--- actual warnings ---\n{}",
-                            expected_warnings, actual_warnings
+                            "typecheck warning mismatch\n--- expected ---\n{}\n--- actual warnings ---\n{}",
+                            expected_warnings, actual_warnings.trim()
                         ),
                     });
                 }

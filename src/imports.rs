@@ -155,13 +155,14 @@ async fn typecheck_and_merge_stdlib_module(
     parent_env: &Rc<TypeEnv>,
     env: &mut TypeEnv,
     source_path: Option<&str>,
-) -> Result<InferState, ()> {
+) -> Result<InferState, Vec<String>> {
     // Parse the module source. Stdlib modules are embedded source strings, not user files,
     // so we always use plain parse() without file stamping. File stamping is only for
     // user-supplied files processed via read_source() in the CLI pipeline.
-    let _ = source_path; // reserved for future use
+    let path = source_path.unwrap_or("<stdlib>");
     let mut program = {
-        let parsed = parser::parse(source).map_err(|_| ())?;
+        let parsed = parser::parse(source)
+            .map_err(|e| vec![format!("parse error in {path}: {e}")])?;
         parsed.program.clone()
     };
 
@@ -182,15 +183,15 @@ async fn typecheck_and_merge_stdlib_module(
     // not filesystem paths. The cap_std::Dir is required by expand_surface_program's signature
     // but is never accessed during prelude expansion (no_fs=true in typecheck pipeline).
     #[allow(clippy::disallowed_methods)]
-    let expand_base_dir =
-        cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority()).map_err(|_| ())?;
+    let expand_base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
+        .map_err(|e| vec![format!("cannot open cwd for {path} expansion: {e}")])?;
     crate::expand::expand_surface_program(
         &mut program,
         true, // no_fs: true — prelude expansion never accesses filesystem
         &expand_base_dir,
     )
     .await
-    .map_err(|_| ())?;
+    .map_err(|e| vec![format!("macro expansion error in {path}: {e}")])?;
 
     // Desugar $_ implicit lambdas on SurfaceProgram (after expansion, before resolve).
     // Correct pipeline order: parse → expand → desugar → resolve → typecheck.
@@ -221,11 +222,11 @@ async fn typecheck_and_merge_stdlib_module(
     // Stdlib modules are user code loaded by loader.llt — they receive no special treatment.
     // Type errors in stdlib are bugs that must be surfaced immediately, not silently discarded.
     if !type_errors.is_empty() {
-        let path = source_path.unwrap_or("<stdlib>");
-        for err in &type_errors {
-            eprintln!("{}", crate::format_type_error(err, source, path));
-        }
-        return Err(());
+        let messages: Vec<String> = type_errors
+            .iter()
+            .map(|e| crate::format_type_error(e, source, path))
+            .collect();
+        return Err(messages);
     }
 
     // Merge the generalized schemes from the final env into the output env.
@@ -494,9 +495,14 @@ fn build_prelude_env_inner() -> Rc<TypeEnv> {
         &mut env,
         Some("prelude.llt"),
     )) {
-        Err(_) => {
-            // Parse/expand error: return builtins-only environment (with capability bindings)
-            return builtins_env;
+        Err(errors) => {
+            // Prelude type errors are bugs — panic immediately so the root cause is visible.
+            // Silent fallback to builtins_env would produce confusing downstream "undefined
+            // variable" errors that mask the actual prelude type error.
+            panic!(
+                "prelude.llt has type errors — fix the prelude before running:\n\n{}",
+                errors.join("\n\n")
+            );
         }
         Ok(prelude_state) => {
             // Cache the prelude's class and instance environments globally.
@@ -763,12 +769,17 @@ async fn build_stdlib_module_type_env_inner(module_path: &str) -> Option<Rc<Type
     // a bare [include %libdir "X.llt"] call.
     let prelude_env = build_prelude_env();
     let mut module_env = TypeEnv::new();
-    let _ = typecheck_and_merge_stdlib_module(
+    if let Err(errors) = typecheck_and_merge_stdlib_module(
         &content,
         &prelude_env,
         &mut module_env,
         Some(module_path),
-    ).await;
+    ).await {
+        for err in &errors {
+            eprintln!("stdlib module {module_path} has type errors:\n{err}");
+        }
+        return None;
+    }
 
     Some(Rc::new(module_env))
 }
@@ -1474,7 +1485,13 @@ async fn resolve_includes(
         // Open nested dir through cap_dir (narrow from existing cap)
         let nested_cap_dir = match cap_dir.open_dir(relative_parent) {
             Ok(d) => d,
-            Err(_) => continue, // Skip if parent dir can't be opened
+            Err(e) => {
+                eprintln!(
+                    "type-checker include: cannot open parent dir {} for nested includes: {e}",
+                    relative_parent.display()
+                );
+                continue;
+            }
         };
 
         let (nested_env, nested_bindings) = Box::pin(resolve_includes(

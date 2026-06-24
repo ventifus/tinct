@@ -2257,7 +2257,10 @@ pub fn core_type_env(env: &mut TypeEnv) {
             inner_schemes: None,
         },
     );
-    // builtin-reverse: Dict -> Dict
+    // builtin-reverse: {} -> {}
+    // Takes a materialized integer-keyed Dict and returns elements in reverse insertion order.
+    // Callers must materialize any lazy Seq first via builtin-collect before calling this.
+    // Reversing a lazy Seq is not a trivial operation and requires explicit materialization.
     env.insert(
         "builtin-reverse".to_string(),
         Type::Function {

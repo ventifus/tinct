@@ -167,12 +167,12 @@ fn test_invalid_corpus() {
                         .map(|e| format!("{}", e))
                         .collect::<Vec<_>>()
                         .join("\n");
-                    if !all_errors.contains(expected_substr.as_str()) {
+                    if all_errors.trim() != expected_substr.as_str() {
                         failed.push((
                             relative_path.to_path_buf(),
                             format!(
-                                "Error message mismatch\n--- expected substring ---\n{}\n--- actual recovered errors ---\n{}",
-                                expected_substr, all_errors
+                                "Error message mismatch\n--- expected ---\n{}\n--- actual recovered errors ---\n{}",
+                                expected_substr, all_errors.trim()
                             ),
                         ));
                     }
@@ -181,12 +181,12 @@ fn test_invalid_corpus() {
             Err(e) => {
                 // Fatal parse error (lexer failure, unclosed brackets, etc.)
                 let error_msg = format!("{}", e);
-                if !error_msg.contains(expected_substr.as_str()) {
+                if error_msg.trim() != expected_substr.as_str() {
                     failed.push((
                         relative_path.to_path_buf(),
                         format!(
-                            "Error message mismatch\n--- expected substring ---\n{}\n--- actual fatal error ---\n{}",
-                            expected_substr, error_msg
+                            "Error message mismatch\n--- expected ---\n{}\n--- actual fatal error ---\n{}",
+                            expected_substr, error_msg.trim()
                         ),
                     ));
                 }
@@ -561,64 +561,79 @@ fn test_typecheck_error_corpus_eval() {
         return;
     }
 
-    let mut failed = Vec::new();
+    // Spawn with a large stack: prelude type-checking on first call requires significant
+    // stack depth (same rationale as test_eval_corpus using 256MB).
+    let result = std::thread::Builder::new()
+        .stack_size(256 * 1024 * 1024) // 256MB
+        .spawn(move || {
+            // Pre-populate the prelude cache inside the large-stack thread so subsequent
+            // calls to typecheck_source() don't need to rebuild it.
+            let _ = tinct::build_prelude_env();
 
-    for test_file in &test_files {
-        let content = fs::read_to_string(test_file)
-            .unwrap_or_else(|e| panic!("Failed to read {}: {}", test_file.display(), e));
+            let mut failed = Vec::new();
 
-        let relative_path = test_file
-            .strip_prefix(env!("CARGO_MANIFEST_DIR"))
-            .unwrap_or(test_file);
+            for test_file in &test_files {
+                let content = fs::read_to_string(test_file)
+                    .unwrap_or_else(|e| panic!("Failed to read {}: {}", test_file.display(), e));
 
-        let test = match split_test_file(&content) {
-            Ok(t) => t,
-            Err(e) => {
-                failed.push((
-                    relative_path.to_path_buf(),
-                    format!("test file format error: {}", e),
-                ));
-                continue;
-            }
-        };
+                let relative_path = test_file
+                    .strip_prefix(env!("CARGO_MANIFEST_DIR"))
+                    .unwrap_or(test_file);
 
-        let expected_substr = match &test.expectations.out {
-            Some(e) => e,
-            None => {
-                failed.push((
-                    relative_path.to_path_buf(),
-                    "type error corpus test file missing expected error substring after === out"
-                        .to_string(),
-                ));
-                continue;
-            }
-        };
+                let test = match split_test_file(&content) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        failed.push((
+                            relative_path.to_path_buf(),
+                            format!("test file format error: {}", e),
+                        ));
+                        continue;
+                    }
+                };
 
-        // Type check should fail for all files in tests/corpus/eval/type_errors/
-        match typecheck_source(&test.input) {
-            Ok(()) => {
-                failed.push((
-                    relative_path.to_path_buf(),
-                    "Expected typecheck to fail, but it succeeded".to_string(),
-                ));
-            }
-            Err(error_msg) => {
-                if !error_msg.contains(expected_substr.as_str()) {
-                    failed.push((
-                        relative_path.to_path_buf(),
-                        format!(
-                            "Error message mismatch\n--- expected substring ---\n{}\n--- actual errors ---\n{}",
-                            expected_substr, error_msg
-                        ),
-                    ));
+                let expected_substr = match &test.expectations.out {
+                    Some(e) => e,
+                    None => {
+                        failed.push((
+                            relative_path.to_path_buf(),
+                            "type error corpus test file missing expected error substring after === out"
+                                .to_string(),
+                        ));
+                        continue;
+                    }
+                };
+
+                // Type check should fail for all files in tests/corpus/eval/type_errors/
+                match typecheck_source(&test.input) {
+                    Ok(()) => {
+                        failed.push((
+                            relative_path.to_path_buf(),
+                            "Expected typecheck to fail, but it succeeded".to_string(),
+                        ));
+                    }
+                    Err(error_msg) => {
+                        if error_msg.trim() != expected_substr.as_str() {
+                            failed.push((
+                                relative_path.to_path_buf(),
+                                format!(
+                                    "Error message mismatch\n--- expected ---\n{}\n--- actual errors ---\n{}",
+                                    expected_substr, error_msg.trim()
+                                ),
+                            ));
+                        }
+                    }
                 }
             }
-        }
-    }
 
-    if !failed.is_empty() {
-        eprintln!("\n{} type error test(s) failed:", failed.len());
-        for (path, error) in &failed {
+            failed
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+
+    if !result.is_empty() {
+        eprintln!("\n{} type error test(s) failed:", result.len());
+        for (path, error) in &result {
             eprintln!("  - {}: {}", path.display(), error);
         }
         panic!("Type error corpus tests failed");
@@ -740,13 +755,13 @@ fn test_typecheck_warnings_corpus() {
                         ));
                     }
                     Err(type_errors) => {
-                        if !type_errors.contains(expected_warn.as_str()) {
+                        if type_errors.trim() != expected_warn.as_str() {
                             failed.push((
                                 relative_path.to_path_buf(),
                                 format!(
-                                    "typecheck warning mismatch\n--- expected substring ---\n{}\n--- actual warnings ---\n{}",
+                                    "typecheck warning mismatch\n--- expected ---\n{}\n--- actual warnings ---\n{}",
                                     expected_warn,
-                                    type_errors
+                                    type_errors.trim()
                                 ),
                             ));
                         }
@@ -833,13 +848,13 @@ fn test_typecheck_error_corpus() {
                 ));
             }
             Err(error_msg) => {
-                // Check if the error message contains the expected substring
-                if !error_msg.contains(expected_substr.as_str()) {
+                // Check if the error message matches exactly (trimmed)
+                if error_msg.trim() != expected_substr.as_str() {
                     failed.push((
                         relative_path.to_path_buf(),
                         format!(
-                            "Error message mismatch\n--- expected substring ---\n{}\n--- actual errors ---\n{}",
-                            expected_substr, error_msg
+                            "Error message mismatch\n--- expected ---\n{}\n--- actual errors ---\n{}",
+                            expected_substr, error_msg.trim()
                         ),
                     ));
                 }

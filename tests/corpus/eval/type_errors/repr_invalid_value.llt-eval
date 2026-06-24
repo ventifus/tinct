@@ -1,4 +1,4 @@
 # repr: with invalid value should cause type error
 [@[type: Int  repr: "u128"] 42]
 === out
-invalid repr
+[TypeError] invalid repr: "u128" — must be one of: u8, i8, u16, i16, u32, i32, u64, i64

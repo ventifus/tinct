@@ -3,4 +3,4 @@
   SELECT *
   FROM users
 === out
-unterminated triple-quoted string
+1:1: unterminated triple-quoted string

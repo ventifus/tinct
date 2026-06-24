@@ -13,4 +13,7 @@
   result: 42
 ]
 === out
-non-exhaustive match: missing coverage for [Shape.Square _]
+[TypeError] non-exhaustive match: missing coverage for [Shape.Square _]
+inferred type is Unknown — consider adding a type annotation
+inferred type is Unknown — consider adding a type annotation
+inferred type is Unknown — consider adding a type annotation

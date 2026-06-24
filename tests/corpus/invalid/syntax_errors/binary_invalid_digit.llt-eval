@@ -1,4 +1,4 @@
 # Binary literal with invalid digit (2 is not binary)
 [0b2]
 === out
-invalid digit `2` in binary literal
+1:2: invalid digit `2` in binary literal

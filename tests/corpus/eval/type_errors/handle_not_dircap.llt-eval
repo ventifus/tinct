@@ -1,7 +1,5 @@
 # Type error: passing Int where DirCap is expected
 # narrow expects DirCap as first argument, but 42 (Int) is passed.
-# TODO: original expected "cannot unify DirCap with" — investigate exact
-# error message after prelude/class changes. Using broad match for now.
 [call $narrow 42 "subdir"]
 === out
-ia
+[UnificationFailure] cannot unify DirCap with 42

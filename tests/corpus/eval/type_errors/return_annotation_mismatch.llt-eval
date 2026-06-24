@@ -3,4 +3,4 @@
 # but the @String annotation declares it should return String. Type error.
 [[fn@String [let x@Int] x] 1]
 === out
-cannot unify
+[UnificationFailure] cannot unify String with Int

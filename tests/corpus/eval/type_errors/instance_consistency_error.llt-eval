@@ -18,4 +18,4 @@
 
 %.result
 === out
-consistency violation
+[ConsistencyViolation] consistency violation

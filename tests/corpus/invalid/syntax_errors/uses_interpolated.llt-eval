@@ -3,4 +3,4 @@
 --- uses: [i"core"]
 []
 === out
-interpolated strings not allowed in uses: list
+2:12: interpolated strings not allowed in uses: list — use plain quoted strings like "core"

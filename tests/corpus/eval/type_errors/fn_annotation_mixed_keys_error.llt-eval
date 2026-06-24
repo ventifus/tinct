@@ -2,4 +2,4 @@
 # [return: Int 42] has a named key "return:" (fn metadata key) and a positional entry 42
 [@[return: Int 42] [x: 1]]
 === out
-inferred type is Unknown
+inferred type is Unknown — consider adding a type annotation

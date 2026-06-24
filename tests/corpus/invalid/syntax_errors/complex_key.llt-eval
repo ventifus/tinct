@@ -3,4 +3,4 @@
 # valid computed-key syntax — see missing_closing_bracket.llt-eval for canonical test.)
 [a: 1
 === out
-unclosed bracket
+3:1: unclosed bracket

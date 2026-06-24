@@ -2,4 +2,4 @@
 --- uses: ["""core"""]
 [x: 1]
 === out
-triple-quoted strings not allowed in uses: list
+1:12: triple-quoted strings not allowed in uses: list — use plain quoted strings like "core"

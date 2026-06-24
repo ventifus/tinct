@@ -3,4 +3,4 @@
 # String is not a subtype of Int — type error.
 [fn@Int [let x@String] x]
 === out
-cannot unify
+[UnificationFailure] cannot unify Int with String

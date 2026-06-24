@@ -3,4 +3,4 @@
 --- uses: [core]
 []
 === out
-bare identifiers not allowed in uses: list
+2:12: bare identifiers not allowed in uses: list — use quoted strings like "core"

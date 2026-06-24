@@ -75,14 +75,27 @@ fn inject_single_constructor(
     type_vars: &[String],
 ) {
     let constructor_ty = if fields.fields.is_empty() {
-        // Unit constructor: no fields → the constructor is a value, not a function.
-        // Type: NominalVariant { tag, fields: {} }
-        Type::NominalVariant {
-            tag: tag.to_string(),
-            fields: Row {
-                fields: std::collections::BTreeMap::new(),
-                tail: crate::type_def::RowTail::Empty,
-            },
+        if !type_vars.is_empty() {
+            // Parameterized unit constructor (e.g. Seq.Nil where Seq has type param [a]):
+            // the constructor has type ∀type_vars. App(TyCon(TypeName), type_var_1, ...).
+            // An empty Seq is still a Seq[a] for any element type a.
+            // Extract the ADT name from the qualified tag "TypeName.CtorName".
+            let adt_name = tag.split('.').next().unwrap_or(tag).to_string();
+            let mut result: Type = Type::TyCon(adt_name);
+            for tv in type_vars {
+                result = Type::App(Box::new(result), Box::new(Type::TypeVar(tv.clone(), 0)));
+            }
+            result
+        } else {
+            // Non-parameterized unit constructor (e.g. Color.Red in Color: [type Red Green Blue]):
+            // the constructor is a value with type NominalVariant { tag, fields: {} }.
+            Type::NominalVariant {
+                tag: tag.to_string(),
+                fields: Row {
+                    fields: std::collections::BTreeMap::new(),
+                    tail: crate::type_def::RowTail::Empty,
+                },
+            }
         }
     } else {
         // Field constructor: has fields → the constructor is a function.
