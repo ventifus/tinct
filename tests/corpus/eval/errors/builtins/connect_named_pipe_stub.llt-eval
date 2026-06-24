@@ -1,0 +1,11 @@
+# Test: NamedPipe returns "not supported" error
+# no_fs
+[connect %cwd NamedPipe "/tmp/test.pipe"]
+
+=== error
+[E002] undefined variable: builtin-connect (defined at stdlib/prelude.llt:2711:60-2711:75) (called at 2:1-2:42)
+  --> stdlib/prelude.llt:2711:60-2711:75
+   |
+  2711 | connect@[doc: "Open a TCP/UDP connection under a NetCap"]: builtin-connect
+       |                                                            ^^^^^^^^^^^^^^^
+  in [connect ...] at 2:1-2:42

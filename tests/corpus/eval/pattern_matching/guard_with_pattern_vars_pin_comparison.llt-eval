@@ -1,0 +1,10 @@
+# Test that when the pin name is already in scope, it does comparison, not binding
+[
+  expected: 10
+  result: [match 10
+    expected@[is: [> expected 5]]:   "matched"
+    _:                                "no match"]
+]
+
+=== out
+Dict({"expected": Int(10), "result": String("matched")})

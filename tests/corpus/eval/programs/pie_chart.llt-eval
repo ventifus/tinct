@@ -1,0 +1,63 @@
+[
+  slices: [
+    0: [label: "Alpha"  pct: 40  color: "#e74c3c"]
+    1: [label: "Beta"   pct: 35  color: "#3498db"]
+    2: [label: "Gamma"  pct: 25  color: "#2ecc71"]
+  ]
+
+  # SVG arc endpoints (r=90, center=100,100), precomputed from known angles:
+  # 0° = (190,100)   144° ≈ (27,153)   270° = (100,10)
+  pts: [0: [x: 190  y: 100]  1: [x: 27  y: 153]  2: [x: 100  y: 10]]
+
+  svg-path: [fn [let p1x p1y p2x p2y fill]
+    [str "<path d=\"M 100,100 L " [str p1x] "," [str p1y]
+         " A 90,90 0 0,1 " [str p2x] "," [str p2y]
+         " Z\" fill=\"" fill "\" stroke=\"white\" stroke-width=\"1\"/>"]]
+
+  # Sector detection via integer cross products with boundary ray directions.
+  # Rays (clockwise from 3-o'clock in screen coords where y increases down):
+  #   0°   → direction (1,0):   cross = dy
+  #   144° → direction (-4,3):  cross = -4*dy + -3*dx  (≈143° boundary)
+  #   270° → direction (0,-1):  cross = dx
+  # Sector A (0°–144°):   c0≥0 ∧ c1≤0
+  # Sector B (144°–270°): c1>0 ∧ c2<0
+  # Sector C (270°–360°): else
+
+  cell: [fn [let col row]
+    [
+      dx:  [- col 9]
+      dy:  [- row 9]
+      r2:  [+ [* dx dx] [* dy dy]]
+      c0:  dy
+      c1:  [+ [* -4 dy] [* -3 dx]]
+      c2:  dx
+    ]
+    [if [> r2 82] " "
+      [if [and [>= c0 0] [<= c1 0]]
+        [if [< r2 41] "█" "▓"]   # Sector A: dense inner, dark outer
+        [if [and [> c1 0] [< c2 0]]
+          [if [< r2 41] "▒" "░"]  # Sector B: medium inner, light outer
+          [if [< r2 41] "+" "."]  # Sector C: plus inner, dot outer
+        ]]]]
+
+  row-str: [fn [let row]
+    [join "" [collect [map [fn [let col] [cell col row]] [range 0 20]]]]]
+]
+---
+[
+  p: %.pts
+  s: %.slices
+
+  svg: [str
+    "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"200\" height=\"200\">\n"
+    [%.svg-path p.0.x p.0.y p.1.x p.1.y s.0.color] "\n"
+    [%.svg-path p.1.x p.1.y p.2.x p.2.y s.1.color] "\n"
+    [%.svg-path p.2.x p.2.y p.0.x p.0.y s.2.color] "\n"
+    "</svg>"]
+
+  grid: [join "\n" [collect [map %.row-str [range 0 20]]]]
+
+  output: [str svg "\n\n" grid]
+]
+=== out
+Dict({"p": Dict({0: Dict({"x": Int(190), "y": Int(100)}), 1: Dict({"x": Int(27), "y": Int(153)}), 2: Dict({"x": Int(100), "y": Int(10)})}), "s": Dict({0: Dict({"label": String("Alpha"), "pct": Int(40), "color": String("#e74c3c")}), 1: Dict({"label": String("Beta"), "pct": Int(35), "color": String("#3498db")}), 2: Dict({"label": String("Gamma"), "pct": Int(25), "color": String("#2ecc71")})}), "svg": String("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"200\" height=\"200\">\n<path d=\"M 100,100 L 190,100 A 90,90 0 0,1 27,153 Z\" fill=\"#e74c3c\" stroke=\"white\" stroke-width=\"1\"/>\n<path d=\"M 100,100 L 27,153 A 90,90 0 0,1 100,10 Z\" fill=\"#3498db\" stroke=\"white\" stroke-width=\"1\"/>\n<path d=\"M 100,100 L 100,10 A 90,90 0 0,1 190,100 Z\" fill=\"#2ecc71\" stroke=\"white\" stroke-width=\"1\"/>\n</svg>"), "grid": String("        ░..         \n     ░░░░.....      \n    ░░░░░......     \n   ░░░░▒▒+++....    \n  ░░░░▒▒▒++++....   \n ░░░░▒▒▒▒+++++....  \n ░░░▒▒▒▒▒++++++...  \n ░░▒▒▒▒▒▒+++++++..  \n░░░▒▒▒▒▒▒+++++++... \n░░░▒▒▒▒▒▒███████▓▓▓ \n░░░▒▒▒▒▒████████▓▓▓ \n ░░▒▒▒▒█████████▓▓  \n ░░░▒██████████▓▓▓  \n ░░░▓█████████▓▓▓▓  \n  ░▓▓▓███████▓▓▓▓   \n   ▓▓▓▓█████▓▓▓▓    \n    ▓▓▓▓▓▓▓▓▓▓▓     \n     ▓▓▓▓▓▓▓▓▓      \n        ▓▓▓         \n                    "), "output": String("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"200\" height=\"200\">\n<path d=\"M 100,100 L 190,100 A 90,90 0 0,1 27,153 Z\" fill=\"#e74c3c\" stroke=\"white\" stroke-width=\"1\"/>\n<path d=\"M 100,100 L 27,153 A 90,90 0 0,1 100,10 Z\" fill=\"#3498db\" stroke=\"white\" stroke-width=\"1\"/>\n<path d=\"M 100,100 L 100,10 A 90,90 0 0,1 190,100 Z\" fill=\"#2ecc71\" stroke=\"white\" stroke-width=\"1\"/>\n</svg>\n\n        ░..         \n     ░░░░.....      \n    ░░░░░......     \n   ░░░░▒▒+++....    \n  ░░░░▒▒▒++++....   \n ░░░░▒▒▒▒+++++....  \n ░░░▒▒▒▒▒++++++...  \n ░░▒▒▒▒▒▒+++++++..  \n░░░▒▒▒▒▒▒+++++++... \n░░░▒▒▒▒▒▒███████▓▓▓ \n░░░▒▒▒▒▒████████▓▓▓ \n ░░▒▒▒▒█████████▓▓  \n ░░░▒██████████▓▓▓  \n ░░░▓█████████▓▓▓▓  \n  ░▓▓▓███████▓▓▓▓   \n   ▓▓▓▓█████▓▓▓▓    \n    ▓▓▓▓▓▓▓▓▓▓▓     \n     ▓▓▓▓▓▓▓▓▓      \n        ▓▓▓         \n                    ")})

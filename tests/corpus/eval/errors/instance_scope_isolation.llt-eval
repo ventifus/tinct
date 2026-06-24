@@ -1,0 +1,12 @@
+# Instance registered inside function body is not visible outside
+[
+  make-addable: [fn []
+    [instance Addable
+      [let a@String b@String c]: [+: [fn [let x y] [str x y]]]]
+    "done"]
+
+  _: [make-addable]
+  result: [+ "a" "b"]
+]
+=== error
+no match for types

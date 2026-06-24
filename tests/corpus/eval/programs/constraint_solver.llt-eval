@@ -1,0 +1,23 @@
+[
+  nums: [collect [range 1 10]]
+]
+---
+[
+  # Find all (a, b, c) with 1≤a<b<c≤9 and a+b+c=15 using nested reduce
+  text: [reduce [fn [let out a]
+    [reduce [fn [let out b]
+      [reduce [fn [let out c]
+        [if [and [> c b] [= [+ a [+ b c]] 15]]
+          [str out [str a] "+" [str b] "+" [str c] "=15\n"]
+          out]]
+      out [each %.nums]]]
+    out [filter [fn [let b] [> b a]] [each %.nums]]]]
+  "" [each %.nums]]
+
+  solutions: [split "\n" [trim text]]
+
+  check-count: [if [= [length solutions] 8] true [raise "expected 8 solutions"]]
+  check-first: [if [= [get 0 solutions] "1+5+9=15"] true [raise "wrong first triple"]]
+
+  result: [begin check-count check-first [join "\n" solutions]]
+]

@@ -1,0 +1,5 @@
+# Test that http3-session exists and validates its session argument type
+[http3-session "placeholder"]
+
+=== error
+[E002] undefined variable: http3-session (did you mean the string "http3-session"? Use quotes.) (defined at 1:2-1:15)

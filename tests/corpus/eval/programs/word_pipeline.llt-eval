@@ -1,0 +1,7 @@
+[
+  sentence: "the quick brown fox jumps over the lazy dog"
+  upper:    [fn [let s] [str-map-chars str-to-upper-char s]]
+]
+---
+[words: [split " " %.sentence]]
+words | [filter [fn [let w] [>= [str-length w] 4]]] | [map [%.upper _]] | collect | sort | [join " | "]

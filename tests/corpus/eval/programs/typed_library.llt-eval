@@ -1,0 +1,13 @@
+[
+  format-record: [fn@String [let r@[name: String  score: Int]]
+    [str r.name ": " [str r.score]]]
+  students: [
+    0: [name: "Alice"  score: 92  grade: "A"]
+    1: [name: "Bob"    score: 78  grade: "B"]
+    2: [name: "Carol"  score: 85  grade: "B+"]
+  ]
+]
+---
+[join "\n" [collect [map %.format-record [each %.students]]]]
+=== out
+String("Alice: 92\nBob: 78\nCarol: 85")

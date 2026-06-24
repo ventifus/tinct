@@ -1,0 +1,9 @@
+# Computed key with value that uses pipe operator
+# The pipe should bind to the value, not interfere with key promotion
+
+[
+  [[str "count"]]: [5 | [* _ 2]]
+]
+
+=== out
+Dict({"count": Int(10)})

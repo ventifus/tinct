@@ -1,0 +1,12 @@
+# Basic ordering dispatch via Comparable multi-method instances
+[
+  a: [< 1 2]
+  b: [< 2 1]
+  c: [> 2 1]
+  d: [<= 1 1]
+  e: [>= 2 1]
+  f: [< "a" "b"]
+  g: [< 1.0 2.0]
+]
+=== out
+Dict({"a": Bool(true), "b": Bool(false), "c": Bool(true), "d": Bool(true), "e": Bool(true), "f": Bool(true), "g": Bool(true)})

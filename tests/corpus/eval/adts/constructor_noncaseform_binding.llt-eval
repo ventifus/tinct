@@ -1,0 +1,11 @@
+# Does [Shape.Circle payload]: payload.r bind payload in the non-case arm form?
+# Under T-1154, bare lowercase names in pattern position are Pin patterns.
+# If the name is not in scope, the T-1154 comment says it acts as a wildcard,
+# meaning payload would NOT be bound and payload.r would fail.
+[
+  Shape: [type [Circle r: Int]]
+  sh:    [Shape.Circle r: 5]
+  area:  [match sh
+    [Shape.Circle payload]: [* payload.r payload.r]
+    _:                      0]
+]

@@ -1,0 +1,23 @@
+[
+  Light: [type Red Yellow Green]
+]
+---
+[
+  next:  [fn [let l]
+    [match l
+      Light.Red:    %.Light.Green
+      Light.Green:  %.Light.Yellow
+      Light.Yellow: %.Light.Red
+      _:            %.Light.Red]]
+  s1:    [next %.Light.Red]
+  s2:    [next s1]
+  s3:    [next s2]
+  s4:    [next s3]
+  final: [match s4
+    Light.Red:    "Red"
+    Light.Green:  "Green"
+    Light.Yellow: "Yellow"
+    _:            "Unknown"]
+]
+=== out
+Dict({"next": Function(l), "s1": Variant(Light.Green, Null), "s2": Variant(Light.Yellow, Null), "s3": Variant(Light.Red, Null), "s4": Variant(Light.Green, Null), "final": String("Green")})

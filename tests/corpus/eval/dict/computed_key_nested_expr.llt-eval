@@ -1,0 +1,9 @@
+# Computed key with nested expression
+# [[str "prefix-" [str 42]]]: "val" should produce key "prefix-42"
+
+[
+  [[str "prefix-" [str 42]]]: "value"
+]
+
+=== out
+Dict({"prefix-42": String("value")})

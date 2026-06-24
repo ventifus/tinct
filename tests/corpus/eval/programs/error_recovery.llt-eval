@@ -1,0 +1,21 @@
+[
+  ops: [
+    0: [fn [] [/ 100 5]]
+    1: [fn [] [/ 100 0]]
+    2: [fn [] [/ 100 4]]
+    3: [fn [] [/ 100 0]]
+    4: [fn [] [/ 100 2]]
+  ]
+]
+---
+[
+  results: [collect [map [fn [let f] [try f]] [each %.ops]]]
+]
+---
+[reduce [fn [let acc r]
+  [match r
+    [case [let v] [Result.Ok v]    [+ acc v]]
+    [Result.Error _]:              acc]]
+  0 %.results]
+=== out
+Float(95)

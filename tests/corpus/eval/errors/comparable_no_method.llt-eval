@@ -1,0 +1,4 @@
+# < raises a type error for incompatible types — dispatches to Int arm, builtin-lt rejects
+[< 1 "hello"]
+=== error
+<: expected Int, Float, String, or Bool (same or compatible types), got Int and String

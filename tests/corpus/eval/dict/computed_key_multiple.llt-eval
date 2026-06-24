@@ -1,0 +1,10 @@
+# Multiple computed keys in same dict
+
+[
+  [[+ 1 0]]: "one"
+  [[+ 1 1]]: "two"
+  [[+ 1 2]]: "three"
+]
+
+=== out
+Dict({1: String("one"), 2: String("two"), 3: String("three")})

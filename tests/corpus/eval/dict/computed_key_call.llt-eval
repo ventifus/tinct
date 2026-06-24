@@ -1,0 +1,9 @@
+# Computed dict key using a call expression
+# [[str "a" "b"]: 1] should evaluate the call to produce key "ab"
+
+[
+  result: [[str "a" "b"]: 1]
+]
+
+=== out
+Dict({"result": Dict({"ab": Int(1)})})

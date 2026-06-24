@@ -1,0 +1,13 @@
+# More-specific arm (concrete type) wins over less-specific (unconstrained).
+# When user-defined arms tie with prelude arms in specificity, the innermost
+# scope (user) wins — collect_method_arms returns innermost-first.
+[
+  [instance Addable
+    [let a@Int b@Int c]: [+: [fn [let x y] "int-add"]]
+    [let a b c]:          [+: [fn [let x y] "generic-add"]]]
+
+  r1: [+ 1 2]
+  r2: [+ 1.0 2.0]
+]
+=== out
+Dict({"r1": String("int-add"), "r2": Float(3.0)})

@@ -1,0 +1,11 @@
+# cap_net nc=*.local
+--- caps: [%nc: @NetCap]
+[connect %nc Tcp "github.com" 443]
+
+=== error
+[E002] undefined variable: builtin-connect (defined at stdlib/prelude.llt:2711:60-2711:75) (called at 2:1-2:35)
+  --> stdlib/prelude.llt:2711:60-2711:75
+   |
+  2711 | connect@[doc: "Open a TCP/UDP connection under a NetCap"]: builtin-connect
+       |                                                            ^^^^^^^^^^^^^^^
+  in [connect ...] at 2:1-2:35

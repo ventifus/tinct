@@ -1,0 +1,177 @@
+# Regression test for docgen panic (typecheck_annot.rs:2370).
+# Faithful reproduction of scripts/docgen.llt — emits all docs rather than writing to %docdir.
+
+[
+
+# ── File Discovery ────────────────────────────────────────────────────────
+
+scan-dir: [fn [let prefix@String acc]
+  [call [fn [let entries]
+    [reduce
+      [fn [let files entry@[type: String  name: String]]
+        [full: [if [= prefix ""] [str entry.name] [str prefix "/" entry.name]]]
+        [if [= entry.type "dir"]
+          [scan-dir full files]
+          [if [ends-with? ".llt" entry.name]
+            [cons full files]
+            files]]]
+      acc
+      entries]]
+    [collect [list-dir %libdir [if [= prefix ""] "." prefix]]]]]
+
+llt-files: [sort [scan-dir "" []]]
+
+# ── Annotation accessors ──────────────────────────────────────────────────
+
+# Safe string extraction: call f, return "" if it errors.
+try-str: [fn@String [let f@[Fn@String []]]
+  [try-or f ""]]
+
+# Get the display text of an Annotation Variant (or "" if null/absent).
+ann-text: [fn@String [let ann]
+  [try-str [fn [let] ann.text]]]
+
+# Get the doc: property from a PropertyDict Annotation (or "" if absent).
+ann-doc: [fn@String [let ann]
+  [try-str [fn [let] ann.doc]]]
+
+# Get the return: property from a PropertyDict Annotation (or "" if absent).
+ann-return-prop: [fn@String [let ann]
+  [try-str [fn [let] ann.return]]]
+
+# Determine the return type text from a return-ann Annotation Variant.
+return-type-text: [fn@String [let return-ann]
+  [tag: [try-str [fn [let] [tag-of return-ann]]]]
+  [if [= tag ""]
+    "Any"
+    [if [= tag "PropertyDict"]
+      [call [fn@String [let ret@String]
+        [if [= ret ""] [ann-text return-ann] ret]]
+       [ann-return-prop return-ann]]
+      [ann-text return-ann]]]]
+
+# ── Parameter signature ───────────────────────────────────────────────────
+
+param-sig: [fn@String [let p]
+  [name:     p.name]
+  [variadic: p.variadic]
+  [ann-t:    [ann-text p.annotation]]
+  [prefix:   [if variadic "..." ""]]
+  [if [= ann-t ""]
+    [str prefix name]
+    [str prefix name "@" ann-t]]]
+
+build-sig: [fn@String [let fn-expr]
+  [ret-text:   [return-type-text fn-expr.return-ann]]
+  [params:     fn-expr.params]
+  [param-part: [if [empty? params]
+    ""
+    [str " [let " [join " " [map param-sig params]] "]"]]]
+  [str "fn@" ret-text param-part]]
+
+# ── Doc string extraction ─────────────────────────────────────────────────
+
+fn-ann-doc: [fn@String [let fn-expr]
+  [ann-doc fn-expr.return-ann]]
+
+key-ann-doc: [fn@String [let key-expr]
+  [try-str [fn [let] [ann-doc key-expr.annotation]]]]
+
+# ── Entry parsing ─────────────────────────────────────────────────────────
+
+entry-name: [fn@String [let key-expr]
+  [tag: [try-str [fn [let] [tag-of key-expr]]]]
+  [if [= tag "Var"]
+    [try-str [fn [let] key-expr.name]]
+    [if [= tag "Annotated"]
+      [try-str [fn [let] key-expr.name]]
+      ""]]]
+
+parse-entry: [fn@Dict [let entry]
+  [key:   entry.key]
+  [value: entry.value]
+  [name:  [entry-name key]]
+  [if [= name ""]
+    []
+    [call [fn@Dict [let value-tag@String]
+      [if [= value-tag "Fn"]
+        [call [fn@Dict [let doc@String]
+          [if [= doc ""]
+            [call [fn@Dict [let key-tag@String]
+              [if [= key-tag "Annotated"]
+                [call [fn@Dict [let kdoc@String]
+                  [if [= kdoc ""]
+                    []
+                    [call [fn@Dict [let n d s] [name: n  doc: d  sig: s]]
+                     name kdoc [build-sig value]]]]
+                 [key-ann-doc key]]
+                []]]
+             [try-str [fn [let] [tag-of key]]]]
+            [call [fn@Dict [let n d s] [name: n  doc: d  sig: s]]
+             name doc [build-sig value]]]]
+         [fn-ann-doc value]]
+        []]]
+     [try-str [fn [let] [tag-of value]]]]]]
+
+extract-from-doc: [fn [let doc]
+  [exprs: [collect doc.expressions]]
+  [last-dict: [reduce
+    [fn [let acc expr]
+      [t: [try-str [fn [let] [tag-of expr]]]]
+      [if [= t "Dict"] expr acc]]
+    []
+    exprs]]
+  [if [null? last-dict]
+    []
+    [collect [filter
+      [fn@Bool [let e] [has? "name" e]]
+      [map parse-entry last-dict.entries]]]]]
+
+extract-from-program: [fn [let program]
+  [docs: program.documents]
+  [reduce
+    [fn [let acc doc]
+      [stage-tag: [try-str [fn [let] [tag-of doc.stage]]]]
+      [if [= stage-tag "Type"]
+        acc
+        [reduce [fn [let a e] [cons e a]] acc [extract-from-doc doc]]]]
+    []
+    docs]]
+
+# ── Markdown Rendering ────────────────────────────────────────────────────
+
+mod-name: [fn@String [let full-path@String]
+  [get 0 [split ".llt" full-path]]]
+
+render-entry: [fn@String [let e]
+  [str
+    "\n### `" e.name "`\n\n"
+    e.doc "\n\n"
+    "```tinct\n"
+    e.sig "\n"
+    "```\n"]]
+
+# ── Per-Module Content Generation ─────────────────────────────────────────
+
+# Load, parse, and return documentation for one stdlib file as a Markdown string.
+# Returns "" if the file has no documented bindings.
+# (Original write-module wrote to %docdir; here we return the content instead.)
+emit-module: [fn@String [let full-path@String]
+  [source:  [str [join "\n" [collect [lines [open %libdir full-path Readable]]]]]]
+  [program: [expand [load source name: full-path]]]
+  [docs:    [extract-from-program program]]
+  [name:    [mod-name full-path]]
+  [if [empty? docs]
+    ""
+    [str "# " name "\n"
+         [join "" [map render-entry docs]]
+         "\n"]]]
+
+]
+
+[emit [str
+  "# tinct stdlib Reference\n\n"
+  [join "\n" [filter [fn [let s] [not [= s ""]]] [map emit-module llt-files]]]
+  "\n"]]
+=== out
+Dict({})

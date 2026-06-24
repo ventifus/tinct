@@ -1,0 +1,16 @@
+# Test: Macro expansion error provenance
+#
+# This test verifies that errors during macro expansion include provenance showing
+# which macro was expanding and at which call site.
+
+# Test case: A macro that intentionally errors during expansion
+[macro will-error [let arg]
+  [/ 1 0]]  # Division by zero in transformer body
+
+# This produces an error with macro provenance context
+[will-error dummy]
+=== error
+[E080] macro 'will-error' expansion result failed to evaluate: /: division by zero (defined at 10:1-10:19)
+  in [/ ...] at 7:3-7:10
+  in macro:will-error at 10:1-10:19
+  in in expansion of `will-error` at 10:1-10:19

@@ -1,0 +1,16 @@
+# User-defined Addable instance for a custom type
+[
+  Vec2: [type [Vec2 x: Float y: Float]]
+
+  [instance Addable
+    [let a@Vec2 b@Vec2 c]: [+: [fn [let u v]
+      [Vec2.Vec2 x: [+ u.x v.x]  y: [+ u.y v.y]]]]]
+
+  v1: [Vec2.Vec2 x: 1.0  y: 2.0]
+  v2: [Vec2.Vec2 x: 3.0  y: 4.0]
+  result: [+ v1 v2]
+  rx: result.x
+  ry: result.y
+]
+=== out
+Dict({"Vec2": Dict({"Vec2": Function(x)}), "v1": Variant(Vec2.Vec2, Dict({"x": Float(1.0), "y": Float(2.0)})), "v2": Variant(Vec2.Vec2, Dict({"x": Float(3.0), "y": Float(4.0)})), "result": Variant(Vec2.Vec2, Dict({"x": Float(4.0), "y": Float(6.0)})), "rx": Float(4.0), "ry": Float(6.0)})

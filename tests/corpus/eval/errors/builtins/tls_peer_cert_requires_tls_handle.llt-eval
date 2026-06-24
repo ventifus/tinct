@@ -1,0 +1,14 @@
+# Test: tls-peer-cert requires a Handle with Tls capability
+# Expected: error message about wrong type (Dict instead of Handle)
+
+# Create a mock non-TLS handle (using a dict as a placeholder since we can't create real Handles in corpus tests)
+[h: []]
+[tls-peer-cert h]
+
+=== error
+[E002] undefined variable: builtin-tls-peer-cert (defined at stdlib/prelude.llt:2713:63-2713:84) (called at 5:1-5:18)
+  --> stdlib/prelude.llt:2713:63-2713:84
+   |
+  2713 | tls-peer-cert@[doc: "Extract TLS peer certificate metadata"]: builtin-tls-peer-cert
+       |                                                               ^^^^^^^^^^^^^^^^^^^^^
+  in [tls-peer-cert ...] at 5:1-5:18

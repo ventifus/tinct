@@ -1,0 +1,17 @@
+# User-defined Equatable instance for a custom type
+[
+  Point: [type [Point x: Int y: Int]]
+
+  [instance Equatable
+    [let a@Point]: [=: [fn [let p q]
+      [and [= p.x q.x] [= p.y q.y]]]]]
+
+  p1: [Point.Point x: 1 y: 2]
+  p2: [Point.Point x: 1 y: 2]
+  p3: [Point.Point x: 1 y: 3]
+
+  same: [= p1 p2]
+  diff: [= p1 p3]
+]
+=== out
+Dict({"Point": Dict({"Point": Function(x)}), "p1": Variant(Point.Point, Dict({"x": Int(1), "y": Int(2)})), "p2": Variant(Point.Point, Dict({"x": Int(1), "y": Int(2)})), "p3": Variant(Point.Point, Dict({"x": Int(1), "y": Int(3)})), "same": Bool(true), "diff": Bool(false)})

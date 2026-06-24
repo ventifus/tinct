@@ -1,0 +1,9 @@
+# Computed dict key using arithmetic expression
+# [[+ 1 2]: "three"] should evaluate the addition to produce key 3
+
+[
+  result: [[+ 1 2]: "three"]
+]
+
+=== out
+Dict({"result": Dict({3: String("three")})})

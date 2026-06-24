@@ -1,0 +1,6 @@
+# Test that the bound variable IS available in the body.
+# [case [let n] n body] binds scrutinee (10) to n; guard and body use n.
+[match 10
+    [case [let n] n [if [> n 5] [+ n 1] 0]]]
+=== out
+Int(11)

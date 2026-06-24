@@ -1,0 +1,20 @@
+[prelude: [include %libdir "prelude.llt"]]
+[
+  fn-names: ["map" "filter" "reduce" "sort" "group-by" "join" "split" "str" "get" "merge"]
+
+  format-entry: [fn [let fname]
+    [
+      fval: [get fname prelude]
+      ann:  [annotation-of fval]
+      ret:  [get-or "?" "return" ann]
+      doc:  [get-or "(no description)" "doc" ann]
+    ]
+    [str "### [" fname "] → " [str ret] "\n" [str doc]]]
+
+  entries: [collect [map format-entry [each fn-names]]]
+  count:   [length entries]
+  check:   [if [= count 10] true [raise "expected 10 entries"]]
+  page:    [begin check [join "\n\n" entries]]
+]
+=== out
+Dict({"fn-names": Dict({0: String("map"), 1: String("filter"), 2: String("reduce"), 3: String("sort"), 4: String("group-by"), 5: String("join"), 6: String("split"), 7: String("str"), 8: String("get"), 9: String("merge")}), "format-entry": Function(fname), "entries": Dict({0: String("### [map] → return\ndoc"), 1: String("### [filter] → return\ndoc"), 2: String("### [reduce] → return\ndoc"), 3: String("### [sort] → return\ndoc"), 4: String("### [group-by] → return\ndoc"), 5: String("### [join] → return\ndoc"), 6: String("### [split] → return\ndoc"), 7: String("### [str] → return\ndoc"), 8: String("### [get] → return\ndoc"), 9: String("### [merge] → return\ndoc")}), "count": Int(10), "check": Bool(true), "page": String("### [map] → return\ndoc\n\n### [filter] → return\ndoc\n\n### [reduce] → return\ndoc\n\n### [sort] → return\ndoc\n\n### [group-by] → return\ndoc\n\n### [join] → return\ndoc\n\n### [split] → return\ndoc\n\n### [str] → return\ndoc\n\n### [get] → return\ndoc\n\n### [merge] → return\ndoc")})

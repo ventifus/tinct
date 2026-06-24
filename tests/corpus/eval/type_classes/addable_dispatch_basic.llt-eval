@@ -1,0 +1,12 @@
+# Basic arithmetic dispatch via Addable multi-method instances
+[
+  a: [+ 1 2]
+  b: [+ 1 2.0]
+  c: [+ 2.0 1]
+  d: [+ 3.0 4.0]
+  e: [- 10 3]
+  f: [* 4 5]
+  g: [/ 7.0 2.0]
+]
+=== out
+Dict({"a": Int(3), "b": Float(3.0), "c": Float(3.0), "d": Float(7.0), "e": Int(7), "f": Int(20), "g": Float(3.5)})

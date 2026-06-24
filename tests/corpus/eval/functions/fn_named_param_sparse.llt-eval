@@ -1,0 +1,8 @@
+# $apply with sparse/non-sequential integer keys: sorted by key value
+[
+  f: [fn [let x y] [str x y]]
+  args: [3: "b" 1: "a"]
+  result: [apply f args]
+]
+=== out
+Dict({"f": Function(x, y), "args": Dict({3: String("b"), 1: String("a")}), "result": String("ab")})

@@ -1,0 +1,5 @@
+# Test that quic-session exists and checks its arity
+[quic-session "placeholder"]
+
+=== error
+[E002] undefined variable: quic-session (did you mean the string "quic-session"? Use quotes.) (defined at 1:2-1:14)

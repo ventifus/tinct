@@ -1,0 +1,4 @@
+# No Addable instance for String+String — should error
+[+ "hello" "world"]
+=== error
+no match for types

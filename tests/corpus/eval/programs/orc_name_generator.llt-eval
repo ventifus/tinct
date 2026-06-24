@@ -1,0 +1,20 @@
+[
+  first:  ["Gro" "Murg" "Thrak" "Krul" "Bolg" "Azg" "Drak" "Urk"]
+  middle: ["ash" "ak" "ul" "or" "ug" "ar" "om" "oth"]
+  last:   ["na" "tok" "rath" "ul" "ar" "on" "ek" "az"]
+
+  h: [fn [let n] [mod [+ [* n 6997] 1001] 8]]
+
+  pick: [fn [let seed offset pool]
+    [get [h [+ seed offset]] pool]]
+
+  name-of: [fn [let seed]
+    [str [pick seed 0 first] [pick seed 1 middle] [pick seed 7 last]]]
+
+  entry: [fn [let i]
+    [str [str [+ i 1]] ". " [name-of [* i 7]]]]
+]
+---
+[join "\n" [collect [map %.entry [range 0 8]]]]
+=== out
+String("1. Murgomar\n2. Bolgakaz\n3. Urkugrath\n4. Thrakothon\n5. Azgulna\n6. Groarul\n7. Krulashek\n8. Drakortok")

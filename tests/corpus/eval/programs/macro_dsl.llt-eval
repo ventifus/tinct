@@ -1,0 +1,12 @@
+[
+  safe-mod: [fn [let n d] [if [= d 0] [Error "modulo by zero"] [Ok [mod n d]]]]
+]
+---
+[match [do result
+  [x: [%.safe-mod 17 5]]
+  [y: [%.safe-mod x 3]]
+  [Ok [+ y 10]]]
+  [case [let v] [Result.Ok v]    v]
+  [case [let e] [Result.Error e] -1]]
+=== out
+Int(12)

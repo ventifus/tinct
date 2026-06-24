@@ -1,0 +1,10 @@
+# Error: trying to use `:` after a keyed entry (not an auto-indexed expression)
+# This should fail at parse time
+
+[
+  a: 1
+  : 2
+]
+
+=== out
+`:` without a key (expected key before `:`)

@@ -1,0 +1,6 @@
+# Guard pattern via case form — scrutinee (3) is outside the range [5, 15].
+# The else branch returns "out of range".
+[match 3
+    [case [let n] n [if [and [> n 5] [< n 15]] [str "in range: " [str n]] "out of range"]]]
+=== out
+String("out of range")

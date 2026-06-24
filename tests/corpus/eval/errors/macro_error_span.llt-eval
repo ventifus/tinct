@@ -1,0 +1,28 @@
+# Test: macro-error with AST node for precise error location
+#
+# This test verifies that macro-error correctly uses the span from the
+# provided AST node to report errors at the exact source location.
+
+# Define a macro that validates its argument and errors with span if invalid
+[macro expect-int [let arg]
+  [if [int? arg]
+    arg
+    [macro-error "expected an integer literal" arg]]]
+
+# Call the macro with an invalid argument (a string instead of int)
+# The error should point to the "hello" argument location
+[expect-int "hello"]
+=== error
+[E080] macro 'expect-int' expansion result failed to evaluate: macro expansion error: expected an integer literal (defined at 13:1-13:21)
+  in [builtin-macro-error ...] at stdlib/prelude.llt:3259:5-3259:47
+   |
+  3259 |     [builtin-macro-error message [first node]]]]
+       |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  in [builtin-if ...] at stdlib/prelude.llt:2461:71-2461:89
+   |
+  2461 | if@[doc: "Conditional (select branch by condition)"]: [fn [let c t e] [builtin-if c t e]]
+       |                                                                       ^^^^^^^^^^^^^^^^^^
+  in materialized at 13:1-13:21
+  in [if ...] at 7:3-9:53
+  in macro:expect-int at 13:1-13:21
+  in in expansion of `expect-int` at 13:1-13:21

@@ -1,0 +1,7 @@
+# >> works in multi-expression document body (B-394 regression test)
+[
+  x: 1
+]
+[>> [+ x 1] [+ x 2]]
+=== out
+Int(3)

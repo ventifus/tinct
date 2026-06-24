@@ -1,0 +1,13 @@
+[
+  defaults: [host: "localhost"  port: 5432  ssl: false  pool-size: 10]
+  env:      [port: 5433  ssl: true]
+  local:    [host: "db.dev"  pool-size: 5]
+]
+---
+[
+  config: [deep-merge [deep-merge %.defaults %.env] %.local]
+]
+---
+[str [if %.config.ssl "postgres+ssl" "postgres"] "://" %.config.host ":" [str %.config.port] "/app?pool=" [str %.config.pool-size]]
+=== out
+String("postgres+ssl://db.dev:5433/app?pool=5")

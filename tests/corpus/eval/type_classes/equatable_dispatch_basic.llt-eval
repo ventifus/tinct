@@ -1,0 +1,13 @@
+# Basic equality dispatch via Equatable multi-method instances
+[
+  a: [= 1 1]
+  b: [= 1 2]
+  c: [= "hello" "hello"]
+  d: [= "hello" "world"]
+  e: [= true true]
+  f: [= 1.0 1.0]
+  g: [= 1 "hello"]
+  h: [= 1 1.0]
+]
+=== out
+Dict({"a": Bool(true), "b": Bool(false), "c": Bool(true), "d": Bool(false), "e": Bool(true), "f": Bool(true), "g": Bool(false), "h": Bool(false)})

@@ -1,0 +1,11 @@
+# Test: send-datagram rejects non-DatagramHandle as first argument
+# no_fs
+[send-datagram 42 "hello"]
+
+=== error
+[E002] undefined variable: builtin-send-datagram (defined at stdlib/prelude.llt:2714:68-2714:89) (called at 2:1-2:27)
+  --> stdlib/prelude.llt:2714:68-2714:89
+   |
+  2714 | send-datagram@[doc: "Send a datagram packet (UDP/Unix datagram)"]: builtin-send-datagram
+       |                                                                    ^^^^^^^^^^^^^^^^^^^^^
+  in [send-datagram ...] at 2:1-2:27

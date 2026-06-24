@@ -1,0 +1,15 @@
+# Mix of literal key, call-expression computed key, and $varref computed key in same dict
+# [$var: val] uses the VALUE of $var as the key (computed key via variable reference)
+# [[call-expr]: val] uses the result of the call as the key (computed key via expression)
+# Note: keys are evaluated in parent scope (Key Isolation Invariant),
+# so the-key is defined in an intermediate dict before the main dict.
+
+[the-key: "world"]
+[
+  x: 1
+  [[str "y"]]: 2
+  [$the-key]: "hello"
+]
+
+=== out
+Dict({"x": Int(1), "y": Int(2), "world": String("hello")})

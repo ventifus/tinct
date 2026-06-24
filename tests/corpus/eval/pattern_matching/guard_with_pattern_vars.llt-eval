@@ -1,0 +1,6 @@
+# Guard pattern via case form — bind scrutinee to n, inline guard and body.
+# Uses [str ...] instead of i"..." to avoid tmpl macro dependency.
+[match 10
+    [case [let n] n [if [and [> n 5] [< n 15]] [str "in range: " [str n]] "out of range"]]]
+=== out
+String("in range: 10")
