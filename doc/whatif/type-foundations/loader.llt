@@ -52,16 +52,35 @@
 #   AST:     builtin-parse, builtin-expand, builtin-resolve, builtin-typecheck
 #   Type:    builtin-get-type-context, builtin-make-type-ctx, builtin-fork-type-ctx
 #   Meta:    builtin-module, builtin-eval
-#   Dict:    builtin-reduce, builtin-merge, builtin-get, builtin-str, builtin-str-bytes
+#   String:  builtin-str, builtin-str-bytes, builtin-str-hash, builtin-str-lt
+#   Dict:    builtin-reduce (Dict fold only — NOT Seq; Seq reduce is tinct),
+#            builtin-merge, builtin-get, builtin-keys, builtin-length, builtin-build-dict
+#   Variant: builtin-tag-of (reads Variant tag string — Variant internals, not Dict)
 #   Path:    builtin-path-dir (String → DirCap; extracts dir from a file path)
 #
-# Eliminated (reducible):
+# Eliminated (reducible — derivable in tinct from the irreducibles above):
 #   builtin-bytes-empty?  → [builtin-if [= [builtin-length x] 0] ...]
 #   builtin-map           → fused into builtin-reduce in uses-scope
 #   builtin-dict-get      → builtin-get
 #   builtin-dict-length   → eliminated by passing formatter separately
 #   builtin-walk-expand   → folded into builtin-expand
 #   builtin-expand-one    → eliminated with builtin-walk-expand
+#   builtin-variant       → eliminated; use qualified ADT constructors (Seq.Cons,
+#                           TypeNode.Int, etc.) — bypassed the type system
+#   builtin-seq           → [Seq.Cons head: x  tail: rest] (tinct constructor)
+#   builtin-head          → pattern match on [Seq.Cons p]: p.head (tinct)
+#   builtin-tail          → pattern match on [Seq.Cons p]: p.tail (tinct)
+#   builtin-reverse       → reverse in prelude.llt (tinct, TCO-safe)
+#   builtin-reduce (Seq)  → reduce in prelude.llt (tinct, TCO-safe)
+#   builtin-each-kv           → [map [fn [k] [key: k  value: [get k d]]] [keys d]]
+#   builtin-each              → [map [fn [k] [get k d]] [keys d]]  (values only)
+#   builtin-each-key          → [keys d]  (identity)
+#   builtin-append            → use builder API once implemented; avoid in tinct code
+#   +, -, *, /, =, <          → typeclass METHODS defined in prelude (not Rust builtins);
+#                               Rust provides builtin-int-add, builtin-float-add, etc.
+#   builtin-float             → builtin-int-to-float or builtin-parse-float in math
+#   builtin-to-int/to-float   → replaced by builtin-float-to-int / builtin-parse-int
+#   duration-seconds/minutes/hours/days → tinct arithmetic (* n constant)
 
 --- uses: ["core"]
 

@@ -1,126 +1,199 @@
-# generator/generate.llt — Generate Rust TypeScheme registrations from tinct type annotations.
+# generator/generate.llt — Generate Rust TypeScheme/TyConDef registrations.
 #
 # Usage: tinct run --cap-fs gendir=doc/whatif/type-foundations/generator:rwl generate.llt
 #
-# Walks each builtin_*.llt file in %gendir, type-checks the declarations,
-# and emits a corresponding builtin_*.rs file with Rust TypeScheme/TyConDef registrations.
-#
-# The tinct declaration IS the spec. The Rust output is derived from it.
-#
-# NOTE: This is the type-foundations generator. It reads typed declarations for
-# all builtin groups (core, dict, seq, math, io, async, meta, datetime, net)
-# and generates Rust TypeScheme/TyConDef registrations for the type-foundations target state.
+# Evaluates each builtin_*.llt file (valid tinct declarations), uses describe/ast-of
+# to extract type annotations, and emits Rust TypeScheme/TyConDef registrations.
 
 --- caps: [%gendir: @DirCap]
+
 [
-  # parse-comments: extract name → [Seq String] mapping from source text.
-  # Uses an immediately-invoked lambda to avoid intermediate dict args in if.
-  parse-comments: [fn [let source]
-    [lines: [collect [split "\n" source]]]
-    [state: [reduce
-      [fn [let state line]
-        [trimmed: [trim line]]
-        [if [starts-with? "#" trimmed]
-          [merge state [pending: [cons [trim [str-slice trimmed 1 [str-length trimmed]]] state.pending]]]
-          [[fn [let nm]
-            [if [and [str-contains? trimmed ":"] [and [> [str-length nm] 0] [not [starts-with? "[" nm]]]]
-              [merge state [pending: [] comments: [set state.comments nm state.pending]]]
-              [merge state [pending: []]]]]
-           [trim [get 0 [split ":" trimmed]]]]]]
-      [pending: []  comments: []]
-      lines]]
-    [get "comments" state]]
+  # ── Annotation node → Rust Type::* string ────────────────────────────────────
+  # ann is the annotation dict from ast-of: {kind: "simple"|"dict"|"annotated", ...}
+  # vars is a list of type variable names (to distinguish TyCon from TypeVar)
 
-  # format-comments: convert # comments to Rust // comments.
-  format-comments: [fn [let comment-lines indent]
-    [if [empty? comment-lines]
-      ""
-      [join "\n" [map [fn [let c] [str indent "// " c]] comment-lines]]]]
+  ann-to-rust: [fn [let ann vars]
+    [if [null? ann] "Type::Unknown"
+    [if [str? ann]
+        # Bare string value — check if it's a known type var or TyCon
+        [if [contains? ann vars]
+            [str ann ".clone()"]
+            [known-tycon ann]]
+    # Dict annotation
+    [match [get-or "kind" "" ann]
+        "simple":
+            [name: ann.value]
+            [if [contains? name vars] [str name ".clone()"] [known-tycon name]]
+        "dict":
+            [pos: [filter [fn [let e] [null? e.key]] ann.entries]]
+            [if [empty? pos]
+                # Named-only entries (metadata like doc: return:) — extract return:
+                [named-only-to-rust ann vars]
+                # First positional entry is the type constructor or keyword
+                [head: [annotation-value-str [get "value" [get 0 pos]]]]
+                [tail: [collect [drop 1 [each pos]]]]
+                [if [= head "union"]
+                    [str "Type::normalize_union(vec![" [join ", " [map [fn [let e] [ann-to-rust [get "value" e] vars]] tail]] "])"]
+                    [if [= head "Fn"]
+                        [fn-ann-to-rust ann vars]
+                        [app-chain-to-rust head tail vars]]]]
+        "annotated":
+            # Seq@Int style: name is the constructor, inner is the arg
+            [str "Type::App(Box::new(" [known-tycon ann.name] "), Box::new(" [ann-to-rust ann.inner vars] "))"]
+        _: [str "Type::Unknown /* " [get-or "kind" "?" ann] " */"]]]]
 
-  # typevar-decls: collect TypeVar names from a TypeNode.
-  typevar-decls: [fn [let node]
-    [collect [flat-map [fn [let child]
-      [match child
-        [TypeNode.TypeVar p]: [cons p.name []]
-        _: []]]
-      [TypeNode.children node]]]]
+  # Resolve a plain name to Rust Type
+  known-tycon: [fn [let name]
+    [match name
+        "Int":     "Type::Int"
+        "Float":   "Type::Float"
+        "Boolean": "Type::Bool"
+        "String":  "Type::Str"
+        "Bytes":   "Type::Bytes"
+        "Never":   "Type::Never"
+        "Any":     "Type::Top"
+        "Unknown": "Type::Unknown"
+        _:         [str "Type::TyCon(\"" name "\".into())"]]]
 
-  # typenode-to-rust: convert a TypeNode to a Rust Type::* expression string.
-  typenode-to-rust: [fn [let node vars]
-    [match node
-      [TypeNode.Int]:     "Type::TyCon(\"Int\".into())"
-      [TypeNode.Float]:   "Type::TyCon(\"Float\".into())"
-      [TypeNode.Never]:   "Type::Never"
-      [TypeNode.Unknown]: "Type::Unknown"
-      [TypeNode.TypeConstructor p]:
-        [str "Type::TyCon(\"" p.name "\".into())"]
-      [TypeNode.TypeVar p]:
-        [str p.name ".clone()"]
-      [TypeNode.App p]:
-        [str "Type::App(Box::new(" [typenode-to-rust p.ctor vars]
-             "), Box::new(" [typenode-to-rust p.arg vars] "))"]
-      [TypeNode.Arrow p]:
-        [params: [join ", " [map [fn [let param]
-          [str "(None, " [typenode-to-rust param vars] ")"]]
-          [collect p.params]]]]
-        [str "Type::Function { params: vec![" params "], "
-             "ret: Box::new(" [typenode-to-rust p.result vars] "), "
-             "variadic: false, required_count: " [str [length [collect p.params]]] " }"]
-      _: [str "Type::Any  /* " [builtin-tag-of node] " */"]]]
+  # Extract return type from named-only annotation dict (doc: + return:)
+  named-only-to-rust: [fn [let ann vars]
+    [ret-entry: [find-first-or [fn [let e] [= e.key "return"]] [] ann.entries]]
+    [if [null? ret-entry] "Type::Unknown"
+        [ann-to-rust [get "value" ret-entry] vars]]]
 
-  # fn-to-scheme: convert a function TypeNode to a Rust TypeScheme registration.
-  fn-to-scheme: [fn [let name node comments]
-    [tvars: [typevar-decls node]]
-    [decls: [join "\n    " [map [fn [let v]
-      [str "let " v " = fresh_type_var(\"" v "\");"]]
-      tvars]]]
-    [vars-vec: [str "vec![" [join ", " [map [fn [let v]
-      [str "extract_var_id(&" v ")"]] tvars]] "]"]]
-    [comment-block: [format-comments comments ""]]
-    [prefix: [if [= comment-block ""] "" [str comment-block "\n"]]]
+  # Build left-associative App chain: head [arg1 arg2 ...] → App(App(head,arg1),arg2)
+  app-chain-to-rust: [fn [let head tail vars]
+    [reduce
+      [fn [let acc entry]
+        [str "Type::App(Box::new(" acc "), Box::new(" [ann-to-rust [get "value" entry] vars] "))"]]
+      [known-tycon head]
+      tail]]
+
+  # Convert a [Fn@RetType [...]] annotation to a Rust function type
+  fn-ann-to-rust: [fn [let ann vars]
+    # Look for return type in "annotated" entries or positional
+    "Type::Top  /* Fn type — needs refinement */"]
+
+  # ── Extract type variables from an annotation ─────────────────────────────────
+  # Type vars are lowercase names that are NOT dict field names.
+  # Heuristic: collect all lowercase bare names appearing in positional annotation positions.
+
+  collect-vars-from-ann: [fn [let ann]
+    [if [null? ann] []
+    [if [str? ann]
+        [if [and [> [str-length ann] 0]
+                 [= ann [lower ann]]
+                 [not [contains? ann ["int" "float" "string" "boolean" "bytes" "never" "any" "unknown"]]]]
+            [cons ann []]
+            []]
+    [match [get-or "kind" "" ann]
+        "simple":
+            [name: ann.value]
+            [if [and [> [str-length name] 0] [= name [lower name]]
+                     [not [contains? name ["int" "float" "string" "boolean" "bytes" "never" "any" "unknown"]]]]
+                [cons name []] []]
+        "dict":
+            [pos: [filter [fn [let e] [null? e.key]] ann.entries]]
+            [flat-map collect-vars-from-ann [map [fn [let e] [get "value" e]] pos]]
+        "annotated":
+            [collect-vars-from-ann ann.inner]
+        _: []]]]]
+
+  collect-vars: [fn [let ret-ann params]
+    [from-ret: [collect-vars-from-ann ret-ann]]
+    [from-params: [flat-map [fn [let p]
+        [if [has? "annotation" p] [collect-vars-from-ann p.annotation] []]]
+        params]]
+    [uniq [collect [concat [each from-ret] [each from-params]]]]]
+
+  # ── Process one function declaration ─────────────────────────────────────────
+
+  process-fn: [fn [let name fn-val]
+    [d: [describe fn-val]]
+    [ret-ann: [get-or "return-ann" [] d]]
+    [params: [get-or "params" [] d]]
+    [vars: [collect-vars ret-ann params]]
+    [vars-vec: [str "vec![" [join ", " [map [fn [let v] [str "\"" v "\".to_string()"]] vars]] "]"]]
+    [ret-rust: [ann-to-rust ret-ann vars]]
+    [params-rust: [join ", " [map [fn [let p]
+        [type-rust: [if [has? "annotation" p]
+            [ann-to-rust p.annotation vars]
+            "Type::Top"]]
+        [str "(None, " type-rust ")"]]
+        params]]]
+    [n: [length params]]
     [str
-      prefix
-      [if [= decls ""] "" [str "    " decls "\n"]]
-      "env.insert_scheme(\n"
-      "    \"" name "\",\n"
-      "    TypeScheme {\n"
-      "        vars: " vars-vec ",\n"
-      "        ty: " [typenode-to-rust node tvars] ",\n"
-      "    }\n"
-      ");"]]
+     "env.insert_scheme(\n"
+     "    \"" name "\",\n"
+     "    TypeScheme {\n"
+     "        type_vars: " vars-vec ",\n"
+     "        constraints: vec![],\n"
+     "        body: Type::Function {\n"
+     "            params: vec![" params-rust "],\n"
+     "            ret: Box::new(" ret-rust "),\n"
+     "            variadic: false,\n"
+     "            required_count: " [str n] ",\n"
+     "        },\n"
+     "        label_vars: vec![], kind_vars: vec![], doc: None, inner_schemes: None,\n"
+     "    }\n"
+     ");"]]
 
-  tycon-to-rust: [fn [let name comments]
-    [comment-block: [format-comments comments ""]]
-    [prefix: [if [= comment-block ""] "" [str comment-block "\n"]]]
-    [str prefix "env.insert_tycon_def(\"" name "\", TyConDef::rust_backed(\"" name "\"));"]]
+  # ── Process one type declaration ─────────────────────────────────────────────
+  # [type Name] → arity 0; [type [let a] Name] → arity 1; etc.
+  # The type value itself doesn't tell us arity at runtime; we read the sig.
 
-  # NOTE: process-decls requires a "source → TypeEnv dict" API that doesn't yet exist.
-  # eval-types is a type-stage evaluator (for TypeNode expressions), not a runtime type-checker.
-  # Runtime function declarations (fn@ReturnType) don't evaluate correctly in the type-stage env.
-  # The .llt input files capture the design intent; this generator is a design artifact.
-  # TODO: implement builtin-typecheck-source: String → Dict when the API exists.
-  process-decls: [fn [let source path]
-    [str "// TODO: process " path]]
+  type-arity-from-sig: [fn [let sig]
+    # sig is a string like "fn [...]" or for types, the TypeNode dict repr
+    # For [type Name]: sig would not be a fn sig — use annotation-of instead
+    0]  # default; parameterized types detected via annotation
+
+  process-type: [fn [let name ty-val]
+    # Detect arity by checking if the TypeConstructor dict has params
+    # annotation-of gives us the annotation metadata
+    [ann: [annotation-of ty-val]]
+    [arity: [if [and [not [null? ann]] [has? "params" ann]]
+        [length ann.params]
+        0]]
+    [str "env.insert_tycon_def(\""
+         name
+         "\", TyConDef::opaque(\""
+         name
+         "\", "
+         [str arity]
+         "));"]]
+
+  process-entry: [fn [let name val]
+    [t: [type-of val]]
+    [if [fn? val]
+        [process-fn name val]
+        # Type declarations evaluate to TypeConstructor dicts or similar
+        # Skip pure Dict/Null values (those are likely not declarations)
+        [if [or [= t "Null"] [starts-with? "Builtin" t]]
+            [str "// " name ": skipped (" t ")"]
+            [process-type name val]]]]
+
+  process-dict: [fn [let decls]
+    [join "\n\n" [map
+        [fn [let e] [process-entry e.key e.value]]
+        [entries decls]]]]
 ]
 
-# Main: the document IS the force-reduce — a call expression, not a dict.
-# This ensures the reduce is forced as the document's return value,
-# executing all file writes before the output formatter runs.
+# Main: walk builtin_*.llt files, evaluate each, generate .rs output
 [reduce
   [fn [let count f]
     [path: f.name]
     [in-handle: [open %gendir path Readable]]
     [source: [str [builtin-read-all in-handle]]]
-    # Note: input handle GC'd after source is read (builtin-close not in scope here)
     [base: [get 0 [split "." path]]]
     [out-path: [str base ".rs"]]
-    [content: [process-decls source path]]
-    # builtin-write: (DirCap, String path, String content) -> Int
-    # Simpler than handle API — no open/flush/close needed
-    [written: [builtin-write %gendir out-path [str content "\n"]]]
-    [if [>= written 0]
-        [+ count 1]
-        count]]
+    [decls: [eval source]]
+    [content: [str
+      "// AUTO-GENERATED by generate.llt — DO NOT EDIT\n"
+      "// Source: " path "\n\n"
+      [process-dict decls]
+      "\n"]]
+    [written: [builtin-write %gendir out-path content]]
+    [if [>= written 0] [+ count 1] count]]
   0
   [filter
     [fn [let f] [and [= f.type "file"]

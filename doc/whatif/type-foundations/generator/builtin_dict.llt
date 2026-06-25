@@ -1,24 +1,19 @@
-# Dict primitives — keys, merge, get, set, build.
+# builtin_dict.llt — Irreducible Dict primitives.
 
 [
-  builtin-keys:     [fn@[List Graphemes] [let d@Dict] ...]
-  builtin-length:   [fn@Int              [let d@Dict] ...]
-  builtin-merge:    [fn@Dict             [let a@Dict b@Dict] ...]
-  builtin-append:   [fn@Dict             [let x@Any d@Dict] ...]
-  builtin-get:      [fn@Any              [let k@Graphemes d@Dict] ...]
-  builtin-each:     [fn@[Seq Any]        [let d@Dict] ...]
-  builtin-each-key: [fn@[Seq Graphemes]  [let d@Dict] ...]
-  builtin-each-kv:  [fn@[Seq Any]        [let d@Dict] ...]
-  builtin-build-dict:[fn@Dict            [let xs@[Seq Any]] ...]
-  builtin-tag-of:   [fn@Graphemes        [let v@Any] ...]
+  builtin-keys:      [fn@[Seq k]              [let d@[Map k v]] ...]
+  builtin-length:    [fn@Int                  [let d@[Map k v]] ...]
+  builtin-merge:     [fn@[Map k v]            [let a@[Map k v] b@[Map k v]] ...]
+  builtin-get:       [fn@v                    [let k@k d@[Map k v]] ...]
+  builtin-build-dict:[fn@[Map k v]            [let xs@[Seq [key: k  value: v]]] ...]
 
-  # Mutable builder — opaque Rust type, Any as conservative bound
-  builtin-make-builder:     [fn@Any [let] ...]
-  builtin-builder-set:      [fn@Any [let k@Graphemes v@Any b@Any] ...]
-  builtin-builder-delete:   [fn@Any [let k@Graphemes b@Any] ...]
-  builtin-builder-has?:     [fn@Boolean [let k@Graphemes b@Any] ...]
-  builtin-builder-get:      [fn@Any [let k@Graphemes b@Any] ...]
-  builtin-builder-get-or:   [fn@Any [let k@Graphemes default@Any b@Any] ...]
-  builtin-builder-finish:   [fn@Dict [let b@Any] ...]
-  builtin-builder-snapshot: [fn@Dict [let b@Any] ...]
+  # Mutable builder API
+  builtin-make-builder:     [fn@BuilderHandle [let] ...]
+  builtin-builder-set:      [fn@BuilderHandle [let k@k v@v b@BuilderHandle] ...]
+  builtin-builder-delete:   [fn@BuilderHandle [let k@k b@BuilderHandle] ...]
+  builtin-builder-has?:     [fn@Boolean       [let k@k b@BuilderHandle] ...]
+  builtin-builder-get:      [fn@v             [let k@k b@BuilderHandle] ...]
+  builtin-builder-get-or:   [fn@v             [let k@k default@v b@BuilderHandle] ...]
+  builtin-builder-finish:   [fn@[Map k v]     [let b@BuilderHandle] ...]
+  builtin-builder-snapshot: [fn@[Map k v]     [let b@BuilderHandle] ...]
 ]

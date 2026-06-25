@@ -1,46 +1,47 @@
 # Datetime builtins — timestamps, durations, timezones.
-# String-redesign: format strings and timezone names are Graphemes.
+# Opaque type Timezone declared in builtin_core.llt.
+# Durations are Int nanoseconds throughout.
+#
+# Reducible duration constructors NOT listed here (implemented in prelude.llt as tinct):
+#   duration-seconds: [fn [let n] [* n 1000000000]]
+#   duration-minutes: [fn [let n] [* n 60000000000]]
+#   duration-hours:   [fn [let n] [* n 3600000000000]]
+#   duration-days:    [fn [let n] [* n 86400000000000]]
 
 [
   # Clock
-  builtin-now:         [fn@Int [let cap@ClockCap] ...]
+  builtin-now:         [fn@Int      [let cap@ClockCap] ...]
   builtin-fixed-clock: [fn@ClockCap [let ts@Int] ...]
 
-  # Timestamp parsing/formatting (paths/strings → Graphemes)
-  builtin-parse-timestamp:  [fn@Int      [let s@Graphemes] ...]
-  builtin-format-timestamp: [fn@Graphemes [let ts@Int fmt@Graphemes] ...]
+  # Timestamp parsing/formatting
+  builtin-parse-timestamp:  [fn@Int    [let s@String] ...]
+  builtin-format-timestamp: [fn@String [let ts@Int fmt@String] ...]
 
-  # Timestamp conversion
+  # Unix conversion
   builtin-timestamp-unix: [fn@Int [let ts@Int] ...]
   builtin-unix-timestamp: [fn@Int [let unix@Int] ...]
 
-  # Timestamp arithmetic
+  # Arithmetic
   builtin-timestamp-add:  [fn@Int [let ts@Int dur@Int] ...]
   builtin-timestamp-diff: [fn@Int [let a@Int b@Int] ...]
 
-  # Timestamp components
-  builtin-timestamp-year:   [fn@Int [let ts@Int] ...]
-  builtin-timestamp-month:  [fn@Int [let ts@Int] ...]
-  builtin-timestamp-day:    [fn@Int [let ts@Int] ...]
-  builtin-timestamp-hour:   [fn@Int [let ts@Int] ...]
-  builtin-timestamp-minute: [fn@Int [let ts@Int] ...]
-  builtin-timestamp-second: [fn@Int [let ts@Int] ...]
+  # Component extraction
+  builtin-timestamp-year:   [fn@Int  [let ts@Int] ...]
+  builtin-timestamp-month:  [fn@Int  [let ts@Int] ...]
+  builtin-timestamp-day:    [fn@Int  [let ts@Int] ...]
+  builtin-timestamp-hour:   [fn@Int  [let ts@Int] ...]
+  builtin-timestamp-minute: [fn@Int  [let ts@Int] ...]
+  builtin-timestamp-second: [fn@Int  [let ts@Int] ...]
   builtin-timestamp-parts:  [fn@Dict [let ts@Int] ...]
 
-  # Duration constructors (return nanosecond Int)
-  builtin-duration-nanos:   [fn@Int [let n@Int] ...]
-  builtin-duration-seconds: [fn@Int [let n@Int] ...]
-  builtin-duration-minutes: [fn@Int [let n@Int] ...]
-  builtin-duration-hours:   [fn@Int [let n@Int] ...]
-  builtin-duration-days:    [fn@Int [let n@Int] ...]
+  # Duration primitives (just nanoseconds; others are tinct arithmetic)
+  builtin-duration-nanos:        [fn@Int [let n@Int] ...]
+  builtin-duration-seconds-from: [fn@Int [let dur@Int] ...]  # truncating /
+  builtin-duration-nanos-from:   [fn@Int [let dur@Int] ...]  # identity
 
-  # Duration conversion
-  builtin-duration-seconds-from: [fn@Int [let dur@Int] ...]
-  builtin-duration-nanos-from:   [fn@Int [let dur@Int] ...]
-
-  # Timezone operations (timezone name is Graphemes)
-  builtin-load-tz:          [fn@Any      [let cap@DirCap name@Graphemes] ...]
-  builtin-timestamp-in-tz:  [fn@Dict     [let ts@Int tz@Any] ...]
-  builtin-local-to-timestamp:[fn@Int     [let y@Int mo@Int d@Int h@Int mi@Int s@Int tz@Any] ...]
-  builtin-local-tz-name:    [fn@Graphemes [let cap@DirCap] ...]
+  # Timezone
+  builtin-load-tz:           [fn@Timezone [let cap@DirCap name@String] ...]
+  builtin-timestamp-in-tz:   [fn@Dict     [let ts@Int tz@Timezone] ...]
+  builtin-local-to-timestamp:[fn@Int      [let y@Int mo@Int d@Int h@Int mi@Int s@Int tz@Timezone] ...]
+  builtin-local-tz-name:     [fn@String   [let cap@DirCap] ...]
 ]

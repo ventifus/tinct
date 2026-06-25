@@ -1,33 +1,34 @@
 # Network builtins — TCP/TLS/QUIC/HTTP connections.
-# String-redesign: host/path/method args are Graphemes.
+# Opaque types QuicSession, Http2Session, Http3Session, Uri, Urn declared in builtin_core.llt.
 
 [
   # TCP/UDP connections
-  builtin-connect: [fn@Handle [let cap@NetCap transport@Any ...addr] ...]
+  builtin-connect: [fn@Handle [let cap@NetCap protocol@String ...addr@String] ...]
 
   # TLS
-  builtin-tls-layer:    [fn@Handle [let h@Handle hostname@Graphemes] ...]
+  builtin-tls-layer:    [fn@Handle [let h@Handle hostname@String] ...]
   builtin-tls-peer-cert:[fn@Dict   [let h@Handle] ...]
 
   # Datagram
-  builtin-send-datagram: [fn@Int  [let h@Handle data@Bytes host@Graphemes port@Int] ...]
+  builtin-send-datagram: [fn@Int  [let h@Handle data@Bytes host@String port@Int] ...]
   builtin-recv-datagram: [fn@Dict [let h@Handle maxsize@Int] ...]
 
   # QUIC
-  builtin-quic-session:       [fn@Any [let cap@NetCap host@Graphemes port@Int ...opts] ...]
-  builtin-quic-open-stream:   [fn@Handle [let session@Any] ...]
-  builtin-quic-open-datagram: [fn@Handle [let session@Any] ...]
+  builtin-quic-session:       [fn@QuicSession [let cap@NetCap host@String port@Int ...opts@Any] ...]
+  builtin-quic-open-stream:   [fn@Handle      [let session@QuicSession] ...]
+  builtin-quic-open-datagram: [fn@Handle      [let session@QuicSession] ...]
 
   # HTTP sessions
-  builtin-http2-session: [fn@Any [let h@Handle ...opts] ...]
-  builtin-http3-session: [fn@Any [let h@Handle ...opts] ...]
-  builtin-http-request:  [fn@Dict [let session@Any method@Graphemes path@Graphemes headers@Dict body@Bytes] ...]
+  builtin-http2-session: [fn@Http2Session [let h@Handle ...opts@Any] ...]
+  builtin-http3-session: [fn@Http3Session [let h@Handle ...opts@Any] ...]
+  builtin-http-request:  [fn@Dict         [let session@[union Http2Session Http3Session]
+                                               method@String path@String
+                                               headers@Dict body@Bytes] ...]
 
   # ICMP
-  builtin-icmp-ping: [fn@Dict [let cap@NetCap host@Graphemes] ...]
+  builtin-icmp-ping: [fn@Dict [let cap@NetCap host@String] ...]
 
-  # URI parsing
-  builtin-uri: [fn@Any [let s@Graphemes] ...]
-  builtin-url: [fn@Any [let s@Graphemes] ...]
-  builtin-urn: [fn@Any [let s@Graphemes] ...]
+  # URI parsing (Uri is generic; Urn is a URN specialization)
+  builtin-uri: [fn@Uri [let s@String] ...]
+  builtin-urn: [fn@Urn [let s@String] ...]
 ]

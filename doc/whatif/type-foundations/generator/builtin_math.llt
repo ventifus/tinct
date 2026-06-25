@@ -1,28 +1,31 @@
-# Arithmetic operators and math functions.
-# Arithmetic operators use typeclass constraints (Addable etc.) —
-# these survive the string-redesign unchanged.
+# builtin_math.llt — Arithmetic and math primitives.
+# Note: +, -, *, /, =, < are typeclass methods in prelude (not Rust builtins).
+# These are the Rust primitives backing the Addable/Sortable/etc. instances.
 
 [
-  # Arithmetic operators (typeclass-constrained)
-  +: [fn@c [let a@a b@b  constraint: [a: Addable  b: Addable  c: Addable]] ...]
-  -: [fn@c [let a@a b@b  constraint: [a: Subtractable  b: Subtractable  c: Subtractable]] ...]
-  *: [fn@c [let a@a b@b  constraint: [a: Multipliable  b: Multipliable  c: Multipliable]] ...]
-  /: [fn@c [let a@a b@b  constraint: [a: Divisible    b: Divisible    c: Divisible]] ...]
+  # Integer arithmetic
+  builtin-int-add: [fn@Int [let a@Int b@Int] ...]
+  builtin-int-sub: [fn@Int [let a@Int b@Int] ...]
+  builtin-int-mul: [fn@Int [let a@Int b@Int] ...]
+  builtin-int-div: [fn@Int [let a@Int b@Int] ...]
 
-  # Comparison operators
-  =: [fn@Boolean [let a@a b@b  constraint: [a: Equatable  b: Equatable]] ...]
-  <: [fn@Boolean [let a@a b@b  constraint: [a: Sortable   b: Sortable]] ...]
+  # Float arithmetic
+  builtin-float-add: [fn@Float [let a@Float b@Float] ...]
+  builtin-float-sub: [fn@Float [let a@Float b@Float] ...]
+  builtin-float-mul: [fn@Float [let a@Float b@Float] ...]
+  builtin-float-div: [fn@Float [let a@Float b@Float] ...]
 
-  # Bitwise operations (Int only)
+  # Bitwise (Int only)
   builtin-band: [fn@Int [let a@Int b@Int] ...]
   builtin-bor:  [fn@Int [let a@Int b@Int] ...]
   builtin-bxor: [fn@Int [let a@Int b@Int] ...]
   builtin-shl:  [fn@Int [let a@Int b@Int] ...]
   builtin-shr:  [fn@Int [let a@Int b@Int] ...]
 
-  # Floating-point math
+  # Float math
   builtin-floor:   [fn@Int   [let x@Float] ...]
   builtin-round:   [fn@Int   [let x@Float] ...]
+  builtin-ceil:    [fn@Int   [let x@Float] ...]
   builtin-pow:     [fn@Float [let base@Float exp@Float] ...]
   builtin-sqrt:    [fn@Float [let x@Float] ...]
   builtin-log:     [fn@Float [let x@Float] ...]
@@ -36,12 +39,15 @@
   builtin-acos:    [fn@Float [let x@Float] ...]
   builtin-atan:    [fn@Float [let x@Float] ...]
   builtin-atan2:   [fn@Float [let y@Float x@Float] ...]
+
+  # Float predicates
   builtin-nan?:    [fn@Boolean [let x@Float] ...]
   builtin-inf?:    [fn@Boolean [let x@Float] ...]
   builtin-finite?: [fn@Boolean [let x@Float] ...]
 
   # Type conversions
-  builtin-float:    [fn@Float [let x@Any] ...]
-  builtin-to-int:   [fn@Int   [let x@Any] ...]
-  builtin-to-float: [fn@Float [let x@Any] ...]
+  builtin-int-to-float: [fn@Float [let x@Int] ...]
+  builtin-float-to-int: [fn@Int   [let x@Float] ...]
+  builtin-parse-int:    [fn@Int   [let s@String] ...]
+  builtin-parse-float:  [fn@Float [let s@String] ...]
 ]

@@ -1,51 +1,45 @@
-# Meta/reflection builtins — introspection, variants, annotations, evaluation.
-# String-redesign: gensym/llt-repr return Graphemes (not String).
+# Meta/reflection builtins — introspection, annotations, evaluation, AST.
+# (builtin-raise, builtin-try, builtin-if live in builtin_core.llt)
 
 [
-  # Evaluation
-  builtin-raise:       [fn@Never    [let msg@Graphemes] ...]
-  builtin-try:         [fn@Any      [let f@[Fn@a []]] ...]
-  builtin-if:          [fn@a        [let cond@Boolean then@a else@a] ...]
-  builtin-apply:       [fn@Any      [let f@Any args@Dict] ...]
-  materialize:         [fn@a        [let v@a] ...]
+  # Materialization
+  materialize: [fn@a [let v@a] ...]
 
   # Type introspection
-  builtin-type-of:     [fn@Graphemes [let v@Any] ...]
+  builtin-type-of:        [fn@String  [let v@Any] ...]
   builtin-is-contractive: [fn@Boolean [let node@TypeNode] ...]
+  builtin-tag-of:         [fn@String  [let v@Any] ...]
 
-  # Variant construction and inspection
-  builtin-variant:      [fn@Any    [let tag@Graphemes payload@[default: Absent.Absent]] ...]
-  builtin-tag-of:       [fn@Graphemes [let v@Any] ...]
+  # Function application
+  builtin-apply: [fn@Any [let f@Fn args@Dict] ...]
 
   # Annotations
   builtin-annotation-of:  [fn@Dict [let v@Any] ...]
   builtin-make-annotated: [fn@Any  [let v@Any ann@Dict] ...]
 
-  # Gensym — returns Graphemes (text identifier)
-  builtin-gensym: [fn@Graphemes [let prefix@Graphemes] ...]
+  # Symbol generation (macro hygiene)
+  builtin-gensym: [fn@String [let prefix@String] ...]
 
-  # Representation
-  builtin-llt-repr: [fn@Graphemes [let v@Any] ...]
+  # Representation / debugging
+  builtin-llt-repr: [fn@String [let v@Any] ...]
+  builtin-blake3:   [fn@String [let data@Bytes] ...]
 
-  # Include cache
-  builtin-include-cache-get: [fn@Any [let key@Graphemes] ...]
-  builtin-include-cache-put: [fn@Boolean [let key@Graphemes v@Any] ...]
+  # Include cache (module system)
+  builtin-include-cache-get: [fn@Any     [let key@String] ...]
+  builtin-include-cache-put: [fn@Boolean [let key@String v@Any] ...]
 
   # Module system
-  builtin-module: [fn@Dict [let name@Graphemes] ...]
+  builtin-module: [fn@Dict [let name@String] ...]
 
   # Source loading and evaluation
-  builtin-load:       [fn@Program   [let source@Graphemes name@[default: Absent.Absent]] ...]
-  builtin-expand:     [fn@Program   [let prog@Program] ...]
-  builtin-eval-types: [fn@Dict      [let prog@Program] ...]
+  builtin-load:       [fn@Program [let source@String name@[default: Absent.Absent]] ...]
+  builtin-expand:     [fn@Program [let prog@Program] ...]
+  builtin-eval-types: [fn@Dict    [let prog@Program] ...]
 
-  # Content-addressed hashing
-  builtin-blake3: [fn@Graphemes [let data@Bytes] ...]
-
-  # AST
+  # AST reflection
   builtin-ast-of: [fn@Dict [let v@Any] ...]
 
-  # Extended numeric types
-  builtin-decimal: [fn@Any [let v@Any] ...]
-  builtin-big-int: [fn@Any [let v@Any] ...]
+  # Extended numeric types (opaque Rust types)
+  builtin-decimal: [fn@Decimal [let v@[union Int Float String]] ...]
+  builtin-big-int: [fn@BigInt  [let v@[union Int String]] ...]
 ]
