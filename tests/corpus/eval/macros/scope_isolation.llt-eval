@@ -10,7 +10,7 @@
    fn: [type: "var"  name: "*"]
    args: [0: arg  1: [type: "literal"  kind: "int"  value: 2]]
    named-args: []
-   implied: true]
+   implied: True]
 ]
 
 [macro add-one [let arg]
@@ -18,7 +18,7 @@
    fn: [type: "var"  name: "+"]
    args: [0: arg  1: [type: "literal"  kind: "int"  value: 1]]
    named-args: []
-   implied: true]
+   implied: True]
 ]
 
 [add-one [double 3]]

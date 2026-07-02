@@ -9,7 +9,7 @@
 # infer_child_role_from_type_expr detects `[Seq T]` → ChildRole::Seq → role string "Seq".
 # The `field-annotations` key is present in annotation-of(Union) and maps to a dict
 # whose "types" key holds {role: "Seq"}.
-[NodeType: [type [Union@[as-type: [fn [let u] u]  guarding: false]
+[NodeType: [type [Union@[as-type: [fn [let u] u]  guarding: False]
   items@Child: [Seq NodeType]]]]
 [ann: [annotation-of NodeType.Union]]
 [has-field-anns: [has? "field-annotations" ann]]

@@ -1,8 +1,8 @@
 # Mutual recursion via letrec dict scope.
 # even? and odd? reference each other within the same dict; the intermediate
 # dict expression makes them available in the second expression's scope.
-[even?: [fn [let n] [if [= n 0] true [odd? [- n 1]]]]
- odd?: [fn [let n] [if [= n 0] false [even? [- n 1]]]]]
+[even?: [fn [let n] [if [= n 0] True [odd? [- n 1]]]]
+ odd?: [fn [let n] [if [= n 0] False [even? [- n 1]]]]]
 [r: [even? 4]]
 === out
 Dict({"r": Bool(true)})

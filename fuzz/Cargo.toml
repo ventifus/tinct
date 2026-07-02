@@ -12,7 +12,7 @@ libfuzzer-sys = "0.4"
 
 [dependencies.tinct]
 path = ".."
-features = []  # no cli/repl/lsp — keep the fuzz binary small
+features = []  # no cli/lsp — keep the fuzz binary small
 
 # Each fuzz target is a separate binary. cargo-fuzz builds them with nightly
 # and libFuzzer instrumentation. Run with: cargo fuzz run <name>

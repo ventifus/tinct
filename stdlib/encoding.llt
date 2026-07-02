@@ -31,7 +31,7 @@
 
 hex-encode-impl: [fn@String [let s@String i@Int len@Int acc@String]
     [if [< i len]
-        [hex-encode-step s i len acc [char-code [str-slice i [+ i 1] s]]]
+        [hex-encode-step s i len acc [char-code [str-slice s i [+ i 1]]]]
         acc]]
 
 hex-encode-step: [fn@String [let s@String i@Int len@Int acc@String code@Int]
@@ -57,8 +57,8 @@ hex-digit: [fn@String [let n@Int]
 hex-decode-impl: [fn@String [let s@String i@Int len@Int acc@String]
     [if [< i len]
         [hex-decode-step s i len acc
-            [hex-digit-to-int [str-slice i [+ i 1] s]]
-            [hex-digit-to-int [str-slice [+ i 1] [+ i 2] s]]]
+            [hex-digit-to-int [str-slice s i [+ i 1]]]
+            [hex-digit-to-int [str-slice s [+ i 1] [+ i 2]]]]
         acc]]
 
 hex-decode-step: [fn@String [let s@String i@Int len@Int acc@String hi@Int lo@Int]
@@ -98,17 +98,17 @@ base64-encode-group: [fn@String [let s@String i@Int len@Int acc@String]
     [if [< [+ i 2] len]
         # Full 3-byte group
         [base64-encode-3bytes s i len acc
-            [char-code [str-slice i [+ i 1] s]]
-            [char-code [str-slice [+ i 1] [+ i 2] s]]
-            [char-code [str-slice [+ i 2] [+ i 3] s]]]
+            [char-code [str-slice s i [+ i 1]]]
+            [char-code [str-slice s [+ i 1] [+ i 2]]]
+            [char-code [str-slice s [+ i 2] [+ i 3]]]]
         [if [= [+ i 1] len]
             # Single byte remaining
             [base64-encode-1byte s i len acc
-                [char-code [str-slice i [+ i 1] s]]]
+                [char-code [str-slice s i [+ i 1]]]]
             # Two bytes remaining
             [base64-encode-2bytes s i len acc
-                [char-code [str-slice i [+ i 1] s]]
-                [char-code [str-slice [+ i 1] [+ i 2] s]]]]]]
+                [char-code [str-slice s i [+ i 1]]]
+                [char-code [str-slice s [+ i 1] [+ i 2]]]]]]]
 
 base64-encode-3bytes: [fn@String [let s@String i@Int len@Int acc@String b1@Int b2@Int b3@Int]
     [base64-encode-impl s [+ i 3] len
@@ -137,7 +137,7 @@ base64-encode-1byte: [fn@String [let s@String i@Int len@Int acc@String b1@Int]
 # Get the base64 character for index n (0-63).
 # Type: (Int -> String)
 base64-char: [fn@String [let n@Int]
-    [str-slice n [+ n 1] base64-alphabet]]
+    [str-slice base64-alphabet n [+ n 1]]]
 
 base64-decode-impl: [fn@String [let s@String i@Int len@Int acc@String]
     [if [< i len]
@@ -148,10 +148,10 @@ base64-decode-impl: [fn@String [let s@String i@Int len@Int acc@String]
 base64-decode-group: [fn@String [let s@String i@Int len@Int acc@String]
     [if [< [+ i 3] len]
         [base64-decode-4chars s i len acc
-            [base64-char-to-int [str-slice i [+ i 1] s]]
-            [base64-char-to-int [str-slice [+ i 1] [+ i 2] s]]
-            [base64-char-to-int [str-slice [+ i 2] [+ i 3] s]]
-            [base64-char-to-int [str-slice [+ i 3] [+ i 4] s]]]
+            [base64-char-to-int [str-slice s i [+ i 1]]]
+            [base64-char-to-int [str-slice s [+ i 1] [+ i 2]]]
+            [base64-char-to-int [str-slice s [+ i 2] [+ i 3]]]
+            [base64-char-to-int [str-slice s [+ i 3] [+ i 4]]]]
         [error "base64-decode: invalid input length (must be multiple of 4)"]]]
 
 base64-decode-4chars: [fn@String [let s@String i@Int len@Int acc@String c1@Int c2@Int c3@Int c4@Int]
@@ -181,7 +181,7 @@ base64-char-to-int: [fn@Int [let c@String]
 
 base64-char-to-int-search: [fn@Int [let c@String i@Int]
     [if [< i 64]
-        [if [= c [str-slice i [+ i 1] base64-alphabet]]
+        [if [= c [str-slice base64-alphabet i [+ i 1]]]
             i
             [base64-char-to-int-search c [+ i 1]]]
         [error [str "base64-decode: invalid character: " c]]]]
@@ -193,8 +193,8 @@ base64-char-to-int-search: [fn@Int [let c@String i@Int]
 mask-apply-impl: [fn@String [let data@String mask@String i@Int data-len@Int mask-len@Int acc@String]
     [if [< i data-len]
         [mask-apply-step data mask i data-len mask-len acc
-            [char-code [str-slice i [+ i 1] data]]
-            [char-code [str-slice [mod i mask-len] [+ [mod i mask-len] 1] mask]]]
+            [char-code [str-slice data i [+ i 1]]]
+            [char-code [str-slice mask [mod i mask-len] [+ [mod i mask-len] 1]]]]
         acc]]
 
 mask-apply-step: [fn@String [let data@String mask@String i@Int data-len@Int mask-len@Int acc@String data-code@Int mask-code@Int]

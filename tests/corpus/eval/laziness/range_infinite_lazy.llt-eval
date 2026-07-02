@@ -1,4 +1,5 @@
-# range: infinite range is lazy - only evaluates head, not tail
-[head [range 0]]
+# range: infinite-like range is lazy - only evaluates head, not tail
+# range now requires 2 args (start, end). Use a large end for effectively infinite:
+[head [range 0 1000000]]
 === out
 Int(0)

@@ -877,7 +877,7 @@ Cache hits return a clone of the cached thunk pointer. No file I/O, no evaluatio
 
 - **Cache scope:** Stored in `EvalContext::state::include_cache` (`eval.rs:116`, `HashMap<(u64, u64), Rc<Thunk>>`). Shared via `Rc<RefCell<EvalState>>` across all nested `$include` calls within a single evaluation session.
 
-- **Cache lifetime:** Lives as long as the `EvalContext`. In the CLI, a single `EvalContext` is created per `tinct run` invocation and cleared on exit. In the REPL, the `EvalContext` persists across REPL inputs, so included files are cached for the entire REPL session — a file modified on disk mid-session will not be re-read until the REPL is restarted.
+- **Cache lifetime:** Lives as long as the `EvalContext`. In the CLI, a single `EvalContext` is created per `tinct run` invocation and cleared on exit.
 
 - **Error non-caching:** Failed includes are NOT cached. If `$include("broken.llt")` fails (parse error, I/O error, eval error), subsequent `$include("broken.llt")` calls re-attempt evaluation. Only successful results populate the cache. Note that the call-site thunk caches the failure (via `ThunkState::Failed`) — the same call site will not retry — but a different call site including the same file will retry the file-level evaluation.
 

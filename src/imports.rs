@@ -1,39 +1,23 @@
 //! Import resolution for the type checker.
 //!
-//! This module provides shared import resolution logic that seeds the type checker
-//! with prelude function type signatures. It ensures that `typecheck_source`
-//! knows about stdlib prelude functions, suppressing false "undefined variable" errors.
-//!
-//! The prelude environment is built once globally and cached in a `OnceLock<Arc<TypeEnv>>`.
-//! Subsequent calls to `build_prelude_env()` clone the `Arc` and return a fresh `Rc<TypeEnv>`
-//! wrapping a clone of the shared data. This eliminates per-thread cold-start stack overflows:
-//! only the first thread to call `build_prelude_env()` runs `build_prelude_env_inner()`.
-//!
-//! # Thread safety
-//!
-//! `OnceLock` provides lock-free reads after initialization and a single-initialization
-//! guarantee under concurrent access. The stored `Arc<TypeEnv>` is `Send + Sync` because
-//! `TypeEnv` contains only `HashMap`, `String`, and `Vec` fields (no `Rc` in the cached root
-//! because `build_prelude_env_inner()` returns a flat env with `parent: None`).
-//!
-//! # Rc boundary
-//!
-//! The typecheck path uses `Rc<TypeEnv>` for cheap single-threaded cloning. The global cache
-//! stores `Arc<TypeEnv>`. The conversion at the boundary is: `Rc::new((*arc_env).clone())`.
-//! This is safe and cheap because the flat root env has no `Rc<TypeEnv>` parent pointer.
+//! This module provides shared import resolution logic for include resolution (type-checking
+//! user includes and stdlib modules) and environment construction for the type checker.
+//! The type checker receives its environment through the TypeContext unified handle,
+//! seeded during loader.llt evaluation.
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::rc::Rc;
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::Arc;
 
 use crate::ast::{Span, SurfaceExpression, SurfaceNode, SurfaceProgram};
 use crate::desugar;
+use crate::rust_span;
 use crate::expand;
 use crate::parser;
 use crate::typecheck::{typecheck_surface_program_with_env, TypeMap};
-use crate::types::{ClassEnv, InferState, InstanceEnv, Row, Type, TypeAlias, TypeEnv};
+use crate::types::{Row, Type, TypeEnv};
 
 /// Type alias for include bindings map: span → list of (name, type) pairs
 type IncludeBindings = HashMap<Span, Vec<(String, Type)>>;
@@ -41,661 +25,174 @@ type IncludeBindings = HashMap<Span, Vec<(String, Type)>>;
 /// Depth limit for recursive include resolution (prevents infinite include cycles).
 const MAX_INCLUDE_DEPTH: usize = 16;
 
-/// Newtype wrapper that makes `TypeEnv` usable in a global `OnceLock`.
-///
-/// `TypeEnv` contains `Option<Rc<TypeEnv>>` as its parent field, which makes it `!Send`.
-/// However, the root prelude env cached here ALWAYS has `parent: None` — the `Rc` field
-/// is `None` and is never dereferenced across threads. The only operation performed on
-/// the cached value from multiple threads is `TypeEnv::clone`, which produces a new
-/// value with `parent: None` that is then wrapped in a thread-local `Rc<TypeEnv>`.
-///
-/// # Safety
-///
-/// This is sound because:
-/// 1. The stored `TypeEnv` is the flat root env with `parent: None`.
-/// 2. The `Option<Rc<TypeEnv>>` parent field is `None`, so no `Rc` is ever shared.
-/// 3. `clone()` on the stored value creates a new `TypeEnv` with `parent: None`,
-///    which is immediately handed off to a single thread as `Rc::new(clone)`.
-/// 4. No mutable reference to the stored `TypeEnv` is ever created after initialization;
-///    `OnceLock` provides immutable shared access only after `get_or_init` completes.
-struct SendableTypeEnv(TypeEnv);
-
-// SAFETY: see doc-comment on `SendableTypeEnv`.
-unsafe impl Send for SendableTypeEnv {}
-unsafe impl Sync for SendableTypeEnv {}
-
-/// Newtype wrapper that makes `(ClassEnv, InstanceEnv)` usable in a global `OnceLock`.
-///
-/// `ClassEnv` and `InstanceEnv` contain only `HashMap` values (no `Rc`), so they are
-/// naturally `Send + Sync`. This wrapper exists only for symmetry with `SendableTypeEnv`
-/// and to make the intent explicit.
-struct SendableInstanceCache(ClassEnv, InstanceEnv);
-
-// SAFETY: ClassEnv and InstanceEnv contain only BTreeMap/HashMap values with Send + Sync
-// keys and values. No Rc or RefCell is involved.
-unsafe impl Send for SendableInstanceCache {}
-unsafe impl Sync for SendableInstanceCache {}
-
-/// Global cache of the prelude type environment.
-///
-/// Built once on the first call to `build_prelude_env()`, regardless of which thread
-/// calls first. All subsequent calls read from this cache without re-running the
-/// prelude type-checker.
-///
-/// Stored via `SendableTypeEnv` (a sound `Send + Sync` wrapper) so it can live in a
-/// process-global static. See `SendableTypeEnv` for the safety argument.
-static PRELUDE_CACHE: OnceLock<Arc<SendableTypeEnv>> = OnceLock::new();
-
-/// Global cache of the prelude's class and instance environments.
-///
-/// Populated atomically alongside `PRELUDE_CACHE` when `build_prelude_env_inner` succeeds.
-/// Consumed by `seed_infer_state_from_prelude_cache` to propagate prelude-registered
-/// instances (Equatable, Comparable, Showable, Mappable, Appendable) to user-code
-/// type-checking sessions. Without this, each fresh `InferState::new()` starts with
-/// an empty `instance_env`, so constraint checking for those classes always falls through
-/// to the hardcoded arms in `satisfies_constraint`.
-static PRELUDE_INSTANCE_CACHE: OnceLock<Arc<SendableInstanceCache>> = OnceLock::new();
-
 thread_local! {
-    /// Thread-local cache of the type-stage evaluation environment.
-    ///
-    /// Contains type dicts (Int, Str, etc.) and type-level functions (Seq, Map, union, all).
-    /// Built once per thread on first access, then reused for annotation resolution.
-    static TYPE_STAGE_ENV_CACHE: RefCell<Option<Arc<RwLock<crate::value::Environment>>>> = const { RefCell::new(None) };
-
-    /// Recursion guard for type-stage env building (prevents infinite recursion when
-    /// type-checking the prelude's type-stage sections).
-    static BUILDING_TYPE_STAGE_ENV: RefCell<bool> = const { RefCell::new(false) };
-
     /// Thread-local cache of stdlib module type environments.
     ///
     /// Maps stdlib module path (e.g., `"strings.llt"`) to a `TypeEnv` containing only
     /// the bindings that module exports (above the prelude baseline). Built on demand
     /// when the type checker encounters `[include %libdir "X.llt"]` calls and caches
     /// the result so subsequent references to the same module are cheap.
+    ///
+    /// Stays thread-local because `TypeEnv` contains `Rc` (not `Arc`) and is not `Send`.
     static STDLIB_MODULE_CACHE: RefCell<HashMap<String, Rc<TypeEnv>>> = RefCell::new(HashMap::new());
 
     /// Recursion guard for stdlib module env building (prevents re-entrant calls).
     static BUILDING_STDLIB_MODULE_ENV: RefCell<bool> = const { RefCell::new(false) };
 }
 
-/// Build or retrieve the prelude type environment.
+thread_local! {
+    static PRELUDE_TYPE_STAGE_ENV_CACHE: RefCell<Option<Arc<std::sync::RwLock<crate::value::Environment>>>> =
+        const { RefCell::new(None) };
+    static BUILDING_PRELUDE_TYPE_STAGE_ENV: RefCell<bool> = const { RefCell::new(false) };
+}
+
+
+/// Build and cache the prelude type-stage evaluation environment.
 ///
-/// On the first call (any thread), this parses the embedded prelude source, type-checks it,
-/// and extracts all top-level binding types into a global `OnceLock<Arc<TypeEnv>>`.
-/// All subsequent calls (any thread) retrieve the cached `Arc`, clone its data, and wrap
-/// the clone in a fresh `Rc<TypeEnv>` for use by the single-threaded typecheck path.
+/// Evaluates the `--- stage: type` sections of prelude.llt using only core builtins.
+/// This env is used by type annotation evaluation (`@Int`, `@String`, custom type fns).
 ///
-/// The clone-on-read pattern avoids sharing `Rc<TypeEnv>` across threads (which would be
-/// unsound) while keeping the hot path — the `build_prelude_env_inner()` call — to
-/// exactly one execution per process lifetime.
-///
-/// If the prelude has type errors (e.g., unresolvable type variables), they are
-/// silently ignored and the best-effort environment is returned.
-pub fn build_prelude_env() -> Rc<TypeEnv> {
-    let arc_env = PRELUDE_CACHE.get_or_init(|| {
-        // First call: build the prelude environment and store it globally.
-        // `build_prelude_env_inner` returns an Rc<TypeEnv>; we extract the TypeEnv
-        // value (Rc::try_unwrap — guaranteed to succeed since we just created it
-        // and hold the only reference) and wrap it in Arc<SendableTypeEnv> for global storage.
-        let rc_env = build_prelude_env_inner();
-        let env = Rc::try_unwrap(rc_env)
-            .expect("build_prelude_env_inner returned an Rc with more than one reference");
-        Arc::new(SendableTypeEnv(env))
+/// No circular dependency: does NOT call `build_core_env` or
+/// `expand_surface_program` — type-stage docs are pure dict/fn (no macros needed).
+pub async fn get_prelude_type_stage_env(
+) -> Option<Arc<std::sync::RwLock<crate::value::Environment>>> {
+    let cached = PRELUDE_TYPE_STAGE_ENV_CACHE.with(|c| c.borrow().clone());
+    if let Some(env) = cached {
+        return Some(env);
+    }
+    let already_building = BUILDING_PRELUDE_TYPE_STAGE_ENV.with(|f| *f.borrow());
+    if already_building {
+        return None;
+    }
+    BUILDING_PRELUDE_TYPE_STAGE_ENV.with(|f| *f.borrow_mut() = true);
+    let result = build_prelude_type_stage_env_inner().await;
+    BUILDING_PRELUDE_TYPE_STAGE_ENV.with(|f| *f.borrow_mut() = false);
+    if let Some(ref env) = result {
+        PRELUDE_TYPE_STAGE_ENV_CACHE.with(|c| *c.borrow_mut() = Some(Arc::clone(env)));
+    }
+    result
+}
+
+async fn build_prelude_type_stage_env_inner(
+) -> Option<Arc<std::sync::RwLock<crate::value::Environment>>> {
+    use crate::ast::Stage;
+    use crate::value::{Environment, HashableValue, Thunk, Value};
+
+    // Bootstrap env: core builtins only — type-stage docs use only core_builtins() names.
+    let bootstrap_env = Arc::new(std::sync::RwLock::new(Environment::new()));
+    {
+        let mut env_write = bootstrap_env.write().unwrap();
+        for def in crate::builtins_core::core_builtins() {
+            let name = def.name.to_string();
+            let thunk = Arc::new(Thunk::new_materialized(
+                Value::Builtin(def),
+                rust_span!(),
+            ));
+            env_write.insert(name, thunk);
+        }
+    }
+
+    // Parse prelude.llt (embedded at compile time — no libdir needed).
+    let source = include_str!("../stdlib/prelude.llt");
+    let sf = std::sync::Arc::new(crate::ast::SourceFile {
+        path: std::sync::Arc::from("stdlib/prelude.llt"),
+        content: std::sync::Arc::from(source),
     });
-    // Clone the globally-shared TypeEnv value into a fresh Rc for this call site.
-    // TypeEnv::clone walks only the own bindings/aliases (parent is None for the root env).
-    Rc::new(arc_env.0.clone())
-}
+    let mut program = crate::parser::parse_with_file(source, sf).ok()?.program;
 
-/// Helper function to type-check a stdlib module and extract its bindings into the given env.
-/// Returns the final `InferState` on success (used by the prelude path to capture instance_env).
-async fn typecheck_and_merge_stdlib_module(
-    source: &str,
-    parent_env: &Rc<TypeEnv>,
-    env: &mut TypeEnv,
-    source_path: Option<&str>,
-) -> Result<InferState, Vec<String>> {
-    // Parse the module source. Stdlib modules are embedded source strings, not user files,
-    // so we always use plain parse() without file stamping. File stamping is only for
-    // user-supplied files processed via read_source() in the CLI pipeline.
-    let path = source_path.unwrap_or("<stdlib>");
-    let mut program = {
-        let parsed = parser::parse(source)
-            .map_err(|e| vec![format!("parse error in {path}: {e}")])?;
-        parsed.program.clone()
-    };
+    // No macro expansion: type-stage docs are pure dict/fn expressions (no begin, >>, tmpl).
+    // Expansion would require prelude already loaded (circular), so we skip it.
 
-    // B-309: Enable macro expansion for stdlib modules.
-    //
-    // The previous comment claimed "circular bootstrap recursion" if we expand prelude.llt,
-    // but this is incorrect. Macro expansion (expand_surface_program) is a purely structural
-    // AST-to-AST transformation that does not require runtime evaluation. The two-pass
-    // pre-scan (B-304) collects ALL macro declarations from ALL documents BEFORE expanding
-    // any call sites, so macros declared at the END of prelude.llt (like `begin` at line 3485)
-    // are available when expanding call sites at the BEGINNING.
-    //
-    // Without this expansion, `[begin ...]`, `[do ...]`, and `[tmpl ...]` calls in prelude.llt
-    // are NOT expanded and remain as raw variable lookups — which fail since those names have
-    // no runtime bindings (they are macro transformers, not functions).
-    //
-    // AMBIENT-OK: typecheck_and_merge_stdlib_module uses embedded source strings (include_str!),
-    // not filesystem paths. The cap_std::Dir is required by expand_surface_program's signature
-    // but is never accessed during prelude expansion (no_fs=true in typecheck pipeline).
+    // Desugar and resolve (writes inline to AST nodes).
+    crate::desugar::desugar_surface_program(&mut program);
+    let _resolve_errors = crate::resolve::resolve_surface_program(&program);
+
+    // Build EvalContext backed by bootstrap_env.
     #[allow(clippy::disallowed_methods)]
-    let expand_base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
-        .map_err(|e| vec![format!("cannot open cwd for {path} expansion: {e}")])?;
-    crate::expand::expand_surface_program(
-        &mut program,
-        true, // no_fs: true — prelude expansion never accesses filesystem
-        &expand_base_dir,
-    )
-    .await
-    .map_err(|e| vec![format!("macro expansion error in {path}: {e}")])?;
+    let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority()).ok()?;
+    let ctx = crate::eval::EvalContext::new_empty(base_dir, Arc::clone(&bootstrap_env), false);
 
-    // Desugar $_ implicit lambdas on SurfaceProgram (after expansion, before resolve).
-    // Correct pipeline order: parse → expand → desugar → resolve → typecheck.
-    // Expansion is normally in the pipeline but skipped here for stdlib modules
-    // (see rationale above) — desugar still runs to maintain correct ordering.
-    desugar::desugar_surface_program(&mut program);
+    let mut current_env = Arc::clone(&bootstrap_env);
+    let mut any_success = false;
 
-    // Type-check with the parent environment (builtins + prelude), capturing InferState
-    // and the final TypeEnv (which holds properly generalized TypeSchemes for all prelude
-    // bindings — no TypeVar erasure needed).
-    //
-    // `enable_scheme_map: false` — no LSP hover needed for stdlib modules.
-    // `in_prelude_load: true` — skip instance method body inference (optimization).
-    //
-    // typecheck_surface_program_with_env bridges to the File-based path internally via
-    // surface_program_to_file, so no manual conversion is needed here.
-    let (
-        type_errors,
-        _type_map,
-        _doc_map,
-        _scheme_map,
-        _diagnostics,
-        state,
-        final_env,
-        _annotation_table, // not needed for stdlib module type merging
-    ) = typecheck_surface_program_with_env(&program, Rc::clone(parent_env), false, true, None).await;
-
-    // Stdlib modules are user code loaded by loader.llt — they receive no special treatment.
-    // Type errors in stdlib are bugs that must be surfaced immediately, not silently discarded.
-    if !type_errors.is_empty() {
-        let messages: Vec<String> = type_errors
-            .iter()
-            .map(|e| crate::format_type_error(e, source, path))
-            .collect();
-        return Err(messages);
-    }
-
-    // Merge the generalized schemes from the final env into the output env.
-    //
-    // final_env contains fully generalized TypeSchemes for prelude bindings from successfully
-    // typechecked documents. We use these preferentially because they preserve polymorphism
-    // (e.g., `map` stays ∀a b. (a→b)→[a]→[b] instead of being erased to Fn@Unknown [Unknown]).
-    //
-    // For any prelude function that came from a document with type errors (and thus isn't in
-    // final_env), we fall back to the TypeMap-based extraction with erase_type_vars — this is
-    // the previous behavior: stale TypeVars become Unknown rather than being left unresolved.
-    // The TypeMap-based fallback only inserts a binding if it's not already in env (i.e., not
-    // already inserted by merge_env_bindings_into), so there's no double-insertion.
-    merge_env_bindings_into(&final_env, parent_env, env);
-    extract_bindings_from_program_with_fallback(&program, &_type_map, env);
-
-    Ok(state)
-}
-
-/// Copy all bindings from `source_env` that were explicitly defined by the prelude into `target`.
-///
-/// "Prelude-defined" means the binding appears in at least one frame of `source_env` that is
-/// NOT part of the `baseline_env` chain. This correctly captures names that the prelude
-/// explicitly exports (e.g., `=`, `+`, `keys`, `any?`) while excluding raw builtin names that
-/// the prelude never mentions (e.g., `connect`, `http2-session`).
-///
-/// For names that exist in BOTH the prelude's frames AND the baseline (e.g., `=`, `+`),
-/// the prelude's scheme takes precedence — this is intentional: the prelude may add richer
-/// type information (e.g., Equatable constraints on `=`) than the raw builtin scheme.
-///
-/// Algorithm: walk `source_env`'s frame chain collecting names, stopping at the frame
-/// identified as the baseline root by pointer comparison with `baseline_env`. Names found
-/// in frames above the baseline are "prelude-defined" and are included.
-fn merge_env_bindings_into(source_env: &TypeEnv, baseline_env: &Rc<TypeEnv>, target: &mut TypeEnv) {
-    // Collect names from source_env frames that are ABOVE the baseline.
-    // We walk the frame chain, collecting names until we reach a frame that IS the baseline
-    // (by pointer identity) or has no further parent.
-    let mut prelude_names = std::collections::HashSet::new();
-    collect_names_above_baseline(source_env, baseline_env, &mut prelude_names);
-
-    // Insert the scheme for each prelude-defined name (using source_env.get for the full lookup).
-    for name in prelude_names {
-        if let Some(scheme) = source_env.get(&name) {
-            target.insert_scheme(name, scheme.clone());
-        }
-    }
-}
-
-/// Collect all binding names from `env`'s frame chain that are above (not part of) `baseline`.
-///
-/// Walks the frame chain, adding names from each frame to `names`. Stops when it reaches
-/// a frame pointer-equal to `baseline` (the frame IS the baseline) or when there is no parent.
-/// This correctly collects all names introduced by the prelude without including the raw builtins.
-fn collect_names_above_baseline(
-    env: &TypeEnv,
-    baseline: &Rc<TypeEnv>,
-    names: &mut std::collections::HashSet<String>,
-) {
-    // Add names from this frame (own frame only, no parent walk)
-    env.collect_own_names(names);
-
-    // Walk to parent, stopping if we've reached the baseline
-    if let Some(parent) = env.parent() {
-        if !Rc::ptr_eq(parent, baseline) {
-            collect_names_above_baseline(parent, baseline, names);
-        }
-        // If parent IS the baseline, stop — we've collected all prelude-defined names.
-    }
-}
-
-/// Fallback extraction: insert TypeMap-derived bindings for names NOT already in `target`.
-///
-/// Used after `merge_env_bindings_into` so that prelude bindings from documents that had
-/// type errors (and were therefore dropped from the final TypeEnv) still get inserted into
-/// the output env. TypeVars are erased to Unknown (the previous behavior) since the TypeMap
-/// holds monotype bodies from a stale InferState, not generalized schemes.
-///
-/// Skips any name already in `target` (already inserted by merge_env_bindings_into).
-fn extract_bindings_from_program_with_fallback(
-    program: &SurfaceProgram,
-    type_map: &TypeMap,
-    target: &mut TypeEnv,
-) {
     for doc in &program.documents {
-        for node in doc.node.expressions() {
-            extract_bindings_fallback_from_node(node, type_map, target);
+        if doc.node.stage != Some(Stage::Type) {
+            continue;
         }
-    }
-}
-
-/// Recursively extract bindings from a surface node into `target`, skipping
-/// names already present in `target`.
-fn extract_bindings_fallback_from_node(
-    node: &Arc<SurfaceNode>,
-    type_map: &TypeMap,
-    target: &mut TypeEnv,
-) {
-    match &node.expr {
-        SurfaceExpression::Dict(entries) => {
-            for entry in entries {
-                if let Some(ref key_node) = entry.node.key {
-                    let name = match &key_node.expr {
-                        SurfaceExpression::Str(n) => Some(n.clone()),
-                        SurfaceExpression::VarRef { name, .. } => Some(name.clone()),
-                        SurfaceExpression::Annotated { name, .. } => Some(name.clone()),
-                        _ => None,
-                    };
-                    if let Some(name) = name {
-                        // Skip if already inserted by merge_env_bindings_into.
-                        // get_own checks only the current frame (not parent chain)
-                        // so we correctly detect only our own insertions.
-                        if target.get_own(&name).is_some() {
-                            continue;
-                        }
-                        let value_span = entry.node.value.span.clone();
-                        let key = (value_span.start.offset, value_span.end.offset);
-                        if let Some(ty) = type_map.get(&key) {
-                            let sanitized = erase_type_vars(ty);
-                            target.insert(name, sanitized);
-                        }
+        let expr_nodes: Vec<std::sync::Arc<crate::ast::SurfaceNode>> =
+            doc.node.expressions().cloned().collect();
+        if expr_nodes.is_empty() {
+            continue;
+        }
+        let doc_env = Arc::new(std::sync::RwLock::new(Environment::with_parent(
+            Arc::clone(&current_env),
+        )));
+        let result_thunk = match crate::eval::eval_document_exprs(
+            &expr_nodes,
+            Arc::clone(&doc_env),
+            &ctx,
+        )
+        .await
+        {
+            Ok(t) => t,
+            Err(e) => {
+                // Type-stage doc evaluation must not silently swallow errors.
+                // A failure here means prelude's type-stage section is broken.
+                eprintln!("prelude type-stage eval error: {e}");
+                return None;
+            }
+        };
+        let val = match crate::eval::materialize(&result_thunk, None, &ctx).await {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("prelude type-stage materialize error: {e}");
+                return None;
+            }
+        };
+        let dict = match val {
+            Value::Dict(map) => map,
+            Value::Overlay(l_id, r_id) => {
+                match crate::builtins::flatten_overlay(
+                    &l_id,
+                    &r_id,
+                    "prelude type-stage",
+                    &ctx,
+                    rust_span!(),
+                )
+                .await
+                {
+                    Ok(d) => d,
+                    Err(e) => {
+                        eprintln!("prelude type-stage overlay error: {e}");
+                        return None;
                     }
                 }
             }
-        }
-        SurfaceExpression::Sequential(nodes) => {
-            for child in nodes {
-                extract_bindings_fallback_from_node(child, type_map, target);
-            }
-        }
-        _ => {}
-    }
-}
-
-/// Inner implementation of `build_prelude_env()`.
-///
-/// Parses the embedded prelude source, runs the type-checking pipeline
-/// (desugar → resolve → typecheck), and extracts all top-level binding
-/// types into a new `TypeEnv`. Returns the environment even if type errors occur
-/// (best-effort approach).
-///
-/// ## B-324: Stack overflow on cold-start thread (RESOLVED via T-1114)
-///
-/// The previous thread-local cache caused stack overflows on cold-start threads because
-/// each new thread had to re-run the full prelude type-check. The OnceLock global cache
-/// (T-1114) resolves this: `build_prelude_env_inner` runs exactly once per process
-/// lifetime, and all subsequent calls (from any thread) clone the already-built TypeEnv.
-///
-/// The remaining contributing factors are noted for completeness:
-/// 1. `build_prelude_env_inner()` — type-checks prelude.llt via
-///    `typecheck_surface_program_with_env`. The type checker calls `infer_dict` for the prelude's
-///    top-level dict, which calls `infer_dict` recursively for nested dict bodies (class/instance
-///    declarations and their method dicts).
-/// 2. `unify` → `apply` substitution chains can be deep when the prelude's complex type
-///    annotations interact with the per-dict Substitution frame chain (T-926).
-///
-/// With T-1114, causes (1) and (2) occur only once per process. Subsequent calls return
-/// immediately from `OnceLock::get()` with no stack cost.
-fn build_prelude_env_inner() -> Rc<TypeEnv> {
-    // Start with an empty TypeEnv.
-    // The user-facing TypeEnv should contain ONLY what the prelude explicitly exports,
-    // NOT the raw builtin registry. Builtins are visible during prelude type-checking
-    // (via builtins_env below), but must not leak into user scope.
-    // After typecheck_and_merge_stdlib_module runs, merge_env_bindings_into copies
-    // only the prelude-added entries (filtered against builtins_env as baseline) into env.
-    let mut env = TypeEnv::new();
-
-    // Inject capability variable types that the CLI always provides.
-    // These are runtime-injected by the CLI (see main.rs:905, 955, 934),
-    // so the type checker needs to know about them to avoid false "undefined variable" errors.
-    env.insert("%cwd".to_string(), crate::types::Type::DirCap);
-    env.insert("%libdir".to_string(), crate::types::Type::DirCap);
-    // %stdin is Handle[Readable Text]
-    {
-        let mut caps = BTreeMap::new();
-        caps.insert("Readable".to_string(), Type::Bool);
-        caps.insert("Text".to_string(), Type::Bool);
-        env.insert(
-            "%stdin".to_string(),
-            Type::handle(Type::Record(Row {
-                fields: caps,
-                tail: crate::type_def::RowTail::Empty,
-            })),
-        );
-    }
-    // %stdout is Handle[Writable Text] — use __cap_flag_* format consistent with write-handle's type.
-    // write-handle expects Handle[[__cap_flag_writable: []]] (from cap_flag("writable") in builtins_core.rs).
-    // Under BAS width subtyping, Handle[[__cap_flag_writable: [], __cap_flag_text: []]] satisfies it.
-    {
-        let mut caps = BTreeMap::new();
-        caps.insert(
-            "__cap_flag_writable".to_string(),
-            Type::Record(Row {
-                fields: BTreeMap::new(),
-                tail: crate::type_def::RowTail::Empty,
-            }),
-        );
-        caps.insert(
-            "__cap_flag_text".to_string(),
-            Type::Record(Row {
-                fields: BTreeMap::new(),
-                tail: crate::type_def::RowTail::Empty,
-            }),
-        );
-        env.insert(
-            "%stdout".to_string(),
-            Type::handle(Type::Record(Row {
-                fields: caps,
-                tail: crate::type_def::RowTail::Empty,
-            })),
-        );
-    }
-
-    // Only prelude.llt is loaded at startup.
-    // strings.llt, math.llt, and encoding.llt require explicit [include libdir "module.llt"].
-    let prelude_source = include_str!("../stdlib/prelude.llt");
-
-    // Type-check prelude
-    let mut builtins_env = crate::builtins::build_builtins_type_env();
-    // Inject capability types into builtins_env for prelude type-checking
-    builtins_env.insert("%cwd".to_string(), crate::types::Type::DirCap);
-    builtins_env.insert("%libdir".to_string(), crate::types::Type::DirCap);
-    // %stdin is Handle[Readable Text]
-    {
-        let mut caps = std::collections::BTreeMap::new();
-        caps.insert("Readable".to_string(), Type::Bool);
-        caps.insert("Text".to_string(), Type::Bool);
-        builtins_env.insert(
-            "%stdin".to_string(),
-            crate::types::Type::handle(Type::Record(crate::types::Row {
-                fields: caps,
-                tail: crate::type_def::RowTail::Empty,
-            })),
-        );
-    }
-    // %stdout — use __cap_flag_* format consistent with write-handle's type expectation.
-    {
-        let mut caps = std::collections::BTreeMap::new();
-        caps.insert(
-            "__cap_flag_writable".to_string(),
-            crate::types::Type::Record(crate::types::Row {
-                fields: std::collections::BTreeMap::new(),
-                tail: crate::type_def::RowTail::Empty,
-            }),
-        );
-        caps.insert(
-            "__cap_flag_text".to_string(),
-            crate::types::Type::Record(crate::types::Row {
-                fields: std::collections::BTreeMap::new(),
-                tail: crate::type_def::RowTail::Empty,
-            }),
-        );
-        builtins_env.insert(
-            "%stdout".to_string(),
-            crate::types::Type::handle(crate::types::Type::Record(crate::types::Row {
-                fields: caps,
-                tail: crate::type_def::RowTail::Empty,
-            })),
-        );
-    }
-    let builtins_env = Rc::new(builtins_env);
-
-    // sync bridge — build_prelude_env_inner is called from OnceLock::get_or_init (sync context).
-    match crate::async_rt::block_on_anywhere(typecheck_and_merge_stdlib_module(
-        prelude_source,
-        &builtins_env,
-        &mut env,
-        Some("prelude.llt"),
-    )) {
-        Err(errors) => {
-            // Prelude type errors are bugs — panic immediately so the root cause is visible.
-            // Silent fallback to builtins_env would produce confusing downstream "undefined
-            // variable" errors that mask the actual prelude type error.
-            panic!(
-                "prelude.llt has type errors — fix the prelude before running:\n\n{}",
-                errors.join("\n\n")
-            );
-        }
-        Ok(prelude_state) => {
-            // Cache the prelude's class and instance environments globally.
-            let _ = PRELUDE_INSTANCE_CACHE.set(Arc::new(SendableInstanceCache(
-                prelude_state.class_env.clone(),
-                prelude_state.instance_env.clone(),
-            )));
-
-            // S-886: Inject class method schemes from prelude-registered classes into env.
-            // For each class that has method signatures (e.g., Addable with `+: [fn@c [a b]]`),
-            // build a TypeScheme and insert it into the user-facing env.
-            // This replaces the core_type_env workaround for arithmetic/comparison operators.
-            use crate::type_class::Constraint;
-            use crate::types::{ConstraintArg, TypeScheme};
-            for class_decl in prelude_state.class_env.iter_classes() {
-                for (method_name, method_type) in &class_decl.method_signatures {
-                    // Only inject if not already present (prelude may define a better version)
-                    if env.get_own(method_name).is_some() {
-                        continue;
-                    }
-                    let type_vars: Vec<String> =
-                        class_decl.params.iter().map(|(n, _)| n.clone()).collect();
-                    let scheme = TypeScheme {
-                        type_vars: type_vars.clone(),
-                        constraints: vec![Constraint::Class {
-                            class: std::sync::Arc::new(class_decl.clone()),
-                            vars: type_vars
-                                .iter()
-                                .map(|n| ConstraintArg::Var(n.clone()))
-                                .collect(),
-                            origin_name: Some(std::sync::Arc::from(method_name.as_str())),
-                            origin_span: None,
-                        }],
-                        body: method_type.clone(),
-                        label_vars: vec![],
-                        kind_vars: vec![],
-                        doc: None,
-                        inner_schemes: None,
-                    };
-                    env.insert_scheme(method_name.clone(), scheme);
+            _ => continue,
+        };
+        let next_env = Arc::new(std::sync::RwLock::new(Environment::with_parent(
+            Arc::clone(&current_env),
+        )));
+        {
+            let mut env_write = next_env.write().unwrap();
+            for (key, thunk_id) in &dict {
+                if let HashableValue::Str(name) = key {
+                    let thunk = ctx.get_thunk(*thunk_id);
+                    env_write.insert(name.to_string(), thunk);
+                    any_success = true;
                 }
             }
         }
+        current_env = next_env;
     }
 
-    // B-398: fallback restoration loops removed. Prelude inference should now produce
-    // correct polymorphic schemes for all operators via the ConstraintArg fix.
-
-    // Manual overrides for prelude functions whose types may be degraded to Error
-    // when the prelude has type-checking failures. These functions are called by
-    // core language features (triple-quoted strings → unindent, $include → include),
-    // so they must have correct types even if the prelude body has errors.
-    //
-    // Same pattern as `get`/`get?` restoration above: always inject the authoritative
-    // type signature to ensure these core language features work correctly.
-    //
-    // `unindent`: used by triple-quoted string desugaring `"""...""" → [unindent "..."]`
-    // Type: String → String
-    env.insert(
-        "unindent".to_string(),
-        Type::Function {
-            params: vec![(None, Type::Str)],
-            ret: Box::new(Type::Str),
-            variadic: false,
-            required_count: 1,
-        },
-    );
-
-    // `include`: used by $include expression desugaring
-    // Type: DirCap → String → Unknown (return type is Any in prelude)
-    // The third parameter (integrity-hash) has a default value, so it's not in params.
-    env.insert(
-        "include".to_string(),
-        Type::Function {
-            params: vec![(None, Type::DirCap), (None, Type::Str)],
-            ret: Box::new(Type::Unknown),
-            variadic: true,
-            required_count: 2,
-        },
-    );
-
-    // `when` / `unless` / `cond`: prelude-defined control flow functions.
-    // These have no builtin-* counterpart and are not in core_type_env.
-    // Manually inject safe fallback types so they are never Error-typed in the prelude env.
-    //
-    // The prelude infers more precise types for these (e.g., ∀a. Bool → a → a | {})
-    // via generalization, but those schemes are lost when the prelude SCC fails inference.
-    // The fallback types below are intentionally broad (Top) to avoid false-positive errors:
-    //
-    // `when`: Bool → Top → Top   (evaluates body if predicate is true)
-    // `unless`: Bool → Top → Top (evaluates body if predicate is false)
-    // `cond`: Top → Top          (multi-branch conditional, takes a list of [pred result] pairs)
-    //
-    // These are only inserted if NOT already present (from successful prelude inference).
-    // This ensures that when prelude correctly infers `when: ∀a. Bool → a → a | {}`,
-    // the authoritative scheme is kept — the fallback only fires on degradation.
-    for (name, ty) in [
-        (
-            "when",
-            Type::Function {
-                params: vec![(None, Type::Bool), (None, Type::Top)],
-                ret: Box::new(Type::Top),
-                variadic: false,
-                required_count: 2,
-            },
-        ),
-        (
-            "unless",
-            Type::Function {
-                params: vec![(None, Type::Bool), (None, Type::Top)],
-                ret: Box::new(Type::Top),
-                variadic: false,
-                required_count: 2,
-            },
-        ),
-        (
-            "cond",
-            Type::Function {
-                params: vec![(None, Type::Top)],
-                ret: Box::new(Type::Top),
-                variadic: false,
-                required_count: 1,
-            },
-        ),
-    ] {
-        // Insert fallback if the prelude inference produced an Error type OR the binding
-        // is absent entirely (which can happen if the entire prelude SCC failed and
-        // extract_bindings_from_program_with_fallback did not recover this name).
-        // If prelude correctly inferred a polymorphic scheme (non-Error, non-absent), keep it.
-        let needs_fallback = env
-            .get_own(name)
-            .map(|s| matches!(s.body, Type::Error))
-            .unwrap_or(true); // absent from env → needs fallback
-        if needs_fallback {
-            env.insert(name.to_string(), ty);
-        }
+    if any_success {
+        Some(current_env)
+    } else {
+        Some(Arc::new(std::sync::RwLock::new(Environment::with_parent(
+            bootstrap_env,
+        ))))
     }
-
-    // Propagate capability type aliases from the builtins env to the user-facing env.
-    // These are registered in build_builtins_type_env() (e.g. NetCap, DirCap, Handle, Url)
-    // and must be available for @NetCap / @DirCap / @Handle annotations in user code.
-    // merge_env_bindings_into only copies value bindings; type aliases require this pass.
-    let aliases: Vec<(String, TypeAlias)> = builtins_env
-        .own_type_aliases()
-        .map(|(k, v)| (k.to_string(), v.clone()))
-        .collect();
-    for (name, alias) in aliases {
-        env.insert_type_alias(name, alias);
-    }
-
-    // Inject core builtin primitive schemes into the user-facing env.
-    // Excludes +, -, *, / — those come from class method synthesis (S-886, T-1251)
-    // via the Addable/Subtractable/Multipliable/Divisible class declarations.
-    // Excludes =, <, >, <=, >= — handled in S-885 via Equatable/Comparable instances.
-    // Only primitive builtins (builtin-add, builtin-narrow, etc.) and non-operator
-    // schemes are injected here.
-    {
-        // Operator names that come from typeclass dispatch — do NOT inject from core_type_env.
-        // S-884: arithmetic operators come from Addable/etc. instances.
-        // S-885: comparison operators come from Equatable/Comparable instances.
-        let dispatch_operators: std::collections::HashSet<&str> =
-            ["+", "-", "*", "/", "=", "<", ">", "<=", ">="]
-                .iter()
-                .copied()
-                .collect();
-
-        let mut core_only_env = crate::types::TypeEnv::new();
-        crate::builtins_core::core_type_env(&mut core_only_env);
-        let mut core_names = std::collections::HashSet::new();
-        core_only_env.collect_own_names(&mut core_names);
-        for name in core_names {
-            // Skip operators that will come from class method synthesis.
-            if dispatch_operators.contains(name.as_str()) {
-                continue;
-            }
-            let core_scheme = match core_only_env.get_own(&name) {
-                Some(s) => s,
-                None => continue,
-            };
-            let current = env.get_own(&name);
-            let needs_inject = match current {
-                None => true,
-                Some(current_scheme) => {
-                    !core_scheme.constraints.is_empty() && current_scheme.constraints.is_empty()
-                }
-            };
-            if needs_inject {
-                env.insert_scheme(name, core_scheme.clone());
-            }
-        }
-    }
-
-    Rc::new(env)
 }
 
 /// Retrieve the type environment exported by a stdlib module at `module_path`.
@@ -756,248 +253,163 @@ pub async fn get_stdlib_module_type_env(module_path: &str) -> Option<Rc<TypeEnv>
 // AMBIENT-OK: type-checker include resolution — reads libdir files; type-only, no runtime I/O
 #[allow(clippy::disallowed_methods)]
 async fn build_stdlib_module_type_env_inner(module_path: &str) -> Option<Rc<TypeEnv>> {
-    // Locate the stdlib directory.
+    // Step 1: Locate the stdlib directory.
     let libdir = crate::find_libdir_path()?;
     let full_path = libdir.join(module_path);
 
-    // Read the file content. Skip unreadable files silently (best-effort).
-    let content = std::fs::read_to_string(&full_path).ok()?;
+    // Step 2: Read the module source from disk.
+    let source = match std::fs::read_to_string(&full_path) {
+        Ok(s) => s,
+        Err(_) => return None,
+    };
 
-    // Build the type env with the prelude as the parent baseline.
-    // typecheck_and_merge_stdlib_module extracts only bindings ABOVE the prelude baseline
-    // (i.e., the module's own exports), which is exactly what we inject into scope after
-    // a bare [include %libdir "X.llt"] call.
-    let prelude_env = build_prelude_env();
-    let mut module_env = TypeEnv::new();
-    if let Err(errors) = typecheck_and_merge_stdlib_module(
-        &content,
-        &prelude_env,
-        &mut module_env,
-        Some(module_path),
-    ).await {
-        for err in &errors {
-            eprintln!("stdlib module {module_path} has type errors:\n{err}");
-        }
-        return None;
-    }
+    // Step 3: Build SourceFile with the module's path for span attribution.
+    let sf = std::sync::Arc::new(crate::ast::SourceFile {
+        path: std::sync::Arc::from(full_path.to_string_lossy().as_ref()),
+        content: std::sync::Arc::from(source.as_str()),
+    });
 
-    Some(Rc::new(module_env))
+    // Step 4: Parse.
+    let mut program = crate::parser::parse_with_file(&source, sf).ok()?.program;
+
+    // Step 5: Expand (no_fs=true — stdlib modules are type-checked in isolation, no nested I/O).
+    // AMBIENT-OK: type bootstrap — expand with no_fs=true makes no filesystem calls.
+    let dummy_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority()).ok()?;
+    let expand_env = crate::builtins::build_core_env();
+    crate::expand::expand_surface_program(
+        &mut program,
+        expand_env,
+        /*no_fs=*/ true,
+        &dummy_dir,
+    )
+    .await
+    .ok()?;
+
+    // Step 6: Desugar.
+    crate::desugar::desugar_surface_program(&mut program);
+
+    // Step 7: Resolve (writes inline to AST nodes).
+    let _resolve_errors = crate::resolve::resolve_surface_program(&program);
+
+    // Step 8: Build parent env — builtin_core TypeEnv contains Boolean, Handle, builtin-* names.
+    let parent_env = get_builtin_core_type_env().await?;
+
+    // Step 9: Type-check the module with the builtin_core env as parent.
+    // enable_scheme_map=false (no LSP hover needed for bootstrap),
+    // resolution_table=None (use fresh resolver output from Step 7).
+    let (_errors, _type_map, _doc_map, _scheme_map, _diagnostics, _state, final_env) =
+        typecheck_surface_program_with_env(
+            &program, parent_env, false, // enable_scheme_map
+            None,  // resolution_table
+        )
+        .await;
+
+    // `final_env` contains the parent bindings plus all new declarations from the module.
+    // Convert Arc<TypeEnv> → Rc<TypeEnv> for the STDLIB_MODULE_CACHE (which uses Rc for the
+    // internal parent chain that TypeEnv::with_parent requires).
+    Some(Rc::new((*final_env).clone()))
 }
 
-/// Seed a fresh [`InferState`] with the prelude's class and instance environments.
-///
-/// Called at the start of every user-code type-checking session (in
-/// `typecheck_file_with_types_and_env_and_source_returning_state`). This ensures
-/// that class instances registered by `prelude.llt` (Mappable, Appendable, user-defined
-/// classes) are merged into the state so that `check_constraints_on_var` can find them
-/// via `InstanceEnv::resolve_instance`.
-///
-/// **Primitive class instances** (Equatable, Comparable, Numeric, Showable, Appendable for
-/// leaf/structural types) are pre-seeded in `InferState::new()` so they are available even
-/// during prelude self-type-checking (before the cache is populated). Re-seeding them here
-/// is safe because `InstanceEnv::insert` is idempotent (string-key dedup: duplicate entries
-/// are silently discarded).
-///
-/// This is a no-op when:
-/// - The prelude has not yet been type-checked (cache is empty). This handles the case
-///   where we are currently type-checking the prelude itself.
-/// - The cache is empty due to a prelude parse/expand error.
-pub fn seed_infer_state_from_prelude_cache(state: &mut InferState) {
-    if let Some(cached) = PRELUDE_INSTANCE_CACHE.get() {
-        let SendableInstanceCache(class_env, instance_env) = cached.as_ref();
-        // Merge prelude classes into state (or_insert: don't overwrite user-defined classes)
-        for class_decl in class_env.iter_classes() {
-            state.class_env.insert_if_absent(class_decl.clone());
-        }
-        // Merge all prelude instances into state.
-        //
-        // InstanceEnv::insert is idempotent: instances already pre-seeded by InferState::new()
-        // (Equatable, Comparable, Numeric, Showable, Appendable for primitives/structural types)
-        // are silently discarded when the same string key is encountered again. This means
-        // prelude-defined instances for the same classes (e.g., EquatableInt from prelude.llt)
-        // are merged without error — they hit the same key and are no-ops.
-        //
-        // Indexable: MPTC class with FD — its instances are pre-seeded in InferState::new()
-        // for Map and Seq. Prelude does not declare additional Indexable instances, so no
-        // conflict arises. Seeding here is safe (idempotent).
-        for inst_decl in instance_env.iter_instances() {
-            let _ = state.instance_env.insert(inst_decl.clone());
-        }
-    }
+// Thread-local cache for the builtin_core.llt type environment (T-1366 Rust step 2 bootstrap).
+// Populated on first call to `get_builtin_core_type_env()`. Once built, all subsequent
+// calls on the same thread return an `Arc::clone` without re-parsing or re-typechecking.
+thread_local! {
+    static BUILTIN_CORE_TYPE_ENV: RefCell<Option<Arc<TypeEnv>>> = const { RefCell::new(None) };
+    /// Recursion guard: prevents re-entrant calls from within the typecheck of builtin_core.llt.
+    static BUILDING_BUILTIN_CORE_ENV: RefCell<bool> = const { RefCell::new(false) };
 }
 
-/// Build or retrieve the type-stage evaluation environment.
+/// T-1366 Rust step 2 bootstrap: type-check `stdlib/builtin_core.llt` and return the
+/// resulting `TypeEnv` so that `Boolean`, `Handle`, `builtin-if`, `builtin-raise`, etc.
+/// are visible to the prelude type-checker by their bare names.
 ///
-/// This environment contains type dicts (Int, Str, etc.) and type-level functions
-/// (Seq, Map, union, all) extracted from the prelude's `--- stage: type` sections.
-/// Used by the annotation resolver for evaluating bracket annotations.
+/// Uses `include_str!` so the file is embedded at compile time — no runtime libdir access
+/// needed. The result is cached thread-locally; subsequent calls return `Arc::clone` in O(1).
 ///
-/// The environment is cached in thread-local storage to avoid re-parsing and
-/// re-evaluating the prelude on every type-checking run.
-///
-/// Returns None if:
-/// - We are currently building the type-stage env (recursion guard)
-/// - Type-stage env creation fails (graceful degradation)
-pub fn build_type_stage_env() -> Option<Arc<RwLock<crate::value::Environment>>> {
-    // Check recursion guard first (before cache check, to avoid borrow conflicts)
-    let is_building = BUILDING_TYPE_STAGE_ENV.with(|flag| *flag.borrow());
-    if is_building {
-        // We're already building the type-stage env (recursive call from create_type_stage_env)
-        return None;
+/// Returns `None` if:
+/// - A re-entrant call is detected (recursion guard).
+/// - Parsing or resolution fails (rare; the file is compiled-in and known-good).
+pub async fn get_builtin_core_type_env() -> Option<Arc<TypeEnv>> {
+    // Fast path: return cached result.
+    let cached = BUILTIN_CORE_TYPE_ENV.with(|c| c.borrow().clone());
+    if let Some(env) = cached {
+        return Some(env);
     }
 
-    TYPE_STAGE_ENV_CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        if let Some(ref env) = *cache {
-            // Cache hit: return a clone of the cached environment
-            return Some(Arc::clone(env));
-        }
+    // Recursion guard: prevent re-entrant calls (e.g. from within builtin_core.llt typecheck).
+    let already_building = BUILDING_BUILTIN_CORE_ENV.with(|f| *f.borrow());
+    if already_building {
+        return None;
+    }
+    BUILDING_BUILTIN_CORE_ENV.with(|f| *f.borrow_mut() = true);
 
-        // Set recursion guard
-        BUILDING_TYPE_STAGE_ENV.with(|flag| *flag.borrow_mut() = true);
+    let result = build_builtin_core_type_env_inner().await;
 
-        // Cache miss: build the type-stage environment from scratch
-        let result = match crate::builtins::create_type_stage_env() {
-            Ok(env) => {
-                *cache = Some(Arc::clone(&env));
-                Some(env)
-            }
-            Err(_) => {
-                // If type-stage env creation fails, return None (graceful degradation)
-                None
-            }
-        };
+    BUILDING_BUILTIN_CORE_ENV.with(|f| *f.borrow_mut() = false);
 
-        // Clear recursion guard
-        BUILDING_TYPE_STAGE_ENV.with(|flag| *flag.borrow_mut() = false);
+    if let Some(ref env) = result {
+        BUILTIN_CORE_TYPE_ENV.with(|c| *c.borrow_mut() = Some(Arc::clone(env)));
+    }
 
-        result
-    })
+    result
 }
 
-/// Build a type-stage evaluation environment for a user file by extending the prelude
-/// type-stage env with the file's `--- stage: type` sections.
+/// Inner implementation of `get_builtin_core_type_env`.
 ///
-/// This is the T-1175 implementation: user files can define type-stage functions in
-/// type-stage documents and use them in annotations in runtime documents.
-///
-/// # Algorithm
-///
-/// 1. Get the prelude type-stage env (from `build_type_stage_env()`)
-/// 2. Filter the program to only `--- stage: type` documents
-/// 3. Evaluate each type-stage document with the prelude env as parent
-/// 4. Extract bindings from the result and insert into a new env extending the prelude
-/// 5. Return the extended env
-///
-/// # Returns
-///
-/// - `Some(env)` if at least one type-stage document was successfully evaluated
-/// - `None` if:
-///   - The program has no type-stage documents
-///   - The prelude type-stage env is unavailable (bootstrap recursion guard)
-///   - All type-stage documents failed to evaluate
-pub async fn build_user_type_stage_env(
-    program: &SurfaceProgram,
-    resolution_table: &std::sync::Arc<crate::ast::ResolutionTable>,
-) -> Option<Arc<RwLock<crate::value::Environment>>> {
-    // Get the prelude type-stage env as the base
-    let prelude_env = build_type_stage_env()?;
+/// Parses `stdlib/builtin_core.llt` (embedded at compile time via `include_str!`),
+/// runs the full pipeline (expand → desugar → resolve → typecheck), and returns the
+/// resulting `TypeEnv` with the new type declarations merged on top of
+/// `build_builtins_type_env()` as the parent.
+async fn build_builtin_core_type_env_inner() -> Option<Arc<TypeEnv>> {
+    // Embedded source — no libdir access needed at runtime.
+    let source = include_str!("../stdlib/builtin_core.llt");
+    let sf = std::sync::Arc::new(crate::ast::SourceFile {
+        path: std::sync::Arc::from("stdlib/builtin_core.llt"),
+        content: std::sync::Arc::from(source),
+    });
 
-    // Check if the program has any type-stage documents
-    let has_type_stage_docs = program
-        .documents
-        .iter()
-        .any(|doc| doc.node.stage == Some(crate::ast::Stage::Type));
+    // Parse — extract .program from ParseOutput
+    let mut program = crate::parser::parse_with_file(source, sf).ok()?.program;
 
-    if !has_type_stage_docs {
-        // No user type-stage sections — return None so the caller uses prelude env directly
-        return None;
-    }
-
-    // Create a child env extending the prelude env
-    let user_type_stage_env = Arc::new(RwLock::new(crate::value::Environment::with_parent(
-        Arc::clone(&prelude_env),
-    )));
-
-    // Build a minimal EvalContext for type-stage evaluation
-    // AMBIENT-OK: type-stage evaluation performs no file I/O
+    // Open CWD as a dummy base_dir — no_fs=true means expand won't actually use it.
+    // AMBIENT-OK: type bootstrap — expand with no_fs=true makes no filesystem calls.
     #[allow(clippy::disallowed_methods)]
-    let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority()).ok()?;
-    let ctx =
-        crate::eval::EvalContext::new_empty(base_dir, Arc::clone(&user_type_stage_env), false);
+    let dummy_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority()).ok()?;
 
-    let empty_types = std::sync::Arc::new(crate::ast::TypeAnnotationTable::new());
-    let mut any_success = false;
+    // Expand (macro expansion — no filesystem access, no_fs=true ensures no I/O)
+    let expand_env = crate::builtins::build_core_env();
+    crate::expand::expand_surface_program(
+        &mut program,
+        expand_env,
+        /*no_fs=*/ true,
+        &dummy_dir,
+    )
+    .await
+    .ok()?;
 
-    // Evaluate each type-stage document
-    for doc in &program.documents {
-        if doc.node.stage == Some(crate::ast::Stage::Type) {
-            // Collect expression nodes (skip Decl items)
-            let expr_nodes: Vec<Arc<crate::ast::SurfaceNode>> =
-                doc.node.expressions().cloned().collect();
+    // Desugar
+    crate::desugar::desugar_surface_program(&mut program);
 
-            for expr_node in &expr_nodes {
-                // Evaluate this expression item with the current user_type_stage_env
-                let result = crate::eval::eval_document_exprs(
-                    std::slice::from_ref(expr_node),
-                    Arc::clone(&user_type_stage_env),
-                    &ctx,
-                    resolution_table,
-                    &empty_types,
-                )
-                .await;
+    // Resolve (writes inline to AST nodes).
+    let _resolve_errors = crate::resolve::resolve_surface_program(&program);
 
-                let result_thunk = match result {
-                    Ok(t) => t,
-                    Err(_) => continue, // Skip failed expressions
-                };
+    // Build parent env: builtins type env (Rust-native type signatures).
+    let builtins_env = crate::builtins::build_builtins_type_env();
+    let parent_env = Arc::new(builtins_env);
 
-                // Materialize and extract bindings
-                let val = crate::eval::materialize(&result_thunk, None, &ctx).await;
-                let val = match val {
-                    Ok(v) => v,
-                    Err(_) => continue, // Skip failed materialization
-                };
+    // Typecheck with builtins env as parent.
+    // enable_scheme_map=false (no LSP hover needed for bootstrap),
+    // resolution_table=None (use fresh resolver output).
+    let (_errors, _type_map, _doc_map, _scheme_map, _diagnostics, _state, final_env) =
+        typecheck_surface_program_with_env(
+            &program, parent_env, false, // enable_scheme_map
+            None,  // resolution_table
+        )
+        .await;
 
-                let dict = match val {
-                    crate::value::Value::Dict(map) => map,
-                    crate::value::Value::Overlay(l_id, r_id) => {
-                        match crate::builtins::flatten_overlay(
-                            &l_id,
-                            &r_id,
-                            "user type-stage",
-                            &ctx,
-                            expr_node.span.clone(),
-                        )
-                        .await
-                        {
-                            Ok(d) => d,
-                            Err(_) => continue,
-                        }
-                    }
-                    _ => continue, // Non-dict result — no bindings to extract
-                };
-
-                // Insert bindings into user type-stage env
-                for (key, thunk_id) in dict {
-                    let name = match key {
-                        crate::value::Key::String(s) => s.to_string(),
-                        crate::value::Key::Int(n) => n.to_string(),
-                    };
-                    let thunk = ctx.get_thunk(thunk_id);
-                    user_type_stage_env.write().unwrap().insert(name, thunk);
-                    any_success = true;
-                }
-            }
-        }
-    }
-
-    if any_success {
-        Some(user_type_stage_env)
-    } else {
-        // All type-stage documents failed — fall back to prelude env
-        None
-    }
+    // `final_env` contains the parent bindings plus all new type declarations from
+    // builtin_core.llt. Return it as the bootstrapped TypeEnv.
+    Some(final_env)
 }
 
 /// Replace all TypeVar occurrences in a type with Top.
@@ -1014,7 +426,7 @@ pub async fn build_user_type_stage_env(
 fn erase_type_vars(ty: &crate::types::Type) -> crate::types::Type {
     use crate::types::{Row, Type};
     match ty {
-        Type::TypeVar(_, _) => Type::Top,
+        Type::TypeVar(_, _) => Type::Any,
         Type::Function {
             params,
             ret,
@@ -1197,9 +609,10 @@ fn collect_include_paths_from_node(
                 collect_include_paths_from_node(child, paths);
             }
         }
-        SurfaceExpression::DotAccess { expr: target, .. } => {
+        SurfaceExpression::DotAccess { expr: Some(target), .. } => {
             collect_include_paths_from_node(target, paths);
         }
+        SurfaceExpression::DotAccess { expr: None, .. } => {}
         SurfaceExpression::Quote(inner)
         | SurfaceExpression::Unquote(inner)
         | SurfaceExpression::UnquoteSplice(inner) => {
@@ -1225,9 +638,7 @@ fn collect_include_paths_from_node(
             }
         }
         SurfaceExpression::CaseArm { let_bindings, pattern, body } => {
-            if let Some(lb) = let_bindings {
-                collect_include_paths_from_node(lb, paths);
-            }
+            collect_include_paths_from_node(let_bindings, paths);
             collect_include_paths_from_node(pattern, paths);
             collect_include_paths_from_node(body, paths);
         }
@@ -1235,12 +646,11 @@ fn collect_include_paths_from_node(
         SurfaceExpression::Int(_)
         | SurfaceExpression::U64(_)
         | SurfaceExpression::Float(_)
-        | SurfaceExpression::Bool(_)
         | SurfaceExpression::Str(_)
         | SurfaceExpression::VarRef { .. }
         | SurfaceExpression::Placeholder
         | SurfaceExpression::Decl(_) // type-level declaration, no include paths inside
-        | SurfaceExpression::Rest(_)
+        | SurfaceExpression::Rest(..)
         | SurfaceExpression::Annotated { .. }
         | SurfaceExpression::Error(_) => {}
     }
@@ -1406,13 +816,10 @@ async fn resolve_includes(
         // Use expand_surface_program (not expand_macros) so SurfaceItem::Decl macros are seen.
         // Desugar AFTER macro expansion so that macros can introduce $_ patterns.
         let mut program = parsed.program;
-        if expand::expand_surface_program(
-            &mut program,
-            true,
-            expand_dir,
-        )
-        .await
-        .is_err()
+        let expand_env = crate::builtins::build_core_env();
+        if expand::expand_surface_program(&mut program, expand_env, true, expand_dir)
+            .await
+            .is_err()
         {
             continue;
         }
@@ -1435,15 +842,16 @@ async fn resolve_includes(
         } else {
             Rc::clone(&env)
         };
-        let in_prelude_load = cap_name.as_deref() == Some("%libdir");
-        let (type_errors, type_map, _doc_map, _scheme_map, _diagnostics, _state, _final_env, _ann) =
+        // typecheck_surface_program_with_env takes Arc<TypeEnv> — convert from Rc.
+        let typecheck_env_arc = Arc::new((*typecheck_env).clone());
+        let (type_errors, type_map, _doc_map, _scheme_map, _diagnostics, _state, _final_env) =
             typecheck_surface_program_with_env(
                 &program,
-                typecheck_env,
+                typecheck_env_arc,
                 false,
-                in_prelude_load,
                 None,
-            ).await;
+            )
+            .await;
 
         // Stdlib includes are user code — their type errors are surfaced like any other.
         if !type_errors.is_empty() {
@@ -1573,7 +981,7 @@ fn apply_include_type_to_node(
                             let path_span = args[1].span.clone();
                             if let Some(bindings) = include_bindings.get(&path_span) {
                                 // Build a closed Record type from the contributed bindings
-                                let fields: BTreeMap<String, Type> = bindings
+                                let fields: indexmap::IndexMap<String, Type> = bindings
                                     .iter()
                                     .map(|(name, ty)| (name.clone(), ty.clone()))
                                     .collect();
@@ -1615,9 +1023,10 @@ fn apply_include_type_to_node(
                 apply_include_type_to_node(child, include_bindings, type_map);
             }
         }
-        SurfaceExpression::DotAccess { expr: target, .. } => {
+        SurfaceExpression::DotAccess { expr: Some(target), .. } => {
             apply_include_type_to_node(target, include_bindings, type_map);
         }
+        SurfaceExpression::DotAccess { expr: None, .. } => {}
         SurfaceExpression::Quote(inner)
         | SurfaceExpression::Unquote(inner)
         | SurfaceExpression::UnquoteSplice(inner) => {
@@ -1643,9 +1052,7 @@ fn apply_include_type_to_node(
             }
         }
         SurfaceExpression::CaseArm { let_bindings, pattern, body } => {
-            if let Some(lb) = let_bindings {
-                apply_include_type_to_node(lb, include_bindings, type_map);
-            }
+            apply_include_type_to_node(let_bindings, include_bindings, type_map);
             apply_include_type_to_node(pattern, include_bindings, type_map);
             apply_include_type_to_node(body, include_bindings, type_map);
         }
@@ -1653,12 +1060,11 @@ fn apply_include_type_to_node(
         SurfaceExpression::Int(_)
         | SurfaceExpression::U64(_)
         | SurfaceExpression::Float(_)
-        | SurfaceExpression::Bool(_)
         | SurfaceExpression::Str(_)
         | SurfaceExpression::VarRef { .. }
         | SurfaceExpression::Placeholder
         | SurfaceExpression::Decl(_) // type-level declaration, no include paths inside
-        | SurfaceExpression::Rest(_)
+        | SurfaceExpression::Rest(..)
         | SurfaceExpression::Annotated { .. }
         | SurfaceExpression::Error(_) => {}
     }
@@ -1703,7 +1109,13 @@ pub async fn build_type_env_with_cap(
     base_dir: Option<&Path>,
     cap_dir: &cap_std::fs::Dir,
 ) -> (Rc<TypeEnv>, IncludeBindings) {
-    let prelude_env = build_prelude_env();
+    // Seed the environment with the builtin_core type env as the baseline.
+    // Falls back to an empty env if unavailable (e.g., re-entrant bootstrap call).
+    let prelude_env_arc = get_builtin_core_type_env()
+        .await
+        .unwrap_or_else(|| Arc::new(TypeEnv::new()));
+    // TypeEnv::with_parent takes &Rc<TypeEnv>; convert Arc → Rc by cloning the contained value.
+    let prelude_env = Rc::new((*prelude_env_arc).clone());
 
     // Seed with always-available cap types
     let mut env = TypeEnv::with_parent(&prelude_env);
@@ -1711,9 +1123,9 @@ pub async fn build_type_env_with_cap(
     env.insert("%libdir".to_string(), crate::types::Type::DirCap);
     // %stdin is Handle[Readable Text]
     {
-        let mut caps = BTreeMap::new();
-        caps.insert("Readable".to_string(), Type::Bool);
-        caps.insert("Text".to_string(), Type::Bool);
+        let mut caps: indexmap::IndexMap<String, Type> = indexmap::IndexMap::new();
+        caps.insert("Readable".to_string(), Type::Any);
+        caps.insert("Text".to_string(), Type::Any);
         env.insert(
             "%stdin".to_string(),
             Type::handle(Type::Record(Row {
@@ -1726,18 +1138,18 @@ pub async fn build_type_env_with_cap(
     // write-handle expects Handle[[__cap_flag_writable: []]] (from cap_flag("writable") in builtins_core.rs).
     // Under BAS width subtyping, Handle[[__cap_flag_writable: [], __cap_flag_text: []]] satisfies it.
     {
-        let mut caps = BTreeMap::new();
+        let mut caps: indexmap::IndexMap<String, Type> = indexmap::IndexMap::new();
         caps.insert(
             "__cap_flag_writable".to_string(),
             Type::Record(Row {
-                fields: BTreeMap::new(),
+                fields: indexmap::IndexMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             }),
         );
         caps.insert(
             "__cap_flag_text".to_string(),
             Type::Record(Row {
-                fields: BTreeMap::new(),
+                fields: indexmap::IndexMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             }),
         );
@@ -1767,7 +1179,8 @@ pub async fn build_type_env_with_cap(
             0,
             cap_dir,
             Rc::clone(&prelude_env),
-        ).await;
+        )
+        .await;
         env = new_env;
         include_bindings = bindings;
     }
@@ -1779,72 +1192,6 @@ pub async fn build_type_env_with_cap(
 #[allow(clippy::disallowed_methods)] // test helpers use ambient open_ambient_dir; test-only
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_build_prelude_env_caches() {
-        let env1 = build_prelude_env();
-        let env2 = build_prelude_env();
-        // Both calls must return distinct Rc allocations (clone-on-read pattern) that
-        // refer to equal content — the global OnceLock is only built once, so both
-        // envs contain the same bindings.
-        assert!(
-            !Rc::ptr_eq(&env1, &env2),
-            "expected distinct Rc allocations"
-        );
-        // Both envs expose the same prelude bindings.
-        assert_eq!(
-            env1.get("map").is_some(),
-            env2.get("map").is_some(),
-            "both envs should agree on 'map' presence"
-        );
-        assert_eq!(
-            env1.get("filter").is_some(),
-            env2.get("filter").is_some(),
-            "both envs should agree on 'filter' presence"
-        );
-    }
-
-    #[test]
-    fn test_build_prelude_env_has_prelude_exports() {
-        let env = build_prelude_env();
-        // After builtin-privacy Phase 2: user-facing env contains ONLY prelude exports,
-        // not the raw builtin registry. Check a representative sample of prelude-exported names.
-        //
-        // Prelude re-exports: keys, map, filter, split, str, append, range, error, ...
-        assert!(
-            env.get("keys").is_some(),
-            "keys should be in prelude exports"
-        );
-        assert!(env.get("map").is_some(), "map should be in prelude exports");
-        assert!(
-            env.get("filter").is_some(),
-            "filter should be in prelude exports"
-        );
-        //
-        // Prelude exports `connect` (as a wrapper around `builtin-connect`), so it SHOULD
-        // appear in the user-facing TypeEnv. Verify this.
-        assert!(
-            env.get("connect").is_some(),
-            "connect SHOULD be in prelude env — prelude.llt re-exports it as a wrapper"
-        );
-        // Raw net session builtins that are NOT exported by prelude should be absent.
-        // These test the boundary: user code should not see raw HTTP/QUIC session primitives
-        // that only net.llt exposes via explicit [include libdir "net.llt"].
-        assert!(
-            env.get("http2-session").is_none(),
-            "http2-session should NOT be in prelude env — requires explicit [include libdir \"net.llt\"]"
-        );
-    }
-
-    #[test]
-    fn test_build_prelude_env_has_prelude_functions() {
-        let env = build_prelude_env();
-        // Check that prelude functions are present (examples from stdlib/prelude.llt)
-        // These are LLT-implemented functions, not Rust builtins
-        assert!(env.get("any?").is_some());
-        assert!(env.get("all?").is_some());
-        assert!(env.get("cond").is_some());
-    }
 
     #[test]
     fn test_collect_include_paths_empty() {
@@ -1879,41 +1226,6 @@ mod tests {
         assert_eq!(paths.len(), 0);
     }
 
-    /// Verify that the prelude environment contains type bindings for the six
-    /// core prelude functions that downstream code commonly references.
-    #[test]
-    fn build_prelude_env_resolves_prelude_functions() {
-        let env = build_prelude_env();
-        // These are all LLT-implemented functions defined in stdlib/prelude.llt,
-        // not Rust builtins — their presence proves the full prelude pipeline ran.
-        assert!(env.get("map").is_some(), "expected 'map' in prelude env");
-        assert!(
-            env.get("filter").is_some(),
-            "expected 'filter' in prelude env"
-        );
-        assert!(env.get("and").is_some(), "expected 'and' in prelude env");
-        assert!(env.get("or").is_some(), "expected 'or' in prelude env");
-        assert!(
-            env.get("flatten").is_some(),
-            "expected 'flatten' in prelude env"
-        );
-        assert!(env.get("zip").is_some(), "expected 'zip' in prelude env");
-
-        // strings/math/encoding are NOT loaded at startup — require explicit [include libdir ...]
-        assert!(
-            env.get("pad-left").is_none(),
-            "pad-left should not be in prelude env (requires explicit include)"
-        );
-        assert!(
-            env.get("pi").is_none(),
-            "pi should not be in prelude env (requires explicit include)"
-        );
-        assert!(
-            env.get("hex-encode").is_none(),
-            "hex-encode should not be in prelude env (requires explicit include)"
-        );
-    }
-
     /// Verify that `collect_include_paths` finds `[call $include %cap "path"]` forms.
     ///
     /// This exercises the explicit `call` form (`[call $include ...]`) as distinct
@@ -1938,54 +1250,11 @@ mod tests {
         assert_eq!(paths.len(), 0, "bare includes should be skipped");
     }
 
-    /// Verify that `resolve_includes` returns `base_env` unchanged when the
-    /// include path does not exist on disk.
-    ///
-    /// The implementation skips paths whose `canonicalize()` fails, so a missing
-    /// file is silently ignored and the original environment is returned unmodified.
-    #[test]
-    fn resolve_includes_missing_file_returns_base() {
-        let base_env = Rc::new(crate::builtins::build_builtins_type_env());
-        let include_paths = vec![(
-            Span::origin(),
-            Some("%cwd".to_string()),
-            "nonexistent_file_xyz.llt".to_string(),
-        )];
-        let tmp = std::env::temp_dir();
-        let mut visited = HashSet::new();
-
-        // Open a test cap dir (required by resolve_includes signature)
-        let test_cap_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
-            .expect("failed to open test cap dir");
-
-        let prelude_env_for_test = build_prelude_env();
-        let (result_env, result_bindings) = crate::async_rt::block_on_anywhere(resolve_includes(
-            &include_paths,
-            Some(tmp.as_path()),
-            None, // no libdir
-            Rc::clone(&base_env),
-            &mut visited,
-            0,
-            &test_cap_dir,
-            prelude_env_for_test,
-        ));
-
-        // Missing file: canonicalize fails → skipped → base_env returned as-is.
-        assert!(
-            Rc::ptr_eq(&result_env, &base_env),
-            "expected resolve_includes to return the original base_env when file is missing"
-        );
-        assert!(
-            result_bindings.is_empty(),
-            "expected no bindings when file is missing"
-        );
-    }
-
     /// Verify that `build_type_env` seeds the environment with cap types.
-    #[test]
-    fn test_build_type_env_has_cap_types() {
+    #[tokio::test]
+    async fn test_build_type_env_has_cap_types() {
         let program = SurfaceProgram { documents: vec![] };
-        let (env, _bindings) = crate::async_rt::block_on_anywhere(build_type_env(&program, None));
+        let (env, _bindings) = build_type_env(&program, None).await;
 
         // Check that cap variables are present with correct types
         assert!(env.get("%cwd").is_some(), "expected %cwd in type env");
@@ -2024,8 +1293,8 @@ mod tests {
     /// This test verifies Task 1 of the runtime-reflection-include sprint:
     /// resolve_includes returns a mapping from each include call's span to
     /// the bindings it contributed.
-    #[test]
-    fn test_build_type_env_returns_include_bindings() {
+    #[tokio::test]
+    async fn test_build_type_env_returns_include_bindings() {
         // Parse a simple LLT file that includes another file
         let source = r#"
             [x: 42]
@@ -2033,7 +1302,7 @@ mod tests {
         let program = parser::parse(source).unwrap().program;
 
         // Without any includes, the binding map should be empty
-        let (_env, bindings) = crate::async_rt::block_on_anywhere(build_type_env(&program, None));
+        let (_env, bindings) = build_type_env(&program, None).await;
         assert!(
             bindings.is_empty(),
             "expected empty bindings when there are no includes"
@@ -2168,84 +1437,6 @@ mod tests {
             record_found,
             "expected a Record with 'read' field in type_map; got: {:?}",
             type_map
-        );
-    }
-
-    /// Verify that the prelude document type-checks successfully after the `%rust` fix.
-    ///
-    /// With `%rust` seeded into the builtins env, the prelude document no longer fails
-    /// with "undefined variable: %rust". The `merge_env_bindings_into` env-based path
-    /// now runs for the prelude, giving prelude functions their inferred types from the
-    /// final TypeEnv rather than the TypeMap fallback.
-    ///
-    /// `identity` is defined as `[fn@[return: a] [let x] x]`. Since its parameter `x`
-    /// is unannotated, it gets `Type::Unknown` (not a fresh TypeVar). This makes identity
-    /// appear as `Fn@Unknown [Unknown]` — monomorphic with Unknown types. This is the
-    /// correct behavior under the current unannotated-params-get-Unknown policy.
-    #[test]
-    fn build_prelude_env_identity_via_env_path() {
-        use crate::types::Type;
-
-        let env = build_prelude_env();
-        let scheme = env
-            .get("identity")
-            .expect("expected 'identity' in prelude env");
-
-        // With %rust seeded, the prelude document type-checks successfully and identity
-        // comes from the env-based path (merge_env_bindings_into). The env path gives
-        // identity as Fn@Unknown [Unknown] because its param is unannotated → Unknown.
-        // This is a Function body (not the fallback Unknown body), confirming env path.
-        assert!(
-            matches!(scheme.body, Type::Function { .. }),
-            "expected 'identity' body to be Function (env path active after %rust fix), \
-             got: {:?}",
-            scheme.body
-        );
-    }
-
-    /// Verify that `=` and `<` have their constraint-annotated builtin schemes in the
-    /// prelude env, not degraded monomorphic schemes with Unknown params.
-    ///
-    /// This exercises the builtin-privacy-constraint-hover fix: if the prelude's
-    /// type-checking produces a monomorphic (no type_vars) scheme for these operators,
-    /// the fallback to the authoritative builtin scheme restores the Equatable/Comparable
-    /// constraint for LSP hover display.
-    #[test]
-    fn build_prelude_env_eq_lt_have_constrained_schemes() {
-        let env = build_prelude_env();
-
-        // `=` must be polymorphic (has type_vars) — degraded schemes are monomorphic.
-        let eq_scheme = env.get("=").expect("expected '=' in prelude env");
-        assert!(
-            !eq_scheme.type_vars.is_empty(),
-            "expected '=' to have type_vars (Equatable constraint), got monomorphic scheme: {:?}",
-            eq_scheme
-        );
-        // `=` must have an Equatable constraint.
-        assert!(
-            eq_scheme
-                .constraints
-                .iter()
-                .any(|c| matches!(c, crate::types::Constraint::Class { class, .. } if class.name == "Equatable")),
-            "expected '=' to have Equatable constraint, got: {:?}",
-            eq_scheme.constraints
-        );
-
-        // `<` must be polymorphic (has type_vars).
-        let lt_scheme = env.get("<").expect("expected '<' in prelude env");
-        assert!(
-            !lt_scheme.type_vars.is_empty(),
-            "expected '<' to have type_vars (Comparable constraint), got monomorphic scheme: {:?}",
-            lt_scheme
-        );
-        // `<` must have a Comparable constraint.
-        assert!(
-            lt_scheme
-                .constraints
-                .iter()
-                .any(|c| matches!(c, crate::types::Constraint::Class { class, .. } if class.name == "Comparable")),
-            "expected '<' to have Comparable constraint, got: {:?}",
-            lt_scheme.constraints
         );
     }
 }

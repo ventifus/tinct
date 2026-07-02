@@ -84,7 +84,8 @@ pub fn run_lsp() -> Result<(), Box<dyn Error>> {
 
     eprintln!("tinct LSP server initialized.");
 
-    let mut store = DocumentStore::new().map_err(|e| -> Box<dyn Error> { e.into() })?;
+    let mut store = crate::async_rt::block_on_anywhere(DocumentStore::new())
+        .map_err(|e| -> Box<dyn Error> { e.into() })?;
 
     for msg in &connection.receiver {
         match msg {
@@ -94,10 +95,14 @@ pub fn run_lsp() -> Result<(), Box<dyn Error>> {
                     break;
                 }
 
-                handle_request(&connection, &store, req)?;
+                crate::async_rt::block_on_anywhere(handle_request(&connection, &store, req))?;
             }
             Message::Notification(notif) => {
-                handle_notification(&connection, &mut store, notif)?;
+                crate::async_rt::block_on_anywhere(handle_notification(
+                    &connection,
+                    &mut store,
+                    notif,
+                ))?;
             }
             Message::Response(_) => {
                 // Client responses to our requests (none expected in basic LSP).
@@ -109,7 +114,7 @@ pub fn run_lsp() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn handle_request(
+async fn handle_request(
     connection: &Connection,
     store: &DocumentStore,
     req: Request,
@@ -137,21 +142,27 @@ fn handle_request(
 
             // On-demand hover: if the document is not in the store (not opened),
             // load it from disk and analyze it on the fly.
-            let hover = if let Some(doc) = store.get(&uri) {
+            let hover_text = if let Some(doc) = store.get(&uri) {
                 // Document is open in editor: use cached state
-                lsp_position_to_offset(&pos, &doc.text).and_then(|offset| {
-                    hover_at(doc, &uri, offset, &store.include_graph, store.eval_ctx())
-                })
+                if let Some(offset) = lsp_position_to_offset(&pos, &doc.text) {
+                    hover_at(doc, &uri, offset, &store.include_graph, store.eval_ctx()).await
+                } else {
+                    None
+                }
             } else {
                 // Document is not open: load from URI and analyze
                 use crate::lsp::document::load_doc_from_uri;
-                load_doc_from_uri(&uri).and_then(|doc| {
-                    lsp_position_to_offset(&pos, &doc.text).and_then(|offset| {
-                        hover_at(&doc, &uri, offset, &store.include_graph, store.eval_ctx())
-                    })
-                })
-            }
-            .map(|text| lsp_types::Hover {
+                if let Some(doc) = load_doc_from_uri(&uri).await {
+                    if let Some(offset) = lsp_position_to_offset(&pos, &doc.text) {
+                        hover_at(&doc, &uri, offset, &store.include_graph, store.eval_ctx()).await
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            };
+            let hover = hover_text.map(|text| lsp_types::Hover {
                 contents: HoverContents::Scalar(MarkedString::String(text)),
                 range: None,
             });
@@ -185,17 +196,17 @@ fn handle_request(
 
             // On-demand goto-definition: if the document is not in the store (not opened),
             // load it from disk and analyze it on the fly.
-            let location = if let Some(doc) = store.get(&uri) {
+            use crate::lsp::document::load_doc_from_uri;
+            let location: Option<Location> = if let Some(doc) = store.get(&uri) {
                 // Document is open in editor: use cached state
-                lsp_position_to_offset(&pos, &doc.text).and_then(|offset| {
-                    definition_at(
+                if let Some(offset) = lsp_position_to_offset(&pos, &doc.text) {
+                    if let Some((target_uri, span)) = definition_at(
                         doc,
                         &uri,
                         offset,
                         &store.include_graph,
                         store.prelude_surface(),
-                    )
-                    .map(|(target_uri, span)| {
+                    ) {
                         // Determine source text for converting span to range:
                         // - Document-local: use doc.text
                         // - Included file: read from include_graph
@@ -209,25 +220,27 @@ fn handle_request(
                             // Prelude: read from embedded source
                             include_str!("../../stdlib/prelude.llt").to_string()
                         };
-                        Location {
+                        Some(Location {
                             uri: target_uri,
                             range: llt_span_to_lsp_range(&span, &source_text),
-                        }
-                    })
-                })
+                        })
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
             } else {
                 // Document is not open: load from URI and analyze
-                use crate::lsp::document::load_doc_from_uri;
-                load_doc_from_uri(&uri).and_then(|doc| {
-                    lsp_position_to_offset(&pos, &doc.text).and_then(|offset| {
-                        definition_at(
+                if let Some(doc) = load_doc_from_uri(&uri).await {
+                    if let Some(offset) = lsp_position_to_offset(&pos, &doc.text) {
+                        if let Some((target_uri, span)) = definition_at(
                             &doc,
                             &uri,
                             offset,
                             &store.include_graph,
                             store.prelude_surface(),
-                        )
-                        .map(|(target_uri, span)| {
+                        ) {
                             // For unopened documents, read target text from disk if needed
                             let source_text: String = if target_uri == uri {
                                 doc.text.clone()
@@ -245,24 +258,32 @@ fn handle_request(
                                 } else {
                                     // Other file: load from disk
                                     load_doc_from_uri(&target_uri)
+                                        .await
                                         .map(|d| d.text)
                                         .unwrap_or_default()
                                 }
                             } else {
                                 // Fallback: load from disk
                                 load_doc_from_uri(&target_uri)
+                                    .await
                                     .map(|d| d.text)
                                     .unwrap_or_default()
                             };
-                            Location {
+                            Some(Location {
                                 uri: target_uri,
                                 range: llt_span_to_lsp_range(&span, &source_text),
-                            }
-                        })
-                    })
-                })
-            }
-            .map(GotoDefinitionResponse::Scalar);
+                            })
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            };
+            let location = location.map(GotoDefinitionResponse::Scalar);
 
             let result = serde_json::to_value(location)?;
             connection.sender.send(Message::Response(Response {
@@ -301,12 +322,13 @@ fn handle_request(
             } else {
                 // Document is not open: load from URI and analyze
                 use crate::lsp::document::load_doc_from_uri;
-                load_doc_from_uri(&uri)
-                    .and_then(|doc| {
-                        lsp_position_to_offset(&pos, &doc.text)
-                            .map(|offset| completion_at(&doc, &uri, offset))
-                    })
-                    .unwrap_or_default()
+                if let Some(doc) = load_doc_from_uri(&uri).await {
+                    lsp_position_to_offset(&pos, &doc.text)
+                        .map(|offset| completion_at(&doc, &uri, offset))
+                        .unwrap_or_default()
+                } else {
+                    Vec::new()
+                }
             };
 
             let result = serde_json::to_value(CompletionResponse::Array(items))?;
@@ -339,9 +361,11 @@ fn handle_request(
                 document_symbols_at(doc)
             } else {
                 use crate::lsp::document::load_doc_from_uri;
-                load_doc_from_uri(&uri)
-                    .map(|doc| document_symbols_at(&doc))
-                    .unwrap_or_default()
+                if let Some(doc) = load_doc_from_uri(&uri).await {
+                    document_symbols_at(&doc)
+                } else {
+                    Vec::new()
+                }
             };
 
             let result = serde_json::to_value(DocumentSymbolResponse::Nested(symbols))?;
@@ -371,45 +395,49 @@ fn handle_request(
             let uri = params.text_document.uri;
 
             // Get document text (from store if open, from disk otherwise).
+            use crate::lsp::document::load_doc_from_uri;
             let source: Option<String> = if let Some(doc) = store.get(&uri) {
                 Some(doc.text.clone())
             } else {
-                use crate::lsp::document::load_doc_from_uri;
-                load_doc_from_uri(&uri).map(|doc| doc.text)
+                load_doc_from_uri(&uri).await.map(|doc| doc.text)
             };
 
-            let edits: Option<Vec<TextEdit>> = source.and_then(|text| {
+            let edits: Option<Vec<TextEdit>> = if let Some(text) = source {
                 // Resolve the pretty formatter script from %libdir/cli/fmt/pretty.llt.
                 // If the script cannot be found, return None (no edits — silently no-op).
-                let script_path = crate::find_libdir_path()
-                    .map(|p| p.join("cli").join("fmt").join("pretty.llt"))?;
-                crate::async_rt::block_on_anywhere(crate::formatter::format_source_tinct(
-                    &text,
-                    &script_path,
-                ))
-                .ok()
-                .map(|formatted| {
-                    // Single whole-document replace-all edit: start at (0,0), end past last char.
-                    // Count newlines to find the last line number and last-line length.
-                    let newline_count = text.bytes().filter(|&b| b == b'\n').count() as u32;
-                    let last_line_start = text.rfind('\n').map_or(0, |i| i + 1);
-                    let last_line_len = text[last_line_start..].len() as u32;
-                    let end = Position {
-                        line: newline_count,
-                        character: last_line_len,
-                    };
-                    vec![TextEdit {
-                        range: Range {
-                            start: Position {
-                                line: 0,
-                                character: 0,
-                            },
-                            end,
-                        },
-                        new_text: formatted,
-                    }]
-                })
-            });
+                if let Some(script_path) =
+                    crate::find_libdir_path().map(|p| p.join("cli").join("fmt").join("pretty.llt"))
+                {
+                    crate::formatter::format_source_tinct(&text, &script_path)
+                        .await
+                        .ok()
+                        .map(|formatted| {
+                            // Single whole-document replace-all edit: start at (0,0), end past last char.
+                            // Count newlines to find the last line number and last-line length.
+                            let newline_count = text.bytes().filter(|&b| b == b'\n').count() as u32;
+                            let last_line_start = text.rfind('\n').map_or(0, |i| i + 1);
+                            let last_line_len = text[last_line_start..].len() as u32;
+                            let end = Position {
+                                line: newline_count,
+                                character: last_line_len,
+                            };
+                            vec![TextEdit {
+                                range: Range {
+                                    start: Position {
+                                        line: 0,
+                                        character: 0,
+                                    },
+                                    end,
+                                },
+                                new_text: formatted,
+                            }]
+                        })
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
 
             let result = serde_json::to_value(edits)?;
             connection.sender.send(Message::Response(Response {
@@ -444,12 +472,13 @@ fn handle_request(
                     .unwrap_or_default()
             } else {
                 use crate::lsp::document::load_doc_from_uri;
-                load_doc_from_uri(&uri)
-                    .and_then(|doc| {
-                        lsp_position_to_offset(&pos, &doc.text)
-                            .map(|offset| references_at(&doc, &uri, offset))
-                    })
-                    .unwrap_or_default()
+                if let Some(doc) = load_doc_from_uri(&uri).await {
+                    lsp_position_to_offset(&pos, &doc.text)
+                        .map(|offset| references_at(&doc, &uri, offset))
+                        .unwrap_or_default()
+                } else {
+                    Vec::new()
+                }
             };
 
             // LSP spec: respond with null (None) when there are no references, or the list.
@@ -501,7 +530,7 @@ fn handle_request(
                 })
             } else {
                 use crate::lsp::document::load_doc_from_uri;
-                load_doc_from_uri(&uri).and_then(|doc| {
+                if let Some(doc) = load_doc_from_uri(&uri).await {
                     lsp_position_to_offset(&pos, &doc.text).and_then(|offset| {
                         rename_at(&doc, offset, &new_name).map(|edits| {
                             #[allow(clippy::mutable_key_type)]
@@ -515,7 +544,9 @@ fn handle_request(
                             }
                         })
                     })
-                })
+                } else {
+                    None
+                }
             };
 
             let result = serde_json::to_value(workspace_edit)?;
@@ -548,9 +579,11 @@ fn handle_request(
                 inlay_hints_for(doc)
             } else {
                 use crate::lsp::document::load_doc_from_uri;
-                load_doc_from_uri(&uri)
-                    .map(|doc| inlay_hints_for(&doc))
-                    .unwrap_or_default()
+                if let Some(doc) = load_doc_from_uri(&uri).await {
+                    inlay_hints_for(&doc)
+                } else {
+                    Vec::new()
+                }
             };
 
             let result = serde_json::to_value(hints)?;
@@ -585,10 +618,12 @@ fn handle_request(
                     .and_then(|offset| signature_help_at(doc, offset))
             } else {
                 use crate::lsp::document::load_doc_from_uri;
-                load_doc_from_uri(&uri).and_then(|doc| {
+                if let Some(doc) = load_doc_from_uri(&uri).await {
                     lsp_position_to_offset(&pos, &doc.text)
                         .and_then(|offset| signature_help_at(&doc, offset))
-                })
+                } else {
+                    None
+                }
             };
 
             let result = serde_json::to_value(help)?;
@@ -661,7 +696,7 @@ fn handle_request(
     Ok(())
 }
 
-fn handle_notification(
+async fn handle_notification(
     connection: &Connection,
     store: &mut DocumentStore,
     notif: Notification,
@@ -685,7 +720,7 @@ fn handle_notification(
             }
 
             store.update_document(uri.clone(), text);
-            publish_diagnostics(connection, store, &uri)?;
+            publish_diagnostics(connection, store, &uri).await?;
         }
         DidChangeTextDocument::METHOD => {
             let params: lsp_types::DidChangeTextDocumentParams =
@@ -708,7 +743,7 @@ fn handle_notification(
                 }
 
                 store.update_document(uri.clone(), text);
-                publish_diagnostics(connection, store, &uri)?;
+                publish_diagnostics(connection, store, &uri).await?;
             }
         }
         DidCloseTextDocument::METHOD => {
@@ -772,15 +807,16 @@ fn publish_too_large_diagnostic(
     Ok(())
 }
 
-fn publish_diagnostics(
+async fn publish_diagnostics(
     connection: &Connection,
     store: &DocumentStore,
     uri: &Uri,
 ) -> Result<(), Box<dyn Error>> {
-    let diagnostics = store
-        .get(uri)
-        .map(|doc| diagnostics_for(doc, uri, store.eval_ctx()))
-        .unwrap_or_default();
+    let diagnostics = if let Some(doc) = store.get(uri) {
+        diagnostics_for(doc, uri, store.eval_ctx()).await
+    } else {
+        Vec::new()
+    };
 
     let params = PublishDiagnosticsParams {
         uri: uri.clone(),
@@ -805,8 +841,8 @@ mod tests {
         VersionedTextDocumentIdentifier,
     };
 
-    #[test]
-    fn test_server_capabilities() {
+    #[tokio::test]
+    async fn test_server_capabilities() {
         let caps = ServerCapabilities {
             text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
             hover_provider: Some(lsp_types::HoverProviderCapability::Simple(true)),
@@ -817,8 +853,8 @@ mod tests {
         let _json = serde_json::to_value(caps).unwrap();
     }
 
-    #[test]
-    fn test_hover_request_serialization() {
+    #[tokio::test]
+    async fn test_hover_request_serialization() {
         let uri = "file:///test.llt".parse::<Uri>().unwrap();
         let params = HoverParams {
             text_document_position_params: TextDocumentPositionParams {
@@ -834,8 +870,8 @@ mod tests {
         let _json = serde_json::to_value(params).unwrap();
     }
 
-    #[test]
-    fn test_did_open_notification_serialization() {
+    #[tokio::test]
+    async fn test_did_open_notification_serialization() {
         let uri = "file:///test.llt".parse::<Uri>().unwrap();
         let params = lsp_types::DidOpenTextDocumentParams {
             text_document: TextDocumentItem {
@@ -849,8 +885,8 @@ mod tests {
         let _json = serde_json::to_value(params).unwrap();
     }
 
-    #[test]
-    fn test_did_change_notification_serialization() {
+    #[tokio::test]
+    async fn test_did_change_notification_serialization() {
         let uri = "file:///test.llt".parse::<Uri>().unwrap();
         let params = lsp_types::DidChangeTextDocumentParams {
             text_document: VersionedTextDocumentIdentifier { uri, version: 2 },
@@ -864,8 +900,8 @@ mod tests {
         let _json = serde_json::to_value(params).unwrap();
     }
 
-    #[test]
-    fn test_publish_diagnostics_serialization() {
+    #[tokio::test]
+    async fn test_publish_diagnostics_serialization() {
         let uri = "file:///test.llt".parse::<Uri>().unwrap();
         let params = PublishDiagnosticsParams {
             uri,
@@ -880,49 +916,59 @@ mod tests {
     // These test the same code paths that handle_request/handle_notification use,
     // without requiring a Connection (which is hard to mock).
 
-    #[test]
-    fn test_handle_hover_returns_value() {
-        let mut store = DocumentStore::new().expect("DocumentStore::new in test");
+    #[tokio::test]
+    async fn test_handle_hover_returns_value() {
+        let mut store = DocumentStore::new()
+            .await
+            .expect("DocumentStore::new in test");
         let uri = "file:///test.llt".parse::<Uri>().unwrap();
         store.update_document(uri.clone(), "[x: 42]".to_string());
         let doc = store.get(&uri).unwrap();
-        let hover = hover_at(doc, &uri, 4, &store.include_graph, store.eval_ctx()); // on '42'
+        let hover = hover_at(doc, &uri, 4, &store.include_graph, store.eval_ctx()).await; // on '42'
         assert!(hover.is_some());
         assert!(hover.unwrap().contains("Int"));
     }
 
-    #[test]
-    fn test_handle_hover_no_document() {
-        let store = DocumentStore::new().expect("DocumentStore::new in test");
+    #[tokio::test]
+    async fn test_handle_hover_no_document() {
+        let store = DocumentStore::new()
+            .await
+            .expect("DocumentStore::new in test");
         let uri = "file:///missing.llt".parse::<Uri>().unwrap();
         // If document doesn't exist, hover should return None.
         assert!(store.get(&uri).is_none());
     }
 
-    #[test]
-    fn test_diagnostics_published_on_parse_error() {
-        let mut store = DocumentStore::new().expect("DocumentStore::new in test");
+    #[tokio::test]
+    async fn test_diagnostics_published_on_parse_error() {
+        let mut store = DocumentStore::new()
+            .await
+            .expect("DocumentStore::new in test");
         let uri = "file:///test.llt".parse::<Uri>().unwrap();
         store.update_document(uri.clone(), "[unterminated".to_string());
         let doc = store.get(&uri).unwrap();
-        let diags = diagnostics_for(doc, &uri, store.eval_ctx());
+        let diags = diagnostics_for(doc, &uri, store.eval_ctx()).await;
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].severity, Some(DiagnosticSeverity::ERROR));
     }
 
-    #[test]
-    fn test_diagnostics_empty_for_valid_doc() {
-        let mut store = DocumentStore::new().expect("DocumentStore::new in test");
+    #[tokio::test]
+    async fn test_diagnostics_empty_for_valid_doc() {
+        let mut store = DocumentStore::new()
+            .await
+            .expect("DocumentStore::new in test");
         let uri = "file:///test.llt".parse::<Uri>().unwrap();
         store.update_document(uri.clone(), "[x: 42]".to_string());
         let doc = store.get(&uri).unwrap();
-        let diags = diagnostics_for(doc, &uri, store.eval_ctx());
+        let diags = diagnostics_for(doc, &uri, store.eval_ctx()).await;
         assert!(diags.is_empty());
     }
 
-    #[test]
-    fn test_document_update_replaces_content() {
-        let mut store = DocumentStore::new().expect("DocumentStore::new in test");
+    #[tokio::test]
+    async fn test_document_update_replaces_content() {
+        let mut store = DocumentStore::new()
+            .await
+            .expect("DocumentStore::new in test");
         let uri = "file:///test.llt".parse::<Uri>().unwrap();
         store.update_document(uri.clone(), "[x: 1]".to_string());
         store.update_document(uri.clone(), "[x: 2]".to_string());
@@ -930,25 +976,27 @@ mod tests {
         assert_eq!(doc.text, "[x: 2]");
     }
 
-    #[test]
-    fn test_document_close_removes() {
-        let mut store = DocumentStore::new().expect("DocumentStore::new in test");
+    #[tokio::test]
+    async fn test_document_close_removes() {
+        let mut store = DocumentStore::new()
+            .await
+            .expect("DocumentStore::new in test");
         let uri = "file:///test.llt".parse::<Uri>().unwrap();
         store.update_document(uri.clone(), "[x: 1]".to_string());
         store.remove_document(&uri);
         assert!(store.get(&uri).is_none());
     }
 
-    #[test]
-    fn test_too_large_diagnostic_message() {
+    #[tokio::test]
+    async fn test_too_large_diagnostic_message() {
         let size = 11 * 1024 * 1024; // 11 MB
         let msg = format!("document too large ({} bytes, limit 10 MB)", size);
         assert!(msg.contains("11534336 bytes"));
         assert!(msg.contains("limit 10 MB"));
     }
 
-    #[test]
-    fn test_max_document_size_constant() {
+    #[tokio::test]
+    async fn test_max_document_size_constant() {
         // Compile-time assertion: MAX_DOCUMENT_SIZE must equal MAX_FILE_SIZE (both are 10 MB).
         // These two constants guard the same resource limit at different layers (LSP vs. $include).
         // A mismatch would mean the LSP accepts documents that $include would reject, or vice versa.
@@ -959,16 +1007,18 @@ mod tests {
         assert_eq!(MAX_DOCUMENT_SIZE, 10 * 1024 * 1024);
     }
 
-    #[test]
-    fn test_max_method_name_len_constant() {
+    #[tokio::test]
+    async fn test_max_method_name_len_constant() {
         assert_eq!(MAX_METHOD_NAME_LEN, 256);
     }
 
     // --- rename_at tests (via analysis layer) ---
 
-    #[test]
-    fn test_rename_produces_workspace_edit() {
-        let mut store = DocumentStore::new().expect("DocumentStore::new in test");
+    #[tokio::test]
+    async fn test_rename_produces_workspace_edit() {
+        let mut store = DocumentStore::new()
+            .await
+            .expect("DocumentStore::new in test");
         let uri = "file:///test.llt".parse::<Uri>().unwrap();
         store.update_document(uri.clone(), "[x: 1  y: $x]".to_string());
         let doc = store.get(&uri).unwrap();
@@ -983,9 +1033,11 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_rename_invalid_name() {
-        let mut store = DocumentStore::new().expect("DocumentStore::new in test");
+    #[tokio::test]
+    async fn test_rename_invalid_name() {
+        let mut store = DocumentStore::new()
+            .await
+            .expect("DocumentStore::new in test");
         let uri = "file:///test.llt".parse::<Uri>().unwrap();
         store.update_document(uri.clone(), "[x: 1  y: $x]".to_string());
         let doc = store.get(&uri).unwrap();
@@ -996,9 +1048,11 @@ mod tests {
 
     // --- inlay_hints_for tests (via analysis layer) ---
 
-    #[test]
-    fn test_inlay_hints_emitted_for_typed_bindings() {
-        let mut store = DocumentStore::new().expect("DocumentStore::new in test");
+    #[tokio::test]
+    async fn test_inlay_hints_emitted_for_typed_bindings() {
+        let mut store = DocumentStore::new()
+            .await
+            .expect("DocumentStore::new in test");
         let uri = "file:///test.llt".parse::<Uri>().unwrap();
         store.update_document(uri.clone(), "[x: 42]".to_string());
         let doc = store.get(&uri).unwrap();
@@ -1010,9 +1064,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_inlay_hints_none_for_parse_error() {
-        let mut store = DocumentStore::new().expect("DocumentStore::new in test");
+    #[tokio::test]
+    async fn test_inlay_hints_none_for_parse_error() {
+        let mut store = DocumentStore::new()
+            .await
+            .expect("DocumentStore::new in test");
         let uri = "file:///test.llt".parse::<Uri>().unwrap();
         store.update_document(uri.clone(), "[unterminated".to_string());
         let doc = store.get(&uri).unwrap();
@@ -1022,9 +1078,11 @@ mod tests {
 
     // --- document_symbols_at tests ---
 
-    #[test]
-    fn test_document_symbols_simple() {
-        let mut store = DocumentStore::new().expect("DocumentStore::new in test");
+    #[tokio::test]
+    async fn test_document_symbols_simple() {
+        let mut store = DocumentStore::new()
+            .await
+            .expect("DocumentStore::new in test");
         let uri = "file:///test.llt".parse::<Uri>().unwrap();
         store.update_document(uri.clone(), "[x: 1  y: 2]".to_string());
         let doc = store.get(&uri).unwrap();
@@ -1034,9 +1092,11 @@ mod tests {
         assert_eq!(syms[1].name, "y");
     }
 
-    #[test]
-    fn test_document_symbols_annotated_key() {
-        let mut store = DocumentStore::new().expect("DocumentStore::new in test");
+    #[tokio::test]
+    async fn test_document_symbols_annotated_key() {
+        let mut store = DocumentStore::new()
+            .await
+            .expect("DocumentStore::new in test");
         let uri = "file:///test.llt".parse::<Uri>().unwrap();
         store.update_document(uri.clone(), "[x@Int: 42]".to_string());
         let doc = store.get(&uri).unwrap();
@@ -1045,9 +1105,11 @@ mod tests {
         assert_eq!(syms[0].name, "x");
     }
 
-    #[test]
-    fn test_document_symbols_empty_on_parse_error() {
-        let mut store = DocumentStore::new().expect("DocumentStore::new in test");
+    #[tokio::test]
+    async fn test_document_symbols_empty_on_parse_error() {
+        let mut store = DocumentStore::new()
+            .await
+            .expect("DocumentStore::new in test");
         let uri = "file:///test.llt".parse::<Uri>().unwrap();
         store.update_document(uri.clone(), "[unterminated".to_string());
         let doc = store.get(&uri).unwrap();
@@ -1055,9 +1117,11 @@ mod tests {
         assert!(syms.is_empty());
     }
 
-    #[test]
-    fn test_document_symbols_non_dict_returns_empty() {
-        let mut store = DocumentStore::new().expect("DocumentStore::new in test");
+    #[tokio::test]
+    async fn test_document_symbols_non_dict_returns_empty() {
+        let mut store = DocumentStore::new()
+            .await
+            .expect("DocumentStore::new in test");
         let uri = "file:///test.llt".parse::<Uri>().unwrap();
         // A bare integer is not a dict — no symbols to extract.
         store.update_document(uri.clone(), "42".to_string());
@@ -1068,9 +1132,11 @@ mod tests {
 
     // --- references_at tests ---
 
-    #[test]
-    fn test_references_at_finds_all_refs() {
-        let mut store = DocumentStore::new().expect("DocumentStore::new in test");
+    #[tokio::test]
+    async fn test_references_at_finds_all_refs() {
+        let mut store = DocumentStore::new()
+            .await
+            .expect("DocumentStore::new in test");
         let uri = "file:///test.llt".parse::<Uri>().unwrap();
         // "[x: 1  y: $x  z: $x]"
         //  0         1         2
@@ -1091,9 +1157,11 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_references_at_no_ref_at_offset() {
-        let mut store = DocumentStore::new().expect("DocumentStore::new in test");
+    #[tokio::test]
+    async fn test_references_at_no_ref_at_offset() {
+        let mut store = DocumentStore::new()
+            .await
+            .expect("DocumentStore::new in test");
         let uri = "file:///test.llt".parse::<Uri>().unwrap();
         store.update_document(uri.clone(), "[x: 1]".to_string());
         let doc = store.get(&uri).unwrap();
@@ -1102,9 +1170,11 @@ mod tests {
         assert!(locs.is_empty(), "int literal has no references");
     }
 
-    #[test]
-    fn test_references_at_parse_error_returns_empty() {
-        let mut store = DocumentStore::new().expect("DocumentStore::new in test");
+    #[tokio::test]
+    async fn test_references_at_parse_error_returns_empty() {
+        let mut store = DocumentStore::new()
+            .await
+            .expect("DocumentStore::new in test");
         let uri = "file:///test.llt".parse::<Uri>().unwrap();
         store.update_document(uri.clone(), "[unterminated".to_string());
         let doc = store.get(&uri).unwrap();
@@ -1114,8 +1184,8 @@ mod tests {
 
     // --- document formatting tests ---
 
-    #[test]
-    fn test_formatting_produces_valid_text_edit() {
+    #[tokio::test]
+    async fn test_formatting_produces_valid_text_edit() {
         // Verify that the Rust formatter (still used in formatter.rs unit tests) can
         // parse and reformat a simple document. The LSP path uses format_source_tinct,
         // but format_source is still available for unit testing.
@@ -1127,8 +1197,8 @@ mod tests {
         assert!(!formatted.is_empty());
     }
 
-    #[test]
-    fn test_formatting_end_position() {
+    #[tokio::test]
+    async fn test_formatting_end_position() {
         // Verify the end-position calculation used by the Formatting handler.
         let text = "line1\nline2\nline3";
         // 2 newlines → end.line = 2; "line3" is 5 chars → end.character = 5.

@@ -6,7 +6,7 @@
   apply-if-fn: [fn [let x]
     [cond [
       [[fn? x] [x 42]]
-      [true x]
+      [True x]
     ]]]
 
   r1: [apply-if-fn [fn [let n] [+ n 1]]]

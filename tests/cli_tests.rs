@@ -4134,25 +4134,6 @@ fn describe_no_contract() {
 }
 
 #[test]
-fn describe_json_no_contract() {
-    // --json mode on a file with no contract outputs empty JSON object.
-    let (path, _dir) = write_temp_llt("describe_json_no_contract", "[x: 1]");
-    let output = Command::new(tinct_bin())
-        .args(["describe", "--json", path.to_str().unwrap()])
-        .output()
-        .expect("failed to run tinct");
-
-    assert!(
-        output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let json: serde_json::Value = serde_json::from_str(stdout.trim()).expect("expected valid JSON");
-    assert_eq!(json, serde_json::json!({}));
-}
-
-#[test]
 fn describe_schema_dict_detection() {
     // A file with a schema dict (dict values containing schema keys) is detected.
     let source = r#"[
@@ -4161,7 +4142,7 @@ fn describe_schema_dict_detection() {
 ]"#;
     let (path, _dir) = write_temp_llt("describe_schema_dict", source);
     let output = Command::new(tinct_bin())
-        .args(["describe", "--json", path.to_str().unwrap()])
+        .args(["describe", path.to_str().unwrap()])
         .output()
         .expect("failed to run tinct");
 
@@ -4171,26 +4152,15 @@ fn describe_schema_dict_detection() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let json: serde_json::Value =
-        serde_json::from_str(stdout.trim()).expect("expected valid JSON from describe --json");
-    // Should have detected schema fields
-    let contracts = json.get("contracts").and_then(|c| c.as_array());
+    // Should have detected schema fields and printed them
     assert!(
-        contracts.is_some(),
-        "expected contracts array in JSON output, got: {json}"
+        stdout.contains("port"),
+        "expected 'port' in describe output, got: {stdout}"
     );
-    let contracts = contracts.unwrap();
-    assert!(!contracts.is_empty(), "expected non-empty contracts array");
-    // Check that schema was detected with port and host entries
-    let first = &contracts[0];
-    let schema = first.get("schema").and_then(|s| s.as_object());
     assert!(
-        schema.is_some(),
-        "expected schema object in contract, got: {first}"
+        stdout.contains("host"),
+        "expected 'host' in describe output, got: {stdout}"
     );
-    let schema = schema.unwrap();
-    assert!(schema.contains_key("port"), "expected port in schema");
-    assert!(schema.contains_key("host"), "expected host in schema");
 }
 
 #[test]
@@ -4472,49 +4442,6 @@ fn describe_with_doc_string() {
         stdout.contains("add") && stdout.contains("Adds two numbers"),
         "expected doc string for add in output, got: {stdout}"
     );
-}
-
-#[test]
-fn describe_json_mode_with_doc_string() {
-    // Verify that `tinct describe --json` includes doc strings in the JSON output
-    let llt_content = r#"
-[
-  greet@[type: Fn  doc: "Returns a greeting message"]: fn name [
-    call $str-concat "Hello, " $name
-  ]
-]
-"#;
-    let (path, _dir) = write_temp_llt("describe_json_doc", llt_content);
-    let output = Command::new(tinct_bin())
-        .args(["describe", "--json", path.to_str().unwrap()])
-        .output()
-        .expect("failed to run tinct");
-
-    assert!(
-        output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let json: serde_json::Value =
-        serde_json::from_str(stdout.trim()).expect("expected valid JSON from describe --json");
-
-    // Verify the JSON structure includes a docs section
-    if let Some(contracts) = json.get("contracts").and_then(|c| c.as_array()) {
-        if let Some(contract) = contracts.first() {
-            if let Some(docs) = contract.get("docs").and_then(|d| d.as_object()) {
-                assert!(
-                    docs.get("greet")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.contains("Returns a greeting message"))
-                        .unwrap_or(false),
-                    "expected doc string for greet in JSON, got: {json}"
-                );
-            } else {
-                panic!("expected docs section in contract, got: {json}");
-            }
-        }
-    }
 }
 
 // NOTE: --allow-host flag was removed in cap-simplify sprint.
@@ -4968,9 +4895,9 @@ fn profile_writes_llt_stream_readable_by_stream_input() {
 // Literate eval: %emit and %stdout injection (run_literate_eval)
 //
 // These tests verify that run_literate_eval injects %emit (Channel) and
-// %stdout (WriteHandle) into the root environment, as documented in
-// src/main.rs run_literate_eval. User code can inspect these values via
-// type-of without triggering serialization errors.
+// that %stdout (Dict protocol) is accessible from loader.llt Dict 2.
+// User code can inspect these values via type-of without triggering
+// serialization errors.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -5004,9 +4931,8 @@ fn literate_eval_emit_channel_is_injected() {
 
 #[test]
 fn literate_eval_stdout_handle_is_injected() {
-    // %stdout is a WriteHandle injected by run_literate_eval so that user code
-    // can write directly to stdout. Verify the binding is in scope and has type
-    // "WriteHandle".
+    // %stdout is a protocol dict defined in loader.llt Dict 2 (write/flush/close methods).
+    // Verify it is in scope and is a Dict (Value::WriteHandle was removed in File redesign).
     let md = "# Literate stdout injection\n\n```tinct\n[type-of %stdout]\n```\n";
     let (path, _dir) = write_temp_md("literate_stdout_injection", md);
     let output = Command::new(tinct_bin())
@@ -5023,11 +4949,11 @@ fn literate_eval_stdout_handle_is_injected() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: serde_json::Value =
         serde_json::from_str(stdout.trim()).expect("expected JSON output from literate eval");
-    // type-of returns a String — %stdout is a WriteHandle
+    // type-of returns a String — %stdout is now a protocol dict (Dict)
     assert_eq!(
         json,
-        serde_json::json!("WriteHandle"),
-        "expected %stdout to be a WriteHandle, got: {json}"
+        serde_json::json!("Dict"),
+        "expected %stdout to be a Dict (protocol dict), got: {json}"
     );
 }
 

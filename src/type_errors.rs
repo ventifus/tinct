@@ -217,9 +217,8 @@ pub enum TypeErrorTyped {
 
 impl TypeErrorTyped {
     // ── Bridge constructors ─────────────────────────────────────────────────
-    // These mirror the `TypeErrorLegacy` API so existing call sites compile
-    // after the rename. Each produces a `Generic` variant. T-1107 will migrate
-    // these call sites to typed variants; T-1108 will delete these bridges.
+    // These mirror the legacy TypeError API so existing call sites compile.
+    // Each produces a `Generic` variant; call sites should migrate to typed variants.
 
     pub fn new(message: impl Into<String>, span: Span) -> Self {
         let span = Span {
@@ -466,6 +465,30 @@ impl TypeErrorTyped {
             Self::Generic(e) => e.notes.push(note),
         }
         self
+    }
+
+    /// Returns a stable kebab-case kind name for this error (used in unified error dicts).
+    ///
+    /// Unlike `code()` (which returns legacy T-codes), `kind_name()` returns a
+    /// human-readable kebab-case identifier suitable for programmatic use in tinct code.
+    pub fn kind_name(&self) -> &'static str {
+        match self {
+            Self::ArityMismatch(_) => "arity-mismatch",
+            Self::UndefinedVariable(_) => "undefined-variable",
+            Self::UndefinedType(_) => "undefined-type",
+            Self::UnificationFailure(_) => "unification-failure",
+            Self::FieldNotFound(_) => "field-not-found",
+            Self::NotARecord(_) => "not-a-record",
+            Self::NotAFunction(_) => "not-a-function",
+            Self::TypeAssertFailed(_) => "type-assert-failed",
+            Self::NonExhaustiveMatch(_) => "non-exhaustive-match",
+            Self::OverlappingInstancePatterns(_) => "overlapping-instance-patterns",
+            Self::ConsistencyViolation(_) => "consistency-violation",
+            Self::CoverageViolation(_) => "coverage-violation",
+            Self::InstanceContainsUnknown(_) => "instance-contains-unknown",
+            Self::KindMismatch(_) => "kind-mismatch",
+            Self::Generic(_) => "error",
+        }
     }
 
     /// Returns the human-readable message for this error (without span or variant tag).

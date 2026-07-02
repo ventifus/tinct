@@ -106,6 +106,7 @@ pub(crate) fn stq_walk_node_unknown(node: &SurfaceNode, spans: &mut HashSet<(usi
         SurfaceExpression::TypeAssert {
             annotation,
             expr: inner,
+            ..
         } => {
             if stq_is_unknown_annotation(&annotation.node) {
                 spans.insert((node.span.start.offset, node.span.end.offset));
@@ -141,7 +142,10 @@ pub(crate) fn stq_walk_node_unknown(node: &SurfaceNode, spans: &mut HashSet<(usi
                 stq_walk_node_unknown(e, spans);
             }
         }
-        SurfaceExpression::DotAccess { expr, .. } => stq_walk_node_unknown(expr, spans),
+        SurfaceExpression::DotAccess {
+            expr: Some(inner), ..
+        } => stq_walk_node_unknown(inner, spans),
+        SurfaceExpression::DotAccess { expr: None, .. } => {}
         SurfaceExpression::Pipe { lhs, rhs } => {
             stq_walk_node_unknown(lhs, spans);
             stq_walk_node_unknown(rhs, spans);
@@ -176,9 +180,7 @@ pub(crate) fn stq_walk_node_unknown(node: &SurfaceNode, spans: &mut HashSet<(usi
             pattern,
             body,
         } => {
-            if let Some(lb) = let_bindings {
-                stq_walk_node_unknown(lb, spans);
-            }
+            stq_walk_node_unknown(let_bindings, spans);
             stq_walk_node_unknown(pattern, spans);
             stq_walk_node_unknown(body, spans);
         }
@@ -282,9 +284,10 @@ pub(crate) fn stq_walk_node_overbroad(
                 stq_walk_node_overbroad(e, type_map, diagnostics);
             }
         }
-        SurfaceExpression::DotAccess { expr, .. } => {
-            stq_walk_node_overbroad(expr, type_map, diagnostics)
-        }
+        SurfaceExpression::DotAccess {
+            expr: Some(inner), ..
+        } => stq_walk_node_overbroad(inner, type_map, diagnostics),
+        SurfaceExpression::DotAccess { expr: None, .. } => {}
         SurfaceExpression::Pipe { lhs, rhs } => {
             stq_walk_node_overbroad(lhs, type_map, diagnostics);
             stq_walk_node_overbroad(rhs, type_map, diagnostics);
@@ -322,9 +325,7 @@ pub(crate) fn stq_walk_node_overbroad(
             pattern,
             body,
         } => {
-            if let Some(lb) = let_bindings {
-                stq_walk_node_overbroad(lb, type_map, diagnostics);
-            }
+            stq_walk_node_overbroad(let_bindings, type_map, diagnostics);
             stq_walk_node_overbroad(pattern, type_map, diagnostics);
             stq_walk_node_overbroad(body, type_map, diagnostics);
         }
@@ -383,10 +384,8 @@ pub(crate) fn stq_resolve_simple_annotation(ann: &Annotation) -> Option<Type> {
         Annotation::Simple(name) => match name.as_str() {
             "Int" => Some(Type::Int),
             "Float" => Some(Type::Float),
-            "Number" => Some(Type::Number),
             "Str" => Some(Type::Str),
-            "Bool" => Some(Type::Bool),
-            "Top" => Some(Type::Top),
+            "Any" | "Top" => Some(Type::Any),
             "Unknown" => Some(Type::Unknown),
             _ => None,
         },
@@ -430,7 +429,10 @@ pub(crate) fn stq_collect_node_spans(node: &SurfaceNode, map: &mut HashMap<(usiz
                 stq_collect_node_spans(e, map);
             }
         }
-        SurfaceExpression::DotAccess { expr, .. } => stq_collect_node_spans(expr, map),
+        SurfaceExpression::DotAccess {
+            expr: Some(inner), ..
+        } => stq_collect_node_spans(inner, map),
+        SurfaceExpression::DotAccess { expr: None, .. } => {}
         SurfaceExpression::Pipe { lhs, rhs } => {
             stq_collect_node_spans(lhs, map);
             stq_collect_node_spans(rhs, map);
@@ -465,9 +467,7 @@ pub(crate) fn stq_collect_node_spans(node: &SurfaceNode, map: &mut HashMap<(usiz
             pattern,
             body,
         } => {
-            if let Some(lb) = let_bindings {
-                stq_collect_node_spans(lb, map);
-            }
+            stq_collect_node_spans(let_bindings, map);
             stq_collect_node_spans(pattern, map);
             stq_collect_node_spans(body, map);
         }
@@ -533,6 +533,7 @@ pub(crate) fn scan_explicit_unknown_t011(
             SurfaceExpression::TypeAssert {
                 annotation,
                 expr: inner,
+                ..
             } => {
                 if stq_is_unknown_annotation(&annotation.node) {
                     diagnostics.push(TypeDiagnostic {
@@ -580,7 +581,10 @@ pub(crate) fn scan_explicit_unknown_t011(
                     emit_t011_for_node(e, diagnostics);
                 }
             }
-            SurfaceExpression::DotAccess { expr, .. } => emit_t011_for_node(expr, diagnostics),
+            SurfaceExpression::DotAccess {
+                expr: Some(inner), ..
+            } => emit_t011_for_node(inner, diagnostics),
+            SurfaceExpression::DotAccess { expr: None, .. } => {}
             SurfaceExpression::Pipe { lhs, rhs } => {
                 emit_t011_for_node(lhs, diagnostics);
                 emit_t011_for_node(rhs, diagnostics);
@@ -616,9 +620,7 @@ pub(crate) fn scan_explicit_unknown_t011(
                 pattern,
                 body,
             } => {
-                if let Some(lb) = let_bindings {
-                    emit_t011_for_node(lb, diagnostics);
-                }
+                emit_t011_for_node(let_bindings, diagnostics);
                 emit_t011_for_node(pattern, diagnostics);
                 emit_t011_for_node(body, diagnostics);
             }

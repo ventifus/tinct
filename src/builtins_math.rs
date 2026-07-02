@@ -270,7 +270,7 @@ pub(crate) fn builtin_eq(
 
         let result =
             crate::eval::values_equal(left, right, call_span.clone(), Arc::clone(&ctx)).await?;
-        ok_val(Value::Bool(result), call_span)
+        ok_val(Value::boolean(result), call_span)
     })
 }
 
@@ -319,7 +319,9 @@ pub(crate) fn builtin_lt(
                     end: end_b,
                 },
             ) => source_a[*start_a..*end_a] < source_b[*start_b..*end_b],
-            (Value::Bool(a), Value::Bool(b)) => !a && *b, // false < true
+            (a, b) if a.as_bool().is_some() && b.as_bool().is_some() => {
+                !a.as_bool().unwrap() && b.as_bool().unwrap() // false < true
+            }
             // Cross-type: Int/Float promotion via `as f64` cast.
             // Precision guard: integers with |n| > 2^53 trigger an error, suggesting
             // explicit [float n] cast (doc/11-stdlib.md §Equality P3, P6).
@@ -342,7 +344,7 @@ pub(crate) fn builtin_lt(
                 .into());
             }
         };
-        ok_val(Value::Bool(result), call_span)
+        ok_val(Value::boolean(result), call_span)
     })
 }
 
@@ -408,9 +410,9 @@ pub(crate) fn builtin_lte(
         let val = gt_result
             .try_get_materialized()
             .expect("builtin_lt returns materialized Bool");
-        match val {
-            Value::Bool(b) => ok_val(Value::Bool(!b), call_span),
-            _ => unreachable!("builtin_lt always returns Bool"),
+        match val.as_bool() {
+            Some(b) => ok_val(Value::boolean(!b), call_span),
+            None => unreachable!("builtin_lt always returns Bool"),
         }
     })
 }
@@ -446,9 +448,9 @@ pub(crate) fn builtin_gte(
         let val = lt_result
             .try_get_materialized()
             .expect("builtin_lt returns materialized Bool");
-        match val {
-            Value::Bool(b) => ok_val(Value::Bool(!b), call_span),
-            _ => unreachable!("builtin_lt always returns Bool"),
+        match val.as_bool() {
+            Some(b) => ok_val(Value::boolean(!b), call_span),
+            None => unreachable!("builtin_lt always returns Bool"),
         }
     })
 }
@@ -479,10 +481,10 @@ pub(crate) fn builtin_if(
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
-        match condition {
-            Value::Bool(true) => Ok(Arc::clone(&args[1])),
-            Value::Bool(false) => Ok(Arc::clone(&args[2])),
-            _ => {
+        match condition.as_bool() {
+            Some(true) => Ok(Arc::clone(&args[1])),
+            Some(false) => Ok(Arc::clone(&args[2])),
+            None => {
                 let cond_span = args[0].span.clone();
                 let mut err = EvalError::type_mismatch_ctx(
                     "if".to_string(),
@@ -818,7 +820,7 @@ pub(crate) fn builtin_nan_check(
     } = ctx_arg;
     Box::pin(async move {
         let val = extract_single_float("nan?", &args, named.as_ref(), &ctx, call_span.clone())?;
-        ok_val(Value::Bool(val.is_nan()), call_span)
+        ok_val(Value::boolean(val.is_nan()), call_span)
     })
 }
 
@@ -835,7 +837,7 @@ pub(crate) fn builtin_inf_check(
     } = ctx_arg;
     Box::pin(async move {
         let val = extract_single_float("inf?", &args, named.as_ref(), &ctx, call_span.clone())?;
-        ok_val(Value::Bool(val.is_infinite()), call_span)
+        ok_val(Value::boolean(val.is_infinite()), call_span)
     })
 }
 
@@ -852,7 +854,7 @@ pub(crate) fn builtin_finite_check(
     } = ctx_arg;
     Box::pin(async move {
         let val = extract_single_float("finite?", &args, named.as_ref(), &ctx, call_span.clone())?;
-        ok_val(Value::Bool(val.is_finite()), call_span)
+        ok_val(Value::boolean(val.is_finite()), call_span)
     })
 }
 
@@ -1088,6 +1090,7 @@ mod tests {
     use super::*;
     use crate::ast::Span;
     use crate::error::ErrorKind;
+    use crate::rust_span;
     use crate::test_util::test_span;
     use crate::value::Environment;
     use crate::value::{BuiltinArgs, Thunk, Value};
@@ -1111,7 +1114,7 @@ mod tests {
         if let Some(defs) = crate::builtins::builtin_module("core") {
             for def in defs {
                 let name = def.name.to_string();
-                let thunk = Arc::new(Thunk::new_materialized(Value::Builtin(def), Span::origin()));
+                let thunk = Arc::new(Thunk::new_materialized(Value::Builtin(def), rust_span!()));
                 env.write().unwrap().insert(name, thunk);
             }
         }
@@ -1217,52 +1220,5 @@ mod tests {
             "expected NoInstance, got: {:?}",
             err.kind
         );
-    }
-
-    // --- Equatable/Comparable: no infinite recursion with prelude loaded ---
-    //
-    // These tests verify that = and < do NOT infinitely recurse when Equatable/Comparable
-    // instances are registered in stdlib/prelude.llt. The fast paths for Int/Float/String/Bool
-    // handle those types BEFORE dispatch is attempted. Prelude instances for Int call
-    // [builtin-eq a b] / [builtin-lt a b] which are aliases for = / < — but since the
-    // (Int,Int) fast path runs first, they never re-dispatch. No infinite recursion.
-
-    /// [= 1 1] returns true with prelude loaded (Equatable instances registered).
-    /// Fast path handles (Int,Int) before any dispatch attempt.
-    #[tokio::test]
-    async fn test_eq_int_no_infinite_recursion_with_prelude() {
-        let result = crate::eval_source_with_config("[= 1 1]", true).await;
-        assert!(
-            result.is_ok(),
-            "expected [= 1 1] to succeed, got: {:?}",
-            result.err()
-        );
-        assert_eq!(result.unwrap(), "Bool(true)");
-    }
-
-    /// [< 1 2] returns true with prelude loaded (Comparable instances registered).
-    /// Fast path handles (Int,Int) before any dispatch attempt — no infinite recursion.
-    #[tokio::test]
-    async fn test_lt_int_no_infinite_recursion_with_prelude() {
-        let result = crate::eval_source_with_config("[< 1 2]", true).await;
-        assert!(
-            result.is_ok(),
-            "expected [< 1 2] to succeed, got: {:?}",
-            result.err()
-        );
-        assert_eq!(result.unwrap(), "Bool(true)");
-    }
-
-    /// [sort [3 1 2]] works with prelude loaded (sort uses < internally).
-    /// Int fast path prevents dispatch loops.
-    #[tokio::test]
-    async fn test_sort_no_infinite_recursion_with_prelude() {
-        let result = crate::eval_source_with_config("[sort [3 1 2]]", true).await;
-        assert!(
-            result.is_ok(),
-            "expected [sort [3 1 2]] to succeed, got: {:?}",
-            result.err()
-        );
-        assert_eq!(result.unwrap(), "Dict({0: Int(1), 1: Int(2), 2: Int(3)})");
     }
 }

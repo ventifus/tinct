@@ -1,6 +1,6 @@
 [
-  defaults: [host: "localhost"  port: 5432  ssl: false  pool-size: 10]
-  env:      [port: 5433  ssl: true]
+  defaults: [host: "localhost"  port: 5432  ssl: False  pool-size: 10]
+  env:      [port: 5433  ssl: True]
   local:    [host: "db.dev"  pool-size: 5]
 ]
 ---

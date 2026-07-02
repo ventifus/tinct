@@ -1,5 +1,5 @@
 # Test that Unicode identifiers work correctly in LLT.
 # Per doc/02-syntax.md, identifiers can contain Unicode letters/digits.
-[日本語: 42 Привет: "hello" café: true]
+[日本語: 42 Привет: "hello" café: True]
 === out
-["日本語": 42  "Привет": "hello"  "café": true]
+["日本語": 42  "Привет": "hello"  "café": True]

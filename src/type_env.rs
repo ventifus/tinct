@@ -6,6 +6,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::ast::Span;
+use crate::rust_span;
 
 use super::*;
 
@@ -491,7 +492,7 @@ pub fn generalize(
         state,
         constraints,
         None,
-        crate::ast::Span::origin(),
+        rust_span!(),
     )
 }
 
@@ -1173,7 +1174,7 @@ fn format_type_pretty(ty: &Type, rename: &HashMap<String, String>) -> String {
     match ty {
         // Use the tinct annotation names for user-facing display.
         Type::Unknown => "Unknown".to_string(), // annotation: @Unknown or @_
-        Type::Top => "Any".to_string(),         // annotation: @Any
+        Type::Any => "Any".to_string(),         // annotation: @Any
         Type::Record(row) if row.fields.is_empty() => "Dict".to_string(), // annotation: @Dict
         Type::TypeVar(name, _) => rename.get(name).cloned().unwrap_or_else(|| name.clone()),
         Type::Record(row) => {
@@ -1363,10 +1364,44 @@ impl TypeAlias {
 // ClassDecl, InstanceDecl, ClassEnv, InstanceEnv moved to type_class.rs (chr-module-split)
 // Imported via façade: use super::* resolves through types.rs → type_class.rs
 
+/// Per-scope type environment frame.
+///
+/// Class and instance declarations are stored per-frame and collected via `build_class_env()` /
+/// `build_instance_env()`, which traverse the parent chain. This replaces the previous approach of
+/// storing ClassEnv/InstanceEnv in InferState with propagation hacks (`in_prelude_load`,
+/// `prelude_origin`). Now class/instance declarations follow normal lexical scope rules.
+///
+/// ## Slot indexing
+///
+/// Each frame carries a slot-indexed parallel structure alongside the `bindings` HashMap:
+///
+/// - `slots: Vec<TypeScheme>` — schemes in insertion order, matching the resolver's slot
+///   assignment for this scope level.
+/// - `slot_names: Vec<String>` — names parallel to `slots`, used for seeding only.
+///
+/// `get_type_at(level, slot)` walks `level` parent links then indexes into `slots[slot]`.
+/// This mirrors `Environment::get_slot` and is the fast path for type-checking resolved
+/// `VarRef { level, slot }` nodes. The name-based `get()` remains for unresolved VarRefs,
+/// LSP hover, and bootstrap.
+///
+/// **Insertion order invariant:** The slot assigned by the resolver to a name in a given
+/// scope frame equals the position of that name's first insertion into `slots` for the
+/// corresponding `TypeEnv` frame. `insert` and `insert_scheme` maintain this by pushing
+/// to `slots`/`slot_names` only on the first insertion, and updating the existing entry
+/// in-place on re-insertion.
 #[derive(Debug, Clone)]
 pub struct TypeEnv {
     bindings: HashMap<String, TypeScheme>,
+    /// Slot-indexed schemes — parallel to `slot_names`.
+    /// Slot 0 is the first-inserted binding in this frame, matching the resolver's slot 0.
+    pub(crate) slots: Vec<TypeScheme>,
+    /// Names parallel to `slots` — for seeding and debugging only.
+    pub(crate) slot_names: Vec<String>,
     tycon_defs: HashMap<String, Arc<TyConDef>>,
+    /// Class declarations registered in this scope frame.
+    classes: Vec<crate::type_class::ClassDecl>,
+    /// Instance declarations registered in this scope frame.
+    instances: Vec<crate::type_class::InstanceDecl>,
     parent: Option<Rc<TypeEnv>>,
 }
 
@@ -1374,7 +1409,11 @@ impl TypeEnv {
     pub fn new() -> Self {
         Self {
             bindings: HashMap::new(),
+            slots: Vec::new(),
+            slot_names: Vec::new(),
             tycon_defs: HashMap::new(),
+            classes: Vec::new(),
+            instances: Vec::new(),
             parent: None,
         }
     }
@@ -1382,9 +1421,113 @@ impl TypeEnv {
     pub fn with_parent(parent: &Rc<TypeEnv>) -> Self {
         Self {
             bindings: HashMap::new(),
+            slots: Vec::new(),
+            slot_names: Vec::new(),
             tycon_defs: HashMap::new(),
+            classes: Vec::new(),
+            instances: Vec::new(),
             parent: Some(Rc::clone(parent)),
         }
+    }
+
+    /// O(1) slot-indexed type lookup with de Bruijn level-based parent chain walking.
+    ///
+    /// `level` is a de Bruijn index: 0 = current frame, 1 = parent, N = Nth ancestor.
+    /// This matches the resolver's level assignment in `resolve.rs`.
+    ///
+    /// For `level = 0`: returns `self.slots.get(slot as usize)`.
+    /// For `level > 0`: walks `level` parent links, then does the slot lookup.
+    ///
+    /// Returns `None` if the level or slot is out of bounds.
+    ///
+    /// **Seeding/bootstrap note:** `get_by_name` via `get()` remains for unresolved
+    /// references, bootstrap, and LSP. This method is the fast path for resolved
+    /// `VarRef { level, slot }` nodes.
+    pub fn get_type_at(&self, level: u32, slot: u32) -> Option<&TypeScheme> {
+        if level == 0 {
+            return self.slots.get(slot as usize);
+        }
+        // Walk `level` steps up the parent chain
+        let mut current = self.parent.as_deref();
+        for _ in 1..level {
+            current = current?.parent.as_deref();
+        }
+        current?.slots.get(slot as usize)
+    }
+
+    /// Register a class declaration in this scope frame.
+    pub fn insert_class(&mut self, decl: crate::type_class::ClassDecl) {
+        self.classes.push(decl);
+    }
+
+    /// Register an instance declaration in this scope frame.
+    pub fn insert_instance(&mut self, decl: crate::type_class::InstanceDecl) {
+        self.instances.push(decl);
+    }
+
+    /// Build a ClassEnv by traversing the parent chain and collecting all ClassDecls.
+    /// The resulting ClassEnv represents the complete class hierarchy visible at this scope.
+    pub fn build_class_env(&self) -> crate::type_class::ClassEnv {
+        let mut env = crate::type_class::ClassEnv::new();
+        self.collect_classes_into(&mut env);
+        env
+    }
+
+    fn collect_classes_into(&self, env: &mut crate::type_class::ClassEnv) {
+        // Walk parent first so that child declarations can override parent ones (shadowing).
+        if let Some(ref parent) = self.parent {
+            parent.collect_classes_into(env);
+        }
+        for decl in &self.classes {
+            env.insert(decl.clone());
+        }
+    }
+
+    /// Build an InstanceEnv by traversing the parent chain and collecting all InstanceDecls.
+    /// The resulting InstanceEnv represents all instances visible at this scope.
+    pub fn build_instance_env(&self) -> crate::type_class::InstanceEnv {
+        let mut env = crate::type_class::InstanceEnv::new();
+        self.collect_instances_into(&mut env);
+        env
+    }
+
+    fn collect_instances_into(&self, env: &mut crate::type_class::InstanceEnv) {
+        // Walk parent first so that child declarations shadow parent ones if keys match.
+        if let Some(ref parent) = self.parent {
+            parent.collect_instances_into(env);
+        }
+        for decl in &self.instances {
+            // insert is idempotent on duplicates; ignore errors (overlap detection
+            // is done at registration time, not collection time).
+            let _ = env.insert(decl.clone());
+        }
+    }
+
+    /// Look up a class declaration by name, traversing the parent chain.
+    pub fn get_class(&self, name: &str) -> Option<crate::type_class::ClassDecl> {
+        for decl in &self.classes {
+            if decl.name == name {
+                return Some(decl.clone());
+            }
+        }
+        self.parent
+            .as_ref()
+            .and_then(|p| p.get_class(name))
+    }
+
+    /// Collect all class declarations visible at this scope (parent chain included).
+    /// Returned in order from root to current frame (parent declarations first).
+    pub fn all_classes(&self) -> Vec<crate::type_class::ClassDecl> {
+        let mut result = Vec::new();
+        self.collect_all_classes_into(&mut result);
+        result
+    }
+
+    fn collect_all_classes_into(&self, result: &mut Vec<crate::type_class::ClassDecl>) {
+        if let Some(ref parent) = self.parent {
+            parent.collect_all_classes_into(result);
+        }
+        result.extend(self.classes.iter().cloned());
     }
 
     pub fn get(&self, name: &str) -> Option<&TypeScheme> {
@@ -1433,10 +1576,31 @@ impl TypeEnv {
     }
 
     pub fn insert(&mut self, name: String, ty: Type) {
-        self.bindings.insert(name, TypeScheme::mono(ty));
+        let scheme = TypeScheme::mono(ty);
+        self.insert_scheme_impl(name, scheme);
     }
 
     pub fn insert_scheme(&mut self, name: String, scheme: TypeScheme) {
+        self.insert_scheme_impl(name, scheme);
+    }
+
+    /// Internal: insert a scheme into both `bindings` (HashMap, for name-based lookup) and
+    /// `slots`/`slot_names` (Vec, for slot-indexed lookup).
+    ///
+    /// On first insertion: push to both vecs (slot = current length).
+    /// On re-insertion (same name already in this frame): update the existing vec entry
+    /// in-place so the slot index is preserved (matches resolver's slot assignment).
+    fn insert_scheme_impl(&mut self, name: String, scheme: TypeScheme) {
+        // Update or insert in the slot vecs
+        if let Some(pos) = self.slot_names.iter().position(|n| n == &name) {
+            // Re-insertion: update in place, preserving slot index
+            self.slots[pos] = scheme.clone();
+        } else {
+            // First insertion: push to vecs (slot = next index)
+            self.slot_names.push(name.clone());
+            self.slots.push(scheme.clone());
+        }
+        // Always update HashMap (may replace existing)
         self.bindings.insert(name, scheme);
     }
 
@@ -1456,6 +1620,7 @@ impl TypeEnv {
             builtin_type: None,
             annotation: None,
             field_annotations: indexmap::IndexMap::new(),
+            constructor_constants: indexmap::IndexMap::new(),
         });
         self.tycon_defs.insert(name, def);
     }
@@ -1614,6 +1779,12 @@ impl TypeEnv {
         for (name, def) in other.tycon_defs {
             self.tycon_defs.insert(name, def);
         }
+        for decl in other.classes {
+            self.classes.push(decl);
+        }
+        for decl in other.instances {
+            self.instances.push(decl);
+        }
     }
 
     /// Register a batch of type aliases by copying the TypeScheme from a canonical name.
@@ -1641,10 +1812,7 @@ impl Default for TypeEnv {
 
 /// `TypeError` is the canonical type error type.
 ///
-/// It is an alias for `TypeErrorTyped` from `crate::type_errors`. All callers that
-/// previously used the legacy `TypeError` struct now use `TypeErrorTyped` directly
-/// via this alias. T-1108: legacy struct deleted; this alias ensures all existing
-/// `use crate::types::TypeError` and `Vec<TypeError>` call sites continue to work.
+/// It is an alias for `TypeErrorTyped` from `crate::type_errors`.
 pub use crate::type_errors::TypeErrorTyped as TypeError;
 
 /// Format a `TypeError` into the Rust-style diagnostic format with source context.
@@ -1658,7 +1826,7 @@ pub use crate::type_errors::TypeErrorTyped as TypeError;
 ///    |          ^
 /// ```
 ///
-/// When `source` is empty or the span is synthetic (`Span::origin()`),
+/// When `source` is empty or the span is synthetic,
 /// only the header line is emitted (no snippet).
 ///
 /// `file_name` is shown in the ` --> file:line:col` line. Pass `"-"` for stdin input.
@@ -1902,7 +2070,6 @@ mod help_suggestion_tests {
                 );
                 methods
             },
-            prelude_origin: false,
         };
 
         // Use a fresh InstanceEnv containing ONLY the test instance.
@@ -2095,7 +2262,6 @@ mod help_suggestion_tests {
             determines: vec![],
             resolver: None,
             resolver_injective: false,
-            prelude_origin: false,
             method_signatures: vec![],
         });
 
@@ -2194,7 +2360,6 @@ mod help_suggestion_tests {
             determines: vec![],
             resolver: None,
             resolver_injective: false,
-            prelude_origin: false,
             method_signatures: vec![],
         });
 

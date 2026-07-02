@@ -8,6 +8,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use crate::ast::Span;
+use crate::rust_span;
 use crate::types::{instantiate_at_level, unify, InferState, Kind, Label, Type};
 
 /// A single argument position in a `Constraint::Class`.
@@ -17,12 +18,6 @@ use crate::types::{instantiate_at_level, unify, InferState, Kind, Label, Type};
 /// generalization) are stored as `Ground(Type)` so that `instantiate_scheme` and
 /// `check_constraints_on_var` can use the concrete type directly without needing
 /// to look it up in the substitution.
-///
-/// Introduced by B-398: previously all positions were `Vec<String>`, which caused
-/// `generalize_with_doc` to drop FD constraints whose determined position variables
-/// were not generalizable (they were discharged ground types), and
-/// `instantiate_scheme` to silently drop constraints whose vars weren't in
-/// `var_renaming`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ConstraintArg {
     /// A type variable that will be renamed during instantiation.
@@ -127,10 +122,6 @@ impl Constraint {
             determines: vec![],
             resolver: None,
             resolver_injective: false,
-            // Stub ClassDecl used only for Constraint::Class representation — not stored in ClassEnv.
-            // prelude_origin is irrelevant here (propagation gate in typecheck_dict.rs reads
-            // ClassDecl entries from ClassEnv, not from Constraint stubs).
-            prelude_origin: false,
             method_signatures: vec![],
         });
         Self::Class {
@@ -202,15 +193,6 @@ pub struct ClassDecl {
     /// Read site: `check_constraints_on_var` → `improve_functional_dependency_inner`
     /// (see `type_unify.rs`: `resolver_injective` is captured in `ApplicableConstraint::MultiParam`).
     pub(crate) resolver_injective: bool,
-    /// Whether this class was declared during prelude loading.
-    ///
-    /// `true` for classes declared in `prelude.llt` or pre-seeded in `InferState::new()`.
-    /// `false` for classes declared in user code.
-    ///
-    /// Used in `typecheck_dict.rs` to control per-declaration propagation: only declarations
-    /// with `prelude_origin = true` are merged into the outer frame when a child dict scope
-    /// exits. This replaces the coarse `state.in_prelude_load` gate (T-1110).
-    pub prelude_origin: bool,
     /// Method signatures declared in the class body (S-886: class method synthesis).
     /// Each entry is (method_name, method_type) where method_type uses the class's type
     /// parameters as TypeVars. E.g., for Addable: [("+", Fn(TypeVar("a"), TypeVar("b")) -> TypeVar("c"))].
@@ -256,15 +238,6 @@ pub struct InstanceDecl {
     /// Method implementations: method_name -> inferred type
     /// (The actual dictionary value is stored in eval::ClassDictionary)
     pub method_types: HashMap<String, Type>,
-    /// Whether this instance was declared during prelude loading.
-    ///
-    /// `true` for instances declared in `prelude.llt` or pre-seeded in `InferState::new()`.
-    /// `false` for instances declared in user code.
-    ///
-    /// Used in `typecheck_dict.rs` to control per-declaration propagation: only declarations
-    /// with `prelude_origin = true` are merged into the outer frame when a child dict scope
-    /// exits. This replaces the coarse `state.in_prelude_load` gate (T-1110).
-    pub prelude_origin: bool,
 }
 
 /// Class environment: lexically scoped registry of type class declarations.
@@ -514,8 +487,9 @@ impl InstanceEnv {
                     &mut temp_subst,
                     state,
                     &mut probe_constraints,
-                    Span::origin(),
-                )).await
+                    rust_span!(),
+                ))
+                .await
                 .is_ok();
 
                 // Always restore state — this is a pure probe.
@@ -631,8 +605,9 @@ impl InstanceEnv {
                     &mut temp_subst,
                     state,
                     &mut probe_constraints,
-                    Span::origin(),
-                )).await
+                    rust_span!(),
+                ))
+                .await
                 .is_err()
                 {
                     all_match = false;
@@ -658,7 +633,6 @@ impl InstanceEnv {
                     instance_type: resolved_instance_type,
                     det_positions: inst.det_positions.clone(),
                     method_types: inst.method_types.clone(),
-                    prelude_origin: inst.prelude_origin,
                 });
             } else {
                 // F1 FIX: Restore state after failed probe (discard leaked mutations).
@@ -755,8 +729,9 @@ impl InstanceEnv {
                     &mut temp_subst,
                     state,
                     &mut rl_probe_constraints,
-                    Span::origin(),
-                )).await
+                    rust_span!(),
+                ))
+                .await
                 .is_err()
                 {
                     all_match = false;
@@ -806,7 +781,8 @@ impl InstanceEnv {
 
         // No match in current frame — walk parent chain.
         if let Some(parent) = &self.parent {
-            return Box::pin(parent.reverse_lookup_mptc(class, ded_positions, ded_types, state)).await;
+            return Box::pin(parent.reverse_lookup_mptc(class, ded_positions, ded_types, state))
+                .await;
         }
 
         None
@@ -942,8 +918,9 @@ impl InstanceEnv {
                 &mut temp_subst,
                 state,
                 &mut probe_constraints,
-                Span::origin(),
-            )).await
+                rust_span!(),
+            ))
+            .await
             .is_ok();
 
             // Always restore state after the probe; preserve peak name_counter (F1 fix).
@@ -1018,8 +995,9 @@ impl InstanceEnv {
             &mut temp_subst,
             state,
             &mut winner_constraints,
-            Span::origin(),
-        )).await;
+            rust_span!(),
+        ))
+        .await;
 
         // Apply the unification substitution to method types.
         let freshened_method_types: HashMap<String, Type> = winner
@@ -1047,7 +1025,6 @@ impl InstanceEnv {
             instance_type: freshened_instance_type,
             det_positions: winner.det_positions.clone(),
             method_types: freshened_method_types,
-            prelude_origin: winner.prelude_origin,
         }))
     }
 }
@@ -1150,12 +1127,12 @@ mod tests {
     use crate::type_infer::InferState;
     use std::collections::HashMap;
 
-    fn check_structural_overlap_sync(
+    async fn check_structural_overlap_sync(
         env: &InstanceEnv,
         candidate: &InstanceDecl,
         state: &mut InferState,
     ) -> Result<(), String> {
-        crate::async_rt::block_on_anywhere(env.check_structural_overlap(candidate, state))
+        env.check_structural_overlap(candidate, state).await
     }
 
     fn make_seq_a() -> Type {
@@ -1172,13 +1149,12 @@ mod tests {
             instance_type,
             det_positions: vec![],
             method_types: HashMap::new(),
-            prelude_origin: false,
         }
     }
 
     /// Two disjoint concrete instances (Int vs Str) must NOT be reported as overlapping.
-    #[test]
-    fn test_no_overlap_disjoint_concrete() {
+    #[tokio::test]
+    async fn test_no_overlap_disjoint_concrete() {
         let mut state = InferState::new();
         let mut env = InstanceEnv::new();
 
@@ -1189,14 +1165,16 @@ mod tests {
 
         // Str does not overlap with Int — should be Ok
         assert!(
-            check_structural_overlap_sync(&env, &str_inst, &mut state).is_ok(),
+            check_structural_overlap_sync(&env, &str_inst, &mut state)
+                .await
+                .is_ok(),
             "Int and Str instances should not overlap"
         );
     }
 
     /// `[Seq a]` and `[Seq Int]` overlap: substituting a=Int satisfies both.
-    #[test]
-    fn test_overlap_seq_a_vs_seq_int() {
+    #[tokio::test]
+    async fn test_overlap_seq_a_vs_seq_int() {
         let mut state = InferState::new();
         let mut env = InstanceEnv::new();
 
@@ -1206,7 +1184,7 @@ mod tests {
         env.insert(seq_a_inst).unwrap();
 
         // [Seq Int] overlaps with [Seq a] — must detect overlap
-        let result = check_structural_overlap_sync(&env, &seq_int_inst, &mut state);
+        let result = check_structural_overlap_sync(&env, &seq_int_inst, &mut state).await;
         assert!(
             result.is_err(),
             "Seq[a] and Seq[Int] should be detected as overlapping instances"
@@ -1223,8 +1201,8 @@ mod tests {
     }
 
     /// `[Seq a]` and `[Seq b]` overlap: both accept any Seq, so they are universally overlapping.
-    #[test]
-    fn test_overlap_seq_a_vs_seq_b() {
+    #[tokio::test]
+    async fn test_overlap_seq_a_vs_seq_b() {
         let mut state = InferState::new();
         let mut env = InstanceEnv::new();
 
@@ -1234,7 +1212,7 @@ mod tests {
         env.insert(seq_a_inst).unwrap();
 
         // [Seq b] overlaps with [Seq a] — they are structurally equivalent
-        let result = check_structural_overlap_sync(&env, &seq_b_inst, &mut state);
+        let result = check_structural_overlap_sync(&env, &seq_b_inst, &mut state).await;
         assert!(
             result.is_err(),
             "Seq[a] and Seq[b] should be detected as overlapping (both accept any Seq)"
@@ -1242,20 +1220,22 @@ mod tests {
     }
 
     /// Checking overlap against an empty registry never reports overlap.
-    #[test]
-    fn test_no_overlap_empty_registry() {
+    #[tokio::test]
+    async fn test_no_overlap_empty_registry() {
         let mut state = InferState::new();
         let env = InstanceEnv::new();
         let inst = make_appendable_instance(make_seq_a());
         assert!(
-            check_structural_overlap_sync(&env, &inst, &mut state).is_ok(),
+            check_structural_overlap_sync(&env, &inst, &mut state)
+                .await
+                .is_ok(),
             "Empty registry should never report overlap"
         );
     }
 
     /// check_structural_overlap is side-effect-free: state must not change.
-    #[test]
-    fn test_overlap_check_is_side_effect_free() {
+    #[tokio::test]
+    async fn test_overlap_check_is_side_effect_free() {
         let mut state = InferState::new();
         let mut env = InstanceEnv::new();
 
@@ -1265,7 +1245,12 @@ mod tests {
         let levels_before = state.levels.clone();
 
         // This will detect overlap and return Err — but state must be restored.
-        let _ = check_structural_overlap_sync(&env, &make_appendable_instance(make_seq_int()), &mut state);
+        let _ = check_structural_overlap_sync(
+            &env,
+            &make_appendable_instance(make_seq_int()),
+            &mut state,
+        )
+        .await;
 
         assert_eq!(
             state.subst.name_counter.get(),
@@ -1387,8 +1372,8 @@ mod tests {
 
     /// check_structural_overlap walks the parent chain (T-1031): an instance in a parent frame
     /// must be detected as overlapping with a candidate inserted into a child frame.
-    #[test]
-    fn test_overlap_check_parent_chain() {
+    #[tokio::test]
+    async fn test_overlap_check_parent_chain() {
         let mut state = InferState::new();
 
         // Parent frame: register Appendable(Int).
@@ -1401,7 +1386,7 @@ mod tests {
 
         // Attempting to add another Appendable(Int) to child must detect overlap with parent.
         let duplicate_int = make_appendable_instance(Type::Int);
-        let result = check_structural_overlap_sync(&child_env, &duplicate_int, &mut state);
+        let result = check_structural_overlap_sync(&child_env, &duplicate_int, &mut state).await;
         assert!(
             result.is_err(),
             "Appendable(Int) in child should overlap with Appendable(Int) in parent frame"
@@ -1415,7 +1400,9 @@ mod tests {
         // A disjoint instance (Appendable(Str)) must NOT be reported as overlapping.
         let str_inst = make_appendable_instance(Type::Str);
         assert!(
-            check_structural_overlap_sync(&child_env, &str_inst, &mut state).is_ok(),
+            check_structural_overlap_sync(&child_env, &str_inst, &mut state)
+                .await
+                .is_ok(),
             "Appendable(Str) should not overlap with Appendable(Int) in parent frame"
         );
     }

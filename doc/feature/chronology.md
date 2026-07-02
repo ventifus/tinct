@@ -35,7 +35,7 @@ All commits by Andrew Denton; timezone UTC-7 (Pacific).
 All of the following completing commits landed on 2026-05-04:
 
 - [`cef5e1c`] [Source Text Availability](source-text-availability.md) — `source-text` (completing sprint): multi-line span rendering (all spanned lines shown); LSP `related_information` with mat-span + stack frames
-  - Phase 1 (REPL + CLI snippet rendering) was already done earlier
+  - Phase 1 (CLI snippet rendering) was already done earlier
 
 - [`d8ecf23`] [Type Predicates](type-predicates.md) — `type-predicates`: 8 runtime type predicate builtins (`int?`, `float?`, `num?`, `str?`, `bool?`, `null?`, `dict?`, `fn?`); `list?` in prelude; 32 corpus tests
 

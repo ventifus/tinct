@@ -8,7 +8,7 @@
 //! Type class declarations (`ClassDecl`, `Constraint`) live in `type_class.rs`.
 //! Normalization and Display impls live in `type_normalize.rs`.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
 
@@ -37,20 +37,45 @@ pub enum RowTail {
 
 /// Row representation for record types.
 ///
-/// `fields` uses `BTreeMap` for deterministic iteration order (lexicographic by key).
-/// Although row field order is semantically irrelevant at the type level (structural
-/// subtyping makes rows unordered), deterministic iteration is required for stable
-/// type checker output in corpus tests. BTreeMap provides this guarantee.
-/// Runtime `Value::Dict` keeps `IndexMap` for ordered user-visible semantics;
-/// this BTreeMap is only at the type-inference layer.
+/// `fields` uses `IndexMap` to preserve insertion order (source declaration order).
+/// Insertion order defines the canonical slot numbering used by `slot-get` for
+/// O(1) positional field access. Although row field order is semantically irrelevant at
+/// the type level (structural subtyping makes rows unordered), insertion order IS the
+/// canonical slot ordering that the type checker writes into `SlotAnnotation` fields on DotAccess nodes
+/// and the lowerer reads to emit `Call(slot-get, [Int(slot), target])` vs `Call(field-get, [Str(key), target])`.
+///
+/// `PartialEq`, `Eq`, and `Hash` are order-independent (field set equality, not sequence
+/// equality) so that type equality is unaffected by the order fields were added to a row.
 ///
 /// `tail` constrains the non-named portion of the row. `RowTail::Empty` is the default for
 /// all current closed-record constructions. `RowTail::Uniform` is produced when parsing
 /// `{_ : V}` or `{_@K : V}` annotation syntax (column constraints).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Row {
-    pub fields: BTreeMap<String, Type>, // known fields {l₁: τ₁, l₂: τ₂, ...}
+    pub fields: IndexMap<String, Type>, // known fields {l₁: τ₁, l₂: τ₂, ...}
     pub tail: RowTail,
+}
+
+impl PartialEq for Row {
+    fn eq(&self, other: &Self) -> bool {
+        self.tail == other.tail
+            && self.fields.len() == other.fields.len()
+            && self.fields.iter().all(|(k, v)| other.fields.get(k) == Some(v))
+    }
+}
+
+impl Eq for Row {}
+
+impl std::hash::Hash for Row {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        let mut pairs: Vec<(&String, &Type)> = self.fields.iter().collect();
+        pairs.sort_by_key(|(k, _)| k.as_str());
+        for (k, v) in pairs {
+            k.hash(state);
+            v.hash(state);
+        }
+        self.tail.hash(state);
+    }
 }
 
 /// Kind for higher-kinded types (Jones 1993)
@@ -169,6 +194,20 @@ pub struct TyConDef {
     ///
     /// Both outer and inner maps use `IndexMap` to preserve annotation key insertion order.
     pub field_annotations: IndexMap<String, IndexMap<String, crate::value::Value>>,
+
+    /// Compile-time constants for each variant constructor (T-1357/T-1358).
+    ///
+    /// Maps qualified constructor tag → (constant name → constant value).
+    /// Populated from `name: literal` entries in variant declarations:
+    ///   `[NoError rcode: 0 description: "No Error"]` → `{ "DnsRcode.NoError": { "rcode": 0, "description": "No Error" } }`
+    ///
+    /// Empty for types without constants. Constants are stored as `Value` literals
+    /// (Int, U64, Float, String) — complex expressions are not valid constant entries.
+    ///
+    /// Forward lookup: when `.field` is accessed on a `Variant { tag, payload: None }` or
+    /// after payload access fails, the evaluator looks up `tag` in this map and returns the
+    /// constant for that field. This enables `some-rcode.rcode` without a match expression.
+    pub constructor_constants: IndexMap<String, IndexMap<String, crate::value::Value>>,
 }
 
 impl TyConDef {
@@ -190,6 +229,7 @@ impl TyConDef {
             builtin_type: None,
             annotation: None,
             field_annotations: IndexMap::new(),
+            constructor_constants: IndexMap::new(),
         }
     }
 
@@ -208,6 +248,7 @@ impl TyConDef {
             builtin_type: None,
             annotation: None,
             field_annotations: IndexMap::new(),
+            constructor_constants: IndexMap::new(),
         }
     }
 }
@@ -227,14 +268,7 @@ pub enum Type {
     Float,
     Str,
     StringLiteral(String),
-    Bool,
     Bytes,
-    /// Supertype of both `Int` and `Float` — represents any numeric value.
-    /// No `NumberLiteral` variant exists (unlike `IntLiteral`/`StringLiteral`) because:
-    /// - Literals parse to concrete types (`IntLiteral` or `Float`)
-    /// - `Number` only appears in user annotations (`[@Number ...]`) and subtyping relations
-    /// - There is no runtime value that is "a number but neither int nor float"
-    Number,
     Record(Row),
     Function {
         params: Vec<(Option<String>, Type)>, // (param_name, param_type) — None = positional-only
@@ -261,10 +295,10 @@ pub enum Type {
     /// This prevents the lattice collapse that Any-as-top-and-bottom caused.
     /// See Siek & Taha (2006), Garcia et al. (2016) AGT framework.
     Unknown,
-    /// Top type — ⊤, the true supertype of everything. Represents "any type is allowed here"
+    /// Any type — ⊤, the true supertype of everything. Represents "any type is allowed here"
     /// (TypeAssert upper bound, explicit "accept anything" positions).
-    /// All types τ satisfy τ <: Top.
-    Top,
+    /// All types τ satisfy τ <: Any.
+    Any,
     /// Sentinel for failed sub-expression inference. Prevents cascade errors: when a
     /// sub-expression fails type inference, its result is `Error` rather than propagating
     /// the failure to parent expressions. `unify(Error, T)` is a no-op for all T (silent
@@ -379,9 +413,7 @@ impl PartialEq for Type {
             (Type::Float, Type::Float) => true,
             (Type::Str, Type::Str) => true,
             (Type::StringLiteral(s1), Type::StringLiteral(s2)) => s1 == s2,
-            (Type::Bool, Type::Bool) => true,
             (Type::Bytes, Type::Bytes) => true,
-            (Type::Number, Type::Number) => true,
             (Type::Record(row1), Type::Record(row2)) => row1 == row2,
             (
                 Type::Function {
@@ -405,7 +437,7 @@ impl PartialEq for Type {
             (Type::Proxy, Type::Proxy) => true,
             (Type::TypeVar(n1, _), Type::TypeVar(n2, _)) => n1 == n2,
             (Type::Unknown, Type::Unknown) => true,
-            (Type::Top, Type::Top) => true,
+            (Type::Any, Type::Any) => true,
             (Type::Error, Type::Error) => true,
             (Type::DirCap, Type::DirCap) => true,
             (Type::NetCap, Type::NetCap) => true,
@@ -468,12 +500,10 @@ impl std::hash::Hash for Type {
             Type::Int
             | Type::Float
             | Type::Str
-            | Type::Bool
             | Type::Bytes
-            | Type::Number
             | Type::Proxy
             | Type::Unknown
-            | Type::Top
+            | Type::Any
             | Type::Error
             | Type::DirCap
             | Type::NetCap
@@ -491,11 +521,8 @@ impl std::hash::Hash for Type {
             Type::IntLiteral(v) => v.hash(state),
             Type::StringLiteral(s) => s.hash(state),
             Type::Record(row) => {
-                // Hash fields in sorted order for deterministic hashing
-                let mut fields: Vec<_> = row.fields.iter().collect();
-                fields.sort_by_key(|(k, _)| *k);
-                fields.hash(state);
-                row.tail.hash(state);
+                // Delegate to Row::hash which is order-independent (sorted by key).
+                row.hash(state);
             }
             Type::Function {
                 params,
@@ -527,11 +554,8 @@ impl std::hash::Hash for Type {
             }
             Type::NominalVariant { tag, fields } => {
                 tag.hash(state);
-                // Hash fields in sorted order for deterministic hashing
-                let mut field_vec: Vec<_> = fields.fields.iter().collect();
-                field_vec.sort_by_key(|(k, _)| *k);
-                field_vec.hash(state);
-                fields.tail.hash(state);
+                // Delegate to Row::hash which is order-independent (sorted by key).
+                fields.hash(state);
             }
             // S-860: equirecursive-types-core
             // Hash the binder name (globally unique) and the body.
@@ -818,7 +842,7 @@ impl Type {
             return false;
         }
         // [S-TOP]: τ <: Top for all τ (Top is the supertype of everything)
-        if matches!(sup, Type::Top) {
+        if matches!(sup, Type::Any) {
             return true;
         }
         // [S-NEVER]: Never <: τ for all τ (Never is the subtype of everything)
@@ -902,9 +926,8 @@ impl Type {
                     && Self::is_subtype_inner(a1, a2, tycon_env, depth + 1, sigma)
             }
             (Type::TyCon(n1), Type::TyCon(n2)) => n1 == n2,
-            (Type::IntLiteral(_), Type::Int | Type::Number) => true,
+            (Type::IntLiteral(_), Type::Int) => true,
             (Type::StringLiteral(_), Type::Str) => true,
-            (Type::Int | Type::Float, Type::Number) => true,
             // [S-RcdTop] (BAS width subtyping): A union of closed single-field records with
             // disjoint field names is equivalent to Top in the BAS lattice.  The union
             // `{x: τ} | {y: π}` cannot be refined further by structural subtyping — together
@@ -923,7 +946,7 @@ impl Type {
                 // The union is semantically Top; delegate to is_subtype(Top, sup_ty).
                 // S-TOP (sup == Top) is already handled before the match, so we only
                 // reach here when sup is NOT Top — meaning Top is not a subtype of it.
-                matches!(sup_ty, Type::Top)
+                matches!(sup_ty, Type::Any)
             }
             // [UNION-ELIM]: union is a subtype iff ALL members are subtypes.
             // This arm also handles (Union, Union): each member of sub must be a subtype of
@@ -1206,11 +1229,10 @@ impl Type {
             // Primitives: exact match
             (Type::Int, Type::Int)
             | (Type::Str, Type::Str)
-            | (Type::Bool, Type::Bool)
             | (Type::Float, Type::Float)
             | (Type::Bytes, Type::Bytes) => true,
             // Top accepts everything
-            (_, Type::Top) => true,
+            (_, Type::Any) => true,
             // Structural recursion — consistent subtyping throughout all composite types.
             // App covers Seq[A] ~<: Seq[B] (TyCon("Seq") head) and Map similarly.
             (Type::App(f1, a1), Type::App(f2, a2)) => {
@@ -1303,8 +1325,8 @@ impl Type {
         }
 
         // Unknown, Top, and Error are conservatively assumed to overlap with everything
-        if matches!(t1, Type::Unknown | Type::Top | Type::Error)
-            || matches!(t2, Type::Unknown | Type::Top | Type::Error)
+        if matches!(t1, Type::Unknown | Type::Any | Type::Error)
+            || matches!(t2, Type::Unknown | Type::Any | Type::Error)
         {
             return false;
         }
@@ -1314,56 +1336,42 @@ impl Type {
             // Same type → not disjoint
             (a, b) if a == b => false,
 
-            // Int and Float are disjoint (Number is their supertype, not intersection)
+            // Int and Float are disjoint (their supertype, not intersection)
             (Type::Int, Type::Float) | (Type::Float, Type::Int) => true,
             (Type::IntLiteral(_), Type::Float) | (Type::Float, Type::IntLiteral(_)) => true,
 
             // Different primitives are disjoint
             (Type::Int | Type::IntLiteral(_), Type::Str | Type::StringLiteral(_)) => true,
-            (Type::Int | Type::IntLiteral(_), Type::Bool) => true,
             (Type::Int | Type::IntLiteral(_), Type::Bytes) => true,
             (Type::Float, Type::Str | Type::StringLiteral(_)) => true,
-            (Type::Float, Type::Bool) => true,
             (Type::Float, Type::Bytes) => true,
-            (Type::Str | Type::StringLiteral(_), Type::Bool) => true,
             (Type::Str | Type::StringLiteral(_), Type::Bytes) => true,
-            (Type::Bool, Type::Bytes) => true,
 
             // Symmetric cases
             (Type::Str | Type::StringLiteral(_), Type::Int | Type::IntLiteral(_)) => true,
-            (Type::Bool, Type::Int | Type::IntLiteral(_)) => true,
             (Type::Bytes, Type::Int | Type::IntLiteral(_)) => true,
             (Type::Str | Type::StringLiteral(_), Type::Float) => true,
-            (Type::Bool, Type::Float) => true,
             (Type::Bytes, Type::Float) => true,
-            (Type::Bool, Type::Str | Type::StringLiteral(_)) => true,
             (Type::Bytes, Type::Str | Type::StringLiteral(_)) => true,
-            (Type::Bytes, Type::Bool) => true,
 
             // Record vs any primitive is disjoint
             (Type::Record(_), Type::Int | Type::IntLiteral(_)) => true,
             (Type::Record(_), Type::Float) => true,
             (Type::Record(_), Type::Str | Type::StringLiteral(_)) => true,
-            (Type::Record(_), Type::Bool) => true,
             (Type::Record(_), Type::Bytes) => true,
             (Type::Int | Type::IntLiteral(_), Type::Record(_)) => true,
             (Type::Float, Type::Record(_)) => true,
             (Type::Str | Type::StringLiteral(_), Type::Record(_)) => true,
-            (Type::Bool, Type::Record(_)) => true,
             (Type::Bytes, Type::Record(_)) => true,
 
             // Function vs primitives (for precise false-branch narrowing after fn? guards)
             (Type::Function { .. }, Type::Int | Type::IntLiteral(_)) => true,
             (Type::Function { .. }, Type::Float) => true,
-            (Type::Function { .. }, Type::Number) => true,
             (Type::Function { .. }, Type::Str | Type::StringLiteral(_)) => true,
-            (Type::Function { .. }, Type::Bool) => true,
             (Type::Function { .. }, Type::Bytes) => true,
             (Type::Int | Type::IntLiteral(_), Type::Function { .. }) => true,
             (Type::Float, Type::Function { .. }) => true,
-            (Type::Number, Type::Function { .. }) => true,
             (Type::Str | Type::StringLiteral(_), Type::Function { .. }) => true,
-            (Type::Bool, Type::Function { .. }) => true,
             (Type::Bytes, Type::Function { .. }) => true,
 
             // Function vs structural types (Record, NominalVariant, App)
@@ -1378,13 +1386,11 @@ impl Type {
             (Type::NominalVariant { .. }, Type::Int | Type::IntLiteral(_)) => true,
             (Type::NominalVariant { .. }, Type::Float) => true,
             (Type::NominalVariant { .. }, Type::Str | Type::StringLiteral(_)) => true,
-            (Type::NominalVariant { .. }, Type::Bool) => true,
             (Type::NominalVariant { .. }, Type::Bytes) => true,
             (Type::NominalVariant { .. }, Type::App(_, _)) => true,
             (Type::Int | Type::IntLiteral(_), Type::NominalVariant { .. }) => true,
             (Type::Float, Type::NominalVariant { .. }) => true,
             (Type::Str | Type::StringLiteral(_), Type::NominalVariant { .. }) => true,
-            (Type::Bool, Type::NominalVariant { .. }) => true,
             (Type::Bytes, Type::NominalVariant { .. }) => true,
             (Type::App(_, _), Type::NominalVariant { .. }) => true,
 
@@ -1562,14 +1568,10 @@ impl Type {
                 }
             }),
             // Literal types are consistent with their parent types (similar to subtyping)
-            (Type::IntLiteral(_), Type::Int | Type::Number)
-            | (Type::Int | Type::Number, Type::IntLiteral(_)) => true,
+            (Type::IntLiteral(_), Type::Int) | (Type::Int, Type::IntLiteral(_)) => true,
             (Type::StringLiteral(_), Type::Str) | (Type::Str, Type::StringLiteral(_)) => true,
-            (Type::Int | Type::Float, Type::Number) | (Type::Number, Type::Int | Type::Float) => {
-                true
-            }
             // Top is consistent with everything (τ ~ Top for all τ)
-            (Type::Top, _) | (_, Type::Top) => true,
+            (Type::Any, _) | (_, Type::Any) => true,
             // Never is vacuously consistent with everything — Never is uninhabited, so no
             // runtime value can violate the consistency relation. This is not AGT gradual
             // consistency; it is vacuous truth.
@@ -1829,8 +1831,6 @@ impl Type {
     }
 
     /// Collect type variables in a single tree walk.
-    /// Under BAS, row variables no longer exist (no RowVar nodes), so the  parameter
-    /// has been removed.
     pub fn collect_all_vars(&self, type_vars: &mut HashSet<String>) {
         match self {
             Type::TypeVar(name, _) => {
@@ -1901,9 +1901,8 @@ impl Type {
     /// in the type tree and simultaneously collects all type vars.
     /// Returns `true` if `occurs_name` was found (infinite-type guard for U-VAR arms).
     ///
-    /// This replaces the double-walk pattern of calling `type_var_occurs()` then
+    /// This fuses the double-walk of calling `type_var_occurs()` then
     /// `collect_all_vars()` separately in each U-VAR arm of `unify()`.
-    /// Under BAS, row variables no longer exist, so the row_vars parameter has been removed.
     pub fn collect_all_vars_check_occurs(
         &self,
         occurs_name: &str,
@@ -1997,7 +1996,6 @@ impl Type {
     /// allocation; callers that need deduplication handle it via seen-set or contains_key guards.
     /// Production callers: `instantiate_at_level` and `generalize`. (The test-only `instantiate()`
     /// uses the HashSet variant `collect_all_vars` instead.)
-    /// Under BAS, row variables no longer exist, so the row_vars parameter has been removed.
     pub fn collect_all_vars_vec(&self, type_vars: &mut Vec<String>) {
         match self {
             Type::TypeVar(name, _) => {
@@ -2070,12 +2068,10 @@ impl Type {
             | Type::Float
             | Type::Str
             | Type::StringLiteral(_)
-            | Type::Bool
             | Type::Bytes
-            | Type::Number
             | Type::Proxy
             | Type::Unknown
-            | Type::Top
+            | Type::Any
             | Type::Error
             | Type::DirCap
             | Type::NetCap
@@ -2170,7 +2166,7 @@ impl Type {
                     flattened.extend(nested);
                 }
                 // Top absorbs all in union: T | Top = Top
-                Type::Top => return Type::Top,
+                Type::Any => return Type::Any,
                 // Unknown absorbs all in gradual union: T | Unknown = Unknown (AGT: ? ∪ T = ?)
                 // Without this, Unknown | TypeVar(a) cannot be unified with TypeVar(a) due
                 // to the occurs check (a appears in the union), causing spurious infinite type errors.
@@ -2243,7 +2239,7 @@ impl Type {
                     // Flatten nested intersections
                     flattened.extend(nested);
                 }
-                Type::Top => {
+                Type::Any => {
                     // Top is the identity: T & Top = T, so skip it
                     continue;
                 }
@@ -2261,7 +2257,7 @@ impl Type {
 
         // If all members were Top (identity), return Top
         if flattened.is_empty() {
-            return Type::Top;
+            return Type::Any;
         }
 
         // Deduplicate
@@ -2318,7 +2314,7 @@ impl Type {
                 Type::Never
             }
             // Top absorbs all in union: T | Top = Top
-            Type::Union(ref members) if members.iter().any(|m| matches!(m, Type::Top)) => Type::Top,
+            Type::Union(ref members) if members.iter().any(|m| matches!(m, Type::Any)) => Type::Any,
             // Remove Never arms from union: T | Never = T
             Type::Union(members) if members.iter().any(|m| matches!(m, Type::Never)) => {
                 let filtered: Vec<Type> = members
@@ -2431,7 +2427,7 @@ impl Type {
             // S-RcdTop: union of closed single-field records with disjoint field names → Top
             Type::Union(members) => {
                 if Self::check_s_rcd_top(&members).is_some() {
-                    Type::Top
+                    Type::Any
                 } else {
                     Type::Union(members)
                 }
@@ -2600,15 +2596,13 @@ fn type_order(ty: &Type) -> u8 {
         Type::Float => 2,
         Type::Str => 3,
         Type::StringLiteral(_) => 4,
-        Type::Bool => 5,
         Type::Bytes => 6,
-        Type::Number => 7,
         Type::Record(_) => 8,
         Type::Function { .. } => 9,
         Type::Proxy => 12,
         Type::TypeVar(_, _) => 13,
         Type::Unknown => 14,
-        Type::Top => 15,
+        Type::Any => 15,
         Type::Error => 16,
         Type::DirCap => 17,
         Type::NetCap => 18,
@@ -2686,17 +2680,15 @@ pub(crate) fn type_payload_cmp(a: &Type, b: &Type) -> std::cmp::Ordering {
 /// single-parameter type class.
 ///
 /// This is the **single authoritative source of truth** for primitive class membership.
-/// It is used in two places:
+/// It is used by `type_unify::satisfies_constraint_inner` as a fast-path leaf check for
+/// the structural propagation rules (Record/Union/Intersection/NominalVariant field recursion).
 ///
-/// 1. `type_unify::satisfies_constraint_inner` — fast-path leaf check for the structural
-///    propagation rules (Record/Union/Intersection/NominalVariant field recursion).
-/// 2. `type_infer::InferState::new()` — pre-seeding `InstanceEnv` with `InstanceDecl` entries
-///    so that `InstanceEnv::resolve_instance` returns the same memberships as this function
-///    for user-code type-checking sessions.
+/// Primitive leaf types (Int, Float, Str, etc.) are handled exclusively here — they do NOT
+/// have InstanceDecl entries in TypeEnv or InferState. Adding a new primitive type to a class
+/// (e.g., `Equatable Bytes`) requires updating ONLY this function.
 ///
-/// When adding a new type to a class (e.g., `Equatable Bytes`), update ONLY this function.
-/// The pre-seeded `InstanceDecl` entries in `InferState::new()` are built by calling this
-/// function — no second update is required.
+/// Parametric/structural types (Seq, Map, Record) are declared in prelude.llt via
+/// `[instance ...]` forms and propagate through TypeEnv → InferState at typecheck time.
 ///
 /// **Structural (parametric) types** (`Seq`, `Map`, `Record`, `NominalVariant`) are handled
 /// by structural propagation rules in `satisfies_constraint_inner` (e.g., `Record({f: τ})`
@@ -2720,31 +2712,19 @@ pub fn primitive_satisfies_constraint(ty: &Type, class_name: &str) -> bool {
                 | Type::Float
                 | Type::Str
                 | Type::StringLiteral(_)
-                | Type::Bool
-                | Type::Number
                 | Type::Bytes
         ),
 
         // Comparable: types that support ordering ([< $a $b], [> $a $b], etc.).
         // Comparable implies Equatable via superclass relationship.
-        // Bool is Comparable: false < true (matches runtime builtin_lt behavior).
         "Comparable" => matches!(
             ty,
-            Type::Int
-                | Type::IntLiteral(_)
-                | Type::Float
-                | Type::Str
-                | Type::StringLiteral(_)
-                | Type::Number
-                | Type::Bool
+            Type::Int | Type::IntLiteral(_) | Type::Float | Type::Str | Type::StringLiteral(_)
         ),
 
         // Numeric: types that support arithmetic ([+ $a $b], [* $a $b], etc.).
         // Numeric implies Equatable via superclass relationship.
-        "Numeric" => matches!(
-            ty,
-            Type::Int | Type::IntLiteral(_) | Type::Float | Type::Number
-        ),
+        "Numeric" => matches!(ty, Type::Int | Type::IntLiteral(_) | Type::Float),
 
         // Showable: types that support string conversion ([str $a]).
         // Structural types (Seq, Map, Record) are Showable but are handled by structural
@@ -2757,8 +2737,6 @@ pub fn primitive_satisfies_constraint(ty: &Type, class_name: &str) -> bool {
                 | Type::Float
                 | Type::Str
                 | Type::StringLiteral(_)
-                | Type::Bool
-                | Type::Number
                 | Type::Bytes
         ),
 
@@ -2780,6 +2758,27 @@ pub fn primitive_satisfies_constraint(ty: &Type, class_name: &str) -> bool {
 /// the element type of Seq, as function parameters/return types, or as record field types).
 ///
 /// Returns an error if any TypeVar in the type has Kind::Label in `kind_env`.
+/// Generate the gensym'd binding name for a compile-time instance specialization.
+///
+/// When `[instance Equatable [let k@Int]: [=: impl-fn]]` is compiled, this produces
+/// the name `ɪɴꜱᴛᴀɴᴄᴇ⧼Equatable∷=⟨Int⟩⧽` which is stored as a regular dict binding
+/// in the evaluation environment. Call-site rewriting in lower.rs looks up this name
+/// to produce a direct binding reference rather than going through the method dispatch
+/// sentinel machinery.
+///
+/// All component characters are valid tinct identifier chars (not in the denylist).
+/// `∷` (U+2237, PROPORTION) distinguishes class from method without being DotAccess.
+/// `⧼`/`⧽` (U+29FC/U+29FD) are the gensym delimiters used elsewhere in tinct.
+/// `⟨`/`⟩` (U+27E8/U+27E9) delimit type arguments.
+pub fn instance_binding_name(class: &str, method: &str, type_args: &[&str]) -> String {
+    let args = type_args.join(",");
+    if args.is_empty() {
+        format!("ɪɴꜱᴛᴀɴᴄᴇ⧼{class}∷{method}⧽")
+    } else {
+        format!("ɪɴꜱᴛᴀɴᴄᴇ⧼{class}∷{method}⟨{args}⟩⧽")
+    }
+}
+
 pub fn check_kind_wellformed(
     ty: &Type,
     kind_env: &HashMap<String, Kind>,
@@ -2911,16 +2910,6 @@ mod tests {
     }
 
     #[test]
-    fn test_primitive_equatable_bool() {
-        assert!(primitive_satisfies_constraint(&Type::Bool, "Equatable"));
-    }
-
-    #[test]
-    fn test_primitive_equatable_number() {
-        assert!(primitive_satisfies_constraint(&Type::Number, "Equatable"));
-    }
-
-    #[test]
     fn test_primitive_equatable_bytes() {
         // Bytes is a primitive Equatable — byte-sequence equality is supported at runtime.
         // Regression test: T-910 silently dropped Bytes when migrating from hardcoded arms
@@ -2945,12 +2934,6 @@ mod tests {
         assert!(primitive_satisfies_constraint(&Type::Str, "Comparable"));
     }
 
-    #[test]
-    fn test_primitive_comparable_bool() {
-        // Bool IS Comparable: false < true matches runtime builtin_lt behavior.
-        assert!(primitive_satisfies_constraint(&Type::Bool, "Comparable"));
-    }
-
     // --- Numeric ---
 
     #[test]
@@ -2961,11 +2944,6 @@ mod tests {
     #[test]
     fn test_primitive_numeric_float() {
         assert!(primitive_satisfies_constraint(&Type::Float, "Numeric"));
-    }
-
-    #[test]
-    fn test_primitive_numeric_number() {
-        assert!(primitive_satisfies_constraint(&Type::Number, "Numeric"));
     }
 
     // ============================================================================
@@ -3088,11 +3066,6 @@ mod tests {
         assert!(!primitive_satisfies_constraint(&Type::Str, "Numeric"));
     }
 
-    #[test]
-    fn test_primitive_numeric_bool_false() {
-        assert!(!primitive_satisfies_constraint(&Type::Bool, "Numeric"));
-    }
-
     // --- Showable ---
 
     #[test]
@@ -3103,11 +3076,6 @@ mod tests {
     #[test]
     fn test_primitive_showable_str() {
         assert!(primitive_satisfies_constraint(&Type::Str, "Showable"));
-    }
-
-    #[test]
-    fn test_primitive_showable_bool() {
-        assert!(primitive_satisfies_constraint(&Type::Bool, "Showable"));
     }
 
     #[test]

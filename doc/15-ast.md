@@ -163,8 +163,6 @@ pub enum CoreExpr {
         level: u32,
         slot: u32,
     },
-    // Unresolvable ref (include-introduced bindings) — name-based env lookup at runtime
-    FreeVar(String),
 
     DotAccess {
         expr: Arc<Spanned<CoreExpr>>,

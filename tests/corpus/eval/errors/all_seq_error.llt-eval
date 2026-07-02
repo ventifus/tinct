@@ -1,4 +1,4 @@
 # all?: Seq input produces clear error message
-[all? [fn [let x] true] [range 0 3]]
+[all? [fn [let x] True] [range 0 3]]
 === out
 Bool(true)

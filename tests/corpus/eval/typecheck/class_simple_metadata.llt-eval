@@ -6,7 +6,7 @@
     test-method: [Fn@Bool [a a]]]
 
   # Return a simple value to verify the class declaration typechecks
-  result: true
+  result: True
 ]
 
 ---

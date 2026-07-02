@@ -1,16 +1,17 @@
 //! Type annotation resolution and type expression parsing.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
 use super::{check_surface_expr, contains_unknown_or_top, infer_surface_expr, TypeMap};
 use crate::ast::{Annotation, Span, Spanned, SurfaceEntry, SurfaceExpression, SurfaceNode};
+use crate::rust_span;
 use crate::type_class::ConstraintArg;
 use crate::type_def::Variance;
 use crate::type_errors::{GenericTypeError, TypeErrorTyped, UndefinedType};
 use crate::types::{Constraint, InferState, Kind, Row, Type, TypeAlias, TypeEnv, TypeError};
-use crate::value::{Key, Thunk, Value};
+use crate::value::{HashableValue, Thunk, Value};
 
 /// Convert a variance annotation name to a `Variance` value (T-953).
 ///
@@ -249,7 +250,8 @@ pub(crate) async fn expand_type_alias(
         &mut Some(&mut alias_ann_map),
         &mut None,
         None,
-    ).await?;
+    )
+    .await?;
     Ok(Type::Unknown)
 }
 
@@ -278,11 +280,13 @@ pub(crate) async fn resolve_type_assert(
         &mut ann_mapping_opt,
         &mut row_ann_mapping_opt,
         None,
-    ).await
+    )
+    .await
     .map_err(|e| vec![e])?;
 
     // Use checking mode for TypeAssert inner expression (doc/06 §Bidirectional Typing).
-    let check_result = check_surface_expr(inner, &expected, env, state, constraints, type_map).await;
+    let check_result =
+        check_surface_expr(inner, &expected, env, state, constraints, type_map).await;
 
     // If checking fails, propagate errors (TypeAssert failures are hard type errors).
     if let Err(type_errors) = check_result {
@@ -346,8 +350,8 @@ pub(crate) async fn resolve_type_assert(
                     call_stack: vec![],
                 })]);
             }
-            // Check consistency: repr requires a numeric type (Int or Number)
-            let is_numeric = matches!(&expected, Type::Int | Type::Number | Type::Float);
+            // Check consistency: repr requires a numeric type (Int or Float)
+            let is_numeric = matches!(&expected, Type::Int | Type::Float);
             if !is_numeric {
                 return Err(vec![TypeErrorTyped::Generic(GenericTypeError {
                     message: format!(
@@ -381,10 +385,6 @@ pub(crate) async fn resolve_type_assert(
 /// - `[@Fn@RetType [Param1 Param2 ...]]` → function type with params and return type
 /// - `[@Fn@RetType]` (no param list) → zero-parameter function returning RetType
 ///
-/// If `name == "Seq"`, interprets `$annotation` as the element type:
-/// - `Seq@ElemType` (bare Annotated form) → `Type::seq(elem)`
-/// - `[@Seq expr]` (TypeAssert) → checks `expr` against `App(TyCon("Seq"), Any)` (element type is Any; `@ElemType` suffix is a parse error in TypeAssert position)
-///
 /// Otherwise, resolves `$annotation` as a regular type annotation.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn resolve_annotated(
@@ -408,21 +408,8 @@ pub(crate) async fn resolve_annotated(
             ann_mapping,
             row_ann_mapping,
             type_params_scope,
-        ).await
-    } else if name == "Seq" {
-        let elem = resolve_annotation(
-            &annotation.node,
-            env,
-            span.clone(),
-            state,
-            constraints,
-            ann_mapping,
-            row_ann_mapping,
-            type_params_scope,
-        ).await?;
-        let ty = Type::seq(elem);
-        crate::types::check_kind_wellformed(&ty, &state.kind_env, span)?;
-        Ok(ty)
+        )
+        .await
     } else if name == "Handle" {
         // Handle@SomeCapType — subscript form for capability row in parameter annotations.
         //
@@ -442,7 +429,8 @@ pub(crate) async fn resolve_annotated(
             ann_mapping,
             row_ann_mapping,
             type_params_scope,
-        ).await?;
+        )
+        .await?;
         Ok(Type::handle(cap_type))
     } else {
         resolve_annotation(
@@ -454,7 +442,8 @@ pub(crate) async fn resolve_annotated(
             ann_mapping,
             row_ann_mapping,
             type_params_scope,
-        ).await
+        )
+        .await
     }
 }
 
@@ -1176,7 +1165,8 @@ pub(crate) async fn resolve_fn_metadata(
                         ann_mapping,
                         row_ann_mapping,
                         type_params_scope,
-                    ).await?;
+                    )
+                    .await?;
                     return_type = Some(ret);
                 }
             }
@@ -1311,7 +1301,8 @@ async fn resolve_fn_type(
                     ann_mapping,
                     row_ann_mapping,
                     type_params_scope,
-                ).await?;
+                )
+                .await?;
                 let ty = Type::Function {
                     params: vec![],
                     ret: Box::new(ret),
@@ -1333,7 +1324,8 @@ async fn resolve_fn_type(
                     ann_mapping,
                     row_ann_mapping,
                     type_params_scope,
-                ).await
+                )
+                .await
             }
         }
         _ => {
@@ -1347,7 +1339,8 @@ async fn resolve_fn_type(
                 ann_mapping,
                 row_ann_mapping,
                 type_params_scope,
-            ).await?;
+            )
+            .await?;
             let ty = Type::Function {
                 params: vec![],
                 ret: Box::new(ret),
@@ -1402,7 +1395,8 @@ async fn resolve_annotation_as_type(
                 ann_mapping,
                 row_ann_mapping,
                 type_params_scope,
-            ).await
+            )
+            .await
         }
         Annotation::Annotated(name, inner) => {
             // For fn annotations, forward to full resolver
@@ -1416,7 +1410,8 @@ async fn resolve_annotation_as_type(
                 ann_mapping,
                 row_ann_mapping,
                 type_params_scope,
-            ).await
+            )
+            .await
         }
     }
 }
@@ -1448,21 +1443,9 @@ pub(crate) async fn resolve_annotation(
         }
         Annotation::Annotated(name, inner) => {
             // Parameterized type annotations: Seq@Int, Map@[String: Int], Record@[field: Type]
+            // Note: "Seq" no longer has a special case — it resolves through TyCon lookup like
+            // any other user-declared parameterized type (type-foundations S-894).
             match name.as_str() {
-                "Seq" => {
-                    // Resolve the inner type
-                    let elem_type = Box::pin(resolve_annotation(
-                        inner,
-                        env,
-                        span,
-                        state,
-                        constraints,
-                        ann_mapping,
-                        row_ann_mapping,
-                        type_params_scope,
-                    )).await?;
-                    Ok(Type::seq(elem_type))
-                }
                 "Map" => {
                     // Resolve the inner annotation for key and value types
                     match inner.as_ref() {
@@ -1479,7 +1462,8 @@ pub(crate) async fn resolve_annotation(
                                 ann_mapping,
                                 row_ann_mapping,
                                 type_params_scope,
-                            )).await?;
+                            ))
+                            .await?;
                             Ok(Type::map(state.fresh_type_var(), value_type))
                         }
                         Annotation::PropertyDict(surface_entries) => {
@@ -1508,7 +1492,8 @@ pub(crate) async fn resolve_annotation(
                                         ann_mapping,
                                         row_ann_mapping,
                                         type_params_scope,
-                                    ).await?
+                                    )
+                                    .await?
                                 } else {
                                     Type::Unknown
                                 };
@@ -1520,7 +1505,8 @@ pub(crate) async fn resolve_annotation(
                                     ann_mapping,
                                     row_ann_mapping,
                                     type_params_scope,
-                                ).await?;
+                                )
+                                .await?;
                                 Ok(Type::map(key_ty, value_ty))
                             } else {
                                 // No "value:" key — delegate to resolve_type_dict which handles
@@ -1534,7 +1520,8 @@ pub(crate) async fn resolve_annotation(
                                     ann_mapping,
                                     row_ann_mapping,
                                     type_params_scope,
-                                )).await
+                                ))
+                                .await
                             }
                         }
                         _ => {
@@ -1550,7 +1537,8 @@ pub(crate) async fn resolve_annotation(
                                 ann_mapping,
                                 row_ann_mapping,
                                 type_params_scope,
-                            )).await?;
+                            ))
+                            .await?;
                             Ok(Type::map(state.fresh_type_var(), value_type))
                         }
                     }
@@ -1571,7 +1559,8 @@ pub(crate) async fn resolve_annotation(
                                 ann_mapping,
                                 row_ann_mapping,
                                 type_params_scope,
-                            )).await
+                            ))
+                            .await
                         }
                         _ => Err(TypeErrorTyped::Generic(GenericTypeError {
                             message:
@@ -1602,7 +1591,8 @@ pub(crate) async fn resolve_annotation(
                         ann_mapping,
                         row_ann_mapping,
                         type_params_scope,
-                    )).await?;
+                    ))
+                    .await?;
                     Ok(Type::handle(cap_type))
                 }
                 _ => {
@@ -1620,14 +1610,18 @@ pub(crate) async fn resolve_annotation(
                                 ann_mapping,
                                 row_ann_mapping,
                                 type_params_scope,
-                            )).await?;
-                            return Ok(Type::App(
-                                Box::new(Type::TyCon(name.clone())),
-                                Box::new(arg),
-                            ));
+                            ))
+                            .await?;
+                            // Expand via expand_named; falls back to App(TyCon, arg) for
+                            // builtins and ADTs (which expand_named returns as App chains).
+                            return Ok(expand_named(name, &[arg.clone()], env, state)
+                                .unwrap_or_else(|| {
+                                    Type::App(Box::new(Type::TyCon(name.clone())), Box::new(arg))
+                                }));
                         } else if def.arity() == 0 {
-                            // Zero-arity TyCon with annotation — unusual but valid.
-                            return Ok(Type::TyCon(name.clone()));
+                            // Zero-arity TyCon with annotation — expand via expand_named.
+                            return Ok(expand_named(name, &[], env, state)
+                                .unwrap_or_else(|| Type::TyCon(name.clone())));
                         }
                     }
                     // Unknown parameterized type — no TyConDef found
@@ -1694,7 +1688,8 @@ pub(crate) async fn resolve_annotation(
                     ann_mapping,
                     row_ann_mapping,
                     type_params_scope,
-                ).await
+                )
+                .await
             } else if let Some(label_value_node) = surface_entries.iter().find_map(|se| {
                 // @[label: name] — named Label-kinded TypeVar annotation.
                 // Only fires when there is exactly one entry and its key is "label".
@@ -1780,7 +1775,8 @@ pub(crate) async fn resolve_annotation(
                     ann_mapping,
                     row_ann_mapping,
                     type_params_scope,
-                )).await
+                ))
+                .await
             }
         }
     }
@@ -1806,7 +1802,8 @@ async fn resolve_property_dict_as_record(
         ann_mapping,
         row_ann_mapping,
         type_params_scope,
-    ).await;
+    )
+    .await;
 
     match dict_result {
         Ok(ty) => Ok(ty),
@@ -1836,7 +1833,8 @@ async fn resolve_property_dict_as_record(
                 let synth_node = synthesize_type_stage_node(entries, span.clone());
                 // Return Unknown when type-stage evaluation fails: env unavailable,
                 // eval error, or the result is TypeNode.Recursive/RecursiveRef (deferred).
-                Ok(eval_type_stage_expr(&synth_node, env, state).await
+                Ok(eval_type_stage_expr(&synth_node, env, state)
+                    .await
                     .unwrap_or(Type::Unknown))
             }
         }
@@ -1866,7 +1864,7 @@ fn entries_look_like_type_dict(entries: &[Spanned<SurfaceEntry>]) -> bool {
     // Record type pattern: every entry has a string key and a type-shaped value.
     entries.iter().all(|entry| {
         // Rest entries (`...` / `...name`) are valid in type dicts
-        if matches!(&entry.node.value.expr, SurfaceExpression::Rest(_)) {
+        if matches!(&entry.node.value.expr, SurfaceExpression::Rest(..)) {
             return true;
         }
         // Every entry must have a string key
@@ -1921,8 +1919,10 @@ async fn instantiate_type_alias(
                     // on instance_env AND &mut state simultaneously, which Rust's borrow checker
                     // rejects when both are fields of InferState.
                     let instance_env = state.instance_env.clone();
-                    let error_span = origin_span.clone().unwrap_or_else(crate::ast::Span::origin);
-                    match Box::pin(instance_env.resolve_instance(&class.name, arg_type, state)).await {
+                    let error_span = origin_span.clone().unwrap_or_else(|| rust_span!());
+                    match Box::pin(instance_env.resolve_instance(&class.name, arg_type, state))
+                        .await
+                    {
                         Ok(Some(_)) => {
                             // Constraint satisfied — continue.
                         }
@@ -1989,7 +1989,7 @@ fn apply_type_alias_substitution(
             }
         }
         Type::Record(row) => {
-            let new_fields: BTreeMap<String, Type> = row
+            let new_fields: indexmap::IndexMap<String, Type> = row
                 .fields
                 .iter()
                 .map(|(k, v)| (k.clone(), apply_type_alias_substitution(v, subst, state)))
@@ -2049,7 +2049,7 @@ fn apply_type_alias_substitution(
             Box::new(apply_type_alias_substitution(arg, subst, state)),
         ),
         Type::NominalVariant { tag, fields } => {
-            let new_fields: BTreeMap<String, Type> = fields
+            let new_fields: indexmap::IndexMap<String, Type> = fields
                 .fields
                 .iter()
                 .map(|(k, v)| (k.clone(), apply_type_alias_substitution(v, subst, state)))
@@ -2106,10 +2106,7 @@ pub(crate) fn resolve_type_name_with_guard(
             "Int"
                 | "Float"
                 | "String"
-                | "Bool"
-                | "Number"
                 | "Any"
-                | "Seq"
                 | "Handle"
                 | "Null"
                 | "Dict"
@@ -2117,7 +2114,6 @@ pub(crate) fn resolve_type_name_with_guard(
                 | "Record"
                 | "Fn"
                 | "Never"
-                | "Top"
                 | "Unknown"
         )
     {
@@ -2230,14 +2226,11 @@ pub(crate) fn resolve_type_name(
         "Int" => Ok(Type::Int),
         "Float" => Ok(Type::Float),
         "String" | "Str" => Ok(Type::Str),
-        "Bool" => Ok(Type::Bool),
-        "Number" | "Num" => Ok(Type::Number),
         "Bytes" => Ok(Type::Bytes),
-        "Any" => Ok(Type::Top),
+        "Any" => Ok(Type::Any),
         "Proxy" => Ok(Type::Proxy),
         // BAS type names
         "Never" => Ok(Type::Never),
-        "Top" => Ok(Type::Top),
         "Unknown" => Ok(Type::Unknown),
         "Operator" => Err(TypeErrorTyped::Generic(GenericTypeError {
             message: "Operator is a kind, not a type — annotate a class type parameter as `f@Operator`, not a value expression".to_string(),
@@ -2255,7 +2248,6 @@ pub(crate) fn resolve_type_name(
             state.kind_env.insert(fresh.clone(), crate::types::Kind::Label);
             Ok(Type::TypeVar(fresh, state.level))
         }
-        "Seq" => Ok(Type::seq(Type::Unknown)),
         // Bare @Handle — no capability row argument. Resolves to Handle(Unknown),
         // which is the gradual "any handle" type. This is correct for unannotated
         // handle parameters where the caller doesn't know (or care about) the
@@ -2264,14 +2256,14 @@ pub(crate) fn resolve_type_name(
         // resolve_type_dict respectively and never reach this bare-name path.
         "Handle" => Ok(Type::handle(Type::Unknown)),
         "Null" => Ok(Type::Record(Row {
-            fields: BTreeMap::new(),
+            fields: indexmap::IndexMap::new(),
             tail: crate::type_def::RowTail::Empty,
         })),
         "Dict" => {
             // Empty record — represents "any dict" under BAS width subtyping.
             // Any concrete record is a subtype because all required fields (none) are present.
             Ok(Type::Record(Row {
-                fields: BTreeMap::new(),
+                fields: indexmap::IndexMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             }))
         }
@@ -2282,7 +2274,7 @@ pub(crate) fn resolve_type_name(
         "Record" => {
             // Bare @Record → open record (empty fields)
             Ok(Type::Record(Row {
-                fields: BTreeMap::new(),
+                fields: indexmap::IndexMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             }))
         }
@@ -2304,7 +2296,7 @@ pub(crate) fn resolve_type_name(
             // subtype of `Function{...}`.
             Ok(Type::Function {
                 params: vec![],
-                ret: Box::new(Type::Top),
+                ret: Box::new(Type::Any),
                 variadic: true,
                 required_count: 0,
             })
@@ -2503,7 +2495,7 @@ fn expand_alias_body_guarded(
     // Recursively expand the type structure
     let result = match ty {
         Type::Record(row) => {
-            let mut new_fields = BTreeMap::new();
+            let mut new_fields = indexmap::IndexMap::new();
             for (k, v) in &row.fields {
                 new_fields.insert(
                     k.clone(),
@@ -2683,19 +2675,22 @@ pub(crate) async fn resolve_type_expr_with_guard(
             depth,
             type_params_scope,
         ),
-        SurfaceExpression::Dict(entries) => Box::pin(resolve_type_dict_with_guard(
-            entries,
-            env,
-            node.span.clone(),
-            state,
-            constraints,
-            ann_mapping,
-            row_ann_mapping,
-            recursion_guard,
-            current_alias,
-            depth,
-            type_params_scope,
-        )).await,
+        SurfaceExpression::Dict(entries) => {
+            Box::pin(resolve_type_dict_with_guard(
+                entries,
+                env,
+                node.span.clone(),
+                state,
+                constraints,
+                ann_mapping,
+                row_ann_mapping,
+                recursion_guard,
+                current_alias,
+                depth,
+                type_params_scope,
+            ))
+            .await
+        }
         _ => {
             // For all other expr types, delegate to normal resolve_type_expr.
             // Most expr types (literals, Annotated, Call) don't recursively reference type aliases,
@@ -2709,7 +2704,8 @@ pub(crate) async fn resolve_type_expr_with_guard(
                 ann_mapping,
                 row_ann_mapping,
                 type_params_scope,
-            )).await
+            ))
+            .await
         }
     }
 }
@@ -2759,7 +2755,8 @@ async fn resolve_type_dict_with_guard(
                         current_alias,
                         depth,
                         type_params_scope,
-                    )).await?;
+                    ))
+                    .await?;
                     members.push(ty);
                 }
                 return Ok(Type::normalize_union(members));
@@ -2786,7 +2783,8 @@ async fn resolve_type_dict_with_guard(
                         current_alias,
                         depth,
                         type_params_scope,
-                    )).await?;
+                    ))
+                    .await?;
                     members.push(ty);
                 }
                 return Ok(Type::normalize_intersection(members));
@@ -2811,7 +2809,8 @@ async fn resolve_type_dict_with_guard(
                     current_alias,
                     depth,
                     type_params_scope,
-                )).await?;
+                ))
+                .await?;
                 return Ok(Type::Negation(Box::new(inner)));
             }
         }
@@ -2830,9 +2829,9 @@ async fn resolve_type_dict_with_guard(
     if !all_positional {
         // Reuse the same logic as the tail of resolve_type_dict but route field-value
         // resolution through resolve_type_expr_with_guard.
-        let mut fields: BTreeMap<String, Type> = BTreeMap::new();
+        let mut fields: indexmap::IndexMap<String, Type> = indexmap::IndexMap::new();
         for entry in entries {
-            if let SurfaceExpression::Rest(_) = &entry.node.value.expr {
+            if let SurfaceExpression::Rest(..) = &entry.node.value.expr {
                 // `...` rest notation: accepted for openness annotation, produces no field.
                 continue;
             }
@@ -2863,7 +2862,8 @@ async fn resolve_type_dict_with_guard(
                         ann_mapping,
                         row_ann_mapping,
                         type_params_scope,
-                    ).await;
+                    )
+                    .await;
                 }
             };
             let ty = Box::pin(resolve_type_expr_with_guard(
@@ -2877,7 +2877,8 @@ async fn resolve_type_dict_with_guard(
                 current_alias,
                 depth,
                 type_params_scope,
-            )).await?;
+            ))
+            .await?;
             fields.insert(key, ty);
         }
 
@@ -2904,7 +2905,7 @@ async fn resolve_type_dict_with_guard(
                 let members: Vec<Type> = fields
                     .into_iter()
                     .map(|(k, v)| {
-                        let mut member_fields = BTreeMap::new();
+                        let mut member_fields = indexmap::IndexMap::new();
                         member_fields.insert(k, v);
                         Type::Record(Row {
                             fields: member_fields,
@@ -2936,7 +2937,8 @@ async fn resolve_type_dict_with_guard(
         ann_mapping,
         row_ann_mapping,
         type_params_scope,
-    ).await
+    )
+    .await
 }
 
 pub(crate) async fn resolve_type_expr(
@@ -2986,7 +2988,7 @@ pub(crate) async fn resolve_type_expr(
                     Ok(Type::NominalVariant {
                         tag: name.clone(),
                         fields: Row {
-                            fields: BTreeMap::new(),
+                            fields: indexmap::IndexMap::new(),
                             tail: crate::type_def::RowTail::Empty,
                         },
                     })
@@ -2994,16 +2996,19 @@ pub(crate) async fn resolve_type_expr(
                 Err(e) => Err(e),
             }
         }
-        SurfaceExpression::Dict(entries) => Box::pin(resolve_type_dict(
-            entries,
-            env,
-            node.span.clone(),
-            state,
-            constraints,
-            ann_mapping,
-            row_ann_mapping,
-            type_params_scope,
-        )).await,
+        SurfaceExpression::Dict(entries) => {
+            Box::pin(resolve_type_dict(
+                entries,
+                env,
+                node.span.clone(),
+                state,
+                constraints,
+                ann_mapping,
+                row_ann_mapping,
+                type_params_scope,
+            ))
+            .await
+        }
         SurfaceExpression::Annotated { name, annotation } => {
             if name == "Fn" {
                 Box::pin(resolve_fn_type(
@@ -3015,7 +3020,8 @@ pub(crate) async fn resolve_type_expr(
                     ann_mapping,
                     row_ann_mapping,
                     type_params_scope,
-                )).await
+                ))
+                .await
             } else {
                 // For all other parameterized type annotations in type-expression position
                 // (e.g., `Handle@DirCap`, `Seq@Int`, `Map@[key: Str value: Int]` inline),
@@ -3036,7 +3042,8 @@ pub(crate) async fn resolve_type_expr(
                     ann_mapping,
                     row_ann_mapping,
                     type_params_scope,
-                )).await
+                ))
+                .await
             }
         }
         // This arm handles `SurfaceExpression::Call { implied: true }`, which arises when a
@@ -3069,7 +3076,8 @@ pub(crate) async fn resolve_type_expr(
                         ann_mapping,
                         row_ann_mapping,
                         type_params_scope,
-                    )).await?;
+                    ))
+                    .await?;
                     // args[0] should be the parameter list (a Dict or another implied Call)
                     let mut params = Vec::new();
                     if let Some(param_list) = args.first() {
@@ -3096,7 +3104,8 @@ pub(crate) async fn resolve_type_expr(
                                         ann_mapping,
                                         row_ann_mapping,
                                         type_params_scope,
-                                    )).await?;
+                                    ))
+                                    .await?;
                                     params.push((param_name, param_ty));
                                 }
                             }
@@ -3115,7 +3124,8 @@ pub(crate) async fn resolve_type_expr(
                                     ann_mapping,
                                     row_ann_mapping,
                                     type_params_scope,
-                                )).await?;
+                                ))
+                                .await?;
                                 params.push((None, param_ty));
                                 for a in inner_args.iter() {
                                     let param_ty = Box::pin(resolve_type_expr(
@@ -3126,7 +3136,8 @@ pub(crate) async fn resolve_type_expr(
                                         ann_mapping,
                                         row_ann_mapping,
                                         type_params_scope,
-                                    )).await?;
+                                    ))
+                                    .await?;
                                     params.push((None, param_ty));
                                 }
                             }
@@ -3140,7 +3151,8 @@ pub(crate) async fn resolve_type_expr(
                                     ann_mapping,
                                     row_ann_mapping,
                                     type_params_scope,
-                                )).await?;
+                                ))
+                                .await?;
                                 params.push((None, param_ty));
                             }
                         }
@@ -3194,7 +3206,8 @@ pub(crate) async fn resolve_type_expr(
                             ann_mapping,
                             row_ann_mapping,
                             type_params_scope,
-                        )).await?;
+                        ))
+                        .await?;
                         members.push(ty);
                     }
                     return Ok(Type::normalize_union(members));
@@ -3218,7 +3231,8 @@ pub(crate) async fn resolve_type_expr(
                             ann_mapping,
                             row_ann_mapping,
                             type_params_scope,
-                        )).await?;
+                        ))
+                        .await?;
                         members.push(ty);
                     }
                     return Ok(Type::normalize_intersection(members));
@@ -3239,7 +3253,8 @@ pub(crate) async fn resolve_type_expr(
                         ann_mapping,
                         row_ann_mapping,
                         type_params_scope,
-                    )).await?;
+                    ))
+                    .await?;
                     return Ok(Type::Negation(Box::new(inner)));
                 }
             }
@@ -3263,7 +3278,8 @@ pub(crate) async fn resolve_type_expr(
                                 ann_mapping,
                                 row_ann_mapping,
                                 type_params_scope,
-                            )).await?;
+                            ))
+                            .await?;
                             result = Type::App(Box::new(result), Box::new(arg));
                         }
                         return Ok(result);
@@ -3277,15 +3293,18 @@ pub(crate) async fn resolve_type_expr(
                     // Resolve all type arguments
                     let mut type_args = Vec::new();
                     for arg in args {
-                        type_args.push(Box::pin(resolve_type_expr(
-                            arg,
-                            env,
-                            state,
-                            constraints,
-                            ann_mapping,
-                            row_ann_mapping,
-                            type_params_scope,
-                        )).await?);
+                        type_args.push(
+                            Box::pin(resolve_type_expr(
+                                arg,
+                                env,
+                                state,
+                                constraints,
+                                ann_mapping,
+                                row_ann_mapping,
+                                type_params_scope,
+                            ))
+                            .await?,
+                        );
                     }
 
                     // Check arity
@@ -3317,12 +3336,66 @@ pub(crate) async fn resolve_type_expr(
                     .get(name)
                     .is_some_and(|def| def.builtin_type.is_some());
                 if crate::eval::is_constructor_name(name) && !is_builtin {
-                    // This is a nominal variant constructor with named fields.
-                    // args is empty, named_args contains the field types.
-                    // We need to resolve each field type and build a NominalVariant.
-                    if !named_args.is_empty() {
-                        let mut fields_map = BTreeMap::new();
-                        for named_arg in named_args {
+                    // This is a nominal variant constructor with named fields and/or constants.
+                    //
+                    // T-1357: The new lookup-table syntax mixes:
+                    //   - Constants: `name: literal` → named_arg with literal value — stored in
+                    //     TyConDef.constructor_constants, NOT in the NominalVariant type.
+                    //   - Payload fields: `name: TypeExpr` → named_arg with non-literal value, OR
+                    //     `name@TypeExpr` → annotated positional arg.
+                    //
+                    // Separation rule:
+                    //   named_args whose value resolves as a literal (Int/Float/Str/U64) → constant
+                    //   named_args whose value is not a literal → payload field (resolve as type)
+                    //   args that are Annotated { name, annotation } → named payload field
+                    //   args that are bare VarRef/Call (not Annotated) → old-style positional payload
+                    //
+                    // `is_literal` helper: true for Int, U64, Float, Str surface expressions.
+                    let is_literal_expr = |expr: &SurfaceExpression| {
+                        matches!(
+                            expr,
+                            SurfaceExpression::Int(_)
+                                | SurfaceExpression::U64(_)
+                                | SurfaceExpression::Float(_)
+                                | SurfaceExpression::Str(_)
+                        )
+                    };
+
+                    // Collect payload fields from non-literal named_args.
+                    let payload_named: Vec<_> = named_args
+                        .iter()
+                        .filter(|na| !is_literal_expr(&na.node.value.expr))
+                        .collect();
+
+                    // Collect payload fields from annotated positional args (data@String form).
+                    let payload_annotated: Vec<_> = args
+                        .iter()
+                        .filter_map(|arg| {
+                            if let SurfaceExpression::Annotated { name, annotation } = &arg.expr {
+                                Some((name.clone(), annotation.clone(), arg.span.clone()))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+
+                    // Collect non-annotated positional args (old-style [Some a] payload).
+                    let positional_non_annotated: Vec<_> = args
+                        .iter()
+                        .filter(|arg| !matches!(&arg.expr, SurfaceExpression::Annotated { .. }))
+                        .collect();
+
+                    let has_payload_named = !payload_named.is_empty();
+                    let has_payload_annotated = !payload_annotated.is_empty();
+                    let has_positional = !positional_non_annotated.is_empty();
+
+                    if has_payload_named || has_payload_annotated {
+                        // Mixed constants + payload fields, or payload-only.
+                        // Build NominalVariant with only the payload fields (constants live in TyConDef).
+                        let mut fields_map = indexmap::IndexMap::new();
+
+                        // Named payload fields from non-literal named_args.
+                        for named_arg in &payload_named {
                             let field_ty = Box::pin(resolve_type_expr(
                                 &named_arg.node.value,
                                 env,
@@ -3331,9 +3404,28 @@ pub(crate) async fn resolve_type_expr(
                                 ann_mapping,
                                 row_ann_mapping,
                                 type_params_scope,
-                            )).await?;
+                            ))
+                            .await?;
                             fields_map.insert(named_arg.node.name.clone(), field_ty);
                         }
+
+                        // Named payload fields from annotated positional args (data@String).
+                        // Resolve each annotation as a type expression.
+                        for (field_name, annotation, ann_span) in &payload_annotated {
+                            let field_ty = Box::pin(resolve_annotation(
+                                &annotation.node,
+                                env,
+                                ann_span.clone(),
+                                state,
+                                constraints,
+                                ann_mapping,
+                                row_ann_mapping,
+                                type_params_scope,
+                            ))
+                            .await?;
+                            fields_map.insert(field_name.clone(), field_ty);
+                        }
+
                         return Ok(Type::NominalVariant {
                             tag: name.clone(),
                             fields: Row {
@@ -3341,45 +3433,49 @@ pub(crate) async fn resolve_type_expr(
                                 tail: crate::type_def::RowTail::Empty,
                             },
                         });
-                    } else if args.len() == 1 {
-                        // Single positional payload: [Some a] → NominalVariant("Some", { "0": a })
-                        // Use integer string key "0" for the single positional payload field.
-                        let payload_ty = Box::pin(resolve_type_expr(
-                            &args[0],
-                            env,
-                            state,
-                            constraints,
-                            ann_mapping,
-                            row_ann_mapping,
-                            type_params_scope,
-                        )).await?;
-                        let mut fields_map = BTreeMap::new();
-                        fields_map.insert("0".to_string(), payload_ty);
-                        return Ok(Type::NominalVariant {
-                            tag: name.clone(),
-                            fields: Row {
-                                fields: fields_map,
-                                tail: crate::type_def::RowTail::Empty,
-                            },
-                        });
-                    } else if args.is_empty() {
-                        // Unit constructor: [None] → NominalVariant("None", {})
-                        return Ok(Type::NominalVariant {
-                            tag: name.clone(),
-                            fields: Row {
-                                fields: BTreeMap::new(),
-                                tail: crate::type_def::RowTail::Empty,
-                            },
-                        });
+                    } else if has_positional {
+                        // Old-style single positional payload: [Some a] → NominalVariant("Some", { "0": a })
+                        // Only valid when exactly one non-annotated positional arg is present.
+                        if positional_non_annotated.len() == 1 {
+                            let payload_ty = Box::pin(resolve_type_expr(
+                                positional_non_annotated[0],
+                                env,
+                                state,
+                                constraints,
+                                ann_mapping,
+                                row_ann_mapping,
+                                type_params_scope,
+                            ))
+                            .await?;
+                            let mut fields_map = indexmap::IndexMap::new();
+                            fields_map.insert("0".to_string(), payload_ty);
+                            return Ok(Type::NominalVariant {
+                                tag: name.clone(),
+                                fields: Row {
+                                    fields: fields_map,
+                                    tail: crate::type_def::RowTail::Empty,
+                                },
+                            });
+                        } else {
+                            return Err(TypeErrorTyped::Generic(GenericTypeError {
+                                message: format!(
+                                    "nominal constructor {} requires either 0 args, 1 positional arg, or named/annotated payload fields",
+                                    name
+                                ),
+                                span: node.span.clone(),
+                                notes: vec![], call_stack: vec![],
+                            }));
+                        }
                     } else {
-                        return Err(TypeErrorTyped::Generic(GenericTypeError {
-                            message: format!(
-                                "nominal constructor {} requires either 0 args, 1 arg, or named args",
-                                name
-                            ),
-                            span: node.span.clone(),
-                            notes: vec![], call_stack: vec![],
-                        }));
+                        // No payload: all named_args are constants, no annotated positionals.
+                        // Unit constructor (with or without constants): NominalVariant with empty fields.
+                        return Ok(Type::NominalVariant {
+                            tag: name.clone(),
+                            fields: Row {
+                                fields: indexmap::IndexMap::new(),
+                                tail: crate::type_def::RowTail::Empty,
+                            },
+                        });
                     }
                 }
             }
@@ -3425,7 +3521,8 @@ pub(crate) async fn resolve_type_expr(
                             ann_mapping,
                             row_ann_mapping,
                             type_params_scope,
-                        )).await?;
+                        ))
+                        .await?;
                         members.push(member_ty);
                     }
                     return Ok(Type::normalize_union(members));
@@ -3468,7 +3565,9 @@ pub(crate) async fn resolve_type_dict(
         ann_mapping,
         row_ann_mapping,
         type_params_scope,
-    )).await? {
+    ))
+    .await?
+    {
         return Ok(fn_type);
     }
 
@@ -3487,8 +3586,10 @@ pub(crate) async fn resolve_type_dict(
                     if let Some(def) = env.lookup_tycon_def(name) {
                         let arity = def.arity();
                         if arity == 0 && entries.len() == 1 {
-                            // Zero-arity TyCon: bare name with no arguments.
-                            return Ok(Type::TyCon(name.clone()));
+                            // Zero-arity TyCon: expand via expand_named, which handles
+                            // structural aliases and returns Type::TyCon for builtins/ADTs.
+                            return Ok(expand_named(name, &[], env, state)
+                                .unwrap_or_else(|| Type::TyCon(name.clone())));
                         } else if arity > 0 {
                             // Collect argument types from subsequent positional entries.
                             if entries.len() < 1 + arity {
@@ -3514,28 +3615,23 @@ pub(crate) async fn resolve_type_dict(
                                     ann_mapping,
                                     row_ann_mapping,
                                     type_params_scope,
-                                ).await?;
+                                )
+                                .await?;
                                 args.push(arg);
                             }
 
-                            // Structural aliases: expand via substitution.
-                            // ADTs and builtins: keep as App(TyCon, args).
-                            let is_structural_alias =
-                                def.constructors.is_empty() && def.builtin_type.is_none();
-                            if is_structural_alias {
-                                let mut stack = ExpansionStack::new();
-                                if let Some(expanded) =
-                                    expand_named(name, &args, &mut stack, env, state)
-                                {
-                                    return Ok(expanded);
-                                }
-                            }
-
-                            let mut result = Type::TyCon(name.clone());
-                            for arg in args {
-                                result = Type::App(Box::new(result), Box::new(arg));
-                            }
-                            return Ok(result);
+                            // Expand via expand_named (handles structural aliases, builtins,
+                            // and ADTs uniformly). Falls back to App(TyCon, args) chain when
+                            // expand_named returns None (unknown alias name).
+                            return Ok(expand_named(name, &args, env, state).unwrap_or_else(
+                                || {
+                                    let mut result = Type::TyCon(name.clone());
+                                    for arg in &args {
+                                        result = Type::App(Box::new(result), Box::new(arg.clone()));
+                                    }
+                                    result
+                                },
+                            ));
                         }
                     }
                 }
@@ -3556,15 +3652,18 @@ pub(crate) async fn resolve_type_dict(
                         if kind.arity() > 0 {
                             let mut args: Vec<Type> = Vec::new();
                             for e in entries[1..].iter() {
-                                args.push(resolve_type_expr(
-                                    &e.node.value,
-                                    env,
-                                    state,
-                                    constraints,
-                                    ann_mapping,
-                                    row_ann_mapping,
-                                    type_params_scope,
-                                ).await?);
+                                args.push(
+                                    resolve_type_expr(
+                                        &e.node.value,
+                                        env,
+                                        state,
+                                        constraints,
+                                        ann_mapping,
+                                        row_ann_mapping,
+                                        type_params_scope,
+                                    )
+                                    .await?,
+                                );
                             }
 
                             // User-defined: always Kind::Operator (arity 1).
@@ -3629,15 +3728,18 @@ pub(crate) async fn resolve_type_dict(
                                         call_stack: vec![],
                                     }));
                                 }
-                                type_args.push(resolve_type_expr(
-                                    &entry.node.value,
-                                    env,
-                                    state,
-                                    constraints,
-                                    ann_mapping,
-                                    row_ann_mapping,
-                                    type_params_scope,
-                                ).await?);
+                                type_args.push(
+                                    resolve_type_expr(
+                                        &entry.node.value,
+                                        env,
+                                        state,
+                                        constraints,
+                                        ann_mapping,
+                                        row_ann_mapping,
+                                        type_params_scope,
+                                    )
+                                    .await?,
+                                );
                             }
                             if type_args.len() != alias.params.len() {
                                 return Err(TypeErrorTyped::Generic(GenericTypeError {
@@ -3652,7 +3754,8 @@ pub(crate) async fn resolve_type_dict(
                                     call_stack: vec![],
                                 }));
                             }
-                            return Box::pin(instantiate_type_alias(&alias, &type_args, state)).await;
+                            return Box::pin(instantiate_type_alias(&alias, &type_args, state))
+                                .await;
                         }
                     }
                 }
@@ -3695,7 +3798,8 @@ pub(crate) async fn resolve_type_dict(
                         ann_mapping,
                         row_ann_mapping,
                         type_params_scope,
-                    ).await?;
+                    )
+                    .await?;
                     members.push(ty);
                 }
                 return Ok(Type::normalize_union(members));
@@ -3719,7 +3823,8 @@ pub(crate) async fn resolve_type_dict(
                         ann_mapping,
                         row_ann_mapping,
                         type_params_scope,
-                    ).await?;
+                    )
+                    .await?;
                     members.push(ty);
                 }
                 return Ok(Type::normalize_intersection(members));
@@ -3741,7 +3846,8 @@ pub(crate) async fn resolve_type_dict(
                     ann_mapping,
                     row_ann_mapping,
                     type_params_scope,
-                ).await?;
+                )
+                .await?;
                 return Ok(Type::Negation(Box::new(inner)));
             }
         }
@@ -3809,7 +3915,7 @@ pub(crate) async fn resolve_type_dict(
                                 return Ok(Type::NominalVariant {
                                     tag: tag.to_string(),
                                     fields: Row {
-                                        fields: BTreeMap::new(),
+                                        fields: indexmap::IndexMap::new(),
                                         tail: crate::type_def::RowTail::Empty,
                                     },
                                 });
@@ -3823,9 +3929,10 @@ pub(crate) async fn resolve_type_dict(
                                     ann_mapping,
                                     row_ann_mapping,
                                     type_params_scope,
-                                ).await?;
+                                )
+                                .await?;
                                 // Unnamed payload: create record with single field "0"
-                                let mut fields = BTreeMap::new();
+                                let mut fields = indexmap::IndexMap::new();
                                 fields.insert("0".to_string(), payload_ty);
                                 return Ok(Type::NominalVariant {
                                     tag: tag.to_string(),
@@ -3844,7 +3951,7 @@ pub(crate) async fn resolve_type_dict(
                             // Case 2: Mixed positional+keyed — [Constructor field: Type ...]
                             // First entry is tag (positional), remaining are named fields (keyed).
                             // Only reached when some of entries[1..] are keyed.
-                            let mut variant_fields = BTreeMap::new();
+                            let mut variant_fields = indexmap::IndexMap::new();
                             for field_entry in &entries[1..] {
                                 match &field_entry.node.key {
                                     Some(k) => {
@@ -3872,7 +3979,8 @@ pub(crate) async fn resolve_type_dict(
                                             ann_mapping,
                                             row_ann_mapping,
                                             type_params_scope,
-                                        ).await?;
+                                        )
+                                        .await?;
                                         variant_fields.insert(field_name, field_ty);
                                     }
                                     None => {
@@ -3916,92 +4024,20 @@ pub(crate) async fn resolve_type_dict(
                     ann_mapping,
                     row_ann_mapping,
                     type_params_scope,
-                ).await;
+                )
+                .await;
             }
         }
     }
 
-    // Mixed positional + metadata-keyed annotation: [Int String default: 0]
-    // Positional entries are union type members; metadata keys (default, repr, doc) are ignored.
-    // E.g.: @[Int String default: 0] → Union(Int, Str) (default: 0 is runtime metadata, not a type).
-    {
-        const METADATA_KEYS: &[&str] = &["default", "repr", "doc"];
-        let positional_entries: Vec<_> = entries.iter().filter(|e| e.node.key.is_none()).collect();
-        let has_only_metadata_non_positional = entries.iter().all(|e| {
-            e.node.key.is_none()
-                || e.node.key.as_ref().is_some_and(|k| {
-                    if let SurfaceExpression::Str(s) = &k.expr {
-                        METADATA_KEYS.contains(&s.as_str())
-                    } else {
-                        false
-                    }
-                })
-        });
-        if !positional_entries.is_empty() && has_only_metadata_non_positional && !all_positional
-        // only if there are SOME keyed entries (otherwise all_positional path handles it)
-        {
-            let mut members = Vec::new();
-            for entry in &positional_entries {
-                let member_ty = resolve_type_expr(
-                    &entry.node.value,
-                    env,
-                    state,
-                    constraints,
-                    ann_mapping,
-                    row_ann_mapping,
-                    type_params_scope,
-                ).await?;
-                members.push(member_ty);
-            }
-            return Ok(Type::normalize_union(members));
-        }
-    }
-
-    // All-positional multi-entry union path: when all entries have no key and don't match
-    // any of the specific forms above (constructor, keyword, Fn type, etc.), treat each
-    // entry's value as a union member type. This handles TypeAlias bodies like
-    // `[type [Foo] [Bar]]` where each `[Foo]` resolves to NominalVariant("Foo", {}).
-    // Note: B-314 plans to retire this in favor of explicit `[or ...]` syntax.
-    if all_positional && entries.len() >= 2 {
-        // Check if any entry has a None key (all positional) — confirmed by all_positional
-        // Try resolving each positional entry as a type expression for a union
-        let mut members = Vec::new();
-        let mut all_ok = true;
-        for entry in entries {
-            if entry.node.key.is_none() {
-                match resolve_type_expr(
-                    &entry.node.value,
-                    env,
-                    state,
-                    constraints,
-                    ann_mapping,
-                    row_ann_mapping,
-                    type_params_scope,
-                ).await {
-                    Ok(ty) => members.push(ty),
-                    Err(_) => {
-                        all_ok = false;
-                        break;
-                    }
-                }
-            } else {
-                all_ok = false;
-                break;
-            }
-        }
-        if all_ok && !members.is_empty() {
-            return Ok(Type::normalize_union(members));
-        }
-    }
-
-    let mut fields: BTreeMap<String, Type> = BTreeMap::new();
+    let mut fields: indexmap::IndexMap<String, Type> = indexmap::IndexMap::new();
     let mut has_rest = false; // tracks if `...` is present (BAS: openness via width subtyping)
                               // Column constraint: `{_ : V}` or `{_@K : V}` annotation syntax (T-950).
                               // At most one `_` per row type; duplicate produces a type error.
     let mut uniform_tail: Option<crate::type_def::RowTail> = None;
 
     for entry in entries {
-        if let SurfaceExpression::Rest(_name) = &entry.node.value.expr {
+        if let SurfaceExpression::Rest(_name, _) = &entry.node.value.expr {
             // BAS: `...` annotations express user intent for openness; under BAS width
             // subtyping all records are closed — is_subtype handles extra fields.
             has_rest = true;
@@ -4036,7 +4072,8 @@ pub(crate) async fn resolve_type_dict(
                 ann_mapping,
                 row_ann_mapping,
                 type_params_scope,
-            ).await?;
+            )
+            .await?;
             // Check for typed-key form `_@K` vs plain `_`
             let key_ty = match entry.node.key.as_ref().map(|k| &k.expr) {
                 Some(SurfaceExpression::Annotated { annotation, .. }) => {
@@ -4050,7 +4087,8 @@ pub(crate) async fn resolve_type_dict(
                         ann_mapping,
                         row_ann_mapping,
                         type_params_scope,
-                    ).await?;
+                    )
+                    .await?;
                     Some(Box::new(key_t))
                 }
                 _ => None, // plain `_`: no key type constraint
@@ -4094,7 +4132,8 @@ pub(crate) async fn resolve_type_dict(
             ann_mapping,
             row_ann_mapping,
             type_params_scope,
-        ).await?;
+        )
+        .await?;
         fields.insert(key, ty);
     }
 
@@ -4139,7 +4178,7 @@ pub(crate) async fn resolve_type_dict(
                     // Under BAS open semantics, structural annotations are open by default
                     // via conjunction elimination — a RowVar is no longer needed to express
                     // openness. Each single-field member uses a closed (Empty) row tail.
-                    let mut member_fields = BTreeMap::new();
+                    let mut member_fields = indexmap::IndexMap::new();
                     member_fields.insert(k, v);
                     Type::Record(Row {
                         fields: member_fields,
@@ -4198,20 +4237,20 @@ fn synthesize_type_stage_node(entries: &[Spanned<SurfaceEntry>], span: Span) -> 
             .iter()
             .map(|e| Arc::clone(&e.node.value))
             .collect();
-        Arc::new(SurfaceNode {
-            expr: SurfaceExpression::Call {
+        Arc::new(SurfaceNode::new(
+            SurfaceExpression::Call {
                 func,
                 args,
                 named_args: vec![],
                 implied: true,
             },
             span,
-        })
+        ))
     } else {
-        Arc::new(SurfaceNode {
-            expr: SurfaceExpression::Dict(entries.to_vec()),
+        Arc::new(SurfaceNode::new(
+            SurfaceExpression::Dict(entries.to_vec()),
             span,
-        })
+        ))
     }
 }
 
@@ -4234,13 +4273,15 @@ async fn variant_payload_dict(
         _ => return None,
     };
     let payload_thunk = ctx.get_thunk(payload_id);
-    let payload_val = crate::eval::materialize(&payload_thunk, None, ctx).await.ok()?;
+    let payload_val = crate::eval::materialize(&payload_thunk, None, ctx)
+        .await
+        .ok()?;
     match payload_val {
         Value::Dict(dict) => {
             // Extract each string-keyed field, materializing the field value.
             let mut fields = HashMap::new();
             for (key, thunk_id) in &dict {
-                if let Key::String(k) = key {
+                if let HashableValue::Str(k) = key {
                     let field_thunk = ctx.get_thunk(*thunk_id);
                     if let Ok(v) = crate::eval::materialize(&field_thunk, None, ctx).await {
                         fields.insert(k.to_string(), v);
@@ -4253,119 +4294,40 @@ async fn variant_payload_dict(
     }
 }
 
-/// Collect a tinct Seq (lazy linked list of `Seq.Cons`/`Seq.Nil` Variants) into a Vec of `Type`.
+/// Collect a TypeNode children Dict (`[Map Int TypeNode]`) into a Vec of `Type`.
 ///
-/// Each element is passed through `typenode_value_to_type` to convert it to a `Type`.
-/// Returns `None` if any element fails to convert or the spine is malformed.
+/// TypeNode fields like `Union.types`, `Intersect.types`, `Arrow.params`, and
+/// `TypeApplication.args` are now integer-keyed Dicts of TypeNode values.
+/// Each value is converted via `typenode_value_to_type`.
 ///
-/// Used by `typenode_value_to_type` to process `TypeNode.Union.types`,
-/// `TypeNode.Intersect.types`, `TypeNode.Arrow.params`, and `TypeNode.TypeApplication.args`.
-///
-/// ## Why this is distinct from `typecheck_walk::collect_seq_sync`
-///
-/// `collect_seq_sync` (in `typecheck_walk.rs`) collects Seq elements as raw `Value`s — it
-/// is a generic walker that does not know about Types. This function differs in two ways:
-///
-/// 1. **Return type**: `Option<Vec<Type>>` vs `Vec<Value>` — this function converts each
-///    element immediately via `typenode_value_to_type`, failing the entire collection if any
-///    element is unrepresentable as a `Type`.
-/// 2. **Failure semantics**: returns `None` on any malformed element (hard error — the caller
-///    needs all elements to proceed). `collect_seq_sync` silently stops on errors (soft
-///    degradation — partial results are acceptable for traversal).
-///
-/// These distinct contracts mean consolidation would force one to adopt the other's semantics.
-/// Both implementations are intentional and must remain separate.
-async fn collect_typenode_seq(seq_val: Value, ctx: &Arc<crate::eval::EvalContext>) -> Option<Vec<Type>> {
+/// Returns `None` if any element fails to convert or the input is not a Dict.
+async fn collect_typenode_seq(
+    dict_val: Value,
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> Option<Vec<Type>> {
+    // Unwrap Value::Annotated wrapper transparently.
+    let inner = match dict_val {
+        Value::Annotated { inner, .. } => inner.as_ref().clone(),
+        other => other,
+    };
+
+    let dict = match inner {
+        Value::Dict(d) => d,
+        _ => return None,
+    };
+
     let mut result = Vec::new();
-    let mut current = seq_val;
-    // Depth limit to guard against malformed cycles (TypeNode seqs are always finite).
-    let mut depth = 0usize;
-    const MAX_SEQ_DEPTH: usize = 256;
-
+    let mut i = 0i64;
     loop {
-        if depth > MAX_SEQ_DEPTH {
-            return None;
-        }
-        depth += 1;
-
-        // Determine the next action without holding a borrow on `current` across
-        // the assignment `current = ...` below. We first extract the information we
-        // need (tag, payload_id) from `current`, then drop the borrow before mutating.
-        enum SeqStep {
-            Nil,
-            Cons(crate::value::ThunkId), // payload ThunkId from Seq.Cons
-            CollectedDict,               // already-collected integer-keyed dict
-            Annotated,                   // Value::Annotated wrapper
-            Unknown,                     // unrecognised shape
-        }
-        let step = match &current {
-            Value::Variant { tag, payload: None } if tag == "Seq.Nil" => SeqStep::Nil,
-            Value::Variant {
-                tag,
-                payload: Some(payload_id),
-            } if tag == "Seq.Cons" => SeqStep::Cons(*payload_id),
-            Value::Dict(_) => SeqStep::CollectedDict,
-            Value::Annotated { .. } => SeqStep::Annotated,
-            _ => SeqStep::Unknown,
-        };
-
-        match step {
-            SeqStep::Nil => {
-                // End of sequence — return collected elements.
-                return Some(result);
+        match dict.get(&HashableValue::Int(i)) {
+            Some(thunk_id) => {
+                let thunk = ctx.get_thunk(*thunk_id);
+                let val = crate::eval::materialize(&thunk, None, ctx).await.ok()?;
+                let ty = Box::pin(typenode_value_to_type(&val, ctx)).await?;
+                result.push(ty);
+                i += 1;
             }
-            SeqStep::Cons(payload_id) => {
-                // Materialize the Seq.Cons payload dict to extract head and tail.
-                let payload_thunk = ctx.get_thunk(payload_id);
-                let payload_val = crate::eval::materialize(&payload_thunk, None, ctx).await.ok()?;
-                let dict = match payload_val {
-                    Value::Dict(d) => d,
-                    _ => return None,
-                };
-                // Extract and convert the head element.
-                let head_id = *dict.get(&Key::String("head".into()))?;
-                let head_thunk = ctx.get_thunk(head_id);
-                let head_val = crate::eval::materialize(&head_thunk, None, ctx).await.ok()?;
-                let head_ty = Box::pin(typenode_value_to_type(&head_val, ctx)).await?;
-                result.push(head_ty);
-                // Advance to tail (replaces `current` for the next iteration).
-                let tail_id = *dict.get(&Key::String("tail".into()))?;
-                let tail_thunk = ctx.get_thunk(tail_id);
-                current = crate::eval::materialize(&tail_thunk, None, ctx).await.ok()?;
-            }
-            SeqStep::CollectedDict => {
-                // Integer-keyed dict (result of builtin-collect on a Seq) — iterate in order.
-                // Ownership of `current` is needed; extract the dict now.
-                let dict = match current {
-                    Value::Dict(d) => d,
-                    _ => return None,
-                };
-                if dict.is_empty() {
-                    // Empty dict is the terminal Seq value (Seq.Nil equivalent).
-                    return Some(result);
-                }
-                let mut i = 0i64;
-                loop {
-                    match dict.get(&Key::Int(i)) {
-                        Some(thunk_id) => {
-                            let thunk = ctx.get_thunk(*thunk_id);
-                            let val = crate::eval::materialize(&thunk, None, ctx).await.ok()?;
-                            let ty = Box::pin(typenode_value_to_type(&val, ctx)).await?;
-                            result.push(ty);
-                            i += 1;
-                        }
-                        None => return Some(result),
-                    }
-                }
-            }
-            SeqStep::Annotated => {
-                // Unwrap Value::Annotated and retry with the inner value.
-                current = match current {
-                    Value::Annotated { inner, .. } => inner.as_ref().clone(),
-                    _ => return None,
-                };
-            }
-            SeqStep::Unknown => return None,
+            None => return Some(result),
         }
     }
 }
@@ -4381,9 +4343,7 @@ async fn collect_typenode_seq(seq_val: Value, ctx: &Arc<crate::eval::EvalContext
 /// Returns `None` if the value cannot be recognized as a Type.
 ///
 /// **Coverage:** All structural TypeNode variants are handled: Union, Intersect, Negation,
-/// Record, Arrow, TypeConstructor, TypeApplication, TypeVar. TypeNode.Recursive and
-/// TypeNode.RecursiveRef return `None` — they require the equirecursive CheckerType migration
-/// and are deferred to a future sprint.
+/// Record, Arrow, TypeConstructor, TypeApplication, TypeVar, Recursive, RecursiveRef.
 ///
 /// Public (crate-internal) re-export for use by `type_normalize::evaluate_resolver`.
 /// The implementation is `typenode_value_to_type`; this wrapper adds the `pub(crate)` visibility.
@@ -4414,11 +4374,15 @@ fn typenode_value_to_type<'a>(
                     "TypeNode.Int" => Some(Type::Int),
                     "TypeNode.Float" => Some(Type::Float),
                     "TypeNode.String" => Some(Type::Str),
-                    "TypeNode.Bool" => Some(Type::Bool),
+                    "TypeNode.Bool" => Some(Type::TyCon("Boolean".to_string())),
                     "TypeNode.Unknown" => Some(Type::Unknown),
+                    // TypeNode.Top is the sound lattice top (τ <: Top for all τ).
+                    // Rust represents this as Type::Any (which IS the top type in the lattice).
+                    // Distinct from TypeNode.Unknown (the gradual ? type, not in the subtype lattice).
+                    "TypeNode.Top" => Some(Type::Any),
                     "TypeNode.Never" => Some(Type::Never),
                     "TypeNode.Absent" => Some(Type::Record(Row {
-                        fields: BTreeMap::new(),
+                        fields: indexmap::IndexMap::new(),
                         tail: crate::type_def::RowTail::Empty,
                     })),
 
@@ -4466,25 +4430,23 @@ fn typenode_value_to_type<'a>(
                         // `fields` is a Dict (Map String TypeNode) — string-keyed, values are TypeNodes.
                         let record_fields = match fields_val {
                             Value::Dict(ref dict) => {
-                                let mut out: BTreeMap<String, Type> = BTreeMap::new();
+                                let mut out: indexmap::IndexMap<String, Type> = indexmap::IndexMap::new();
                                 for (key, thunk_id) in dict {
-                                    if let Key::String(k) = key {
+                                    if let HashableValue::Str(k) = key {
                                         let thunk = ctx.get_thunk(*thunk_id);
-                                        let v = crate::eval::materialize(&thunk, None, ctx).await.ok()?;
+                                        let v = crate::eval::materialize(&thunk, None, ctx)
+                                            .await
+                                            .ok()?;
                                         let ty = typenode_value_to_type(&v, ctx).await?;
                                         out.insert(k.to_string(), ty);
                                     }
                                 }
                                 out
                             }
-                            // Empty dict / Seq.Nil for empty record
-                            Value::Variant { tag, payload: None } if tag == "Seq.Nil" => {
-                                BTreeMap::new()
-                            }
-                            _ => BTreeMap::new(),
+                            _ => indexmap::IndexMap::new(), // Empty or unrecognized fields → empty record
                         };
 
-                        let tail = if matches!(open_val, Value::Bool(true)) {
+                        let tail = if open_val.as_bool() == Some(true) {
                             crate::type_def::RowTail::Uniform {
                                 key: None,
                                 value: Box::new(Type::Unknown),
@@ -4537,11 +4499,10 @@ fn typenode_value_to_type<'a>(
                             "Int" => Some(Type::Int),
                             "Float" => Some(Type::Float),
                             "String" | "Str" => Some(Type::Str),
-                            "Bool" => Some(Type::Bool),
                             "Unknown" => Some(Type::Unknown),
                             "Never" => Some(Type::Never),
                             "Absent" => Some(Type::Record(Row {
-                                fields: BTreeMap::new(),
+                                fields: indexmap::IndexMap::new(),
                                 tail: crate::type_def::RowTail::Empty,
                             })),
                             _ => Some(Type::TyCon(name)),
@@ -4587,10 +4548,40 @@ fn typenode_value_to_type<'a>(
                         Some(Type::TypeVar(name, level))
                     }
 
-                    // ── Recursive / RecursiveRef ──────────────────────────────────────────
-                    // These require the CheckerType migration (equirecursive types full impl).
-                    // Return None so the caller falls back gracefully to Type::Unknown.
-                    "TypeNode.Recursive" | "TypeNode.RecursiveRef" => None,
+                    // ── Recursive ────────────────────────────────────────────────────────
+                    // TypeNode.Recursive { var: String, body: TypeNode }
+                    // → Type::Recursive { var, body: Box<Type> }
+                    //
+                    // The `var` field is a String binder name (e.g., "𝜇List"). The `body`
+                    // field is a TypeNode that may contain TypeNode.RecursiveRef nodes with
+                    // the same `name`, which map to Type::TypeVar(name, 0) sentinels.
+                    "TypeNode.Recursive" => {
+                        let fields = variant_payload_dict(val, ctx).await?;
+                        let var_val = fields.get("var")?;
+                        let var = var_val.as_str()?.to_string();
+                        let body_val = fields.get("body")?.clone();
+                        let body = Box::pin(typenode_value_to_type(&body_val, ctx)).await?;
+                        Some(Type::Recursive {
+                            var,
+                            body: Box::new(body),
+                        })
+                    }
+
+                    // ── RecursiveRef ──────────────────────────────────────────────────────
+                    // TypeNode.RecursiveRef { name: String }
+                    // → Type::TypeVar(name, 0)
+                    //
+                    // RecursiveRef is a leaf node marking a back-reference to the enclosing
+                    // TypeNode.Recursive binder with the same `name`. In the Rust Type enum
+                    // this is represented as TypeVar(name, 0) — the same sentinel produced by
+                    // expand_named Step 4 (cycle detection). Level 0 is used because recursive
+                    // self-references are not inference variables and must never be generalized.
+                    "TypeNode.RecursiveRef" => {
+                        let fields = variant_payload_dict(val, ctx).await?;
+                        let name_val = fields.get("name")?;
+                        let name = name_val.as_str()?.to_string();
+                        Some(Type::TypeVar(name, 0))
+                    }
 
                     // Unknown tag — not a recognized TypeNode constructor.
                     _ => None,
@@ -4620,10 +4611,9 @@ fn typenode_value_to_type<'a>(
 ///
 /// Returns `Err(TypeError)` if:
 /// - `fn_val` is not a function value.
-/// - The type-stage environment is unavailable (build_type_stage_env returned None).
+/// - The type-stage environment is unavailable (`state.type_stage_env` is `None`).
 /// - Function invocation or materialization fails.
-/// - The result cannot be converted to a `Type` (TypeNode.Recursive/RecursiveRef require the
-///   equirecursive CheckerType migration — they return `None` and cause this error).
+/// - The result cannot be converted to a `Type` (unrecognized TypeNode tag).
 ///
 /// ## Usage
 ///
@@ -4638,23 +4628,26 @@ pub(crate) async fn eval_type_stage_value(
     args: &[Value],
     state: &mut InferState,
 ) -> Result<Type, TypeError> {
-    let origin_span = crate::ast::Span::origin();
+    let origin_span = rust_span!();
 
     // Obtain the type-stage environment for building the EvalContext.
-    // T-1175: Prefer the user file's extended type-stage env when available.
-    let type_stage_env = state
-        .type_stage_env
-        .clone()
-        .or_else(crate::imports::build_type_stage_env)
-        .ok_or_else(|| {
-            TypeErrorTyped::Generic(GenericTypeError {
-                message: "type-stage environment unavailable (bootstrap recursion guard fired)"
-                    .to_string(),
+    // Prefer state.type_stage_env (set when the source file has --- stage: type sections).
+    // Fall back to the prelude type-stage env when state.type_stage_env is None (e.g., for
+    // files that use built-in type annotations but declare no type-stage sections of their own).
+    let type_stage_env = match state.type_stage_env.clone() {
+        Some(env) => env,
+        None => match crate::imports::get_prelude_type_stage_env().await {
+            Some(env) => env,
+            None => return Err(TypeErrorTyped::Generic(GenericTypeError {
+                message:
+                    "type-stage environment unavailable: prelude type-stage env could not be built"
+                        .to_string(),
                 span: origin_span.clone(),
                 notes: vec![],
                 call_stack: vec![],
-            })
-        })?;
+            })),
+        },
+    };
 
     // Build a minimal EvalContext backed by the type-stage environment.
     // AMBIENT-OK: type-stage evaluation performs no file I/O.
@@ -4703,14 +4696,16 @@ pub(crate) async fn eval_type_stage_value(
                 origin: None,
                 ctx: &ctx,
             };
-            crate::eval_call::invoke_function(&call_ctx).await.map_err(|e| {
-                TypeErrorTyped::Generic(GenericTypeError {
-                    message: format!("type-stage function call failed: {e}"),
-                    span: origin_span.clone(),
-                    notes: vec![],
-                    call_stack: vec![],
-                })
-            })?
+            crate::eval_call::invoke_function(&call_ctx)
+                .await
+                .map_err(|e| {
+                    TypeErrorTyped::Generic(GenericTypeError {
+                        message: format!("type-stage function call failed: {e}"),
+                        span: origin_span.clone(),
+                        notes: vec![],
+                        call_stack: vec![],
+                    })
+                })?
         }
         // Not a function — as-type dispatch requires a callable value.
         _ => {
@@ -4724,27 +4719,28 @@ pub(crate) async fn eval_type_stage_value(
     };
 
     // Materialize the result.
-    let result_val = crate::eval::materialize(&result_thunk, None, &ctx).await.map_err(|e| {
-        TypeErrorTyped::Generic(GenericTypeError {
-            message: format!("type-stage materialization failed: {e}"),
-            span: origin_span.clone(),
-            notes: vec![],
-            call_stack: vec![],
-        })
-    })?;
+    let result_val = crate::eval::materialize(&result_thunk, None, &ctx)
+        .await
+        .map_err(|e| {
+            TypeErrorTyped::Generic(GenericTypeError {
+                message: format!("type-stage materialization failed: {e}"),
+                span: origin_span.clone(),
+                notes: vec![],
+                call_stack: vec![],
+            })
+        })?;
 
     // Convert TypeNode Value → Type.
-    typenode_value_to_type(&result_val, &ctx).await.ok_or_else(|| {
-        TypeErrorTyped::Generic(GenericTypeError {
-            message: format!(
-                "type-stage result cannot be converted to Type: {result_val} \
-                 (TypeNode.Recursive/RecursiveRef require equirecursive CheckerType migration)"
-            ),
-            span: origin_span,
-            notes: vec![],
-            call_stack: vec![],
+    typenode_value_to_type(&result_val, &ctx)
+        .await
+        .ok_or_else(|| {
+            TypeErrorTyped::Generic(GenericTypeError {
+                message: format!("type-stage result cannot be converted to Type: {result_val}"),
+                span: origin_span,
+                notes: vec![],
+                call_stack: vec![],
+            })
         })
-    })
 }
 
 /// Evaluate a type-stage `SurfaceNode` annotation expression and convert the result to
@@ -4772,9 +4768,7 @@ pub(crate) async fn eval_type_stage_value(
 /// Returns `Err(TypeError)` if:
 /// - The type-stage environment is unavailable (bootstrap / recursion guard).
 /// - Evaluation of the expression fails (runtime error in type-stage code).
-/// - The evaluated value cannot be converted to a Type (only `TypeNode.Recursive` and
-///   `TypeNode.RecursiveRef` fall into this category — they require the equirecursive
-///   CheckerType migration and are deferred to a future sprint).
+/// - The evaluated value cannot be converted to a Type (unrecognized TypeNode tag).
 ///
 /// In the fallback call sites (`resolve_property_dict_as_record`), errors are caught with
 /// `.unwrap_or(Type::Unknown)`, preserving existing gradual-typing behaviour for
@@ -4799,23 +4793,23 @@ pub(crate) async fn eval_type_stage_expr(
     let node_span = node.span.clone();
 
     // Obtain the type-stage environment.
-    // T-1175: Prefer the user file's extended type-stage env (from state.type_stage_env) when
-    // available, falling back to the prelude-only env from build_type_stage_env(). This allows
-    // user files to define type-stage functions in --- stage: type sections and use them in
-    // annotations in runtime sections.
-    let type_stage_env = state
-        .type_stage_env
-        .clone()
-        .or_else(crate::imports::build_type_stage_env)
-        .ok_or_else(|| {
-            TypeErrorTyped::Generic(GenericTypeError {
-                message: "type-stage environment unavailable (bootstrap recursion guard fired)"
-                    .to_string(),
+    // Prefer state.type_stage_env (set when the source file has --- stage: type sections).
+    // Fall back to the prelude type-stage env when state.type_stage_env is None (e.g., for
+    // files that use built-in type annotations but declare no type-stage sections of their own).
+    let type_stage_env = match state.type_stage_env.clone() {
+        Some(env) => env,
+        None => match crate::imports::get_prelude_type_stage_env().await {
+            Some(env) => env,
+            None => return Err(TypeErrorTyped::Generic(GenericTypeError {
+                message:
+                    "type-stage environment unavailable: prelude type-stage env could not be built"
+                        .to_string(),
                 span: node_span.clone(),
                 notes: vec![],
                 call_stack: vec![],
-            })
-        })?;
+            })),
+        },
+    };
 
     // Build a minimal EvalContext backed by the type-stage environment.
     // AMBIENT-OK: type-stage evaluation performs no file I/O.
@@ -4831,16 +4825,13 @@ pub(crate) async fn eval_type_stage_expr(
         })?;
     let ctx = crate::eval::EvalContext::new_empty(base_dir, Arc::clone(&type_stage_env), false);
 
-    // Create empty resolution and annotation tables (no prior resolution pass for
-    // synthetic type-stage nodes; names are resolved at eval time from the env chain).
-    let res_table = crate::ast::empty_resolution_table_arc();
-    let types_table = crate::ast::empty_type_annotation_table_arc();
+    // No resolution pass for synthetic type-stage nodes; resolution is inline on nodes
+    // (written at definition time). Names resolve via the env chain at eval time.
+    // All type annotations are inline on AST nodes — no external tables needed.
 
     // Wrap the SurfaceNode in a lazy thunk that will evaluate it in the type-stage env.
     let surface_thunk = Arc::new(Thunk::new_surface(
         Arc::clone(node),
-        res_table,
-        types_table,
         Arc::clone(&type_stage_env),
         Arc::clone(&ctx),
         node_span.clone(),
@@ -4874,17 +4865,36 @@ pub(crate) async fn eval_type_stage_expr(
     // is no longer needed. Each step returns Option; on None we fall through to direct
     // conversion via `typenode_value_to_type`.
     let as_type_dispatch: Option<Type> = async {
-        // Look up the TypeNode dict in the type-stage environment.
-        let typenode_thunk = type_stage_env.read().ok()?.get("TypeNode")?;
-        let typenode_dict_val = crate::eval::materialize(&typenode_thunk, None, &ctx).await.ok()?;
+        // Look up the TypeNode dict in the type-stage environment via slot_names
+        // (seeding path — not an eval-time lookup).  Walk slot_names + parent chain
+        // to find "TypeNode" without calling get_by_name.
+        let typenode_thunk = {
+            let mut found: Option<Arc<Thunk>> = None;
+            let mut cur: Option<Arc<std::sync::RwLock<crate::value::Environment>>> =
+                Some(Arc::clone(&type_stage_env));
+            while let Some(frame) = cur {
+                let frame_ref = frame.read().ok()?;
+                if let Some(idx) = frame_ref.slot_names.iter().rposition(|n| n == "TypeNode") {
+                    found = Some(Arc::clone(&frame_ref.slots[idx]));
+                    break;
+                }
+                cur = frame_ref.parent.as_ref().map(Arc::clone);
+            }
+            found?
+        };
+        let typenode_dict_val = crate::eval::materialize(&typenode_thunk, None, &ctx)
+            .await
+            .ok()?;
 
         // Retrieve the as-type function from the TypeNode dict.
         // This key is added by `[merge TypeNode [...]]` in T-1059; absent until then.
         let as_type_fn = match &typenode_dict_val {
             Value::Dict(ref d) => {
-                let as_type_id = d.get(&Key::String("as-type".into()))?;
+                let as_type_id = d.get(&HashableValue::Str("as-type".into()))?;
                 let as_type_thunk = ctx.get_thunk(*as_type_id);
-                crate::eval::materialize(&as_type_thunk, None, &ctx).await.ok()?
+                crate::eval::materialize(&as_type_thunk, None, &ctx)
+                    .await
+                    .ok()?
             }
             _ => return None,
         };
@@ -4892,7 +4902,9 @@ pub(crate) async fn eval_type_stage_expr(
         // Call TypeNode.as-type(typenode_val) to normalize and convert to Type.
         // eval_type_stage_value handles: call fn → materialize → typenode_value_to_type.
         // Returns None on failure (non-function value, eval error, unrecognized result).
-        eval_type_stage_value(&as_type_fn, std::slice::from_ref(&typenode_val), state).await.ok()
+        eval_type_stage_value(&as_type_fn, std::slice::from_ref(&typenode_val), state)
+            .await
+            .ok()
     }
     .await;
 
@@ -4903,17 +4915,18 @@ pub(crate) async fn eval_type_stage_expr(
 
     // Fall through to direct conversion: raw typenode_val → Type (no as-type normalization).
     // Handles TypeNode primitive variants only.
-    typenode_value_to_type(&typenode_val, &ctx).await.ok_or_else(|| {
-        TypeErrorTyped::Generic(GenericTypeError {
-            message: format!(
-                "type-stage expression produced an unrecognized value: {typenode_val} \
-                 (TypeNode.Recursive/RecursiveRef require equirecursive CheckerType migration)"
-            ),
-            span: node_span,
-            notes: vec![],
-            call_stack: vec![],
+    typenode_value_to_type(&typenode_val, &ctx)
+        .await
+        .ok_or_else(|| {
+            TypeErrorTyped::Generic(GenericTypeError {
+                message: format!(
+                    "type-stage expression produced an unrecognized value: {typenode_val}"
+                ),
+                span: node_span,
+                notes: vec![],
+                call_stack: vec![],
+            })
         })
-    })
 }
 
 // ============================================================================
@@ -4929,8 +4942,6 @@ pub(crate) async fn eval_type_stage_expr(
 /// The binder name is generated via `gensym_fresh('𝜇', alias_name)` before the body
 /// is expanded, so that any self-reference in the body can return the pre-assigned name
 /// rather than an uninitialized one.
-// Scaffolding for equirecursive types (S-860 CheckerType migration)
-#[allow(dead_code)]
 pub(crate) type ExpansionStack = Vec<(Arc<crate::type_def::TyConDef>, String)>;
 
 /// Returns `true` if `ty` contains any bare (unexpanded) type constructor references.
@@ -4942,7 +4953,6 @@ pub(crate) type ExpansionStack = Vec<(Arc<crate::type_def::TyConDef>, String)>;
 ///
 /// Used by `expand_named` Step 2b as a fast-path: if the alias body has no TyCon
 /// references, it can be returned directly without further expansion.
-#[allow(dead_code)] // S-860 CheckerType migration will use this
 pub(crate) fn body_contains_tycon_ref(ty: &Type) -> bool {
     match ty {
         Type::TyCon(_) => true,
@@ -5002,7 +5012,6 @@ pub(crate) fn body_contains_tycon_ref(ty: &Type) -> bool {
 /// Note: `TypeVar(var, 0)` at recursive positions is the sentinel produced by Step 4
 /// (cycle detection). After expansion, `contains_recvar(expanded, binder_name)` checks
 /// whether this sentinel appears anywhere in the body — confirming the alias is recursive.
-#[allow(dead_code)] // S-860 CheckerType migration
 pub(crate) fn contains_recvar(ty: &Type, var: &str) -> bool {
     match ty {
         Type::TypeVar(name, _) => name == var,
@@ -5129,7 +5138,6 @@ pub(crate) fn is_contractive_type(ty: &Type, var: &str) -> bool {
 pub(crate) fn expand_named(
     name: &str,
     args: &[Type],
-    stack: &mut ExpansionStack,
     env: &TypeEnv,
     state: &mut InferState,
 ) -> Option<Type> {
@@ -5178,7 +5186,7 @@ pub(crate) fn expand_named(
     // If the same Arc<TyConDef> is already on the stack, this is a self-referential
     // (recursive) type. Return a TypeVar with the pre-assigned binder name so that the
     // caller receives a stable type identity for the recursive position.
-    for (stack_def, binder_name) in stack.iter() {
+    for (stack_def, binder_name) in state.expansion_stack.iter() {
         if Arc::ptr_eq(stack_def, &def) {
             return Some(Type::TypeVar(binder_name.clone(), 0));
         }
@@ -5205,11 +5213,11 @@ pub(crate) fn expand_named(
     // The gensym_fresh call is here — BEFORE stack.push — so the pre-assigned name is
     // available to Step 4 (cycle detection) for any self-reference in the body.
     let binder_name = crate::builtins_meta::gensym_fresh('𝜇', name);
-    stack.push((def, binder_name.clone()));
+    state.expansion_stack.push((def, binder_name.clone()));
 
-    let expanded = expand_all_tycon_apps(&body_substituted, stack, env, state);
+    let expanded = expand_all_tycon_apps(&body_substituted, env, state);
 
-    stack.pop();
+    state.expansion_stack.pop();
 
     // Recursive wrapping rule (Step 6 wrap — S-860: equirecursive-types-core).
     //
@@ -5272,25 +5280,17 @@ pub(crate) fn expand_named(
 /// Returns the expanded type. Falls back to the original type node when expansion
 /// fails (e.g., unknown alias name — the TyCon is preserved for downstream error
 /// reporting).
-#[allow(dead_code)] // S-860 CheckerType migration
-pub(crate) fn expand_all_tycon_apps(
-    ty: &Type,
-    stack: &mut ExpansionStack,
-    env: &TypeEnv,
-    state: &mut InferState,
-) -> Type {
+pub(crate) fn expand_all_tycon_apps(ty: &Type, env: &TypeEnv, state: &mut InferState) -> Type {
     match ty {
         // Bare TyCon — zero-arg application.
-        Type::TyCon(name) => {
-            expand_named(name, &[], stack, env, state).unwrap_or_else(|| ty.clone())
-        }
+        Type::TyCon(name) => expand_named(name, &[], env, state).unwrap_or_else(|| ty.clone()),
 
         // App chain: collect the root TyCon name and all args, then expand.
         // App is left-associative: App(App(TyCon("Map"), Str), Int) = Map[Str][Int].
         // We collect args right-to-left while peeling left-associative Apps, then reverse.
         Type::App(f, arg) => {
             // Expand the argument first (args are always expanded before the ctor).
-            let expanded_arg = expand_all_tycon_apps(arg, stack, env, state);
+            let expanded_arg = expand_all_tycon_apps(arg, env, state);
 
             // Check whether `f` is a TyCon or another App(TyCon, ...) chain.
             // Collect the root name and all preceding args by peeling the App spine.
@@ -5301,11 +5301,11 @@ pub(crate) fn expand_all_tycon_apps(
                     // Expand preceding args first, then append the current expanded_arg.
                     let mut all_args: Vec<Type> = preceding_args
                         .iter()
-                        .map(|a| expand_all_tycon_apps(a, stack, env, state))
+                        .map(|a| expand_all_tycon_apps(a, env, state))
                         .collect();
                     all_args.push(expanded_arg);
 
-                    expand_named(name, &all_args, stack, env, state).unwrap_or_else(|| {
+                    expand_named(name, &all_args, env, state).unwrap_or_else(|| {
                         // Unknown alias — rebuild the App chain with the expanded args.
                         let base = Type::TyCon(name.to_string());
                         all_args
@@ -5315,7 +5315,7 @@ pub(crate) fn expand_all_tycon_apps(
                 }
                 None => {
                     // `f` is not a TyCon chain (e.g., App(TypeVar, arg)) — recurse into f.
-                    let expanded_f = expand_all_tycon_apps(f, stack, env, state);
+                    let expanded_f = expand_all_tycon_apps(f, env, state);
                     Type::App(Box::new(expanded_f), Box::new(expanded_arg))
                 }
             }
@@ -5323,18 +5323,18 @@ pub(crate) fn expand_all_tycon_apps(
 
         // Structural recursion for all other type forms.
         Type::Record(row) => {
-            let new_fields: BTreeMap<String, Type> = row
+            let new_fields: indexmap::IndexMap<String, Type> = row
                 .fields
                 .iter()
-                .map(|(k, v)| (k.clone(), expand_all_tycon_apps(v, stack, env, state)))
+                .map(|(k, v)| (k.clone(), expand_all_tycon_apps(v, env, state)))
                 .collect();
             let new_tail = match &row.tail {
                 crate::type_def::RowTail::Uniform { key, value } => {
                     crate::type_def::RowTail::Uniform {
                         key: key
                             .as_ref()
-                            .map(|k| Box::new(expand_all_tycon_apps(k, stack, env, state))),
-                        value: Box::new(expand_all_tycon_apps(value, stack, env, state)),
+                            .map(|k| Box::new(expand_all_tycon_apps(k, env, state))),
+                        value: Box::new(expand_all_tycon_apps(value, env, state)),
                     }
                 }
                 other => other.clone(),
@@ -5353,9 +5353,9 @@ pub(crate) fn expand_all_tycon_apps(
         } => Type::Function {
             params: params
                 .iter()
-                .map(|(name, p)| (name.clone(), expand_all_tycon_apps(p, stack, env, state)))
+                .map(|(name, p)| (name.clone(), expand_all_tycon_apps(p, env, state)))
                 .collect(),
-            ret: Box::new(expand_all_tycon_apps(ret, stack, env, state)),
+            ret: Box::new(expand_all_tycon_apps(ret, env, state)),
             variadic: *variadic,
             required_count: *required_count,
         },
@@ -5363,34 +5363,32 @@ pub(crate) fn expand_all_tycon_apps(
         Type::Union(members) => Type::normalize_union(
             members
                 .iter()
-                .map(|m| expand_all_tycon_apps(m, stack, env, state))
+                .map(|m| expand_all_tycon_apps(m, env, state))
                 .collect(),
         ),
 
         Type::Intersection(members) => Type::normalize_intersection(
             members
                 .iter()
-                .map(|m| expand_all_tycon_apps(m, stack, env, state))
+                .map(|m| expand_all_tycon_apps(m, env, state))
                 .collect(),
         ),
 
-        Type::Negation(inner) => {
-            Type::Negation(Box::new(expand_all_tycon_apps(inner, stack, env, state)))
-        }
+        Type::Negation(inner) => Type::Negation(Box::new(expand_all_tycon_apps(inner, env, state))),
 
         Type::NominalVariant { tag, fields } => {
-            let new_fields: BTreeMap<String, Type> = fields
+            let new_fields: indexmap::IndexMap<String, Type> = fields
                 .fields
                 .iter()
-                .map(|(k, v)| (k.clone(), expand_all_tycon_apps(v, stack, env, state)))
+                .map(|(k, v)| (k.clone(), expand_all_tycon_apps(v, env, state)))
                 .collect();
             let new_tail = match &fields.tail {
                 crate::type_def::RowTail::Uniform { key, value } => {
                     crate::type_def::RowTail::Uniform {
                         key: key
                             .as_ref()
-                            .map(|k| Box::new(expand_all_tycon_apps(k, stack, env, state))),
-                        value: Box::new(expand_all_tycon_apps(value, stack, env, state)),
+                            .map(|k| Box::new(expand_all_tycon_apps(k, env, state))),
+                        value: Box::new(expand_all_tycon_apps(value, env, state)),
                     }
                 }
                 other => other.clone(),
@@ -5410,7 +5408,7 @@ pub(crate) fn expand_all_tycon_apps(
         // is preserved unchanged — it is a μ-binder name, not a type alias reference.
         Type::Recursive { var, body } => Type::Recursive {
             var: var.clone(),
-            body: Box::new(expand_all_tycon_apps(body, stack, env, state)),
+            body: Box::new(expand_all_tycon_apps(body, env, state)),
         },
 
         // Atomic types (primitives, TypeVar, Unknown, Top, etc.) — no TyCon children.
@@ -5425,7 +5423,6 @@ pub(crate) fn expand_all_tycon_apps(
 /// Given `App(TypeVar("a"), Int)`, returns `(None, [])` — no TyCon root.
 ///
 /// The returned `preceding_args` are in left-to-right order (first arg first).
-#[allow(dead_code)] // S-860 CheckerType migration
 fn collect_app_spine(ty: &Type) -> (Option<&str>, Vec<&Type>) {
     match ty {
         Type::TyCon(name) => (Some(name.as_str()), vec![]),
@@ -5497,7 +5494,8 @@ async fn try_resolve_fn_type_expr(
         ann_mapping,
         row_ann_mapping,
         type_params_scope,
-    ).await?;
+    )
+    .await?;
 
     // The parameter list can be:
     // - SurfaceExpression::Dict(entries) — standard syntax: `[$a $b]` or `[$Number]`
@@ -5526,7 +5524,8 @@ async fn try_resolve_fn_type_expr(
                     ann_mapping,
                     row_ann_mapping,
                     type_params_scope,
-                ).await?;
+                )
+                .await?;
                 params.push((param_name, param_ty));
             }
         }
@@ -5546,7 +5545,8 @@ async fn try_resolve_fn_type_expr(
                 ann_mapping,
                 row_ann_mapping,
                 type_params_scope,
-            ).await?;
+            )
+            .await?;
             params.push((None, param_ty));
             for arg in args.iter() {
                 let param_ty = resolve_type_expr(
@@ -5557,7 +5557,8 @@ async fn try_resolve_fn_type_expr(
                     ann_mapping,
                     row_ann_mapping,
                     type_params_scope,
-                ).await?;
+                )
+                .await?;
                 params.push((None, param_ty));
             }
         }
@@ -5578,294 +5579,4 @@ async fn try_resolve_fn_type_expr(
         variadic: false,
         required_count,
     }))
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// CheckerType — thin Value wrapper for TypeNode representation (T-1070, S-860)
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// A thin newtype wrapper around a [`Value`] that is a TypeNode variant.
-///
-/// `CheckerType` is the scaffolding for the equirecursive type system migration
-/// (equirecursive-types-core, S-860). It wraps a tinct `Value` — specifically a
-/// `Value::Variant` whose tag is one of the `TypeNode.*` constructor names — so
-/// that the type checker can operate on TypeNode values directly instead of the
-/// Rust `Type` enum.
-///
-/// ## Design rationale
-///
-/// As specified in `doc/whatif/equirecursive-types.md §CheckerType`, the long-term
-/// representation of all types (including inference variables) is a TypeNode tinct
-/// value. `TypeVar` is `TypeNode.TypeVar name: String  level: Int` — a first-class
-/// TypeNode constructor, not a separate Rust variant. This eliminates the parallel
-/// `Type` enum representation and makes TypeNode values directly walkable by
-/// `TypeNode.children` without any Rust-side dispatch.
-///
-/// ## Current state (S-860/S-861 scaffolding)
-///
-/// This struct and its associated functions are not yet wired into the active
-/// type-checking pipeline. S-862 will:
-/// - Migrate annotation resolution to produce `CheckerType` instead of `Type`
-/// - Give the type-checker arena access so `fresh_type_var` and payload-carrying
-///   conversions in `from_type` can construct proper
-///   `Value::Variant { payload: Some(ThunkId) }` dicts
-/// - Retire the parallel `Type` enum
-///
-/// Until S-862, all payload-carrying TypeNode conversions fall back to
-/// `TypeNode.Unknown`. Leaf (unit) constructors are fully correct: they produce
-/// `Value::Variant { tag: "TypeNode.X", payload: None }` which requires no arena.
-///
-/// ## Relationship to `InferState.levels`
-///
-/// `InferState.levels: HashMap<String, u32>` remains the **authoritative** current
-/// level for each type variable (Kiselyov 2013). The `level` field embedded in a
-/// `TypeNode.TypeVar` payload is the **creation-time** level — fixed at
-/// `fresh_type_var` call time. Level lowering updates `state.levels[name]`, never
-/// the payload. All generalization and level-comparison code MUST read
-/// `state.levels`, not the payload. See `doc/whatif/equirecursive-types.md
-/// §TypeNode` ("collect_type_vars reads level from state.levels[name]").
-#[allow(dead_code)] // S-860 scaffolding — wired in S-862
-#[derive(Clone, Debug)]
-pub(crate) struct CheckerType(pub(crate) Value);
-
-impl CheckerType {
-    /// Construct a `CheckerType` for a unit (payload-free) TypeNode variant.
-    ///
-    /// Internal helper used by `from_type` and the primitive leaf conversions.
-    fn unit_variant(tag: &'static str) -> Self {
-        CheckerType(Value::Variant {
-            tag: tag.to_string(),
-            payload: None,
-        })
-    }
-
-    /// Convert a `Type` enum value to its `CheckerType` (TypeNode Value) equivalent.
-    ///
-    /// ## Conversion table
-    ///
-    /// | `Type` variant        | TypeNode tag             | Notes                                  |
-    /// |-----------------------|--------------------------|----------------------------------------|
-    /// | `Int`                 | `TypeNode.Int`           | leaf, correct                          |
-    /// | `IntLiteral(_)`       | `TypeNode.Int`           | promoted to Int (no literal TypeNode)  |
-    /// | `Float`               | `TypeNode.Float`         | leaf, correct                          |
-    /// | `Str`                 | `TypeNode.String`        | leaf, correct                          |
-    /// | `StringLiteral(_)`    | `TypeNode.String`        | promoted to String                     |
-    /// | `Bool`                | `TypeNode.Bool`          | leaf, correct                          |
-    /// | `Unknown`             | `TypeNode.Unknown`       | leaf, correct                          |
-    /// | `Never`               | `TypeNode.Never`         | leaf, correct                          |
-    /// | `TypeVar(name, lvl)`  | `TypeNode.Unknown`       | TODO(S-862): needs arena for payload   |
-    /// | `Function { .. }`     | `TypeNode.Unknown`       | TODO(S-862): needs arena for payload   |
-    /// | `Record(_)`           | `TypeNode.Unknown`       | TODO(S-862): needs arena for payload   |
-    /// | `Union(_)`            | `TypeNode.Unknown`       | TODO(S-862): needs arena for payload   |
-    /// | all others            | `TypeNode.Unknown`       | TODO(S-862): map remaining variants    |
-    ///
-    /// ## Why payload-carrying types fall back to `TypeNode.Unknown`
-    ///
-    /// `Value::Variant { payload: Some(ThunkId) }` requires insertion into a `ThunkArena`
-    /// (via `EvalContext::alloc_thunk`). The type-checker does not currently hold arena
-    /// access — arenas are owned by the evaluation pipeline (`EvalContext`). Until S-862
-    /// threads arena access into the type-checker (or introduces a dedicated checker-local
-    /// arena), we cannot construct well-formed payload dicts. Returning `TypeNode.Unknown`
-    /// is safe for scaffolding: callers in S-862 will replace these paths with fully-wired
-    /// arena-backed constructors.
-    ///
-    /// `_state: &InferState` is accepted now (unused) so S-862 can add level lookups
-    /// without changing the signature.
-    #[allow(dead_code)] // S-860 scaffolding — wired in S-862
-    pub(crate) fn from_type(ty: &Type, _state: &InferState) -> Self {
-        match ty {
-            // ── Leaf primitives — no payload required ─────────────────────────
-            Type::Int | Type::IntLiteral(_) => Self::unit_variant("TypeNode.Int"),
-            Type::Float => Self::unit_variant("TypeNode.Float"),
-            Type::Str | Type::StringLiteral(_) => Self::unit_variant("TypeNode.String"),
-            Type::Bool => Self::unit_variant("TypeNode.Bool"),
-            Type::Unknown => Self::unit_variant("TypeNode.Unknown"),
-            Type::Never => Self::unit_variant("TypeNode.Never"),
-
-            // ── Payload-carrying types — TODO(S-862) ──────────────────────────
-            // These variants require a ThunkArena to construct their payload dicts.
-            // S-862 will thread arena access into the type-checker and complete these arms.
-            //
-            // Intended final forms:
-            //   TypeVar(name, lvl) → TypeNode.TypeVar { name: name, level: state.levels[name] }
-            //   Function { .. }    → TypeNode.Arrow { params: Seq<TypeNode>, result: TypeNode }
-            //   Record(row)        → TypeNode.Record { fields: Map<String,TypeNode>, open: Bool }
-            //   Union(members)     → TypeNode.Union { types: Seq<TypeNode> }
-            Type::TypeVar(_, _) | Type::Function { .. } | Type::Record(_) | Type::Union(_) => {
-                Self::unit_variant("TypeNode.Unknown")
-            }
-
-            // ── Everything else — Unknown fallback ────────────────────────────
-            // Covers: Number, Bytes, Top, Error, DirCap, NetCap, Uri, Timestamp,
-            // Duration, ClockCap, Timezone, QuicSession, Http2Session, Http3Session,
-            // QuicDatagramHandle, DatagramHandle, Intersection, App, TyCon,
-            // Operator, TypeStageApp, NominalVariant, Proxy.
-            // TODO(S-862): map remaining variants to their TypeNode equivalents.
-            _ => Self::unit_variant("TypeNode.Unknown"),
-        }
-    }
-
-    /// Create a `CheckerType` representing a fresh inference type variable.
-    ///
-    /// ## Intended final form (S-861)
-    ///
-    /// ```text
-    /// TypeNode.TypeVar { name: name, level: level }
-    /// ```
-    /// as `Value::Variant { tag: "TypeNode.TypeVar", payload: Some(ThunkId) }` where
-    /// the payload is a `Value::Dict { "name" → String(name), "level" → Int(level) }`.
-    ///
-    /// Constructing the payload dict requires inserting it into a `ThunkArena` — which
-    /// the type-checker does not currently hold. S-862 will add arena access and complete
-    /// this constructor.
-    ///
-    /// ## Current stub (S-860)
-    ///
-    /// Returns `TypeNode.Unknown` (a unit variant, no arena needed) as a placeholder.
-    /// `_name` and `_level` are accepted so S-862 can fill in the implementation without
-    /// changing call sites.
-    ///
-    /// ## `state.levels` remains authoritative
-    ///
-    /// This function does NOT touch `InferState.levels`. `state.levels[name]` is the
-    /// authoritative current level for the variable (Kiselyov 2013 level lowering).
-    /// The `level` argument here is the creation-time level to embed in the TypeNode
-    /// payload; `state.levels` may lower it subsequently. All level comparisons during
-    /// generalization MUST read `state.levels`, not this embedded value.
-    #[allow(dead_code)] // S-860 scaffolding — wired in S-862
-    pub(crate) fn fresh_type_var(_name: String, _level: u32) -> Self {
-        // TODO(S-862): Replace with:
-        //
-        //   use indexmap::IndexMap;
-        //   use crate::value::Key;
-        //   use crate::ast::Span;
-        //   use std::sync::Arc;
-        //
-        //   let mut dict = IndexMap::new();
-        //   dict.insert(Key::String("name".into()),  /* alloc String thunk into arena */);
-        //   dict.insert(Key::String("level".into()), /* alloc Int thunk into arena */);
-        //   let payload_id = arena.alloc(Arc::new(
-        //       Thunk::new_materialized(Value::Dict(dict), Span::origin())
-        //   ));
-        //   CheckerType(Value::Variant {
-        //       tag: "TypeNode.TypeVar".to_string(),
-        //       payload: Some(payload_id),
-        //   })
-        Self::unit_variant("TypeNode.Unknown")
-    }
-}
-
-#[cfg(test)]
-mod checker_type_tests {
-    use super::*;
-
-    /// Helper: extract the TypeNode variant tag from a `CheckerType`.
-    fn typenode_tag(ct: &CheckerType) -> &str {
-        match &ct.0 {
-            Value::Variant { tag, .. } => tag.as_str(),
-            other => panic!("CheckerType does not wrap a Variant: {:?}", other),
-        }
-    }
-
-    /// Helper: verify the CheckerType wraps a unit variant (payload is None).
-    fn is_unit_variant(ct: &CheckerType) -> bool {
-        matches!(&ct.0, Value::Variant { payload: None, .. })
-    }
-
-    fn dummy_state() -> InferState {
-        InferState::new()
-    }
-
-    #[test]
-    fn from_type_int_produces_typenode_int() {
-        let state = dummy_state();
-        let ct = CheckerType::from_type(&Type::Int, &state);
-        assert_eq!(typenode_tag(&ct), "TypeNode.Int");
-        assert!(
-            is_unit_variant(&ct),
-            "TypeNode.Int must be a unit variant (no payload)"
-        );
-    }
-
-    #[test]
-    fn from_type_int_literal_promotes_to_typenode_int() {
-        let state = dummy_state();
-        let ct = CheckerType::from_type(&Type::IntLiteral(42), &state);
-        assert_eq!(typenode_tag(&ct), "TypeNode.Int");
-    }
-
-    #[test]
-    fn from_type_float_produces_typenode_float() {
-        let state = dummy_state();
-        let ct = CheckerType::from_type(&Type::Float, &state);
-        assert_eq!(typenode_tag(&ct), "TypeNode.Float");
-    }
-
-    #[test]
-    fn from_type_str_produces_typenode_string() {
-        let state = dummy_state();
-        let ct = CheckerType::from_type(&Type::Str, &state);
-        assert_eq!(typenode_tag(&ct), "TypeNode.String");
-    }
-
-    #[test]
-    fn from_type_string_literal_promotes_to_typenode_string() {
-        let state = dummy_state();
-        let ct = CheckerType::from_type(&Type::StringLiteral("hello".to_string()), &state);
-        assert_eq!(typenode_tag(&ct), "TypeNode.String");
-    }
-
-    #[test]
-    fn from_type_bool_produces_typenode_bool() {
-        let state = dummy_state();
-        let ct = CheckerType::from_type(&Type::Bool, &state);
-        assert_eq!(typenode_tag(&ct), "TypeNode.Bool");
-    }
-
-    #[test]
-    fn from_type_unknown_produces_typenode_unknown() {
-        let state = dummy_state();
-        let ct = CheckerType::from_type(&Type::Unknown, &state);
-        assert_eq!(typenode_tag(&ct), "TypeNode.Unknown");
-        assert!(is_unit_variant(&ct));
-    }
-
-    #[test]
-    fn from_type_never_produces_typenode_never() {
-        let state = dummy_state();
-        let ct = CheckerType::from_type(&Type::Never, &state);
-        assert_eq!(typenode_tag(&ct), "TypeNode.Never");
-        assert!(is_unit_variant(&ct));
-    }
-
-    /// TypeVar falls back to Unknown until S-862 wires arena access for payload dicts.
-    #[test]
-    fn from_type_typevar_falls_back_to_unknown_until_s861() {
-        let state = dummy_state();
-        let ct = CheckerType::from_type(&Type::TypeVar("_t0".to_string(), 1), &state);
-        assert_eq!(
-            typenode_tag(&ct),
-            "TypeNode.Unknown",
-            "TypeVar fallback to Unknown expected until S-861 wires arena access"
-        );
-    }
-
-    /// `fresh_type_var` stub returns Unknown until S-861 wires arena access.
-    #[test]
-    fn fresh_type_var_stub_returns_unknown_until_s861() {
-        let ct = CheckerType::fresh_type_var("_t0".to_string(), 1);
-        assert_eq!(
-            typenode_tag(&ct),
-            "TypeNode.Unknown",
-            "fresh_type_var stub returns Unknown until S-861 wires arena access"
-        );
-    }
-
-    #[test]
-    fn checker_type_clone_preserves_tag() {
-        let state = dummy_state();
-        let ct = CheckerType::from_type(&Type::Int, &state);
-        let ct2 = ct.clone();
-        assert_eq!(typenode_tag(&ct2), "TypeNode.Int");
-    }
 }

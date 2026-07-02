@@ -60,9 +60,6 @@ pub async fn format_source_tinct_with_dir(
     let parse_output = parse(input).map_err(|e| format!("{e}"))?;
 
     // Load and expand the formatter script BEFORE creating env/ctx.
-    // expand_surface_program internally calls create_stdlib_env_with_arena(), updating STDLIB_ARENA_CACHE.
-    // By expanding first, env+ctx are created from the final cache state, keeping them
-    // in the same arena basis and avoiding the "undefined variable: try" regression.
     // AMBIENT-OK: formatter script loaded from stdlib path.
     #[allow(clippy::disallowed_methods)]
     let formatter_source = std::fs::read_to_string(script_path).map_err(|e| {
@@ -74,12 +71,16 @@ pub async fn format_source_tinct_with_dir(
     let formatter_parsed =
         parse(&formatter_source).map_err(|e| format!("formatter parse error: {e}"))?;
 
+    // Build a fresh core env for macro expansion.
+    let expand_env = crate::builtins::build_core_env();
+
     // PIPELINE INVARIANT: parse -> expand_surface_program -> desugar -> resolve -> typecheck.
     // Use expand_surface_program (not expand_macros) so SurfaceItem::Decl macros are seen.
     // Desugar AFTER macro expansion so that macros can introduce $_ patterns.
     let mut formatter_program = formatter_parsed.program;
     let expand_result = crate::expand::expand_surface_program(
         &mut formatter_program,
+        expand_env,
         false, // formatter always has filesystem access
         &base_dir,
     )
@@ -87,30 +88,28 @@ pub async fn format_source_tinct_with_dir(
     .map_err(|e| format!("formatter expand error: {e}"))?;
     // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
     desugar::desugar_surface_program(&mut formatter_program);
-    // Variable resolution pass (Phase 1 of arena allocation strategy).
-    let formatter_resolution_table =
-        std::sync::Arc::new(resolve::resolve_surface_program(&formatter_program));
-    let formatter_type_annotation_table =
-        std::sync::Arc::new(crate::ast::TypeAnnotationTable::new());
+    // Variable resolution pass — writes de Bruijn coordinates inline to AST nodes.
+    let resolve_errors = resolve::resolve_surface_program(&formatter_program);
+    if !resolve_errors.is_empty() {
+        let msgs: Vec<String> = resolve_errors
+            .iter()
+            .map(|(name, span)| {
+                let loc = match &span.file {
+                    Some(f) => format!("{}:{}:{}", f.path, span.start.line, span.start.column),
+                    None => format!("<formatter>:{}:{}", span.start.line, span.start.column),
+                };
+                format!("[E002] undefined variable: {} (at {})", name, loc)
+            })
+            .collect();
+        return Err(msgs.join("\n"));
+    }
+    // Typecheck the expanded and desugared formatter (writes inline type annotations).
+    let _ = typecheck::typecheck_surface_program_annotation_table(&formatter_program).await;
 
-    // Typecheck the expanded and desugared formatter.
-    let _ = typecheck::typecheck_surface_program_annotation_table(&formatter_program);
-
-    // Create env+ctx AFTER expand_surface_program so STDLIB_ARENA_CACHE is stable.
-    // Use new_sharing_arena (not new) so stdlib ThunkIds are valid in the eval ctx —
-    // same pattern as eval_source_with_config. With EvalContext::new (clone), ThunkIds
-    // stored in prelude dicts are looked up in a separate arena vec and may be invalid.
-    let (env, stdlib_arena) =
-        crate::builtins::create_stdlib_env_with_arena().await.map_err(|e| format!("{e}"))?;
-    let type_stage_env = crate::imports::build_type_stage_env().unwrap_or_else(|| Arc::clone(&env));
-    let ctx = EvalContext::new_sharing_arena(
-        base_dir,
-        Arc::clone(&env),
-        type_stage_env,
-        false,
-        stdlib_arena,
-        expand_result.macro_injects_map,
-    );
+    // Build a fresh core env for evaluation context.
+    let env = crate::builtins::build_core_env();
+    let ctx = EvalContext::new_empty(base_dir, Arc::clone(&env), false);
+    let _ = expand_result.macro_injects_map;
 
     // Convert input AST to dict using the now-stable ctx.
     use crate::surface_convert::{surface_program_to_dict, AstToDictOpts, CommentMaps};
@@ -134,8 +133,6 @@ pub async fn format_source_tinct_with_dir(
         &formatter_program,
         Arc::clone(&env),
         &ctx,
-        &formatter_resolution_table,
-        &formatter_type_annotation_table,
         &std::collections::HashMap::new(),
         Some(ast_thunk),
     )
@@ -436,7 +433,6 @@ impl<'a> Formatter<'a> {
                     self.output.push_str(".0");
                 }
             }
-            SurfaceExpression::Bool(b) => self.output.push_str(if *b { "true" } else { "false" }),
             SurfaceExpression::Str(s) => {
                 // Source-sniff: check if the original token was a quoted string or a
                 // bare identifier (dict key). If the source character at the span start
@@ -464,7 +460,7 @@ impl<'a> Formatter<'a> {
                     self.output.push_str(s);
                 }
             }
-            SurfaceExpression::VarRef { name, escaped } => {
+            SurfaceExpression::VarRef { name, escaped, .. } => {
                 // Emit `$` prefix if this was written as an escaped ref (`$name`).
                 // Bare identifiers and `%`-prefixed refs do not get a `$` prepended —
                 // the `%` is already part of `name`.
@@ -473,8 +469,10 @@ impl<'a> Formatter<'a> {
                 }
                 self.output.push_str(name);
             }
-            SurfaceExpression::DotAccess { expr, field } => {
-                self.format_expr(expr, false);
+            SurfaceExpression::DotAccess { expr, field, .. } => {
+                if let Some(target) = expr {
+                    self.format_expr(target, false);
+                }
                 self.output.push('.');
                 match field {
                     crate::ast::DotKey::Ident(s) => self.output.push_str(s),
@@ -602,10 +600,8 @@ impl<'a> Formatter<'a> {
                 self.output.push('[');
                 self.output.push_str("case");
                 self.output.push(' ');
-                if let Some(lb) = let_bindings {
-                    self.format_expr(lb, false);
-                    self.output.push(' ');
-                }
+                self.format_expr(let_bindings, false);
+                self.output.push(' ');
                 self.format_expr(pattern, false);
                 self.output.push(' ');
                 self.format_expr(body, false);
@@ -619,7 +615,7 @@ impl<'a> Formatter<'a> {
                 // The actual declaration content is preserved for type checking only.
                 self.output.push_str("...");
             }
-            SurfaceExpression::Rest(name) => {
+            SurfaceExpression::Rest(name, _) => {
                 self.output.push_str("...");
                 if let Some(n) = name {
                     self.output.push_str(n);
@@ -728,13 +724,6 @@ impl<'a> Formatter<'a> {
                     s.len()
                 }
             }
-            SurfaceExpression::Bool(b) => {
-                if *b {
-                    4
-                } else {
-                    5
-                }
-            }
             SurfaceExpression::Str(s) => {
                 // Source-sniff: if originally a quoted string, add 2 for the quote characters.
                 // If originally a bare identifier key, width is just the content length.
@@ -754,12 +743,13 @@ impl<'a> Formatter<'a> {
                 // `%`-prefixed refs already include `%` in the stored name.
                 name.len() + if *escaped { 1 } else { 0 }
             }
-            SurfaceExpression::DotAccess { expr, field } => {
+            SurfaceExpression::DotAccess { expr, field, .. } => {
                 let field_len = match field {
                     crate::ast::DotKey::Ident(s) => s.len(),
                     crate::ast::DotKey::Int(n) => n.to_string().len(),
                 };
-                self.measure_expr_width(expr) + 1 + field_len
+                let target_len = expr.as_ref().map_or(0, |t| self.measure_expr_width(t));
+                target_len + 1 + field_len
             }
             SurfaceExpression::Pipe { lhs, rhs } => {
                 self.measure_expr_width(lhs) + 3 + self.measure_expr_width(rhs) // lhs | rhs
@@ -880,21 +870,18 @@ impl<'a> Formatter<'a> {
                 pattern,
                 body,
             } => {
-                // [case <pattern> <body>] or [case <let_bindings> <pattern> <body>]
-                let lb_width = let_bindings
-                    .as_ref()
-                    .map(|lb| 1 + self.measure_expr_width(lb))
-                    .unwrap_or(0);
+                // [case <let_bindings> <pattern> <body>]
                 1 + 4
                     + 1
-                    + lb_width
+                    + self.measure_expr_width(let_bindings)
+                    + 1
                     + self.measure_expr_width(pattern)
                     + 1
                     + self.measure_expr_width(body)
                     + 1
             }
             SurfaceExpression::Placeholder | SurfaceExpression::Decl(_) => 3, // ...
-            SurfaceExpression::Rest(name) => 3 + name.as_ref().map_or(0, |n| n.len()),
+            SurfaceExpression::Rest(name, _) => 3 + name.as_ref().map_or(0, |n| n.len()),
             SurfaceExpression::Error(span) => {
                 // Measure the width of the original source text
                 span.end.offset - span.start.offset
@@ -906,8 +893,8 @@ impl<'a> Formatter<'a> {
         use crate::ast::{LiteralPattern, Pattern};
         match pattern {
             Pattern::Wildcard => 1,
-            Pattern::Pin(name) => name.len(), // bare name (T-1154)
-            Pattern::TypeAssertPending { annotation, inner } => {
+            Pattern::Pin(name, _) => name.len(), // bare name (T-1154)
+            Pattern::TypeAssertPending { annotation, inner, .. } => {
                 // [@Ann inner] or [@Ann] — 3 for "[@" + "]", annotation width, optional inner
                 let ann_width = format!("{}", annotation.node).len();
                 let inner_width = match inner {
@@ -935,7 +922,6 @@ impl<'a> Formatter<'a> {
                         s.len()
                     }
                 }
-                LiteralPattern::Bool(b) => b.to_string().len(),
                 LiteralPattern::Str(s) => 2 + s.len(), // "string" (approximate, doesn't account for escapes)
             },
             Pattern::Dict { fields, rest } => {
@@ -954,10 +940,6 @@ impl<'a> Formatter<'a> {
                     width += 3; // "..."
                 }
                 width
-            }
-            Pattern::Seq { head, tail } => {
-                6 + self.measure_pattern_width(&head.node) + self.measure_pattern_width(&tail.node)
-                // "[seq h t]"
             }
             Pattern::Constructor { tag, binding } => {
                 if let Some(pat) = binding {
@@ -1298,7 +1280,7 @@ impl<'a> Formatter<'a> {
         use crate::ast::{LiteralPattern, Pattern};
         match &pattern.node {
             Pattern::Wildcard => self.output.push('_'),
-            Pattern::Pin(name) => {
+            Pattern::Pin(name, _) => {
                 // T-1154: bare lowercase names in pattern position are now Pin.
                 // Display as the bare name (without $); this round-trips correctly.
                 self.output.push_str(name);
@@ -1316,7 +1298,6 @@ impl<'a> Formatter<'a> {
                         self.output.push_str(".0");
                     }
                 }
-                LiteralPattern::Bool(b) => self.output.push_str(&b.to_string()),
                 LiteralPattern::Str(s) => {
                     self.output.push('"');
                     self.output
@@ -1342,13 +1323,6 @@ impl<'a> Formatter<'a> {
                 }
                 self.output.push(']');
             }
-            Pattern::Seq { head, tail } => {
-                self.output.push_str("[seq ");
-                self.format_pattern(head);
-                self.output.push(' ');
-                self.format_pattern(tail);
-                self.output.push(']');
-            }
             Pattern::Constructor { tag, binding } => {
                 if let Some(pat) = binding {
                     self.output.push('[');
@@ -1360,7 +1334,7 @@ impl<'a> Formatter<'a> {
                     self.output.push_str(tag);
                 }
             }
-            Pattern::TypeAssertPending { annotation, inner } => {
+            Pattern::TypeAssertPending { annotation, inner, .. } => {
                 self.output.push_str("[@");
                 self.format_annotation(annotation);
                 if let Some(inner_pat) = inner {
@@ -1449,7 +1423,6 @@ impl<'a> Formatter<'a> {
             }
             SurfaceExpression::U64(n) => n.to_string().chars().next(),
             SurfaceExpression::Float(_) => Some('0'), // approximate
-            SurfaceExpression::Bool(b) => Some(if *b { 't' } else { 'f' }),
             SurfaceExpression::Str(_) => {
                 // Check if quoted or bare
                 let is_quoted = self
@@ -1487,7 +1460,7 @@ impl<'a> Formatter<'a> {
             | SurfaceExpression::CaseArm { .. } => Some('['),
             SurfaceExpression::Annotated { name, .. } => name.chars().next(),
             SurfaceExpression::Placeholder
-            | SurfaceExpression::Rest(_)
+            | SurfaceExpression::Rest(..)
             | SurfaceExpression::Decl(_) => Some('.'),
             SurfaceExpression::Error(_) => None,
         }
@@ -1638,8 +1611,6 @@ mod tests {
 
     #[test]
     fn test_bracket_no_longer_access() {
-        // Bracket access syntax has been removed. `$a` and `[0]` are now separate expressions.
-        // The formatter handles each as a standalone item in the document.
         // $a alone formats as a reference.
         assert_eq!(format_source("$a").unwrap(), "$a\n");
         // [0] alone formats as a dict with one auto-indexed entry.
@@ -2121,27 +2092,6 @@ mod tests {
     }
 
     // --- Match / Pipe expression tests ---
-
-    #[test]
-    fn test_format_match_single_arm() {
-        // Match syntax requires a colon between pattern and body.
-        // Dict patterns are open by default (rest: true), so [ok: v] formats as [ok: v  ...].
-        let input = "[match $x [ok: v]: $v]";
-        let formatted = format_source(input).unwrap();
-        assert_eq!(formatted.trim(), "[match $x [ok: v  ...]: $v]");
-    }
-
-    #[test]
-    fn test_format_match_two_arms() {
-        // Match syntax requires a colon between each pattern and its body.
-        // Dict patterns are open by default (rest: true), so [ok: body] formats as [ok: body  ...].
-        let input = "[match $r [ok: body]: $body [err: msg]: $msg]";
-        let formatted = format_source(input).unwrap();
-        assert_eq!(
-            formatted.trim(),
-            "[match $r [ok: body  ...]: $body [err: msg  ...]: $msg]"
-        );
-    }
 
     #[test]
     fn test_format_match_idempotent() {

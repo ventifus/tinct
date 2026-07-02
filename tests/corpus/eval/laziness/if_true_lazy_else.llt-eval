@@ -1,4 +1,4 @@
-# Laziness: $if does not force the false branch when condition is true
-[if true 1 [/ 1 0]]
+# Laziness: $if does not force the false branch when condition is True
+[if True 1 [/ 1 0]]
 === out
 Int(1)

@@ -1,0 +1,119 @@
+#!/usr/bin/env python3
+"""
+Audit Claude session logs: every tool call + modified file with timestamps.
+
+python3 session_audit.py ~/.claude/projects/-var-home-adenton-Projects-tinct/
+python3 session_audit.py ... --session 3ec5b6a5 --after 2026-06-30T20:00:00Z
+python3 session_audit.py ... --git-only
+python3 session_audit.py ... --files-only --before 2026-07-01T02:57:00Z
+"""
+
+import json, sys, argparse
+from pathlib import Path
+from datetime import datetime, timezone
+
+FILE_OPS = {"Write", "Edit", "NotebookEdit"}
+BULK_OPS = {"mcp__toolbox__fs_bulk_edit"}
+GIT_OPS = {
+    "mcp__toolbox__git_reset", "mcp__toolbox__git_commit", "mcp__toolbox__git_autosquash",
+    "mcp__toolbox__git_rebase_abort", "mcp__toolbox__git_rebase_continue",
+    "mcp__toolbox__git_stash", "mcp__toolbox__git_stash_pop", "mcp__toolbox__git_force_push",
+    "mcp__toolbox__git_push", "mcp__toolbox__git_fixup",
+    "mcp__toolbox__run_target", "mcp__toolbox__run_script",
+}
+
+def parse_ts(s):
+    try: return datetime.fromisoformat(s.replace("Z", "+00:00")) if s else None
+    except: return None
+
+def get_detail(name, inp):
+    if name in FILE_OPS:
+        return inp.get("file_path") or inp.get("path") or ""
+    if name in BULK_OPS:
+        paths = inp.get("file_paths") or []
+        old = (inp.get("old_string") or "")[:40].replace("\n", "\\n")
+        return f"[{len(paths)} files] {', '.join(paths[:4])}{'...' if len(paths)>4 else ''} | old={old!r}"
+    if name == "mcp__toolbox__git_reset":
+        return f"ref={inp.get('ref','HEAD')} mode={inp.get('mode','mixed')}"
+    if name == "mcp__toolbox__git_commit":
+        return f"\"{inp.get('message','')[:70]}\""
+    if name in ("mcp__toolbox__run_target", "mcp__toolbox__run_script"):
+        return (inp.get("target") or inp.get("path") or "")[:80]
+    return ""
+
+def process_jsonl(path, sid, source, after_ts, before_ts, only_git, only_files):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line: continue
+                try: obj = json.loads(line)
+                except: continue
+                ts = parse_ts(obj.get("timestamp"))
+                if after_ts and ts and ts < after_ts: continue
+                if before_ts and ts and ts > before_ts: continue
+                msg = obj.get("message", {})
+                content = msg.get("content", [])
+                if isinstance(content, str): continue
+                for item in content:
+                    if not isinstance(item, dict) or item.get("type") != "tool_use": continue
+                    name = item.get("name", "")
+                    inp = item.get("input") or {}
+                    if only_git and name not in GIT_OPS: continue
+                    if only_files and name not in FILE_OPS | BULK_OPS: continue
+                    yield (ts, sid, source, name, get_detail(name, inp))
+    except OSError as e:
+        print(f"# skip {path}: {e}", file=sys.stderr)
+
+def find_files(session_dir, session_filter):
+    base = Path(session_dir).expanduser()
+    files = []
+    for item in sorted(base.iterdir()):
+        if item.is_file() and item.suffix == ".jsonl":
+            sid = item.stem
+            if session_filter and session_filter not in sid: continue
+            files.append((sid, item, "main"))
+        elif item.is_dir() and item.name not in ("memory",) and not item.name.startswith("."):
+            sid = item.name
+            if session_filter and session_filter not in sid: continue
+            sub = item / "subagents"
+            if sub.is_dir():
+                for f in sorted(sub.iterdir()):
+                    if f.is_file() and f.suffix == ".jsonl":
+                        files.append((sid, f, f"agent:{f.stem[:12]}"))
+    return files
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("session_dir")
+    p.add_argument("--session", default=None)
+    p.add_argument("--after", default=None)
+    p.add_argument("--before", default=None)
+    p.add_argument("--git-only", action="store_true")
+    p.add_argument("--files-only", action="store_true")
+    p.add_argument("--no-sort", action="store_true")
+    args = p.parse_args()
+
+    after_ts, before_ts = parse_ts(args.after), parse_ts(args.before)
+    files = find_files(args.session_dir, args.session)
+    print(f"# Scanning {len(files)} JSONL files", file=sys.stderr)
+
+    events = []
+    for sid, path, source in files:
+        for ev in process_jsonl(path, sid, source, after_ts, before_ts, args.git_only, args.files_only):
+            events.append(ev)
+
+    if not args.no_sort:
+        MIN = datetime.min.replace(tzinfo=timezone.utc)
+        events.sort(key=lambda e: e[0] or MIN)
+
+    print(f"# {len(events)} events\n", file=sys.stderr)
+    print(f"{'TIMESTAMP':<22}  {'TYPE':<6}  {'SESSION':<8}  {'SOURCE':<22}  {'TOOL':<45}  DETAIL")
+    print("-" * 170)
+    for ts, sid, source, name, detail in events:
+        ts_str = ts.strftime("%Y-%m-%dT%H:%M:%SZ") if ts else "????"
+        marker = "GIT   " if name in GIT_OPS else ("FILE  " if name in FILE_OPS else ("BULK  " if name in BULK_OPS else "TOOL  "))
+        print(f"{ts_str:<22}  {marker}  {sid[:8]}  {source:<22}  {name:<45}  {detail}")
+
+if __name__ == "__main__":
+    main()

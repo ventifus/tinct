@@ -1,4 +1,4 @@
 # Appendable class infrastructure: AppendableSeq instance with string elements.
 # Verifies that concat on Seq of strings works correctly.
-# Uses map over range to create string Seqs without builtin-variant (not in type env).
+# Uses map over range to create string Seqs (builtin-variant eliminated).
 [result: [collect [concat [map [fn [let _] "a"] [range 0 1]] [map [fn [let _] "b"] [range 0 1]]]]]

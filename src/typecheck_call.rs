@@ -7,7 +7,7 @@
 //! - `check_call_with_scheme` — polymorphic call with single-shot scheme instantiation
 //! - `check_call` — general function call type checking (CALL-MONO and CALL-POLY)
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -119,7 +119,7 @@ pub(crate) async fn check_dot_access(
             let beta = state.fresh_type_var();
 
             // Build the record type to unify α with (BAS: no RowVar tail)
-            let mut fields = BTreeMap::new();
+            let mut fields = indexmap::IndexMap::new();
             fields.insert(field_str.to_string(), beta.clone());
             let record_ty = Type::Record(Row {
                 fields,
@@ -129,7 +129,15 @@ pub(crate) async fn check_dot_access(
             // Unify TypeVar(α) with Record({field: β})
             let alpha_ty = Type::TypeVar(alpha.clone(), alpha_level);
             let mut subst = std::mem::take(&mut state.subst);
-            let result = Box::pin(unify(&alpha_ty, &record_ty, &mut subst, state, constraints, span)).await;
+            let result = Box::pin(unify(
+                &alpha_ty,
+                &record_ty,
+                &mut subst,
+                state,
+                constraints,
+                span,
+            ))
+            .await;
             state.subst = subst;
             result.map_err(|e| vec![e])?;
 
@@ -232,7 +240,7 @@ pub(crate) async fn check_dot_access_int(
         Type::TypeVar(ref alpha, alpha_level) => {
             let beta = state.fresh_type_var();
 
-            let mut fields = BTreeMap::new();
+            let mut fields = indexmap::IndexMap::new();
             fields.insert(field_name, beta.clone());
             let record_ty = Type::Record(Row {
                 fields,
@@ -241,7 +249,15 @@ pub(crate) async fn check_dot_access_int(
 
             let alpha_ty = Type::TypeVar(alpha.clone(), *alpha_level);
             let mut subst = std::mem::take(&mut state.subst);
-            let result = Box::pin(unify(&alpha_ty, &record_ty, &mut subst, state, constraints, span)).await;
+            let result = Box::pin(unify(
+                &alpha_ty,
+                &record_ty,
+                &mut subst,
+                state,
+                constraints,
+                span,
+            ))
+            .await;
             state.subst = subst;
             result.map_err(|e| vec![e])?;
             Ok(beta)
@@ -279,7 +295,7 @@ pub(crate) fn is_concrete_type(ty: &Type) -> bool {
     match ty {
         // Non-concrete: open inference variables or imprecise top types.
         // Top is the "any" type (like dynamic/unknown) — not a concrete constraint.
-        Type::Unknown | Type::TypeVar(_, _) | Type::Top => false,
+        Type::Unknown | Type::TypeVar(_, _) | Type::Any => false,
         // Composite types: recurse into components.
         Type::Function { params, ret, .. } => {
             params.iter().all(|(_, p)| is_concrete_type(p)) && is_concrete_type(ret)
@@ -475,13 +491,10 @@ pub(crate) async fn check_call_with_scheme(
                     // Boundary guard tracking: if argument is Unknown and parameter expects
                     // a concrete type, record this as a gradual typing boundary.
                     if matches!(arg_ty, Type::Unknown) && is_concrete_type(param_ty) {
-                        // Record the argument span and expected type for gradual typing
-                        // boundary guard insertion at eval time. HashMap ensures O(1)
-                        // lookup per span in eval_core_expr.
+                        // Record the expected type as an inline type guard on the argument node.
+                        // The lowerer reads SurfaceNode.type_guard and wraps it in CoreExpr::TypeAssert.
                         if idx < args.len() {
-                            state
-                                .boundary_guards
-                                .insert(args[idx].span.clone(), param_ty.clone());
+                            args[idx].type_guard.set(Some(param_ty.clone()));
                         }
                     }
 
@@ -494,7 +507,9 @@ pub(crate) async fn check_call_with_scheme(
                         state,
                         constraints,
                         span.clone(),
-                    )).await {
+                    ))
+                    .await
+                    {
                         arg_errors.get_or_insert_with(Vec::new).push(e);
                     }
                 }
@@ -564,7 +579,9 @@ pub(crate) async fn check_call_with_scheme(
                                     state,
                                     constraints,
                                     span.clone(),
-                                )).await {
+                                ))
+                                .await
+                                {
                                     arg_errors.get_or_insert_with(Vec::new).push(e);
                                 }
                             }
@@ -638,7 +655,9 @@ pub(crate) async fn check_call_with_scheme(
                                 state,
                                 constraints,
                                 type_map,
-                            ).await {
+                            )
+                            .await
+                            {
                                 Ok(arg_ty) => {
                                     // Task 2: merge state.subst updates from infer_surface_expr into local subst
                                     subst
@@ -652,7 +671,9 @@ pub(crate) async fn check_call_with_scheme(
                                         state,
                                         constraints,
                                         na.span.clone(),
-                                    )).await {
+                                    ))
+                                    .await
+                                    {
                                         arg_errors.get_or_insert_with(Vec::new).push(
                                             TypeErrorTyped::Generic(GenericTypeError {
                                                 message: format!(
@@ -700,7 +721,9 @@ pub(crate) async fn check_call_with_scheme(
                                     state,
                                     constraints,
                                     type_map,
-                                ).await {
+                                )
+                                .await
+                                {
                                     arg_errors.get_or_insert_with(Vec::new).append(&mut errs);
                                 }
                             }
@@ -801,7 +824,7 @@ pub(crate) async fn check_call_with_scheme(
             // Result type: NominalVariant with the arg type as payload.
             // Runtime stores payload as Some(payload_id), so we model it as a single-field
             // record with numeric field "0" (consistent with single-positional payload convention).
-            let mut payload_fields = BTreeMap::new();
+            let mut payload_fields = indexmap::IndexMap::new();
             payload_fields.insert("0".to_string(), arg_ty);
             Ok(Type::NominalVariant {
                 tag: tag.clone(),
@@ -966,7 +989,8 @@ pub(crate) async fn check_call(
                             // so no explicit state.subst.apply() is needed here — check_surface_expr applies
                             // state.subst to its expected type internally, which is a no-op on ground types.
                             if let Err(mut errs) =
-                                check_surface_expr(arg, param_ty, env, state, constraints, type_map).await
+                                check_surface_expr(arg, param_ty, env, state, constraints, type_map)
+                                    .await
                             {
                                 errors.append(&mut errs);
                             }
@@ -985,9 +1009,8 @@ pub(crate) async fn check_call(
                                     if is_concrete_type(param_ty)
                                         && matches!(arg_ty_resolved, Type::Unknown)
                                     {
-                                        state
-                                            .boundary_guards
-                                            .insert(arg.span.clone(), param_ty.clone());
+                                        // Set inline type guard on the argument AST node.
+                                        arg.type_guard.set(Some(param_ty.clone()));
                                     }
                                     // CALL-MONO guarantees func_ty has no inference vars, so
                                     // param_ty (drawn from func_ty.params) is always ground.
@@ -1053,7 +1076,9 @@ pub(crate) async fn check_call(
                                         state,
                                         constraints,
                                         arg.span.clone(),
-                                    )).await {
+                                    ))
+                                    .await
+                                    {
                                         errors.push(e);
                                     }
                                     state.subst = subst;
@@ -1120,7 +1145,9 @@ pub(crate) async fn check_call(
                                 state,
                                 constraints,
                                 type_map,
-                            ).await {
+                            )
+                            .await
+                            {
                                 Ok(arg_ty) => {
                                     // Boundary guard check (post-inference, single-pass)
                                     if is_concrete_type(param_ty) {
@@ -1130,10 +1157,8 @@ pub(crate) async fn check_call(
                                             state.subst.apply(&arg_ty)
                                         };
                                         if matches!(resolved_arg_ty, Type::Unknown) {
-                                            state.boundary_guards.insert(
-                                                na.node.value.span.clone(),
-                                                param_ty.clone(),
-                                            );
+                                            // Set inline type guard on the named arg's value AST node.
+                                            na.node.value.type_guard.set(Some(param_ty.clone()));
                                         }
                                     }
                                     let mut subst = std::mem::take(&mut state.subst);
@@ -1144,7 +1169,8 @@ pub(crate) async fn check_call(
                                         state,
                                         constraints,
                                         na.span.clone(),
-                                    )).await;
+                                    ))
+                                    .await;
                                     state.subst = subst;
                                     if let Err(e) = result {
                                         errors.push(TypeErrorTyped::Generic(GenericTypeError {
@@ -1192,7 +1218,9 @@ pub(crate) async fn check_call(
                                     state,
                                     constraints,
                                     type_map,
-                                ).await {
+                                )
+                                .await
+                                {
                                     errors.append(&mut errs);
                                 }
                             }
@@ -1277,7 +1305,9 @@ pub(crate) async fn check_call(
                                         state,
                                         constraints,
                                         arg.span.clone(),
-                                    )).await {
+                                    ))
+                                    .await
+                                    {
                                         arg_errors.get_or_insert_with(Vec::new).push(e);
                                     }
                                     state.subst = subst;
@@ -1351,7 +1381,9 @@ pub(crate) async fn check_call(
                                 state,
                                 constraints,
                                 type_map,
-                            ).await {
+                            )
+                            .await
+                            {
                                 Ok(arg_ty) => {
                                     // Boundary guard check (post-inference, single-pass)
                                     if is_concrete_type(param_ty) {
@@ -1361,10 +1393,8 @@ pub(crate) async fn check_call(
                                             state.subst.apply(&arg_ty)
                                         };
                                         if matches!(resolved_arg_ty, Type::Unknown) {
-                                            state.boundary_guards.insert(
-                                                na.node.value.span.clone(),
-                                                param_ty.clone(),
-                                            );
+                                            // Set inline type guard on the named arg's value AST node.
+                                            na.node.value.type_guard.set(Some(param_ty.clone()));
                                         }
                                     }
                                     // Unify the inferred type against the expected param type
@@ -1376,7 +1406,8 @@ pub(crate) async fn check_call(
                                         state,
                                         constraints,
                                         na.span.clone(),
-                                    )).await;
+                                    ))
+                                    .await;
                                     state.subst = subst;
                                     if let Err(errs) = result {
                                         arg_errors.get_or_insert_with(Vec::new).push(
@@ -1426,7 +1457,9 @@ pub(crate) async fn check_call(
                                     state,
                                     constraints,
                                     type_map,
-                                ).await {
+                                )
+                                .await
+                                {
                                     arg_errors.get_or_insert_with(Vec::new).append(&mut errs);
                                 }
                             }
@@ -1540,7 +1573,7 @@ pub(crate) async fn check_call(
             // Result type: NominalVariant with the arg type as payload.
             // Runtime stores payload as Some(payload_id), so we model it as a single-field
             // record with numeric field "0" (consistent with single-positional payload convention).
-            let mut payload_fields = BTreeMap::new();
+            let mut payload_fields = indexmap::IndexMap::new();
             payload_fields.insert("0".to_string(), arg_ty);
             Ok(Type::NominalVariant {
                 tag: tag.clone(),

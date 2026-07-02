@@ -1,6 +1,7 @@
 # More-specific arm (concrete type) wins over less-specific (unconstrained).
-# When user-defined arms tie with prelude arms in specificity, the innermost
-# scope (user) wins — collect_method_arms returns innermost-first.
+# When user-defined arms are in the same scope as prelude arms, the innermost
+# scope (user) wins via env shadowing — the instance binding in the inner scope
+# shadows the prelude's instance binding of the same name.
 [
   [instance Addable
     [let a@Int b@Int c]: [+: [fn [let x y] "int-add"]]

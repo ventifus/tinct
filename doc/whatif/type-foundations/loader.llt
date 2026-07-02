@@ -104,9 +104,15 @@
 
 [
   # ── Foundation ────────────────────────────────────────────────────────────
-  # Boolean is declared in prelude.llt — that is the single source.
-  # loader.llt uses builtin-if which dispatches on Variant tag strings
-  # "Boolean.True"/"Boolean.False" directly — no Boolean alias needed here.
+  # Boolean is declared here (loader.llt dict 2), before prelude loads.
+  # This makes Boolean.True / Boolean.False available as constructor names
+  # throughout loader.llt and in all closures that capture loader's scope.
+  # builtin-if dispatches on the Variant tag strings "Boolean.True"/
+  # "Boolean.False" — it does not need the type declaration itself, but
+  # declaring Boolean here makes the constructors accessible as values.
+  # prelude.llt must NOT redeclare Boolean — it is already in scope.
+
+  Boolean: [type True False]
 
   DocName: [type [Named name: String]  Unnamed]
 
@@ -118,13 +124,35 @@
   ]
 
   # ── Module injection ──────────────────────────────────────────────────────
-  # Fused map+reduce: fold g z (map f xs) = fold (g . f) z xs  (Gill et al. 1993)
+  # Process a --- uses: declaration list.
+  #
+  # For each module name, two things happen:
+  #   1. Type-checker: parse + resolve + typecheck builtin_NAME.llt.
+  #      builtin-typecheck updates TypeContext in-place (side-effect).
+  #      No builtin-eval — placeholder ... bodies must never execute.
+  #   2. Evaluator: builtin-module NAME returns the dict of Value::Builtin
+  #      implementations, merged into the accumulating scope.
+  #
+  # Called once per file in eval-file, before builtin-typecheck on the
+  # file itself — TypeSchemes from the declaration file must be in
+  # TypeContext before the file's body is type-checked.
+  # Returns: merged dict of runtime impls, threaded into eval-document-runtime.
 
-  uses-scope: [fn [let doc]
+  uses-scope: [fn [let module-names]
     [builtin-reduce
-      [fn [let acc name] [builtin-merge acc [builtin-module name]]]
+      [fn [let scope name]
+        [decl-path:     [builtin-str "builtin_" name ".llt"]]
+        [decl-handle:   [builtin-open %libdir decl-path Readable]]
+        [decl-bytes:    [read-handle decl-handle [builtin-bytes]]]
+        [decl-raw:      [builtin-parse decl-bytes decl-path]]
+        [decl-expanded: [expand decl-raw]]
+        [decl-resolved: [builtin-resolve decl-expanded]]
+        # Type-check for TypeContext side-effect only. Discard the typed AST.
+        [builtin-typecheck decl-resolved [builtin-get-type-context]]
+        # Merge runtime implementations into the accumulating scope dict.
+        [builtin-merge scope [builtin-module name]]]
       []
-      doc.uses]]
+      module-names]]
 
   # ── Named section accumulation ────────────────────────────────────────────
 
@@ -150,13 +178,19 @@
   # Uses zero-arg [builtin-get-type-context] (it is building the context).
 
   include: [fn [let cap path]
-    [handle:   [builtin-open cap path Readable]]
-    [bytes:    [read-handle handle [builtin-bytes]]]
-    [raw:      [builtin-parse bytes path]]
-    [expanded: [expand raw]]
-    [resolved: [builtin-resolve expanded]]
-    [typed:    [builtin-typecheck resolved [builtin-get-type-context]]]
-    [builtin-eval typed]]
+    [handle:    [builtin-open cap path Readable]]
+    [bytes:     [read-handle handle [builtin-bytes]]]
+    [raw:       [builtin-parse bytes path]]
+    [expanded:  [expand raw]]
+    [resolved:  [builtin-resolve expanded]]
+    # Process --- uses: before type-checking — same as eval-file.
+    # mod-scope: merged impls dict (Value::Builtin) from all declared modules.
+    # Side-effect: builtin-typecheck calls within uses-scope update TypeContext.
+    [mod-scope: [uses-scope resolved.uses]]
+    [typed:     [builtin-typecheck resolved [builtin-get-type-context]]]
+    # scope-merge: augments the evaluation scope with mod-scope entries.
+    # Does not replace the implicit scope — adds to it.
+    [builtin-eval typed scope-merge: mod-scope]]
 
   # ── Document-level evaluation ─────────────────────────────────────────────
   # Builds the scope for one user document. Known initial-env entries (%cwd,
@@ -172,8 +206,25 @@
   #   known init    — %cwd, %libdir, %stdout, %args from closure
   #   prelude       — standard library (lowest; shadowed by everything above)
 
-  eval-document-runtime: [fn [let state doc include-dir prelude emit-ch]
+  # mod-scope: the merged dict of Value::Builtin impls from uses-scope.
+  # Computed once per file in eval-file and threaded into each document.
+  # mod-scope: the merged dict of Value::Builtin impls from uses-scope.
+  # Computed once per file in eval-file and threaded into each document.
+  eval-document-runtime: [fn [let state mod-scope doc include-dir prelude emit-ch]
     [emit-fn: [fn [let v] [builtin-send emit-ch v]]]
+    # ctx-include: a prelude-carrying version of include injected into document scope.
+    # When user code calls [include cap path], it gets this version, which evaluates
+    # the included file with prelude in scope. The bare include in loader dict 2
+    # evaluates in loader's closure (no prelude) — used only for bootstrapping.
+    [ctx-include: [fn [let cap path]
+      [handle:    [builtin-open cap path Readable]]
+      [bytes:     [read-handle handle [builtin-bytes]]]
+      [raw:       [builtin-parse bytes path]]
+      [expanded:  [expand raw]]
+      [resolved:  [builtin-resolve expanded]]
+      [sub-mod:   [uses-scope resolved.uses]]
+      [typed:     [builtin-typecheck resolved [builtin-get-type-context]]]
+      [builtin-eval typed scope: [builtin-merge prelude sub-mod]]]]
     [val: [builtin-eval
       doc.expressions
       scope:   [builtin-merge
@@ -184,9 +235,10 @@
                      %stdout:       %stdout
                      %args:         %args
                      %include-dir:  include-dir
+                     include:       ctx-include    # shadows loader's include
                      emit:          emit-fn
                      %emit-channel: emit-ch]
-                    [builtin-merge state.named [uses-scope doc]]]]
+                    [builtin-merge state.named mod-scope]]]
       program: doc
       expects: doc.expects
       %:       state.percent]]
@@ -212,11 +264,15 @@
     [raw:      [builtin-parse bytes item.path]]
     [expanded: [expand raw]]
     [resolved: [builtin-resolve expanded]]
+    # Process --- uses: BEFORE typechecking the file body:
+    #   - updates TypeContext with TypeSchemes from each builtin_X.llt (side-effect)
+    #   - returns merged dict of Value::Builtin impls for the evaluator
+    [mod-scope: [uses-scope resolved.uses]]
     # Forces prelude before type-checking — TypeContext is updated as a side effect.
     [typed:    [builtin-typecheck resolved [builtin-get-type-context prelude]]]
     [state:    [builtin-reduce
                   [fn [let state doc]
-                    [eval-document-runtime state doc file-include-dir prelude emit-ch]]
+                    [eval-document-runtime state mod-scope doc file-include-dir prelude emit-ch]]
                   [percent: prev  named: []]
                   typed.documents]]
     state.percent]
@@ -226,10 +282,12 @@
     [raw:      [builtin-parse bytes "<expr>"]]
     [expanded: [expand raw]]
     [resolved: [builtin-resolve expanded]]
+    # -e expressions rarely declare --- uses:, but uniform handling costs nothing.
+    [mod-scope: [uses-scope resolved.uses]]
     [typed:    [builtin-typecheck resolved [builtin-get-type-context prelude]]]
     [state:    [builtin-reduce
                   [fn [let state doc]
-                    [eval-document-runtime state doc include-dir prelude emit-ch]]
+                    [eval-document-runtime state mod-scope doc include-dir prelude emit-ch]]
                   [percent: prev  named: []]
                   typed.documents]]
     state.percent]

@@ -217,7 +217,7 @@ args: [5 10]
 source → parse → expand → desugar → resolve → typecheck → eval
 ```
 
-The pass operates on `SurfaceProgram` (multi-document) and `Arc<SurfaceNode>` (single expression for REPL). All entry points call `desugar_surface_program()` after `expand_surface_program()` and before `surface_program_to_file()`. The type checker and evaluator receive the already-desugared `File`.
+The pass operates on `SurfaceProgram` (multi-document). All entry points call `desugar_surface_program()` after `expand_surface_program()` and before `surface_program_to_file()`. The type checker and evaluator receive the already-desugared `File`.
 
 **DIRECT predicate.** Tests whether an expression is `_` or a dot access chain rooted at `_`. Operates on **raw** (pre-desugaring) AST nodes. Dict entry keys are excluded — only the access *target* triggers desugaring:
 
@@ -360,7 +360,7 @@ fn desugar_surface(node: &mut Arc<SurfaceNode>, depth: usize) {
 }
 ```
 
-**Implementation location.** The desugaring pass lives in `src/desugar.rs`. The entry points are `desugar_surface_program()` for multi-document programs and `desugar_surface_node()` for single nodes (REPL). Unit tests for `_` desugaring call `desugar_surface_node()` (or `desugar_surface_program()`) before `surface_program_to_file()` and `eval()`.
+**Implementation location.** The desugaring pass lives in `src/desugar.rs`. The entry point is `desugar_surface_program()` for multi-document programs. Unit tests for `_` desugaring call `desugar_surface_program()` before `surface_program_to_file()` and `eval()`.
 
 #### Testing Requirements
 

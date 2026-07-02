@@ -1,8 +1,8 @@
 # T-1154: [@Bool x] no longer binds x (x is Pattern::Pin — wildcard, no binding).
-# Use a standalone [case [let x] x body] arm. The _: false arm may or may not
+# Use a standalone [case [let x] x body] arm. The _: False arm may or may not
 # trigger a coverage warning depending on the Bool scrutinee type inference.
-[match true
+[match True
   [case [let x] x x]
-  _: false]
+  _: False]
 === out
 Bool(true)

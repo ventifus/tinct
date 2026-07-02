@@ -3,6 +3,6 @@
 [macro my-if [let cond then else]
   [quote [if [unquote cond] [unquote then] [unquote else]]]]
 
-[my-if true 1 2]
+[my-if True 1 2]
 === out
 Int(1)

@@ -110,73 +110,187 @@ impl fmt::Debug for BuiltinDef {
     }
 }
 
-/// Dict key type: either an integer (auto-indexed) or a string (bare word / quoted).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Key {
+/// A fully-materialised tinct value that implements Hash + Eq.
+/// Only these Value variants may appear as dict keys.
+///
+/// Currently only Int and Str are produced by the evaluator — the Bool, Dict,
+/// and Variant arms exist to accommodate future key types without a breaking
+/// enum change.
+#[derive(Clone, Debug)]
+pub enum HashableValue {
     Int(i64),
-    String(Rc<str>),
+    Bool(bool),
+    Str(Rc<str>),
+    /// Dict key — pairs in insertion order, compared order-insensitively.
+    Dict(Vec<(HashableValue, HashableValue)>),
+    /// Nominal variant key.
+    Variant {
+        tag: Rc<str>,
+        payload: Option<Box<HashableValue>>,
+    },
 }
 
-impl PartialOrd for Key {
+/// splitmix64 finaliser — used to mix pair hashes for Dict keys so that
+/// swapping key and value produces a different hash.
+#[inline]
+fn splitmix64_mix(h: u64) -> u64 {
+    let h = h.wrapping_add(0x9e3779b97f4a7c15);
+    let h = (h ^ (h >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+    let h = (h ^ (h >> 27)).wrapping_mul(0x94d049bb133111eb);
+    h ^ (h >> 31)
+}
+
+impl Hash for HashableValue {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        // Use explicit u8 discriminants so that the StrHashableValue wrapper
+        // can hash the same way without constructing a full HashableValue.
+        // Discriminants: Int=0, Bool=1, Str=2, Dict=3, Variant=4
+        match self {
+            HashableValue::Int(n) => {
+                0u8.hash(state);
+                n.hash(state);
+            }
+            HashableValue::Bool(b) => {
+                1u8.hash(state);
+                b.hash(state);
+            }
+            HashableValue::Str(s) => {
+                2u8.hash(state);
+                s.hash(state);
+            }
+            HashableValue::Dict(pairs) => {
+                3u8.hash(state);
+                // Commutative sum of pair hashes so that insertion order does not affect
+                // the hash. Each pair's contribution is non-commutative between key and
+                // value: v_mixed depends on k_mixed, so {a: b} and {b: a} produce
+                // different hashes when a != b.
+                let mut acc: u64 = 0;
+                for (k, v) in pairs {
+                    use std::collections::hash_map::DefaultHasher;
+                    let mut kh = DefaultHasher::new();
+                    k.hash(&mut kh);
+                    let mut vh = DefaultHasher::new();
+                    v.hash(&mut vh);
+                    // Non-linear: key and value have different "roles" in the hash.
+                    // v_mixed feeds k_mixed as addend so that swapping key and value
+                    // changes the result (XOR would make k_mixed ^ v_mixed symmetric).
+                    let k_mixed = splitmix64_mix(kh.finish());
+                    let v_mixed = splitmix64_mix(vh.finish().wrapping_add(k_mixed));
+                    acc = acc.wrapping_add(k_mixed.wrapping_add(v_mixed));
+                }
+                acc.hash(state);
+            }
+            HashableValue::Variant { tag, payload } => {
+                4u8.hash(state);
+                tag.hash(state);
+                payload.hash(state);
+            }
+        }
+    }
+}
+
+impl PartialEq for HashableValue {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (HashableValue::Int(a), HashableValue::Int(b)) => a == b,
+            (HashableValue::Bool(a), HashableValue::Bool(b)) => a == b,
+            (HashableValue::Str(a), HashableValue::Str(b)) => a == b,
+            (HashableValue::Dict(a), HashableValue::Dict(b)) => {
+                // Order-insensitive comparison.
+                // Strategy: for each pair in `a`, find a matching pair in `b`.
+                if a.len() != b.len() {
+                    return false;
+                }
+                // For each (k, v) in `a`, there must be exactly one (k, v) in `b`
+                // where k == k and v == v. We do this via a matching scan.
+                // This is O(n²) but Dict keys are generally small in tinct usage.
+                let mut matched = vec![false; b.len()];
+                'outer: for (ak, av) in a {
+                    for (i, (bk, bv)) in b.iter().enumerate() {
+                        if !matched[i] && ak == bk && av == bv {
+                            matched[i] = true;
+                            continue 'outer;
+                        }
+                    }
+                    return false; // No match found for this pair
+                }
+                true
+            }
+            (
+                HashableValue::Variant {
+                    tag: ta,
+                    payload: pa,
+                },
+                HashableValue::Variant {
+                    tag: tb,
+                    payload: pb,
+                },
+            ) => ta == tb && pa == pb,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for HashableValue {}
+
+impl PartialOrd for HashableValue {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         match (self, other) {
-            (Key::Int(a), Key::Int(b)) => a.partial_cmp(b),
-            (Key::String(a), Key::String(b)) => a.partial_cmp(b),
+            (HashableValue::Int(a), HashableValue::Int(b)) => a.partial_cmp(b),
+            (HashableValue::Str(a), HashableValue::Str(b)) => a.partial_cmp(b),
             _ => None, // mixed types are incomparable
         }
     }
 }
 
-impl Hash for Key {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        // Use explicit u8 discriminants (Int=0u8, String=1u8) instead of
-        // std::mem::discriminant so that StrKey::hash can use the same
-        // literal without allocating a temporary Rc<str>.
-        match self {
-            Key::Int(n) => {
-                0u8.hash(state);
-                n.hash(state);
-            }
-            Key::String(s) => {
-                1u8.hash(state);
-                s.hash(state);
-            }
-        }
-    }
-}
-
-impl fmt::Display for Key {
+impl fmt::Display for HashableValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Key::Int(n) => write!(f, "{n}"),
-            Key::String(s) => write!(f, "{s}"),
+            HashableValue::Int(n) => write!(f, "{n}"),
+            HashableValue::Bool(b) => write!(f, "{b}"),
+            HashableValue::Str(s) => write!(f, "{s}"),
+            HashableValue::Dict(pairs) => {
+                write!(f, "[")?;
+                for (i, (k, v)) in pairs.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, " ")?;
+                    }
+                    write!(f, "{k}: {v}")?;
+                }
+                write!(f, "]")
+            }
+            HashableValue::Variant { tag, payload: None } => write!(f, "{tag}"),
+            HashableValue::Variant {
+                tag,
+                payload: Some(p),
+            } => write!(f, "{tag}({p})"),
         }
     }
 }
 
-/// A wrapper type for `&str` that hashes the same way as `Key::String`.
-/// This enables zero-allocation lookups in `IndexMap<Key, V>`.
+/// A wrapper type for `&str` that hashes the same way as `HashableValue::Str`.
+/// This enables zero-allocation lookups in `IndexMap<HashableValue, V>`.
 #[derive(Debug)]
-pub(crate) struct StrKey<'a>(pub &'a str);
+#[allow(dead_code)] // used in tests; prod code routes through field-get builtin instead
+pub(crate) struct StrHashableValue<'a>(pub &'a str);
 
-impl Hash for StrKey<'_> {
+impl Hash for StrHashableValue<'_> {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        // Key::String is discriminant 1 (Int=0, String=1).
-        // Using 1u8 directly avoids the Rc::from("") allocation that the
-        // std::mem::discriminant approach required on every hash call.
-        1u8.hash(state);
-        // Then hash the string content
+        // HashableValue::Str is discriminant 2. Using 2u8 directly avoids the
+        // Rc::from("") allocation that constructing a full HashableValue would require.
+        2u8.hash(state);
         self.0.hash(state);
     }
 }
 
-// If Key gains new variants, update the StrKey::hash discriminant literal (currently 1u8 for Key::String).
+// If HashableValue gains new variants, update the StrHashableValue::hash discriminant
+// literal (currently 2u8 for HashableValue::Str).
 
-impl Equivalent<Key> for StrKey<'_> {
-    fn equivalent(&self, key: &Key) -> bool {
+impl Equivalent<HashableValue> for StrHashableValue<'_> {
+    fn equivalent(&self, key: &HashableValue) -> bool {
         match key {
-            Key::String(s) => self.0 == s.as_ref(),
-            Key::Int(_) => false,
+            HashableValue::Str(s) => self.0 == s.as_ref(),
+            _ => false,
         }
     }
 }
@@ -368,7 +482,7 @@ impl DirPerms {
 /// are the hot path in builder-heavy prelude code like `collect-kv`).
 pub struct Builder {
     frozen: AtomicBool,
-    inner: Mutex<Option<IndexMap<Key, ThunkId>>>,
+    inner: Mutex<Option<IndexMap<HashableValue, ThunkId>>>,
 }
 
 impl Builder {
@@ -376,7 +490,7 @@ impl Builder {
     pub fn new() -> Self {
         Self {
             frozen: AtomicBool::new(false),
-            inner: Mutex::new(Some(IndexMap::new())),
+            inner: Mutex::new(Some(IndexMap::<HashableValue, ThunkId>::new())),
         }
     }
 
@@ -384,7 +498,9 @@ impl Builder {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             frozen: AtomicBool::new(false),
-            inner: Mutex::new(Some(IndexMap::with_capacity(capacity))),
+            inner: Mutex::new(Some(IndexMap::<HashableValue, ThunkId>::with_capacity(
+                capacity,
+            ))),
         }
     }
 
@@ -394,7 +510,7 @@ impl Builder {
     }
 
     /// Set a key-value pair. Returns error if frozen.
-    pub fn set(&self, key: Key, value: ThunkId) -> Result<(), String> {
+    pub fn set(&self, key: HashableValue, value: ThunkId) -> Result<(), String> {
         // Fast-path: check frozen flag without taking the mutex.
         if self.frozen.load(Ordering::Relaxed) {
             return Err("builder is frozen (already finished)".to_string());
@@ -410,7 +526,7 @@ impl Builder {
     }
 
     /// Delete a key. Returns error if frozen.
-    pub fn delete(&self, key: &Key) -> Result<(), String> {
+    pub fn delete(&self, key: &HashableValue) -> Result<(), String> {
         // Fast-path: check frozen flag without taking the mutex.
         if self.frozen.load(Ordering::Relaxed) {
             return Err("builder is frozen (already finished)".to_string());
@@ -426,7 +542,7 @@ impl Builder {
     }
 
     /// Check if a key exists. Returns false (not error) if frozen.
-    pub fn has(&self, key: &Key) -> bool {
+    pub fn has(&self, key: &HashableValue) -> bool {
         // Fast-path: frozen builder has no entries.
         if self.frozen.load(Ordering::Relaxed) {
             return false;
@@ -436,7 +552,7 @@ impl Builder {
     }
 
     /// Get a value by key. Returns None if key doesn't exist or builder is frozen.
-    pub fn get(&self, key: &Key) -> Option<ThunkId> {
+    pub fn get(&self, key: &HashableValue) -> Option<ThunkId> {
         // Fast-path: frozen builder has no entries.
         if self.frozen.load(Ordering::Relaxed) {
             return None;
@@ -448,11 +564,7 @@ impl Builder {
     /// Atomically get-or-insert: if `key` exists, return its ThunkId; otherwise
     /// insert `default_id` at `key` and return `default_id`.
     /// Returns error if the builder is frozen.
-    ///
-    /// This eliminates the `builder-has?` + `builder-get` + `builder-set` triple
-    /// that `group-by` previously used, reducing locking overhead and avoiding the
-    /// race window between the has? check and the set.
-    pub fn get_or(&self, key: Key, default_id: ThunkId) -> Result<ThunkId, String> {
+    pub fn get_or(&self, key: HashableValue, default_id: ThunkId) -> Result<ThunkId, String> {
         // Fast-path: frozen builder cannot be mutated.
         if self.frozen.load(Ordering::Relaxed) {
             return Err("builder is frozen (already finished)".to_string());
@@ -472,7 +584,7 @@ impl Builder {
     }
 
     /// Take the inner map, freezing the builder. Returns error if already frozen.
-    pub fn finish(&self) -> Result<IndexMap<Key, ThunkId>, String> {
+    pub fn finish(&self) -> Result<IndexMap<HashableValue, ThunkId>, String> {
         // Set the frozen flag BEFORE taking the mutex so that concurrent readers
         // on the fast-path see frozen=true as soon as possible.
         if self.frozen.swap(true, Ordering::Relaxed) {
@@ -486,7 +598,7 @@ impl Builder {
     }
 
     /// Clone the inner map without freezing. Returns error if frozen.
-    pub fn snapshot(&self) -> Result<IndexMap<Key, ThunkId>, String> {
+    pub fn snapshot(&self) -> Result<IndexMap<HashableValue, ThunkId>, String> {
         // Fast-path: no need to take the lock to know it's empty.
         if self.frozen.load(Ordering::Relaxed) {
             return Err("builder is frozen".to_string());
@@ -526,10 +638,8 @@ pub enum Value {
         start: usize,
         end: usize,
     },
-    /// Boolean (`true` or `false`)
-    Bool(bool),
     /// Ordered key-value map with lazy (thunked) values
-    Dict(IndexMap<Key, ThunkId>),
+    Dict(IndexMap<HashableValue, ThunkId>),
     /// Transient builder for efficient mutable dict construction.
     /// One-shot invariant: once frozen (via builder-finish), all mutations error.
     /// Sequential-use: not safe for concurrent modification (Mutex protects state, not semantics).
@@ -556,30 +666,12 @@ pub enum Value {
     },
     /// Network capability — authority to connect to specified hosts/subnets
     NetCap(Rc<Vec<NetCapEntry>>),
-    /// Open file/stream handle with capability metadata.
-    /// `caps`: capability names → associated data (Null for boolean caps, Dict for protocol caps).
-    /// `inner`: the underlying I/O reader (BufRead trait object).
-    /// `write_inner`: optional write half for bidirectional connections (e.g. TCP sockets).
-    /// `seek_inner`: optional seek interface for files (None for streams).
-    /// `raw_tcp`: shared slot for extracting raw TcpStream (populated by `connect cap Tcp`, consumed by `tls-layer`).
-    ///            `Rc<RefCell<Option<...>>>` preserves `Value: Clone` — all clones share the slot.
-    ///            `take()` in `tls-layer` invalidates all aliases.
-    /// `creation_span`: span where this Handle was created (for dual-span error messages).
-    Handle {
-        caps: HashMap<String, Value>,
-        inner: Rc<std::cell::RefCell<Box<dyn std::io::BufRead>>>,
-        write_inner: Option<Rc<std::cell::RefCell<Box<dyn std::io::Write>>>>,
-        seek_inner: Option<Rc<std::cell::RefCell<Box<dyn std::io::Seek>>>>,
-        raw_tcp: Option<Rc<RefCell<Option<std::net::TcpStream>>>>,
-        creation_span: Span,
-    },
-    /// Write-only file/stream handle with capability metadata.
-    /// `caps`: capability names → associated data (Null for boolean caps, Dict for protocol caps).
-    /// `inner`: the underlying I/O writer (Write trait object).
-    WriteHandle {
-        caps: HashMap<String, Value>,
-        inner: Rc<std::cell::RefCell<Box<dyn std::io::Write>>>,
-    },
+    /// Raw file handle — the OS primitive, nothing more.
+    /// Created by `builtin-file-open`. Read, write, seek via `builtin-file-read`,
+    /// `builtin-file-write`, `builtin-file-seek`. All protocol (open/read/write/close)
+    /// is built in tinct (prelude.llt `open` wraps this in a protocol dict).
+    /// cap_std::fs::File implements Read + Write + Seek — no buffering added here.
+    File(Rc<RefCell<cap_std::fs::File>>),
     /// Revocable directory capability
     RevocableDirCap {
         inner: Rc<cap_std::fs::Dir>,
@@ -666,39 +758,35 @@ pub enum Value {
         annotation: Box<Value>,
     },
 
-    // DELETED: Value::RustRegistry (include-decomp-redelete sprint)
-    // The %rust virtual module is now a plain Value::Dict injected into bootstrap_env.
-    // See doc/whatif/include-decomposition.md.
-
     // =========================================================================
     // runtime-v2 native AST value types (Sprint 1, Part F)
     // =========================================================================
     //
     // These variants replace the old Dict-schema representation of AST nodes.
     // `load` returns Value::Program; `expand` takes and returns Value::Program;
-    // `eval` takes [Seq Expression]; `ast-of` returns Value::Expression.
+    // `eval` takes [Seq Expr.*]; `ast-of` returns `Value::Variant { tag: "Expr.*", .. }`.
     //
-    // `dict?` returns false for all three — they are nominal types, not plain Dicts.
-    // Match dispatch works via `surface_expr_tag()` / `surface_doc_tag()` /
-    // `surface_program_tag()` from `src/surface_fields.rs`.
+    // `dict?` returns false for Program and Document — they are nominal types, not plain Dicts.
+    // AST expression nodes are represented as `Expr.*` Variants (e.g. Expr.VarRef, Expr.Call).
+    // Match dispatch on AST nodes uses the standard Variant tag mechanism.
     /// A complete tinct program — the type returned by `load` and `expand`.
     /// Wraps an Arc<SurfaceProgram> for Send+Sync compatibility (future async runtime).
-    /// Also carries resolution and type annotation tables computed during load/expand,
-    /// plus the expects_resolved map from the typecheck pass (keyed by expects annotation span).
+    /// All type annotations are stored inline on AST nodes (TypeAnnotation OnceLock fields).
+    /// expects_resolved carries the pipeline expects contract types from the typecheck pass.
     Program {
         program: Arc<SurfaceProgram>,
-        resolutions: Arc<crate::ast::ResolutionTable>,
-        types: Arc<crate::ast::TypeAnnotationTable>,
         expects_resolved: Arc<HashMap<crate::ast::Span, crate::types::Type>>,
+        /// Type warnings/errors produced by `builtin-typecheck`. Empty for pre-typecheck programs.
+        /// Stored as raw TypeErrors; materialized as structured dicts by eval_materialize.rs
+        /// so tinct code can format them (file, line, col, message) — not Rust.
+        warnings: Arc<Vec<crate::types::TypeError>>,
     },
 
     /// A single document within a program — accessible via `program.documents`.
     /// Contains expressions and declarations.
+    /// Resolution is done separately via `builtin-resolve doc env: E` which returns a
+    /// Resolution is inline on AST nodes (via Resolution::OnceLock fields).
     Document(Arc<SurfaceDocument>),
-
-    /// A single AST expression node — the type returned by `ast-of` and `[quote ...]`.
-    /// Tinct code pattern-matches on this via the `Expression` type variants.
-    Expression(Arc<SurfaceNode>),
 
     // =========================================================================
     // runtime-v2 async primitives (Sprint 2, Part B — real implementations)
@@ -736,10 +824,18 @@ pub enum Value {
     /// so that `cell-get` can borrow the latest value without requiring exclusive access.
     ReactiveCell(Arc<ReactiveCellInner>),
 
-    /// Multi-method dispatcher sentinel. Returned from FreeVar lookup when no regular binding
-    /// exists but method arms are registered in env.methods for the given name.
-    /// The PendingCallDispatch continuation recognizes this and performs type-based dispatch.
-    MethodDispatcher(String),
+    /// Opaque type-checker context handle — returned by `builtin-make-type-ctx` and
+    /// `builtin-get-type-context`, consumed by `builtin-typecheck` and `builtin-fork-type-ctx`.
+    /// Not serializable. Interior state is mutated in place by `builtin-typecheck` calls
+    /// (type declarations accumulate monotonically).
+    TypeContext(Arc<Mutex<crate::eval::TypeContextData>>),
+
+    /// A live evaluation environment — returned by `builtin-eval` when evaluating a full
+    /// document, and by `builtin-extend-env` when constructing layered environments.
+    /// Passed as `env:` to `builtin-eval` to set the starting environment for evaluation,
+    /// enabling method arms and bindings to flow through the env chain rather than being
+    /// flattened into a dict.
+    Environment(Arc<RwLock<Environment>>),
 }
 
 /// State of an async task spawned via `task` builtin.
@@ -855,67 +951,30 @@ pub fn bytes_val(data: &[u8]) -> Value {
     }
 }
 
-/// Helper: Construct a Seq.Cons variant from head and tail ThunkIds.
-///
-/// Creates `Variant { tag: "Seq.Cons", payload: Some(dict_thunk) }` where
-/// the payload is a Dict with `"head"` and `"tail"` keys pointing to the
-/// provided thunks. This is the Seq→Variant migration representation.
-///
-/// **Laziness preserved**: head and tail ThunkIds are embedded directly in
-/// the payload dict without materialization. Only when the payload dict is
-/// accessed will those thunks be forced.
-///
-/// **Usage**: Replaces `Value::Seq { head, tail }` construction sites.
-pub fn make_seq_cons(head: ThunkId, tail: ThunkId, ctx: &crate::eval::EvalContext) -> Value {
-    use indexmap::IndexMap;
-    let mut dict = IndexMap::new();
-    dict.insert(Key::String("head".into()), head);
-    dict.insert(Key::String("tail".into()), tail);
-    let payload_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-        Value::Dict(dict),
-        Span::origin(),
-    )));
-    Value::Variant {
-        tag: "Seq.Cons".to_string(),
-        payload: Some(payload_id),
-    }
-}
-
-/// Helper: Construct a Seq.Nil variant (empty sequence).
-///
-/// Creates `Variant { tag: "Seq.Nil", payload: None }`.
-/// This is the unit variant representation of an empty sequence.
-///
-/// **Usage**: Replaces empty dict pattern used for Seq termination.
-pub fn make_seq_nil() -> Value {
-    Value::Variant {
-        tag: "Seq.Nil".to_string(),
-        payload: None,
-    }
-}
-
-/// Helper: Check if a value is a Seq (either Seq.Cons or Seq.Nil).
-///
-/// Returns `true` for both `Seq.Cons` (payload variant) and `Seq.Nil` (unit variant).
-/// This replaces the old `matches!(val, Value::Seq { .. })` pattern.
-pub fn is_seq(val: &Value) -> bool {
-    matches!(
-        val,
-        Value::Variant {
-            tag,
-            payload: Some(_)
-        } if tag == "Seq.Cons"
-    ) || matches!(
-        val,
-        Value::Variant { tag, payload: None } if tag == "Seq.Nil"
-    )
-}
-
 impl Value {
+    pub fn boolean(b: bool) -> Value {
+        Value::Variant {
+            tag: if b {
+                "Boolean.True".to_string()
+            } else {
+                "Boolean.False".to_string()
+            },
+            payload: None,
+        }
+    }
+
+    pub fn as_bool(&self) -> Option<bool> {
+        match self {
+            Value::Variant { tag, payload: None } if tag == "Boolean.True" => Some(true),
+            Value::Variant { tag, payload: None } if tag == "Boolean.False" => Some(false),
+            _ => None,
+        }
+    }
+
     /// Returns a human-readable type name for error messages, diagnostics, and dispatch.
     ///
     /// For user-defined nominal types (variants), returns the full qualified tag
-    /// e.g. "Vec2.Vec2", "Color.Red", "Seq.Cons" — preserving the actual type identity.
+    /// e.g. "Vec2.Vec2", "Color.Red", "Option.Some" — preserving the actual type identity.
     /// Previously returned the useless string "Variant" for all variant values.
     pub fn type_name(&self) -> &str {
         match self {
@@ -923,7 +982,6 @@ impl Value {
             Value::U64(_) => "U64",
             Value::Float(_) => "Float",
             Value::String { .. } => "String",
-            Value::Bool(_) => "Bool",
             Value::Dict(_) => "Dict",
             Value::Builder(_) => "Builder",
             Value::Function { .. } => "Function",
@@ -932,12 +990,11 @@ impl Value {
             Value::Overlay(..) => "Dict",
             Value::DirCap { .. } => "DirCap",
             Value::NetCap(_) => "NetCap",
-            Value::Handle { .. } => "Handle",
-            Value::WriteHandle { .. } => "WriteHandle",
+            Value::File(_) => "File",
             Value::RevocableDirCap { .. } => "DirCap",
-            // Return the full qualified tag — "Seq.Cons", "Vec2.Vec2", "Color.Red", etc.
-            // Preserves the actual type identity. Dispatch (S-884) strips the constructor
-            // suffix at match time, so @Seq matches Seq.Cons and @Vec2 matches Vec2.Vec2.
+            // Return the full qualified tag — "Color.Red", "Option.Some", etc.
+            // Preserves the actual type identity. Dispatch strips the constructor
+            // suffix at match time, so @Color matches Color.Red and @Option matches Option.Some.
             Value::Variant { tag, .. } => tag.as_str(),
             Value::Decimal(_) => "Decimal",
             Value::BigInt(_) => "BigInt",
@@ -954,7 +1011,6 @@ impl Value {
             Value::DatagramHandle { .. } => "DatagramHandle",
             Value::Program { .. } => "Program",
             Value::Document(_) => "Document",
-            Value::Expression(_) => "Expression",
             Value::Task(_) => "Task",
             Value::Channel(_) => "Channel",
             Value::BroadcastChannel(_) => "BroadcastChannel",
@@ -964,7 +1020,8 @@ impl Value {
             Value::ReactiveCell(_) => "ReactiveCell",
             // Annotated is transparent — delegate to the inner value's type.
             Value::Annotated { inner, .. } => inner.type_name(),
-            Value::MethodDispatcher(_) => "MethodDispatcher",
+            Value::TypeContext(_) => "TypeContext",
+            Value::Environment(_) => "Environment",
         }
     }
 
@@ -995,9 +1052,8 @@ impl fmt::Debug for Value {
                 let s = &source[*start..*end];
                 f.debug_tuple("String").field(&s).finish()
             }
-            Value::Bool(b) => f.debug_tuple("Bool").field(b).finish(),
             Value::Dict(map) => {
-                let keys: Vec<&Key> = map.keys().collect();
+                let keys: Vec<&HashableValue> = map.keys().collect();
                 f.debug_tuple("Dict").field(&keys).finish()
             }
             Value::Builder(builder) => {
@@ -1016,8 +1072,7 @@ impl fmt::Debug for Value {
             Value::Overlay(..) => write!(f, "Overlay(...)"),
             Value::DirCap { .. } => write!(f, "DirCap"),
             Value::NetCap(entries) => write!(f, "NetCap({} entries)", entries.len()),
-            Value::Handle { caps, .. } => write!(f, "Handle({} caps)", caps.len()),
-            Value::WriteHandle { caps, .. } => write!(f, "WriteHandle({} caps)", caps.len()),
+            Value::File(_) => write!(f, "File(...)"),
             Value::RevocableDirCap { revoked, .. } => {
                 if revoked.get() {
                     write!(f, "DirCap(revoked)")
@@ -1053,11 +1108,6 @@ impl fmt::Debug for Value {
             Value::DatagramHandle { .. } => write!(f, "DatagramHandle"),
             Value::Program { .. } => write!(f, "Program(...)"),
             Value::Document(_) => write!(f, "Document(...)"),
-            Value::Expression(node) => write!(
-                f,
-                "Expression({})",
-                crate::surface_fields::surface_expr_tag(&node.expr)
-            ),
             Value::Task(_) => write!(f, "Task"),
             Value::Channel(_) => write!(f, "Channel"),
             Value::Context(_) => write!(f, "Context"),
@@ -1067,7 +1117,8 @@ impl fmt::Debug for Value {
             Value::OneshotReceiver(_) => write!(f, "OneshotReceiver"),
             // Annotated is transparent — delegate to inner value's Debug.
             Value::Annotated { inner, .. } => write!(f, "{inner:?}"),
-            Value::MethodDispatcher(name) => write!(f, "MethodDispatcher({name})"),
+            Value::TypeContext(_) => write!(f, "TypeContext"),
+            Value::Environment(_) => write!(f, "Environment"),
         }
     }
 }
@@ -1082,7 +1133,6 @@ impl fmt::Display for Value {
                 let s = &source[*start..*end];
                 write!(f, "{s:?}")
             }
-            Value::Bool(b) => write!(f, "{b}"),
             Value::Dict(map) => {
                 write!(f, "[")?;
                 for (i, (key, _)) in map.iter().enumerate() {
@@ -1112,8 +1162,7 @@ impl fmt::Display for Value {
             Value::Overlay(..) => write!(f, "[<overlay>]"),
             Value::DirCap { .. } => write!(f, "<DirCap>"),
             Value::NetCap(_) => write!(f, "<NetCap>"),
-            Value::Handle { .. } => write!(f, "<Handle>"),
-            Value::WriteHandle { .. } => write!(f, "<WriteHandle>"),
+            Value::File(_) => write!(f, "<File>"),
             Value::RevocableDirCap { revoked, .. } => {
                 if revoked.get() {
                     write!(f, "<DirCap (revoked)>")
@@ -1122,14 +1171,7 @@ impl fmt::Display for Value {
                 }
             }
             Value::Variant { tag, payload } => {
-                // Special display for Seq variants to maintain backward compatibility
-                if tag == "Seq.Cons" {
-                    write!(f, "Seq(...)")
-                } else if tag == "Seq.Nil" {
-                    write!(f, "Seq()")
-                } else if tag == "Absent.Absent" {
-                    write!(f, "Absent()")
-                } else if payload.is_some() {
+                if payload.is_some() {
                     write!(f, "{tag}(<payload>)")
                 } else {
                     write!(f, "{tag}")
@@ -1162,11 +1204,6 @@ impl fmt::Display for Value {
             Value::DatagramHandle { .. } => write!(f, "<DatagramHandle>"),
             Value::Program { .. } => write!(f, "<program>"),
             Value::Document(_) => write!(f, "<document>"),
-            Value::Expression(node) => write!(
-                f,
-                "<expression:{}>",
-                crate::surface_fields::surface_expr_tag(&node.expr)
-            ),
             Value::Task(_) => write!(f, "<task>"),
             Value::Channel(_) => write!(f, "<channel>"),
             Value::Context(_) => write!(f, "<context>"),
@@ -1176,7 +1213,8 @@ impl fmt::Display for Value {
             Value::OneshotReceiver(_) => write!(f, "<oneshot-receiver>"),
             // Annotated is transparent — delegate to inner value's Display.
             Value::Annotated { inner, .. } => write!(f, "{inner}"),
-            Value::MethodDispatcher(name) => write!(f, "<method-dispatcher:{name}>"),
+            Value::TypeContext(_) => write!(f, "<TypeContext>"),
+            Value::Environment(_) => write!(f, "<Environment>"),
         }
     }
 }
@@ -1192,22 +1230,19 @@ impl fmt::Display for Value {
 /// `Value::PartialEq` returns `a == b`.
 ///
 /// **CURRENT STATUS:** This invariant is SATISFIED. Int and Float use separate
-/// hash paths in `Key::hash()` (via discriminant-based hashing), so `Int(1)` and
-/// `Float(1.0)` produce different hashes even though they are numerically equal.
-/// Cross-variant comparisons return `false` in `Value::PartialEq`, so distinct
-/// hash values are required.
+/// hash paths in `HashableValue::hash()` (via discriminant-based hashing), so
+/// `HashableValue::Int(1)` and a hypothetical float key produce different hashes.
+/// Cross-variant comparisons return `false` in `HashableValue::PartialEq`, so
+/// distinct hash values are required.
 ///
-/// **CONSEQUENCE:** Dict keys `[1: x]` (Int key) and `[1.0: y]` (Float key) are
-/// treated as DISTINCT keys, not merged. This is intentional: the type system
-/// treats `Int` and `Float` as separate types (subsumed by `Number` via subtyping,
-/// but not equal). Future Dict key deduplication or Set types must preserve this
-/// separation.
+/// **CONSEQUENCE:** Dict keys `[1: x]` (Int key) are distinct from string keys.
+/// This is intentional: the type system treats `Int` and `String` as separate types.
+/// Future Dict key deduplication or Set types must preserve this separation.
 ///
-/// **CROSS-REFERENCE:** `Key::hash()` implementation (lines 47-54) enforces
-/// discriminant-based hashing to maintain this invariant. See also: `Key::PartialEq`
-/// (derived via `#[derive(PartialEq)]` on line 31) and `$=` builtin semantics
-/// (src/builtins_math.rs) which allow cross-type Int/Float comparison (separate
-/// from Value equality used for Dict keys).
+/// **CROSS-REFERENCE:** `HashableValue::hash()` enforces discriminant-based hashing
+/// to maintain this invariant. See also: `HashableValue::PartialEq` and `$=` builtin
+/// semantics (src/builtins_math.rs) which allow cross-type Int/Float comparison
+/// (separate from HashableValue equality used for Dict keys).
 ///
 /// Structural equality for thunk memoization. Note: differs from `$=` (which promotes
 /// Int→Float for cross-type comparison). `Value::PartialEq` uses structural equality;
@@ -1230,7 +1265,6 @@ impl PartialEq for Value {
                     end: end_b,
                 },
             ) => src_a[*start_a..*end_a] == src_b[*start_b..*end_b],
-            (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::Decimal(a), Value::Decimal(b)) => a == b,
             (Value::BigInt(a), Value::BigInt(b)) => a == b,
             (
@@ -1269,22 +1303,39 @@ impl PartialEq for Value {
             (Value::Annotated { inner, .. }, other) | (other, Value::Annotated { inner, .. }) => {
                 inner.as_ref() == other
             }
+            // TypeContext is identity-comparable (pointer equality).
+            (Value::TypeContext(a), Value::TypeContext(b)) => Arc::ptr_eq(a, b),
+            // Unit Variant (payload: None) — compare by tag string.
+            // Payload variants fall through to false: comparing dicts inside payloads
+            // would require materializing thunks, breaking laziness.
+            (
+                Value::Variant {
+                    tag: ta,
+                    payload: None,
+                },
+                Value::Variant {
+                    tag: tb,
+                    payload: None,
+                },
+            ) => ta == tb,
             // Timezone is not comparable — opaque data
-            // Dict, Function, Builtin, Seq, Proxy, Overlay, Handle, and WriteHandle are not structurally compared.
+            // Dict, Function, Builtin, Seq, Proxy, Overlay, File, payload Variant are not structurally compared.
             // Overlay would require materializing both sides, breaking laziness.
-            // Handle and WriteHandle cannot be meaningfully compared (contain RefCell and trait objects).
+            // File: pointer equality — same RefCell means same open file descriptor.
+            (Value::File(a), Value::File(b)) => Rc::ptr_eq(a, b),
             _ => false,
         }
     }
 }
 
 // Size assertion: ensure Value::Dict (IndexMap) remains the dominant variant.
-// Value enum size is dominated by Dict(IndexMap) + Handle. BuiltinDef is Copy (40 bytes:
+// Value enum size is dominated by Dict(IndexMap). BuiltinDef is Copy (40 bytes:
 // 8-byte fn ptr + 2 fat ptrs for &str and &[Strictness]). IndexMap size varies
 // by version; indexmap 2.x uses ~72 bytes on 64-bit platforms.
-// Handle added raw_tcp (16 bytes) + creation_span (48 bytes) in connect-v2 refactor.
+// Value::File adds one Rc<RefCell<cap_std::fs::File>> (16 bytes on 64-bit).
+// Handle/WriteHandle were removed in the File redesign — size reduced.
 const _: () = {
-    const EXPECTED_MAX: usize = 144; // Increased from 80 for Handle refactor
+    const EXPECTED_MAX: usize = 144; // Retained from before Handle removal; actual size may be smaller
     const ACTUAL: usize = std::mem::size_of::<Value>();
     assert!(
         ACTUAL <= EXPECTED_MAX,
@@ -1301,10 +1352,10 @@ const _: () = {
 #[derive(Debug, Clone)]
 pub enum UnevaluatedState {
     /// Pre-lowering Surface thunk — created by the `eval` builtin.
+    /// All cross-phase data (resolution, type annotations, field slots) is stored
+    /// inline on the AST nodes — no external tables needed.
     Surface {
         node: Arc<SurfaceNode>,
-        res: Arc<crate::ast::ResolutionTable>,
-        types: Arc<crate::ast::TypeAnnotationTable>,
         env: Arc<RwLock<Environment>>,
         ctx: Arc<crate::eval::EvalContext>,
     },
@@ -1450,8 +1501,6 @@ pub type GuardedParts = (
 /// Return type of `Thunk::take_surface`.
 pub type SurfaceParts = (
     Arc<SurfaceNode>,
-    Arc<crate::ast::ResolutionTable>,
-    Arc<crate::ast::TypeAnnotationTable>,
     Arc<RwLock<Environment>>,
     Arc<crate::eval::EvalContext>,
 );
@@ -1527,13 +1576,11 @@ impl Thunk {
 
     /// Create a Surface thunk — wraps a SurfaceNode for lazy evaluation.
     ///
-    /// On first force, the Surface thunk is evaluated via the evaluator which converts
-    /// it through the bridge to the old Expr format and evaluates it.
-    /// (Full CoreExpr lowering path is Sprint 2.)
+    /// All cross-phase data (type annotations, field slots) is stored inline on AST nodes.
+    /// On first force, the Surface thunk is lowered (reading inline fields from nodes)
+    /// and evaluated.
     pub fn new_surface(
         node: std::sync::Arc<crate::ast::SurfaceNode>,
-        res: std::sync::Arc<crate::ast::ResolutionTable>,
-        types: std::sync::Arc<crate::ast::TypeAnnotationTable>,
         env: Arc<RwLock<Environment>>,
         ctx: Arc<crate::eval::EvalContext>,
         span: Span,
@@ -1543,8 +1590,6 @@ impl Thunk {
             inner: ThunkInner {
                 unevaluated: Mutex::new(Some(UnevaluatedState::Surface {
                     node,
-                    res,
-                    types,
                     env,
                     ctx,
                 })),
@@ -1747,14 +1792,10 @@ impl Thunk {
             },
             UnevaluatedState::Surface {
                 node,
-                res,
-                types,
                 env,
                 ctx: _,
             } => UnevaluatedState::Surface {
                 node,
-                res,
-                types,
                 env,
                 ctx: new_ctx,
             },
@@ -1954,20 +1995,18 @@ impl Thunk {
 
     /// Atomically take the Surface state (if present), transitioning to InProgress.
     ///
-    /// Returns `Some((node, res, types, env, ctx))` if the thunk was in Surface state.
+    /// Returns `Some((node, env, ctx))` if the thunk was in Surface state.
     /// Returns `None` if the thunk was in any other state (state is restored).
     pub fn take_surface(&self) -> Option<SurfaceParts> {
         let mut guard = self.inner.unevaluated.lock().unwrap();
         match guard.take() {
             Some(UnevaluatedState::Surface {
                 node,
-                res,
-                types,
                 env,
                 ctx,
             }) => {
                 // State is now InProgress
-                Some((node, res, types, env, ctx))
+                Some((node, env, ctx))
             }
             other => {
                 // Restore the state
@@ -2147,9 +2186,9 @@ impl fmt::Debug for Thunk {
 }
 
 /// Lexical scope chain: bindings in the current scope plus an optional parent link.
-/// Uses `IndexMap` to preserve insertion order — a prerequisite for Phase 2's slot-based
-/// lookup where `(level, slot)` indices reference entries by position. Phase 1 (resolver)
-/// populates the caches; the evaluator still uses name-based lookup until FlatEnv exists.
+/// Slots are stored in a `Vec<Arc<Thunk>>` indexed by position; parallel `Vec<String>`
+/// holds the names for resolver seeding and non-eval name-based lookup only.
+/// The evaluator accesses bindings exclusively via `get_slot(level, slot)` — no hash lookup.
 ///
 /// # DAG invariant
 ///
@@ -2166,32 +2205,22 @@ impl fmt::Debug for Thunk {
 ///   in the parent chain (no environment has itself as an ancestor).
 /// - `$include` creates a fresh child env from the stdlib root; it cannot create cycles.
 ///
-/// The absence of cycles means `Environment::get()` always terminates. It also means
+/// The absence of cycles means `Environment::get_by_name()` always terminates. It also means
 /// environments form a tree rooted at the stdlib environment, enabling safe stack-free
 /// traversal via iterative parent-pointer walking.
-/// A single dispatch arm registered by `[instance ClassName [let a@T ...]: [method: body]]`.
-/// Arms are stored in env.methods and selected at call time by matching runtime argument types.
-#[derive(Debug, Clone)]
-pub struct MethodArm {
-    /// One tag per binding in the arm pattern. None = unconstrained, Some("Int") = concrete type.
-    /// Length may be less than the method's arg count — dispatch uses min(tags.len(), args.len()).
-    pub type_tags: Vec<Option<String>>,
-    /// Lazy body thunk — created at registration time, forced only when dispatched.
-    pub body: Arc<Thunk>,
-    pub span: Span,
-}
 
 #[derive(Debug, Clone)]
 pub struct Environment {
-    /// Bindings map from name to thunk. Uses IndexMap to preserve insertion order for
-    /// slot-based O(1) lookup. `get_by_slot` (below) uses IndexMap's `get_index` for
-    /// O(1) positional access. Slot indices are assigned by the resolver in resolve.rs
-    /// and used at the `CoreExpr::Var` call site in eval.rs.
-    pub(crate) bindings: IndexMap<String, Arc<Thunk>>,
-    /// Multi-method dispatch arms registered by instance declarations.
-    /// Keyed by method name (e.g., "+", "="). NOT inherited from parent frames —
-    /// parent frames are walked by collect_method_arms at lookup time.
-    pub(crate) methods: HashMap<String, Vec<MethodArm>>,
+    /// Slot-indexed thunk storage — the evaluator's ONLY access path at runtime.
+    /// Slot indices are assigned by the resolver in resolve.rs and used at the
+    /// `CoreExpr::Var` call site in eval_core.rs / eval.rs via `get_slot`.
+    /// No name-based hash lookup occurs during evaluation.
+    pub(crate) slots: Vec<Arc<Thunk>>,
+    /// Names parallel to `slots` — used ONLY by the resolver's `from_env()` for
+    /// scope seeding, and by non-eval paths (typecheck, LSP, pattern matching) that
+    /// need name-based lookup via `get_by_name()`.
+    /// Never used for runtime variable lookup.
+    pub(crate) slot_names: Vec<String>,
     pub(crate) parent: Option<Arc<RwLock<Environment>>>,
 }
 
@@ -2217,42 +2246,45 @@ pub(crate) fn reset_slot_counters() {
 impl Environment {
     pub fn new() -> Self {
         Self {
-            bindings: IndexMap::new(),
-            methods: HashMap::new(),
+            slots: Vec::new(),
+            slot_names: Vec::new(),
             parent: None,
         }
     }
 
     pub fn with_parent(parent: Arc<RwLock<Environment>>) -> Self {
         Self {
-            bindings: IndexMap::new(),
-            methods: HashMap::new(),
+            slots: Vec::new(),
+            slot_names: Vec::new(),
             parent: Some(parent),
         }
     }
 
     /// Look up a binding by name, searching this environment then ancestors.
     ///
+    /// This is used by non-eval paths: typecheck, LSP, pattern pin matching, and the
+    /// `Value::Environment` dot-access path. The evaluator uses `get_slot` exclusively.
+    ///
     /// # Lock safety
     ///
     /// This method acquires a read lock on each ancestor `RwLock<Environment>` as
     /// it walks up the scope chain.  Callers **must not** hold a write lock
-    /// on any ancestor environment while calling `get()`, or
+    /// on any ancestor environment while calling `get_by_name()`, or
     /// the program will deadlock.
     ///
     /// The scope chain must form a DAG -- circular parent links will cause an
     /// infinite loop.
-    pub fn get(&self, name: &str) -> Option<Arc<Thunk>> {
-        // Check current scope first
-        if let Some(thunk) = self.bindings.get(name) {
-            return Some(Arc::clone(thunk));
+    pub fn get_by_name(&self, name: &str) -> Option<Arc<Thunk>> {
+        // Check current scope first — linear scan of slot_names
+        if let Some(idx) = self.slot_names.iter().rposition(|n| n == name) {
+            return Some(Arc::clone(&self.slots[idx]));
         }
         // Walk parent chain iteratively
         let mut current = self.parent.as_ref().map(Arc::clone);
         while let Some(env_rc) = current {
             let env = env_rc.read().unwrap();
-            if let Some(thunk) = env.bindings.get(name) {
-                return Some(Arc::clone(thunk));
+            if let Some(idx) = env.slot_names.iter().rposition(|n| n == name) {
+                return Some(Arc::clone(&env.slots[idx]));
             }
             current = env.parent.as_ref().map(Arc::clone);
         }
@@ -2260,70 +2292,37 @@ impl Environment {
     }
 
     pub fn insert(&mut self, name: String, thunk: Arc<Thunk>) {
-        self.bindings.insert(name, thunk);
+        self.slot_names.push(name);
+        self.slots.push(thunk);
     }
 
-    /// Register a method dispatch arm for the given method name.
-    pub fn insert_method_arm(&mut self, name: String, arm: MethodArm) {
-        self.methods.entry(name).or_default().push(arm);
-    }
-
-    /// Collect all method arms for `name` visible from this env frame, innermost-first.
-    /// Walks the full parent chain, accumulating arms from every frame.
-    pub fn collect_method_arms(env: &Arc<RwLock<Environment>>, name: &str) -> Vec<MethodArm> {
-        let mut result = Vec::new();
-        let mut current = Some(Arc::clone(env));
-        while let Some(frame) = current {
-            let guard = frame.read().unwrap();
-            if let Some(arms) = guard.methods.get(name) {
-                result.extend(arms.iter().cloned());
-            }
-            current = guard.parent.as_ref().map(Arc::clone);
-        }
-        result
-    }
 
     /// O(1) slot-based lookup with De Bruijn level-based parent chain walking.
     ///
     /// `level` is a De Bruijn index: 0 = current environment, 1 = parent, N = Nth ancestor.
     /// This matches the resolver's level assignment in `resolve.rs::Resolver::resolve`.
     ///
-    /// For `level = 0`: looks up `slot` directly in the current environment's
-    /// `bindings` IndexMap using `get_index` — no name hash, no string comparison.
+    /// For `level = 0`: looks up `slot` directly in the current environment's `slots` Vec —
+    /// no name hash, no string comparison, pure positional indexing.
     ///
     /// For `level > 0`: walks `level` steps up the parent chain, then does the
     /// slot lookup. Each step costs one `Arc::clone` + `RwLock::read`, so the
-    /// total cost is O(level). This is still faster than name-based lookup for
-    /// deep environments because we skip the string hash at each level.
+    /// total cost is O(level).
     ///
-    /// Returns `None` if the level or slot is out of bounds (indicates a resolver
-    /// bug; `eval.rs` falls back to name-based lookup when this returns `None`).
-    ///
-    /// # Safety Net: Name Verification
-    ///
-    /// If the entry at `slot` exists but the key doesn't match `expected_name`,
-    /// this indicates a slot-shift bug (e.g., computed-string keys inserting entries
-    /// out of order). The method falls back to name-based lookup instead of returning
-    /// the wrong thunk.
-    pub fn get_by_slot(&self, level: u32, slot: u32, expected_name: &str) -> Option<Arc<Thunk>> {
+    /// Returns `None` if the level or slot is out of bounds.
+    /// The caller is responsible for turning `None` into an error; there is no
+    /// name-based fallback.
+    pub fn get_slot(&self, level: u32, slot: u32) -> Option<Arc<Thunk>> {
         if level == 0 {
-            // Fast path: O(1) index into the current scope's bindings
-            if let Some((key, thunk)) = self.bindings.get_index(slot as usize) {
-                if key == expected_name {
-                    #[cfg(test)]
-                    SLOT_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
-                    return Some(Arc::clone(thunk));
-                } else {
-                    // Slot-shift detected: key at slot doesn't match expected name.
-                    // Fall back to name-based lookup (correct but slower).
-                    #[cfg(test)]
-                    SLOT_MISS_COUNT.fetch_add(1, Ordering::Relaxed);
-                    return self.bindings.get(expected_name).map(Arc::clone);
-                }
-            }
+            // Fast path: O(1) index into the current scope's slots Vec
+            let result = self.slots.get(slot as usize).map(Arc::clone);
             #[cfg(test)]
-            SLOT_MISS_COUNT.fetch_add(1, Ordering::Relaxed);
-            return None;
+            if result.is_some() {
+                SLOT_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
+            } else {
+                SLOT_MISS_COUNT.fetch_add(1, Ordering::Relaxed);
+            }
+            return result;
         }
         // Walk `level` steps up the parent chain, then do slot lookup
         let mut steps_remaining = level;
@@ -2332,24 +2331,14 @@ impl Environment {
             steps_remaining -= 1;
             if steps_remaining == 0 {
                 let env = env_rc.read().unwrap();
-                if let Some((key, thunk)) = env.bindings.get_index(slot as usize) {
-                    if key == expected_name {
-                        #[cfg(test)]
-                        SLOT_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
-                        return Some(Arc::clone(thunk));
-                    } else {
-                        // Slot-shift detected: single-env name lookup in this ancestor's own
-                        // bindings only (not a chain walk). If the name is not in this ancestor,
-                        // returns None, and the caller's env_lock.get(name) at eval.rs performs
-                        // the full chain walk from the current scope as the outer fallback.
-                        #[cfg(test)]
-                        SLOT_MISS_COUNT.fetch_add(1, Ordering::Relaxed);
-                        return env.bindings.get(expected_name).map(Arc::clone);
-                    }
-                }
+                let result = env.slots.get(slot as usize).map(Arc::clone);
                 #[cfg(test)]
-                SLOT_MISS_COUNT.fetch_add(1, Ordering::Relaxed);
-                return None;
+                if result.is_some() {
+                    SLOT_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    SLOT_MISS_COUNT.fetch_add(1, Ordering::Relaxed);
+                }
+                return result;
             }
             let next = env_rc.read().unwrap().parent.as_ref().map(Arc::clone);
             current = next;
@@ -2378,14 +2367,130 @@ mod tests {
         crate::eval::EvalContext::new(base_dir, Arc::clone(&env), Arc::clone(&env), false)
     }
 
+    // -----------------------------------------------------------------------
+    // HashableValue property tests (T-1303 / T-1304)
+    // -----------------------------------------------------------------------
+
+    /// eq_implies_hash_eq: two equal HashableValues must have identical hashes.
     #[test]
-    fn test_key_hash_consistency() {
+    fn test_hashable_value_eq_implies_hash_eq() {
         use std::collections::hash_map::DefaultHasher;
 
-        let k1 = Key::String("x".into());
-        let k2 = Key::String("x".into());
+        let hash = |k: &HashableValue| {
+            let mut h = DefaultHasher::new();
+            k.hash(&mut h);
+            h.finish()
+        };
 
-        let hash = |k: &Key| {
+        // Int
+        let k1 = HashableValue::Int(42);
+        let k2 = HashableValue::Int(42);
+        assert_eq!(k1, k2);
+        assert_eq!(hash(&k1), hash(&k2));
+
+        // Str
+        let s1 = HashableValue::Str("hello".into());
+        let s2 = HashableValue::Str("hello".into());
+        assert_eq!(s1, s2);
+        assert_eq!(hash(&s1), hash(&s2));
+
+        // Bool
+        let b1 = HashableValue::Bool(true);
+        let b2 = HashableValue::Bool(true);
+        assert_eq!(b1, b2);
+        assert_eq!(hash(&b1), hash(&b2));
+
+        // Dict (order-insensitive)
+        let d1 = HashableValue::Dict(vec![
+            (HashableValue::Str("a".into()), HashableValue::Int(1)),
+            (HashableValue::Str("b".into()), HashableValue::Int(2)),
+        ]);
+        let d2 = HashableValue::Dict(vec![
+            (HashableValue::Str("b".into()), HashableValue::Int(2)),
+            (HashableValue::Str("a".into()), HashableValue::Int(1)),
+        ]);
+        assert_eq!(d1, d2);
+        assert_eq!(hash(&d1), hash(&d2));
+    }
+
+    /// dict_order_invariant: Dict([a,b]) == Dict([b,a]) and hashes match.
+    #[test]
+    fn test_hashable_value_dict_order_invariant() {
+        use std::collections::hash_map::DefaultHasher;
+
+        let hash = |k: &HashableValue| {
+            let mut h = DefaultHasher::new();
+            k.hash(&mut h);
+            h.finish()
+        };
+
+        let pair_a = (HashableValue::Int(1), HashableValue::Str("x".into()));
+        let pair_b = (HashableValue::Int(2), HashableValue::Str("y".into()));
+
+        let d_ab = HashableValue::Dict(vec![pair_a.clone(), pair_b.clone()]);
+        let d_ba = HashableValue::Dict(vec![pair_b, pair_a]);
+
+        assert_eq!(d_ab, d_ba, "Dict equality must be order-insensitive");
+        assert_eq!(
+            hash(&d_ab),
+            hash(&d_ba),
+            "Dict hashes must match when equal"
+        );
+    }
+
+    /// dict_key_value_swap_produces_different_hash: {a: b} must not hash the same as {b: a}.
+    ///
+    /// Regression test for the XOR collision bug: `kh.finish() ^ vh.finish()` is commutative,
+    /// so {a: b} and {b: a} would hash identically when a and b have the same type.
+    /// The fix uses a non-commutative chain: v_mixed depends on k_mixed.
+    #[test]
+    fn test_hashable_value_dict_key_value_swap_hash() {
+        use std::collections::hash_map::DefaultHasher;
+
+        let hash = |k: &HashableValue| {
+            let mut h = DefaultHasher::new();
+            k.hash(&mut h);
+            h.finish()
+        };
+
+        let key = HashableValue::Str("key".into());
+        let val = HashableValue::Str("val".into());
+
+        // {key: val} — key in key position, val in value position
+        let d_kv = HashableValue::Dict(vec![(key.clone(), val.clone())]);
+        // {val: key} — swapped
+        let d_vk = HashableValue::Dict(vec![(val.clone(), key.clone())]);
+
+        // They must be unequal (PartialEq is correct already — just confirming)
+        assert_ne!(d_kv, d_vk, "{{key: val}} must not equal {{val: key}}");
+        // They must hash differently (was the bug: XOR made them collide)
+        assert_ne!(
+            hash(&d_kv),
+            hash(&d_vk),
+            "{{key: val}} and {{val: key}} must have different hashes (key-value swap collision)"
+        );
+    }
+
+    /// cross_type_inequality: distinct types must be unequal.
+    #[test]
+    fn test_hashable_value_cross_type_inequality() {
+        assert_ne!(HashableValue::Int(42), HashableValue::Bool(false));
+        assert_ne!(HashableValue::Int(1), HashableValue::Str("1".into()));
+        assert_ne!(
+            HashableValue::Bool(false),
+            HashableValue::Str("false".into())
+        );
+    }
+
+    /// Str hash consistency — same string, different Rc, same hash.
+    #[test]
+    fn test_hashable_value_str_hash_consistency() {
+        use std::collections::hash_map::DefaultHasher;
+
+        let k1 = HashableValue::Str("x".into());
+        let k2 = HashableValue::Str("x".into());
+
+        let hash = |k: &HashableValue| {
             let mut h = DefaultHasher::new();
             k.hash(&mut h);
             h.finish()
@@ -2394,10 +2499,12 @@ mod tests {
         assert_eq!(hash(&k1), hash(&k2));
     }
 
+    /// Display formatting for HashableValue.
     #[test]
-    fn test_key_display() {
-        assert_eq!(format!("{}", Key::Int(42)), "42");
-        assert_eq!(format!("{}", Key::String("hello".into())), "hello");
+    fn test_hashable_value_display() {
+        assert_eq!(format!("{}", HashableValue::Int(42)), "42");
+        assert_eq!(format!("{}", HashableValue::Str("hello".into())), "hello");
+        assert_eq!(format!("{}", HashableValue::Bool(true)), "true");
     }
 
     #[test]
@@ -2411,14 +2518,14 @@ mod tests {
         }
         assert_eq!(string_val("a"), string_val("a"));
         assert_ne!(string_val("a"), string_val("b"));
-        assert_eq!(Value::Bool(true), Value::Bool(true));
-        assert_ne!(Value::Bool(true), Value::Bool(false));
+        assert_eq!(Value::boolean(true), Value::boolean(true));
+        assert_ne!(Value::boolean(true), Value::boolean(false));
     }
 
     #[test]
     fn test_value_partial_eq_cross_variant() {
         assert_ne!(Value::Int(1), Value::Float(1.0));
-        assert_ne!(Value::Int(0), Value::Bool(false));
+        assert_ne!(Value::Int(0), Value::boolean(false));
         assert_ne!(string_val("1"), Value::Int(1));
     }
 
@@ -2517,65 +2624,70 @@ mod tests {
     }
 
     #[test]
-    fn test_seq_type_name() {
+    fn test_variant_payload_type_name() {
+        // Payload variants return their full qualified tag from type_name().
         let ctx = test_ctx();
-        let span = test_span(1, 1, 1, 1);
-        let head_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+        let payload_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Int(42),
-            span.clone(),
+            test_span(1, 1, 1, 1),
         )));
-        let tail_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(make_seq_nil(), span)));
-        let seq = make_seq_cons(head_id, tail_id, &ctx);
-        // Seq.Cons returns its full qualified tag.
-        assert_eq!(seq.type_name(), "Seq.Cons");
+        let v = Value::Variant {
+            tag: "Color.Red".to_string(),
+            payload: Some(payload_id),
+        };
+        assert_eq!(v.type_name(), "Color.Red");
     }
 
     #[test]
-    fn test_seq_debug() {
+    fn test_variant_unit_type_name() {
+        let v = Value::Variant {
+            tag: "Color.Blue".to_string(),
+            payload: None,
+        };
+        assert_eq!(v.type_name(), "Color.Blue");
+    }
+
+    #[test]
+    fn test_variant_payload_debug() {
         let ctx = test_ctx();
-        let span = test_span(1, 1, 1, 1);
-        let head_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+        let payload_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Int(1),
-            span.clone(),
+            test_span(1, 1, 1, 1),
         )));
-        let tail_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(make_seq_nil(), span)));
-        let seq = make_seq_cons(head_id, tail_id, &ctx);
-        let debug_str = format!("{:?}", seq);
-        // Seq.Cons is a Variant: debug shows "Variant(Seq.Cons, <payload>)"
+        let v = Value::Variant {
+            tag: "Option.Some".to_string(),
+            payload: Some(payload_id),
+        };
+        let debug_str = format!("{:?}", v);
         assert!(
-            debug_str.contains("Seq.Cons"),
-            "debug should contain Seq.Cons, got: {}",
+            debug_str.contains("Option.Some"),
+            "debug should contain tag, got: {}",
             debug_str
         );
     }
 
     #[test]
-    fn test_seq_display() {
+    fn test_variant_payload_display() {
         let ctx = test_ctx();
-        let span = test_span(1, 1, 1, 1);
-        let head_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+        let payload_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Int(1),
-            span.clone(),
+            test_span(1, 1, 1, 1),
         )));
-        let tail_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(make_seq_nil(), span)));
-        let seq = make_seq_cons(head_id, tail_id, &ctx);
-        let display_str = format!("{}", seq);
-        // Seq.Cons display uses the special backward-compat format "Seq(...)"
-        assert_eq!(display_str, "Seq(...)");
+        let v = Value::Variant {
+            tag: "Option.Some".to_string(),
+            payload: Some(payload_id),
+        };
+        assert_eq!(format!("{}", v), "Option.Some(<payload>)");
     }
 
     #[test]
-    fn test_seq_not_equal_to_itself() {
-        let ctx = test_ctx();
-        let span = test_span(1, 1, 1, 1);
-        let head_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            Value::Int(42),
-            span.clone(),
-        )));
-        let tail_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(make_seq_nil(), span)));
-        let seq = make_seq_cons(head_id, tail_id, &ctx);
-        // Variant PartialEq always returns false (by design)
-        assert_ne!(seq.clone(), seq);
+    fn test_variant_not_equal_to_itself() {
+        // Unit Variant PartialEq compares by tag string.
+        let v = Value::Variant {
+            tag: "Color.Red".to_string(),
+            payload: None,
+        };
+        assert_eq!(v.clone(), v);
     }
 
     #[test]
@@ -2585,7 +2697,7 @@ mod tests {
         let thunk = Arc::new(Thunk::new_materialized(Value::Int(42), span));
         env.insert("x".into(), Arc::clone(&thunk));
 
-        let found = env.get("x");
+        let found = env.get_by_name("x");
         assert!(found.is_some());
         assert!(Arc::ptr_eq(&found.unwrap(), &thunk));
     }
@@ -2600,7 +2712,7 @@ mod tests {
         let parent_rc = Arc::new(RwLock::new(parent));
         let child = Environment::with_parent(Arc::clone(&parent_rc));
 
-        let found = child.get("y");
+        let found = child.get_by_name("y");
         assert!(found.is_some());
         assert!(Arc::ptr_eq(&found.unwrap(), &thunk));
     }
@@ -2608,7 +2720,7 @@ mod tests {
     #[test]
     fn test_environment_get_missing() {
         let env = Environment::new();
-        assert!(env.get("nonexistent").is_none());
+        assert!(env.get_by_name("nonexistent").is_none());
     }
 
     #[test]
@@ -2623,7 +2735,7 @@ mod tests {
         let child_thunk = Arc::new(Thunk::new_materialized(Value::Int(2), span));
         child.insert("x".into(), Arc::clone(&child_thunk));
 
-        let found = child.get("x").unwrap();
+        let found = child.get_by_name("x").unwrap();
         // Should find the child's binding, not the parent's
         assert!(Arc::ptr_eq(&found, &child_thunk));
         assert!(!Arc::ptr_eq(&found, &parent_thunk));
@@ -2683,8 +2795,8 @@ mod tests {
 
     #[test]
     fn test_value_display_bool() {
-        assert_eq!(format!("{}", Value::Bool(true)), "true");
-        assert_eq!(format!("{}", Value::Bool(false)), "false");
+        assert_eq!(format!("{}", Value::boolean(true)), "Boolean.True");
+        assert_eq!(format!("{}", Value::boolean(false)), "Boolean.False");
     }
 
     #[test]
@@ -2696,17 +2808,17 @@ mod tests {
     #[test]
     fn test_value_display_dict_with_entries() {
         let ctx = test_ctx();
-        let mut map: IndexMap<Key, crate::arena::ThunkId> = IndexMap::new();
+        let mut map: IndexMap<HashableValue, ThunkId> = IndexMap::new();
         let span = test_span(1, 1, 1, 5);
         map.insert(
-            Key::String("x".into()),
+            HashableValue::Str("x".into()),
             ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 Value::Int(1),
                 span.clone(),
             ))),
         );
         map.insert(
-            Key::Int(0),
+            HashableValue::Int(0),
             ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Int(2), span))),
         );
         let dict = Value::Dict(map);
@@ -2777,31 +2889,37 @@ mod tests {
 
     #[test]
     fn test_value_debug_bool() {
-        assert_eq!(format!("{:?}", Value::Bool(true)), "Bool(true)");
-        assert_eq!(format!("{:?}", Value::Bool(false)), "Bool(false)");
+        assert_eq!(
+            format!("{:?}", Value::boolean(true)),
+            "Variant(Boolean.True)"
+        );
+        assert_eq!(
+            format!("{:?}", Value::boolean(false)),
+            "Variant(Boolean.False)"
+        );
     }
 
     #[test]
     fn test_value_debug_dict() {
         let ctx = test_ctx();
-        let mut map: IndexMap<Key, crate::arena::ThunkId> = IndexMap::new();
+        let mut map: IndexMap<HashableValue, ThunkId> = IndexMap::new();
         let span = test_span(1, 1, 1, 5);
         map.insert(
-            Key::String("x".into()),
+            HashableValue::Str("x".into()),
             ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 Value::Int(1),
                 span.clone(),
             ))),
         );
         map.insert(
-            Key::Int(0),
+            HashableValue::Int(0),
             ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Int(2), span))),
         );
         let dict = Value::Dict(map);
         let debug_str = format!("{dict:?}");
         // Dict shows keys only
         assert!(debug_str.starts_with("Dict("));
-        assert!(debug_str.contains("String(\"x\")"));
+        assert!(debug_str.contains("Str(\"x\")"));
         assert!(debug_str.contains("Int(0)"));
     }
 
@@ -3008,22 +3126,22 @@ mod tests {
     }
 
     #[test]
-    fn test_strkey_lookup() {
-        // Task 6: Test StrKey hash/equivalent for zero-allocation lookups
-        let mut map: IndexMap<Key, i32> = IndexMap::new();
-        map.insert(Key::String("foo".into()), 42);
-        map.insert(Key::String("bar".into()), 99);
-        map.insert(Key::Int(0), 100);
+    fn test_str_hashable_value_lookup() {
+        // Test StrHashableValue hash/equivalent for zero-allocation lookups
+        let mut map: IndexMap<HashableValue, i32> = IndexMap::new();
+        map.insert(HashableValue::Str("foo".into()), 42);
+        map.insert(HashableValue::Str("bar".into()), 99);
+        map.insert(HashableValue::Int(0), 100);
 
-        // Positive case: lookup with StrKey should work
-        assert_eq!(map.get(&StrKey("foo")), Some(&42));
-        assert_eq!(map.get(&StrKey("bar")), Some(&99));
+        // Positive case: lookup with StrHashableValue should work
+        assert_eq!(map.get(&StrHashableValue("foo")), Some(&42));
+        assert_eq!(map.get(&StrHashableValue("bar")), Some(&99));
 
         // Negative case: non-matching key should return None
-        assert_eq!(map.get(&StrKey("baz")), None);
+        assert_eq!(map.get(&StrHashableValue("baz")), None);
 
-        // StrKey should not match Int keys
-        assert_eq!(map.get(&StrKey("0")), None);
+        // StrHashableValue should not match Int keys
+        assert_eq!(map.get(&StrHashableValue("0")), None);
     }
 
     #[test]
@@ -3324,7 +3442,7 @@ mod tests {
     #[test]
     fn test_as_str_on_non_string() {
         assert_eq!(Value::Int(42).as_str(), None);
-        assert_eq!(Value::Bool(true).as_str(), None);
+        assert_eq!(Value::boolean(true).as_str(), None);
         assert_eq!(Value::Float(3.14).as_str(), None);
     }
 

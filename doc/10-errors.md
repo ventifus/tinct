@@ -1040,8 +1040,6 @@ Source snippets (source lines with caret annotations, like rustc) are rendered b
 - Single-line spans: extracts the line, places `^` characters from `start.column` to `end.column` (clamped to line length)
 - Multi-line spans: first line gets `^` from `start.column` to end of line; middle lines get full `^`; last line gets `^` from column 0 to `end.column`
 
-**REPL integration (`src/repl.rs`):** `eval_input` receives `input: &str` and calls `.map_err(|e| ...)` on each eval step. Change each `map_err(|e| format!("{e}"))` to also call `render_span_snippet(input, e.definition_span)` and append the snippet to the error string. `StepResult = Result<String, String>` is unchanged.
-
 **CLI integration (`src/main.rs`):** Error display after `eval_file` receives the source string from the file read. Append snippet at display site.
 
 **LSP:** Uses `DiagnosticRelatedInformation` — not a text snippet. Separate phase.
@@ -1101,3 +1099,53 @@ All 36 `ErrorKind` variants map to stable error codes and human-readable message
 | **Internal** | E099 | `"{message}"` (implementation-defined) | Context-dependent |
 
 The variants above are exhaustive — every runtime error maps to one of these `ErrorKind` variants. The call convention errors (E020-E024) correspond to constraint violations C-COVERAGE, C-NO-OVERLAP, and C-NAMED-VALID from doc/04-functions.md §Call Convention. E024 (MissingRequiredParam) is the per-parameter coverage check from the Kotlin model — it fires when a required parameter is not covered by either a positional or named argument. Error codes are stable across releases; message wording may vary.
+
+---
+
+## Discriminated Error Unions Per Subsystem
+
+Operations fail in predictable, distinguishable ways. `try` is for exceptional and unexpected failures — crashes, bugs, and truly unrecoverable states. Expected failure modes return **typed discriminated unions** that callers pattern-match directly. This is the Rust/Haskell model: one typed error union per subsystem, no string matching.
+
+```tinct
+[match [lookup-ips cap DnsQtype.A host]
+  [Result.Ok addrs]:           [happy-connect cap port addrs]
+  [DnsError.NXDomain name]:    [error [str "no such host: " name]]
+  [DnsError.Timeout]:          [retry-with-tcp cap host]
+  [DnsError.Refused]:          [error "nameserver refused query"]
+  [DnsError.ServerFailure]:    [try-next-nameserver cap host]]
+```
+
+### Design Rules
+
+1. **One discriminated union per subsystem.** Each domain (`Dns`, `Tls`, `Http`, `Net`, etc.) defines a `FooError` type whose variants enumerate every distinguishable failure mode.
+
+2. **Variants are named after the failure, not the mechanism.** `DnsError.NXDomain` not `DnsError.ResponseCode3`. The variant name is what the caller cares about.
+
+3. **`try` is for unexpected failures only.** If a failure is predictable (host not found, connection refused, authentication failed), it belongs in a typed return value, not in `try`.
+
+4. **Payloads carry context.** `[DnsError.NXDomain name]` carries the queried name. `[TlsError.CertificateExpired cert]` carries the cert. Callers get what they need to produce a meaningful error message or decide on a recovery strategy — without string parsing.
+
+### Pattern
+
+```tinct
+# Define the error union for a subsystem
+FooError: [type
+  [NotFound   key@String]
+  [Forbidden  reason@String]
+  [Timeout    after@Int]
+  [BadFormat  offset@Int]]
+
+# Return it alongside success values
+do-thing: [fn@[or FooResult FooError] [let input]
+  ...]
+
+# Callers pattern-match on named failure modes
+[match [do-thing my-input]
+  [FooResult payload]:         [use payload.value]
+  [FooError.NotFound key]:     [error [str "not found: " key]]
+  [FooError.Timeout after]:    [retry-after after]
+  [FooError.Forbidden reason]: [raise reason]
+  [FooError.BadFormat offset]: [log-and-skip offset]]
+```
+
+The net-specific error unions (`DnsError`, `TlsError`, `NetError`, `HttpError`, `WsError`, `QuicError`) are defined in their respective stdlib files.

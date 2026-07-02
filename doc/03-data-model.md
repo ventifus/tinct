@@ -59,7 +59,7 @@ At the runtime level, all dicts are `Value::Dict`. At the type level, the type c
 
 **Record** — a dict whose field names are statically known. Annotated as `@[name: String  age: Int]`. The type checker tracks each field and its type precisely. `get` on a Record field with a known key returns the field type directly.
 
-**Map@[K: V]** — a homogeneous dict where all keys have type K and all values have type V. Annotated as `@[Map [K: V]]` — the compact form reads as "map from K to V". Key type K must be `Int`, `Str`, or `Int | Str`. `get` on a `Map@[K: V]` returns `V | Null` (the key may be absent). Bare `@Map` means `Map@[Any: Any]`. The explicit named form `@[Map [key: K  value: V]]` is also accepted when maximum clarity is needed.
+**Map@[K: V]** — a homogeneous dict where all keys have type K and all values have type V. Annotated as `@[Map [K: V]]` — the compact form reads as "map from K to V". Key type K must satisfy the `Hashable` typeclass — any type implementing `Hashable` can be a dict key, including nominal variants like `Boolean.True`/`Boolean.False`. `get` on a `Map@[K: V]` returns `V | Null` (the key may be absent). Bare `@Map` means `Map@[Any: Any]`. The explicit named form `@[Map [key: K  value: V]]` is also accepted when maximum clarity is needed.
 
 **`Dict`** is the union of both — `@Dict` accepts either form.
 
@@ -358,9 +358,7 @@ Tinct has a fixed set of runtime value types. The following table lists all type
 | `Decimal` | Arbitrary-precision decimal (`rust_decimal`) | §Numeric Types below |
 | `BigInt` | Arbitrary-precision integer (`num_bigint`) | §Numeric Types below |
 | `String` | UTF-8 string | Used throughout; type name `Str` internally |
-| `Bool` | Boolean (`true` / `false`) | Literal values; no dedicated section |
 | `Dict` | Key-value dictionary (the fundamental structure) | §Dicts Are Fundamental above |
-| `Seq` | Lazy sequence (coinductive stream) | §Lazy Sequences below |
 | `Function` | User-defined function (closure) | [Functions](04-functions.md) |
 | `Builtin` | Rust-native function | [Builtins Reference](11a-builtins.md) |
 | `Variant` | Tagged value (`tag` + optional `payload`) | [Builtins Reference](11a-builtins.md) §ADTs |
@@ -850,3 +848,78 @@ error: `:` can only appear in dict, call, class, instance, or match forms
 ```
 
 `[slice 1 3 data]` returns entries at positions 1 and 2 (half-open interval `[1, 3)` by insertion order), yielding `[0: 2  1: 3]` (renumbered). Use `slice`, `take`, and `drop` for subsequences.
+
+## Collection Type Hierarchy
+
+Tinct has one runtime collection primitive: `Value::Dict`. All other collection types — `Seq`, `List`, `Map`, `Record` — are tinct-defined abstractions over `Value::Dict` declared in prelude. The Rust evaluator is blind to these names; they are resolved through the same type and environment lookup as any user-defined type.
+
+### The Three Collection Types
+
+**`Seq a`** — lazy recursive cons-list. Defined in prelude as a nominal ADT:
+
+```tinct
+Seq: [type [let a]
+  [Cons head: a  tail: [Seq a]]
+  End]
+```
+
+`Seq` is the streaming type: O(1) head and tail, potentially infinite, no random access. The tail is always a thunk — never forced until accessed. `map`, `filter`, and `reduce` over `Seq` are lazy O(1)-per-element operations. `Seq` has no `Indexable` instance by design — random access requires O(n) traversal and must be made explicit via `collect`.
+
+**`List a`** — lazy 2-3 finger tree (Hinze & Paterson 2006). Defined entirely in prelude as nominal ADTs (`Digit`, `FNode`, `FingerTree`). `List` is a deque: O(1) amortized push-left and push-right, O(log n) random access, O(log n) concatenation. The O(1) amortized bounds rely on thunk memoization — tinct's call-by-need sharing guarantee (Launchbury 1993) ensures each thunk is evaluated at most once.
+
+`collect` materializes a `Seq` into a `List` (O(n)), enabling subsequent O(1) length and O(log n) index access.
+
+**`Map k v`** — homogeneous keyed collection. At runtime it is a plain `Value::Dict`. Key type `k` must satisfy `Hashable`. `Dict` (the user-facing name for a string-keyed heterogeneous dict) is `Map String Any`.
+
+### Key Type Generalization — `HashableValue`
+
+The Rust representation of dict keys is `HashableValue` — the materializable subset of values that implement `Hash + Eq`:
+
+```rust
+enum HashableValue {
+    Int(i64),
+    Bool(bool),           // Boolean.True / Boolean.False
+    Dict(Vec<(HashableValue, HashableValue)>),  // order-insensitive
+    Variant { tag, payload },
+}
+```
+
+Any type with a `Hashable` instance can be a dict key. `Float` is explicitly excluded: IEEE 754 `NaN != NaN` violates the reflexivity law required by `Eq`, and `+0.0 == -0.0` would require equal hashes for different bit patterns.
+
+Dict equality and hashing for `HashableValue::Dict` use a commutative sum `Σ mix(hash(k), hash(v))` with a non-linear mixer (splitmix64 multiply-xor-shift), consistent with tinct's order-insensitive dict equality.
+
+### `Boolean` — Tinct-Defined
+
+`Boolean: [type True False]` is declared in `loader.llt`. `Value::Bool` does not exist in the Rust runtime. The tinct constructors are `Boolean.True` and `Boolean.False` (uppercase, always qualified). `builtin-if` dispatches on the Variant tag string directly.
+
+```tinct
+[if Boolean.True "yes" "no"]  # → "yes"
+
+[match condition
+  Boolean.True:  "yes"
+  Boolean.False: "no"]
+```
+
+### Collection Typeclass Hierarchy
+
+Typeclasses for collections are **complexity promises**, not category-membership labels. Every typeclass method is O(log n) or better:
+
+| Typeclass | Complexity | Methods | Types with instance |
+|-----------|-----------|---------|-------------------|
+| `Prependable` | O(1) amortized | `push-left`, `peek-left`, `pop-left` | `Seq`, `List` |
+| `Appendable` | O(1) amortized | `push-right`, `peek-right`, `pop-right` | `List` |
+| `Concatenable` | O(log n) | `<>` (join two) | `List` |
+| `Indexable c k v` | O(log n) get + O(1) length | `get`, `slice`, `length` | `List` (Int keys), `Map` (Hashable keys) |
+| `Iterable c a` | O(1) initiation | `each` | `List`, `Map` |
+
+O(n) operations (`map`, `filter`, `reduce`, `collect`, `sort`) are plain prelude functions, not typeclass methods. A **deque** is any type that is both `Prependable` and `Appendable` — `List` is a deque, `Seq` is not.
+
+`Dict` has **no** `Concatenable` instance — `merge` is O(n) (violates the O(log n) promise). Use `merge` explicitly when you need dict union.
+
+### `Hashable` and `Sortable`
+
+`Hashable` implies `Equatable` (hash consistency requires equality). `Sortable` and `Equatable` are orthogonal — a type may have one without the other:
+
+- `Float`: `Sortable` (IEEE 754 `<` is defined) but **NOT** `Equatable` or `Hashable` (NaN violates reflexivity)
+- `Boolean`: `Equatable` and `Hashable` but **NOT** `Sortable` (no natural ordering)
+- `Int`, `Graphemes`: both `Equatable` and `Sortable`

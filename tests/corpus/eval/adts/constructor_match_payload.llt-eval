@@ -1,5 +1,5 @@
 # B-337: Named-field constructor match test.
-# Constructor [Ok value: a] generates [fn [let value] [builtin-variant "Result.Ok" {value: value}]].
+# Constructor [Ok value: a] generates [fn [let value] [CoreExpr::Variant "Result.Ok" {value: value}]].
 # Calling [Result.Ok value: 42] creates a variant with payload {value: 42}.
 # Pattern match extracts the payload dict as `v`, then accesses `v.value`.
 [

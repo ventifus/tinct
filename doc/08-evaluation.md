@@ -445,7 +445,7 @@ materialize(θ_inner) ⇒ error(e)               where ¬e.is_cacheable()
 materialize(θ) ⇒ error(e)
 ```
 
-Note: As of T-908, the continuation stack depth limit has been removed. Resource limits now come from individual builtins (e.g., `MAX_COLLECT_SIZE` in `$collect`) and OS memory constraints. The backward `InProgress → Guarded` edge handles non-cacheable errors from these sources.
+The continuation stack has no depth limit — resource limits come from individual builtins (e.g., `MAX_COLLECT_SIZE` in `$collect`) and OS memory constraints. The backward `InProgress → Guarded` edge handles non-cacheable errors from these sources.
 
 [MATERIALIZE-GUARD-NONCACHEABLE] fires when the inner thunk's materialization fails with a non-cacheable error (e.g., ResourceLimitExceeded from a builtin). The Guarded state is restored because non-cacheable errors are transient resource-bound conditions, not semantic errors. (`src/eval_materialize.rs`, in the `Guarded` arm of `force_step()`)
 
@@ -1422,12 +1422,11 @@ Per execution context (deferred per-section model):
 |---------|---------------|---------------------|-------|
 | CLI (single section) | Entire eval | None | One arena, dropped at end. No migration. |
 | CLI (multi-section) | Per section | `%` (selectively migrated) | Arena per section, migrate at `---` |
-| REPL | Per input | `%` (selectively migrated) | Each input is implicitly a section |
 | LSP | Per section | `%` (selectively migrated) | Editing section N re-evaluates N+ with cached `%` from N-1 |
 
 **Cost model:** Migration is O(thunks reachable from `%`), not O(total section thunks). For sections where `%` is a small result derived from large intermediate computations, migration cost is much lower than deep-materialization.
 
-**Rejected alternatives:** (1) Session-scoped arena — unbounded memory growth during long REPL sessions; requires stop-the-world compaction with pointer fixup across all live references. (2) Hybrid arena+Arc — two allocation paths; every thunk creation must decide arena vs Arc; closures capturing thunks make escape analysis intractable. (3) Deep-materialization at `---` — changes language semantics (lazy→eager), breaks closures (env chains hold dangling arena handles after drop), and diverges on infinite sequences in `%`. (4) Per-eval copy-out without section granularity — triggers materialization of intermediate values within a section, losing laziness benefits.
+**Rejected alternatives:** (1) Session-scoped arena — unbounded memory growth across a long-running session; requires stop-the-world compaction with pointer fixup across all live references. (2) Hybrid arena+Arc — two allocation paths; every thunk creation must decide arena vs Arc; closures capturing thunks make escape analysis intractable. (3) Deep-materialization at `---` — changes language semantics (lazy→eager), breaks closures (env chains hold dangling arena handles after drop), and diverges on infinite sequences in `%`. (4) Per-eval copy-out without section granularity — triggers materialization of intermediate values within a section, losing laziness benefits.
 
 **LSP incremental re-evaluation:** Migrated `%` values are self-contained `Arc`-backed storage with no arena references. The LSP caches `%` per section. Editing section N re-uses cached `%` from section N-1 (already migrated, no re-evaluation) and re-evaluates only sections N through the end.
 
@@ -1439,7 +1438,7 @@ Per execution context (deferred per-section model):
 
 ## Iterative Evaluator (CEK Machine)
 
-**Implementation:** The evaluator uses an iterative CEK machine (Control-Environment-Kontinuation) with an unbounded continuation stack in `src/eval_materialize.rs`. This replaced the old recursive evaluator which used `MAX_EVAL_DEPTH = 256` and relied on Rust's call stack. As of T-908, the continuation stack depth limit was removed — tinct runs as a single-process CLI with no multi-tenant threat model, so the OS enforces memory limits via OOM.
+**Implementation:** The evaluator uses an iterative CEK machine (Control-Environment-Kontinuation) with an unbounded continuation stack in `src/eval_materialize.rs`. The continuation stack has no depth limit — tinct runs as a single-process CLI with no multi-tenant threat model, so the OS enforces memory limits via OOM.
 
 **Evaluation depth is bounded by:**
 
@@ -1662,12 +1661,6 @@ Thunks are allocated in a `ThunkArena` (global bulk deallocation boundary) but s
 | TypeAssert predicate check | `Action::EvalCore` (predicate) + `Cont::PredicateCheck` |
 | Thunk memoization | `Action::Materialize` (result) + `Cont::Memoize` |
 
-### Arena Migration
+### Arena
 
-The evaluator uses a three-phase arena migration strategy:
-
-- **Phase 1** (complete): `ThunkArena` and `EnvArena` provide `ThunkId`/`EnvId` handle-based allocation. Thunks are allocated in the arena via `ctx.alloc_thunk()`.
-- **Phase 2** (current): Thunks are allocated via the arena BUT `Value` variants still hold `Arc<Thunk>` references (registry approach). This avoids a massive refactor of all exhaustive `Value` matches while establishing the arena allocation pattern.
-- **Phase 3** (future): Replace `Arc<Thunk>` fields in `Value` (Seq, Proxy, Overlay, Function) with `ThunkId` for direct ownership. Requires updating all exhaustive Value matches across the codebase.
-
-Phase 2 preserves `Arc<Thunk>` in Value to reduce risk — the arena pattern is established incrementally before the value representation changes.
+`ThunkArena` and `EnvArena` provide `ThunkId`/`EnvId` handle-based allocation. Thunks are allocated via `ctx.alloc_thunk()`. `Value` variants hold `Arc<Thunk>` references alongside the arena (registry approach), which allows the arena allocation pattern without requiring exhaustive `Value` match updates across the codebase.

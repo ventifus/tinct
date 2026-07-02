@@ -28,7 +28,7 @@ use crate::types::{pretty_type_str, TypeError, TypeScheme};
 /// via imports::build_type_env(), so hover should work for prelude functions if
 /// the type checker inferred their types correctly.
 #[allow(clippy::mutable_key_type)] // Uri interior mutability is safe for HashMap keys
-pub fn hover_at(
+pub async fn hover_at(
     doc: &DocumentState,
     doc_url: &Uri,
     offset: usize,
@@ -48,17 +48,21 @@ pub fn hover_at(
         // Expand macros on SurfaceProgram, matching the
         // pipeline invariant (expand → desugar → resolve → typecheck).
         let mut program = block_parsed.program.clone();
-        crate::async_rt::block_on_anywhere(crate::expand::expand_surface_program(
+        crate::expand::expand_surface_program(
             &mut program,
+            Arc::clone(&eval_ctx.config.stdlib_env),
             eval_ctx.config.no_fs,
             &eval_ctx.config.base_dir,
-        ))
+        )
+        .await
         .ok()?;
         // Desugar $_ implicit lambdas on SurfaceProgram
         crate::desugar::desugar_surface_program(&mut program);
-        let (seeded_env, _) = crate::async_rt::block_on_anywhere(crate::imports::build_type_env(&program, None));
+        let (seeded_env_rc, _) = crate::imports::build_type_env(&program, None).await;
+        // typecheck_surface_program takes Arc<TypeEnv>; build_type_env returns Rc.
+        let seeded_env = std::sync::Arc::new((*seeded_env_rc).clone());
         let (_type_errors, block_type_map, block_doc_map, block_scheme_map, _diagnostics) =
-            crate::async_rt::block_on_anywhere(crate::typecheck::typecheck_surface_program(&program, seeded_env));
+            crate::typecheck::typecheck_surface_program(&program, seeded_env).await;
 
         // Walk the block's Surface AST with block-local offset
         for document in &program.documents {
@@ -285,16 +289,6 @@ fn hover_at_surface_node(
                 doc_url
             )
         )),
-        SurfaceExpression::Bool(b) => Some(format!(
-            "Bool literal: {b}{}",
-            type_suffix(
-                node.span.clone(),
-                type_map,
-                scheme_map,
-                include_graph,
-                doc_url
-            )
-        )),
         SurfaceExpression::Str(s) => Some(format!(
             "String literal: {s:?}{}",
             type_suffix(
@@ -307,21 +301,24 @@ fn hover_at_surface_node(
         )),
 
         SurfaceExpression::DotAccess {
-            expr: target,
+            expr: target_opt,
             field,
+            ..
         } => {
-            // Check if hover is on the field name (assumes field starts after dot).
-            hover_at_surface_node(
-                target,
-                offset,
-                type_map,
-                scheme_map,
-                doc_map,
-                source,
-                include_graph,
-                doc_url,
-            )
-            .or_else(|| {
+            // Check if hover is on the target expression (not a leading-dot).
+            let inner_hover = target_opt.as_ref().and_then(|target| {
+                hover_at_surface_node(
+                    target,
+                    offset,
+                    type_map,
+                    scheme_map,
+                    doc_map,
+                    source,
+                    include_graph,
+                    doc_url,
+                )
+            });
+            inner_hover.or_else(|| {
                 Some(format!(
                     "Field access: .{field}{}",
                     type_suffix(
@@ -481,6 +478,7 @@ fn hover_at_surface_node(
         SurfaceExpression::TypeAssert {
             expr: inner,
             annotation,
+            ..
         } => {
             // Check inner expression first, then fall back to annotation text.
             hover_at_surface_node(
@@ -521,7 +519,7 @@ fn hover_at_surface_node(
             )
         )),
 
-        SurfaceExpression::Rest(name) => {
+        SurfaceExpression::Rest(name, _) => {
             Some(format!("Rest marker: {}", name.as_deref().unwrap_or("...")))
         }
 
@@ -900,7 +898,10 @@ fn name_at_offset(node: &Arc<SurfaceNode>, offset: usize) -> Option<String> {
 
         SurfaceExpression::Fn { body, .. } => name_at_offset(body, offset),
 
-        SurfaceExpression::DotAccess { expr: target, .. } => name_at_offset(target, offset),
+        SurfaceExpression::DotAccess {
+            expr: Some(target), ..
+        } => name_at_offset(target, offset),
+        SurfaceExpression::DotAccess { expr: None, .. } => None,
 
         SurfaceExpression::Sequential(exprs) => exprs
             .iter()
@@ -939,9 +940,8 @@ fn name_at_offset(node: &Arc<SurfaceNode>, offset: usize) -> Option<String> {
         SurfaceExpression::Int(_)
         | SurfaceExpression::U64(_)
         | SurfaceExpression::Float(_)
-        | SurfaceExpression::Bool(_)
         | SurfaceExpression::Str(_)
-        | SurfaceExpression::Rest(_)
+        | SurfaceExpression::Rest(..)
         | SurfaceExpression::Placeholder
         | SurfaceExpression::Decl(_)
         | SurfaceExpression::Annotated { .. }
@@ -987,7 +987,10 @@ fn find_key_definition(node: &Arc<SurfaceNode>, name: &str) -> Option<Span> {
 
         SurfaceExpression::Fn { body, .. } => find_key_definition(body, name),
 
-        SurfaceExpression::DotAccess { expr: target, .. } => find_key_definition(target, name),
+        SurfaceExpression::DotAccess {
+            expr: Some(target), ..
+        } => find_key_definition(target, name),
+        SurfaceExpression::DotAccess { expr: None, .. } => None,
 
         SurfaceExpression::Sequential(exprs) => exprs
             .iter()
@@ -1025,10 +1028,9 @@ fn find_key_definition(node: &Arc<SurfaceNode>, name: &str) -> Option<Span> {
         SurfaceExpression::Int(_)
         | SurfaceExpression::U64(_)
         | SurfaceExpression::Float(_)
-        | SurfaceExpression::Bool(_)
         | SurfaceExpression::Str(_)
         | SurfaceExpression::VarRef { .. }
-        | SurfaceExpression::Rest(_)
+        | SurfaceExpression::Rest(..)
         | SurfaceExpression::Placeholder
         | SurfaceExpression::Decl(_)
         | SurfaceExpression::Annotated { .. }
@@ -1294,9 +1296,12 @@ fn collect_var_refs_spanned(
             collect_var_refs_spanned(body, name, source, uri, out);
         }
 
-        SurfaceExpression::DotAccess { expr: target, .. } => {
+        SurfaceExpression::DotAccess {
+            expr: Some(target), ..
+        } => {
             collect_var_refs_spanned(target, name, source, uri, out);
         }
+        SurfaceExpression::DotAccess { expr: None, .. } => {}
 
         SurfaceExpression::Sequential(exprs) => {
             for seq_expr in exprs {
@@ -1347,11 +1352,10 @@ fn collect_var_refs_spanned(
         SurfaceExpression::Int(_)
         | SurfaceExpression::U64(_)
         | SurfaceExpression::Float(_)
-        | SurfaceExpression::Bool(_)
         | SurfaceExpression::Str(_)
         | SurfaceExpression::Placeholder
         | SurfaceExpression::Decl(_)
-        | SurfaceExpression::Rest(_)
+        | SurfaceExpression::Rest(..)
         | SurfaceExpression::Annotated { .. }
         | SurfaceExpression::Error(_) => {}
     }
@@ -1361,7 +1365,7 @@ fn collect_var_refs_spanned(
 ///
 /// `uri` is the document's URI, used to construct `DiagnosticRelatedInformation`
 /// locations that point back into the same file.
-pub fn diagnostics_for(
+pub async fn diagnostics_for(
     doc: &DocumentState,
     uri: &Uri,
     eval_ctx: &std::sync::Arc<crate::eval::EvalContext>,
@@ -1397,12 +1401,13 @@ pub fn diagnostics_for(
                     // Expand macros on SurfaceProgram, matching the
                     // pipeline invariant (expand → desugar → resolve → typecheck).
                     let mut program = output.program.clone();
-                    if let Err(e) =
-                        crate::async_rt::block_on_anywhere(crate::expand::expand_surface_program(
-                            &mut program,
-                            eval_ctx.config.no_fs,
-                            &eval_ctx.config.base_dir,
-                        ))
+                    if let Err(e) = crate::expand::expand_surface_program(
+                        &mut program,
+                        Arc::clone(&eval_ctx.config.stdlib_env),
+                        eval_ctx.config.no_fs,
+                        &eval_ctx.config.base_dir,
+                    )
+                    .await
                     {
                         // Macro expansion error — convert to diagnostic
                         let mut diag = Diagnostic {
@@ -1431,9 +1436,11 @@ pub fn diagnostics_for(
                     crate::desugar::desugar_surface_program(&mut program);
 
                     // Type check
-                    let (seeded_env, _) = crate::async_rt::block_on_anywhere(crate::imports::build_type_env(&program, None));
+                    let (seeded_env_rc, _) = crate::imports::build_type_env(&program, None).await;
+                    // typecheck_surface_program takes Arc<TypeEnv>; build_type_env returns Rc.
+                    let seeded_env = std::sync::Arc::new((*seeded_env_rc).clone());
                     let (type_errors, _, _, _, _) =
-                        crate::async_rt::block_on_anywhere(crate::typecheck::typecheck_surface_program(&program, seeded_env));
+                        crate::typecheck::typecheck_surface_program(&program, seeded_env).await;
 
                     for err in type_errors {
                         let mut diag = type_error_to_diagnostic(&err, &block.code, uri);
@@ -1661,7 +1668,7 @@ fn eval_error_to_diagnostic(err: &crate::error::EvalError, source: &str, uri: &U
 
         // Stack frames: the call chain that triggered materialization.
         for frame in &err.stack {
-            // Skip synthetic (Span::origin()) frames — they are stdlib/builtin internals
+            // Skip synthetic (origin) frames — they are stdlib/builtin internals
             // that pollute user-facing traces.
             if frame.definition_span.start.offset == 0 && frame.definition_span.end.offset == 0 {
                 continue;
@@ -1710,22 +1717,22 @@ mod tests {
 
     use std::sync::{Arc, RwLock};
 
-    use crate::builtins::create_stdlib_env;
+    use crate::builtins::build_core_env;
     use crate::value::Environment;
 
-    /// Helper: create a stdlib env for tests.
-    fn test_env() -> Arc<RwLock<Environment>> {
-        crate::async_rt::block_on_anywhere(create_stdlib_env()).unwrap()
+    /// Helper: create a core env for tests.
+    async fn test_env() -> Arc<RwLock<Environment>> {
+        build_core_env()
     }
 
     /// Helper: create an EvalContext for tests.
-    fn test_ctx() -> Arc<crate::eval::EvalContext> {
+    async fn test_ctx() -> Arc<crate::eval::EvalContext> {
         // AMBIENT-OK: LSP test helper — no prior Dir available, test context only.
         #[allow(clippy::disallowed_methods)]
         let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .expect("failed to open test base_dir");
-        let env = test_env();
-        crate::eval::EvalContext::new(base_dir, Arc::clone(&env), Arc::clone(&env), true)
+        let env = test_env().await;
+        crate::eval::EvalContext::new_empty(base_dir, Arc::clone(&env), true)
     }
 
     /// Helper: create an empty include graph for tests.
@@ -1739,44 +1746,77 @@ mod tests {
         "file:///test.llt".parse::<Uri>().unwrap()
     }
 
-    #[test]
-    fn test_hover_int_literal() {
-        let env = test_env();
-        let doc = DocumentState::new("42".to_string(), &env, &test_ctx(), None);
-        let hover = hover_at(&doc, &test_uri(), 0, &test_include_graph(), &test_ctx());
+    #[tokio::test]
+    async fn test_hover_int_literal() {
+        let env = test_env().await;
+        let doc = DocumentState::new("42".to_string(), &env, &test_ctx().await, None);
+        let hover = hover_at(
+            &doc,
+            &test_uri(),
+            0,
+            &test_include_graph(),
+            &test_ctx().await,
+        )
+        .await;
         assert_eq!(hover.as_deref(), Some("Int literal: 42 (42)"));
     }
 
-    #[test]
-    fn test_hover_var_ref() {
-        let env = test_env();
+    #[tokio::test]
+    async fn test_hover_var_ref() {
+        let env = test_env().await;
         // $x is undefined, so no type is inferred -- just syntactic info.
-        let doc = DocumentState::new("$x".to_string(), &env, &test_ctx(), None);
-        let hover = hover_at(&doc, &test_uri(), 1, &test_include_graph(), &test_ctx());
+        let doc = DocumentState::new("$x".to_string(), &env, &test_ctx().await, None);
+        let hover = hover_at(
+            &doc,
+            &test_uri(),
+            1,
+            &test_include_graph(),
+            &test_ctx().await,
+        )
+        .await;
         assert!(hover.is_some());
         assert!(hover.unwrap().contains("Variable: $x"));
     }
 
-    #[test]
-    fn test_hover_var_ref_with_type() {
-        let env = test_env();
+    #[tokio::test]
+    async fn test_hover_var_ref_with_type() {
+        let env = test_env().await;
         // $x is defined in scope, so hover should show its type.
-        let doc = DocumentState::new("[x: 42]\n[y: $x]".to_string(), &env, &test_ctx(), None);
+        let doc = DocumentState::new(
+            "[x: 42]\n[y: $x]".to_string(),
+            &env,
+            &test_ctx().await,
+            None,
+        );
         // Offset 12 is inside "$x" in the second expression "[y: $x]"
         // "[x: 42]\n[y: $x]"
         //  0123456 7 89012345
-        let hover = hover_at(&doc, &test_uri(), 12, &test_include_graph(), &test_ctx());
+        let hover = hover_at(
+            &doc,
+            &test_uri(),
+            12,
+            &test_include_graph(),
+            &test_ctx().await,
+        )
+        .await;
         assert!(hover.is_some());
         let text = hover.unwrap();
         assert!(text.contains("Variable: $x"), "got: {text}");
         assert!(text.contains("(42)"), "should show type, got: {text}");
     }
 
-    #[test]
-    fn test_hover_string_literal() {
-        let env = test_env();
-        let doc = DocumentState::new("\"hello\"".to_string(), &env, &test_ctx(), None);
-        let hover = hover_at(&doc, &test_uri(), 2, &test_include_graph(), &test_ctx());
+    #[tokio::test]
+    async fn test_hover_string_literal() {
+        let env = test_env().await;
+        let doc = DocumentState::new("\"hello\"".to_string(), &env, &test_ctx().await, None);
+        let hover = hover_at(
+            &doc,
+            &test_uri(),
+            2,
+            &test_include_graph(),
+            &test_ctx().await,
+        )
+        .await;
         assert!(hover.is_some());
         let text = hover.unwrap();
         assert!(text.contains("String literal"), "got: {text}");
@@ -1786,30 +1826,37 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_hover_no_match() {
-        let env = test_env();
-        let doc = DocumentState::new("[x: 1]".to_string(), &env, &test_ctx(), None);
+    #[tokio::test]
+    async fn test_hover_no_match() {
+        let env = test_env().await;
+        let doc = DocumentState::new("[x: 1]".to_string(), &env, &test_ctx().await, None);
         // Hover on whitespace between entries.
-        let hover = hover_at(&doc, &test_uri(), 100, &test_include_graph(), &test_ctx());
+        let hover = hover_at(
+            &doc,
+            &test_uri(),
+            100,
+            &test_include_graph(),
+            &test_ctx().await,
+        )
+        .await;
         assert!(hover.is_none());
     }
 
-    #[test]
-    fn test_diagnostics_parse_error() {
-        let env = test_env();
-        let doc = DocumentState::new("[unterminated".to_string(), &env, &test_ctx(), None);
-        let diags = diagnostics_for(&doc, &test_uri(), &test_ctx());
+    #[tokio::test]
+    async fn test_diagnostics_parse_error() {
+        let env = test_env().await;
+        let doc = DocumentState::new("[unterminated".to_string(), &env, &test_ctx().await, None);
+        let diags = diagnostics_for(&doc, &test_uri(), &test_ctx().await).await;
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].severity, Some(DiagnosticSeverity::ERROR));
         assert_eq!(diags[0].source, Some("tinct-parser".to_string()));
     }
 
-    #[test]
-    fn test_diagnostics_type_error() {
-        let env = test_env();
-        let doc = DocumentState::new("[@Number hello]".to_string(), &env, &test_ctx(), None);
-        let diags = diagnostics_for(&doc, &test_uri(), &test_ctx());
+    #[tokio::test]
+    async fn test_diagnostics_type_error() {
+        let env = test_env().await;
+        let doc = DocumentState::new("[@Number hello]".to_string(), &env, &test_ctx().await, None);
+        let diags = diagnostics_for(&doc, &test_uri(), &test_ctx().await).await;
         assert!(!diags.is_empty());
         let type_diag = diags
             .iter()
@@ -1818,13 +1865,13 @@ mod tests {
         assert_eq!(type_diag.severity, Some(DiagnosticSeverity::WARNING));
     }
 
-    #[test]
-    fn test_diagnostics_eval_error() {
+    #[tokio::test]
+    async fn test_diagnostics_eval_error() {
         // LSP skips the eval pass entirely — eval_errors is always empty.
         // Undefined variables are caught by the type checker instead.
-        let env = test_env();
-        let doc = DocumentState::new("$undefined".to_string(), &env, &test_ctx(), None);
-        let diags = diagnostics_for(&doc, &test_uri(), &test_ctx());
+        let env = test_env().await;
+        let doc = DocumentState::new("$undefined".to_string(), &env, &test_ctx().await, None);
+        let diags = diagnostics_for(&doc, &test_uri(), &test_ctx().await).await;
         assert!(!diags.is_empty());
         // No eval diagnostic — eval is skipped in LSP context.
         assert!(
@@ -1842,85 +1889,126 @@ mod tests {
         assert_eq!(type_diag.severity, Some(DiagnosticSeverity::WARNING));
     }
 
-    #[test]
-    fn test_diagnostics_valid_source() {
-        let env = test_env();
-        let doc = DocumentState::new("[x: 42]".to_string(), &env, &test_ctx(), None);
-        let diags = diagnostics_for(&doc, &test_uri(), &test_ctx());
+    #[tokio::test]
+    async fn test_diagnostics_valid_source() {
+        let env = test_env().await;
+        let doc = DocumentState::new("[x: 42]".to_string(), &env, &test_ctx().await, None);
+        let diags = diagnostics_for(&doc, &test_uri(), &test_ctx().await).await;
         assert!(diags.is_empty());
     }
 
-    #[test]
-    fn test_hover_dict_entry_key() {
-        let env = test_env();
-        let doc = DocumentState::new("[x: 42]".to_string(), &env, &test_ctx(), None);
-        let hover = hover_at(&doc, &test_uri(), 1, &test_include_graph(), &test_ctx()); // on 'x'
+    #[tokio::test]
+    async fn test_hover_dict_entry_key() {
+        let env = test_env().await;
+        let doc = DocumentState::new("[x: 42]".to_string(), &env, &test_ctx().await, None);
+        let hover = hover_at(
+            &doc,
+            &test_uri(),
+            1,
+            &test_include_graph(),
+            &test_ctx().await,
+        )
+        .await; // on 'x'
         assert!(hover.is_some());
     }
 
-    #[test]
-    fn test_hover_dict_entry_value() {
-        let env = test_env();
-        let doc = DocumentState::new("[x: 42]".to_string(), &env, &test_ctx(), None);
-        let hover = hover_at(&doc, &test_uri(), 4, &test_include_graph(), &test_ctx()); // on '42'
+    #[tokio::test]
+    async fn test_hover_dict_entry_value() {
+        let env = test_env().await;
+        let doc = DocumentState::new("[x: 42]".to_string(), &env, &test_ctx().await, None);
+        let hover = hover_at(
+            &doc,
+            &test_uri(),
+            4,
+            &test_include_graph(),
+            &test_ctx().await,
+        )
+        .await; // on '42'
         assert!(hover.is_some());
         let text = hover.unwrap();
         assert!(text.contains("Int literal"), "got: {text}");
         assert!(text.contains("(42)"), "should show type, got: {text}");
     }
 
-    #[test]
-    fn test_hover_nested_dict() {
-        let env = test_env();
-        let doc = DocumentState::new("[a: [b: 1]]".to_string(), &env, &test_ctx(), None);
-        let hover = hover_at(&doc, &test_uri(), 8, &test_include_graph(), &test_ctx()); // on '1'
+    #[tokio::test]
+    async fn test_hover_nested_dict() {
+        let env = test_env().await;
+        let doc = DocumentState::new("[a: [b: 1]]".to_string(), &env, &test_ctx().await, None);
+        let hover = hover_at(
+            &doc,
+            &test_uri(),
+            8,
+            &test_include_graph(),
+            &test_ctx().await,
+        )
+        .await; // on '1'
         assert!(hover.is_some());
         let text = hover.unwrap();
         assert!(text.contains("Int literal"), "got: {text}");
     }
 
-    #[test]
-    fn test_hover_function_param() {
-        let env = test_env();
+    #[tokio::test]
+    async fn test_hover_function_param() {
+        let env = test_env().await;
         // "[fn [let x] $x]" — 'x' is at offset 9
-        let doc = DocumentState::new("[fn [let x] $x]".to_string(), &env, &test_ctx(), None);
-        let hover = hover_at(&doc, &test_uri(), 9, &test_include_graph(), &test_ctx()); // on 'x' in param list
+        let doc = DocumentState::new("[fn [let x] $x]".to_string(), &env, &test_ctx().await, None);
+        let hover = hover_at(
+            &doc,
+            &test_uri(),
+            9,
+            &test_include_graph(),
+            &test_ctx().await,
+        )
+        .await; // on 'x' in param list
         assert!(hover.is_some());
         assert!(hover.unwrap().contains("Parameter"));
     }
 
-    #[test]
-    fn test_hover_call_expression() {
-        let env = test_env();
-        let doc = DocumentState::new("[call $+ 1 2]".to_string(), &env, &test_ctx(), None);
-        let hover = hover_at(&doc, &test_uri(), 6, &test_include_graph(), &test_ctx()); // on '$+'
+    #[tokio::test]
+    async fn test_hover_call_expression() {
+        let env = test_env().await;
+        let doc = DocumentState::new("[call $+ 1 2]".to_string(), &env, &test_ctx().await, None);
+        let hover = hover_at(
+            &doc,
+            &test_uri(),
+            6,
+            &test_include_graph(),
+            &test_ctx().await,
+        )
+        .await; // on '$+'
         assert!(hover.is_some());
         assert!(hover.unwrap().contains("Variable: $+"));
     }
 
-    #[test]
-    fn test_hover_float_literal() {
-        let env = test_env();
-        let doc = DocumentState::new("3.14".to_string(), &env, &test_ctx(), None);
-        let hover = hover_at(&doc, &test_uri(), 0, &test_include_graph(), &test_ctx());
+    #[tokio::test]
+    async fn test_hover_float_literal() {
+        let env = test_env().await;
+        let doc = DocumentState::new("3.14".to_string(), &env, &test_ctx().await, None);
+        let hover = hover_at(
+            &doc,
+            &test_uri(),
+            0,
+            &test_include_graph(),
+            &test_ctx().await,
+        )
+        .await;
         assert_eq!(hover.as_deref(), Some("Float literal: 3.14 (Float)"));
     }
 
-    #[test]
-    fn test_hover_bool_literal() {
-        let env = test_env();
-        let doc = DocumentState::new("true".to_string(), &env, &test_ctx(), None);
-        let hover = hover_at(&doc, &test_uri(), 0, &test_include_graph(), &test_ctx());
-        assert_eq!(hover.as_deref(), Some("Bool literal: true (Bool)"));
-    }
-
-    #[test]
-    fn test_hover_type_not_shown_on_error() {
-        let env = test_env();
+    #[tokio::test]
+    async fn test_hover_type_not_shown_on_error() {
+        let env = test_env().await;
         // $undefined has type <error> when inference fails -- LSP hover shows the sentinel
         // so users can see that the expression has a type error rather than seeing Any.
-        let doc = DocumentState::new("$undefined".to_string(), &env, &test_ctx(), None);
-        let hover = hover_at(&doc, &test_uri(), 1, &test_include_graph(), &test_ctx());
+        let doc = DocumentState::new("$undefined".to_string(), &env, &test_ctx().await, None);
+        let hover = hover_at(
+            &doc,
+            &test_uri(),
+            1,
+            &test_include_graph(),
+            &test_ctx().await,
+        )
+        .await;
         assert!(hover.is_some());
         let text = hover.unwrap();
         assert_eq!(text, "Variable: $undefined (<error>)");
@@ -1931,8 +2019,8 @@ mod tests {
     ///
     /// We build an `EvalError` directly with both spans set and verify the resulting
     /// `Diagnostic` has non-None `related_information` containing the "forced here" entry.
-    #[test]
-    fn test_eval_error_to_diagnostic_related_information() {
+    #[tokio::test]
+    async fn test_eval_error_to_diagnostic_related_information() {
         use crate::ast::{Position, Span};
         use crate::error::EvalError;
 
@@ -1997,8 +2085,8 @@ mod tests {
 
     /// Verify that when an eval error has no materialization span (immediate error,
     /// definition == use site), `related_information` is None.
-    #[test]
-    fn test_eval_error_to_diagnostic_no_related_when_no_mat_span() {
+    #[tokio::test]
+    async fn test_eval_error_to_diagnostic_no_related_when_no_mat_span() {
         use crate::ast::{Position, Span};
         use crate::error::EvalError;
 
@@ -2031,10 +2119,10 @@ mod tests {
 
     // --- Go To Definition tests ---
 
-    #[test]
-    fn test_definition_at_simple() {
-        let env = test_env();
-        let doc = DocumentState::new("[x: 42  y: $x]".to_string(), &env, &test_ctx(), None);
+    #[tokio::test]
+    async fn test_definition_at_simple() {
+        let env = test_env().await;
+        let doc = DocumentState::new("[x: 42  y: $x]".to_string(), &env, &test_ctx().await, None);
         let uri = test_uri();
         // Offset 12 is on '$x' in the second entry.
         // "[x: 42  y: $x]"
@@ -2047,10 +2135,10 @@ mod tests {
         assert_eq!(span.end.offset, 2);
     }
 
-    #[test]
-    fn test_definition_at_mutually_recursive() {
-        let env = test_env();
-        let doc = DocumentState::new("[a: $b  b: $a]".to_string(), &env, &test_ctx(), None);
+    #[tokio::test]
+    async fn test_definition_at_mutually_recursive() {
+        let env = test_env().await;
+        let doc = DocumentState::new("[a: $b  b: $a]".to_string(), &env, &test_ctx().await, None);
         let uri = test_uri();
         // Offset 5 is on '$b' in the first entry.
         // "[a: $b  b: $a]"
@@ -2063,10 +2151,15 @@ mod tests {
         assert_eq!(span.end.offset, 9);
     }
 
-    #[test]
-    fn test_definition_at_annotated_key() {
-        let env = test_env();
-        let doc = DocumentState::new("[x@Int: 1  y: $x]".to_string(), &env, &test_ctx(), None);
+    #[tokio::test]
+    async fn test_definition_at_annotated_key() {
+        let env = test_env().await;
+        let doc = DocumentState::new(
+            "[x@Int: 1  y: $x]".to_string(),
+            &env,
+            &test_ctx().await,
+            None,
+        );
         let uri = test_uri();
         // Offset 15 is on '$x' in the second entry.
         // "[x@Int: 1  y: $x]"
@@ -2079,10 +2172,10 @@ mod tests {
         assert_eq!(span.end.offset, 6);
     }
 
-    #[test]
-    fn test_definition_at_no_match() {
-        let env = test_env();
-        let doc = DocumentState::new("$undefined".to_string(), &env, &test_ctx(), None);
+    #[tokio::test]
+    async fn test_definition_at_no_match() {
+        let env = test_env().await;
+        let doc = DocumentState::new("$undefined".to_string(), &env, &test_ctx().await, None);
         let uri = test_uri();
         // Offset 1 is on '$undefined', which has no definition in the document.
         let def_result = definition_at(&doc, &uri, 1, &test_include_graph(), None);
@@ -2092,13 +2185,13 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_definition_at_nested_dict() {
-        let env = test_env();
+    #[tokio::test]
+    async fn test_definition_at_nested_dict() {
+        let env = test_env().await;
         let doc = DocumentState::new(
             "[outer: [inner: 42]  use: $inner]".to_string(),
             &env,
-            &test_ctx(),
+            &test_ctx().await,
             None,
         );
         let uri = test_uri();
@@ -2113,60 +2206,34 @@ mod tests {
         assert_eq!(span.end.offset, 14);
     }
 
-    #[test]
-    fn test_definition_at_parse_error() {
-        let env = test_env();
-        let doc = DocumentState::new("[unterminated".to_string(), &env, &test_ctx(), None);
+    #[tokio::test]
+    async fn test_definition_at_parse_error() {
+        let env = test_env().await;
+        let doc = DocumentState::new("[unterminated".to_string(), &env, &test_ctx().await, None);
         let uri = test_uri();
         let def_result = definition_at(&doc, &uri, 1, &test_include_graph(), None);
         assert!(def_result.is_none(), "should return None when parse fails");
     }
 
-    #[test]
-    fn test_hover_prelude_name() {
-        // After migration to shared imports module, prelude types are seeded via
-        // imports::build_type_env(). This test verifies that hover still works
-        // for prelude functions via the document's type_map.
-        let env = test_env();
-        let ctx = test_ctx();
-        let doc = DocumentState::new(
-            "[call $map [fn [let x] x] [1 2 3]]".to_string(),
-            &env,
-            &ctx,
-            None, // base_dir=None still seeds prelude types via imports::build_type_env
-        );
-        // Offset 6 is on '$map'
-        // "[call $map [fn [let x] x] [1 2 3]]"
-        //  0123456789...
-        let hover = hover_at(&doc, &test_uri(), 6, &test_include_graph(), &test_ctx());
-        assert!(hover.is_some(), "should find hover for $map");
-        let text = hover.unwrap();
-        assert!(
-            !text.contains("<error>"),
-            "hover should not show <error> for prelude name; got: {text}"
-        );
-        assert!(
-            text.contains("(") && text.contains(")"),
-            "hover should show type signature for prelude name; got: {text}"
-        );
-    }
-
-    // Note: test_definition_at_prelude_name was removed during migration to shared
-    // imports module. Prelude go-to-definition is not currently supported but could
-    // be re-added by extending imports.rs to provide a prelude span map.
-
-    #[test]
-    fn test_hover_shows_doc() {
-        let env = test_env();
+    #[tokio::test]
+    async fn test_hover_shows_doc() {
+        let env = test_env().await;
         let source = r#"[fn [let x@[type: String doc: "the name"]] $x]"#;
-        let doc = DocumentState::new(source.to_string(), &env, &test_ctx(), None);
+        let doc = DocumentState::new(source.to_string(), &env, &test_ctx().await, None);
 
         // Hover on "$x" in the function body (starts at offset 43)
         // "[fn [let x@[type: String doc: "the name"]] $x]"
         //  0         1         2         3         4
         //  01234567890123456789012345678901234567890123456
         //                                             ^-- $ at 43, x at 44
-        let hover = hover_at(&doc, &test_uri(), 43, &test_include_graph(), &test_ctx());
+        let hover = hover_at(
+            &doc,
+            &test_uri(),
+            43,
+            &test_include_graph(),
+            &test_ctx().await,
+        )
+        .await;
         assert!(hover.is_some(), "hover should be present");
         let text = hover.unwrap();
         assert!(
@@ -2179,17 +2246,24 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_hover_no_doc() {
-        let env = test_env();
+    #[tokio::test]
+    async fn test_hover_no_doc() {
+        let env = test_env().await;
         let source = r#"[fn [let x@String] $x]"#;
-        let doc = DocumentState::new(source.to_string(), &env, &test_ctx(), None);
+        let doc = DocumentState::new(source.to_string(), &env, &test_ctx().await, None);
 
         // Hover on "$x" in the function body (starts at offset 19)
         // "[fn [let x@String] $x]"
         //  0         1         2
         //  0123456789012345678901
-        let hover = hover_at(&doc, &test_uri(), 19, &test_include_graph(), &test_ctx());
+        let hover = hover_at(
+            &doc,
+            &test_uri(),
+            19,
+            &test_include_graph(),
+            &test_ctx().await,
+        )
+        .await;
         assert!(hover.is_some(), "hover should be present");
         let text = hover.unwrap();
         assert!(
@@ -2202,17 +2276,24 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_hover_doc_and_default() {
-        let env = test_env();
+    #[tokio::test]
+    async fn test_hover_doc_and_default() {
+        let env = test_env().await;
         let source = r#"[fn [let x@[type: Number default: 0 doc: "count"]] $x]"#;
-        let doc = DocumentState::new(source.to_string(), &env, &test_ctx(), None);
+        let doc = DocumentState::new(source.to_string(), &env, &test_ctx().await, None);
 
         // Hover on "$x" in the function body (starts at offset 52)
         // "[fn [let x@[type: Number default: 0 doc: "count"]] $x]"
         //  0         1         2         3         4         5
         //  01234567890123456789012345678901234567890123456789012345
-        let hover = hover_at(&doc, &test_uri(), 52, &test_include_graph(), &test_ctx());
+        let hover = hover_at(
+            &doc,
+            &test_uri(),
+            52,
+            &test_include_graph(),
+            &test_ctx().await,
+        )
+        .await;
         assert!(hover.is_some(), "hover should be present");
         let text = hover.unwrap();
         assert!(
@@ -2226,16 +2307,23 @@ mod tests {
         // The type inference should work regardless of default value presence
     }
 
-    #[test]
-    fn test_hover_param_with_doc() {
-        let env = test_env();
+    #[tokio::test]
+    async fn test_hover_param_with_doc() {
+        let env = test_env().await;
         let source = r#"[fn [let x@[type: String doc: "the name"]] $x]"#;
-        let doc = DocumentState::new(source.to_string(), &env, &test_ctx(), None);
+        let doc = DocumentState::new(source.to_string(), &env, &test_ctx().await, None);
 
         // Hover on parameter "x" itself (at offset 9 in [fn [let x@...]])
         // "[fn [let x@[type: String doc: "the name"]] $x]"
         //  012345678 9
-        let hover = hover_at(&doc, &test_uri(), 9, &test_include_graph(), &test_ctx());
+        let hover = hover_at(
+            &doc,
+            &test_uri(),
+            9,
+            &test_include_graph(),
+            &test_ctx().await,
+        )
+        .await;
         assert!(hover.is_some(), "hover should be present on param");
         let text = hover.unwrap();
         assert!(
@@ -2248,23 +2336,30 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_hover_function_param_names_in_type() {
+    #[tokio::test]
+    async fn test_hover_function_param_names_in_type() {
         // Task 1: parameter names should appear in function type display.
         // A typed function [fn [x@Int y@Int] ...] stored in a dict key $f
         // should show "x: Int y: Int" in the hover type.
-        let env = test_env();
+        let env = test_env().await;
         // Use two-document pipeline: define f, then reference it.
         // "[f: [fn [let x@Int y@Int] 0]]" = 30 chars (0..29), \n at 30
         // "[call $f 1 2]"  starts at 31
         //  "$f" is at offset 37 ('$') and 38 ('f')
         let source = "[f: [fn [let x@Int y@Int] 0]]\n[call $f 1 2]";
-        let doc = DocumentState::new(source.to_string(), &env, &test_ctx(), None);
+        let doc = DocumentState::new(source.to_string(), &env, &test_ctx().await, None);
         // "[f: [fn [let x@Int y@Int] 0]]\n[call $f 1 2]"
         //  0         1         2         3
         //  0123456789012345678901234567890123456789012345
         //                                       ^ 37 = '$f'
-        let hover = hover_at(&doc, &test_uri(), 37, &test_include_graph(), &test_ctx());
+        let hover = hover_at(
+            &doc,
+            &test_uri(),
+            37,
+            &test_include_graph(),
+            &test_ctx().await,
+        )
+        .await;
         assert!(hover.is_some(), "should have hover on $f");
         let text = hover.unwrap();
         assert!(
@@ -2278,46 +2373,16 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_hover_builtin_shows_constraint() {
-        // Hover on `=` should show the Equatable constraint and Bool return type.
-        //
-        // Fixed by builtin-privacy-constraint-hover sprint: when the prelude's inferred
-        // scheme for `=` is degraded (monomorphic with Unknown params, due to prelude
-        // type-checking discarding schemes when any dict entry fails), we fall back to
-        // the authoritative builtin scheme which has the correct Equatable constraint.
-        //
-        // "[call $= 1 2]"
-        //  0123456789...
-        //       ^ 6 = '$' of '$='
-        let env = test_env();
-        let source = "[call $= 1 2]";
-        let doc = DocumentState::new(source.to_string(), &env, &test_ctx(), None);
-        // Offset 6 is on '$='
-        let hover = hover_at(&doc, &test_uri(), 6, &test_include_graph(), &test_ctx());
-        assert!(hover.is_some(), "should have hover on $=");
-        let text = hover.unwrap();
-        assert!(
-            text.contains("Bool"),
-            "hover should show Bool return type for $=, got: {text}"
-        );
-        // The Equatable constraint must be visible in the hover (from the builtin fallback scheme).
-        assert!(
-            text.contains("Equatable"),
-            "hover should show Equatable constraint for $=, got: {text}"
-        );
-    }
-
-    #[test]
-    fn test_hover_function_with_doc_in_scheme() {
+    #[tokio::test]
+    async fn test_hover_function_with_doc_in_scheme() {
         // Test that when hovering on a function reference, the doc from the TypeScheme
         // is displayed in the hover text.
-        let env = test_env();
+        let env = test_env().await;
         let source = r#"[
   identity@[doc: "Returns the argument unchanged"]: [fn [let x@a] $x]
   test: [call $identity 42]
 ]"#;
-        let doc = DocumentState::new(source.to_string(), &env, &test_ctx(), None);
+        let doc = DocumentState::new(source.to_string(), &env, &test_ctx().await, None);
         // Find offset of "$identity" in the call expression
         let identity_offset = source.find("$identity").expect("should find $identity");
         let hover = hover_at(
@@ -2325,8 +2390,9 @@ mod tests {
             &test_uri(),
             identity_offset,
             &test_include_graph(),
-            &test_ctx(),
-        );
+            &test_ctx().await,
+        )
+        .await;
         assert!(hover.is_some(), "should have hover on $identity");
         let text = hover.unwrap();
         assert!(
@@ -2341,104 +2407,62 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_definition_at_prelude_name() {
-        // Verify that go-to-definition works for prelude functions when prelude_ast is provided.
-        let env = test_env();
-        let ctx = test_ctx();
-        // Use a prelude function like "map" (defined in the prelude)
-        let source = "[call $map [fn [let x] x] [1 2 3]]";
-        let doc = DocumentState::new(source.to_string(), &env, &ctx, None);
-        let uri = test_uri();
-
-        // Parse the prelude Surface AST
-        let prelude_source = include_str!("../../stdlib/prelude.llt");
-        let prelude_surface = crate::parser::parse(prelude_source).ok().map(|o| o.program);
-
-        // Offset 6 is on '$map'
-        // "[call $map [fn [let x] x] [1 2 3]]"
-        //  0123456789...
-        let def_result = definition_at(
-            &doc,
-            &uri,
-            6,
-            &test_include_graph(),
-            prelude_surface.as_ref(),
-        );
-
-        // Should find the definition in the prelude
-        assert!(
-            def_result.is_some(),
-            "should find definition of $map in prelude"
-        );
-
-        let (target_uri, _span) = def_result.unwrap();
-
-        // The target URI should be the prelude file (not the test document)
-        assert_ne!(
-            target_uri, uri,
-            "definition should point to prelude, not the test document"
-        );
-
-        // The URI should be a file:// URI pointing to stdlib/prelude.llt
-        assert!(
-            target_uri.as_str().contains("prelude.llt"),
-            "target URI should reference prelude.llt, got: {}",
-            target_uri.as_str()
-        );
-    }
-
     // --- document_symbols_at tests ---
 
-    #[test]
-    fn test_document_symbols_simple() {
-        let env = test_env();
-        let doc = DocumentState::new("[x: 1  y: 2]".to_string(), &env, &test_ctx(), None);
+    #[tokio::test]
+    async fn test_document_symbols_simple() {
+        let env = test_env().await;
+        let doc = DocumentState::new("[x: 1  y: 2]".to_string(), &env, &test_ctx().await, None);
         let syms = document_symbols_at(&doc);
         assert_eq!(syms.len(), 2);
         assert_eq!(syms[0].name, "x");
         assert_eq!(syms[1].name, "y");
     }
 
-    #[test]
-    fn test_document_symbols_annotated_key() {
-        let env = test_env();
-        let doc = DocumentState::new("[x@Int: 42]".to_string(), &env, &test_ctx(), None);
+    #[tokio::test]
+    async fn test_document_symbols_annotated_key() {
+        let env = test_env().await;
+        let doc = DocumentState::new("[x@Int: 42]".to_string(), &env, &test_ctx().await, None);
         let syms = document_symbols_at(&doc);
         assert_eq!(syms.len(), 1);
         assert_eq!(syms[0].name, "x");
     }
 
-    #[test]
-    fn test_document_symbols_string_key() {
-        let env = test_env();
-        let doc = DocumentState::new(r#"["my-key": 99]"#.to_string(), &env, &test_ctx(), None);
+    #[tokio::test]
+    async fn test_document_symbols_string_key() {
+        let env = test_env().await;
+        let doc = DocumentState::new(
+            r#"["my-key": 99]"#.to_string(),
+            &env,
+            &test_ctx().await,
+            None,
+        );
         let syms = document_symbols_at(&doc);
         assert_eq!(syms.len(), 1);
         assert_eq!(syms[0].name, "my-key");
     }
 
-    #[test]
-    fn test_document_symbols_empty_on_parse_error() {
-        let env = test_env();
-        let doc = DocumentState::new("[unterminated".to_string(), &env, &test_ctx(), None);
+    #[tokio::test]
+    async fn test_document_symbols_empty_on_parse_error() {
+        let env = test_env().await;
+        let doc = DocumentState::new("[unterminated".to_string(), &env, &test_ctx().await, None);
         let syms = document_symbols_at(&doc);
         assert!(syms.is_empty());
     }
 
-    #[test]
-    fn test_document_symbols_non_dict_is_empty() {
-        let env = test_env();
-        let doc = DocumentState::new("42".to_string(), &env, &test_ctx(), None);
+    #[tokio::test]
+    async fn test_document_symbols_non_dict_is_empty() {
+        let env = test_env().await;
+        let doc = DocumentState::new("42".to_string(), &env, &test_ctx().await, None);
         let syms = document_symbols_at(&doc);
         assert!(syms.is_empty());
     }
 
-    #[test]
-    fn test_document_symbols_symbol_kind_is_variable() {
+    #[tokio::test]
+    async fn test_document_symbols_symbol_kind_is_variable() {
         use lsp_types::SymbolKind;
-        let env = test_env();
-        let doc = DocumentState::new("[foo: 1]".to_string(), &env, &test_ctx(), None);
+        let env = test_env().await;
+        let doc = DocumentState::new("[foo: 1]".to_string(), &env, &test_ctx().await, None);
         let syms = document_symbols_at(&doc);
         assert_eq!(syms.len(), 1);
         assert_eq!(syms[0].kind, SymbolKind::VARIABLE);
@@ -2446,54 +2470,54 @@ mod tests {
 
     // --- references_at tests ---
 
-    #[test]
-    fn test_references_at_finds_all() {
-        let env = test_env();
+    #[tokio::test]
+    async fn test_references_at_finds_all() {
+        let env = test_env().await;
         // "[x: 1  y: $x  z: $x]"
         //  0         1         2
         //  0123456789012345678901
         let source = "[x: 1  y: $x  z: $x]";
-        let doc = DocumentState::new(source.to_string(), &env, &test_ctx(), None);
+        let doc = DocumentState::new(source.to_string(), &env, &test_ctx().await, None);
         let uri = test_uri();
         // Cursor on first "$x" at offset 11
         let locs = references_at(&doc, &uri, 11);
         assert_eq!(locs.len(), 2, "should find both $x refs; got {locs:?}");
     }
 
-    #[test]
-    fn test_references_at_single_ref() {
-        let env = test_env();
-        let doc = DocumentState::new("[x: 1  y: $x]".to_string(), &env, &test_ctx(), None);
+    #[tokio::test]
+    async fn test_references_at_single_ref() {
+        let env = test_env().await;
+        let doc = DocumentState::new("[x: 1  y: $x]".to_string(), &env, &test_ctx().await, None);
         let uri = test_uri();
         // Cursor on "$x" at offset 11
         let locs = references_at(&doc, &uri, 11);
         assert_eq!(locs.len(), 1, "should find single ref; got {locs:?}");
     }
 
-    #[test]
-    fn test_references_at_no_ref_on_literal() {
-        let env = test_env();
-        let doc = DocumentState::new("[x: 42]".to_string(), &env, &test_ctx(), None);
+    #[tokio::test]
+    async fn test_references_at_no_ref_on_literal() {
+        let env = test_env().await;
+        let doc = DocumentState::new("[x: 42]".to_string(), &env, &test_ctx().await, None);
         let uri = test_uri();
         // Offset 4 is on the integer '42', not a VarRef.
         let locs = references_at(&doc, &uri, 4);
         assert!(locs.is_empty(), "int literal has no references");
     }
 
-    #[test]
-    fn test_references_at_parse_error_returns_empty() {
-        let env = test_env();
-        let doc = DocumentState::new("[unterminated".to_string(), &env, &test_ctx(), None);
+    #[tokio::test]
+    async fn test_references_at_parse_error_returns_empty() {
+        let env = test_env().await;
+        let doc = DocumentState::new("[unterminated".to_string(), &env, &test_ctx().await, None);
         let uri = test_uri();
         let locs = references_at(&doc, &uri, 1);
         assert!(locs.is_empty());
     }
 
-    #[test]
-    fn test_references_at_uri_matches() {
-        let env = test_env();
+    #[tokio::test]
+    async fn test_references_at_uri_matches() {
+        let env = test_env().await;
         let source = "[x: 1  y: $x]";
-        let doc = DocumentState::new(source.to_string(), &env, &test_ctx(), None);
+        let doc = DocumentState::new(source.to_string(), &env, &test_ctx().await, None);
         let uri = test_uri();
         let locs = references_at(&doc, &uri, 11);
         for loc in &locs {
@@ -2506,14 +2530,14 @@ mod tests {
 
     // --- rename_at tests ---
 
-    #[test]
-    fn test_rename_at_simple() {
-        let env = test_env();
+    #[tokio::test]
+    async fn test_rename_at_simple() {
+        let env = test_env().await;
         // "[x: 1  y: $x]"
         //  0123456789012345
         //         ^ $x at 11
         let source = "[x: 1  y: $x]";
-        let doc = DocumentState::new(source.to_string(), &env, &test_ctx(), None);
+        let doc = DocumentState::new(source.to_string(), &env, &test_ctx().await, None);
         // Cursor on "$x" at offset 11
         let edits = rename_at(&doc, 11, "z");
         assert!(edits.is_some(), "should produce edits");
@@ -2529,15 +2553,15 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_rename_at_renames_definition_and_uses() {
-        let env = test_env();
+    #[tokio::test]
+    async fn test_rename_at_renames_definition_and_uses() {
+        let env = test_env().await;
         // "[x: 1  y: $x  z: $x]"
         //  0         1         2
         //  0123456789012345678901
         //  key at 1, $x at 11, $x at 18
         let source = "[x: 1  y: $x  z: $x]";
-        let doc = DocumentState::new(source.to_string(), &env, &test_ctx(), None);
+        let doc = DocumentState::new(source.to_string(), &env, &test_ctx().await, None);
         // Cursor on first "$x" at offset 11
         let edits = rename_at(&doc, 11, "foo");
         assert!(edits.is_some(), "should produce edits");
@@ -2553,54 +2577,54 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_rename_at_invalid_name_rejected() {
-        let env = test_env();
-        let doc = DocumentState::new("[x: 1  y: $x]".to_string(), &env, &test_ctx(), None);
+    #[tokio::test]
+    async fn test_rename_at_invalid_name_rejected() {
+        let env = test_env().await;
+        let doc = DocumentState::new("[x: 1  y: $x]".to_string(), &env, &test_ctx().await, None);
         // New name with invalid characters (contains '@')
         let edits = rename_at(&doc, 11, "x@y");
         assert!(edits.is_none(), "identifier with '@' should be rejected");
     }
 
-    #[test]
-    fn test_rename_at_empty_name_rejected() {
-        let env = test_env();
-        let doc = DocumentState::new("[x: 1  y: $x]".to_string(), &env, &test_ctx(), None);
+    #[tokio::test]
+    async fn test_rename_at_empty_name_rejected() {
+        let env = test_env().await;
+        let doc = DocumentState::new("[x: 1  y: $x]".to_string(), &env, &test_ctx().await, None);
         let edits = rename_at(&doc, 11, "");
         assert!(edits.is_none(), "empty name should be rejected");
     }
 
-    #[test]
-    fn test_rename_at_digit_start_rejected() {
-        let env = test_env();
-        let doc = DocumentState::new("[x: 1  y: $x]".to_string(), &env, &test_ctx(), None);
+    #[tokio::test]
+    async fn test_rename_at_digit_start_rejected() {
+        let env = test_env().await;
+        let doc = DocumentState::new("[x: 1  y: $x]".to_string(), &env, &test_ctx().await, None);
         let edits = rename_at(&doc, 11, "123abc");
         assert!(edits.is_none(), "digit-starting name should be rejected");
     }
 
-    #[test]
-    fn test_rename_at_parse_error_returns_none() {
-        let env = test_env();
-        let doc = DocumentState::new("[unterminated".to_string(), &env, &test_ctx(), None);
+    #[tokio::test]
+    async fn test_rename_at_parse_error_returns_none() {
+        let env = test_env().await;
+        let doc = DocumentState::new("[unterminated".to_string(), &env, &test_ctx().await, None);
         let edits = rename_at(&doc, 1, "z");
         assert!(edits.is_none());
     }
 
-    #[test]
-    fn test_rename_at_no_ref_at_offset_returns_none() {
-        let env = test_env();
+    #[tokio::test]
+    async fn test_rename_at_no_ref_at_offset_returns_none() {
+        let env = test_env().await;
         // Offset 4 is on the integer literal '1', not a VarRef.
-        let doc = DocumentState::new("[x: 1]".to_string(), &env, &test_ctx(), None);
+        let doc = DocumentState::new("[x: 1]".to_string(), &env, &test_ctx().await, None);
         let edits = rename_at(&doc, 4, "z");
         assert!(edits.is_none(), "no rename when cursor is on a literal");
     }
 
-    #[test]
-    fn test_rename_at_hyphenated_name_valid() {
-        let env = test_env();
+    #[tokio::test]
+    async fn test_rename_at_hyphenated_name_valid() {
+        let env = test_env().await;
         // Tinct identifiers can contain hyphens.
         let source = "[my-key: 1  y: $my-key]";
-        let doc = DocumentState::new(source.to_string(), &env, &test_ctx(), None);
+        let doc = DocumentState::new(source.to_string(), &env, &test_ctx().await, None);
         // Cursor on "$my-key" at offset 15
         let edits = rename_at(&doc, 15, "new-key");
         assert!(edits.is_some(), "hyphenated rename should succeed");
@@ -2608,26 +2632,26 @@ mod tests {
 
     // --- is_valid_tinct_identifier tests ---
 
-    #[test]
-    fn test_is_valid_ident_simple() {
+    #[tokio::test]
+    async fn test_is_valid_ident_simple() {
         assert!(is_valid_tinct_identifier("foo"));
         assert!(is_valid_tinct_identifier("my-key"));
         assert!(is_valid_tinct_identifier("pred?"));
         assert!(is_valid_tinct_identifier("x"));
     }
 
-    #[test]
-    fn test_is_valid_ident_rejects_empty() {
+    #[tokio::test]
+    async fn test_is_valid_ident_rejects_empty() {
         assert!(!is_valid_tinct_identifier(""));
     }
 
-    #[test]
-    fn test_is_valid_ident_rejects_digit_start() {
+    #[tokio::test]
+    async fn test_is_valid_ident_rejects_digit_start() {
         assert!(!is_valid_tinct_identifier("1abc"));
     }
 
-    #[test]
-    fn test_is_valid_ident_rejects_special_chars() {
+    #[tokio::test]
+    async fn test_is_valid_ident_rejects_special_chars() {
         assert!(!is_valid_tinct_identifier("x@y"));
         assert!(!is_valid_tinct_identifier("x.y"));
         assert!(!is_valid_tinct_identifier("x y"));
@@ -2639,10 +2663,10 @@ mod tests {
 
     // --- inlay_hints_for tests ---
 
-    #[test]
-    fn test_inlay_hints_for_simple_binding() {
-        let env = test_env();
-        let doc = DocumentState::new("[x: 42]".to_string(), &env, &test_ctx(), None);
+    #[tokio::test]
+    async fn test_inlay_hints_for_simple_binding() {
+        let env = test_env().await;
+        let doc = DocumentState::new("[x: 42]".to_string(), &env, &test_ctx().await, None);
         let hints = inlay_hints_for(&doc);
         // Should emit a hint for the binding "x" with type "42" or "Int"
         assert!(
@@ -2665,15 +2689,15 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_inlay_hints_skips_annotated_bindings() {
-        let env = test_env();
+    #[tokio::test]
+    async fn test_inlay_hints_skips_annotated_bindings() {
+        let env = test_env().await;
         // When a binding has a TypeAssert annotation, no inlay hint should be emitted.
-        let _doc = DocumentState::new("[x@Int: 42]".to_string(), &env, &test_ctx(), None);
+        let _doc = DocumentState::new("[x@Int: 42]".to_string(), &env, &test_ctx().await, None);
         // The key is annotated (x@Int), not the value; value is 42 (no TypeAssert)
         // so a hint IS expected here (annotation on key != TypeAssert on value).
         // A TypeAssert on the value looks like: [x: @Int 42]
-        let doc2 = DocumentState::new("[x: @Int 42]".to_string(), &env, &test_ctx(), None);
+        let doc2 = DocumentState::new("[x: @Int 42]".to_string(), &env, &test_ctx().await, None);
         let hints2 = inlay_hints_for(&doc2);
         // Value has TypeAssert — no hint expected.
         assert!(
@@ -2683,27 +2707,27 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_inlay_hints_parse_error_returns_empty() {
-        let env = test_env();
-        let doc = DocumentState::new("[unterminated".to_string(), &env, &test_ctx(), None);
+    #[tokio::test]
+    async fn test_inlay_hints_parse_error_returns_empty() {
+        let env = test_env().await;
+        let doc = DocumentState::new("[unterminated".to_string(), &env, &test_ctx().await, None);
         let hints = inlay_hints_for(&doc);
         assert!(hints.is_empty());
     }
 
-    #[test]
-    fn test_inlay_hints_non_dict_returns_empty() {
-        let env = test_env();
-        let doc = DocumentState::new("42".to_string(), &env, &test_ctx(), None);
+    #[tokio::test]
+    async fn test_inlay_hints_non_dict_returns_empty() {
+        let env = test_env().await;
+        let doc = DocumentState::new("42".to_string(), &env, &test_ctx().await, None);
         let hints = inlay_hints_for(&doc);
         assert!(hints.is_empty());
     }
 
-    #[test]
-    fn test_inlay_hints_position_is_after_key() {
-        let env = test_env();
+    #[tokio::test]
+    async fn test_inlay_hints_position_is_after_key() {
+        let env = test_env().await;
         // "[x: 42]" — key 'x' is at column 1 (0-indexed), so end of key is column 2 (char 1).
-        let doc = DocumentState::new("[x: 42]".to_string(), &env, &test_ctx(), None);
+        let doc = DocumentState::new("[x: 42]".to_string(), &env, &test_ctx().await, None);
         let hints = inlay_hints_for(&doc);
         if !hints.is_empty() {
             let pos = hints[0].position;
@@ -2719,15 +2743,15 @@ mod tests {
 
     // --- signature_help_at tests ---
 
-    #[test]
-    fn test_signature_help_inside_call() {
-        let env = test_env();
+    #[tokio::test]
+    async fn test_signature_help_inside_call() {
+        let env = test_env().await;
         // "[f: [fn [let x@Int y@Int] 0]]\n[call $f 1 2]"
         //  0         1         2         3
         //  0123456789012345678901234567890123456789
         // "$f" is at offset 33, "1" is at offset 36, "2" is at offset 38
         let source = "[f: [fn [let x@Int y@Int] 0]]\n[call $f 1 2]";
-        let doc = DocumentState::new(source.to_string(), &env, &test_ctx(), None);
+        let doc = DocumentState::new(source.to_string(), &env, &test_ctx().await, None);
         // Offset 37 is between "1" and "2" — on the second argument.
         let help = signature_help_at(&doc, 37);
         // Should return some signature help when inside a call with a known typed function.
@@ -2746,11 +2770,11 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_signature_help_not_in_call() {
-        let env = test_env();
+    #[tokio::test]
+    async fn test_signature_help_not_in_call() {
+        let env = test_env().await;
         // A bare integer literal — not inside a call.
-        let doc = DocumentState::new("42".to_string(), &env, &test_ctx(), None);
+        let doc = DocumentState::new("42".to_string(), &env, &test_ctx().await, None);
         let help = signature_help_at(&doc, 0);
         assert!(
             help.is_none(),
@@ -2758,17 +2782,17 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_signature_help_parse_error() {
-        let env = test_env();
-        let doc = DocumentState::new("[unterminated".to_string(), &env, &test_ctx(), None);
+    #[tokio::test]
+    async fn test_signature_help_parse_error() {
+        let env = test_env().await;
+        let doc = DocumentState::new("[unterminated".to_string(), &env, &test_ctx().await, None);
         let help = signature_help_at(&doc, 1);
         assert!(help.is_none(), "should return None on parse error");
     }
 
-    #[test]
-    fn test_signature_help_active_parameter_index() {
-        let env = test_env();
+    #[tokio::test]
+    async fn test_signature_help_active_parameter_index() {
+        let env = test_env().await;
         // Use a builtin with a known function type.
         // "[call $+ 1 2]" — $+ is a function, cursor on "2" means active_param = 1.
         // "[call $+ 1 2]"
@@ -2776,7 +2800,7 @@ mod tests {
         //  0123456789012
         // "$+" at offset 6, "1" at offset 9, "2" at offset 11
         let source = "[call $+ 1 2]";
-        let doc = DocumentState::new(source.to_string(), &env, &test_ctx(), None);
+        let doc = DocumentState::new(source.to_string(), &env, &test_ctx().await, None);
         // Cursor on "2" at offset 11 (after "1" which starts at offset 9)
         let help = signature_help_at(&doc, 11);
         if let Some(h) = help {
@@ -2791,22 +2815,27 @@ mod tests {
 
     // --- workspace_symbols_for tests ---
 
-    #[test]
-    fn test_workspace_symbols_empty_query_returns_all() {
-        let env = test_env();
-        let doc = DocumentState::new("[x: 1  y: 2  z: 3]".to_string(), &env, &test_ctx(), None);
+    #[tokio::test]
+    async fn test_workspace_symbols_empty_query_returns_all() {
+        let env = test_env().await;
+        let doc = DocumentState::new(
+            "[x: 1  y: 2  z: 3]".to_string(),
+            &env,
+            &test_ctx().await,
+            None,
+        );
         let uri = test_uri();
         let syms = workspace_symbols_for(&doc, &uri, "");
         assert_eq!(syms.len(), 3, "empty query should return all symbols");
     }
 
-    #[test]
-    fn test_workspace_symbols_prefix_filter() {
-        let env = test_env();
+    #[tokio::test]
+    async fn test_workspace_symbols_prefix_filter() {
+        let env = test_env().await;
         let doc = DocumentState::new(
             "[foo: 1  bar: 2  baz: 3]".to_string(),
             &env,
-            &test_ctx(),
+            &test_ctx().await,
             None,
         );
         let uri = test_uri();
@@ -2819,13 +2848,13 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_workspace_symbols_case_insensitive() {
-        let env = test_env();
+    #[tokio::test]
+    async fn test_workspace_symbols_case_insensitive() {
+        let env = test_env().await;
         let doc = DocumentState::new(
             "[Foo: 1  FOO: 2  foo: 3]".to_string(),
             &env,
-            &test_ctx(),
+            &test_ctx().await,
             None,
         );
         let uri = test_uri();
@@ -2838,28 +2867,33 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_workspace_symbols_no_match() {
-        let env = test_env();
-        let doc = DocumentState::new("[foo: 1  bar: 2]".to_string(), &env, &test_ctx(), None);
+    #[tokio::test]
+    async fn test_workspace_symbols_no_match() {
+        let env = test_env().await;
+        let doc = DocumentState::new(
+            "[foo: 1  bar: 2]".to_string(),
+            &env,
+            &test_ctx().await,
+            None,
+        );
         let uri = test_uri();
         let syms = workspace_symbols_for(&doc, &uri, "xyz");
         assert!(syms.is_empty(), "no match should return empty vec");
     }
 
-    #[test]
-    fn test_workspace_symbols_parse_error_returns_empty() {
-        let env = test_env();
-        let doc = DocumentState::new("[unterminated".to_string(), &env, &test_ctx(), None);
+    #[tokio::test]
+    async fn test_workspace_symbols_parse_error_returns_empty() {
+        let env = test_env().await;
+        let doc = DocumentState::new("[unterminated".to_string(), &env, &test_ctx().await, None);
         let uri = test_uri();
         let syms = workspace_symbols_for(&doc, &uri, "");
         assert!(syms.is_empty(), "parse error should yield empty list");
     }
 
-    #[test]
-    fn test_workspace_symbols_uri_is_set() {
-        let env = test_env();
-        let doc = DocumentState::new("[x: 1]".to_string(), &env, &test_ctx(), None);
+    #[tokio::test]
+    async fn test_workspace_symbols_uri_is_set() {
+        let env = test_env().await;
+        let doc = DocumentState::new("[x: 1]".to_string(), &env, &test_ctx().await, None);
         let uri = test_uri();
         let syms = workspace_symbols_for(&doc, &uri, "");
         assert_eq!(syms.len(), 1);
@@ -2874,15 +2908,15 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_hover_markdown_simple() {
-        let env = test_env();
+    #[tokio::test]
+    async fn test_hover_markdown_simple() {
+        let env = test_env().await;
         let markdown = r#"# Test
 
 ```tinct
 [x: 42]
 ```"#;
-        let doc = DocumentState::new_markdown(markdown.to_string(), &env, &test_ctx(), None);
+        let doc = DocumentState::new_markdown(markdown.to_string(), &env, &test_ctx().await, None);
 
         assert_eq!(doc.literate_blocks.len(), 1, "should have 1 block");
         let block = &doc.literate_blocks[0];
@@ -2894,53 +2928,61 @@ mod tests {
             &test_uri(),
             test_offset,
             &test_include_graph(),
-            &test_ctx(),
-        );
+            &test_ctx().await,
+        )
+        .await;
         assert!(
             hover.is_some(),
             "hover should work inside markdown code blocks"
         );
     }
 
-    #[test]
-    fn test_hover_markdown_outside_block() {
-        let env = test_env();
+    #[tokio::test]
+    async fn test_hover_markdown_outside_block() {
+        let env = test_env().await;
         let markdown = r#"# Test
 
 ```tinct
 [x: 42]
 ```"#;
-        let doc = DocumentState::new_markdown(markdown.to_string(), &env, &test_ctx(), None);
+        let doc = DocumentState::new_markdown(markdown.to_string(), &env, &test_ctx().await, None);
 
         // Offset 0 is in the prose before the code block
-        let hover = hover_at(&doc, &test_uri(), 0, &test_include_graph(), &test_ctx());
+        let hover = hover_at(
+            &doc,
+            &test_uri(),
+            0,
+            &test_include_graph(),
+            &test_ctx().await,
+        )
+        .await;
         assert!(
             hover.is_none(),
             "hover should return None outside code blocks"
         );
     }
 
-    #[test]
-    fn test_diagnostics_markdown_parse_error() {
-        let env = test_env();
+    #[tokio::test]
+    async fn test_diagnostics_markdown_parse_error() {
+        let env = test_env().await;
         let markdown = r#"```tinct
 [unterminated
 ```"#;
-        let doc = DocumentState::new_markdown(markdown.to_string(), &env, &test_ctx(), None);
-        let diags = diagnostics_for(&doc, &test_uri(), &test_ctx());
+        let doc = DocumentState::new_markdown(markdown.to_string(), &env, &test_ctx().await, None);
+        let diags = diagnostics_for(&doc, &test_uri(), &test_ctx().await).await;
         assert!(!diags.is_empty(), "should have parse error diagnostics");
         assert_eq!(diags[0].severity, Some(DiagnosticSeverity::ERROR));
         assert_eq!(diags[0].source, Some("tinct-parser".to_string()));
     }
 
-    #[test]
-    fn test_diagnostics_markdown_type_error() {
-        let env = test_env();
+    #[tokio::test]
+    async fn test_diagnostics_markdown_type_error() {
+        let env = test_env().await;
         let markdown = r#"```tinct
 [@Number "not a number"]
 ```"#;
-        let doc = DocumentState::new_markdown(markdown.to_string(), &env, &test_ctx(), None);
-        let diags = diagnostics_for(&doc, &test_uri(), &test_ctx());
+        let doc = DocumentState::new_markdown(markdown.to_string(), &env, &test_ctx().await, None);
+        let diags = diagnostics_for(&doc, &test_uri(), &test_ctx().await).await;
         assert!(!diags.is_empty(), "should have type error diagnostics");
         // Type errors are warnings in tinct
         assert!(diags
@@ -2950,8 +2992,8 @@ mod tests {
 
     // --- hover_at_declaration ClassDecl/InstanceDecl tests ---
 
-    #[test]
-    fn test_hover_at_declaration_class_decl() {
+    #[tokio::test]
+    async fn test_hover_at_declaration_class_decl() {
         // Hovering on the method name inside a [class ...] declaration should
         // delegate to hover_at_surface_node and return a non-None result.
         //
@@ -2960,19 +3002,26 @@ mod tests {
         //                  0123456789012345678901234567890123456789012345678901234
         //                  [class [let Equatable a] eq: [fn [let x@a y@a] Bool]]
         //                                           ^^ offset 25-26 is "eq" key
-        let env = test_env();
+        let env = test_env().await;
         let source = "[class [let Equatable a] eq: [fn [let x@a y@a] Bool]]";
-        let doc = DocumentState::new(source.to_string(), &env, &test_ctx(), None);
+        let doc = DocumentState::new(source.to_string(), &env, &test_ctx().await, None);
         // Hover on the "eq" method key (offset 25 = 'e' of "eq")
-        let hover = hover_at(&doc, &test_uri(), 25, &test_include_graph(), &test_ctx());
+        let hover = hover_at(
+            &doc,
+            &test_uri(),
+            25,
+            &test_include_graph(),
+            &test_ctx().await,
+        )
+        .await;
         assert!(
             hover.is_some(),
             "hovering inside a class declaration method should return Some; source: {source:?}"
         );
     }
 
-    #[test]
-    fn test_hover_at_declaration_instance_decl() {
+    #[tokio::test]
+    async fn test_hover_at_declaration_instance_decl() {
         // Hovering on the method name inside an [instance ...] declaration should
         // delegate to hover_at_surface_node and return a non-None result.
         //
@@ -2981,11 +3030,18 @@ mod tests {
         //                  0123456789012345678901234567890123456789012345678901234567890123456
         //                  [instance Equatable [pattern [a@Int]]: eq: [fn [let x y] [= x y]]]
         //                                                          ^^ offset 39-40 is "eq" key
-        let env = test_env();
+        let env = test_env().await;
         let source = "[instance Equatable [pattern [a@Int]]: eq: [fn [let x y] [= x y]]]";
-        let doc = DocumentState::new(source.to_string(), &env, &test_ctx(), None);
+        let doc = DocumentState::new(source.to_string(), &env, &test_ctx().await, None);
         // Hover on the "eq" method key (offset 39 = 'e' of "eq")
-        let hover = hover_at(&doc, &test_uri(), 39, &test_include_graph(), &test_ctx());
+        let hover = hover_at(
+            &doc,
+            &test_uri(),
+            39,
+            &test_include_graph(),
+            &test_ctx().await,
+        )
+        .await;
         assert!(
             hover.is_some(),
             "hovering inside an instance declaration method should return Some; source: {source:?}"
@@ -2994,8 +3050,8 @@ mod tests {
 
     // --- hover_at_surface_node Error(span) test ---
 
-    #[test]
-    fn test_hover_on_error_node_shows_parse_error() {
+    #[tokio::test]
+    async fn test_hover_on_error_node_shows_parse_error() {
         // A parse error inside a bracket form (recovered) creates a SurfaceExpression::Error
         // node. Hovering on it should return a string containing "Parse error at".
         //
@@ -3006,7 +3062,7 @@ mod tests {
         // Actually the most reliable way is to parse source that leaves an Error in a
         // recoverable position. "[call @]" — '@' without a following token in call position
         // gets parsed as an error node in the expression position.
-        let env = test_env();
+        let env = test_env().await;
         // Use a parse that produces an error but recovers (errors vec is non-empty, program is still Some).
         // The parser returns Err for truly unclosed brackets, so we need a recovering case.
         // "[x: @ 1]" — '@' without annotation creates a parse error that is recovered.
@@ -3017,9 +3073,16 @@ mod tests {
                 // Parser recovered — check if any Error node exists in the program
                 // hover_at_surface_node should handle Error(span) and return "Parse error at ..."
                 // We exercise the code path via hover_at on the DocumentState.
-                let doc = DocumentState::new(source.to_string(), &env, &test_ctx(), None);
+                let doc = DocumentState::new(source.to_string(), &env, &test_ctx().await, None);
                 // Find an offset that could hit an Error node (offset 4 is at '@')
-                let hover = hover_at(&doc, &test_uri(), 4, &test_include_graph(), &test_ctx());
+                let hover = hover_at(
+                    &doc,
+                    &test_uri(),
+                    4,
+                    &test_include_graph(),
+                    &test_ctx().await,
+                )
+                .await;
                 // If hover is Some, it should contain "Parse error" when on an error node
                 if let Some(text) = hover {
                     // Either it returned some other node's hover (if recovery put '@' elsewhere),
@@ -3178,9 +3241,12 @@ fn collect_rename_edits_spanned(
             collect_rename_edits_spanned(body, name, source, out);
         }
 
-        SurfaceExpression::DotAccess { expr: target, .. } => {
+        SurfaceExpression::DotAccess {
+            expr: Some(target), ..
+        } => {
             collect_rename_edits_spanned(target, name, source, out);
         }
+        SurfaceExpression::DotAccess { expr: None, .. } => {}
 
         SurfaceExpression::Sequential(exprs) => {
             for seq_expr in exprs {
@@ -3230,11 +3296,10 @@ fn collect_rename_edits_spanned(
         SurfaceExpression::Int(_)
         | SurfaceExpression::U64(_)
         | SurfaceExpression::Float(_)
-        | SurfaceExpression::Bool(_)
         | SurfaceExpression::Str(_)
         | SurfaceExpression::Placeholder
         | SurfaceExpression::Decl(_)
-        | SurfaceExpression::Rest(_)
+        | SurfaceExpression::Rest(..)
         | SurfaceExpression::Annotated { .. }
         | SurfaceExpression::Error(_) => {}
     }
@@ -3562,9 +3627,12 @@ fn collect_dict_keys_in_scope(
         SurfaceExpression::Fn { body, .. } => {
             collect_dict_keys_in_scope(body, offset, items, seen);
         }
-        SurfaceExpression::DotAccess { expr: target, .. } => {
+        SurfaceExpression::DotAccess {
+            expr: Some(target), ..
+        } => {
             collect_dict_keys_in_scope(target, offset, items, seen);
         }
+        SurfaceExpression::DotAccess { expr: None, .. } => {}
         SurfaceExpression::Sequential(exprs) => {
             for seq_expr in exprs {
                 collect_dict_keys_in_scope(seq_expr, offset, items, seen);
@@ -3755,7 +3823,10 @@ fn find_enclosing_call(node: &Arc<SurfaceNode>, offset: usize) -> Option<((usize
 
         SurfaceExpression::Fn { body, .. } => find_enclosing_call(body, offset),
 
-        SurfaceExpression::DotAccess { expr: target, .. } => find_enclosing_call(target, offset),
+        SurfaceExpression::DotAccess {
+            expr: Some(target), ..
+        } => find_enclosing_call(target, offset),
+        SurfaceExpression::DotAccess { expr: None, .. } => None,
 
         SurfaceExpression::Sequential(exprs) => {
             exprs.iter().find_map(|e| find_enclosing_call(e, offset))

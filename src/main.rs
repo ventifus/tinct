@@ -8,19 +8,15 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use std::io::{self, Read};
 use std::path::PathBuf;
-use std::process;
 use std::rc::Rc;
 use std::str::FromStr;
 use std::sync::Arc;
 use tinct::{
-    create_stdlib_env, escape_json_str, literate, parse,
-    parse_with_file, visit_value, EvalContext, JsonVisitor, SourceFile, Thunk, MAX_FILE_SIZE,
+    build_core_env, literate, parse, parse_with_file, string_val, EvalContext, HashableValue,
+    SourceFile, Thunk, ThunkId, Value, MAX_FILE_SIZE,
 };
-fn materialize(t: &Thunk, s: Option<&tinct::Span>, c: &std::sync::Arc<EvalContext>) -> tinct::EvalResult<tinct::Value> {
-    tinct::async_rt::block_on_anywhere(tinct::materialize(t, s, c))
-}
-
 // Exit codes for llt eval
+const EXIT_OK: i32 = 0;
 const EXIT_ERROR: i32 = 1;
 const EXIT_TIMEOUT: i32 = 2;
 // Note: RLIMIT_AS violations cause SIGSEGV/SIGKILL from the kernel, not a clean exit code.
@@ -167,6 +163,12 @@ enum Commands {
         #[arg(short = 'o', long = "output", value_name = "FORMAT")]
         output: Option<String>,
 
+        /// Alternative init program to use instead of the embedded stdlib/loader.llt.
+        /// The init program receives the same %programs, %args, %cwd, %libdir
+        /// as the standard loader.llt. %stdout and %stderr are defined by the init program itself.
+        #[clap(long, value_name = "FILE")]
+        init: Option<String>,
+
         /// Write profiling data to a JSON file. Collects span-level timing data during evaluation.
         /// Each thunk materialization produces a span record with source location, timing, parent
         /// attribution, and stall breakdown. Use tinct scripts in scripts/profile/ to analyze.
@@ -209,21 +211,14 @@ enum Commands {
         /// File to hash.
         file: String,
     },
-    /// Start an interactive REPL session.
-    #[cfg(feature = "repl")]
-    Repl,
     /// Start the LSP server (stdio transport).
     #[cfg(feature = "lsp")]
     Lsp,
     /// Describe the input contract of an LLT file.
     ///
     /// Extracts `%@Type` annotations and schema dicts, printing a human-readable
-    /// summary of the expected input shape. Use `--json` for machine-readable output.
+    /// summary of the expected input shape.
     Describe {
-        /// Emit machine-readable JSON instead of human-readable text.
-        #[arg(long)]
-        json: bool,
-
         /// Input LLT file to describe.
         file: String,
     },
@@ -314,24 +309,24 @@ enum Commands {
 enum LiterateMode {
     /// Extract tinct code blocks and print as a ---‑separated pipeline source.
     Tangle,
-    /// Extract blocks, evaluate the pipeline, and print the result as JSON.
-    Eval,
-    /// Evaluate blocks and output the Markdown with JSON results as comments after each block.
-    Weave,
     /// Extract blocks, type-check without evaluating.
     Lint,
 }
 
-/// Structure to hold actual output for each block in literate mode.
-#[derive(Debug)]
-struct BlockOutput {
-    out: Option<String>,   // JSON result or (emit)
-    warn: Option<String>,  // Type warnings
-    error: Option<String>, // Error message if evaluation failed
-    info: Option<String>,  // Log output (future: from `log` builtin)
+fn main() {
+    // async_rt::block_on uses current_thread Tokio runtime + thread-local LocalSet.
+    // This ensures spawn_local tasks (e.g., emit channel drain in formatters) are
+    // driven alongside the main future. #[tokio::main]'s multi_thread runtime does
+    // NOT drive LocalSet, so spawn_local tasks spawned by [task ...] never execute.
+    //
+    // process::exit() is called AFTER block_on() returns so that the Tokio runtime
+    // is no longer on the stack. Calling process::exit() from inside an async context
+    // panics with "Oh no! We never placed the Core back, this is a bug!".
+    let exit_code = tinct::async_rt::block_on(async_main());
+    std::process::exit(exit_code);
 }
 
-fn main() {
+async fn async_main() -> i32 {
     // Install ring as the process-level TLS crypto provider.
     // Both ring and aws-lc-rs are compiled in (via quinn+reqwest feature flags);
     // rustls panics at runtime if the process default is ambiguous.
@@ -346,7 +341,7 @@ fn main() {
     #[cfg(all(unix, not(debug_assertions)))]
     if let Err(e) = setup_rlimits(cli.max_memory, cli.max_cpu, cli.max_fds) {
         eprintln!("error: {e}");
-        process::exit(EXIT_ERROR);
+        return EXIT_ERROR;
     }
     // On non-Unix platforms (or debug builds), rlimit flags are accepted for CLI
     // compatibility but have no effect.
@@ -384,7 +379,6 @@ fn main() {
     }
 
     // Materialize is iterative (materialize_rc loop); no large worker stack needed.
-    // The REPL spawns its own 128MB thread for eval when needed (src/repl.rs).
     let result = match cli.command {
         Commands::Run {
             no_fs,
@@ -402,33 +396,38 @@ fn main() {
             no_cap_clock,
             cap_clock_fixed,
             cap_file,
+            init,
             expr,
             input,
             output,
             profile,
             files,
-        } => run_eval(
-            &files,
-            no_fs,
-            require_integrity,
-            strict,
-            timeout.as_deref(),
-            no_landlock,
-            no_env,
-            allow_env,
-            no_cwd,
-            no_libdir,
-            libdir_path,
-            cap_fs,
-            cap_net,
-            no_cap_clock,
-            cap_clock_fixed,
-            cap_file,
-            expr,
-            input,
-            output,
-            profile.as_deref(),
-        ),
+        } => {
+            run_eval(
+                &files,
+                no_fs,
+                require_integrity,
+                strict,
+                timeout.as_deref(),
+                no_landlock,
+                no_env,
+                allow_env,
+                no_cwd,
+                no_libdir,
+                libdir_path,
+                cap_fs,
+                cap_net,
+                no_cap_clock,
+                cap_clock_fixed,
+                cap_file,
+                init,
+                expr,
+                input,
+                output,
+                profile.as_deref(),
+            )
+            .await
+        }
         Commands::Hash { file } => run_hash(&file),
         Commands::Fmt {
             check,
@@ -436,12 +435,10 @@ fn main() {
             output,
             strict,
             file,
-        } => tinct::async_rt::block_on_anywhere(run_fmt(&file, check, in_place, &output, strict)),
-        #[cfg(feature = "repl")]
-        Commands::Repl => tinct::repl::run_repl(),
+        } => run_fmt(&file, check, in_place, &output, strict).await,
         #[cfg(feature = "lsp")]
         Commands::Lsp => tinct::lsp::run_lsp().map_err(|e| format!("{e}")),
-        Commands::Describe { json, file } => run_describe(&file, json),
+        Commands::Describe { file } => run_describe(&file).await,
         Commands::Explain { code } => run_explain(&code),
         Commands::Lint {
             file,
@@ -449,35 +446,32 @@ fn main() {
             cap_fs,
             cap_net,
             strict,
-        } => run_lint(&file, no_fs, strict, &cap_fs, &cap_net),
+        } => run_lint(&file, no_fs, strict, &cap_fs, &cap_net).await,
         Commands::Literate {
             mode,
             file,
-            no_substitute,
+            no_substitute: _,
             strict,
-            in_place,
-            verify,
-            fail_on_errors,
-            cap_fs,
-            cap_net,
-        } => run_literate(&LiterateConfig {
-            file_path: &file,
-            mode: &mode,
-            no_substitute,
-            strict,
-            in_place,
-            verify,
-            fail_on_errors,
-            cap_fs: &cap_fs,
-            cap_net: &cap_net,
-        }),
+            in_place: _,
+            verify: _,
+            fail_on_errors: _,
+            cap_fs: _,
+            cap_net: _,
+        } => {
+            run_literate(&LiterateConfig {
+                file_path: &file,
+                mode: &mode,
+                strict,
+            })
+            .await
+        }
     };
 
     match result {
-        Ok(()) => {}
+        Ok(()) => EXIT_OK,
         Err(e) => {
             eprintln!("{e}");
-            process::exit(EXIT_ERROR);
+            EXIT_ERROR
         }
     }
 }
@@ -1048,6 +1042,7 @@ fn interleave_files_and_exprs(files: &[String], exprs: &[String]) -> Vec<Pipelin
                     | "--cap-clock"
                     | "--cap-clock-fixed"
                     | "--cap-file"
+                    | "--init"
             ) {
                 // These flags take a value, skip it
                 args.next();
@@ -1313,7 +1308,7 @@ fn spawn_profile_flush_thread(
 // CLI entrypoint with all flags
 // AMBIENT-OK: CLI bootstrap — operator-specified file paths and capability directories
 #[allow(clippy::disallowed_methods)]
-fn run_eval(
+async fn run_eval(
     file_paths: &[String],
     no_fs: bool,
     require_integrity: bool,
@@ -1330,18 +1325,22 @@ fn run_eval(
     no_cap_clock: bool,
     cap_clock_fixed: Option<String>,
     cap_file: Vec<String>,
+    init: Option<String>,
     expr: Vec<String>,
     input: Option<String>,
     output: Option<String>,
     profile: Option<&str>,
 ) -> Result<(), String> {
-    // Build the complete pipeline: [input formatter] + [files/exprs interleaved] + [output formatter]
-    let mut pipeline_stages: Vec<PipelineStage> = Vec::new();
+    // Build the interleaved list of user pipeline stages: files and -e expressions in CLI order.
+    // Clap doesn't preserve mixed positional/flag order, so we reconstruct it by parsing raw args.
+    //
+    // NOTE (T-1347): The -i/-o formatter stages are NO LONGER added here Rust-side.
+    // loader.llt (dict 3) constructs the formatter ProgramItem.File from %args.output and passes
+    // it separately to cli-pipeline, which runs it last. See doc/whatif/type-foundations.md §src/main.rs.
+    let interleaved_stages = interleave_files_and_exprs(file_paths, &expr);
 
-    // Prepend -i input formatter if specified
+    // Validate formatter names early (before any file opens) so errors are reported cleanly.
     if let Some(ref input_format) = input {
-        // Validate formatter name: only alphanumeric and hyphens allowed.
-        // This prevents path traversal via -i ../../secret or similar.
         if !input_format
             .chars()
             .all(|c| c.is_alphanumeric() || c == '-')
@@ -1351,36 +1350,8 @@ fn run_eval(
                 input_format
             ));
         }
-        let libdir_path = resolve_libdir_path(libdir_path.as_deref())
-            .ok_or_else(|| "--input: stdlib directory not found (libdir)".to_string())?;
-        let input_path = libdir_path
-            .join("cli")
-            .join("in")
-            .join(format!("{}.llt", input_format));
-        if !input_path.exists() {
-            return Err(format!(
-                "--input: formatter not found: {}",
-                input_path.display()
-            ));
-        }
-        pipeline_stages.push(PipelineStage::File(
-            input_path
-                .to_str()
-                .ok_or_else(|| "formatter path is not valid UTF-8".to_string())?
-                .to_string(),
-        ));
     }
-
-    // Interleave files and -e expressions in the order they appear on the CLI.
-    // Clap doesn't preserve mixed positional/flag order, so we reconstruct it
-    // by parsing raw CLI arguments.
-    let interleaved_stages = interleave_files_and_exprs(file_paths, &expr);
-    pipeline_stages.extend(interleaved_stages);
-
-    // Append -o output formatter if specified
     if let Some(ref output_format) = output {
-        // Validate formatter name: only alphanumeric and hyphens allowed.
-        // This prevents path traversal via -o ../../secret or similar.
         if !output_format
             .chars()
             .all(|c| c.is_alphanumeric() || c == '-')
@@ -1390,49 +1361,77 @@ fn run_eval(
                 output_format
             ));
         }
-        let libdir_path = resolve_libdir_path(libdir_path.as_deref())
-            .ok_or_else(|| "--output: stdlib directory not found (libdir)".to_string())?;
-        let output_path = libdir_path
-            .join("cli")
-            .join("out")
-            .join(format!("{}.llt", output_format));
-        if !output_path.exists() {
-            return Err(format!(
-                "--output: formatter not found: {}",
-                output_path.display()
-            ));
-        }
-        pipeline_stages.push(PipelineStage::File(
-            output_path
-                .to_str()
-                .ok_or_else(|| "formatter path is not valid UTF-8".to_string())?
-                .to_string(),
-        ));
-    } else {
-        // When no -o flag is specified, use none.llt as the default output formatter.
-        // This drains %emit and forces % without writing any output.
-        // See doc/whatif/data-streaming.md §src/main.rs for the spec.
-        let libdir_path = resolve_libdir_path(libdir_path.as_deref()).ok_or_else(|| {
-            "stdlib directory not found (libdir) - needed for default output formatter".to_string()
-        })?;
-        let none_path = libdir_path.join("cli").join("out").join("none.llt");
-        if !none_path.exists() {
-            return Err(format!(
-                "internal error: default output formatter not found: {} (stdlib installation is broken)",
-                none_path.display()
-            ));
-        }
-        pipeline_stages.push(PipelineStage::File(
-            none_path
-                .to_str()
-                .ok_or_else(|| "none.llt path is not valid UTF-8".to_string())?
-                .to_string(),
-        ));
     }
 
-    if pipeline_stages.is_empty() {
-        return Err("no input files or expressions specified".to_string());
+    // ── Pre-open all file handles before Landlock fires ────────────────────────
+    //
+    // File handles opened here remain valid after Landlock restricts future open() calls.
+    // Each file path gets an absolute path (for error reporting) and a readable handle
+    // (opened via open_ambient_dir). Expressions (-e) don't need handles.
+    //
+    // %programs entries (ProgramItem variants) are built from these pre-opened handles.
+    // The file index in %programs matches CLI argument order.
+
+    /// A pre-opened file handle and its resolved absolute path.
+    struct PreOpenedFile {
+        abs_path: String,
+        /// Readable bytes handle opened pre-Landlock.
+        // AMBIENT-OK: CLI bootstrap — operator-specified file paths.
+        handle: std::fs::File,
     }
+
+    // For -i input formatter: validate it exists and record its path.
+    // The formatter itself is passed as %args.input to loader.llt (dict 3 builds the ProgramItem).
+    // We don't need to pre-open -i/-o formatters: they're in %libdir which is always pre-opened.
+
+    // Pre-open each user file (positional args only; -e expressions have no file).
+    let mut pre_opened_files: Vec<(String, PreOpenedFile)> = Vec::new();
+    for stage in &interleaved_stages {
+        if let PipelineStage::File(file_path) = stage {
+            if file_path == "-" {
+                // stdin: no pre-open needed; loader.llt reads from %stdin handle.
+                continue;
+            }
+            // Resolve to absolute path for error reporting and %include-dir computation.
+            let abs_path = {
+                let p = std::path::Path::new(file_path.as_str());
+                if p.is_absolute() {
+                    file_path.clone()
+                } else {
+                    std::env::current_dir()
+                        .map_err(|e| format!("cannot determine working directory: {e}"))?
+                        .join(p)
+                        .to_str()
+                        .ok_or_else(|| format!("file path is not valid UTF-8: {file_path}"))?
+                        .to_string()
+                }
+            };
+            // Open file for reading. Must happen before Landlock.
+            // AMBIENT-OK: CLI bootstrap — operator-specified file path.
+            #[allow(clippy::disallowed_types, clippy::disallowed_methods)]
+            let file_handle = std::fs::File::open(file_path.as_str())
+                .map_err(|e| format!("cannot open {:?}: {e}", file_path))?;
+            pre_opened_files.push((
+                file_path.clone(),
+                PreOpenedFile {
+                    abs_path,
+                    handle: file_handle,
+                },
+            ));
+        }
+    }
+    // Pre-read --init file before Landlock fires (same reason user files are pre-opened).
+    // Landlock restricts future open() calls; reading the init source here avoids
+    // being blocked by the filesystem ACL if --cap-fs is also specified.
+    let init_source_owned: Option<String> = if let Some(ref path) = init {
+        #[allow(clippy::disallowed_types, clippy::disallowed_methods)]
+        let source = std::fs::read_to_string(path)
+            .map_err(|e| format!("cannot read --init file '{}': {e}", path))?;
+        Some(source)
+    } else {
+        None
+    };
+
     // Install timeout handler if requested (must happen before evaluation)
     if let Some(duration) = timeout {
         #[cfg(unix)]
@@ -1441,25 +1440,24 @@ fn run_eval(
         }
         #[cfg(not(unix))]
         {
-            eprintln!("error: --timeout is only supported on Unix platforms");
-            process::exit(EXIT_ERROR);
+            return Err("--timeout is only supported on Unix platforms".to_string());
         }
     }
 
     // Resource limits are now applied globally in main() before subcommand dispatch.
 
-    // Create stdlib environment
-    let env = tinct::async_rt::block_on_anywhere(create_stdlib_env()).map_err(|e| format!("{e}"))?;
-    // Build type-stage environment (for builtin_eval_types). Falls back to stdlib_env if unavailable.
-    let type_stage_env = tinct::build_type_stage_env().unwrap_or_else(|| Arc::clone(&env));
+    // Build a fresh core env seeded with only the core Rust builtins.
+    // Loader.llt will be evaluated exactly once via run_loader_pipeline below,
+    // after all capability thunks have been injected into this env.
+    let env = build_core_env();
 
     // Apply Landlock filesystem ACL enforcement (Linux only, defense-in-depth).
     // Auto-triggered when --cap-fs entries are present (unless --no-landlock is set).
     // Derives Landlock roots from the --cap-fs directory paths.
     //
-    // Also grant read access to the directories containing the main input files so
-    // they can be read before evaluation starts. These extra-readable dirs are NOT
-    // part of the --cap-fs allowlist; they're just for reading the primary input files.
+    // File handles for user files are pre-opened above (pre_opened_files) and remain
+    // valid after Landlock fires. Landlock restricts future open() calls; existing FDs
+    // are unaffected.
     #[cfg(target_os = "linux")]
     if !no_landlock && !cap_fs.is_empty() {
         // Extract directory paths from --cap-fs NAME=PATH[:MODE] entries
@@ -1478,16 +1476,12 @@ fn run_eval(
             })
             .collect();
 
-        // Collect the canonical parent directories of each input file.
-        // Inline expressions (PipelineStage::Expr) don't need extra_readable paths.
-        let mut extra_readable: Vec<PathBuf> = pipeline_stages
+        // Collect the canonical parent directories of each pre-opened input file.
+        // Expressions (-e) don't need Landlock readable paths (no file access).
+        let mut extra_readable: Vec<PathBuf> = pre_opened_files
             .iter()
-            .filter_map(|stage| match stage {
-                PipelineStage::File(p) if p != "-" => Some(p.as_str()),
-                _ => None,
-            })
-            .filter_map(|p| {
-                let path = std::path::Path::new(p);
+            .filter_map(|(_, pf)| {
+                let path = std::path::Path::new(&pf.abs_path);
                 let dir = match path.parent().filter(|d| !d.as_os_str().is_empty()) {
                     Some(d) => d.to_path_buf(),
                     None => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
@@ -1540,66 +1534,25 @@ fn run_eval(
             dir: Rc::new(cwd_dir),
             perms: tinct::DirPerms::full(),
         };
-        let cwd_thunk = tinct::Thunk::new_materialized(cwd_value, tinct::Span::origin());
+        let cwd_thunk = tinct::Thunk::new_materialized(cwd_value, tinct::rust_span!());
         env.write()
             .unwrap()
             .insert("%cwd".to_string(), Arc::new(cwd_thunk));
     }
 
-    // Inject `%stdin` Handle for fd 0 into the root environment only when `-i` is present.
-    // When `-i` is not specified, there is no stdin input.
+    // %stdin: Handle/WriteHandle removed. When -i is specified, %stdin is not injected.
+    // The input formatter (cli/in/*.llt) must be updated to use builtin-read-stdin instead.
+    // TODO: Redesign %stdin injection using Value::File or builtin-read-stdin for each read.
+    // %stdin injection via Handle removed — network/stream redesign in progress.
+    // The -i flag sets input formatter; %stdin is not injected. Input format name flows via %args.input.
     if input.is_some() {
-        use std::cell::RefCell;
-        use std::collections::HashMap;
-        use std::io::BufReader;
-        use tinct::Value;
-
-        // Create stdin handle with default caps
-        let mut caps = HashMap::new();
-        caps.insert("Readable".to_string(), Value::Bool(true));
-        caps.insert("Text".to_string(), Value::Bool(true));
-
-        let stdin_handle = Value::Handle {
-            caps,
-            inner: Rc::new(RefCell::new(
-                Box::new(BufReader::new(std::io::stdin())) as Box<dyn std::io::BufRead>
-            )),
-            write_inner: None,
-            seek_inner: None,
-            raw_tcp: None,
-            creation_span: tinct::Span::origin(),
-        };
-        let stdin_thunk = tinct::Thunk::new_materialized(stdin_handle, tinct::Span::origin());
-        env.write()
-            .unwrap()
-            .insert("%stdin".to_string(), Arc::new(stdin_thunk));
+        // No-op: %stdin was previously injected here as a Value::Handle. Now no-op.
+        // The input formatter name is passed via %args.input (see below).
     }
 
-    // Inject `%stdout` WriteHandle into the root environment.
-    // Output formatters write directly to %stdout via [write-handle %stdout ...].
-    // This replaces the old "formatter returns String, CLI prints it" model.
-    {
-        use std::cell::RefCell;
-        use std::collections::HashMap;
-        use std::io::BufWriter;
-        use tinct::Value;
-
-        // Create stdout WriteHandle with default caps (Bool(true) sentinel, consistent with stdin)
-        let mut caps = HashMap::new();
-        caps.insert("Writable".to_string(), Value::Bool(true));
-        caps.insert("Text".to_string(), Value::Bool(true));
-
-        let stdout_handle = Value::WriteHandle {
-            caps,
-            inner: Rc::new(RefCell::new(
-                Box::new(BufWriter::new(std::io::stdout())) as Box<dyn std::io::Write>
-            )),
-        };
-        let stdout_thunk = tinct::Thunk::new_materialized(stdout_handle, tinct::Span::origin());
-        env.write()
-            .unwrap()
-            .insert("%stdout".to_string(), Arc::new(stdout_thunk));
-    }
+    // NOTE: %stdout and %stderr are NOT injected here.
+    // They are defined as protocol dicts in loader.llt Dict 2, using
+    // builtin-write-stdout and builtin-write-stderr (stateless builtins).
 
     // Inject `%libdir` DirCap for the stdlib directory (unless --no-libdir is set).
     // --no-libdir enforcement: when the flag is set, `%libdir` is NOT injected, so
@@ -1640,7 +1593,7 @@ fn run_eval(
                     perms: tinct::DirPerms::full(),
                 };
                 let libdir_thunk =
-                    tinct::Thunk::new_materialized(libdir_value, tinct::Span::origin());
+                    tinct::Thunk::new_materialized(libdir_value, tinct::rust_span!());
                 env.write()
                     .unwrap()
                     .insert("%libdir".to_string(), Arc::new(libdir_thunk));
@@ -1665,7 +1618,7 @@ fn run_eval(
                 dir: dir_for_cap,
                 perms,
             };
-            let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::Span::origin());
+            let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::rust_span!());
             // Inject as `%NAME` (auto-prefix %).
             let scoped_name = if name.starts_with('%') {
                 name.to_string()
@@ -1717,7 +1670,7 @@ fn run_eval(
         // Create NetCap values and inject them as `%NAME`.
         for (name, entries) in net_caps {
             let cap_value = Value::NetCap(Rc::new(entries));
-            let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::Span::origin());
+            let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::rust_span!());
             env.write().unwrap().insert(name, Arc::new(cap_thunk));
         }
     }
@@ -1749,7 +1702,7 @@ fn run_eval(
             Value::ClockCap(Rc::new(ClockCapInner::Real))
         };
 
-        let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::Span::origin());
+        let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::rust_span!());
         env.write()
             .unwrap()
             .insert("%clock".to_string(), Arc::new(cap_thunk));
@@ -1760,9 +1713,6 @@ fn run_eval(
     // AMBIENT-OK: CLI bootstrap — operator-specified file paths via --cap-file.
     #[allow(clippy::disallowed_types, clippy::disallowed_methods)]
     if !no_fs {
-        use std::collections::HashMap;
-        use std::io::{BufReader, BufWriter};
-
         for cap_file_entry in &cap_file {
             // Parse NAME=PATH[:MODE]
             let (name, rest) = cap_file_entry.split_once('=').ok_or_else(|| {
@@ -1795,7 +1745,7 @@ fn run_eval(
             }
 
             // Parse mode into capability flags
-            let (readable, writable, appendable, binary) = if let Some(mode) = mode_str {
+            let (readable, writable, appendable, _binary) = if let Some(mode) = mode_str {
                 if mode.starts_with('[') {
                     // Extended syntax: [Readable Writable ...]
                     if !mode.ends_with(']') {
@@ -1854,116 +1804,13 @@ fn run_eval(
                 ));
             }
 
-            // Build the Handle or WriteHandle value
-            let cap_value = if readable && !writable && !appendable {
-                // Read-only: use Handle with read inner
-                let file = std::fs::File::open(path_str).map_err(|e| {
-                    format!("--cap-file: cannot open {:?} for reading: {e}", path_str)
-                })?;
-                let buf_reader: Box<dyn std::io::BufRead> = Box::new(BufReader::new(file));
-                let mut caps: HashMap<String, tinct::Value> = HashMap::new();
-                caps.insert(
-                    "Readable".to_string(),
-                    tinct::Value::Dict(indexmap::IndexMap::new()),
-                );
-                if binary {
-                    caps.insert(
-                        "Binary".to_string(),
-                        tinct::Value::Dict(indexmap::IndexMap::new()),
-                    );
-                } else {
-                    caps.insert(
-                        "Text".to_string(),
-                        tinct::Value::Dict(indexmap::IndexMap::new()),
-                    );
-                }
-                tinct::Value::Handle {
-                    caps,
-                    inner: Rc::new(std::cell::RefCell::new(buf_reader)),
-                    write_inner: None,
-                    seek_inner: None,
-                    raw_tcp: None,
-                    creation_span: tinct::Span::origin(),
-                }
-            } else if writable && !readable && !appendable {
-                // Write-only (truncate): use WriteHandle
-                let file = std::fs::OpenOptions::new()
-                    .write(true)
-                    .create(true)
-                    .truncate(true)
-                    .open(path_str)
-                    .map_err(|e| {
-                        format!("--cap-file: cannot open {:?} for writing: {e}", path_str)
-                    })?;
-                let buf_writer: Box<dyn std::io::Write> = Box::new(BufWriter::new(file));
-                let mut caps: HashMap<String, tinct::Value> = HashMap::new();
-                caps.insert(
-                    "Writable".to_string(),
-                    tinct::Value::Dict(indexmap::IndexMap::new()),
-                );
-                if binary {
-                    caps.insert(
-                        "Binary".to_string(),
-                        tinct::Value::Dict(indexmap::IndexMap::new()),
-                    );
-                } else {
-                    caps.insert(
-                        "Text".to_string(),
-                        tinct::Value::Dict(indexmap::IndexMap::new()),
-                    );
-                }
-                tinct::Value::WriteHandle {
-                    caps,
-                    inner: Rc::new(std::cell::RefCell::new(buf_writer)),
-                }
-            } else if appendable && !readable && !writable {
-                // Append-only: use WriteHandle with append flag
-                let file = std::fs::OpenOptions::new()
-                    .append(true)
-                    .create(true)
-                    .open(path_str)
-                    .map_err(|e| {
-                        format!("--cap-file: cannot open {:?} for appending: {e}", path_str)
-                    })?;
-                let buf_writer: Box<dyn std::io::Write> = Box::new(BufWriter::new(file));
-                let mut caps: HashMap<String, tinct::Value> = HashMap::new();
-                caps.insert(
-                    "Appendable".to_string(),
-                    tinct::Value::Dict(indexmap::IndexMap::new()),
-                );
-                if binary {
-                    caps.insert(
-                        "Binary".to_string(),
-                        tinct::Value::Dict(indexmap::IndexMap::new()),
-                    );
-                } else {
-                    caps.insert(
-                        "Text".to_string(),
-                        tinct::Value::Dict(indexmap::IndexMap::new()),
-                    );
-                }
-                tinct::Value::WriteHandle {
-                    caps,
-                    inner: Rc::new(std::cell::RefCell::new(buf_writer)),
-                }
-            } else {
-                // Read-write or other combinations not yet supported
-                return Err(format!(
-                    "--cap-file: read-write and multi-capability modes not yet implemented in {:?} (use separate read/write Handles)",
-                    cap_file_entry
-                ));
-            };
-
-            let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::Span::origin());
-            // Inject as `%NAME` (auto-prefix %).
-            let scoped_name = if name.starts_with('%') {
-                name.to_string()
-            } else {
-                format!("%{name}")
-            };
-            env.write()
-                .unwrap()
-                .insert(scoped_name, Arc::new(cap_thunk));
+            // --cap-file: Handle/WriteHandle removed. Use DirCap (--cap-fs) instead.
+            // TODO: Redesign --cap-file to inject a DirCap or Value::File.
+            return Err(format!(
+                "--cap-file: file handle injection via Handle/WriteHandle is not available in this version. \
+                 Use --cap-fs NAME=PATH to inject a DirCap instead. Affected entry: {:?}",
+                cap_file_entry
+            ));
         }
     }
 
@@ -1979,14 +1826,9 @@ fn run_eval(
         None // unrestricted
     };
 
-    // Multi-stage pipeline: parse/expand/typecheck all stages, then invoke eval-programs once.
-    //
-    // ARENA SHARING INVARIANT: All stages in the pipeline must share the same ThunkArena so
-    // that ThunkIds allocated by earlier stages remain valid when later stages reference them
-    // via the `%` pipeline variable. We establish one base EvalContext for the first stage,
-    // then use `with_base_dir_and_path` for subsequent stages — this creates a new config
-    // (different base_dir) while sharing the same arena, state, and stdlib_env.
-    // eval-programs threads % through each Value::Program in sequence.
+    // Arena sharing invariant: all stages in the pipeline share the same ThunkArena so that
+    // ThunkIds allocated for %programs entries remain valid throughout evaluation.
+    // The eval_ctx created below owns the arena; fallback pipeline stages derive from it.
 
     // Initialize profiling collector if --profile is set, and spawn the background
     // flush thread + install the SIGINT handler for fault-tolerant profile writing.
@@ -2046,363 +1888,237 @@ fn run_eval(
             None
         };
 
-    let mut last_source = String::new();
-    let mut last_eval_ctx: Option<Arc<EvalContext>> = None;
-    let mut base_eval_ctx: Option<Arc<EvalContext>> = None;
+    // ── Build %programs Dict (T-1347) ─────────────────────────────────────────
+    //
+    // Integer-keyed Dict of ProgramItem variants, one per CLI stage in order:
+    //   ProgramItem.File { path: String, handle: Handle } — for file arguments
+    //   ProgramItem.Expr { src: String } — for -e inline expressions
+    //
+    // File handles stored in ProgramItem.File are the pre-opened handles from above.
+    // Landlock is now active; any future open() outside the allowed directories is blocked.
+    //
+    // The formatter (from -i/-o flags or the default none.llt) is NOT included in %programs.
+    // loader.llt dict 3 constructs the formatter ProgramItem.File from %args.output and passes
+    // it separately to cli-pipeline as the final stage.
+    //
+    // Bootstrapping contract: Rust uses qualified tag names "ProgramItem.File" /
+    // "ProgramItem.Expr" — the same tags declared in loader.llt dict 2. This is the
+    // one Rust↔tinct bootstrap contract for %programs (see doc/whatif/type-foundations.md).
 
-    // Collect Value::Program values from each pipeline stage (parse → expand → resolve → typecheck).
-    // Evaluation is deferred until all programs are collected — eval-programs threads % through them.
-    let mut collected_programs: Vec<tinct::Value> = Vec::new();
+    // Create the base eval context (owns the ThunkArena used by all %programs thunks).
+    let cwd_for_ctx = {
+        // AMBIENT-OK: CWD at startup, operator-controlled.
+        #[allow(clippy::disallowed_methods)]
+        cap_std::fs::Dir::open_ambient_dir(
+            std::env::current_dir()
+                .map_err(|e| format!("cannot determine working directory: {e}"))?,
+            cap_std::ambient_authority(),
+        )
+        .map_err(|e| format!("cannot open cwd for eval context: {e}"))?
+    };
+    let eval_ctx = {
+        let type_stage_env = std::sync::Arc::new(std::sync::RwLock::new(tinct::Environment::new()));
+        let mut ctx = EvalContext::new_with_options(
+            cwd_for_ctx,
+            Arc::clone(&env),
+            type_stage_env,
+            no_fs,
+            require_integrity,
+            env_allowed.clone(),
+        );
+        if let Some(ref collector) = profiling_collector {
+            Arc::get_mut(&mut ctx).unwrap().profiling = Some(Arc::clone(collector));
+        }
+        if let Some(ref libdir_rc) = libdir_rc_for_ctx {
+            ctx.set_libdir_dir(Arc::clone(libdir_rc));
+        }
+        // Initialize TypeContext so loader.llt can call [builtin-get-type-context].
+        ctx.init_type_context(tinct::TypeContextData {
+            type_stage_env: std::sync::Arc::new(std::sync::RwLock::new(tinct::Environment::new())),
+            inference_env: tinct::get_builtin_core_type_env()
+                .await
+                .expect("builtin_core type env unavailable at startup"),
+        });
+        ctx
+    };
 
-    // Wrap the pipeline loop and output section in a closure so we can run profile
-    // write + flush thread cleanup unconditionally regardless of success or failure.
-    // The closure captures all mutable locals by mutable reference; after it returns,
-    // `last_eval_ctx` is available for the final profile write.
-    let eval_result: Result<(), String> = (|| {
-        for stage in &pipeline_stages {
-            // Read the LLT source (from file or inline expression).
-            // For file stages, build an Arc<SourceFile> so spans carry the file name.
-            // For inline expressions, parse without a file reference.
-            // `source` is kept for downstream error formatting (type errors, eval snippets).
-            let (source, output) = match stage {
-                PipelineStage::File(file_path) => {
-                    let sf = read_source(file_path)?;
-                    let source_str = String::from(&*sf.content);
-                    let out = parse_with_file(&source_str, Arc::clone(&sf)).map_err(|e| {
-                        if strict {
-                            tinct::format_parse_error(&e, &source_str, file_path)
-                        } else {
-                            format!("{e}")
-                        }
-                    })?;
-                    (source_str, out)
-                }
-                PipelineStage::Expr(expression) => {
-                    let out = parse(expression).map_err(|e| {
-                        if strict {
-                            tinct::format_parse_error(&e, expression, "<expr>")
-                        } else {
-                            format!("{e}")
-                        }
-                    })?;
-                    (expression.clone(), out)
-                }
-            };
+    // Helper: allocate a value as a materialized thunk in the eval_ctx arena and return its ThunkId.
+    // Used to build Value::Dict entries (which use ThunkId, not Arc<Thunk>).
+    let alloc_val = |v: Value| -> ThunkId {
+        eval_ctx.alloc_thunk(Arc::new(Thunk::new_materialized(v, tinct::rust_span!())))
+    };
 
-            // Determine base directory for $include resolution (needed for expand, typecheck, and eval).
-            let file_base_dir_path = match stage {
-                PipelineStage::Expr(_) => {
-                    // Inline expressions use cwd as base directory
-                    std::env::current_dir()
-                        .map_err(|e| format!("cannot determine working directory: {e}"))?
-                }
+    // Build %programs as an integer-keyed Value::Dict.
+    // Each entry is a Value::Variant (ProgramItem.File or ProgramItem.Expr) ThunkId.
+    //
+    // Value::Dict uses ThunkId keys (arena-based), not Arc<Thunk>.
+    // All thunks allocated here use the eval_ctx arena created above.
+    let programs_dict: Value = {
+        use indexmap::IndexMap;
+        let mut pre_open_iter = pre_opened_files.into_iter();
+        let mut dict: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+
+        for (index, stage) in interleaved_stages.iter().enumerate() {
+            let key = HashableValue::Int(index as i64);
+            let item_value = match stage {
                 PipelineStage::File(file_path) => {
                     if file_path == "-" {
-                        std::env::current_dir()
-                            .map_err(|e| format!("cannot determine working directory: {e}"))?
+                        // stdin: ProgramItem.File with path="-", no handle.
+                        // loader.llt eval-file checks path=="-" and reads from %stdin.
+                        let mut payload_dict: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+                        payload_dict.insert(
+                            HashableValue::Str("path".into()),
+                            alloc_val(string_val("-")),
+                        );
+                        let payload_id = alloc_val(Value::Dict(payload_dict));
+                        Value::Variant {
+                            tag: "ProgramItem.File".to_string(),
+                            payload: Some(payload_id),
+                        }
                     } else {
-                        let p = std::path::Path::new(file_path);
-                        // Use the file's parent directory; fall back to cwd if the path has no parent
-                        // (e.g., a bare filename like "test.llt").
-                        match p.parent().filter(|d| !d.as_os_str().is_empty()) {
-                            Some(dir) => dir.canonicalize().map_err(|e| {
-                                format!("cannot resolve directory for \"{file_path}\": {e}")
-                            })?,
-                            None => std::env::current_dir()
-                                .map_err(|e| format!("cannot determine working directory: {e}"))?,
+                        // Regular file: consume the next pre-opened handle.
+                        let pf = pre_open_iter
+                            .next()
+                            .expect("pre_opened_files count must match non-stdin File stages");
+                        let abs_path = pf.1.abs_path;
+                        let raw_handle = pf.1.handle;
+
+                        // Wrap the raw std::fs::File as a Value::File (thin OS primitive).
+                        // cap_std::fs::File::from_std() wraps a std::fs::File without ambient authority.
+                        // AMBIENT-OK: this file was opened before Landlock activation (pre_opened_files).
+                        use std::cell::RefCell;
+                        let cap_file = cap_std::fs::File::from_std(raw_handle);
+                        let handle_value = Value::File(Rc::new(RefCell::new(cap_file)));
+
+                        // Build payload dict: { path: String, handle: Handle }
+                        let mut payload_dict: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+                        payload_dict.insert(
+                            HashableValue::Str("path".into()),
+                            alloc_val(string_val(&abs_path)),
+                        );
+                        payload_dict
+                            .insert(HashableValue::Str("handle".into()), alloc_val(handle_value));
+                        let payload_id = alloc_val(Value::Dict(payload_dict));
+                        Value::Variant {
+                            tag: "ProgramItem.File".to_string(),
+                            payload: Some(payload_id),
                         }
                     }
                 }
-            };
-
-            // Open base_dir as a cap-std Dir before expand_surface_program so it can be passed in
-            // without re-acquiring ambient authority inside the expansion step.
-            let base_dir = cap_std::fs::Dir::open_ambient_dir(
-                &file_base_dir_path,
-                cap_std::ambient_authority(),
-            )
-            .map_err(|e| format!("cannot open base directory: {e}"))?;
-
-            // PIPELINE INVARIANT: parse -> expand_surface_program -> desugar -> resolve_surface_program -> typecheck -> eval.
-            // Use expand_surface_program (not expand_macros) so SurfaceItem::Decl macros are seen.
-            // Desugar AFTER macro expansion so that macros can introduce $_ patterns.
-            // See also: src/lib.rs (eval_source_with_config pipeline), src/expand.rs module comment.
-            let mut program = output.program;
-            tinct::async_rt::block_on_anywhere(tinct::expand::expand_surface_program(
-                &mut program,
-                no_fs,
-                &base_dir,
-            ))
-            .map_err(|e| format!("{e}"))?;
-            // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
-            tinct::desugar::desugar_surface_program(&mut program);
-            // Transform instance decls to method dicts (T-1142).
-            tinct::desugar::desugar_instance_decls_surface_program(&mut program);
-            // Variable resolution pass (Phase 1 of arena allocation strategy).
-            let resolution_table =
-                std::sync::Arc::new(tinct::resolve::resolve_surface_program(&program));
-            // Type errors are advisory unless --strict is set.
-            // Build type environment with prelude + includes (if file-based).
-            let type_env = match stage {
-                PipelineStage::File(file_path) if file_path != "-" => {
-                    // File-based: use build_type_env with base_dir for include resolution
-                    let (env, _include_bindings) =
-                        tinct::async_rt::block_on_anywhere(tinct::build_type_env(&program, Some(&file_base_dir_path)));
-                    env
-                }
-                _ => {
-                    // Stdin or inline expr: prelude-only (no include resolution)
-                    tinct::build_prelude_env()
+                PipelineStage::Expr(expression) => {
+                    // ProgramItem.Expr { src: String }
+                    let mut payload_dict: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+                    payload_dict.insert(
+                        HashableValue::Str("src".into()),
+                        alloc_val(string_val(expression)),
+                    );
+                    let payload_id = alloc_val(Value::Dict(payload_dict));
+                    Value::Variant {
+                        tag: "ProgramItem.Expr".to_string(),
+                        payload: Some(payload_id),
+                    }
                 }
             };
-            let (
-                type_errors,
-                _type_map,
-                _doc_map,
-                _scheme_map,
-                type_diagnostics,
-                infer_state,
-                _final_env,
-                type_annotation_table_from_env,
-            ) = tinct::async_rt::block_on_anywhere(tinct::typecheck::typecheck_surface_program_with_env(
-                &program,
-                type_env,
-                false, // disable scheme_map (not needed for eval)
-                false, // not in prelude load
-                Some(&resolution_table),
-            ));
-            if !type_errors.is_empty() {
-                let file_name = match stage {
-                    PipelineStage::File(fp) => fp.as_str(),
-                    PipelineStage::Expr(_) => "<expr>",
-                };
-                for err in &type_errors {
-                    eprintln!("{}", tinct::format_type_error(err, &source, file_name));
-                }
-                if strict {
-                    // In strict mode, type errors are fatal — exit.
-                    return Err("type checking failed — cannot evaluate".to_string());
-                } else {
-                    // Non-strict mode: type errors are advisory, print warning and continue.
-                    eprintln!(
-                        "type checking failed with {} error(s) (use --strict to make fatal)",
-                        type_errors.len()
-                    );
-                }
-            }
-            // Emit type quality diagnostics (T010/T011 Unknown, T012 overbroad, T013 ambiguous, …).
-            // In --strict mode, bump each diagnostic's level and treat Err-level diagnostics
-            // as fatal (they escalate Info→Warn→Err under --strict).
-            if !type_diagnostics.is_empty() {
-                let diag_file_name = match stage {
-                    PipelineStage::File(fp) => fp.as_str(),
-                    PipelineStage::Expr(_) => "<expr>",
-                };
-                let mut has_fatal_diag = false;
-                for d in &type_diagnostics {
-                    let effective = if strict {
-                        use tinct::DiagnosticLevel;
-                        let bumped_level = d.level.bump();
-                        // Emit with the bumped level
-                        let bumped = tinct::TypeDiagnostic {
-                            level: bumped_level,
-                            message: d.message.clone(),
-                            span: d.span.clone(),
-                            code: d.code,
-                        };
-                        if bumped_level == DiagnosticLevel::Err {
-                            has_fatal_diag = true;
-                        }
-                        bumped
-                    } else {
-                        d.clone()
-                    };
-                    eprintln!(
-                        "{}",
-                        format_type_diagnostic(&effective, &source, diag_file_name)
-                    );
-                }
-                if strict && has_fatal_diag {
-                    return Err(
-                        "type checking failed — type warnings escalated to errors by --strict"
-                            .to_string(),
-                    );
-                }
-            }
+            dict.insert(key, alloc_val(item_value));
+        }
+        Value::Dict(dict)
+    };
 
-            // Create or derive the evaluation context.
-            // First file: create the base context (owns the ThunkArena).
-            // Subsequent files: derive from the base context via with_base_dir_and_path so all
-            // files share the same arena — ThunkIds from earlier files remain valid in later ones.
-            let stage_source_file = match stage {
-                PipelineStage::File(fp) if fp != "-" => Some(fp.clone()),
-                _ => None,
-            };
-            let eval_ctx = if let Some(ref base) = base_eval_ctx {
-                let mut ctx =
-                    base.with_base_dir_and_path(base_dir, Some(file_base_dir_path.clone()));
-                // Update source file for this stage so backtrace frames show the right filename.
-                Arc::get_mut(&mut ctx)
-                    .unwrap()
-                    .set_source_file(stage_source_file);
-                ctx
+    // ── Build %args Dict (T-1347) ──────────────────────────────────────────────
+    //
+    // Dict with parsed CLI flags. loader.llt reads %args.output to select the formatter
+    // and %args.strict to decide whether type errors are fatal.
+    //
+    // %args.input: name of the -i input formatter (or "" if not specified).
+    // The -i formatter is NOT pre-appended to %programs Rust-side. Instead, loader.llt
+    // dict 3 reads %args.input to construct the input ProgramItem.File if non-empty.
+    let args_dict: Value = {
+        use indexmap::IndexMap;
+        let mut dict: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+
+        // output: name of the -o formatter (default "none").
+        dict.insert(
+            HashableValue::Str("output".into()),
+            alloc_val(string_val(output.as_deref().unwrap_or("none"))),
+        );
+
+        // input: name of the -i formatter (default "" = no input formatter).
+        dict.insert(
+            HashableValue::Str("input".into()),
+            alloc_val(string_val(input.as_deref().unwrap_or(""))),
+        );
+
+        // strict: whether type errors are fatal.
+        dict.insert(
+            HashableValue::Str("strict".into()),
+            alloc_val(Value::boolean(strict)),
+        );
+
+        Value::Dict(dict)
+    };
+
+    // Inject %programs and %args into the stdlib environment so loader.llt can see them.
+    {
+        let programs_thunk = std::sync::Arc::new(tinct::Thunk::new_materialized(
+            programs_dict,
+            tinct::rust_span!(),
+        ));
+        env.write()
+            .unwrap()
+            .insert("%programs".to_string(), programs_thunk);
+        let args_thunk = std::sync::Arc::new(tinct::Thunk::new_materialized(
+            args_dict,
+            tinct::rust_span!(),
+        ));
+        env.write().unwrap().insert("%args".to_string(), args_thunk);
+    }
+
+    // Wrap the evaluation section in an async block so profiling cleanup runs unconditionally
+    // even when loader setup fails.
+    let eval_result: Result<(), String> = (async {
+        // ── Evaluate loader.llt (or --init override) ─────────────────────────
+        //
+        // loader.llt is the tinct "main function". It reads %programs, %args, %cwd,
+        // %libdir, %stdout from its initial scope, loads prelude, and runs the CLI pipeline.
+        // All output happens via side effects (%stdout writes, emit channel drains).
+        //
+        // The initial environment (env) is the stdlib environment after all caps injection
+        // above. %programs and %args are already injected into env before this point.
+        //
+        // run_loader_pipeline handles parse → expand → desugar → resolve → typecheck →
+        // eval → materialize. It is the shared bootstrap path used by both the CLI and
+        // the lib API (eval_source_with_config).
+        //
+        // Dup the libdir into a plain cap_std::fs::Dir. libdir_rc_for_ctx is pre-opened
+        // before Landlock fires; open_dir(".") produces a dup without a new ambient open.
+        let libdir_for_loader = libdir_rc_for_ctx
+            .as_ref()
+            .ok_or_else(|| {
+                "cannot evaluate loader.llt: stdlib directory (--libdir) is required".to_string()
+            })?
+            .open_dir(".")
+            .map_err(|e| format!("cannot dup libdir for loader expansion: {e}"))?;
+
+        // Determine init program source and path.
+        // init_source_owned was pre-read before Landlock fired (above).
+        let (init_source, init_path): (&str, &str) =
+            if let (Some(ref path), Some(ref source)) = (&init, &init_source_owned) {
+                (source.as_str(), path.as_str())
             } else {
-                let mut ctx = EvalContext::new_with_options(
-                    base_dir,
-                    Arc::clone(&env),
-                    Arc::clone(&type_stage_env),
-                    no_fs,
-                    require_integrity,
-                    env_allowed.clone(),
-                );
-                // Set profiling collector if --profile was specified
-                if let Some(ref collector) = profiling_collector {
-                    Arc::get_mut(&mut ctx).unwrap().profiling = Some(Arc::clone(collector));
-                }
-                // Set source file for backtrace frame filenames.
-                Arc::get_mut(&mut ctx)
-                    .unwrap()
-                    .set_source_file(stage_source_file);
-                // Share the already-open libdir Dir with the evaluator so that the self-hosted
-                // `include` (prelude.llt) can inject %libdir into nested includes without re-acquiring ambient authority.
-                if let Some(ref libdir_rc) = libdir_rc_for_ctx {
-                    ctx.set_libdir_dir(Arc::clone(libdir_rc));
-                }
-                base_eval_ctx = Some(Arc::clone(&ctx));
-                ctx
+                (include_str!("../stdlib/loader.llt"), "stdlib/loader.llt")
             };
 
-            // Wire boundary guards and do-infer resolutions from type inference to the eval context
-            eval_ctx.set_boundary_guards(infer_state.boundary_guards);
-            eval_ctx.set_do_infer_resolutions(infer_state.do_infer_resolutions);
-            eval_ctx.set_tycon_env(infer_state.tycon_env);
-
-            // TypeAnnotationTable was populated directly by typecheck_surface_program_with_env
-            // above — no second typecheck call needed.
-            let type_annotation_table = std::sync::Arc::new(type_annotation_table_from_env);
-
-            // Collect this stage as a Value::Program for eval-programs.
-            // eval-programs (in loader.llt) threads % through each program in sequence.
-            collected_programs.push(tinct::Value::Program {
-                program: std::sync::Arc::new(program),
-                resolutions: resolution_table,
-                types: type_annotation_table,
-                expects_resolved: std::sync::Arc::new(infer_state.expects_resolved),
-            });
-
-            last_source = source;
-            last_eval_ctx = Some(eval_ctx);
-        }
-
-        if collected_programs.is_empty() {
-            return Err("internal error: no programs collected".to_string());
-        }
-
-        let eval_ctx = last_eval_ctx
-            .clone()
-            .ok_or_else(|| "internal error: no eval context".to_string())?;
-
-        // Look up eval-programs from the stdlib env (exported by loader.llt → prelude).
-        // eval-programs: [fn [let programs initial-input] ...]
-        // It threads % through each program in sequence, returning the final output.
-        let eval_programs_thunk = {
-            let env_guard = env.read().unwrap();
-            env_guard
-                .get("eval-programs")
-                .ok_or_else(|| {
-                    "internal error: eval-programs not found in stdlib env (prelude not loaded?)"
-                        .to_string()
-                })?
-                .clone()
-        };
-        let eval_programs_val = materialize(&eval_programs_thunk, None, &eval_ctx)
-            .map_err(|e| format!("internal error: failed to materialize eval-programs: {e}"))?;
-
-        // Build a Seq.Cons/Seq.Nil list of programs from the collected programs (right-folded).
-        // Build from the end so the first program is at the head.
-        let mut seq_thunk = Arc::new(tinct::Thunk::new_materialized(
-            tinct::make_seq_nil(),
-            tinct::Span::origin(),
-        ));
-        for prog_val in collected_programs.into_iter().rev() {
-            let head_thunk = Arc::new(tinct::Thunk::new_materialized(
-                prog_val,
-                tinct::Span::origin(),
-            ));
-            let head_id = eval_ctx.alloc_thunk(head_thunk);
-            let tail_id = eval_ctx.alloc_thunk(seq_thunk);
-            seq_thunk = Arc::new(tinct::Thunk::new_materialized(
-                tinct::make_seq_cons(head_id, tail_id, &eval_ctx),
-                tinct::Span::origin(),
-            ));
-        }
-
-        // The initial input to the pipeline (% for the first program).
-        // None → empty dict (same default as eval_surface_file_with_input).
-        let initial_input_thunk = Arc::new(tinct::Thunk::new_materialized(
-            tinct::Value::Dict(indexmap::IndexMap::new()),
-            tinct::Span::origin(),
-        ));
-
-        // Invoke eval-programs([programs_seq, initial_input]) via invoke_function.
-        // eval-programs is a two-argument function: [fn [let programs initial-input] ...]
-        let programs_arg = seq_thunk;
-        let input_arg = initial_input_thunk;
-
-        match eval_programs_val {
-            tinct::Value::Function {
-                ref params,
-                ref body,
-                env: ref closure_env,
-                ..
-            } => {
-                let positional = vec![programs_arg, input_arg];
-                let call_ctx = tinct::CallContext {
-                    params: params.as_slice(),
-                    body,
-                    closure_env,
-                    positional: &positional,
-                    named: None,
-                    default_env: closure_env,
-                    call_span: tinct::Span::origin(),
-                    origin: Some(Arc::from("eval-programs")),
-                    ctx: &eval_ctx,
-                };
-                // invoke_function returns an unevaluated thunk (the function body is lazy).
-                // Materialize it to drive the full pipeline to completion, including the
-                // output formatter's drain task and [await drain]. Without materialization,
-                // eval-programs is a no-op and no output is ever produced.
-                tinct::async_rt::block_on(async {
-                    let thunk = tinct::invoke_function(&call_ctx).await?;
-                    tinct::materialize(&thunk, None, &eval_ctx).await
-                })
-                .map_err(|e| {
-                    let mut error_str = format!("{e}");
-                    if let Some(snippet) =
-                        tinct::render_span_snippet(&last_source, e.definition_span)
-                    {
-                        error_str.push('\n');
-                        error_str.push_str(&snippet);
-                    }
-                    error_str
-                })?;
-
-                // Flush %stdout explicitly. BufWriter::drop does not run when
-                // process::exit is called (SIGINT path or EXIT_ERROR). The `?`
-                // above short-circuits on eval error, so this flush only runs on
-                // the success path — avoiding emission of corrupt partial output.
-                let _ = std::io::Write::flush(&mut std::io::stdout());
-            }
-            other => {
-                return Err(format!(
-                    "internal error: eval-programs is {} instead of Function",
-                    other.type_name()
-                ));
-            }
-        }
-
-        Ok(())
-    })(); // end of eval_result closure
+        tinct::run_loader_pipeline(
+            Arc::clone(&env),
+            &eval_ctx,
+            &libdir_for_loader,
+            no_fs,
+            init_source,
+            init_path,
+        )
+        .await
+    })
+    .await; // end of eval_result async block
 
     // === Unconditional cleanup (runs on success AND failure) ===
 
@@ -2497,17 +2213,17 @@ async fn run_fmt(
         let fmt_base_dir = open_file_base_dir(file_path, "fmt")?;
         // Use expand_surface_program (not expand_macros) so SurfaceItem::Decl macros are seen.
         let mut program = output.program;
-        tinct::async_rt::block_on_anywhere(tinct::expand::expand_surface_program(
-            &mut program,
-            false,
-            &fmt_base_dir,
-        ))
-        .map_err(|e| format!("{e}"))?;
+        let fmt_expand_env = tinct::build_core_env();
+        tinct::expand::expand_surface_program(&mut program, fmt_expand_env, false, &fmt_base_dir)
+            .await
+            .map_err(|e| format!("{e}"))?;
         // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
         tinct::desugar::desugar_surface_program(&mut program);
-        let env = tinct::build_prelude_env();
+        let env = tinct::get_builtin_core_type_env()
+            .await
+            .expect("builtin core type env unavailable");
         let (type_errors, _type_map, _doc_map, _scheme_map, fmt_diagnostics) =
-            tinct::async_rt::block_on_anywhere(tinct::typecheck::typecheck_surface_program(&program, env));
+            tinct::typecheck::typecheck_surface_program(&program, env).await;
 
         if !type_errors.is_empty() {
             let error_msgs: Vec<String> = type_errors
@@ -2615,7 +2331,7 @@ async fn run_fmt(
 /// Exit 0 on clean, exit 1 on any warnings or errors.
 // AMBIENT-OK: CLI bootstrap — opens file parent dir for type-checking
 #[allow(clippy::disallowed_methods)]
-fn run_lint(
+async fn run_lint(
     file_path: &str,
     _no_fs: bool,
     strict: bool,
@@ -2646,18 +2362,17 @@ fn run_lint(
     };
     // Use expand_surface_program (not expand_macros) so SurfaceItem::Decl macros are seen.
     let mut program = output.program;
-    tinct::async_rt::block_on_anywhere(tinct::expand::expand_surface_program(
-        &mut program,
-        false,
-        &lint_base_dir,
-    ))
-    .map_err(|e| format!("{e}"))?;
+    let lint_expand_env = tinct::build_core_env();
+    tinct::expand::expand_surface_program(&mut program, lint_expand_env, false, &lint_base_dir)
+        .await
+        .map_err(|e| format!("{e}"))?;
     // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
     tinct::desugar::desugar_surface_program(&mut program);
-    // Type check with prelude environment
-    let env = tinct::build_prelude_env();
+    let env = tinct::get_builtin_core_type_env()
+        .await
+        .expect("builtin core type env unavailable");
     let (type_errors, _type_map, _doc_map, _scheme_map, diagnostics) =
-        tinct::async_rt::block_on_anywhere(tinct::typecheck::typecheck_surface_program(&program, env));
+        tinct::typecheck::typecheck_surface_program(&program, env).await;
 
     // Collect all errors and warnings
     let mut all_messages = Vec::new();
@@ -2821,13 +2536,7 @@ fn read_source(file_path: &str) -> Result<Arc<SourceFile>, String> {
 struct LiterateConfig<'a> {
     file_path: &'a str,
     mode: &'a LiterateMode,
-    no_substitute: bool,
     strict: bool,
-    in_place: bool,
-    verify: bool,
-    fail_on_errors: bool,
-    cap_fs: &'a [String],
-    cap_net: &'a [String],
 }
 
 /// Process a Markdown file in literate mode.
@@ -2836,12 +2545,9 @@ struct LiterateConfig<'a> {
 /// handles them according to `mode`:
 ///
 /// - **`tangle`** — print the extracted blocks joined with `\n---\n`.
-/// - **`eval`** — join the blocks, evaluate the resulting pipeline, print JSON.
-/// - **`weave`** — evaluate each block in pipeline order; output the original
-///   Markdown with the JSON result appended as a comment after each tinct block.
 // AMBIENT-OK: CLI bootstrap — opens file parent dir for evaluation
 #[allow(clippy::disallowed_methods)]
-fn run_literate(config: &LiterateConfig) -> Result<(), String> {
+async fn run_literate(config: &LiterateConfig<'_>) -> Result<(), String> {
     let file_path = config.file_path;
     let markdown = String::from(&*read_source(file_path)?.content);
     let blocks = literate::extract_code_blocks(&markdown);
@@ -2850,14 +2556,6 @@ fn run_literate(config: &LiterateConfig) -> Result<(), String> {
         match config.mode {
             LiterateMode::Tangle => {
                 // Nothing to print — output empty string (no trailing newline).
-                return Ok(());
-            }
-            LiterateMode::Eval => {
-                return Err("no tinct code blocks found in the Markdown file".to_string());
-            }
-            LiterateMode::Weave => {
-                // Nothing to annotate — print the Markdown unchanged.
-                print!("{markdown}");
                 return Ok(());
             }
             LiterateMode::Lint => {
@@ -2874,298 +2572,11 @@ fn run_literate(config: &LiterateConfig) -> Result<(), String> {
             Ok(())
         }
 
-        LiterateMode::Eval => {
-            let tangled = literate::tangle(blocks);
-            run_literate_eval(&tangled, config)
-        }
-
-        LiterateMode::Weave => run_literate_weave(&markdown, &blocks, config),
-
         LiterateMode::Lint => {
             let tangled = literate::tangle(blocks);
-            run_literate_lint(&tangled, config)
+            run_literate_lint(&tangled, config).await
         }
     }
-}
-
-/// Evaluate a tangled tinct source string and print the result as JSON.
-///
-/// Always serializes output to JSON regardless of any `-o` formatter flag.
-/// The `-o` flag is respected only by `run_eval`; literate eval always uses
-/// the JSON serialization path (parse → desugar → resolve → typecheck →
-/// eval → materialize → JSON).
-/// The base directory is derived from the Markdown file's parent directory.
-///
-/// Literate mode always runs with --no-cwd and --no-env (hard-coded).
-/// Capabilities are injected via cap_fs and cap_net. %libdir is always available.
-/// %clock is set to a fixed ClockCap from the markdown file's mtime.
-// AMBIENT-OK: CLI literate-eval reading markdown file metadata for mtime.
-#[allow(clippy::disallowed_methods)]
-fn run_literate_eval(tangled: &str, config: &LiterateConfig) -> Result<(), String> {
-    let markdown_path = config.file_path;
-    let strict = config.strict;
-    let cap_fs = config.cap_fs;
-    let cap_net = config.cap_net;
-    // Parse the tangled source.
-    let output = parse(tangled).map_err(|e| {
-        if strict {
-            tinct::format_parse_error(&e, tangled, markdown_path)
-        } else {
-            format!("parse error in tangled tinct source: {e}")
-        }
-    })?;
-
-    // PIPELINE INVARIANT: parse -> expand_surface_program -> desugar -> resolve -> typecheck.
-    // Desugar AFTER macro expansion so that macros can introduce $_ patterns.
-    let eval_base_dir = open_file_base_dir(markdown_path, "literate eval")?;
-    // Use expand_surface_program (not expand_macros) so SurfaceItem::Decl macros are seen.
-    let mut program = output.program;
-    tinct::async_rt::block_on_anywhere(tinct::expand::expand_surface_program(
-        &mut program,
-        false,
-        &eval_base_dir,
-    ))
-    .map_err(|e| format!("{e}"))?;
-    // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
-    tinct::desugar::desugar_surface_program(&mut program);
-    // Transform instance decls to method dicts (T-1142).
-    tinct::desugar::desugar_instance_decls_surface_program(&mut program);
-    // Variable resolution pass (Phase 1 of arena allocation strategy).
-    let resolution_table = std::sync::Arc::new(tinct::resolve::resolve_surface_program(&program));
-    let (type_errors, type_annotation_table, expects_resolved) =
-        tinct::async_rt::block_on_anywhere(tinct::typecheck::typecheck_surface_program_annotation_table(&program));
-    let type_annotation_table = std::sync::Arc::new(type_annotation_table);
-    let expects_resolved = std::sync::Arc::new(expects_resolved);
-
-    // In strict mode, type errors are fatal
-    if strict && !type_errors.is_empty() {
-        let mut msg = String::from("type errors:\n");
-        for err in &type_errors {
-            msg.push_str(&format!("  {err}\n"));
-        }
-        return Err(msg);
-    }
-
-    // Determine base directory from the Markdown file's location.
-    let base_dir_path = if markdown_path == "-" {
-        std::env::current_dir().map_err(|e| format!("cannot determine working directory: {e}"))?
-    } else {
-        let p = std::path::Path::new(markdown_path);
-        match p.parent().filter(|d| !d.as_os_str().is_empty()) {
-            Some(dir) => dir
-                .canonicalize()
-                .map_err(|e| format!("cannot resolve directory for \"{markdown_path}\": {e}"))?,
-            None => std::env::current_dir()
-                .map_err(|e| format!("cannot determine working directory: {e}"))?,
-        }
-    };
-
-    let base_dir = cap_std::fs::Dir::open_ambient_dir(&base_dir_path, cap_std::ambient_authority())
-        .map_err(|e| format!("cannot open base directory: {e}"))?;
-
-    let env = tinct::async_rt::block_on_anywhere(create_stdlib_env()).map_err(|e| format!("{e}"))?;
-    // Build type-stage environment (for builtin_eval_types). Falls back to stdlib_env if unavailable.
-    let type_stage_env = tinct::build_type_stage_env().unwrap_or_else(|| Arc::clone(&env));
-
-    // E1: Inject fixed ClockCap from file mtime for deterministic output
-    {
-        use tinct::{ClockCapInner, Value};
-
-        // Get the markdown file's mtime
-        let mtime = if markdown_path == "-" {
-            // For stdin, use Unix epoch as a stable default
-            jiff::Timestamp::from_second(0)
-                .map_err(|e| format!("failed to create epoch timestamp: {e}"))?
-        } else {
-            let metadata = std::fs::metadata(markdown_path)
-                .map_err(|e| format!("cannot read file metadata: {e}"))?;
-            let system_time = metadata
-                .modified()
-                .map_err(|e| format!("cannot read file mtime: {e}"))?;
-
-            // Convert SystemTime to jiff::Timestamp
-            let duration_since_epoch = system_time
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|e| format!("file mtime is before Unix epoch: {e}"))?;
-            let nanos = i128::try_from(duration_since_epoch.as_nanos())
-                .map_err(|_| "mtime nanoseconds out of i128 range".to_string())?;
-            jiff::Timestamp::from_nanosecond(nanos)
-                .map_err(|e| format!("failed to convert mtime to timestamp: {e}"))?
-        };
-
-        let nanos = i64::try_from(mtime.as_nanosecond())
-            .map_err(|_| "mtime is out of i64 range".to_string())?;
-        let cap_value = Value::ClockCap(Rc::new(ClockCapInner::Fixed(nanos)));
-        let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::Span::origin());
-        env.write()
-            .unwrap()
-            .insert("%clock".to_string(), Arc::new(cap_thunk));
-    }
-
-    // E3: Inject --cap-fs NAME=PATH[:MODE] entries (same as run_eval)
-    {
-        use tinct::Value;
-        let cap_entries = open_cap_fs_entries(cap_fs, false)?;
-        for (name, cap_dir_arc, perms) in cap_entries {
-            // Clone the Arc to get an independent Rc for the DirCap value
-            let dir_for_cap = Rc::new(cap_dir_arc.open_dir(".").expect("failed to dup cap dir"));
-            let cap_value = Value::DirCap {
-                dir: dir_for_cap,
-                perms,
-            };
-            let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::Span::origin());
-            // Inject as `%NAME` (auto-prefix %).
-            let scoped_name = if name.starts_with('%') {
-                name.to_string()
-            } else {
-                format!("%{name}")
-            };
-            env.write()
-                .unwrap()
-                .insert(scoped_name, Arc::new(cap_thunk));
-        }
-    }
-
-    // E3: Inject --cap-net NAME=ENTRY entries (same as run_eval)
-    {
-        use std::collections::HashMap;
-        use tinct::NetCapEntry;
-        use tinct::Value;
-
-        let mut net_caps: HashMap<String, Vec<NetCapEntry>> = HashMap::new();
-
-        for cap_net_entry in cap_net {
-            let (name, entry_str) = cap_net_entry.split_once('=').ok_or_else(|| {
-                format!(
-                    "--cap-net: expected NAME=ENTRY format, got {:?}",
-                    cap_net_entry
-                )
-            })?;
-            let name = name.trim();
-            if name.is_empty() {
-                return Err(format!(
-                    "--cap-net: NAME must not be empty in {:?}",
-                    cap_net_entry
-                ));
-            }
-            let entry_str = entry_str.trim();
-
-            let entry = parse_cli_net_cap_entry(entry_str)?;
-            let scoped_name = if name.starts_with('%') {
-                name.to_string()
-            } else {
-                format!("%{name}")
-            };
-            net_caps.entry(scoped_name).or_default().push(entry);
-        }
-
-        // Now bind each accumulated NetCap.
-        for (name, entries) in net_caps {
-            let cap_value = Value::NetCap(Rc::new(entries));
-            let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::Span::origin());
-            env.write().unwrap().insert(name, Arc::new(cap_thunk));
-        }
-    }
-
-    // Inject `%emit` channel into the root environment.
-    // This is a bounded async channel with capacity 64 (same as eval-programs in loader.llt).
-    // User code emits values via `[emit val]`, which sends to this channel.
-    // For literate eval, the channel is created but never drained — emitted values are
-    // discarded. This matches the semantics of `tinct run` without an output formatter:
-    // the none.llt formatter drains %emit and discards all values.
-    {
-        use tinct::Value;
-        let (tx, rx) = tokio::sync::mpsc::channel(64);
-        let channel_inner = tinct::ChannelInner {
-            sender: tx,
-            receiver: tokio::sync::Mutex::new(rx),
-            capacity: 64,
-        };
-        let emit_value = Value::Channel(std::sync::Arc::new(channel_inner));
-        let emit_thunk = tinct::Thunk::new_materialized(emit_value, tinct::Span::origin());
-        env.write()
-            .unwrap()
-            .insert("%emit".to_string(), Arc::new(emit_thunk));
-    }
-
-    // Inject `%stdout` WriteHandle into the root environment.
-    // Output formatters and user code can write directly to %stdout via [write-handle %stdout ...].
-    {
-        use std::cell::RefCell;
-        use std::collections::HashMap;
-        use std::io::BufWriter;
-        use tinct::Value;
-
-        // Create stdout WriteHandle with default caps (Bool(true) sentinel, consistent with stdin)
-        let mut caps = HashMap::new();
-        caps.insert("Writable".to_string(), Value::Bool(true));
-        caps.insert("Text".to_string(), Value::Bool(true));
-
-        let stdout_handle = Value::WriteHandle {
-            caps,
-            inner: Rc::new(RefCell::new(
-                Box::new(BufWriter::new(std::io::stdout())) as Box<dyn std::io::Write>
-            )),
-        };
-        let stdout_thunk = tinct::Thunk::new_materialized(stdout_handle, tinct::Span::origin());
-        env.write()
-            .unwrap()
-            .insert("%stdout".to_string(), Arc::new(stdout_thunk));
-    }
-
-    // Literate mode always runs with --no-env (hard-coded, per doc comment).
-    // env_allowed: Some(empty) = all env vars denied.
-    let eval_ctx = EvalContext::new_with_options(
-        base_dir,
-        Arc::clone(&env),
-        Arc::clone(&type_stage_env),
-        false,
-        false,
-        Some(std::collections::HashSet::new()),
-    );
-
-    let thunk = tinct::async_rt::block_on(tinct::eval_surface_file_with_input(
-        &program,
-        Arc::clone(&env),
-        &eval_ctx,
-        &resolution_table,
-        &type_annotation_table,
-        &expects_resolved,
-        None,
-    ))
-    .map_err(|e| {
-        let mut msg = format!("{e}");
-        if let Some(snippet) = tinct::render_span_snippet(tangled, e.definition_span) {
-            msg.push('\n');
-            msg.push_str(&snippet);
-        }
-        msg
-    })?;
-
-    let val = materialize(&thunk, None, &eval_ctx).map_err(|e| {
-        let mut msg = format!("{e}");
-        if let Some(snippet) = tinct::render_span_snippet(tangled, e.definition_span) {
-            msg.push('\n');
-            msg.push_str(&snippet);
-        }
-        msg
-    })?;
-
-    // Always serialize to JSON (emit is purely additive)
-    let json =
-        tinct::async_rt::block_on_anywhere(visit_value(&val, &eval_ctx, 0, &JsonVisitor, thunk.definition_span())).map_err(|e| {
-            let mut msg = format!("{e}");
-            if let Some(snippet) = tinct::render_span_snippet(tangled, e.definition_span) {
-                msg.push('\n');
-                msg.push_str(&snippet);
-            }
-            msg
-        })?;
-    let output = tinct::json_pretty_print(&json);
-
-    println!("{output}");
-
-    Ok(())
 }
 
 /// Lint mode: type-check tangled tinct source without evaluating.
@@ -3180,7 +2591,7 @@ fn run_literate_eval(tangled: &str, config: &LiterateConfig) -> Result<(), Strin
 /// The base directory is derived from the Markdown file's parent directory.
 /// AMBIENT-OK: CLI literate-lint opening markdown file directory for include resolution.
 #[allow(clippy::disallowed_methods)]
-fn run_literate_lint(tangled: &str, config: &LiterateConfig) -> Result<(), String> {
+async fn run_literate_lint(tangled: &str, config: &LiterateConfig<'_>) -> Result<(), String> {
     let markdown_path = config.file_path;
     let strict = config.strict;
 
@@ -3198,20 +2609,19 @@ fn run_literate_lint(tangled: &str, config: &LiterateConfig) -> Result<(), Strin
     let lint_base_dir = open_file_base_dir(markdown_path, "literate lint")?;
     // Use expand_surface_program (not expand_macros) so SurfaceItem::Decl macros are seen.
     let mut program = output.program;
-    tinct::async_rt::block_on_anywhere(tinct::expand::expand_surface_program(
-        &mut program,
-        false,
-        &lint_base_dir,
-    ))
-    .map_err(|e| format!("{e}"))?;
+    let lit_expand_env = tinct::build_core_env();
+    tinct::expand::expand_surface_program(&mut program, lit_expand_env, false, &lint_base_dir)
+        .await
+        .map_err(|e| format!("{e}"))?;
     // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
     tinct::desugar::desugar_surface_program(&mut program);
     // Transform instance decls to method dicts (T-1142).
     tinct::desugar::desugar_instance_decls_surface_program(&mut program);
-    // Type check with prelude environment
-    let env = tinct::build_prelude_env();
+    let env = tinct::get_builtin_core_type_env()
+        .await
+        .expect("builtin core type env unavailable");
     let (type_errors, _type_map, _doc_map, _scheme_map, diagnostics) =
-        tinct::async_rt::block_on_anywhere(tinct::typecheck::typecheck_surface_program(&program, env));
+        tinct::typecheck::typecheck_surface_program(&program, env).await;
 
     // Collect all errors and warnings
     let mut all_messages = Vec::new();
@@ -3260,884 +2670,6 @@ fn run_literate_lint(tangled: &str, config: &LiterateConfig) -> Result<(), Strin
     Ok(())
 }
 
-/// Weave mode: evaluate blocks and update/verify === sections in code blocks.
-///
-/// Evaluates each block in pipeline order, threading `%` between blocks.
-///
-/// **Modes:**
-/// - Default (no flags): embed errors in `=== error` section, continue to next block, exit 0
-/// - `--fail-on-errors`: any evaluation error exits 1 immediately
-/// - `--verify`: compare actual output against expected === sections; exit 1 on mismatch
-/// - `--in-place`: write output to .tmp then rename to source file (instead of stdout)
-///
-/// **Literate-specific behavior:**
-/// - Always runs with --no-cwd and --no-env (hard-coded)
-/// - %clock is set to a fixed ClockCap from markdown file mtime
-/// - %libdir is always available
-/// - Capabilities injected via cap_fs and cap_net
-// AMBIENT-OK: CLI literate-weave reading markdown file metadata for mtime.
-#[allow(clippy::disallowed_methods)]
-fn run_literate_weave(
-    markdown: &str,
-    blocks: &[String],
-    config: &LiterateConfig,
-) -> Result<(), String> {
-    let markdown_path = config.file_path;
-    let no_substitute = config.no_substitute;
-    let strict = config.strict;
-    let in_place = config.in_place;
-    let verify = config.verify;
-    let fail_on_errors = config.fail_on_errors;
-    let cap_fs = config.cap_fs;
-    let cap_net = config.cap_net;
-    // Evaluate the pipeline incrementally: process one block at a time, threading
-    // % between them. This lets us annotate each block with the result at that point.
-    let base_dir_path = if markdown_path == "-" {
-        std::env::current_dir().map_err(|e| format!("cannot determine working directory: {e}"))?
-    } else {
-        let p = std::path::Path::new(markdown_path);
-        match p.parent().filter(|d| !d.as_os_str().is_empty()) {
-            Some(dir) => dir
-                .canonicalize()
-                .map_err(|e| format!("cannot resolve directory for \"{markdown_path}\": {e}"))?,
-            None => std::env::current_dir()
-                .map_err(|e| format!("cannot determine working directory: {e}"))?,
-        }
-    };
-
-    let env = tinct::async_rt::block_on_anywhere(create_stdlib_env()).map_err(|e| format!("{e}"))?;
-    // Build type-stage environment (for builtin_eval_types). Falls back to stdlib_env if unavailable.
-    let type_stage_env = tinct::build_type_stage_env().unwrap_or_else(|| Arc::clone(&env));
-
-    // E1: Inject fixed ClockCap from file mtime for deterministic weave output
-    {
-        use tinct::{ClockCapInner, Value};
-
-        // Get the markdown file's mtime
-        let mtime = if markdown_path == "-" {
-            // For stdin, use Unix epoch as a stable default
-            jiff::Timestamp::from_second(0)
-                .map_err(|e| format!("failed to create epoch timestamp: {e}"))?
-        } else {
-            let metadata = std::fs::metadata(markdown_path)
-                .map_err(|e| format!("cannot read file metadata: {e}"))?;
-            let system_time = metadata
-                .modified()
-                .map_err(|e| format!("cannot read file mtime: {e}"))?;
-
-            // Convert SystemTime to jiff::Timestamp
-            let duration_since_epoch = system_time
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|e| format!("file mtime is before Unix epoch: {e}"))?;
-            let nanos = i128::try_from(duration_since_epoch.as_nanos())
-                .map_err(|_| "mtime nanoseconds out of i128 range".to_string())?;
-            jiff::Timestamp::from_nanosecond(nanos)
-                .map_err(|e| format!("failed to convert mtime to timestamp: {e}"))?
-        };
-
-        let nanos = i64::try_from(mtime.as_nanosecond())
-            .map_err(|_| "mtime is out of i64 range".to_string())?;
-        let cap_value = Value::ClockCap(Rc::new(ClockCapInner::Fixed(nanos)));
-        let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::Span::origin());
-        env.write()
-            .unwrap()
-            .insert("%clock".to_string(), Arc::new(cap_thunk));
-    }
-
-    // E3: Inject --cap-fs NAME=PATH[:MODE] entries (same as run_eval)
-    {
-        use tinct::Value;
-        let cap_entries = open_cap_fs_entries(cap_fs, false)?;
-        for (name, cap_dir_arc, perms) in cap_entries {
-            // Clone the Arc to get an independent Rc for the DirCap value
-            let dir_for_cap = Rc::new(cap_dir_arc.open_dir(".").expect("failed to dup cap dir"));
-            let cap_value = Value::DirCap {
-                dir: dir_for_cap,
-                perms,
-            };
-            let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::Span::origin());
-            // Inject as `%NAME` (auto-prefix %).
-            let scoped_name = if name.starts_with('%') {
-                name.to_string()
-            } else {
-                format!("%{name}")
-            };
-            env.write()
-                .unwrap()
-                .insert(scoped_name, Arc::new(cap_thunk));
-        }
-    }
-
-    // E3: Inject --cap-net NAME=ENTRY entries (same as run_eval)
-    {
-        use std::collections::HashMap;
-        use tinct::NetCapEntry;
-        use tinct::Value;
-
-        let mut net_caps: HashMap<String, Vec<NetCapEntry>> = HashMap::new();
-
-        for cap_net_entry in cap_net {
-            let (name, entry_str) = cap_net_entry.split_once('=').ok_or_else(|| {
-                format!(
-                    "--cap-net: expected NAME=ENTRY format, got {:?}",
-                    cap_net_entry
-                )
-            })?;
-            let name = name.trim();
-            if name.is_empty() {
-                return Err(format!(
-                    "--cap-net: NAME must not be empty in {:?}",
-                    cap_net_entry
-                ));
-            }
-            let entry_str = entry_str.trim();
-
-            let entry = parse_cli_net_cap_entry(entry_str)?;
-            let scoped_name = if name.starts_with('%') {
-                name.to_string()
-            } else {
-                format!("%{name}")
-            };
-            net_caps.entry(scoped_name).or_default().push(entry);
-        }
-
-        // Now bind each accumulated NetCap.
-        for (name, entries) in net_caps {
-            let cap_value = Value::NetCap(Rc::new(entries));
-            let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::Span::origin());
-            env.write().unwrap().insert(name, Arc::new(cap_thunk));
-        }
-    }
-
-    // Inject `%emit` channel into the root environment.
-    // This is a bounded async channel with capacity 64 (same as eval-programs in loader.llt).
-    // User code emits values via `[emit val]`, which sends to this channel.
-    // For literate weave, the channel is created but never drained — emitted values are
-    // discarded. This matches the semantics of `tinct run` without an output formatter:
-    // the none.llt formatter drains %emit and discards all values.
-    {
-        use tinct::Value;
-        let (tx, rx) = tokio::sync::mpsc::channel(64);
-        let channel_inner = tinct::ChannelInner {
-            sender: tx,
-            receiver: tokio::sync::Mutex::new(rx),
-            capacity: 64,
-        };
-        let emit_value = Value::Channel(std::sync::Arc::new(channel_inner));
-        let emit_thunk = tinct::Thunk::new_materialized(emit_value, tinct::Span::origin());
-        env.write()
-            .unwrap()
-            .insert("%emit".to_string(), Arc::new(emit_thunk));
-    }
-
-    // Inject `%stdout` WriteHandle into the root environment.
-    // Output formatters and user code can write directly to %stdout via [write-handle %stdout ...].
-    {
-        use std::cell::RefCell;
-        use std::collections::HashMap;
-        use std::io::BufWriter;
-        use tinct::Value;
-
-        // Create stdout WriteHandle with default caps (Bool(true) sentinel, consistent with stdin)
-        let mut caps = HashMap::new();
-        caps.insert("Writable".to_string(), Value::Bool(true));
-        caps.insert("Text".to_string(), Value::Bool(true));
-
-        let stdout_handle = Value::WriteHandle {
-            caps,
-            inner: Rc::new(RefCell::new(
-                Box::new(BufWriter::new(std::io::stdout())) as Box<dyn std::io::Write>
-            )),
-        };
-        let stdout_thunk = tinct::Thunk::new_materialized(stdout_handle, tinct::Span::origin());
-        env.write()
-            .unwrap()
-            .insert("%stdout".to_string(), Arc::new(stdout_thunk));
-    }
-
-    // Create one base EvalContext that owns the shared ThunkArena.
-    // All blocks derive from this context via with_base_dir_and_path so that
-    // ThunkIds allocated by block N remain valid when block N+1 references them
-    // via the % pipeline variable. This matches the arena-sharing pattern used by
-    // the multi-file pipeline in run_eval.
-    let base_dir_initial =
-        cap_std::fs::Dir::open_ambient_dir(&base_dir_path, cap_std::ambient_authority())
-            .map_err(|e| format!("cannot open base directory: {e}"))?;
-    // Literate mode always runs with --no-env (hard-coded, per doc comment).
-    // env_allowed: Some(empty) = all env vars denied.
-    let base_eval_ctx = EvalContext::new_with_options(
-        base_dir_initial,
-        Arc::clone(&env),
-        Arc::clone(&type_stage_env),
-        false,
-        false,
-        Some(std::collections::HashSet::new()),
-    );
-
-    // Evaluate each block in turn, passing the previous result as pipeline input.
-    // Collect (block_index -> actual output sections) for weaving/verification.
-    let mut pipeline_input: Option<Arc<Thunk>> = None;
-
-    // Split blocks into code + expectations
-    let blocks_with_exp: Vec<_> = blocks
-        .iter()
-        .map(|s| literate::split_block_sections(s))
-        .collect();
-
-    let mut block_outputs: Vec<BlockOutput> = Vec::with_capacity(blocks_with_exp.len());
-
-    for (i, block_with_exp) in blocks_with_exp.iter().enumerate() {
-        let code = &block_with_exp.code;
-
-        let parse_result = parse(code);
-        let parsed = match parse_result {
-            Ok(o) => o,
-            Err(e) => {
-                let error_msg = if strict {
-                    tinct::format_parse_error(&e, code, &format!("block {}", i + 1))
-                } else {
-                    format!("{e}")
-                };
-
-                if fail_on_errors {
-                    return Err(format!("parse error in code block {}: {error_msg}", i + 1));
-                }
-
-                // Embed error and continue
-                block_outputs.push(BlockOutput {
-                    out: None,
-                    warn: None,
-                    error: Some(error_msg),
-                    info: None,
-                });
-                continue;
-            }
-        };
-
-        // PIPELINE INVARIANT: parse -> expand_surface_program -> desugar -> resolve -> typecheck.
-        // Use expand_surface_program (not expand_macros) so SurfaceItem::Decl macros are seen.
-        // Desugar AFTER macro expansion so that macros can introduce $_ patterns.
-        let mut program = parsed.program;
-        match tinct::async_rt::block_on_anywhere(tinct::expand::expand_surface_program(
-            &mut program,
-            false,
-            &base_eval_ctx.config.base_dir,
-        )) {
-            Ok(_) => {}
-            Err(e) => {
-                let msg = format!("{e}");
-                if fail_on_errors {
-                    return Err(format!(
-                        "macro expansion error in code block {}: {msg}",
-                        i + 1
-                    ));
-                }
-                block_outputs.push(BlockOutput {
-                    out: None,
-                    warn: None,
-                    error: Some(msg),
-                    info: None,
-                });
-                continue;
-            }
-        }
-        // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
-        tinct::desugar::desugar_surface_program(&mut program);
-        // Transform instance decls to method dicts (T-1142).
-        tinct::desugar::desugar_instance_decls_surface_program(&mut program);
-        // Variable resolution pass (Phase 1 of arena allocation strategy).
-        let resolution_table =
-            std::sync::Arc::new(tinct::resolve::resolve_surface_program(&program));
-        let (type_errors, type_annotation_table, expects_resolved) =
-            tinct::async_rt::block_on_anywhere(tinct::typecheck::typecheck_surface_program_annotation_table(&program));
-        let type_annotation_table = std::sync::Arc::new(type_annotation_table);
-
-        // Capture type warnings (always non-fatal in literate mode unless --strict)
-        let type_warnings = if !strict && !type_errors.is_empty() {
-            let mut msg = String::new();
-            for err in &type_errors {
-                msg.push_str(&format!("{err}\n"));
-            }
-            Some(msg.trim_end().to_string())
-        } else {
-            None
-        };
-
-        // In strict mode, type errors are fatal
-        if strict && !type_errors.is_empty() {
-            let mut msg = String::from("type errors:\n");
-            for err in &type_errors {
-                msg.push_str(&format!("  {err}\n"));
-            }
-            if fail_on_errors {
-                return Err(format!("type errors in code block {}: {msg}", i + 1));
-            }
-            block_outputs.push(BlockOutput {
-                out: None,
-                warn: None,
-                error: Some(msg),
-                info: None,
-            });
-            continue;
-        }
-
-        // Derive per-block context from the base context (shares the ThunkArena).
-        let base_dir =
-            cap_std::fs::Dir::open_ambient_dir(&base_dir_path, cap_std::ambient_authority())
-                .map_err(|e| format!("cannot open base directory: {e}"))?;
-
-        let eval_ctx = base_eval_ctx.with_base_dir_and_path(base_dir, Some(base_dir_path.clone()));
-
-        let thunk_result = tinct::async_rt::block_on(tinct::eval_surface_file_with_input(
-            &program,
-            Arc::clone(&env),
-            &eval_ctx,
-            &resolution_table,
-            &type_annotation_table,
-            &expects_resolved,
-            pipeline_input.clone(),
-        ));
-        let thunk = match thunk_result {
-            Ok(t) => t,
-            Err(e) => {
-                let error_msg = format!("{e}");
-                if fail_on_errors {
-                    return Err(format!("eval error in code block {}: {error_msg}", i + 1));
-                }
-                block_outputs.push(BlockOutput {
-                    out: None,
-                    warn: type_warnings,
-                    error: Some(error_msg),
-                    info: None,
-                });
-                continue;
-            }
-        };
-
-        let val_result = materialize(&thunk, None, &eval_ctx);
-        let val = match val_result {
-            Ok(v) => v,
-            Err(e) => {
-                let error_msg = format!("{e}");
-                if fail_on_errors {
-                    return Err(format!(
-                        "materialize error in code block {}: {error_msg}",
-                        i + 1
-                    ));
-                }
-                block_outputs.push(BlockOutput {
-                    out: None,
-                    warn: type_warnings,
-                    error: Some(error_msg),
-                    info: None,
-                });
-                continue;
-            }
-        };
-
-        // Always serialize the result to JSON (emit is additive)
-        let json = tinct::async_rt::block_on_anywhere(visit_value(&val, &eval_ctx, 0, &JsonVisitor, thunk.definition_span()))
-            .map_err(|e| format!("error serializing code block {} result: {e}", i + 1))?;
-        let output_str = json;
-
-        block_outputs.push(BlockOutput {
-            out: Some(output_str),
-            warn: type_warnings,
-            error: None,
-            info: None,
-        });
-        // Thread the result as pipeline input to the next block.
-        pipeline_input = Some(Arc::clone(&thunk));
-    }
-
-    // C3: Verify mode — compare actual output against expected === sections
-    if verify {
-        let mut mismatches = Vec::new();
-        for (i, (block_with_exp, block_output)) in
-            blocks_with_exp.iter().zip(block_outputs.iter()).enumerate()
-        {
-            let expected = &block_with_exp.expectations;
-
-            // Check output section
-            if let Some(ref expected_out) = expected.out {
-                match &block_output.out {
-                    Some(actual_out) => {
-                        if actual_out.trim() != expected_out.trim() {
-                            mismatches.push(format!(
-                                "Block {}: output mismatch\nExpected:\n{}\nActual:\n{}",
-                                i + 1,
-                                expected_out,
-                                actual_out
-                            ));
-                        }
-                    }
-                    None => {
-                        mismatches.push(format!(
-                            "Block {}: expected output but got error\nExpected:\n{}\nActual error:\n{}",
-                            i + 1, expected_out, block_output.error.as_ref().unwrap_or(&"(no error message)".to_string())
-                        ));
-                    }
-                }
-            }
-
-            // Check warn section
-            if let Some(ref expected_warn) = expected.warn {
-                match &block_output.warn {
-                    Some(actual_warn) => {
-                        if !actual_warn.contains(expected_warn.trim()) {
-                            mismatches.push(format!(
-                                "Block {}: warning mismatch\nExpected substring:\n{}\nActual:\n{}",
-                                i + 1,
-                                expected_warn,
-                                actual_warn
-                            ));
-                        }
-                    }
-                    None => {
-                        mismatches.push(format!(
-                            "Block {}: expected warning but got none\nExpected warning:\n{}",
-                            i + 1,
-                            expected_warn
-                        ));
-                    }
-                }
-            }
-
-            // Check error section
-            if let Some(ref expected_error) = expected.error {
-                match &block_output.error {
-                    Some(actual_error) => {
-                        if !actual_error.contains(expected_error.trim()) {
-                            mismatches.push(format!(
-                                "Block {}: error mismatch\nExpected substring:\n{}\nActual:\n{}",
-                                i + 1,
-                                expected_error,
-                                actual_error
-                            ));
-                        }
-                    }
-                    None => {
-                        mismatches.push(format!(
-                            "Block {}: expected error but got success\nExpected error:\n{}",
-                            i + 1,
-                            expected_error
-                        ));
-                    }
-                }
-            }
-
-            // Check info section
-            if let Some(ref expected_info) = expected.info {
-                match &block_output.info {
-                    Some(actual_info) => {
-                        if !actual_info.contains(expected_info.trim()) {
-                            mismatches.push(format!(
-                                "Block {}: info mismatch\nExpected substring:\n{}\nActual:\n{}",
-                                i + 1,
-                                expected_info,
-                                actual_info
-                            ));
-                        }
-                    }
-                    None => {
-                        mismatches.push(format!(
-                            "Block {}: expected info but got none\nExpected info:\n{}",
-                            i + 1,
-                            expected_info
-                        ));
-                    }
-                }
-            }
-        }
-
-        if !mismatches.is_empty() {
-            eprintln!(
-                "Verification failed with {} mismatche(s):\n",
-                mismatches.len()
-            );
-            for mismatch in &mismatches {
-                eprintln!("{}\n", mismatch);
-            }
-            return Err("verification failed".to_string());
-        }
-
-        // Verification passed
-        return Ok(());
-    }
-
-    // C2: Weave mode — reconstruct blocks with === sections inline
-    let mut block_idx = 0;
-    let mut in_tinct_block = false;
-    let mut in_code_portion = false;
-    let mut output = String::with_capacity(markdown.len() + block_outputs.len() * 80);
-    let lines: Vec<&str> = markdown.lines().collect();
-    let mut i = 0;
-
-    while i < lines.len() {
-        let line = lines[i];
-        let trimmed = line.trim();
-
-        if !in_tinct_block {
-            output.push_str(line);
-            output.push('\n');
-            if trimmed == "```tinct" || trimmed == "```llt" {
-                in_tinct_block = true;
-                in_code_portion = true;
-            }
-        } else if trimmed == "```" {
-            // Closing fence for tinct block
-            in_tinct_block = false;
-            in_code_portion = false;
-
-            // C2: Insert === sections before closing fence
-            if block_idx < block_outputs.len() {
-                let block_output = &block_outputs[block_idx];
-
-                // Add === warn section if there are warnings
-                if let Some(ref warn) = block_output.warn {
-                    output.push_str("=== warn\n");
-                    output.push_str(warn);
-                    output.push('\n');
-                }
-
-                // Add === out section if there's output
-                if let Some(ref out) = block_output.out {
-                    output.push_str("=== out\n");
-                    output.push_str(out);
-                    output.push('\n');
-                }
-
-                // Add === error section if there's an error
-                if let Some(ref error) = block_output.error {
-                    output.push_str("=== error\n");
-                    output.push_str(error);
-                    output.push('\n');
-                }
-
-                // Add === info section if there's info/log output
-                if let Some(ref info) = block_output.info {
-                    output.push_str("=== info\n");
-                    output.push_str(info);
-                    output.push('\n');
-                }
-
-                block_idx += 1;
-            }
-
-            output.push_str(line);
-            output.push('\n');
-        } else if in_code_portion && trimmed.starts_with("===") {
-            // Skip existing === sections and everything after them in this block
-            in_code_portion = false;
-            // Don't write this line or any subsequent lines until closing fence
-        } else if in_code_portion {
-            // Still in code portion — keep the line
-            output.push_str(line);
-            output.push('\n');
-        }
-        // else: skip lines in old === sections
-
-        i += 1;
-    }
-
-    // Inline marker substitution: replace <!-- tinct-result: EXPR --> markers
-    // with the most-recent code block's result. When EXPR is empty the full JSON
-    // is inserted; when EXPR is e.g. `%.x` the corresponding JSON field is
-    // extracted.
-    if !no_substitute {
-        output = substitute_inline_markers(&output, &block_outputs);
-    }
-
-    // Write output
-    if in_place {
-        write_file_atomic(markdown_path, &output)?;
-    } else {
-        print!("{output}");
-    }
-
-    Ok(())
-}
-
-/// Substitute inline `<!-- tinct-result: ... -->` markers in Markdown output.
-///
-/// Markers with an expression (e.g., `<!-- tinct-result: %.x -->`) extract the
-/// named field from the most recent block result. Markers without an expression
-/// (just `<!-- tinct-result: -->`) are replaced with the full JSON output of the
-/// most recent block.
-///
-/// The "most recent block" advances each time a tinct code block's closing fence
-/// is encountered before the marker.
-fn substitute_inline_markers(woven: &str, block_outputs: &[BlockOutput]) -> String {
-    const MARKER_OPEN: &str = "<!-- tinct-result:";
-    const MARKER_CLOSE: &str = "-->";
-
-    let mut result = String::with_capacity(woven.len());
-    let mut current_block: usize = 0;
-    let mut in_tinct_block = false;
-
-    for line in woven.lines() {
-        let trimmed = line.trim();
-
-        // Track code block boundaries to know which block result is "current"
-        if !in_tinct_block && (trimmed == "```tinct" || trimmed == "```llt") {
-            in_tinct_block = true;
-        } else if in_tinct_block && trimmed == "```" {
-            in_tinct_block = false;
-            current_block += 1;
-        }
-
-        // Only substitute in non-code-block lines
-        if !in_tinct_block && line.contains(MARKER_OPEN) {
-            let mut line_result = String::with_capacity(line.len());
-            let mut remaining = line;
-
-            while let Some(open_pos) = remaining.find(MARKER_OPEN) {
-                line_result.push_str(&remaining[..open_pos]);
-                let after_open = &remaining[open_pos + MARKER_OPEN.len()..];
-
-                if let Some(close_pos) = after_open.find(MARKER_CLOSE) {
-                    let expr = after_open[..close_pos].trim();
-                    let blk_idx = current_block.saturating_sub(1);
-
-                    let replacement = if let Some(block) = block_outputs.get(blk_idx) {
-                        if let Some(ref out) = block.out {
-                            if expr.is_empty() {
-                                out.clone()
-                            } else {
-                                resolve_inline_expr(expr, out)
-                            }
-                        } else {
-                            // Block had an error — leave marker as-is
-                            let marker_end =
-                                open_pos + MARKER_OPEN.len() + close_pos + MARKER_CLOSE.len();
-                            remaining[open_pos..marker_end].to_string()
-                        }
-                    } else {
-                        // No block output — leave marker as-is
-                        let marker_end =
-                            open_pos + MARKER_OPEN.len() + close_pos + MARKER_CLOSE.len();
-                        remaining[open_pos..marker_end].to_string()
-                    };
-
-                    line_result.push_str(&replacement);
-                    remaining = &after_open[close_pos + MARKER_CLOSE.len()..];
-                } else {
-                    // No closing --> found, emit remainder as-is
-                    line_result.push_str(&remaining[open_pos..]);
-                    remaining = "";
-                    break;
-                }
-            }
-
-            line_result.push_str(remaining);
-            result.push_str(&line_result);
-        } else {
-            result.push_str(line);
-        }
-        result.push('\n');
-    }
-
-    result
-}
-
-/// Extract a top-level field value from a compact JSON object string.
-///
-/// Returns `Some(display_string)` if `json_output` is a JSON object containing `field`,
-/// where the display string strips surrounding `"..."` for string values and returns
-/// the raw fragment for numbers, booleans, and null.
-///
-/// Only handles the flat output of `JsonVisitor` (compact, no extra whitespace).
-fn json_get_object_field(json_output: &str, field: &str) -> Option<String> {
-    let s = json_output.trim();
-    if !s.starts_with('{') || !s.ends_with('}') {
-        return None;
-    }
-    // Build the key fragment to search for: `"<field>":`.
-    // This handles the common case where keys do not themselves contain `"` or `\`.
-    // For keys with special chars the escaped form would differ, but field names in
-    // inline expressions are always simple identifiers.
-    let needle = format!("\"{}\":", field);
-    // Scan through the object manually to find the key.
-    // We need string-aware scanning to skip over key/value strings safely.
-    let inner = &s[1..s.len() - 1]; // strip outer { }
-    let mut pos = 0;
-    let bytes = inner.as_bytes();
-    while pos < bytes.len() {
-        // Skip whitespace
-        while pos < bytes.len() && matches!(bytes[pos], b' ' | b'\t' | b'\n' | b'\r') {
-            pos += 1;
-        }
-        if pos >= bytes.len() {
-            break;
-        }
-        // We expect a quoted key
-        if bytes[pos] != b'"' {
-            break;
-        }
-        // Find end of key string (handle escapes)
-        let key_start = pos;
-        pos += 1; // skip opening "
-        while pos < bytes.len() {
-            if bytes[pos] == b'\\' {
-                pos += 2; // skip escape sequence
-            } else if bytes[pos] == b'"' {
-                pos += 1; // skip closing "
-                break;
-            } else {
-                pos += 1;
-            }
-        }
-        // Skip ':'
-        while pos < bytes.len() && bytes[pos] == b':' {
-            pos += 1;
-        }
-        // Find end of value (handle strings, nested objects/arrays)
-        let val_start = pos;
-        if pos >= bytes.len() {
-            break;
-        }
-        let val_end = json_scan_value(inner, pos);
-        let key_fragment = &inner[key_start..];
-        if key_fragment.starts_with(needle.as_str()) {
-            // This is the key we want — extract the raw value
-            let raw = inner[val_start..val_end].trim();
-            // Convert to display string
-            let display = if raw.starts_with('"') && raw.ends_with('"') && raw.len() >= 2 {
-                // Single-pass unescape of a JSON string value.
-                // Sequential .replace() chains are incorrect for inputs like \\n (escaped
-                // backslash followed by n), which would be mishandled as a newline. A
-                // single-pass character scanner handles all escape sequences correctly,
-                // including \uXXXX Unicode escapes emitted by escape_json_str for control chars.
-                let inner_str = &raw[1..raw.len() - 1];
-                let mut result = String::with_capacity(inner_str.len());
-                let mut chars = inner_str.chars();
-                while let Some(c) = chars.next() {
-                    if c == '\\' {
-                        match chars.next() {
-                            Some('"') => result.push('"'),
-                            Some('\\') => result.push('\\'),
-                            Some('n') => result.push('\n'),
-                            Some('r') => result.push('\r'),
-                            Some('t') => result.push('\t'),
-                            Some('b') => result.push('\x08'),
-                            Some('f') => result.push('\x0c'),
-                            Some('/') => result.push('/'),
-                            Some('u') => {
-                                // Consume exactly 4 hex digits per RFC 8259 §7
-                                let hex: String = chars.by_ref().take(4).collect();
-                                if let Ok(n) = u32::from_str_radix(&hex, 16) {
-                                    if let Some(ch) = char::from_u32(n) {
-                                        result.push(ch);
-                                    }
-                                }
-                                // If invalid, silently drop (malformed JSON input)
-                            }
-                            Some(c2) => {
-                                result.push('\\');
-                                result.push(c2);
-                            }
-                            None => {}
-                        }
-                    } else {
-                        result.push(c);
-                    }
-                }
-                result
-            } else {
-                raw.to_string()
-            };
-            return Some(display);
-        }
-        pos = val_end;
-        // Skip ',' separator
-        while pos < bytes.len() && matches!(bytes[pos], b',' | b' ' | b'\t' | b'\n' | b'\r') {
-            pos += 1;
-        }
-    }
-    None
-}
-
-/// Scan a JSON value starting at `pos` in `s`, returning the end position.
-///
-/// Handles strings (with escapes), arrays, objects, and primitives.
-fn json_scan_value(s: &str, mut pos: usize) -> usize {
-    let bytes = s.as_bytes();
-    while pos < bytes.len() && matches!(bytes[pos], b' ' | b'\t') {
-        pos += 1;
-    }
-    if pos >= bytes.len() {
-        return pos;
-    }
-    match bytes[pos] {
-        b'"' => {
-            pos += 1;
-            while pos < bytes.len() {
-                if bytes[pos] == b'\\' {
-                    pos += 2;
-                } else if bytes[pos] == b'"' {
-                    pos += 1;
-                    break;
-                } else {
-                    pos += 1;
-                }
-            }
-            pos
-        }
-        b'{' | b'[' => {
-            let open = bytes[pos];
-            let close = if open == b'{' { b'}' } else { b']' };
-            let mut depth = 1usize;
-            pos += 1;
-            while pos < bytes.len() && depth > 0 {
-                if bytes[pos] == b'"' {
-                    pos += 1;
-                    while pos < bytes.len() {
-                        if bytes[pos] == b'\\' {
-                            pos += 2;
-                        } else if bytes[pos] == b'"' {
-                            pos += 1;
-                            break;
-                        } else {
-                            pos += 1;
-                        }
-                    }
-                } else if bytes[pos] == open {
-                    depth += 1;
-                    pos += 1;
-                } else if bytes[pos] == close {
-                    depth -= 1;
-                    pos += 1;
-                } else {
-                    pos += 1;
-                }
-            }
-            pos
-        }
-        _ => {
-            // Primitive: scan until ',' or '}' or ']' or end
-            while pos < bytes.len() && !matches!(bytes[pos], b',' | b'}' | b']') {
-                pos += 1;
-            }
-            pos
-        }
-    }
-}
-
-/// Resolve an inline expression against a JSON output string.
-///
-/// Supports `%.field` patterns (dot-key field extraction from a JSON object).
-/// Falls back to the full output for unrecognized patterns.
-fn resolve_inline_expr(expr: &str, json_output: &str) -> String {
-    // Handle %.field pattern
-    if let Some(field) = expr.strip_prefix("%.") {
-        if let Some(display) = json_get_object_field(json_output, field) {
-            return display;
-        }
-    }
-    // Fallback: return full output
-    json_output.to_string()
-}
-
 /// Schema keys recognized by the `describe` subcommand heuristic.
 /// A dict is considered a "schema dict" if any of its values is a dict containing
 /// at least one of these keys. This mirrors the constraint keys supported by `$validate`.
@@ -4154,134 +2686,22 @@ const SCHEMA_KEYS: &[&str] = &[
     "enum",
 ];
 
-/// Simple JSON representation for the describe command.
-/// This replaces serde_json usage in run_describe and its helpers.
-#[derive(Debug, Clone)]
-enum DescribeJson {
-    Bool(bool),
-    Int(i64),
-    Float(f64),
-    Str(String),
-    Array(Vec<DescribeJson>),
-    Object(Vec<(String, DescribeJson)>),
-}
-
-impl DescribeJson {
-    /// Convert to a pretty-printed JSON string with 2-space indentation.
-    fn to_json_pretty(&self, indent_level: usize) -> String {
-        let indent = "  ".repeat(indent_level);
-        let next_indent = "  ".repeat(indent_level + 1);
-
-        match self {
-            DescribeJson::Bool(b) => b.to_string(),
-            DescribeJson::Int(n) => n.to_string(),
-            DescribeJson::Float(f) => {
-                // Match serde_json behavior: finite floats only
-                if f.is_finite() {
-                    f.to_string()
-                } else {
-                    "null".to_string()
-                }
-            }
-            DescribeJson::Str(s) => {
-                // Delegate to the shared escape_json_str from lib.rs to avoid duplication.
-                format!("\"{}\"", escape_json_str(s))
-            }
-            DescribeJson::Array(items) => {
-                if items.is_empty() {
-                    return "[]".to_string();
-                }
-                let mut result = "[\n".to_string();
-                for (i, item) in items.iter().enumerate() {
-                    result.push_str(&next_indent);
-                    result.push_str(&item.to_json_pretty(indent_level + 1));
-                    if i < items.len() - 1 {
-                        result.push(',');
-                    }
-                    result.push('\n');
-                }
-                result.push_str(&indent);
-                result.push(']');
-                result
-            }
-            DescribeJson::Object(entries) => {
-                if entries.is_empty() {
-                    return "{}".to_string();
-                }
-                let mut result = "{\n".to_string();
-                for (i, (key, value)) in entries.iter().enumerate() {
-                    result.push_str(&next_indent);
-                    // Key is always a string, so escape it
-                    result.push_str(&DescribeJson::Str(key.clone()).to_json_pretty(0));
-                    result.push_str(": ");
-                    result.push_str(&value.to_json_pretty(indent_level + 1));
-                    if i < entries.len() - 1 {
-                        result.push(',');
-                    }
-                    result.push('\n');
-                }
-                result.push_str(&indent);
-                result.push('}');
-                result
-            }
-        }
-    }
-
-    /// Get the value as a string, if it's a string.
-    fn as_str(&self) -> Option<&str> {
-        match self {
-            DescribeJson::Str(s) => Some(s),
-            _ => None,
-        }
-    }
-
-    /// Get the value as an object (Vec of key-value pairs), if it's an object.
-    fn as_object(&self) -> Option<&Vec<(String, DescribeJson)>> {
-        match self {
-            DescribeJson::Object(entries) => Some(entries),
-            _ => None,
-        }
-    }
-
-    /// Get a field from an object by key.
-    fn get(&self, key: &str) -> Option<&DescribeJson> {
-        match self {
-            DescribeJson::Object(entries) => entries.iter().find(|(k, _)| k == key).map(|(_, v)| v),
-            _ => None,
-        }
-    }
-}
-
-/// Write content to a file atomically using a .tmp file then rename.
-// AMBIENT-OK: CLI literate-weave --in-place writing to operator-specified file.
-#[allow(clippy::disallowed_types, clippy::disallowed_methods)]
-fn write_file_atomic(path: &str, content: &str) -> Result<(), String> {
-    use std::io::Write;
-
-    let tmp_path = format!("{}.tmp", path);
-    let mut file = std::fs::File::create(&tmp_path)
-        .map_err(|e| format!("cannot create temporary file {}: {e}", tmp_path))?;
-
-    file.write_all(content.as_bytes())
-        .map_err(|e| format!("cannot write to temporary file {}: {e}", tmp_path))?;
-
-    file.sync_all()
-        .map_err(|e| format!("cannot sync temporary file {}: {e}", tmp_path))?;
-
-    std::fs::rename(&tmp_path, path)
-        .map_err(|e| format!("cannot rename {} to {}: {e}", tmp_path, path))?;
-
-    Ok(())
+/// Collects the human-readable contract information for one document section.
+struct ContractSection {
+    section_idx: usize,
+    type_name: Option<String>,
+    fields: Vec<(String, String)>,  // (field_name, constraint_description)
+    schema: Vec<(String, String)>,  // (field_name, constraint_description)
+    docs: Vec<(String, String)>,    // (binding_name, doc_string)
 }
 
 /// Describe the input contract of an LLT file.
 ///
 /// Parses the file, extracts `%@Type` / `expects:` annotations from each document,
-/// and detects schema dicts by heuristic. Outputs a human-readable summary (default)
-/// or machine-readable JSON (`--json`).
+/// and detects schema dicts by heuristic. Outputs a human-readable summary.
 // AMBIENT-OK: CLI describe — opens file parent dir for type-checking
 #[allow(clippy::disallowed_methods)]
-fn run_describe(file_path: &str, json_mode: bool) -> Result<(), String> {
+async fn run_describe(file_path: &str) -> Result<(), String> {
     let sf = read_source(file_path)?;
     let source = String::from(&*sf.content);
     let output = parse_with_file(&source, Arc::clone(&sf)).map_err(|e| format!("{e}"))?;
@@ -4300,36 +2720,35 @@ fn run_describe(file_path: &str, json_mode: bool) -> Result<(), String> {
     };
     // Use expand_surface_program (not expand_macros) so SurfaceItem::Decl macros are seen.
     let mut program = output.program;
-    tinct::async_rt::block_on_anywhere(tinct::expand::expand_surface_program(
-        &mut program,
-        false,
-        &describe_base_dir,
-    ))
-    .map_err(|e| format!("{e}"))?;
+    let desc_expand_env = tinct::build_core_env();
+    tinct::expand::expand_surface_program(&mut program, desc_expand_env, false, &describe_base_dir)
+        .await
+        .map_err(|e| format!("{e}"))?;
     // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
     tinct::desugar::desugar_surface_program(&mut program);
-    // Type check to get DocMap (for doc strings)
-    let env = tinct::build_prelude_env();
+    // Type check to get DocMap (for doc strings).
+    let env = tinct::get_builtin_core_type_env()
+        .await
+        .expect("builtin core type env unavailable");
     let (_type_errors, _type_map, doc_map, _scheme_map, _diagnostics) =
-        tinct::async_rt::block_on_anywhere(tinct::typecheck::typecheck_surface_program(&program, env));
+        tinct::typecheck::typecheck_surface_program(&program, env).await;
 
     // Collect contract information from each document section.
-    let mut contracts: Vec<DescribeJson> = Vec::new();
+    let mut contracts: Vec<ContractSection> = Vec::new();
     let mut has_any_contract = false;
 
     for (doc_idx, doc) in program.documents.iter().enumerate() {
-        let mut doc_contract: Vec<(String, DescribeJson)> = Vec::new();
-        doc_contract.push(("section".to_string(), DescribeJson::Int(doc_idx as i64)));
+        let mut type_name: Option<String> = None;
+        let mut fields: Vec<(String, String)> = Vec::new();
 
         // Extract expects: / %@Type annotation
         if let Some(ref ann) = doc.node.expects {
             has_any_contract = true;
             match &ann.node {
-                tinct::Annotation::Simple(type_name) => {
-                    doc_contract.push(("type".to_string(), DescribeJson::Str(type_name.clone())));
+                tinct::Annotation::Simple(name) => {
+                    type_name = Some(name.clone());
                 }
                 tinct::Annotation::PropertyDict(entries) => {
-                    let mut fields: Vec<(String, DescribeJson)> = Vec::new();
                     for entry in entries {
                         if let Some(ref key_node) = entry.node.key {
                             if let tinct::SurfaceExpression::Str(ref key_name) = key_node.expr {
@@ -4340,122 +2759,66 @@ fn run_describe(file_path: &str, json_mode: bool) -> Result<(), String> {
                             }
                         }
                     }
-                    if !fields.is_empty() {
-                        doc_contract.push(("fields".to_string(), DescribeJson::Object(fields)));
-                    }
                 }
                 tinct::Annotation::Annotated(name, _inner) => {
-                    doc_contract.push(("type".to_string(), DescribeJson::Str(name.clone())));
+                    type_name = Some(name.clone());
                 }
             }
         }
 
         // Detect schema dicts in the document expressions
-        let schema_fields = detect_schema_dict(&doc.node);
-        if !schema_fields.is_empty() {
+        let schema = detect_schema_dict(&doc.node);
+        if !schema.is_empty() {
             has_any_contract = true;
-            doc_contract.push(("schema".to_string(), DescribeJson::Object(schema_fields)));
         }
 
         // Include doc strings from DocMap for top-level bindings
-        let doc_strings = extract_doc_strings_from_doc(&doc.node, &doc_map);
-        if !doc_strings.is_empty() {
+        let docs = extract_doc_strings_from_doc(&doc.node, &doc_map);
+        if !docs.is_empty() {
             has_any_contract = true;
-            doc_contract.push(("docs".to_string(), DescribeJson::Object(doc_strings)));
         }
 
-        if doc_contract.len() > 1 {
-            // Has more than just "section"
-            contracts.push(DescribeJson::Object(doc_contract));
+        let has_content = type_name.is_some() || !fields.is_empty() || !schema.is_empty() || !docs.is_empty();
+        if has_content {
+            contracts.push(ContractSection { section_idx: doc_idx, type_name, fields, schema, docs });
         }
     }
 
     if !has_any_contract {
-        if json_mode {
-            println!("{{}}");
-        } else {
-            println!("no input contract");
-        }
+        println!("no input contract");
         return Ok(());
     }
 
-    if json_mode {
-        let output = DescribeJson::Object(vec![(
-            "contracts".to_string(),
-            DescribeJson::Array(contracts),
-        )]);
-        let pretty = output.to_json_pretty(0);
-        println!("{pretty}");
-    } else {
-        // Human-readable output: one line per field, with doc strings
-        for contract in &contracts {
-            if let Some(section) = contract.get("section") {
-                if contracts.len() > 1 {
-                    // Format the section number
-                    let section_str = match section {
-                        DescribeJson::Int(n) => n.to_string(),
-                        _ => "?".to_string(),
-                    };
-                    println!("--- section {} ---", section_str);
-                }
+    // Human-readable output: one line per field, with doc strings
+    for contract in &contracts {
+        if contracts.len() > 1 {
+            println!("--- section {} ---", contract.section_idx);
+        }
+        if let Some(ref name) = contract.type_name {
+            println!("  expects: @{}", name);
+        }
+        for (name, constraint) in &contract.fields {
+            if let Some((_, doc_str)) = contract.docs.iter().find(|(k, _)| k == name) {
+                println!("  {}: {} — {}", name, constraint, doc_str);
+            } else {
+                println!("  {}: {}", name, constraint);
             }
-            if let Some(type_name) = contract.get("type") {
-                println!("  expects: @{}", type_name.as_str().unwrap_or("?"));
+        }
+        for (name, constraint) in &contract.schema {
+            if let Some((_, doc_str)) = contract.docs.iter().find(|(k, _)| k == name) {
+                println!("  {}: {} — {}", name, constraint, doc_str);
+            } else {
+                println!("  {}: {}", name, constraint);
             }
-            if let Some(fields) = contract.get("fields").and_then(|f| f.as_object()) {
-                for (name, constraint) in fields {
-                    print!("  {}: {}", name, format_constraint(constraint));
-                    // Add doc string if available
-                    if let Some(docs) = contract.get("docs").and_then(|d| d.as_object()) {
-                        if let Some(doc_str) = docs
-                            .iter()
-                            .find(|(k, _)| k == name)
-                            .map(|(_, v)| v)
-                            .and_then(|v| v.as_str())
-                        {
-                            print!(" — {}", doc_str);
-                        }
-                    }
-                    println!();
-                }
-            }
-            if let Some(schema) = contract.get("schema").and_then(|s| s.as_object()) {
-                for (name, constraint) in schema {
-                    print!("  {}: {}", name, format_constraint(constraint));
-                    // Add doc string if available
-                    if let Some(docs) = contract.get("docs").and_then(|d| d.as_object()) {
-                        if let Some(doc_str) = docs
-                            .iter()
-                            .find(|(k, _)| k == name)
-                            .map(|(_, v)| v)
-                            .and_then(|v| v.as_str())
-                        {
-                            print!(" — {}", doc_str);
-                        }
-                    }
-                    println!();
-                }
-            }
-            // If there are doc strings for bindings not in fields/schema, show them
-            if let Some(docs) = contract.get("docs").and_then(|d| d.as_object()) {
-                let field_names: std::collections::HashSet<&String> = contract
-                    .get("fields")
-                    .and_then(|f| f.as_object())
-                    .map(|o| o.iter().map(|(k, _)| k).collect())
-                    .unwrap_or_default();
-                let schema_names: std::collections::HashSet<&String> = contract
-                    .get("schema")
-                    .and_then(|s| s.as_object())
-                    .map(|o| o.iter().map(|(k, _)| k).collect())
-                    .unwrap_or_default();
-
-                for (name, doc_str) in docs {
-                    if !field_names.contains(name) && !schema_names.contains(name) {
-                        if let Some(doc_val) = doc_str.as_str() {
-                            println!("  {} — {}", name, doc_val);
-                        }
-                    }
-                }
+        }
+        // Show doc strings for bindings not in fields/schema
+        let field_names: std::collections::HashSet<&str> =
+            contract.fields.iter().map(|(k, _)| k.as_str()).collect();
+        let schema_names: std::collections::HashSet<&str> =
+            contract.schema.iter().map(|(k, _)| k.as_str()).collect();
+        for (name, doc_str) in &contract.docs {
+            if !field_names.contains(name.as_str()) && !schema_names.contains(name.as_str()) {
+                println!("  {} — {}", name, doc_str);
             }
         }
     }
@@ -4468,8 +2831,8 @@ fn run_describe(file_path: &str, json_mode: bool) -> Result<(), String> {
 fn extract_doc_strings_from_doc(
     doc: &tinct::ast::SurfaceDocument,
     doc_map: &std::collections::HashMap<String, String>,
-) -> Vec<(String, DescribeJson)> {
-    let mut result: Vec<(String, DescribeJson)> = Vec::new();
+) -> Vec<(String, String)> {
+    let mut result: Vec<(String, String)> = Vec::new();
 
     for expr in doc.expressions() {
         if let tinct::ast::SurfaceExpression::Dict(entries) = &expr.expr {
@@ -4491,7 +2854,7 @@ fn extract_doc_strings_from_doc(
 
                     if let Some(name) = name_opt {
                         if let Some(doc_str) = doc_map.get(name) {
-                            result.push((name.to_string(), DescribeJson::Str(doc_str.clone())));
+                            result.push((name.to_string(), doc_str.clone()));
                         }
                     }
                 }
@@ -4507,16 +2870,16 @@ fn extract_doc_strings_from_doc(
 /// A dict is a schema dict if any of its values is itself a dict containing
 /// at least one recognized schema key (type, min, max, min-length, max-length,
 /// pattern, required, items, fields, enum).
-fn detect_schema_dict(doc: &tinct::ast::SurfaceDocument) -> Vec<(String, DescribeJson)> {
-    let mut result: Vec<(String, DescribeJson)> = Vec::new();
+fn detect_schema_dict(doc: &tinct::ast::SurfaceDocument) -> Vec<(String, String)> {
+    let mut result: Vec<(String, String)> = Vec::new();
     for expr in doc.expressions() {
         if let tinct::ast::SurfaceExpression::Dict(entries) = &expr.expr {
             for entry in entries {
                 if let Some(ref key_node) = entry.node.key {
                     if let tinct::ast::SurfaceExpression::Str(ref field_name) = key_node.expr {
                         // Check if the value is a dict with schema keys
-                        if let Some(schema_info) = extract_schema_info(&entry.node.value.expr) {
-                            result.push((field_name.clone(), schema_info));
+                        if let Some(constraint_str) = extract_schema_info(&entry.node.value.expr) {
+                            result.push((field_name.clone(), constraint_str));
                         }
                     }
                 }
@@ -4527,69 +2890,38 @@ fn detect_schema_dict(doc: &tinct::ast::SurfaceDocument) -> Vec<(String, Describ
 }
 
 /// If `expr` is a dict containing at least one recognized schema key, return
-/// a JSON object describing the constraints. Otherwise return None.
-fn extract_schema_info(expr: &tinct::ast::SurfaceExpression) -> Option<DescribeJson> {
+/// a human-readable constraint string. Otherwise return None.
+fn extract_schema_info(expr: &tinct::ast::SurfaceExpression) -> Option<String> {
     if let tinct::ast::SurfaceExpression::Dict(entries) = expr {
-        let mut info: Vec<(String, DescribeJson)> = Vec::new();
+        let mut parts: Vec<String> = Vec::new();
         let mut has_schema_key = false;
         for entry in entries {
             if let Some(ref key_node) = entry.node.key {
                 if let tinct::ast::SurfaceExpression::Str(ref key_name) = key_node.expr {
                     if SCHEMA_KEYS.contains(&key_name.as_str()) {
                         has_schema_key = true;
-                        info.push((
-                            key_name.clone(),
-                            describe_surface_annotation_value(&entry.node.value.expr),
-                        ));
+                        let val_str = describe_surface_annotation_value(&entry.node.value.expr);
+                        parts.push(format!("{key_name}: {val_str}"));
                     }
                 }
             }
         }
         if has_schema_key {
-            return Some(DescribeJson::Object(info));
+            return Some(parts.join(", "));
         }
     }
     None
 }
 
-/// Turn a surface annotation value expression into a JSON description.
-fn describe_surface_annotation_value(expr: &tinct::ast::SurfaceExpression) -> DescribeJson {
+/// Turn a surface annotation value expression into a human-readable string.
+fn describe_surface_annotation_value(expr: &tinct::ast::SurfaceExpression) -> String {
     match expr {
-        tinct::ast::SurfaceExpression::Str(s) => DescribeJson::Str(s.clone()),
-        tinct::ast::SurfaceExpression::Int(n) => DescribeJson::Int(*n),
-        tinct::ast::SurfaceExpression::U64(n) => DescribeJson::Int(*n as i64),
-        tinct::ast::SurfaceExpression::Float(f) => DescribeJson::Float(*f),
-        tinct::ast::SurfaceExpression::Bool(b) => DescribeJson::Bool(*b),
-        tinct::ast::SurfaceExpression::VarRef { name, .. } => DescribeJson::Str(name.clone()),
-        _ => DescribeJson::Str("(complex)".to_string()),
-    }
-}
-
-/// Format a constraint JSON value as a human-readable string.
-fn format_constraint(val: &DescribeJson) -> String {
-    match val {
-        DescribeJson::Str(s) => s.clone(),
-        DescribeJson::Object(entries) => {
-            let parts: Vec<String> = entries
-                .iter()
-                .map(|(k, v)| {
-                    let v_str = match v {
-                        DescribeJson::Str(s) => s.clone(),
-                        DescribeJson::Int(n) => n.to_string(),
-                        DescribeJson::Float(f) => f.to_string(),
-                        DescribeJson::Bool(b) => b.to_string(),
-                        DescribeJson::Array(_) => "[...]".to_string(),
-                        DescribeJson::Object(_) => "{...}".to_string(),
-                    };
-                    format!("{k}: {v_str}")
-                })
-                .collect();
-            parts.join(", ")
-        }
-        DescribeJson::Int(n) => n.to_string(),
-        DescribeJson::Float(f) => f.to_string(),
-        DescribeJson::Bool(b) => b.to_string(),
-        DescribeJson::Array(_) => "[...]".to_string(),
+        tinct::ast::SurfaceExpression::Str(s) => s.clone(),
+        tinct::ast::SurfaceExpression::Int(n) => n.to_string(),
+        tinct::ast::SurfaceExpression::U64(n) => n.to_string(),
+        tinct::ast::SurfaceExpression::Float(f) => f.to_string(),
+        tinct::ast::SurfaceExpression::VarRef { name, .. } => name.clone(),
+        _ => "(complex)".to_string(),
     }
 }
 
@@ -5257,54 +3589,5 @@ mod tests {
         use tinct::NetCapEntry;
         let entry = parse_cli_net_cap_entry("any").unwrap();
         assert!(matches!(entry, NetCapEntry::Any));
-    }
-
-    // -------------------------------------------------------------------------
-    // json_get_object_field tests
-    // -------------------------------------------------------------------------
-
-    #[test]
-    fn json_get_object_field_string_value() {
-        assert_eq!(
-            json_get_object_field(r#"{"host":"localhost"}"#, "host"),
-            Some("localhost".to_string())
-        );
-    }
-
-    #[test]
-    fn json_get_object_field_number_value() {
-        assert_eq!(
-            json_get_object_field(r#"{"port":8080}"#, "port"),
-            Some("8080".to_string())
-        );
-    }
-
-    #[test]
-    fn json_get_object_field_missing_key() {
-        assert_eq!(json_get_object_field(r#"{"x":1}"#, "y"), None);
-    }
-
-    #[test]
-    fn json_get_object_field_not_an_object() {
-        assert_eq!(json_get_object_field(r#"[1,2,3]"#, "x"), None);
-    }
-
-    #[test]
-    fn json_get_object_field_escaped_backslash_n_in_value() {
-        // JSON: {"k":"a\\nb"} — the value is escaped backslash + n (not newline).
-        // After unescaping: a\nb (backslash + n as two characters).
-        assert_eq!(
-            json_get_object_field(r#"{"k":"a\\nb"}"#, "k"),
-            Some("a\\nb".to_string())
-        );
-    }
-
-    #[test]
-    fn json_get_object_field_unicode_escape() {
-        // JSON escape sequence decodes to U+0001 (SOH control character).
-        assert_eq!(
-            json_get_object_field("{\"k\":\"\\u0001\"}", "k"),
-            Some("\x01".to_string())
-        );
     }
 }

@@ -76,24 +76,24 @@ grpc-decode-u32-be: [fn@Int [let bytes@String offset@Int]
                     [+
                         [*
                             [char-code [str-slice
+                                bytes
                                 offset
-                                [+ offset 1]
-                                bytes]]
+                                [+ offset 1]]]
                             256]
                         [char-code [str-slice
+                            bytes
                             [+ offset 1]
-                            [+ offset 2]
-                            bytes]]]
+                            [+ offset 2]]]]
                     256]
                 [char-code [str-slice
+                    bytes
                     [+ offset 2]
-                    [+ offset 3]
-                    bytes]]]
+                    [+ offset 3]]]]
             256]
         [char-code [str-slice
+            bytes
             [+ offset 3]
-            [+ offset 4]
-            bytes]]]
+            [+ offset 4]]]]
 
 ]
 ]
@@ -149,7 +149,7 @@ parse-grpc-frame-header@[doc: "Parse gRPC Length-Prefixed Message header"]:
                 [length bytes]]]
             [set []
                 compressed: [=
-                    [char-code [str-slice 0 1 bytes]]
+                    [char-code [str-slice bytes 0 1]]
                     1]
                 length:     [grpc-decode-u32-be bytes 1]
                 header-len: GRPC-HEADER-LEN]]]

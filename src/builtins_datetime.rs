@@ -6,7 +6,7 @@
 //!
 //! See doc/whatif/lib-datetime.md for the full specification.
 
-use std::collections::BTreeMap;
+
 use std::future::Future;
 use std::pin::Pin;
 use std::rc::Rc;
@@ -20,7 +20,7 @@ use crate::builtins::builtin;
 use crate::error::{EvalError, EvalResult};
 use crate::types::{Row, Type, TypeEnv};
 use crate::value::{
-    string_val, BuiltinArgs, BuiltinDef, ClockCapInner, Key, Strictness, Thunk, Value,
+    string_val, BuiltinArgs, BuiltinDef, ClockCapInner, HashableValue, Strictness, Thunk, Value,
 };
 
 /// Helper to create a boxed EvalError from a message.
@@ -376,7 +376,7 @@ pub fn builtin_timestamp_lt(
         };
 
         Ok(Arc::new(Thunk::new_materialized(
-            Value::Bool(t1_nanos < t2_nanos),
+            Value::boolean(t1_nanos < t2_nanos),
             call_span,
         )))
     })
@@ -423,7 +423,7 @@ pub fn builtin_timestamp_gt(
         };
 
         Ok(Arc::new(Thunk::new_materialized(
-            Value::Bool(t1_nanos > t2_nanos),
+            Value::boolean(t1_nanos > t2_nanos),
             call_span,
         )))
     })
@@ -470,7 +470,7 @@ pub fn builtin_timestamp_eq(
         };
 
         Ok(Arc::new(Thunk::new_materialized(
-            Value::Bool(t1_nanos == t2_nanos),
+            Value::boolean(t1_nanos == t2_nanos),
             call_span,
         )))
     })
@@ -743,42 +743,42 @@ pub fn builtin_timestamp_parts(
 
         let mut map = IndexMap::new();
         map.insert(
-            Key::String("year".into()),
+            HashableValue::Str("year".into()),
             args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 Value::Int(dt.year() as i64),
                 call_span.clone(),
             ))),
         );
         map.insert(
-            Key::String("month".into()),
+            HashableValue::Str("month".into()),
             args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 Value::Int(dt.month() as i64),
                 call_span.clone(),
             ))),
         );
         map.insert(
-            Key::String("day".into()),
+            HashableValue::Str("day".into()),
             args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 Value::Int(dt.day() as i64),
                 call_span.clone(),
             ))),
         );
         map.insert(
-            Key::String("hour".into()),
+            HashableValue::Str("hour".into()),
             args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 Value::Int(dt.hour() as i64),
                 call_span.clone(),
             ))),
         );
         map.insert(
-            Key::String("minute".into()),
+            HashableValue::Str("minute".into()),
             args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 Value::Int(dt.minute() as i64),
                 call_span.clone(),
             ))),
         );
         map.insert(
-            Key::String("second".into()),
+            HashableValue::Str("second".into()),
             args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 Value::Int(dt.second() as i64),
                 call_span.clone(),
@@ -1174,56 +1174,56 @@ pub fn builtin_timestamp_in_tz(
 
         let mut map = IndexMap::new();
         map.insert(
-            Key::String("year".into()),
+            HashableValue::Str("year".into()),
             args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 Value::Int(dt.year() as i64),
                 call_span.clone(),
             ))),
         );
         map.insert(
-            Key::String("month".into()),
+            HashableValue::Str("month".into()),
             args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 Value::Int(dt.month() as i64),
                 call_span.clone(),
             ))),
         );
         map.insert(
-            Key::String("day".into()),
+            HashableValue::Str("day".into()),
             args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 Value::Int(dt.day() as i64),
                 call_span.clone(),
             ))),
         );
         map.insert(
-            Key::String("hour".into()),
+            HashableValue::Str("hour".into()),
             args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 Value::Int(dt.hour() as i64),
                 call_span.clone(),
             ))),
         );
         map.insert(
-            Key::String("minute".into()),
+            HashableValue::Str("minute".into()),
             args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 Value::Int(dt.minute() as i64),
                 call_span.clone(),
             ))),
         );
         map.insert(
-            Key::String("second".into()),
+            HashableValue::Str("second".into()),
             args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 Value::Int(dt.second() as i64),
                 call_span.clone(),
             ))),
         );
         map.insert(
-            Key::String("offset-seconds".into()),
+            HashableValue::Str("offset-seconds".into()),
             args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 Value::Int(dt.offset().seconds() as i64),
                 call_span.clone(),
             ))),
         );
         map.insert(
-            Key::String("tz-name".into()),
+            HashableValue::Str("tz-name".into()),
             args.ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 string_val(dt.time_zone().iana_name().unwrap_or("Unknown")),
                 call_span.clone(),
@@ -1556,7 +1556,6 @@ pub fn datetime_builtins() -> Vec<BuiltinDef> {
 
 /// Inject all datetime type signatures into `env`.
 ///
-/// Provides the datetime section of the former `TypeEnv::with_builtins()` (deleted in T-722).
 /// Called by `type_env_module("datetime")` in `src/builtins.rs` and (via delegation)
 /// by `build_builtins_type_env()`. Add new datetime builtins here.
 pub fn datetime_type_env(env: &mut TypeEnv) {
@@ -1656,7 +1655,7 @@ pub fn datetime_type_env(env: &mut TypeEnv) {
             name.to_string(),
             Type::Function {
                 params: vec![(None, Type::Timestamp), (None, Type::Timestamp)],
-                ret: Box::new(Type::Bool),
+                ret: Box::new(Type::TyCon("Boolean".to_string())),
                 variadic: false,
                 required_count: 2,
             },
@@ -1687,7 +1686,7 @@ pub fn datetime_type_env(env: &mut TypeEnv) {
         Type::Function {
             params: vec![(None, Type::Timestamp)],
             ret: Box::new(Type::Record(Row {
-                fields: BTreeMap::from([
+                fields: indexmap::IndexMap::from_iter([
                     ("year".to_string(), Type::Int),
                     ("month".to_string(), Type::Int),
                     ("day".to_string(), Type::Int),
@@ -1747,7 +1746,7 @@ pub fn datetime_type_env(env: &mut TypeEnv) {
         Type::Function {
             params: vec![(None, Type::Timestamp), (None, Type::Timezone)],
             ret: Box::new(Type::Record(Row {
-                fields: BTreeMap::from([
+                fields: indexmap::IndexMap::from_iter([
                     ("year".to_string(), Type::Int),
                     ("month".to_string(), Type::Int),
                     ("day".to_string(), Type::Int),

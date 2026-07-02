@@ -1,13 +1,13 @@
 # Named-field constructor with @Child on [Map K V] type produces role "MapValues".
 # This is the pattern used by TypeNode.Record in prelude.llt:
-#   [Record@[as-type: [fn [let r] r]  guarding: true]
+#   [Record@[as-type: [fn [let r] r]  guarding: True]
 #     fields@Child: [Map String TypeNode]
 #     open:         Bool]
 #
 # infer_child_role_from_type_expr detects [Map K T] → ChildRole::MapValues.
 # The `field-annotations` key maps "fields" to {role: "MapValues"}.
 # Non-@Child fields (open: Bool) do NOT appear in field-annotations.
-[DictNode: [type [Record@[as-type: [fn [let r] r]  guarding: true]
+[DictNode: [type [Record@[as-type: [fn [let r] r]  guarding: True]
   fields@Child: [Map String DictNode]
   open:         Bool]]]
 [ann: [annotation-of DictNode.Record]]

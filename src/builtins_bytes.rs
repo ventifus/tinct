@@ -1,4 +1,5 @@
-//! Byte sequence builtins: bytes, bytes-find, bytes-of, bytes-equal?, ct-equal?.
+//! Byte sequence builtins: bytes, bytes-concat, bytes-find, bytes-of, bytes-equal?, ct-equal?, builtin-encode,
+//! builtin-bytes-get, builtin-bytes-slice.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -190,82 +191,6 @@ pub(crate) fn builtin_bytes_of(
         let mut bytes = Vec::new();
 
         match val {
-            _ if crate::value::is_seq(&val) => {
-                // Iterate the sequence — val is moved/consumed here, not borrowed
-                let mut current = val;
-
-                loop {
-                    match current {
-                        Value::Variant {
-                            ref tag,
-                            payload: None,
-                        } if tag == "Seq.Nil" => {
-                            // End of sequence
-                            break;
-                        }
-                        Value::Variant {
-                            ref tag,
-                            payload: Some(payload_id),
-                        } if tag == "Seq.Cons" => {
-                            let payload_thunk = ctx.get_thunk(payload_id);
-                            let payload_val =
-                                materialize(&payload_thunk, Some(&call_span), &ctx).await?;
-                            let (head, tail) = if let Value::Dict(ref d) = payload_val {
-                                let h = *d
-                                    .get(&crate::value::Key::String("head".into()))
-                                    .expect("Seq.Cons must have head");
-                                let t = *d
-                                    .get(&crate::value::Key::String("tail".into()))
-                                    .expect("Seq.Cons must have tail");
-                                (h, t)
-                            } else {
-                                return Err(EvalError::internal(
-                                    "Seq.Cons payload must be a Dict".to_string(),
-                                    call_span,
-                                )
-                                .into());
-                            };
-
-                            let head_thunk = ctx.get_thunk(head);
-                            let head_val = materialize(&head_thunk, Some(&call_span), &ctx).await?;
-
-                            match head_val {
-                                Value::Int(n) if (0..=255).contains(&n) => {
-                                    bytes.push(n as u8);
-                                }
-                                Value::Int(n) => {
-                                    return Err(EvalError::internal(
-                                        format!("bytes-of: integer {n} out of range 0-255"),
-                                        call_span,
-                                    )
-                                    .into());
-                                }
-                                _ => {
-                                    return Err(EvalError::type_mismatch_ctx(
-                                        "bytes-of".to_string(),
-                                        "Int",
-                                        head_val.type_name(),
-                                        call_span,
-                                    )
-                                    .into());
-                                }
-                            }
-
-                            let tail_thunk = ctx.get_thunk(tail);
-                            current = materialize(&tail_thunk, Some(&call_span), &ctx).await?;
-                        }
-                        _ => {
-                            return Err(EvalError::type_mismatch_ctx(
-                                "bytes-of".to_string(),
-                                "Seq",
-                                current.type_name(),
-                                call_span,
-                            )
-                            .into());
-                        }
-                    }
-                }
-            }
             Value::Dict(map) => {
                 // Iterate dict values in insertion order — map is owned (Send)
                 for (_key, thunk_id) in map {
@@ -307,6 +232,89 @@ pub(crate) fn builtin_bytes_of(
         }
 
         ok_val(bytes_val(&bytes), call_span)
+    })
+}
+
+/// `bytes-concat`: Concatenate exactly two Bytes values.
+///
+/// Takes 2 args: both must be Bytes. Returns concatenated Bytes.
+/// For variadic concatenation of N byte sequences, use `bytes`.
+///
+/// # Example
+///
+/// ```llt
+/// [builtin-bytes-concat b1 b2]  // → Bytes (b1 followed by b2)
+/// ```
+pub(crate) fn builtin_bytes_concat(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx: _,
+        } = ctx_arg;
+
+        if let Some(named_map) = named {
+            if !named_map.is_empty() {
+                return Err(EvalError::internal(
+                    "bytes-concat does not accept named arguments".to_string(),
+                    call_span,
+                )
+                .into());
+            }
+        }
+
+        if args.len() != 2 {
+            return Err(EvalError::internal(
+                format!(
+                    "bytes-concat requires exactly 2 arguments, got {}",
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
+        }
+
+        let val1 = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by pos_strictness");
+        let val2 = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by pos_strictness");
+
+        let bytes1 = match val1.as_bytes() {
+            Some(bytes) => bytes,
+            None => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "bytes-concat".to_string(),
+                    "Bytes",
+                    val1.type_name(),
+                    args[0].span.clone(),
+                )
+                .into());
+            }
+        };
+
+        let bytes2 = match val2.as_bytes() {
+            Some(bytes) => bytes,
+            None => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "bytes-concat".to_string(),
+                    "Bytes",
+                    val2.type_name(),
+                    args[1].span.clone(),
+                )
+                .into());
+            }
+        };
+
+        let mut result = Vec::with_capacity(bytes1.len() + bytes2.len());
+        result.extend_from_slice(bytes1);
+        result.extend_from_slice(bytes2);
+
+        ok_val(bytes_val(&result), call_span)
     })
 }
 
@@ -385,7 +393,7 @@ pub(crate) fn builtin_bytes_equal(
             }
         };
 
-        ok_val(Value::Bool(bytes1 == bytes2), call_span)
+        ok_val(Value::boolean(bytes1 == bytes2), call_span)
     })
 }
 
@@ -466,11 +474,544 @@ pub(crate) fn builtin_ct_equal(
 
         // Different lengths: return false (still in constant time per subtle docs)
         if bytes1.len() != bytes2.len() {
-            return ok_val(Value::Bool(false), call_span);
+            return ok_val(Value::boolean(false), call_span);
         }
 
         // Constant-time comparison
         let result = bytes1.ct_eq(bytes2);
-        ok_val(Value::Bool(result.into()), call_span)
+        ok_val(Value::boolean(result.into()), call_span)
+    })
+}
+
+/// `builtin-encode`: Encode a numeric value as Bytes in the specified byte order/format.
+///
+/// Takes 2 args:
+/// - `format`: a Variant tag from the `ByteOrder` type (e.g., `ByteOrder.Int64BE`,
+///   `ByteOrder.Float32LE`, `ByteOrder.UInt8`)
+/// - `value`: Int or Float to encode
+///
+/// The tag name (from `tag-of format`) determines the encoding:
+/// - `ByteOrder.Int8`      — 1 byte signed
+/// - `ByteOrder.UInt8`     — 1 byte unsigned
+/// - `ByteOrder.Int16LE` / `ByteOrder.Int16BE`   — 2 bytes signed
+/// - `ByteOrder.UInt16LE` / `ByteOrder.UInt16BE`  — 2 bytes unsigned
+/// - `ByteOrder.Int32LE` / `ByteOrder.Int32BE`   — 4 bytes signed
+/// - `ByteOrder.UInt32LE` / `ByteOrder.UInt32BE`  — 4 bytes unsigned
+/// - `ByteOrder.Int64LE` / `ByteOrder.Int64BE`   — 8 bytes signed
+/// - `ByteOrder.UInt64LE` / `ByteOrder.UInt64BE`  — 8 bytes unsigned
+/// - `ByteOrder.Float32LE` / `ByteOrder.Float32BE` — 4 bytes IEEE 754
+/// - `ByteOrder.Float64LE` / `ByteOrder.Float64BE` — 8 bytes IEEE 754
+///
+/// Returns Bytes of the appropriate length.
+pub(crate) fn builtin_encode(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx: _,
+        } = ctx_arg;
+
+        if let Some(named_map) = named {
+            if !named_map.is_empty() {
+                return Err(EvalError::internal(
+                    "builtin-encode does not accept named arguments".to_string(),
+                    call_span,
+                )
+                .into());
+            }
+        }
+
+        if args.len() != 2 {
+            return Err(EvalError::internal(
+                format!(
+                    "builtin-encode requires exactly 2 arguments (format, value), got {}",
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
+        }
+
+        let fmt_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by pos_strictness");
+        let num_val = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by pos_strictness");
+
+        // Extract the tag from the format variant
+        let tag = match &fmt_val {
+            Value::Variant { tag, .. } => tag.clone(),
+            _ => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-encode".to_string(),
+                    "ByteOrder variant",
+                    fmt_val.type_name(),
+                    args[0].span.clone(),
+                )
+                .into());
+            }
+        };
+
+        // Extract numeric value
+        let as_i64 = match &num_val {
+            Value::Int(n) => Some(*n),
+            _ => None,
+        };
+        let as_f64 = match &num_val {
+            Value::Float(f) => Some(*f),
+            Value::Int(n) => Some(*n as f64),
+            _ => None,
+        };
+
+        let bytes: Vec<u8> = match tag.as_str() {
+            "ByteOrder.Int8" => {
+                let n = as_i64.ok_or_else(|| {
+                    EvalError::type_mismatch_ctx(
+                        "builtin-encode".to_string(),
+                        "Int",
+                        num_val.type_name(),
+                        args[1].span.clone(),
+                    )
+                })?;
+                vec![n as i8 as u8]
+            }
+            "ByteOrder.UInt8" => {
+                let n = as_i64.ok_or_else(|| {
+                    EvalError::type_mismatch_ctx(
+                        "builtin-encode".to_string(),
+                        "Int",
+                        num_val.type_name(),
+                        args[1].span.clone(),
+                    )
+                })?;
+                vec![n as u8]
+            }
+            "ByteOrder.Int16LE" => {
+                let n = as_i64.ok_or_else(|| {
+                    EvalError::type_mismatch_ctx(
+                        "builtin-encode".to_string(),
+                        "Int",
+                        num_val.type_name(),
+                        args[1].span.clone(),
+                    )
+                })?;
+                (n as i16).to_le_bytes().to_vec()
+            }
+            "ByteOrder.Int16BE" => {
+                let n = as_i64.ok_or_else(|| {
+                    EvalError::type_mismatch_ctx(
+                        "builtin-encode".to_string(),
+                        "Int",
+                        num_val.type_name(),
+                        args[1].span.clone(),
+                    )
+                })?;
+                (n as i16).to_be_bytes().to_vec()
+            }
+            "ByteOrder.UInt16LE" => {
+                let n = as_i64.ok_or_else(|| {
+                    EvalError::type_mismatch_ctx(
+                        "builtin-encode".to_string(),
+                        "Int",
+                        num_val.type_name(),
+                        args[1].span.clone(),
+                    )
+                })?;
+                (n as u16).to_le_bytes().to_vec()
+            }
+            "ByteOrder.UInt16BE" => {
+                let n = as_i64.ok_or_else(|| {
+                    EvalError::type_mismatch_ctx(
+                        "builtin-encode".to_string(),
+                        "Int",
+                        num_val.type_name(),
+                        args[1].span.clone(),
+                    )
+                })?;
+                (n as u16).to_be_bytes().to_vec()
+            }
+            "ByteOrder.Int32LE" => {
+                let n = as_i64.ok_or_else(|| {
+                    EvalError::type_mismatch_ctx(
+                        "builtin-encode".to_string(),
+                        "Int",
+                        num_val.type_name(),
+                        args[1].span.clone(),
+                    )
+                })?;
+                (n as i32).to_le_bytes().to_vec()
+            }
+            "ByteOrder.Int32BE" => {
+                let n = as_i64.ok_or_else(|| {
+                    EvalError::type_mismatch_ctx(
+                        "builtin-encode".to_string(),
+                        "Int",
+                        num_val.type_name(),
+                        args[1].span.clone(),
+                    )
+                })?;
+                (n as i32).to_be_bytes().to_vec()
+            }
+            "ByteOrder.UInt32LE" => {
+                let n = as_i64.ok_or_else(|| {
+                    EvalError::type_mismatch_ctx(
+                        "builtin-encode".to_string(),
+                        "Int",
+                        num_val.type_name(),
+                        args[1].span.clone(),
+                    )
+                })?;
+                (n as u32).to_le_bytes().to_vec()
+            }
+            "ByteOrder.UInt32BE" => {
+                let n = as_i64.ok_or_else(|| {
+                    EvalError::type_mismatch_ctx(
+                        "builtin-encode".to_string(),
+                        "Int",
+                        num_val.type_name(),
+                        args[1].span.clone(),
+                    )
+                })?;
+                (n as u32).to_be_bytes().to_vec()
+            }
+            "ByteOrder.Int64LE" => {
+                let n = as_i64.ok_or_else(|| {
+                    EvalError::type_mismatch_ctx(
+                        "builtin-encode".to_string(),
+                        "Int",
+                        num_val.type_name(),
+                        args[1].span.clone(),
+                    )
+                })?;
+                n.to_le_bytes().to_vec()
+            }
+            "ByteOrder.Int64BE" => {
+                let n = as_i64.ok_or_else(|| {
+                    EvalError::type_mismatch_ctx(
+                        "builtin-encode".to_string(),
+                        "Int",
+                        num_val.type_name(),
+                        args[1].span.clone(),
+                    )
+                })?;
+                n.to_be_bytes().to_vec()
+            }
+            "ByteOrder.UInt64LE" => {
+                let n = as_i64.ok_or_else(|| {
+                    EvalError::type_mismatch_ctx(
+                        "builtin-encode".to_string(),
+                        "Int",
+                        num_val.type_name(),
+                        args[1].span.clone(),
+                    )
+                })?;
+                (n as u64).to_le_bytes().to_vec()
+            }
+            "ByteOrder.UInt64BE" => {
+                let n = as_i64.ok_or_else(|| {
+                    EvalError::type_mismatch_ctx(
+                        "builtin-encode".to_string(),
+                        "Int",
+                        num_val.type_name(),
+                        args[1].span.clone(),
+                    )
+                })?;
+                (n as u64).to_be_bytes().to_vec()
+            }
+            "ByteOrder.Float32LE" => {
+                let f = as_f64.ok_or_else(|| {
+                    EvalError::type_mismatch_ctx(
+                        "builtin-encode".to_string(),
+                        "Float or Int",
+                        num_val.type_name(),
+                        args[1].span.clone(),
+                    )
+                })?;
+                (f as f32).to_le_bytes().to_vec()
+            }
+            "ByteOrder.Float32BE" => {
+                let f = as_f64.ok_or_else(|| {
+                    EvalError::type_mismatch_ctx(
+                        "builtin-encode".to_string(),
+                        "Float or Int",
+                        num_val.type_name(),
+                        args[1].span.clone(),
+                    )
+                })?;
+                (f as f32).to_be_bytes().to_vec()
+            }
+            "ByteOrder.Float64LE" => {
+                let f = as_f64.ok_or_else(|| {
+                    EvalError::type_mismatch_ctx(
+                        "builtin-encode".to_string(),
+                        "Float or Int",
+                        num_val.type_name(),
+                        args[1].span.clone(),
+                    )
+                })?;
+                f.to_le_bytes().to_vec()
+            }
+            "ByteOrder.Float64BE" => {
+                let f = as_f64.ok_or_else(|| {
+                    EvalError::type_mismatch_ctx(
+                        "builtin-encode".to_string(),
+                        "Float or Int",
+                        num_val.type_name(),
+                        args[1].span.clone(),
+                    )
+                })?;
+                f.to_be_bytes().to_vec()
+            }
+            other => {
+                return Err(EvalError::user_error(
+                    format!(
+                        "builtin-encode: unknown ByteOrder tag '{}'. Expected one of: \
+                         ByteOrder.Int8, ByteOrder.UInt8, ByteOrder.Int16LE, ByteOrder.Int16BE, \
+                         ByteOrder.UInt16LE, ByteOrder.UInt16BE, ByteOrder.Int32LE, ByteOrder.Int32BE, \
+                         ByteOrder.UInt32LE, ByteOrder.UInt32BE, ByteOrder.Int64LE, ByteOrder.Int64BE, \
+                         ByteOrder.UInt64LE, ByteOrder.UInt64BE, ByteOrder.Float32LE, ByteOrder.Float32BE, \
+                         ByteOrder.Float64LE, ByteOrder.Float64BE",
+                        other
+                    ),
+                    call_span,
+                )
+                .into());
+            }
+        };
+
+        ok_val(bytes_val(&bytes), call_span)
+    })
+}
+
+/// `builtin-bytes-get`: Return the byte at index `i` as an Int (0–255).
+///
+/// Takes 2 args:
+/// - `i`: Int — zero-based byte index
+/// - `b`: Bytes — the byte sequence
+///
+/// Returns `Int` in range 0–255. Errors if `i` is out of bounds.
+/// O(1) — direct slice index into the underlying `Rc<[u8]>`.
+pub(crate) fn builtin_bytes_get(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx: _,
+        } = ctx_arg;
+
+        if let Some(ref named_map) = named {
+            if !named_map.is_empty() {
+                return Err(EvalError::internal(
+                    "builtin-bytes-get does not accept named arguments".to_string(),
+                    call_span,
+                )
+                .into());
+            }
+        }
+
+        if args.len() != 2 {
+            return Err(EvalError::internal(
+                format!(
+                    "builtin-bytes-get requires exactly 2 arguments (i, b), got {}",
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
+        }
+
+        let i_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by pos_strictness");
+        let b_val = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by pos_strictness");
+
+        let i = match i_val {
+            Value::Int(n) => n,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-bytes-get".to_string(),
+                    "Int",
+                    other.type_name(),
+                    args[0].span.clone(),
+                )
+                .into())
+            }
+        };
+
+        let bytes = match b_val.as_bytes() {
+            Some(b) => b,
+            None => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-bytes-get".to_string(),
+                    "Bytes",
+                    b_val.type_name(),
+                    args[1].span.clone(),
+                )
+                .into())
+            }
+        };
+
+        let len = bytes.len() as i64;
+        if i < 0 || i >= len {
+            return Err(EvalError::user_error(
+                format!(
+                    "builtin-bytes-get: index {} out of bounds for Bytes of length {}",
+                    i, len
+                ),
+                call_span,
+            )
+            .into());
+        }
+
+        let byte_val = bytes[i as usize] as i64;
+        ok_val(Value::Int(byte_val), call_span)
+    })
+}
+
+/// `builtin-bytes-slice`: Return a sub-slice of a Bytes value as a new Bytes.
+///
+/// Takes 3 args:
+/// - `b`: Bytes — the source byte sequence
+/// - `start`: Int — zero-based start index (inclusive)
+/// - `len`: Int — number of bytes to include
+///
+/// Returns `Bytes`. Errors if `start` or `start + len` is out of bounds,
+/// or if `len` is negative.
+/// O(1) — shares the underlying `Rc<[u8]>` without copying, just adjusts offsets.
+pub(crate) fn builtin_bytes_slice(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx: _,
+        } = ctx_arg;
+
+        if let Some(ref named_map) = named {
+            if !named_map.is_empty() {
+                return Err(EvalError::internal(
+                    "builtin-bytes-slice does not accept named arguments".to_string(),
+                    call_span,
+                )
+                .into());
+            }
+        }
+
+        if args.len() != 3 {
+            return Err(EvalError::internal(
+                format!(
+                    "builtin-bytes-slice requires exactly 3 arguments (b, start, len), got {}",
+                    args.len()
+                ),
+                call_span,
+            )
+            .into());
+        }
+
+        let b_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by pos_strictness");
+        let start_val = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by pos_strictness");
+        let len_val = args[2]
+            .try_get_materialized()
+            .expect("pre-materialized by pos_strictness");
+
+        let (source, base_start, base_end) = match &b_val {
+            Value::Bytes { source, start, end } => (std::rc::Rc::clone(source), *start, *end),
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-bytes-slice".to_string(),
+                    "Bytes",
+                    other.type_name(),
+                    args[0].span.clone(),
+                )
+                .into())
+            }
+        };
+
+        let start_i = match start_val {
+            Value::Int(n) => n,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-bytes-slice".to_string(),
+                    "Int",
+                    other.type_name(),
+                    args[1].span.clone(),
+                )
+                .into())
+            }
+        };
+
+        let len_i = match len_val {
+            Value::Int(n) => n,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-bytes-slice".to_string(),
+                    "Int",
+                    other.type_name(),
+                    args[2].span.clone(),
+                )
+                .into())
+            }
+        };
+
+        let total_len = (base_end - base_start) as i64;
+
+        if len_i < 0 {
+            return Err(EvalError::user_error(
+                format!(
+                    "builtin-bytes-slice: len must be non-negative, got {}",
+                    len_i
+                ),
+                call_span,
+            )
+            .into());
+        }
+        if start_i < 0 || start_i > total_len {
+            return Err(EvalError::user_error(
+                format!(
+                    "builtin-bytes-slice: start {} out of bounds for Bytes of length {}",
+                    start_i, total_len
+                ),
+                call_span,
+            )
+            .into());
+        }
+        let end_i = start_i + len_i;
+        if end_i > total_len {
+            return Err(EvalError::user_error(
+                format!(
+                    "builtin-bytes-slice: start {} + len {} = {} exceeds Bytes length {}",
+                    start_i, len_i, end_i, total_len
+                ),
+                call_span,
+            )
+            .into());
+        }
+
+        // Zero-copy subslice: share the same Rc<[u8]>, adjust offsets only.
+        let new_start = base_start + start_i as usize;
+        let new_end = base_start + end_i as usize;
+        ok_val(
+            Value::Bytes {
+                source,
+                start: new_start,
+                end: new_end,
+            },
+            call_span,
+        )
     })
 }

@@ -5,7 +5,7 @@
     fields: [
       port: [
         type: "Int"
-        required: true
+        required: True
       ]
     ]
   ]

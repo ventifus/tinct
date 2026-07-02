@@ -979,7 +979,7 @@ The `builtin-*` names are the canonical registration names for all Rust builtins
 | `builtin-gensym` | `gensym` | Stable name for raw symbol generation |
 | `builtin-llt-repr` | `llt-repr` | Stable name for raw LLT representation |
 | `builtin-tag-of` | `tag-of` | Stable name for raw variant tag extraction |
-| `builtin-variant` | `variant` | Stable name for raw variant construction |
+| `builtin-sequential` | — | Boot-level AST construction: int-keyed dict of Expression nodes → Sequential node |
 | `builtin-decimal` | `decimal` | Stable name for raw decimal conversion |
 | `builtin-big-int` | `big-int` | Stable name for raw big integer conversion |
 | `builtin-proxy` | `proxy` | Stable name for raw proxy construction |

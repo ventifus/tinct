@@ -3,6 +3,6 @@
 [macro my-unless [let cond body]
   [quote [if [unquote cond] [] [unquote body]]]]
 
-[my-unless false 42]
+[my-unless False 42]
 === out
 Int(42)

@@ -25,13 +25,13 @@
 toml-sw: [fn [let p s]
   [plen: [str-length p]
    slen: [str-length s]]
-  [if [<= plen slen] [= p [str-slice 0 plen s]] false]]
+  [if [<= plen slen] [= p [str-slice s 0 plen]] false]]
 
 # Parse a TOML value token: quoted string or integer.
 toml-val: [fn [let raw]
   [ts: [trim raw]]
   [if [toml-sw "\"" ts]
-    [str-slice 1 [- [str-length ts] 1] ts]
+    [str-slice ts 1 [- [str-length ts] 1]]
     [match [try [fn [let] [to-int ts]]]
       [case [let v] [Result.Ok v] v]
       _:                          ts]]]
@@ -68,7 +68,7 @@ toml-kv: [fn [let state k v]
 
 # Handle array-table header [[name]].
 toml-arr-header: [fn [let state tl]
-  [inner:    [str-slice 2 [- [str-length tl] 2] tl]
+  [inner:    [str-slice tl 2 [- [str-length tl] 2]]
    aname:    [trim inner]
    cur-arr:  [get-or aname [] state.result]
    new-idx:  [length cur-arr]
@@ -78,15 +78,15 @@ toml-arr-header: [fn [let state tl]
 
 # Handle regular section header [name].
 toml-sect-header: [fn [let state tl]
-  [inner: [str-slice 1 [- [str-length tl] 1] tl]
+  [inner: [str-slice tl 1 [- [str-length tl] 1]]
    sname: [trim inner]]
   [merge state [section: sname  arr-name: ""]]]
 
 # Apply key-value given pre-computed key end position and total length.
 # Factored out of toml-kv-line to avoid multi-body in else-branch.
 toml-kv-apply: [fn [let state tl key-end total-len]
-  [k: [trim [str-slice 0 key-end tl]]
-   v: [toml-val [str-slice [+ key-end 1] total-len tl]]]
+  [k: [trim [str-slice tl 0 key-end]]
+   v: [toml-val [str-slice tl [+ key-end 1] total-len]]]
   [toml-kv state k v]]
 
 # Handle a key-value line (may contain '=').
@@ -131,7 +131,7 @@ parse-toml-lite@[doc: "Parse a minimal TOML-lite string into a dict. Returns Res
     [match [try [fn [let]
       [state: [reduce toml-process toml-init [split "\n" input]]]
       state.result]]
-      [case [let v] [Result.Ok v]    [builtin-variant "Result.Ok" v]]
-      [case [let e] [Result.Error e] [builtin-variant "Result.Error" [str "toml-lite: " e]]]]]
+      [case [let v] [Result.Ok v]    [Result.Ok value: v]]
+      [case [let e] [Result.Error e] [Result.Error msg: [str "toml-lite: " e]]]]]
 
 ]

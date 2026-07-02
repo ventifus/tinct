@@ -9,6 +9,6 @@
     _:    "other"]]
  r1: [describe 42]
  r2: [describe "hello"]
- r3: [describe true]]
+ r3: [describe True]]
 === out
 Dict({"describe": Function(x), "r1": String("integer"), "r2": String("string"), "r3": String("other")})

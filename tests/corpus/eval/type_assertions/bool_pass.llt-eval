@@ -1,4 +1,4 @@
 # Structural TypeAssert: Bool annotation with Bool value passes
-[@Bool true]
+[@Bool True]
 === out
 Bool(true)

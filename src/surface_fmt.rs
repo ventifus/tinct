@@ -11,12 +11,12 @@ use indexmap::IndexMap;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use crate::arena::ThunkId;
 use crate::ast::{CoreExpr, LiteralPattern, Param, Pattern, Spanned};
 use crate::eval::core_expr_is_static_key;
 use crate::eval::EvalContext;
-use crate::lexer::{fmt_bool, fmt_float, fmt_int, fmt_string};
-use crate::value::{Environment, Key, Value};
+use crate::lexer::{fmt_float, fmt_int, fmt_string};
+use crate::value::ThunkId;
+use crate::value::{Environment, HashableValue, Value};
 
 /// Format a dict as a tinct literal `[k: v  ...]`.
 ///
@@ -27,7 +27,7 @@ use crate::value::{Environment, Key, Value};
 /// path serializing scalar dicts). Function serialization requires `Some(ctx)` for stdlib
 /// membership checks.
 pub fn fmt_dict(
-    map: &IndexMap<Key, ThunkId>,
+    map: &IndexMap<HashableValue, ThunkId>,
     ctx: Option<&Arc<EvalContext>>,
 ) -> Result<String, String> {
     let mut out = String::from("[");
@@ -38,17 +38,22 @@ pub fn fmt_dict(
 
         // Format key
         match key {
-            Key::Int(n) => {
+            HashableValue::Int(n) => {
                 out.push_str(&fmt_int(*n));
                 out.push(':');
             }
-            Key::String(s) => {
+            HashableValue::Str(s) => {
                 // Use bare identifier syntax when the string is a valid identifier
                 if is_valid_identifier(s) {
                     out.push_str(s);
                 } else {
                     out.push_str(&fmt_string(s));
                 }
+                out.push(':');
+            }
+            // Bool, Dict, Variant keys: format via Display
+            other => {
+                out.push_str(&format!("{other}"));
                 out.push(':');
             }
         }
@@ -124,15 +129,15 @@ pub fn fmt_fn(
     // For each captured name, look it up in env and serialize its value.
     let mut substitutions: HashMap<String, String> = HashMap::new();
     for name in &free_vars {
-        if let Some(thunk) = env.get(name) {
+        if let Some(thunk) = env.get_by_name(name) {
             let value = thunk
                 .try_get_materialized()
                 .ok_or_else(|| format!("captured variable `{name}` is not materialized"))?;
             let scn = value.to_tinct(Some(ctx))?;
             substitutions.insert(name.clone(), scn);
         }
-        // If the name is not in env at all, leave it as-is (it may be a FreeVar
-        // that the runtime resolves through an enclosing include scope).
+        // If the name is not in env at all, leave it as-is (it may be an ambient
+        // name that the runtime resolves through the enclosing scope chain).
     }
 
     // Step 3: Capture-avoiding alpha-rename.
@@ -266,29 +271,30 @@ fn collect_free_vars(
         CoreExpr::Int(_)
         | CoreExpr::U64(_)
         | CoreExpr::Float(_)
-        | CoreExpr::Bool(_)
         | CoreExpr::Str(_)
         | CoreExpr::Placeholder
         | CoreExpr::Error(_)
-        | CoreExpr::Rest(_)
-        | CoreExpr::RegisterMethods { .. } => {}
+        | CoreExpr::Rest(_) => {}
+
+        // Variant: tag is a literal, payload may contain variable references.
+        CoreExpr::Variant { payload, .. } => {
+            if let Some(inner) = payload {
+                collect_free_vars(&inner.node, param_scope, stdlib_env, out);
+            }
+        }
 
         // Variable references — the decision point
-        CoreExpr::Var { name, .. } | CoreExpr::FreeVar(name) => {
-            if !param_scope.contains(name.as_str()) && stdlib_env.get(name).is_none() {
+        CoreExpr::Var { name, .. } => {
+            if !param_scope.contains(name.as_str()) && stdlib_env.get_by_name(name).is_none() {
                 out.insert(name.clone());
             }
         }
 
         // Annotated is a variable reference in annotation position
         CoreExpr::Annotated { name, .. } => {
-            if !param_scope.contains(name.as_str()) && stdlib_env.get(name).is_none() {
+            if !param_scope.contains(name.as_str()) && stdlib_env.get_by_name(name).is_none() {
                 out.insert(name.clone());
             }
-        }
-
-        CoreExpr::DotAccess { expr, .. } => {
-            collect_free_vars(&expr.node, param_scope, stdlib_env, out);
         }
 
         CoreExpr::Sequential(exprs) => {
@@ -409,32 +415,11 @@ fn collect_free_vars(
             pattern,
             body,
         } => {
-            // Note: CoreExpr::CaseArm.pattern is a CoreExpr (not Pattern), so we cannot
-            // use collect_pattern_bindings here. However, if the pattern is a LetDecl
-            // (2-arg form) or let_bindings is set (3-arg form), we need to extract the
-            // variable names from the bindings and add them to scope before recursing
-            // into the body.
+            // Extract binding names from let_bindings to build the arm scope.
             let mut arm_scope = param_scope.clone();
-
-            // 3-arg form: extract binding names from the let_bindings node
-            if let Some(lb) = let_bindings {
-                if let CoreExpr::LetDecl { bindings } = &lb.node {
-                    for binding in bindings {
-                        if let CoreExpr::Str(name) | CoreExpr::FreeVar(name) = &binding.node {
-                            arm_scope.insert(name.clone());
-                        } else if let CoreExpr::Annotated { name, .. } = &binding.node {
-                            arm_scope.insert(name.clone());
-                        } else if let CoreExpr::Var { name, .. } = &binding.node {
-                            arm_scope.insert(name.clone());
-                        }
-                    }
-                }
-            }
-
-            // 2-arg form: pattern is the LetDecl — extract names from it as before
-            if let CoreExpr::LetDecl { bindings } = &pattern.node {
+            if let CoreExpr::LetDecl { bindings } = &let_bindings.node {
                 for binding in bindings {
-                    if let CoreExpr::Str(name) | CoreExpr::FreeVar(name) = &binding.node {
+                    if let CoreExpr::Str(name) = &binding.node {
                         arm_scope.insert(name.clone());
                     } else if let CoreExpr::Annotated { name, .. } = &binding.node {
                         arm_scope.insert(name.clone());
@@ -444,9 +429,7 @@ fn collect_free_vars(
                 }
             }
 
-            if let Some(lb) = let_bindings {
-                collect_free_vars(&lb.node, param_scope, stdlib_env, out);
-            }
+            collect_free_vars(&let_bindings.node, param_scope, stdlib_env, out);
             collect_free_vars(&pattern.node, param_scope, stdlib_env, out);
             collect_free_vars(&body.node, &arm_scope, stdlib_env, out);
         }
@@ -518,9 +501,6 @@ fn collect_free_vars_in_quote(
                 collect_free_vars_in_quote(&e.node, depth, param_scope, stdlib_env, out);
             }
         }
-        CoreExpr::DotAccess { expr, .. } => {
-            collect_free_vars_in_quote(&expr.node, depth, param_scope, stdlib_env, out);
-        }
         CoreExpr::Match { scrutinee, arms } => {
             collect_free_vars_in_quote(&scrutinee.node, depth, param_scope, stdlib_env, out);
             for arm in arms {
@@ -538,28 +518,11 @@ fn collect_free_vars_in_quote(
             pattern,
             body,
         } => {
-            // If the pattern is a LetDecl (2-arg) or let_bindings is set (3-arg),
-            // extract variable names and extend scope for the body.
+            // Extract binding names from let_bindings to build the arm scope.
             let mut arm_scope = param_scope.clone();
-
-            if let Some(lb) = let_bindings {
-                if let CoreExpr::LetDecl { bindings } = &lb.node {
-                    for binding in bindings {
-                        if let CoreExpr::Str(name) | CoreExpr::FreeVar(name) = &binding.node {
-                            arm_scope.insert(name.clone());
-                        } else if let CoreExpr::Annotated { name, .. } = &binding.node {
-                            arm_scope.insert(name.clone());
-                        } else if let CoreExpr::Var { name, .. } = &binding.node {
-                            arm_scope.insert(name.clone());
-                        }
-                    }
-                }
-                collect_free_vars_in_quote(&lb.node, depth, param_scope, stdlib_env, out);
-            }
-
-            if let CoreExpr::LetDecl { bindings } = &pattern.node {
+            if let CoreExpr::LetDecl { bindings } = &let_bindings.node {
                 for binding in bindings {
-                    if let CoreExpr::Str(name) | CoreExpr::FreeVar(name) = &binding.node {
+                    if let CoreExpr::Str(name) = &binding.node {
                         arm_scope.insert(name.clone());
                     } else if let CoreExpr::Annotated { name, .. } = &binding.node {
                         arm_scope.insert(name.clone());
@@ -569,6 +532,7 @@ fn collect_free_vars_in_quote(
                 }
             }
 
+            collect_free_vars_in_quote(&let_bindings.node, depth, param_scope, stdlib_env, out);
             collect_free_vars_in_quote(&pattern.node, depth, param_scope, stdlib_env, out);
             collect_free_vars_in_quote(&body.node, depth, &arm_scope, stdlib_env, out);
         }
@@ -577,19 +541,22 @@ fn collect_free_vars_in_quote(
                 collect_free_vars_in_quote(&b.node, depth, param_scope, stdlib_env, out);
             }
         }
+        // Variant: tag is a literal, payload may contain variable references.
+        CoreExpr::Variant { payload, .. } => {
+            if let Some(inner) = payload {
+                collect_free_vars_in_quote(&inner.node, depth, param_scope, stdlib_env, out);
+            }
+        }
         // Leaves — nothing to do even inside quotes
         CoreExpr::Int(_)
         | CoreExpr::U64(_)
         | CoreExpr::Float(_)
-        | CoreExpr::Bool(_)
         | CoreExpr::Str(_)
         | CoreExpr::Var { .. }
-        | CoreExpr::FreeVar(_)
         | CoreExpr::Annotated { .. }
         | CoreExpr::Rest(_)
         | CoreExpr::Placeholder
-        | CoreExpr::Error(_)
-        | CoreExpr::RegisterMethods { .. } => {}
+        | CoreExpr::Error(_) => {}
     }
 }
 
@@ -603,10 +570,6 @@ fn collect_pattern_bindings(pattern: &Pattern, scope: &mut HashSet<String>) {
                 collect_pattern_bindings(&sub_pattern.node, scope);
             }
         }
-        Pattern::Seq { head, tail } => {
-            collect_pattern_bindings(&head.node, scope);
-            collect_pattern_bindings(&tail.node, scope);
-        }
         Pattern::Constructor { binding, .. } => {
             if let Some(binding) = binding {
                 collect_pattern_bindings(&binding.node, scope);
@@ -619,7 +582,7 @@ fn collect_pattern_bindings(pattern: &Pattern, scope: &mut HashSet<String>) {
             }
         }
         // Non-binding patterns
-        Pattern::Wildcard | Pattern::Literal(_) | Pattern::Pin(_) => {}
+        Pattern::Wildcard | Pattern::Literal(_) | Pattern::Pin(..) => {}
         Pattern::TypeAssertPending { inner, .. } => {
             if let Some(inner_pat) = inner {
                 collect_pattern_bindings(&inner_pat.node, scope);
@@ -653,7 +616,6 @@ fn core_expr_to_tinct(
         CoreExpr::Int(n) => Ok(fmt_int(*n)),
         CoreExpr::U64(n) => Ok(format!("{n}u")),
         CoreExpr::Float(f) => fmt_float(*f),
-        CoreExpr::Bool(b) => Ok(fmt_bool(*b).to_string()),
         CoreExpr::Str(s) => Ok(fmt_string(s)),
 
         // Placeholder and Error — emit as opaque marker strings
@@ -667,7 +629,7 @@ fn core_expr_to_tinct(
         },
 
         // Variable references — apply substitution or rename
-        CoreExpr::Var { name, .. } | CoreExpr::FreeVar(name) => {
+        CoreExpr::Var { name, .. } => {
             if param_scope.contains(name.as_str()) {
                 // Bound by an enclosing param — apply rename if needed, otherwise leave
                 Ok(rename_map
@@ -678,7 +640,7 @@ fn core_expr_to_tinct(
                 // Captured from user env — inline the SCN
                 Ok(scn.clone())
             } else {
-                // Stdlib reference or unresolvable FreeVar — leave as-is
+                // Stdlib reference or ambient binding — leave as-is
                 Ok(rename_map
                     .get(name)
                     .cloned()
@@ -701,13 +663,6 @@ fn core_expr_to_tinct(
                     .cloned()
                     .unwrap_or_else(|| name.clone()))
             }
-        }
-
-        // Dot access: `target.field`
-        CoreExpr::DotAccess { expr, field } => {
-            let target =
-                core_expr_to_tinct(&expr.node, param_scope, substitutions, rename_map, ctx)?;
-            Ok(format!("{}.{}", target, field))
         }
 
         // Sequential: emit each expression in order, progressively injecting dict-level
@@ -972,26 +927,11 @@ fn core_expr_to_tinct(
             pattern,
             body,
         } => {
-            // Extract variable names for scope: use let_bindings (3-arg) or pattern LetDecl (2-arg).
+            // Extract binding names from let_bindings to build the arm scope.
             let mut arm_scope = param_scope.clone();
-
-            if let Some(lb) = let_bindings {
-                if let CoreExpr::LetDecl { bindings } = &lb.node {
-                    for binding in bindings {
-                        if let CoreExpr::Str(name) | CoreExpr::FreeVar(name) = &binding.node {
-                            arm_scope.insert(name.clone());
-                        } else if let CoreExpr::Annotated { name, .. } = &binding.node {
-                            arm_scope.insert(name.clone());
-                        } else if let CoreExpr::Var { name, .. } = &binding.node {
-                            arm_scope.insert(name.clone());
-                        }
-                    }
-                }
-            }
-
-            if let CoreExpr::LetDecl { bindings } = &pattern.node {
+            if let CoreExpr::LetDecl { bindings } = &let_bindings.node {
                 for binding in bindings {
-                    if let CoreExpr::Str(name) | CoreExpr::FreeVar(name) = &binding.node {
+                    if let CoreExpr::Str(name) = &binding.node {
                         arm_scope.insert(name.clone());
                     } else if let CoreExpr::Annotated { name, .. } = &binding.node {
                         arm_scope.insert(name.clone());
@@ -1001,28 +941,31 @@ fn core_expr_to_tinct(
                 }
             }
 
-            let lb_str = if let Some(lb) = let_bindings {
-                Some(core_expr_to_tinct(
-                    &lb.node,
-                    param_scope,
-                    substitutions,
-                    rename_map,
-                    ctx,
-                )?)
-            } else {
-                None
-            };
+            let lb_str = core_expr_to_tinct(
+                &let_bindings.node,
+                param_scope,
+                substitutions,
+                rename_map,
+                ctx,
+            )?;
             let pattern_str =
                 core_expr_to_tinct(&pattern.node, param_scope, substitutions, rename_map, ctx)?;
             let body_str =
                 core_expr_to_tinct(&body.node, &arm_scope, substitutions, rename_map, ctx)?;
-            if let Some(lb) = lb_str {
-                Ok(format!("[case {} {} {}]", lb, pattern_str, body_str))
+            Ok(format!("[case {} {} {}]", lb_str, pattern_str, body_str))
+        }
+
+        // Variant: `TypeName.CtorName` or `[TypeName.CtorName payload]`
+        CoreExpr::Variant { tag, payload } => {
+            if let Some(inner) = payload {
+                let inner_str =
+                    core_expr_to_tinct(&inner.node, param_scope, substitutions, rename_map, ctx)?;
+                Ok(format!("[{} {}]", tag, inner_str))
             } else {
-                Ok(format!("[{}: {}]", pattern_str, body_str))
+                Ok(tag.clone())
             }
         }
-        CoreExpr::RegisterMethods { .. } => Ok("[instance ...]".to_string()),
+
     }
 }
 
@@ -1102,7 +1045,6 @@ fn core_expr_to_tinct_raw(
         CoreExpr::Int(n) => Ok(fmt_int(*n)),
         CoreExpr::U64(n) => Ok(format!("{n}u")),
         CoreExpr::Float(f) => fmt_float(*f),
-        CoreExpr::Bool(b) => Ok(fmt_bool(*b).to_string()),
         CoreExpr::Str(s) => Ok(fmt_string(s)),
         CoreExpr::Placeholder => Ok("_".to_string()),
         CoreExpr::Error(_) => Err("cannot serialize CoreExpr::Error".to_string()),
@@ -1111,20 +1053,9 @@ fn core_expr_to_tinct_raw(
             None => Ok("...".to_string()),
         },
         // Inside quotes: variables are opaque AST data — emit their names as-is
-        CoreExpr::Var { name, .. } | CoreExpr::FreeVar(name) => Ok(name.clone()),
+        CoreExpr::Var { name, .. } => Ok(name.clone()),
         CoreExpr::Annotated { name, .. } => Ok(name.clone()),
 
-        CoreExpr::DotAccess { expr, field } => {
-            let s = core_expr_to_tinct_in_quote(
-                &expr.node,
-                depth,
-                param_scope,
-                substitutions,
-                rename_map,
-                ctx,
-            )?;
-            Ok(format!("{}.{}", s, field))
-        }
         CoreExpr::Sequential(exprs) => {
             let mut parts = Vec::new();
             for e in exprs {
@@ -1322,26 +1253,11 @@ fn core_expr_to_tinct_raw(
             pattern,
             body,
         } => {
-            // Extract variable names for scope: use let_bindings (3-arg) or pattern LetDecl (2-arg).
+            // Extract binding names from let_bindings to build the arm scope.
             let mut arm_scope = param_scope.clone();
-
-            if let Some(lb) = let_bindings {
-                if let CoreExpr::LetDecl { bindings } = &lb.node {
-                    for binding in bindings {
-                        if let CoreExpr::Str(name) | CoreExpr::FreeVar(name) = &binding.node {
-                            arm_scope.insert(name.clone());
-                        } else if let CoreExpr::Annotated { name, .. } = &binding.node {
-                            arm_scope.insert(name.clone());
-                        } else if let CoreExpr::Var { name, .. } = &binding.node {
-                            arm_scope.insert(name.clone());
-                        }
-                    }
-                }
-            }
-
-            if let CoreExpr::LetDecl { bindings } = &pattern.node {
+            if let CoreExpr::LetDecl { bindings } = &let_bindings.node {
                 for binding in bindings {
-                    if let CoreExpr::Str(name) | CoreExpr::FreeVar(name) = &binding.node {
+                    if let CoreExpr::Str(name) = &binding.node {
                         arm_scope.insert(name.clone());
                     } else if let CoreExpr::Annotated { name, .. } = &binding.node {
                         arm_scope.insert(name.clone());
@@ -1351,18 +1267,14 @@ fn core_expr_to_tinct_raw(
                 }
             }
 
-            let lb_s = if let Some(lb) = let_bindings {
-                Some(core_expr_to_tinct_in_quote(
-                    &lb.node,
-                    depth,
-                    param_scope,
-                    substitutions,
-                    rename_map,
-                    ctx,
-                )?)
-            } else {
-                None
-            };
+            let lb_s = core_expr_to_tinct_in_quote(
+                &let_bindings.node,
+                depth,
+                param_scope,
+                substitutions,
+                rename_map,
+                ctx,
+            )?;
             let ps = core_expr_to_tinct_in_quote(
                 &pattern.node,
                 depth,
@@ -1379,13 +1291,26 @@ fn core_expr_to_tinct_raw(
                 rename_map,
                 ctx,
             )?;
-            if let Some(lb) = lb_s {
-                Ok(format!("[case {} {} {}]", lb, ps, bs))
+            Ok(format!("[case {} {} {}]", lb_s, ps, bs))
+        }
+
+        // Variant: tag is opaque AST data inside quotes — emit as-is.
+        CoreExpr::Variant { tag, payload } => {
+            if let Some(inner) = payload {
+                let s = core_expr_to_tinct_in_quote(
+                    &inner.node,
+                    depth,
+                    param_scope,
+                    substitutions,
+                    rename_map,
+                    ctx,
+                )?;
+                Ok(format!("[{} {}]", tag, s))
             } else {
-                Ok(format!("[{}: {}]", ps, bs))
+                Ok(tag.clone())
             }
         }
-        CoreExpr::RegisterMethods { .. } => Ok("[instance ...]".to_string()),
+
     }
 }
 
@@ -1394,7 +1319,7 @@ fn serialize_pattern(pattern: &Pattern) -> Result<String, String> {
     match pattern {
         Pattern::Wildcard => Ok("_".to_string()),
 
-        Pattern::TypeAssertPending { annotation, inner } => {
+        Pattern::TypeAssertPending { annotation, inner, .. } => {
             if let Some(inner_pat) = inner {
                 let inner_str = serialize_pattern(&inner_pat.node)?;
                 Ok(format!("[@{} {}]", annotation.node, inner_str))
@@ -1413,12 +1338,11 @@ fn serialize_pattern(pattern: &Pattern) -> Result<String, String> {
         }
         // T-1154: bare lowercase names in pattern position are now Pin patterns.
         // Serialize as bare name (no $); this round-trips correctly through the parser.
-        Pattern::Pin(name) => Ok(name.clone()),
+        Pattern::Pin(name, _) => Ok(name.clone()),
         Pattern::Literal(lit) => match lit {
             LiteralPattern::Int(n) => Ok(fmt_int(*n)),
             LiteralPattern::U64(n) => Ok(format!("{n}u")),
             LiteralPattern::Float(f) => fmt_float(*f),
-            LiteralPattern::Bool(b) => Ok(fmt_bool(*b).to_string()),
             LiteralPattern::Str(s) => Ok(fmt_string(s)),
         },
         Pattern::Dict { fields, rest } => {
@@ -1431,11 +1355,6 @@ fn serialize_pattern(pattern: &Pattern) -> Result<String, String> {
                 parts.push("..".to_string());
             }
             Ok(format!("[{}]", parts.join("  ")))
-        }
-        Pattern::Seq { head, tail } => {
-            let h = serialize_pattern(&head.node)?;
-            let t = serialize_pattern(&tail.node)?;
-            Ok(format!("[seq {} {}]", h, t))
         }
         Pattern::Constructor { tag, binding } => match binding {
             None => Ok(tag.clone()),
@@ -1452,211 +1371,6 @@ fn serialize_pattern(pattern: &Pattern) -> Result<String, String> {
         // T-1140: Predicate patterns — serialize as <predicate> placeholder.
         // The SurfaceNode is not available for round-trip serialization in this context.
         Pattern::Predicate(_) => Ok("<predicate>".to_string()),
-    }
-}
-
-/// Format a SurfaceNode as tinct source text.
-///
-/// This is an AST → source text unparser, the inverse of the parser.
-///
-/// Basic version handling common SurfaceExpression variants. Uncommon variants (Quote, Match,
-/// etc.) return a fallback error.
-pub fn fmt_expression(node: &Arc<crate::ast::SurfaceNode>) -> Result<String, String> {
-    use crate::ast::SurfaceExpression;
-
-    match &node.expr {
-        // Literals — delegate to lexer formatters
-        SurfaceExpression::Int(n) => Ok(fmt_int(*n)),
-        SurfaceExpression::U64(n) => Ok(format!("{n}u")),
-        SurfaceExpression::Float(f) => fmt_float(*f),
-        SurfaceExpression::Bool(b) => Ok(fmt_bool(*b).to_string()),
-        SurfaceExpression::Str(s) => Ok(fmt_string(s)),
-
-        // Variable reference — just the name
-        SurfaceExpression::VarRef { name, escaped } => {
-            if *escaped {
-                Ok(format!("${}", name))
-            } else {
-                Ok(name.clone())
-            }
-        }
-
-        // Dict — use similar pattern to fmt_dict but for surface AST
-        SurfaceExpression::Dict(entries) => {
-            let mut out = String::from("[");
-            for (i, entry) in entries.iter().enumerate() {
-                if i > 0 {
-                    out.push_str("  ");
-                }
-                if let Some(key_node) = &entry.node.key {
-                    let key_str = fmt_expression(key_node)?;
-                    out.push_str(&key_str);
-                    out.push(':');
-                    out.push(' ');
-                }
-                let val_str = fmt_expression(&entry.node.value)?;
-                out.push_str(&val_str);
-            }
-            out.push(']');
-            Ok(out)
-        }
-
-        // Call — [func args...]
-        SurfaceExpression::Call {
-            func,
-            args,
-            named_args,
-            ..
-        } => {
-            let func_str = fmt_expression(func)?;
-            let mut parts = vec![func_str];
-            for arg in args {
-                parts.push(fmt_expression(arg)?);
-            }
-            for named_arg in named_args {
-                let val_str = fmt_expression(&named_arg.node.value)?;
-                parts.push(format!("{}: {}", named_arg.node.name, val_str));
-            }
-            Ok(format!("[{}]", parts.join(" ")))
-        }
-
-        // DotAccess — target.field
-        SurfaceExpression::DotAccess { expr, field } => {
-            let target = fmt_expression(expr)?;
-            Ok(format!("{}.{}", target, field))
-        }
-
-        // Sequential — newline-separated expressions
-        SurfaceExpression::Sequential(exprs) => {
-            let mut parts = Vec::new();
-            for e in exprs {
-                parts.push(fmt_expression(e)?);
-            }
-            Ok(parts.join("\n"))
-        }
-
-        // Fn — [fn [let params] body]
-        SurfaceExpression::Fn { params, body, .. } => {
-            let params_str: Vec<String> = params
-                .iter()
-                .map(|p| {
-                    if p.node.variadic {
-                        format!("...{}", p.node.name)
-                    } else {
-                        p.node.name.clone()
-                    }
-                })
-                .collect();
-            let body_str = fmt_expression(body)?;
-            Ok(format!("[fn [let {}] {}]", params_str.join(" "), body_str))
-        }
-
-        // Placeholder
-        SurfaceExpression::Placeholder => Ok("_".to_string()),
-
-        // Rest parameter
-        SurfaceExpression::Rest(name) => match name {
-            Some(n) => Ok(format!("...{}", n)),
-            None => Ok("...".to_string()),
-        },
-
-        // Match — [match scrutinee [pattern: body] ...]
-        SurfaceExpression::Match { scrutinee, arms } => {
-            let scrutinee_str = fmt_expression(scrutinee)?;
-            let mut arm_parts = Vec::with_capacity(arms.len());
-            for arm in arms {
-                let pattern_str = arm.pattern.node.to_string();
-                let body_str = fmt_expression(&arm.body)?;
-
-                if let Some(guard) = &arm.guard {
-                    let guard_str = fmt_expression(guard)?;
-                    arm_parts.push(format!(
-                        "[{}: [if {} {} []]]",
-                        pattern_str, guard_str, body_str
-                    ));
-                } else {
-                    arm_parts.push(format!("[{}: {}]", pattern_str, body_str));
-                }
-            }
-            Ok(format!(
-                "[match {}  {}]",
-                scrutinee_str,
-                arm_parts.join("  ")
-            ))
-        }
-
-        // Quote — [quote expr]
-        SurfaceExpression::Quote(inner) => {
-            let inner_str = fmt_expression(inner)?;
-            Ok(format!("[quote {}]", inner_str))
-        }
-
-        // Unquote — [unquote expr]
-        SurfaceExpression::Unquote(inner) => {
-            let inner_str = fmt_expression(inner)?;
-            Ok(format!("[unquote {}]", inner_str))
-        }
-
-        // UnquoteSplice — [unquote-splice expr]
-        SurfaceExpression::UnquoteSplice(inner) => {
-            let inner_str = fmt_expression(inner)?;
-            Ok(format!("[unquote-splice {}]", inner_str))
-        }
-
-        // Pipe — lhs | rhs
-        SurfaceExpression::Pipe { lhs, rhs } => {
-            let lhs_str = fmt_expression(lhs)?;
-            let rhs_str = fmt_expression(rhs)?;
-            Ok(format!("{} | {}", lhs_str, rhs_str))
-        }
-
-        // TypeAssert — [@Type expr]
-        SurfaceExpression::TypeAssert { annotation, expr } => {
-            let expr_str = fmt_expression(expr)?;
-            Ok(format!("[@{} {}]", annotation.node, expr_str))
-        }
-
-        // Annotated — name@annotation
-        SurfaceExpression::Annotated { name, annotation } => {
-            Ok(format!("{}@{}", name, annotation.node))
-        }
-
-        // CaseArm — 2-arg: [pattern: body] / 3-arg: [case [let ...] pattern body]
-        SurfaceExpression::CaseArm {
-            let_bindings,
-            pattern,
-            body,
-        } => {
-            let pattern_str = fmt_expression(pattern)?;
-            let body_str = fmt_expression(body)?;
-            if let Some(lb) = let_bindings {
-                let lb_str = fmt_expression(lb)?;
-                Ok(format!("[case {} {} {}]", lb_str, pattern_str, body_str))
-            } else {
-                Ok(format!("[{}: {}]", pattern_str, body_str))
-            }
-        }
-
-        // PatternDecl — [pattern bindings...]
-        SurfaceExpression::PatternDecl { bindings } => {
-            let mut parts = Vec::with_capacity(bindings.len());
-            for b in bindings {
-                parts.push(fmt_expression(b)?);
-            }
-            Ok(format!("[pattern {}]", parts.join(" ")))
-        }
-
-        // LetDecl — [let bindings...]
-        SurfaceExpression::LetDecl { bindings } => {
-            let mut parts = Vec::with_capacity(bindings.len());
-            for b in bindings {
-                parts.push(fmt_expression(b)?);
-            }
-            Ok(format!("[let {}]", parts.join(" ")))
-        }
-
-        SurfaceExpression::Error(_) => Err("Cannot serialize SurfaceExpression::Error".to_string()),
-        SurfaceExpression::Decl(_) => Err("Cannot serialize SurfaceExpression::Decl".to_string()),
     }
 }
 
@@ -1715,7 +1429,6 @@ impl Value {
         match self {
             Value::Int(n) => Ok(fmt_int(*n)),
             Value::Float(f) => fmt_float(*f),
-            Value::Bool(b) => Ok(fmt_bool(*b).to_string()),
             Value::String { source, start, end } => Ok(fmt_string(&source[*start..*end])),
             Value::Dict(map) => fmt_dict(map, ctx),
             Value::Variant { tag, payload } => fmt_variant(tag, *payload, ctx),
@@ -1773,8 +1486,6 @@ impl Value {
                 // Serialize the merged dict
                 fmt_dict(&merged, ctx)
             }
-            Value::Expression(node) => fmt_expression(node),
-
             // Non-serializable values — no tinct representation exists
             Value::DirCap { .. } => {
                 Err(format!("no tinct representation for {}", self.type_name()))
@@ -1784,10 +1495,7 @@ impl Value {
             Value::RevocableDirCap { .. } => {
                 Err(format!("no tinct representation for {}", self.type_name()))
             }
-            Value::Handle { .. } => {
-                Err(format!("no tinct representation for {}", self.type_name()))
-            }
-            Value::WriteHandle { .. } => {
+            Value::File(_) => {
                 Err(format!("no tinct representation for {}", self.type_name()))
             }
             Value::QuicSession { .. } => {
@@ -1825,7 +1533,10 @@ impl Value {
             Value::U64(n) => Ok(format!("{n}u")),
             // Annotated is transparent — delegate to inner value.
             Value::Annotated { inner, .. } => inner.to_tinct(ctx),
-            Value::MethodDispatcher(_) => {
+            Value::TypeContext(_) => {
+                Err(format!("no tinct representation for {}", self.type_name()))
+            }
+            Value::Environment(_) => {
                 Err(format!("no tinct representation for {}", self.type_name()))
             }
         }

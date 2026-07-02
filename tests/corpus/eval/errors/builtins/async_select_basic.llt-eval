@@ -10,7 +10,7 @@
   sent: [send ch1 42]
   pair1: [ch: ch1  handler: [fn [let x] [str "ch1:" x]]]
   pair2: [ch: ch2  handler: [fn [let x] [str "ch2:" x]]]
-  sources: [seq pair1 [seq pair2 [builtin-variant "Seq.Nil"]]]
+  sources: [seq pair1 [seq pair2 Seq.End]]
   result: [select-once [context] sources]
 ]
 .result

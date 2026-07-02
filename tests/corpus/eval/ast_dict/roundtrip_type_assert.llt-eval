@@ -1,6 +1,6 @@
 # dict_to_surface_node_inner roundtrip: TypeAssert variant (recently added)
 --- uses: ["core"]
 # [quote [@Int 42]] produces a TypeAssert node; eval re-evaluates it with runtime type checking.
-[eval [seq [quote [@Int 42]] [builtin-variant "Seq.Nil"]]]
+[eval [seq [quote [@Int 42]] Seq.End]]
 === out
 Int(42)

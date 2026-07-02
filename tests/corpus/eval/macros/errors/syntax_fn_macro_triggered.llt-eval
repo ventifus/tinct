@@ -7,7 +7,7 @@
 [macro wrap-fn [let params body]
   [
     type:       "call"
-    implied:    false
+    implied:    False
     fn:         [type: "var"  name: "fn"]
     args:       [0: params  1: body]
     named-args: []]]

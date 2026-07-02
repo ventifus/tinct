@@ -50,7 +50,7 @@
 - AST coverage: every `SurfaceExpression` variant requires both a `lower` handler (src/lower.rs producing `CoreExpr`) and a `typecheck` handler (src/typecheck.rs); every `CoreExpr` variant requires an `eval_core_expr` handler (src/eval.rs)
 - Builtin registration: builtins are organized into named module groups via `builtin_module(name)` (src/builtins.rs) — "core", "datetime", "net". Each stdlib file declares its Rust dependencies with a `--- uses: ["core"]` document header; the evaluator injects the named group into the document's local scope before any expressions run.
 - Environment chain: user code inherits only prelude's exported dict. Builtins are in scope only during prelude evaluation (via `--- uses: ["core"]`) and are not propagated into user code's environment. The old `root_env → stdlib_env → user env` chain with all builtins pre-injected is replaced by a document-local injection model.
-- Desugar ordering: `desugar_surface_program()` runs after parse and before both typecheck and eval in all entry points (eval_source, eval_surface_file_with_input, CLI, REPL, stdlib loading, lsp/document.rs::update_document)
+- Desugar ordering: `desugar_surface_program()` runs after parse and before both typecheck and eval in all entry points (eval_source, eval_surface_file_with_input, CLI, stdlib loading, lsp/document.rs::update_document)
 
 **Cross-module coupling:**
 
@@ -322,7 +322,6 @@ struct EvalContext {
 
 - **CLI (main.rs):** Constructs EvalContext from CLI args (file path → base_dir), passes to eval_surface_file.
 - **LSP:** Each DocumentState gets its own EvalContext. DocumentStore extracts base_dir from document URI. Config (stdlib_env) is shared across documents; state is per-document.
-- **REPL:** Single EvalContext per session. Include state (guard, cache) persists across eval_input() calls. Session env accumulates bindings across commands. `eval_input()` calls `parse()` (returns a full `SurfaceProgram`) then passes the entire program to `eval_surface_file_with_input()`, so `---`-separated multi-document input works correctly across all documents.
 
 **Precedent:** Nix's `EvalState`, Nickel's `VirtualMachine`, Dhall's normalization context. Standard pattern in mature language implementations for separating evaluation infrastructure from variable bindings.
 
@@ -732,9 +731,8 @@ Tinct uses a multi-layer testing approach that matches the component architectur
 - Format: `.llt-eval` and `.llt-parse` files with `===` delimiter between input and expected output (see [Tooling](12-tooling.md) §Corpus Test Format)
 - Coverage: all language features, edge cases, error conditions
 
-**CLI integration tests** (REPL and LSP):
+**CLI integration tests** (LSP):
 
-- REPL session tests — multi-command interactions, environment persistence, `$eval` behavior
 - LSP protocol tests — document sync, hover, diagnostics, incremental updates
 - File I/O sandboxing tests — `--no-fs` flag, include guards, path canonicalization
 
@@ -742,6 +740,6 @@ Tinct uses a multi-layer testing approach that matches the component architectur
 
 - **Unit tests** — per module isolation (src/parser.rs, src/eval.rs, src/types.rs, src/builtins.rs). Test individual functions, error paths, edge cases, state transitions.
 - **Corpus tests** — end-to-end validation (tests/corpus/valid/, tests/corpus/invalid/). Test language features in combination; verify error messages match expected output.
-- **CLI integration tests** — REPL session tests, LSP protocol tests, file I/O sandboxing tests (--no-fs flag, include guards).
+- **CLI integration tests** — LSP protocol tests, file I/O sandboxing tests (--no-fs flag, include guards).
 - **Coverage invariant** — new language features require BOTH unit tests (isolated) and corpus tests (end-to-end). Error paths must have corpus tests with substring matching.
 - **Depth limit discipline** — tests that exercise MAX_EVAL_DEPTH must use 16MB stack threads to avoid Rust stack overflow before LLT depth limit is reached.

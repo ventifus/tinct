@@ -66,14 +66,13 @@ build-release:
     {{container}} run {{run_flags}} {{rust_image}} cargo build --release
 
 # Run all tests: lib tests (single-threaded to prevent parallel 128MB-thread exhaustion)
-# followed by corpus integration tests, CLI integration tests, and LSP corpus tests, in separate containers.
+# followed by corpus tests (tinct runner), CLI integration tests, in separate containers.
 # --test-threads=1 serializes deep-eval tests (each 128MB unnamed thread) so only one runs at a time.
-test: build-release
+test:
     {{container}} run {{test_run_flags}} -e RUST_MIN_STACK=67108864 -e RUSTFLAGS="-D warnings" {{rust_image}} cargo test --lib -- --test-threads=1 --quiet
-    {{container}} run {{test_run_flags}} -e RUST_MIN_STACK=67108864 -e RUSTFLAGS="-D warnings" {{rust_image}} cargo test --test corpus_tests -- --test-threads=1 --quiet
+    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo run --bin tinct -- run --init stdlib/test-loader.llt tests/corpus/eval/*.llt-eval
     {{container}} run {{run_flags}} -e RUSTFLAGS="-D warnings" {{rust_image}} cargo test --test cli_tests -- --quiet
     {{container}} run {{run_flags}} -e RUSTFLAGS="-D warnings" {{rust_image}} cargo test --test integration_async -- --quiet
-    {{container}} run {{test_run_flags}} -e RUST_MIN_STACK=67108864 -e RUSTFLAGS="-D warnings" {{rust_image}} cargo test --features lsp --test lsp_corpus_tests -- --test-threads=1 --quiet
 
 # Run a specific test (same flags as CI: -D warnings, test-threads=1)
 test-one TEST:
@@ -85,77 +84,26 @@ test-one TEST:
 test-lib:
     {{container}} run {{test_run_flags}} -e RUST_MIN_STACK=67108864 -e RUSTFLAGS="-D warnings" {{rust_image}} cargo test --lib -- --test-threads=1 --quiet
 
-# Run lib tests and show only failures + summary lines
-test-lib-summary:
-    -{{container}} run {{test_run_flags}} -e RUST_MIN_STACK=67108864 -e RUSTFLAGS="-D warnings" {{rust_image}} sh -c "cargo test --lib -- --test-threads=1 2>&1 | grep -E 'FAILED|test result:|failures:'"
 
-# Run corpus tests and show only failures + summary lines
+# Run corpus tests and show output (tinct runner reports failures inline)
 test-corpus-summary:
-    -{{container}} run {{test_run_flags}} -e RUST_MIN_STACK=67108864 -e RUSTFLAGS="-D warnings" {{rust_image}} sh -c "cargo test --test corpus_tests -- --test-threads=1 2>&1 | grep -E 'FAILED|test result:|failures:| - tests'"
-
-# Run eval corpus and show full failure details with error messages (first 5 failures)
-test-corpus-failures:
-    -{{container}} run {{test_run_flags}} -e RUST_MIN_STACK=67108864 -e RUSTFLAGS="-D warnings" {{rust_image}} sh -c "cargo test --test corpus_tests -- --test-threads=1 test_eval_corpus 2>&1 | grep -A 3 'eval test.*failed' | head -100"
-
-# Run update-corpus dry run and show just the summary (stripped count)
-update-corpus-summary:
-    -{{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 -e RUSTFLAGS="-D warnings" {{rust_image}} sh -c "cargo test --test update_corpus -- --ignored --nocapture --test-threads=1 update_eval_corpus 2>&1 | grep -E 'Stripped:|Updated:|Unchanged:|panicked'"
+    -{{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo run --bin tinct -- run --init stdlib/test-loader.llt tests/corpus/eval/*.llt-eval
 
 # Run CLI tests and show only failures + summary lines
 test-cli-summary:
     -{{container}} run {{run_flags}} -e RUSTFLAGS="-D warnings" {{rust_image}} sh -c "cargo test --test cli_tests 2>&1 | grep -E 'FAILED|test result:|failures:'"
 
-# Run LSP corpus tests and show only failures + summary lines
-test-lsp-summary:
-    -{{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 -e RUSTFLAGS="-D warnings" {{rust_image}} sh -c "cargo test --features lsp --test lsp_corpus_tests -- --test-threads=1 2>&1 | grep -E 'FAILED|test result:|failures:'"
 
-
-# Run only corpus tests (NOTE: does not include LSP corpus tests — use `just test-lsp` for those)
+# Run only corpus tests using the tinct test runner.
+# With no arguments: auto-discovers all tests under tests/corpus/.
+# With file arguments: runs only those specific tests.
 test-corpus:
-    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo test --test corpus_tests -- --quiet
+    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo run --bin tinct -- run --init stdlib/test-loader.llt
 
-# Run slow TCO tests (10,000-iteration loops, excluded from default `just test`).
-# Use this to verify tail-call optimization handles large iteration counts.
-test-slow:
-    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 -e RUSTFLAGS="-D warnings" {{rust_image}} cargo test --test corpus_tests -- test_eval_corpus_slow --include-ignored --test-threads=1 --quiet
-
-# Update corpus test expected outputs to match actual evaluator output.
-# Usage:
-#   just update-corpus                          # update all eval corpus tests
-#   just update-corpus --dry-run                # preview changes
-#   just update-corpus --filter "identity"      # only matching files
-#   just update-corpus --all                    # eval + valid + typecheck
-update-corpus *ARGS:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    DRY_RUN=""
-    FILTER=""
-    TESTS="update_eval_corpus"
-    for arg in {{ARGS}}; do
-        case "$arg" in
-            --dry-run) DRY_RUN="-e UPDATE_CORPUS_DRY_RUN=1" ;;
-            --accept-warn) DRY_RUN="${DRY_RUN} -e UPDATE_CORPUS_ACCEPT_WARN=1" ;;
-            --filter) shift_next=1 ;;
-            --all) TESTS="update_eval_corpus update_valid_corpus update_typecheck_warnings_corpus" ;;
-            --valid) TESTS="update_valid_corpus" ;;
-            --typecheck) TESTS="update_typecheck_warnings_corpus" ;;
-            *)
-                if [ "${shift_next:-}" = "1" ]; then
-                    FILTER="-e UPDATE_CORPUS_FILTER=$arg"
-                    shift_next=0
-                fi
-                ;;
-        esac
-    done
-    for test in $TESTS; do
-        echo "=== Running $test ==="
-        {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 -e RUSTFLAGS="-D warnings" $DRY_RUN $FILTER {{rust_image}} \
-            cargo test --test update_corpus -- --ignored --nocapture --test-threads=1 "$test"
-    done
-
-# Run only LSP corpus tests (requires --features lsp)
-test-lsp:
-    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo test --features lsp --test lsp_corpus_tests -- --test-threads=1 --quiet
+# Run specific corpus test files.
+# Usage: just test-corpus-one tests/corpus/eval/simple_dict.llt-eval
+test-corpus-one +FILES:
+    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo run --bin tinct -- run --init stdlib/test-loader.llt {{FILES}}
 
 # Run all lint checks. Always runs every check regardless of failures; exits non-zero if any failed.
 lint:
@@ -236,15 +184,15 @@ lint-builtins-cps:
     @echo "OK: No unannotated builtins call materialize() directly"
 
 # Run tinct lint --strict on every .llt file in stdlib/
-lint-stdlib: build-release
+lint-stdlib:
     find stdlib -name '*.llt' -type f -print -exec \
-        {{container}} run {{run_flags}} {{rust_image}} ./target/release/tinct lint --strict {} \;
+        {{container}} run {{run_flags}} {{rust_image}} cargo run --bin tinct -- lint --strict {} \;
 
 # Type-check tinct code blocks in documentation using tinct literate lint.
 # Only includes docs where all code blocks are expected to type-check cleanly.
 # Add more files here as they are verified.
-lint-docs: build-release
-    {{container}} run {{run_flags}} {{rust_image}} ./target/release/tinct literate lint doc/quickstart.md
+lint-docs:
+    {{container}} run {{run_flags}} {{rust_image}} cargo run --bin tinct -- literate lint doc/quickstart.md
 
 # Lint all markdown files with markdownlint-cli2
 lint-md:
@@ -297,8 +245,8 @@ tree:
     {{container}} run {{run_flags}} {{rust_image}} cargo tree
 
 # Lint a single tinct source file
-lint-file FILE: build-release
-    {{container}} run {{run_flags}} {{rust_image}} ./target/release/tinct lint --strict {{FILE}}
+lint-file FILE:
+    {{container}} run {{run_flags}} {{rust_image}} cargo run --bin tinct -- lint --strict {{FILE}}
 
 # Run full CI pipeline (check, test, lint, fmt-check, audit)
 ci:
@@ -309,10 +257,6 @@ ci:
     just fmt-check
     just audit
     @echo "✅ All CI checks passed!"
-
-# Start interactive REPL
-repl:
-    {{container}} run -it {{run_flags}} {{rust_image}} cargo run --bin tinct -- repl
 
 # Start LSP server (stdio transport)
 lsp:
@@ -385,16 +329,16 @@ docgen:
 # Weave tinct code block outputs into doc/*.md (living documentation).
 # Updates the === out / === warn / === info sections inside each ```tinct block.
 # Re-run to update. Use `just doc-verify` in CI to check without modifying.
-doc: build-release
+doc:
     for f in doc/*.md; do \
-        {{container}} run {{run_flags}} {{rust_image}} ./target/release/tinct literate weave --strict -i "$f"; \
+        {{container}} run {{run_flags}} {{rust_image}} cargo run --bin tinct -- literate weave --strict -i "$f"; \
     done
 
 # Verify that all annotated ```tinct blocks in doc/*.md match their === expected sections.
 # Exits 0 if all match, exits 1 with diff details if any mismatch. Use in CI.
-doc-verify: build-release
+doc-verify:
     for f in doc/*.md; do \
-        {{container}} run {{run_flags}} {{rust_image}} ./target/release/tinct literate weave --strict --fail-on-errors --verify "$f"; \
+        {{container}} run {{run_flags}} {{rust_image}} cargo run --bin tinct -- literate weave --strict --fail-on-errors --verify "$f"; \
     done
 
 # Build Rust API documentation

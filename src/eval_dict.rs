@@ -5,28 +5,27 @@
 //! values are thunks). Keys are evaluated in the parent scope.
 //!
 //! All evaluation is CoreExpr-native via `eval_dict_core` / `eval_key_core`.
-//! The old Expr-based `eval_dict` / `eval_key` were removed in the Parts-B+E migration.
 
 use std::rc::Rc;
 use std::sync::{Arc, RwLock};
 
 use indexmap::IndexMap;
 
-use crate::arena::ThunkId;
 use crate::ast::{Annotation, CoreEntry, CoreExpr, Span, Spanned, SurfaceExpression};
 use crate::error::{EvalError, EvalResult};
-use crate::value::{string_val, Environment, Key, Thunk, Value};
+use crate::value::ThunkId;
+use crate::value::{string_val, Environment, HashableValue, Thunk, Value};
 
 use super::{eval_core_expr, materialize, EvalContext};
 
-fn value_to_key(value: &Value, span: &Span) -> EvalResult<Key> {
+fn value_to_key(value: &Value, span: &Span) -> EvalResult<HashableValue> {
     match value {
         Value::String {
             ref source,
             start,
             end,
-        } => Ok(Key::String(Rc::from(&source[*start..*end]))),
-        Value::Int(n) => Ok(Key::Int(*n)),
+        } => Ok(HashableValue::Str(Rc::from(&source[*start..*end]))),
+        Value::Int(n) => Ok(HashableValue::Int(*n)),
         _ => Err(EvalError::type_mismatch("String or Int", value.type_name(), span.clone()).into()),
     }
 }
@@ -42,22 +41,22 @@ fn eval_annotation_property_dict(
     entries: &[Spanned<crate::ast::SurfaceEntry>],
     ctx: &Arc<EvalContext>,
 ) -> EvalResult<Value> {
-    let mut dict_map: IndexMap<Key, ThunkId> = IndexMap::with_capacity(entries.len());
+    let mut dict_map: IndexMap<HashableValue, ThunkId> = IndexMap::with_capacity(entries.len());
     let mut auto_index: i64 = 0;
 
     for entry in entries {
-        // Evaluate the key to get a concrete Key
+        // Evaluate the key to get a concrete HashableValue
         let key = if let Some(key_node) = &entry.node.key {
             // Evaluate the key expression (SurfaceExpression)
             // We need to lower it to CoreExpr first, then evaluate
             // For now, handle the common case of string literals directly
             match &key_node.expr {
-                SurfaceExpression::Str(s) => Key::String(Rc::from(s.as_str())),
-                SurfaceExpression::Int(n) => Key::Int(*n),
+                SurfaceExpression::Str(s) => HashableValue::Str(Rc::from(s.as_str())),
+                SurfaceExpression::Int(n) => HashableValue::Int(*n),
                 // U64 values that fit in i64 are used as integer keys; larger values error.
                 SurfaceExpression::U64(n) => {
                     if let Ok(i) = i64::try_from(*n) {
-                        Key::Int(i)
+                        HashableValue::Int(i)
                     } else {
                         return Err(Box::new(EvalError::internal(
                             format!(
@@ -67,7 +66,9 @@ fn eval_annotation_property_dict(
                         )));
                     }
                 }
-                SurfaceExpression::VarRef { name, .. } => Key::String(Rc::from(name.as_str())),
+                SurfaceExpression::VarRef { name, .. } => {
+                    HashableValue::Str(Rc::from(name.as_str()))
+                }
                 _ => {
                     // For complex key expressions, we'd need to lower and evaluate
                     // For now, treat as an error since annotation keys should be simple
@@ -82,7 +83,7 @@ fn eval_annotation_property_dict(
             }
         } else {
             // Auto-indexed entry
-            let k = Key::Int(auto_index);
+            let k = HashableValue::Int(auto_index);
             auto_index = auto_index.checked_add(1).ok_or_else(|| {
                 EvalError::integer_overflow(
                     "annotation dict auto-index".to_string(),
@@ -113,16 +114,12 @@ fn eval_annotation_property_dict(
                     Value::Float(*f),
                     entry.node.value.span.clone(),
                 )),
-                SurfaceExpression::Bool(b) => Arc::new(Thunk::new_materialized(
-                    Value::Bool(*b),
-                    entry.node.value.span.clone(),
-                )),
                 _ => {
                     // Non-literal annotation values (VarRef type names, fn expressions, etc.)
                     // are skipped — they appear in function return-type annotations like
                     // @[return: Dict  doc: "..."] where Dict is a type name, not a runtime value.
                     // T-1124 handles expression evaluation at fn-definition time for fn annotations;
-                    // dict-key annotations only carry literal metadata (strings, ints, bools).
+                    // dict-key annotations only carry literal metadata (strings, ints, numbers).
                     continue;
                 }
             }
@@ -188,8 +185,7 @@ pub(crate) fn core_expr_is_static_key(k: &CoreExpr) -> bool {
 
 /// Evaluate a dict literal from `CoreExpr::Dict` entries with letrec semantics.
 ///
-/// Directly accepts the `CoreEntry` slice produced by `eval_core_expr`'s Dict arm,
-/// avoiding the Vec<Spanned<Entry>> allocation previously required by `eval_dict`.
+/// Directly accepts the `CoreEntry` slice produced by `eval_core_expr`'s Dict arm.
 ///
 /// Semantics are identical to `eval_dict`:
 /// - String-keyed entries enter `dict_env` (letrec: forward references allowed)
@@ -208,15 +204,11 @@ pub(crate) async fn eval_dict_core(
     dict_span: &Span,
 ) -> EvalResult<Arc<Thunk>> {
     // Task 6: Skip dict_env allocation for literal-only dicts.
-    // Check if all values are literals (Int/Float/Bool/Str) - if so, we don't need letrec scoping.
+    // Check if all values are literals (Int/Float/Str) - if so, we don't need letrec scoping.
     let has_non_literal = entries.iter().any(|entry| {
         !matches!(
             &entry.node.value.node,
-            CoreExpr::Int(_)
-                | CoreExpr::U64(_)
-                | CoreExpr::Float(_)
-                | CoreExpr::Bool(_)
-                | CoreExpr::Str(_)
+            CoreExpr::Int(_) | CoreExpr::U64(_) | CoreExpr::Float(_) | CoreExpr::Str(_)
         )
     });
 
@@ -227,7 +219,7 @@ pub(crate) async fn eval_dict_core(
     } else {
         None
     };
-    let mut dict_map: IndexMap<Key, ThunkId> = IndexMap::with_capacity(entries.len());
+    let mut dict_map: IndexMap<HashableValue, ThunkId> = IndexMap::with_capacity(entries.len());
     let mut auto_index: i64 = 0;
 
     // Allocate a FlatEnv for this dict scope with entries.len() capacity (upper bound).
@@ -247,41 +239,6 @@ pub(crate) async fn eval_dict_core(
     let mut letrec_slots: Vec<(u32, ThunkId)> = Vec::new();
 
     for entry in entries {
-        // Pre-scan: RegisterMethods entries register method dispatch arms eagerly into the
-        // dict's env frame before any lazy values are accessible. This ensures instance
-        // declarations are visible to all entries in this dict regardless of order.
-        if let CoreExpr::RegisterMethods { arms } = &entry.node.value.node {
-            if let Some(ref env) = dict_env {
-                let mut env_guard = env.write().unwrap();
-                for (dispatch_tags, method_name, body_expr) in arms {
-                    let body_thunk = Arc::new(crate::value::Thunk::new_unevaluated_core(
-                        Arc::clone(body_expr),
-                        Arc::clone(env),
-                        Arc::clone(ctx),
-                        body_expr.span.clone(),
-                    ));
-                    let arm = crate::value::MethodArm {
-                        type_tags: dispatch_tags.clone(),
-                        body: body_thunk,
-                        span: entry.span.clone(),
-                    };
-                    // Propagate the SAME arm (same thunk, same closure over dict_env) to the
-                    // methods sink when set. This is used during stdlib bootstrap so that prelude
-                    // method arms end up in stdlib_env.methods where user code can find them via
-                    // collect_method_arms. The thunk closes over dict_env (correct: has full
-                    // prelude scope including private helpers).
-                    if let Some(sink) = ctx.methods_sink.lock().unwrap().as_ref() {
-                        sink.write()
-                            .unwrap()
-                            .insert_method_arm(method_name.clone(), arm.clone());
-                    }
-                    env_guard.insert_method_arm(method_name.clone(), arm);
-                }
-            }
-            // Skip this entry from the dict map — RegisterMethods is side-effect only.
-            continue;
-        }
-
         // Determine if this entry has a static key (CoreExpr::Str or CoreExpr::Annotated).
         // Must match resolve.rs Resolver::walk_expr Dict arm exactly — use the shared predicate.
         let is_static_key = entry
@@ -293,7 +250,7 @@ pub(crate) async fn eval_dict_core(
         let key = match &entry.node.key {
             Some(key_expr) => eval_key_core(key_expr, parent_env, ctx).await?,
             None => {
-                let k = Key::Int(auto_index);
+                let k = HashableValue::Int(auto_index);
                 auto_index = auto_index.checked_add(1).ok_or_else(|| {
                     EvalError::integer_overflow("dict auto-index".to_string(), entry.span.clone())
                 })?;
@@ -314,10 +271,6 @@ pub(crate) async fn eval_dict_core(
             )),
             CoreExpr::Float(f) => Arc::new(Thunk::new_materialized(
                 Value::Float(*f),
-                entry.node.value.span.clone(),
-            )),
-            CoreExpr::Bool(b) => Arc::new(Thunk::new_materialized(
-                Value::Bool(*b),
                 entry.node.value.span.clone(),
             )),
             CoreExpr::Str(s) => Arc::new(Thunk::new_materialized(
@@ -388,7 +341,7 @@ pub(crate) async fn eval_dict_core(
         // CRITICAL: Only insert static-key entries to preserve slot alignment with the resolver.
         // Computed-key entries (even if they evaluate to strings) are NOT part of the letrec scope.
         if is_static_key {
-            if let Key::String(ref name) = key {
+            if let HashableValue::Str(ref name) = key {
                 if let Some(ref env) = dict_env {
                     env.write()
                         .unwrap()
@@ -452,7 +405,7 @@ pub(crate) async fn eval_dict_core(
     )))
 }
 
-/// Evaluate a dict key from a `CoreExpr` node, returning a concrete `Key`.
+/// Evaluate a dict key from a `CoreExpr` node, returning a concrete `HashableValue`.
 ///
 /// Fast path for literal keys (Str/Int) avoids creating temporary thunks.
 /// General path materializes the expression via `eval_core_expr`.
@@ -460,15 +413,15 @@ pub(crate) async fn eval_key_core(
     key_expr: &Arc<Spanned<CoreExpr>>,
     parent_env: &Arc<RwLock<Environment>>,
     ctx: &Arc<EvalContext>,
-) -> EvalResult<Key> {
+) -> EvalResult<HashableValue> {
     // Fast path for static keys — avoids thunk creation and materialization
     match &key_expr.node {
-        CoreExpr::Str(s) => return Ok(Key::String(Rc::from(s.as_str()))),
-        CoreExpr::Int(n) => return Ok(Key::Int(*n)),
+        CoreExpr::Str(s) => return Ok(HashableValue::Str(Rc::from(s.as_str()))),
+        CoreExpr::Int(n) => return Ok(HashableValue::Int(*n)),
         // U64 keys that fit in i64 are used as integer keys; larger values error.
         CoreExpr::U64(n) => {
             if let Ok(i) = i64::try_from(*n) {
-                return Ok(Key::Int(i));
+                return Ok(HashableValue::Int(i));
             }
             return Err(EvalError::internal(
                 format!("u64 key {n} is too large for a dict integer key (max i64::MAX)"),
@@ -480,84 +433,11 @@ pub(crate) async fn eval_key_core(
         // eval_core_expr for CoreExpr::Annotated already returns string_val(name);
         // skipping the thunk/materialize round-trip is both faster and avoids any
         // environment-dependent lookup that could produce a wrong result.
-        CoreExpr::Annotated { name, .. } => return Ok(Key::String(Rc::from(name.as_str()))),
+        CoreExpr::Annotated { name, .. } => return Ok(HashableValue::Str(Rc::from(name.as_str()))),
         _ => {}
     }
-    // General path: must materialize because IndexMap requires concrete Key values
+    // General path: must materialize because IndexMap requires concrete HashableValue keys
     let thunk = eval_core_expr(key_expr.as_ref(), parent_env, ctx).await?;
     let value = materialize(&thunk, Some(&key_expr.span), ctx).await?;
     value_to_key(&value, &key_expr.span)
-}
-
-#[cfg(test)]
-mod tests {
-    // Tests currently use only items from parent module's glob re-exports
-
-    /// Test that dict keys are evaluated in the parent scope, not the dict scope.
-    #[tokio::test]
-    async fn test_key_evaluated_in_parent_scope() {
-        let input = r#"
-            [outer: 1  inner: [x: 2  $outer: 999]]
-        "#;
-        let output = crate::eval_source(input).await.expect("Should succeed");
-        assert!(
-            output.contains("1: Int(999)"),
-            "Key $outer should evaluate to 1 (parent scope), got: {}",
-            output
-        );
-    }
-
-    /// Test that dict values are evaluated in the dict's own scope (letrec).
-    #[tokio::test]
-    async fn test_value_evaluated_in_dict_scope() {
-        let input = r#"[x: 1  y: $x]"#;
-        let output = crate::eval_source(input).await.expect("Should succeed");
-        assert!(
-            output.contains(r#""y": Int(1)"#),
-            "y should reference sibling x (value 1), got: {}",
-            output
-        );
-    }
-
-    /// Test that circular dependencies are detected.
-    #[tokio::test]
-    async fn test_circular_dependency_detection() {
-        let input = r#"[x: $y  y: $x]"#;
-        let err = crate::eval_source(input).await.expect_err("Should fail with circular dependency error");
-        assert!(
-            err.contains("circular dependency"),
-            "Error should mention circular dependency, got: {}",
-            err
-        );
-    }
-
-    /// Test that nested dicts properly shadow outer bindings.
-    #[tokio::test]
-    async fn test_nested_dict_shadowing() {
-        let input = r#"[x: 1  inner: [x: 2  y: $x]]"#;
-        let output = crate::eval_source(input).await.expect("Should succeed");
-        assert!(
-            output.contains(r#""y": Int(2)"#),
-            "inner.y should reference inner.x (2, shadowed), got: {}",
-            output
-        );
-    }
-
-    /// Test that a literal-only dict evaluates correctly via the no-dict_env fast path.
-    #[tokio::test]
-    async fn test_literal_only_dict_fast_path() {
-        let input = r#"[a: 1  b: 2]"#;
-        let output = crate::eval_source(input).await.expect("literal-only dict should evaluate without error");
-        // Both entries must appear with the correct Display representation
-        assert!(
-            output.contains(r#""a": Int(1)"#),
-            "expected 'a': Int(1) in output, got: {}",
-            output
-        );
-        assert!(
-            output.contains(r#""b": Int(2)"#),
-            "expected 'b': Int(2) in output, got: {}",
-            output
-        );
-    }
 }

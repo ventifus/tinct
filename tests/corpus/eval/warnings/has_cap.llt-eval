@@ -1,9 +1,7 @@
-# Test has-cap? on a file handle (has-cap? is now in stdlib/io.llt)
-# open returns a handle with Readable and Text caps
+# Test has-cap? on a protocol dict handle (from open)
+# open returns a protocol dict with read-chunk/write/flush/close/seek keys
+# has-cap? (now wrapping has?) checks if a method key exists on the dict
 [include %libdir "io.llt"]
-[has-cap? [open %cwd "Cargo.toml" Readable] "Readable"]
+[has-cap? [open %cwd "Cargo.toml" Readable] "read-chunk"]
 === out
 Bool(true)
-
-=== warn
-[UnificationFailure] cannot unify Handle[WriteHandle] with Handle[[__cap_flag_readable: []]]

@@ -6,9 +6,9 @@
 //! 1. Walk the AST top-down
 //! 2. Register `MacroDecl` nodes by evaluating their transformer in a fresh context
 //! 3. Expand `Call` nodes if the function name matches a registered macro:
-//!    - Pass arguments as `Value::Expression` (native AST nodes)
-//!    - Call the macro transformer with the Expression values
-//!    - Accept result as `Value::Expression` or convert from Dict (fallback)
+//!    - Pass arguments as `Value::Variant { tag: "Expr.*", .. }` (canonical AST node representation)
+//!    - Call the macro transformer with the Expr.* variant values
+//!    - Accept result as `Value::Variant { tag: "Expr.*", .. }` (typed constructors)
 //!    - Replace the Call node with the expansion
 //!    - Re-expand the result (fixpoint)
 //! 4. Track in-progress expansions to detect infinite recursion
@@ -19,9 +19,8 @@
 //! to generate fresh variable names. By default, macro-introduced bindings can capture
 //! user variables (MH1).
 //!
-//! Full scope-set hygiene (Flatt 2016) is not yet implemented; the ScopeId
-//! infrastructure was removed. A `gensym`-based approach is the only hygiene
-//! mechanism available.
+//! Full scope-set hygiene (Flatt 2016) is not yet implemented; `gensym` is the
+//! only hygiene mechanism available.
 //!
 //! ## Dual-span provenance (Pombrio & Krishnamurthi 2015)
 //!
@@ -38,45 +37,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 use crate::ast::{Param, Span, Spanned, SurfaceEntry, SurfaceNamedArg, SurfaceNode};
-use crate::builtins;
 use crate::error::{EvalError, EvalResult};
+use crate::rust_span;
 use crate::eval::{self, EvalContext};
 use crate::eval_materialize::force_dict_tree;
 use crate::surface_convert::dict_to_surface_node;
 use crate::value::{Environment, Thunk, Value};
 
 /// Provenance information for a macro-generated AST node.
-/// Used for dual-span error reporting per Pombrio & Krishnamurthi (2015).
-#[derive(Debug, Clone)]
-pub struct MacroProvenance {
-    /// Name of the macro that generated this node.
-    pub macro_name: String,
-    /// Span of the macro call site (where `[macro-name ...]` appeared in source).
-    pub call_site_span: Span,
-}
-
-/// Side map from AST node spans to their macro expansion provenance.
-/// Keyed by the span of the generated node (which is the call_span of the expansion).
-/// This is a simplified version of Pombrio & Krishnamurthi's "honest tags".
-pub type ProvenanceMap = HashMap<SpanKey, MacroProvenance>;
-
-/// A hashable key derived from a Span for use in the provenance map.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct SpanKey {
-    pub start_offset: usize,
-    pub end_offset: usize,
-    pub start_line: usize,
-}
-
-impl From<Span> for SpanKey {
-    fn from(span: Span) -> Self {
-        SpanKey {
-            start_offset: span.start.offset,
-            end_offset: span.end.offset,
-            start_line: span.start.line,
-        }
-    }
-}
+// MacroProvenance, ProvenanceMap, and SpanKey removed — provenance is now stored inline
+// on SurfaceNode.provenance (an ast::Provenance OnceLock field). See ast.rs.
+// Use crate::ast::MacroProvenance for the type.
 
 /// Metadata for a registered macro — the transformer function, params pattern, and inject names.
 #[derive(Debug, Clone)]
@@ -114,8 +85,7 @@ pub struct MacroEnv {
     /// In-progress call sites: (file_id, byte_offset) or synthetic ID for generated nodes.
     /// Used for blackhole detection.
     in_progress: HashSet<CallSiteId>,
-    /// Provenance side map: generated-node span -> expansion origin.
-    pub provenance: ProvenanceMap,
+    // provenance removed: written inline on SurfaceNode.provenance (OnceLock) by the expander.
     /// Macros discovered during expansion via `[macro ...]` declarations.
     /// Accumulated during expansion.
     pub discovered_macros: Vec<(String, Arc<Thunk>)>,
@@ -150,7 +120,6 @@ impl MacroEnv {
             depth: 0,
             node_count: 0,
             in_progress: HashSet::new(),
-            provenance: HashMap::new(),
             discovered_macros: Vec::new(),
         }
     }
@@ -246,43 +215,14 @@ impl MacroEnv {
 
 /// Result of surface-program macro expansion.
 pub struct ExpandSurfaceResult {
-    /// Provenance map: generated-node span → expansion origin (for dual-span error reporting).
-    pub provenance: ProvenanceMap,
     /// Macro inject names: `macro_name -> Vec<inject_name>`.
     /// Populated from all macros with `inject:` declarations encountered during expansion.
     /// Used by the `macro-injects` builtin for runtime introspection.
     pub macro_injects_map: HashMap<String, Vec<String>>,
 }
 
-// Reentrance depth guard for expand_surface_program → create_stdlib_env calls.
-// When depth > 0, we're in a re-entrant call and must reuse the cached stdlib
-// env from the depth == 0 call. STDLIB_RESULT_CACHE (in builtins.rs) is the
-// authoritative cache; create_stdlib_env_with_arena() returns it on a cache hit
-// without rebuilding. No separate CACHED_STDLIB_ENV is needed.
 std::thread_local! {
-    static EXPAND_MACROS_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
     static EXPAND_EXPR_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
-}
-
-/// RAII guard for EXPAND_MACROS_DEPTH. Restores depth on drop, even if the guarded scope panics.
-struct DepthGuard {
-    original_depth: u32,
-}
-
-impl DepthGuard {
-    fn new() -> Self {
-        let depth = EXPAND_MACROS_DEPTH.get();
-        EXPAND_MACROS_DEPTH.set(depth + 1);
-        DepthGuard {
-            original_depth: depth,
-        }
-    }
-}
-
-impl Drop for DepthGuard {
-    fn drop(&mut self) {
-        EXPAND_MACROS_DEPTH.set(self.original_depth);
-    }
 }
 
 /// Expand macros in a `SurfaceProgram`.
@@ -294,96 +234,53 @@ impl Drop for DepthGuard {
 /// - Expand `Call` nodes whose function name is a registered macro
 ///
 /// The expansion body is fully native SurfaceExpression — no bridge to old `Expr` types needed.
-pub async fn expand_surface_program(
-    program: &mut crate::ast::SurfaceProgram,
+///
+/// The `env` parameter provides the environment used to evaluate macro transformer bodies.
+/// Callers pass a core env or the pre-populated loader_env. Under the new single-execution-path
+/// architecture, `expand_surface_program` never calls back into `build_core_env` — callers
+/// build the env once and pass it explicitly, eliminating circular dependencies.
+pub fn expand_surface_program<'a>(
+    program: &'a mut crate::ast::SurfaceProgram,
+    env: Arc<RwLock<Environment>>,
     no_fs: bool,
-    base_dir: &cap_std::fs::Dir,
-) -> EvalResult<ExpandSurfaceResult> {
-    use crate::ast::{SurfaceDeclaration, SurfaceItem};
+    base_dir: &'a cap_std::fs::Dir,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<ExpandSurfaceResult>> + 'a>> {
+    Box::pin(async move {
+        use crate::ast::{SurfaceDeclaration, SurfaceItem};
 
-    // Detect infinite recursion
-    let em_depth = EXPAND_MACROS_DEPTH.get();
-    if em_depth > 10 {
-        return Err(EvalError::resource_limit_exceeded(
-            format!(
-                "expand_surface_program: infinite recursion detected (depth={})",
-                em_depth
-            ),
-            crate::ast::Span::origin(),
-        )
-        .into());
-    }
+        let mut env_macro = MacroEnv::new();
 
-    let mut env_macro = MacroEnv::new();
-
-    // Clone the base directory handle
-    let base_dir = base_dir.open_dir(".").map_err(|e| {
-        EvalError::internal(
-            format!("cannot clone base directory for macro expansion: {e}"),
-            crate::ast::Span::origin(),
-        )
-    })?;
-
-    // Create the stdlib env for macro expansion
-    let depth = EXPAND_MACROS_DEPTH.get();
-    let (stdlib_env, ctx) = if depth == 0 {
-        let _depth_guard = DepthGuard::new();
-        match builtins::create_stdlib_env_with_arena().await {
-            Ok((env, arena)) => {
-                let type_stage_env =
-                    crate::imports::build_type_stage_env().unwrap_or_else(|| Arc::clone(&env));
-                let ctx = EvalContext::new_sharing_arena(
-                    base_dir,
-                    Arc::clone(&env),
-                    type_stage_env,
-                    no_fs,
-                    Arc::clone(&arena),
-                    HashMap::new(), // macro_injects_map — will be populated during expansion
-                );
-                // STDLIB_RESULT_CACHE (builtins.rs) is populated by create_stdlib_env_with_arena;
-                // re-entrant calls at depth > 0 will hit that cache and get the same env/arena.
-                (env, ctx)
-            }
-            Err(e) => return Err(e),
-        }
-    } else {
-        // Invariant: depth > 0 means we are inside a depth == 0 call that already
-        // bootstrapped the stdlib. STDLIB_RESULT_CACHE (builtins.rs) is populated by
-        // that call; create_stdlib_env_with_arena() returns the cached (env, arena) pair
-        // immediately without rebuilding. Re-entrant macro expansion must always be nested
-        // inside a depth == 0 call — if the cache is absent, the call stack is broken.
-        //
-        // Using a fresh env with only core builtins would be wrong: macro bodies need prelude
-        // functions. Using new_empty() would violate the arena invariant (stdlib ThunkIds
-        // invalid in a fresh arena). Both bugs are silent and hard to diagnose.
-        let (env, arena) = builtins::create_stdlib_env_with_arena().await.unwrap_or_else(|_| {
-            unreachable!(
-                "expand_surface_program at depth {} but STDLIB_RESULT_CACHE is empty; \
-                 re-entrant expansion must always be nested inside a depth == 0 call \
-                 that has already populated the cache",
-                depth
+        // Clone the base directory handle
+        let base_dir = base_dir.open_dir(".").map_err(|e| {
+            EvalError::internal(
+                format!("cannot clone base directory for macro expansion: {e}"),
+                rust_span!(),
             )
-        });
-        let type_stage_env =
-            crate::imports::build_type_stage_env().unwrap_or_else(|| Arc::clone(&env));
-        let ctx = EvalContext::new_sharing_arena(
-            base_dir,
-            Arc::clone(&env),
-            type_stage_env,
-            no_fs,
-            arena,
-            HashMap::new(),
-        );
-        (env, ctx)
-    };
-    let ctx = Rc::new(ctx);
+        })?;
 
-    // Pre-scan prelude.llt to discover [macro] declarations (tmpl, do, begin).
-    // Macros are defined in prelude.llt but not expanded during bootstrap (the expand
-    // call was removed from create_stdlib_env_inner to avoid circular recursion).
-    // We parse and pre-scan here where the stdlib env is available for evaluating
-    // transformer bodies. Only needed at depth 0 (first entry).
-    if depth == 0 {
+        // Build an expansion EvalContext from the provided env.
+        // Using new_empty (fresh arena) is correct: macro transformer bodies evaluate
+        // to ephemeral Function values that are discarded after expansion.
+        // Macro expansion is pure AST transformation — it does not evaluate type annotations.
+        // Use an empty type-stage env; type-checking happens in a separate pass after expansion.
+        let expand_ctx = crate::eval::EvalContext::new_empty(base_dir, Arc::clone(&env), no_fs);
+        expand_ctx.init_type_context(crate::eval::TypeContextData {
+            type_stage_env: Arc::new(RwLock::new(crate::value::Environment::new())),
+            // Macro expansion is pure AST transformation — inference_env is not consulted.
+            // Use a fresh TypeEnv; calling get_builtin_core_type_env() here would create a
+            // circular dependency when expand_surface_program is called from the bootstrap path
+            // (build_builtin_core_type_env_inner → expand_surface_program → ... → recursion guard).
+            inference_env: std::sync::Arc::new(crate::types::TypeEnv::new()),
+        });
+        let ctx = Rc::new(expand_ctx);
+
+        // Pre-scan prelude.llt to discover [macro] declarations (tmpl, do, begin).
+        // Macros are defined in prelude.llt and must be registered before expanding any
+        // user code that uses them (e.g. `begin`, `>>`, `tmpl`). During bootstrap
+        // (when env=loader_env with only core builtins), transformer bodies that need
+        // prelude functions will fail silently — pre_scan errors are ignored via `let _ = ...`,
+        // so those macros simply won't register. This is safe: loader.llt itself does not
+        // use [macro ...] transformer macros.
         let prelude_source = include_str!("../stdlib/prelude.llt");
         let prelude_sf = std::sync::Arc::new(crate::ast::SourceFile {
             path: std::sync::Arc::from("stdlib/prelude.llt"),
@@ -392,76 +289,65 @@ pub async fn expand_surface_program(
         if let Ok(prelude_parsed) = crate::parser::parse_with_file(prelude_source, prelude_sf) {
             for doc_spanned in &prelude_parsed.program.documents {
                 let _ =
-                    pre_scan_surface_document(&doc_spanned.node, &mut env_macro, &ctx, &stdlib_env)
-                        .await;
+                    pre_scan_surface_document(&doc_spanned.node, &mut env_macro, &ctx, &env).await;
             }
         }
-    }
 
-    // Two-pass macro expansion (B-304):
-    //
-    // Pass 1 — collect ALL macro declarations from ALL documents before expanding anything.
-    // This ensures a macro declared in any document (including a later one) is available
-    // when expanding call sites in any earlier document.
-    //
-    // Without this two-pass approach, the single combined loop would pre-scan doc N and
-    // immediately expand doc N before doc N+1 is even pre-scanned — so macros declared
-    // in doc N+1 are invisible to call sites in doc N.
-    //
-    // Prelude note: prelude.llt is expanded through expand_surface_program in the TYPECHECK
-    // path (src/imports.rs typecheck_and_merge_stdlib_module), but NOT in the runtime
-    // bootstrap path (src/builtins.rs create_stdlib_env_inner). The runtime path skips
-    // expansion because expand_surface_program requires a live stdlib env to evaluate macro
-    // transformer functions — calling it from create_stdlib_env_inner causes infinite
-    // recursion. See B-309 for the tracked follow-up to fix the runtime path properly.
-    for doc_spanned in &program.documents {
-        pre_scan_surface_document(&doc_spanned.node, &mut env_macro, &ctx, &stdlib_env).await?;
-    }
+        // Two-pass macro expansion (B-304):
+        //
+        // Pass 1 — collect ALL macro declarations from ALL documents before expanding anything.
+        // This ensures a macro declared in any document (including a later one) is available
+        // when expanding call sites in any earlier document.
+        //
+        // Without this two-pass approach, the single combined loop would pre-scan doc N and
+        // immediately expand doc N before doc N+1 is even pre-scanned — so macros declared
+        // in doc N+1 are invisible to call sites in doc N.
+        for doc_spanned in &program.documents {
+            pre_scan_surface_document(&doc_spanned.node, &mut env_macro, &ctx, &env).await?;
+        }
 
-    // Pass 2 — expand all documents using the complete macro registry from pass 1.
-    for doc_spanned in &mut program.documents {
-        let doc = &mut doc_spanned.node;
+        // Pass 2 — expand all documents using the complete macro registry from pass 1.
+        for doc_spanned in &mut program.documents {
+            let doc = &mut doc_spanned.node;
 
-        // Expand items
-        let mut expanded_items = Vec::new();
-        for item in std::mem::take(&mut doc.items) {
-            match item {
-                SurfaceItem::Decl(decl_spanned) => {
-                    match decl_spanned.node {
-                        SurfaceDeclaration::Splice(forms) => {
-                            // Flatten splice: each form becomes a separate Expr item
-                            for form in forms {
-                                expanded_items.push(SurfaceItem::Expr(form));
+            // Expand items
+            let mut expanded_items = Vec::new();
+            for item in std::mem::take(&mut doc.items) {
+                match item {
+                    SurfaceItem::Decl(decl_spanned) => {
+                        match decl_spanned.node {
+                            SurfaceDeclaration::Splice(forms) => {
+                                // Flatten splice: each form becomes a separate Expr item
+                                for form in forms {
+                                    expanded_items.push(SurfaceItem::Expr(form));
+                                }
+                            }
+                            SurfaceDeclaration::MacroDecl { .. }
+                            | SurfaceDeclaration::SyntaxClass { .. } => {
+                                // Macro declarations are registered during pre-scan; do not emit
+                            }
+                            _ => {
+                                // Other declarations pass through unchanged
+                                expanded_items.push(SurfaceItem::Decl(decl_spanned));
                             }
                         }
-                        SurfaceDeclaration::MacroDecl { .. }
-                        | SurfaceDeclaration::SyntaxClass { .. } => {
-                            // Macro declarations are registered during pre-scan; do not emit
-                        }
-                        _ => {
-                            // Other declarations pass through unchanged
-                            expanded_items.push(SurfaceItem::Decl(decl_spanned));
-                        }
+                    }
+                    SurfaceItem::Expr(node) => {
+                        // Expand via the native surface path — expand_surface_expr recurses
+                        // into all sub-expressions natively.
+                        let expanded_node =
+                            expand_surface_expr(&node, &mut env_macro, &ctx, &env).await?;
+                        expanded_items.push(SurfaceItem::Expr(expanded_node));
                     }
                 }
-                SurfaceItem::Expr(node) => {
-                    // Expand via the native surface path — expand_surface_expr recurses
-                    // into all sub-expressions natively.
-                    let expanded_node =
-                        expand_surface_expr(&node, &mut env_macro, &ctx, &stdlib_env).await?;
-                    expanded_items.push(SurfaceItem::Expr(expanded_node));
-                }
             }
+
+            doc.items = expanded_items;
         }
 
-        doc.items = expanded_items;
-    }
-
-    let macro_injects_map = env_macro.get_inject_map();
-    Ok(ExpandSurfaceResult {
-        provenance: env_macro.provenance,
-        macro_injects_map,
-    })
+        let macro_injects_map = env_macro.get_inject_map();
+        Ok(ExpandSurfaceResult { macro_injects_map })
+    }) // closes Box::pin(async move { from expand_surface_program
 }
 
 /// Depth-guarded wrapper for `expand_surface_expr_inner`.
@@ -575,39 +461,44 @@ async fn expand_surface_expr_inner(
                         na.span.clone(),
                     ));
                 }
-                Ok(Arc::new(SurfaceNode {
-                    expr: SurfaceExpression::Call {
+                Ok(Arc::new(SurfaceNode::new(
+                    SurfaceExpression::Call {
                         func: expanded_func,
                         args: expanded_args,
                         named_args: expanded_named_args,
                         implied: *implied,
                     },
                     span,
-                }))
+                )))
             }
         }
 
-        SurfaceExpression::DotAccess { expr, field } => {
-            let expanded = expand_surface_expr(expr, env, ctx, stdlib_env).await?;
-            Ok(Arc::new(SurfaceNode {
-                expr: SurfaceExpression::DotAccess {
+        SurfaceExpression::DotAccess { expr, field, .. } => {
+            let expanded = match expr {
+                Some(inner) => Some(expand_surface_expr(inner, env, ctx, stdlib_env).await?),
+                None => None,
+            };
+            Ok(Arc::new(SurfaceNode::new(
+                SurfaceExpression::DotAccess {
                     expr: expanded,
                     field: field.clone(),
+                    resolution: crate::ast::Resolution::new(),
+                    field_slot: crate::ast::SlotAnnotation::new(),
                 },
                 span,
-            }))
+            )))
         }
 
         SurfaceExpression::Pipe { lhs, rhs } => {
             let expanded_lhs = expand_surface_expr(lhs, env, ctx, stdlib_env).await?;
             let expanded_rhs = expand_surface_expr(rhs, env, ctx, stdlib_env).await?;
-            Ok(Arc::new(SurfaceNode {
-                expr: SurfaceExpression::Pipe {
+            Ok(Arc::new(SurfaceNode::new(
+                SurfaceExpression::Pipe {
                     lhs: expanded_lhs,
                     rhs: expanded_rhs,
                 },
                 span,
-            }))
+            )))
         }
 
         SurfaceExpression::Sequential(exprs) => {
@@ -615,10 +506,10 @@ async fn expand_surface_expr_inner(
             for e in exprs {
                 expanded.push(expand_surface_expr(e, env, ctx, stdlib_env).await?);
             }
-            Ok(Arc::new(SurfaceNode {
-                expr: SurfaceExpression::Sequential(expanded),
+            Ok(Arc::new(SurfaceNode::new(
+                SurfaceExpression::Sequential(expanded),
                 span,
-            }))
+            )))
         }
 
         SurfaceExpression::Dict(entries) => {
@@ -755,10 +646,7 @@ async fn expand_surface_expr_inner(
                     entry.span.clone(),
                 ));
             }
-            Ok(Arc::new(SurfaceNode {
-                expr: SurfaceExpression::Dict(expanded_entries),
-                span,
-            }))
+            Ok(Arc::new(SurfaceNode::new(SurfaceExpression::Dict(expanded_entries), span)))
         }
 
         SurfaceExpression::Fn {
@@ -768,26 +656,27 @@ async fn expand_surface_expr_inner(
             desugared,
         } => {
             let expanded_body = expand_surface_expr(body, env, ctx, stdlib_env).await?;
-            Ok(Arc::new(SurfaceNode {
-                expr: SurfaceExpression::Fn {
+            Ok(Arc::new(SurfaceNode::new(
+                SurfaceExpression::Fn {
                     return_ann: return_ann.clone(),
                     params: params.clone(),
                     body: expanded_body,
                     desugared: *desugared,
                 },
                 span,
-            }))
+            )))
         }
 
-        SurfaceExpression::TypeAssert { annotation, expr } => {
+        SurfaceExpression::TypeAssert { annotation, expr, .. } => {
             let expanded = expand_surface_expr(expr, env, ctx, stdlib_env).await?;
-            Ok(Arc::new(SurfaceNode {
-                expr: SurfaceExpression::TypeAssert {
+            Ok(Arc::new(SurfaceNode::new(
+                SurfaceExpression::TypeAssert {
                     annotation: annotation.clone(),
                     expr: expanded,
+                    resolved_type: crate::ast::TypeAnnotation::new(),
                 },
                 span,
-            }))
+            )))
         }
 
         SurfaceExpression::Match { scrutinee, arms } => {
@@ -806,37 +695,28 @@ async fn expand_surface_expr_inner(
                     body: expanded_body,
                 });
             }
-            Ok(Arc::new(SurfaceNode {
-                expr: SurfaceExpression::Match {
+            Ok(Arc::new(SurfaceNode::new(
+                SurfaceExpression::Match {
                     scrutinee: expanded_scrutinee,
                     arms: expanded_arms,
                 },
                 span,
-            }))
+            )))
         }
 
         SurfaceExpression::Quote(inner) => {
             let expanded = expand_surface_expr(inner, env, ctx, stdlib_env).await?;
-            Ok(Arc::new(SurfaceNode {
-                expr: SurfaceExpression::Quote(expanded),
-                span,
-            }))
+            Ok(Arc::new(SurfaceNode::new(SurfaceExpression::Quote(expanded), span)))
         }
 
         SurfaceExpression::Unquote(inner) => {
             let expanded = expand_surface_expr(inner, env, ctx, stdlib_env).await?;
-            Ok(Arc::new(SurfaceNode {
-                expr: SurfaceExpression::Unquote(expanded),
-                span,
-            }))
+            Ok(Arc::new(SurfaceNode::new(SurfaceExpression::Unquote(expanded), span)))
         }
 
         SurfaceExpression::UnquoteSplice(inner) => {
             let expanded = expand_surface_expr(inner, env, ctx, stdlib_env).await?;
-            Ok(Arc::new(SurfaceNode {
-                expr: SurfaceExpression::UnquoteSplice(expanded),
-                span,
-            }))
+            Ok(Arc::new(SurfaceNode::new(SurfaceExpression::UnquoteSplice(expanded), span)))
         }
 
         SurfaceExpression::PatternDecl { bindings } => {
@@ -844,10 +724,7 @@ async fn expand_surface_expr_inner(
             for b in bindings {
                 expanded.push(expand_surface_expr(b, env, ctx, stdlib_env).await?);
             }
-            Ok(Arc::new(SurfaceNode {
-                expr: SurfaceExpression::PatternDecl { bindings: expanded },
-                span,
-            }))
+            Ok(Arc::new(SurfaceNode::new(SurfaceExpression::PatternDecl { bindings: expanded }, span)))
         }
 
         SurfaceExpression::LetDecl { bindings } => {
@@ -855,10 +732,7 @@ async fn expand_surface_expr_inner(
             for b in bindings {
                 expanded.push(expand_surface_expr(b, env, ctx, stdlib_env).await?);
             }
-            Ok(Arc::new(SurfaceNode {
-                expr: SurfaceExpression::LetDecl { bindings: expanded },
-                span,
-            }))
+            Ok(Arc::new(SurfaceNode::new(SurfaceExpression::LetDecl { bindings: expanded }, span)))
         }
 
         SurfaceExpression::CaseArm {
@@ -866,32 +740,28 @@ async fn expand_surface_expr_inner(
             pattern,
             body,
         } => {
-            let expanded_let_bindings = if let Some(lb) = let_bindings {
-                Some(expand_surface_expr(lb, env, ctx, stdlib_env).await?)
-            } else {
-                None
-            };
+            let expanded_let_bindings =
+                expand_surface_expr(let_bindings, env, ctx, stdlib_env).await?;
             let expanded_pattern = expand_surface_expr(pattern, env, ctx, stdlib_env).await?;
             let expanded_body = expand_surface_expr(body, env, ctx, stdlib_env).await?;
-            Ok(Arc::new(SurfaceNode {
-                expr: SurfaceExpression::CaseArm {
+            Ok(Arc::new(SurfaceNode::new(
+                SurfaceExpression::CaseArm {
                     let_bindings: expanded_let_bindings,
                     pattern: expanded_pattern,
                     body: expanded_body,
                 },
                 span,
-            }))
+            )))
         }
 
         // Leaf nodes — clone the Arc (shared immutable data)
         SurfaceExpression::Int(_)
         | SurfaceExpression::U64(_)
         | SurfaceExpression::Float(_)
-        | SurfaceExpression::Bool(_)
         | SurfaceExpression::Str(_)
         | SurfaceExpression::VarRef { .. }
         | SurfaceExpression::Annotated { .. }
-        | SurfaceExpression::Rest(_)
+        | SurfaceExpression::Rest(..)
         | SurfaceExpression::Placeholder
         | SurfaceExpression::Error(_) => Ok(Arc::clone(node)),
     }
@@ -950,7 +820,6 @@ fn validate_syntax_class_surface(
                 SurfaceExpression::Int(_)
                 | SurfaceExpression::U64(_)
                 | SurfaceExpression::Float(_)
-                | SurfaceExpression::Bool(_)
                 | SurfaceExpression::Str(_) => "Literal",
                 SurfaceExpression::Call { .. } => "Call",
                 SurfaceExpression::Dict(_) => "Dict",
@@ -1004,7 +873,6 @@ fn validate_against_pattern_surface(
                         SurfaceExpression::Int(_)
                         | SurfaceExpression::U64(_)
                         | SurfaceExpression::Float(_)
-                        | SurfaceExpression::Bool(_)
                         | SurfaceExpression::Str(_) => "Literal",
                         SurfaceExpression::Call { .. } => "Call",
                         SurfaceExpression::Dict(_) => "Dict",
@@ -1076,13 +944,15 @@ async fn expand_macro_call_surface(
     }
 
     let call_span_clone = call_span.clone();
-    let call_site_id = if call_span == Span::origin() {
-        CallSiteId::Synthetic(next_synthetic_id())
-    } else {
-        CallSiteId::Source {
+    // Source calls have a user file with real content; synthetic/Rust-generated spans have
+    // no file or a Rust source file with empty content. Both get unique IDs to prevent
+    // false cycle detection.
+    let call_site_id = match &call_span.file {
+        Some(f) if !f.content.is_empty() => CallSiteId::Source {
             file_id: 0,
             offset: call_span.start.offset,
-        }
+        },
+        _ => CallSiteId::Synthetic(next_synthetic_id()),
     };
 
     let macro_metadata = env
@@ -1115,7 +985,7 @@ async fn expand_macro_call_surface(
     let mut arg_idx = 0usize;
     for binding in &bindings {
         match &binding.expr {
-            crate::ast::SurfaceExpression::Rest(_) => break,
+            crate::ast::SurfaceExpression::Rest(..) => break,
             crate::ast::SurfaceExpression::Annotated {
                 name: param_name,
                 annotation,
@@ -1141,13 +1011,13 @@ async fn expand_macro_call_surface(
         }
     }
 
-    // Pass each SurfaceNode argument as Value::Expression directly (no dict conversion needed).
+    // Pass each SurfaceNode argument as an Expr.* variant (no dict conversion needed).
     // All args are pushed as individual positional thunks — bind_args_thunks will collect the
     // excess positional args into a Seq cons-list (standard variadic representation).
     // This is correct for both variadic and non-variadic macro params.
     let mut positional_thunks: Vec<Arc<Thunk>> = Vec::with_capacity(args.len());
     for arg in args {
-        let arg_val = Value::Expression(Arc::clone(arg));
+        let arg_val = crate::surface_convert::surface_node_to_expr_variant(arg, ctx);
         positional_thunks.push(Arc::new(Thunk::new_materialized(
             arg_val,
             call_span_clone.clone(),
@@ -1161,14 +1031,16 @@ async fn expand_macro_call_surface(
             .map(|k| k.to_string())
             .or_else(|| inject_names.first().cloned())
             .unwrap_or_default();
-        let binding_node = Arc::new(SurfaceNode {
-            expr: crate::ast::SurfaceExpression::VarRef {
+        let binding_node = Arc::new(SurfaceNode::new(
+            crate::ast::SurfaceExpression::VarRef {
                 name: binding_name.clone(),
                 escaped: false,
+                resolution: crate::ast::Resolution::new(),
+                call_dispatch: crate::ast::CallDispatch::new(),
             },
-            span: call_span_clone.clone(),
-        });
-        let binding_val = Value::Expression(binding_node);
+            call_span_clone.clone(),
+        ));
+        let binding_val = crate::surface_convert::surface_node_to_expr_variant(&binding_node, ctx);
         positional_thunks.push(Arc::new(Thunk::new_materialized(
             binding_val,
             call_span_clone.clone(),
@@ -1247,15 +1119,12 @@ async fn expand_macro_call_surface(
             err
         })?;
 
-    // Check if result is already Value::Expression (new path) or needs conversion from Dict (fallback)
+    // Determine the expansion result:
+    // - Value::Variant { tag: "Expr.*", .. } — typed macro AST via Expr.* constructors
+    // - anything else — error
     let mut expanded_node = match &result_val {
-        Value::Expression(node) => {
-            // New path: macro returned Expression directly, no conversion needed
-            Arc::clone(node)
-        }
-        Value::Dict(_) | Value::Variant { .. } => {
-            // Fallback path: macro returned Dict/Variant, need deep materialization + conversion
-            // dict_to_surface_node expects all nested values to be pre-materialized (uses try_get_materialized)
+        Value::Variant { tag, .. } if tag.starts_with("Expr.") => {
+            // Typed macro AST via Expr.* constructors — force payload and convert to SurfaceNode.
             let deep_result = force_dict_tree(&result_val, ctx).await.map_err(|mut e| {
                 e.push_frame(
                     format!("in expansion of `{}`", macro_name),
@@ -1264,7 +1133,6 @@ async fn expand_macro_call_surface(
                 e
             })?;
 
-            // Convert result dict back to SurfaceNode
             dict_to_surface_node(&deep_result, ctx).map_err(|e| {
                 EvalError::user_error(
                     format!(
@@ -1284,7 +1152,7 @@ async fn expand_macro_call_surface(
         other => {
             return Err(EvalError::user_error(
                 format!(
-                    "macro '{}' must return Expression or Dict, got {}",
+                    "macro '{}' must return an Expr.* variant, got {}",
                     macro_name,
                     other.type_name()
                 ),
@@ -1294,21 +1162,21 @@ async fn expand_macro_call_surface(
         }
     };
 
-    if expanded_node.span == Span::origin() {
-        expanded_node = Arc::new(SurfaceNode {
-            expr: expanded_node.expr.clone(),
-            span: call_span_clone.clone(),
-        });
+    // If the expanded node has no real user source (no file or Rust-generated file),
+    // inherit the macro call site span so errors point to the user's call.
+    let has_user_source = expanded_node.span.file.as_ref().map_or(false, |f| !f.content.is_empty());
+    if !has_user_source {
+        expanded_node = Arc::new(SurfaceNode::new(
+            expanded_node.expr.clone(),
+            call_span_clone.clone(),
+        ));
     }
 
-    // Record provenance
-    guard.expander.provenance.insert(
-        SpanKey::from(call_span_clone.clone()),
-        MacroProvenance {
-            macro_name: macro_name.to_string(),
-            call_site_span: call_span_clone.clone(),
-        },
-    );
+    // Record provenance inline on the expanded node.
+    expanded_node.provenance.set(crate::ast::MacroProvenance {
+        macro_name: macro_name.to_string(),
+        call_site_span: call_span_clone.clone(),
+    });
 
     // Handle splice — return as Decl(Splice(...)) for caller to handle
     // (SurfaceDeclaration::Splice is the surface equivalent of Expr::Splice)
@@ -1335,7 +1203,7 @@ fn extract_inject_names_surface(params: &Arc<SurfaceNode>) -> Vec<String> {
     use crate::ast::{Annotation, SurfaceExpression};
 
     // TypeAssert wrapping LetDecl — `[@[inject: ...] [let ...]]`
-    if let SurfaceExpression::TypeAssert { annotation, expr } = &params.expr {
+    if let SurfaceExpression::TypeAssert { annotation, expr, .. } = &params.expr {
         if matches!(expr.expr, SurfaceExpression::LetDecl { .. }) {
             if let Annotation::PropertyDict(entries) = &annotation.node {
                 for entry in entries {
@@ -1457,7 +1325,7 @@ async fn register_surface_macro_decl(
                                     b.span.clone(),
                                 ));
                             }
-                            SurfaceExpression::Rest(Some(n)) => {
+                            SurfaceExpression::Rest(Some(n), _) => {
                                 out.push(Spanned::new(
                                     Param {
                                         name: n.clone(),
@@ -1467,8 +1335,8 @@ async fn register_surface_macro_decl(
                                     b.span.clone(),
                                 ));
                             }
-                            SurfaceExpression::Rest(None) => {} // anonymous spread
-                            _ => {}                             // other binding forms — skip
+                            SurfaceExpression::Rest(None, _) => {} // anonymous spread
+                            _ => {}                                // other binding forms — skip
                         }
                     }
                     out
@@ -1650,9 +1518,9 @@ fn pre_scan_surface_expr<'a>(
             }
 
             // Compound expressions — recurse into children
-            SurfaceExpression::DotAccess { expr, .. } => {
-                pre_scan_surface_expr(expr, env, &ctx, &stdlib_env).await
-            }
+            SurfaceExpression::DotAccess {
+                expr: Some(inner), ..
+            } => pre_scan_surface_expr(inner, env, &ctx, &stdlib_env).await,
 
             SurfaceExpression::Pipe { lhs, rhs } => {
                 pre_scan_surface_expr(lhs, env, &ctx, &stdlib_env).await?;
@@ -1714,22 +1582,21 @@ fn pre_scan_surface_expr<'a>(
                 pattern,
                 body,
             } => {
-                if let Some(lb) = let_bindings {
-                    pre_scan_surface_expr(lb, env, &ctx, &stdlib_env).await?;
-                }
+                pre_scan_surface_expr(let_bindings, env, &ctx, &stdlib_env).await?;
                 pre_scan_surface_expr(pattern, env, &ctx, &stdlib_env).await?;
                 pre_scan_surface_expr(body, env, &ctx, &stdlib_env).await
             }
 
             // Leaf nodes — no children to scan
-            SurfaceExpression::Int(_)
+            // Leading-dot (DotAccess { expr: None }) has no child expression to walk.
+            SurfaceExpression::DotAccess { expr: None, .. }
+            | SurfaceExpression::Int(_)
             | SurfaceExpression::U64(_)
             | SurfaceExpression::Float(_)
-            | SurfaceExpression::Bool(_)
             | SurfaceExpression::Str(_)
             | SurfaceExpression::VarRef { .. }
             | SurfaceExpression::Annotated { .. }
-            | SurfaceExpression::Rest(_)
+            | SurfaceExpression::Rest(..)
             | SurfaceExpression::Placeholder
             | SurfaceExpression::Error(_) => Ok(()),
         }

@@ -649,7 +649,7 @@ Seq:      [type [let a@Covariant]  Nil  [Cons head: a  tail: [Seq a]]]
 Map:      [type [let k@Equatable v]  [_@k : v]]
 ```
 
-`Seq` is a nominal ADT whose constructors are `Seq.Nil` (unit) and `Seq.Cons` (payload with `head` and `tail` fields). `Map K V` is a transparent alias for the uniform column constraint `{_@K : V}` — any dict whose values are all of type `V` and whose keys satisfy `K`. `Absent` is a unit nominal type for expressing first-class absence.
+`Seq` is a nominal ADT whose constructors are `Seq.End` (unit terminal) and `Seq.Cons` (payload with `head` and `tail` fields). `Map K V` is a transparent alias for the uniform column constraint `{_@K : V}` — any dict whose values are all of type `V` and whose keys satisfy `K`. `Absent` is a unit nominal type for expressing first-class absence.
 
 **Name resolution order** in the type environment:
 
@@ -770,7 +770,7 @@ Constructor patterns use the same dot syntax in pattern head position:
   Signal.SIGINT:  [interrupt]]
 
 [match xs
-  Seq.Nil:       "empty"
+  Seq.End:       "empty"
   [Seq.Cons c]:  c.head]
 
 [match result
@@ -831,7 +831,7 @@ absent?: [fn@Bool [let x@Unknown] [match x Absent.Absent: true  _: false]]
   _:              "present"]
 ```
 
-Builtins that return a missing value (`get?`, `env`) return `Absent.Absent` rather than `[]`. Testing with `absent?` or pattern matching on `Absent.Absent` is correct; `null?` checks only for `[]` (empty collection) and is not interchangeable. Note: `head` raises [E034] on `Seq.Nil` rather than returning `Absent.Absent`. `get-in?` returns `Absent.Absent` if any key in the path is missing; signature: `Dict -> [Seq String] -> Any`. Example: `[get-in? dict ["a" "b" "c"]]` (implemented in the prelude, T-1047, S-855).
+Builtins that return a missing value (`get?`, `env`) return `Absent.Absent` rather than `[]`. Testing with `absent?` or pattern matching on `Absent.Absent` is correct; `null?` checks only for `[]` (empty collection) and is not interchangeable. Note: `head` raises on `Seq.End` rather than returning `Absent.Absent`. `get-in?` returns `Absent.Absent` if any key in the path is missing; signature: `Dict -> [Seq String] -> Any`. Example: `[get-in? dict ["a" "b" "c"]]` (implemented in the prelude, T-1047, S-855).
 
 ### 16. TypeNode: The Primary Type Representation
 
@@ -1239,6 +1239,75 @@ error: `:` can only appear in dict, call, class, instance, or match forms
 ```
 
 `ast-of` on a default: value returns the unevaluated AST expression dict — not the evaluated default value. This enables tooling to inspect the source expression of defaults without forcing evaluation.
+
+---
+
+## Part VIII: Refinement Types and Type-Level Lookup Tables
+
+### 27. `[Bytes N]` — Fixed-Size Byte Sequences
+
+`[Bytes N]` is a refinement type: `Bytes` refined by the constraint `length = N`. `[Bytes N] <: Bytes` — a fixed-size sequence is a valid `Bytes` value usable anywhere variable-length `Bytes` are accepted.
+
+```tinct
+key@[Bytes 32]:  my-bytes       # TypeAssert validates length = 32 at runtime
+addr@[Bytes 4]:  ip-bytes       # [Bytes 4] — 4-byte IPv4 address
+nonce:           [crypto-random 12]  # inferred [Bytes 12]
+```
+
+**Type-stage arithmetic** propagates through size expressions:
+
+```tinct
+# [concat a b] where a: [Bytes 32] and b: [Bytes 32] → [Bytes 64]
+# Type-stage: [+ 32 32] → 64 at type-check time
+```
+
+`N` is always a concrete type-stage integer — always a literal or arithmetic expression over literals evaluated at type-check time. When the size is genuinely unknown, use `Bytes` (no size constraint). There are no type-stage size variables.
+
+**Implementation:** `[Bytes N]` is `TypeNode.SizedBytes { n: Int }` with a `supertype: TypeNode.Bytes` annotation. Subtyping `[Bytes N] <: Bytes` is handled generically via the `supertype:` field — no Rust special-case. Size inequality (`M ≠ N`) fails via structural equality on the `n` field. Runtime representation is `Value::Bytes`; size validation occurs at `TypeAssert` boundaries via the `is:` predicate.
+
+### 28. Type-Level Lookup Tables
+
+Variant declarations carry named compile-time constants (using `:` syntax) alongside or instead of runtime payload fields (using `@` syntax). Constants are resolved at type-check time and stored as metadata on the constructor:
+
+**Grammar:**
+```
+variant_constructor = "[" UppercaseIdent (constant_entry | payload_field)* "]"
+constant_entry      = lowercase_ident ":" literal_expr    # compile-time value
+payload_field       = lowercase_ident "@" type_expr       # runtime payload
+```
+
+**Example:**
+
+```tinct
+DnsRcode: [type
+  [NoError  rcode: 0  description: "No Error"]
+  [FormErr  rcode: 1  description: "Format Error"]
+  [ServFail rcode: 2  description: "Server Failure"]]
+
+WsFrame: [type
+  [Text   opcode: 0x01  data@String]   # constant + payload field
+  [Binary opcode: 0x02  data@Bytes]
+  [Close  opcode: 0x08  code@WsCloseCode  reason@String]]
+```
+
+**Forward lookup:** dot-access on a variant value or type name:
+
+```tinct
+DnsRcode.ServFail.rcode         # → 2
+some-rcode.rcode                # → the rcode constant for the runtime variant
+frame.opcode                    # → 0x01 for Text, etc. — no match needed
+```
+
+**Reverse lookup** via generalized `Indexable`:
+
+```tinct
+[get rcode: 2 DnsRcode]         # → DnsRcode.ServFail
+[get rcode: 99 DnsRcode]        # → Absent.Absent
+```
+
+`DnsRcode` in lookup position evaluates to a runtime `Seq` of all variants, each carrying its compile-time constants as accessible fields. `get` finds the first variant where all selector fields match.
+
+This eliminates all `*->int`/`int->*` lookup functions — the constants travel with the type and cannot get out of sync.
 
 ---
 

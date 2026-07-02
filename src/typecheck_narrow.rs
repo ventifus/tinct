@@ -7,12 +7,13 @@
 //! - Instance pattern type extraction and functional-dependency parameter index resolution
 //! - Pattern overlap / type unification probes (side-effect-free)
 
-use std::collections::BTreeMap;
+
 use std::rc::Rc;
 use std::sync::Arc;
 
 use super::typecheck_annot::resolve_annotation;
 use crate::ast::{Annotation, Pattern, Span, SurfaceExpression, SurfaceNode};
+use crate::rust_span;
 use crate::type_errors::{GenericTypeError, TypeErrorTyped};
 use crate::types::{unify, Constraint, InferState, Row, Type, TypeEnv, TypeError};
 
@@ -102,7 +103,7 @@ pub(crate) fn extract_narrowings(cond: &Arc<SurfaceNode>) -> Vec<Narrowing> {
                             return vec![Narrowing::TypeOf {
                                 var: var_name.clone(),
                                 ty: Type::Record(Row {
-                                    fields: BTreeMap::new(),
+                                    fields: indexmap::IndexMap::new(),
                                     tail: crate::type_def::RowTail::Empty,
                                 }),
                             }];
@@ -112,7 +113,7 @@ pub(crate) fn extract_narrowings(cond: &Arc<SurfaceNode>) -> Vec<Narrowing> {
                         if let SurfaceExpression::VarRef { name: var_name, .. } = &args[0].expr {
                             return vec![Narrowing::TypeOf {
                                 var: var_name.clone(),
-                                ty: Type::Bool,
+                                ty: Type::TyCon("Boolean".to_string()),
                             }];
                         }
                     }
@@ -147,7 +148,7 @@ pub(crate) fn extract_narrowings(cond: &Arc<SurfaceNode>) -> Vec<Narrowing> {
                             return vec![Narrowing::TypeOf {
                                 var: var_name.clone(),
                                 ty: Type::Record(Row {
-                                    fields: BTreeMap::new(),
+                                    fields: indexmap::IndexMap::new(),
                                     tail: crate::type_def::RowTail::Empty,
                                 }),
                             }];
@@ -165,10 +166,10 @@ pub(crate) fn extract_narrowings(cond: &Arc<SurfaceNode>) -> Vec<Narrowing> {
                     }
                     "num?" if args.len() == 1 => {
                         if let SurfaceExpression::VarRef { name: var_name, .. } = &args[0].expr {
-                            // num? narrows to Number (supertype of Int | Float)
+                            // num? narrows to Int | Float
                             return vec![Narrowing::TypeOf {
                                 var: var_name.clone(),
-                                ty: Type::Number,
+                                ty: Type::normalize_union(vec![Type::Int, Type::Float]),
                             }];
                         }
                     }
@@ -195,10 +196,6 @@ pub(crate) fn try_eq_literal(
             SurfaceExpression::Str(s) => Some(Narrowing::EqLiteral {
                 var: name.clone(),
                 ty: Type::StringLiteral(s.clone()),
-            }),
-            SurfaceExpression::Bool(_b) => Some(Narrowing::EqLiteral {
-                var: name.clone(),
-                ty: Type::Bool,
             }),
             _ => None,
         }
@@ -230,14 +227,11 @@ pub(crate) fn try_type_of(left: &Arc<SurfaceNode>, right: &Arc<SurfaceNode>) -> 
                                 "Int" => Some(Type::Int),
                                 "Float" => Some(Type::Float),
                                 "String" => Some(Type::Str),
-                                "Bool" => Some(Type::Bool),
                                 "Dict" => Some(Type::Record(Row {
-                                    fields: BTreeMap::new(),
+                                    fields: indexmap::IndexMap::new(),
                                     tail: crate::type_def::RowTail::Empty,
                                 })),
-                                // HKT: bare Seq type tag narrows to Seq(Unknown) — element type deferred
                                 "Seq" => Some(Type::seq(Type::Unknown)),
-                                "Number" => Some(Type::Number),
                                 _ => None,
                             };
                             return ty.map(|t| Narrowing::TypeOf {
@@ -280,7 +274,7 @@ pub(crate) fn apply_narrowings(
                 let current_ty = env.get(var).map(|scheme| scheme.body.clone());
 
                 // Create a record type with at least the given key
-                let mut fields = BTreeMap::new();
+                let mut fields = indexmap::IndexMap::new();
                 let fresh_type_var = state.fresh_type_var();
                 fields.insert(key.clone(), fresh_type_var);
 
@@ -366,7 +360,6 @@ pub(crate) fn apply_negation_narrowings(
 ///   in the scrutinee Record type. Sub-pattern types are propagated into recursive calls.
 ///   Falls back to `Unknown` when the scrutinee type is not a concrete Record or the
 ///   key is absent (open rows may carry the field at runtime).
-/// - `Pattern::Seq { head, tail }`: head gets `Unknown`, tail gets `Seq(Unknown)`.
 /// - `Pattern::Constructor { binding }`: payload gets the field type from the matching
 ///   NominalVariant when scrutinee is Union or Intersection containing the tag; falls
 ///   back to `Unknown`.
@@ -381,7 +374,7 @@ pub(crate) fn collect_pattern_bindings(
     out: &mut Vec<(String, Type)>,
 ) {
     match pat {
-        Pattern::Wildcard | Pattern::Literal(_) | Pattern::Pin(_) => {}
+        Pattern::Wildcard | Pattern::Literal(_) | Pattern::Pin(..) => {}
         Pattern::TypeAssertPending { inner, .. } => {
             // Safety fallback for non-elaborated patterns. In normal typecheck flow,
             // elaborate_pattern always runs before collect_pattern_bindings, so this arm is
@@ -458,19 +451,6 @@ pub(crate) fn collect_pattern_bindings(
                 collect_pattern_bindings(&sub_pat.node, &field_ty, out);
             }
         }
-        Pattern::Seq { head, tail } => {
-            // Head is the element type; tail is the remaining Seq.
-            let elem_ty = if let Some(elem) = scrutinee_ty.as_seq() {
-                elem.clone()
-            } else {
-                // Gradual: scrutinee is not a Seq — element type unknown
-                Type::Unknown
-            };
-            collect_pattern_bindings(&head.node, &elem_ty, out);
-            // Tail is always a Seq of the same element type.
-            let tail_ty = Type::seq(elem_ty.clone());
-            collect_pattern_bindings(&tail.node, &tail_ty, out);
-        }
         Pattern::Constructor { tag, binding } => {
             // Extract the payload type from the scrutinee when it's a Union containing
             // a NominalVariant with matching tag.
@@ -482,7 +462,7 @@ pub(crate) fn collect_pattern_bindings(
                 // with `MyOk n: Int`), the binding receives the whole payload record so that
                 // field access `p.n` works correctly.
                 let binding_var_name: Option<&str> = match &b.node {
-                    Pattern::Pin(name) => Some(name.as_str()),
+                    Pattern::Pin(name, _) => Some(name.as_str()),
                     _ => None,
                 };
 
@@ -733,7 +713,9 @@ pub(crate) async fn extract_binding_types(
                     &mut None,
                     &mut None,
                     None,
-                ).await {
+                )
+                .await
+                {
                     Ok(ty) => types.push(ty),
                     Err(_) => types.push(Type::Unknown),
                 }
@@ -758,7 +740,8 @@ pub(crate) async fn extract_binding_types(
                 &mut None,
                 &mut None,
                 None,
-            ).await
+            )
+            .await
             .map_err(|e| vec![e])?;
             types.push(ty);
         }
@@ -776,7 +759,9 @@ pub(crate) async fn extract_binding_types(
                 &mut None,
                 &mut None,
                 None,
-            ).await {
+            )
+            .await
+            {
                 Ok(ty) => types.push(ty),
                 Err(_) => types.push(Type::Unknown),
             }
@@ -840,8 +825,11 @@ pub(crate) async fn patterns_overlap(
             &mut temp_subst,
             state,
             &mut probe_constraints,
-            Span::origin(),
-        )).await.is_err() {
+            rust_span!(),
+        ))
+        .await
+        .is_err()
+        {
             overlaps = false;
             break;
         }
@@ -874,15 +862,9 @@ pub(crate) async fn types_can_unify(
             // Clearly disjoint constructors
             (Type::Int, Type::Str)
             | (Type::Int, Type::Float)
-            | (Type::Int, Type::Bool)
             | (Type::Str, Type::Float)
-            | (Type::Str, Type::Bool)
-            | (Type::Float, Type::Bool)
             | (Type::Str, Type::Int)
             | (Type::Float, Type::Int)
-            | (Type::Bool, Type::Int)
-            | (Type::Bool, Type::Str)
-            | (Type::Bool, Type::Float)
             | (Type::Float, Type::Str) => return Ok(false),
             _ => {}
         }
@@ -910,8 +892,11 @@ pub(crate) async fn types_can_unify(
             &mut temp_subst,
             state,
             &mut probe_constraints,
-            Span::origin(),
-        )).await.is_err() {
+            rust_span!(),
+        ))
+        .await
+        .is_err()
+        {
             can_unify = false;
             break;
         }

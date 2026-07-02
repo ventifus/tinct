@@ -1,47 +1,42 @@
-//! Filesystem I/O builtins: open, write, write-atomic, builtin-read-line, builtin-read-chunk, builtin-read-all.
+//! Filesystem I/O builtins: file primitives, DirCap operations, and stateless stdio.
 //!
-//! These builtins provide capability-based access to filesystems,
-//! implementing object-capability security through DirCap values.
+//! **Design principle**: Rust exposes raw OS primitives as thinly as possible. tinct builds
+//! abstractions. No buffering in Rust, no protocol in Rust. The `open` function in prelude.llt
+//! wraps `builtin-file-open` in a protocol dict. `%stdout`/`%stderr` are protocol dicts in
+//! loader.llt Dict 2 that call `builtin-write-stdout`/`builtin-write-stderr`.
 //!
-//! **Filesystem builtins:**
-//! - `open`: Open a file within a DirCap
-//! - `write`: Write a string to a file (DirCap-based)
+//! **File primitives (Value::File — thin OS wrappers, no buffering):**
+//! - `builtin-file-open cap path mode` → `Value::File` (opens via cap_std::fs::Dir)
+//! - `builtin-file-read f n` → `Value::Bytes` (reads up to n bytes, empty on EOF)
+//! - `builtin-file-write f s` → `Value::Dict([])` (writes string bytes, no buffering)
+//! - `builtin-file-flush f` → `Value::Dict([])` (flush)
+//! - `builtin-file-close f` → `Value::Dict([])` (drops file)
+//! - `builtin-file-seek f pos` → `Value::Dict([])` (seek from start)
+//!
+//! **Stateless stdio builtins:**
+//! - `builtin-write-stdout s` → writes string to stdout
+//! - `builtin-write-stderr s` → writes string to stderr
+//! - `builtin-read-stdin n` → reads n bytes from stdin, returns `Value::Bytes`
+//!
+//! **DirCap operations:**
+//! - `write`: Write a string to a file (DirCap-based, atomic via create/write)
 //! - `write-atomic`: Atomically write to a file (temp + rename)
 //! - `narrow`: Attenuate a DirCap to a subdirectory
 //! - `revocable`: Wrap a DirCap in a revocable wrapper
 //! - `revoke-cap`: Revoke a RevocableDirCap
 //!
-//! **Handle capability builtins:**
-//! - `cap-data`: Extract capability data from a Handle/WriteHandle (returns Null on miss)
-//! - `has-cap?`: Check if a capability is present on a Handle/WriteHandle (implemented in stdlib/io.llt)
-//! - `write-handle`: Write to a WriteHandle (returns handle for chaining)
-//! - `flush`: Flush a WriteHandle buffer
-//! - `close`: Close a WriteHandle
-//!
-//! **I/O helpers:**
-//! - `builtin-read-line`: Read a single line from a Handle (Text mode, returns String or [] on EOF)
-//! - `builtin-read-chunk`: Read n bytes from a Handle (returns Bytes or [] on EOF)
-//! - `builtin-read-all`: Read all bytes from a Handle to EOF, returns as String
-//! - `emit`: Write to stdout and suppress JSON output
+//! **Other:**
+//! - `emit`: Write to stdout
 //! - `env`: Read environment variables
 //!
-//! **Note:** `builtin-read-line` and `builtin-read-chunk` are synchronous builtins that use
-//! `BufRead::read_line()` and `Read::read()` respectively. They are safe for the tinct lazy
-//! evaluation model, but when called from within an async context (e.g., inside a `[task ...]`),
-//! they block the current thread. For large files, use explicit `[collect [lines handle]]`
-//! patterns outside task boundaries.
-//!
-//! Network builtins were moved to `builtins_net.rs` in T-915.
+//! Network builtins are in `builtins_net.rs`. Handle/WriteHandle variants removed.
 //!
 //! Extracted from `builtins.rs` to keep that file manageable.
 //!
 //! Registration is via `core_builtins()` in `src/builtins_core.rs`, dispatched by
 //! `builtin_module("core")` in `src/builtins.rs`.
 
-use std::cell::RefCell;
-use std::collections::HashMap;
 use std::future::Future;
-use std::io::BufReader;
 use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -51,7 +46,7 @@ use indexmap::IndexMap;
 use crate::ast::Span;
 use crate::builtins::{ok_val, reject_named, require_string};
 use crate::error::{EvalError, EvalResult};
-use crate::value::{string_val, BuiltinArgs, DirPerms, Thunk, Value};
+use crate::value::{string_val, BuiltinArgs, DirPerms, HashableValue, Thunk, ThunkId, Value};
 
 /// Extract DirCap from a Value, checking revocation and returning (dir, perms).
 /// Used by all DirCap-consuming builtins.
@@ -181,282 +176,6 @@ pub(crate) fn builtin_env(
                 },
                 call_span,
             ), // Not set -> Absent.Absent
-        }
-    })
-}
-
-/// `open`: Open a file within a DirCap.
-///
-/// Accepts two calling patterns:
-/// 1. Legacy (3 args): `[open dir_cap path "r"]` — backward compatibility with string mode
-/// 2. Variant flags (3+ args): `[open dir_cap path Readable Text]` — each arg after path
-///    is a Variant flag that sets a capability in the returned Handle's caps HashMap.
-///
-/// Variant flags:
-/// - `Readable` → read mode (mutually exclusive with Writable)
-/// - `Writable` → write mode (mutually exclusive with Readable)
-/// - `Binary` → binary encoding (mutually exclusive with Text)
-/// - `Text` → text encoding (default if neither Binary nor Text specified)
-///
-/// Returns Value::Handle (read mode) or Value::WriteHandle (write mode).
-///
-/// At least one flag is required in the new pattern. If neither Readable nor Writable is
-/// specified, an error is returned.
-pub(crate) fn builtin_open(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx,
-    } = ctx_arg;
-    Box::pin(async move {
-        // Require at least 3 args: DirCap, String path, and at least one flag/mode
-        if args.len() < 3 {
-            return Err(EvalError::arity_mismatch(3, args.len(), call_span.clone()).into());
-        }
-        reject_named("open", named.as_ref(), call_span.clone())?;
-
-        let dir_val = args[0]
-            .try_get_materialized()
-            .expect("pre-materialized by pos_strictness[0]=Seq");
-        let path_val = args[1]
-            .try_get_materialized()
-            .expect("pre-materialized by pos_strictness[1]=Seq");
-
-        // Extract DirCap and permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "open", args[0].span.clone())?;
-
-        let path = require_string("open", path_val, args[1].span.clone())?;
-
-        // Parse flags from args[2..]
-        let mut caps = HashMap::new();
-        let mut has_readable = false;
-        let mut has_writable = false;
-        let mut has_appendable = false;
-        let mut has_binary = false;
-        let mut has_text = false;
-        let mut has_seekable = false;
-
-        for flag_arg in &args[2..] {
-            let flag_val = crate::eval::materialize(flag_arg, Some(&call_span), &ctx).await?;
-
-            match flag_val {
-                Value::Variant { ref tag, .. } => {
-                    // Strip qualifier prefix ("OpenFlag.Readable" → "Readable") for
-                    // compatibility with T-974 qualified variant tags.
-                    let flag_name = tag.strip_prefix("OpenFlag.").unwrap_or(tag.as_str());
-                    match flag_name {
-                        "Readable" => {
-                            if has_writable || has_appendable {
-                                return Err(EvalError::user_error(
-                                "open: cannot specify Readable with Writable or Appendable flags"
-                                    .to_string(),
-                                call_span.clone(),
-                            )
-                            .into());
-                            }
-                            has_readable = true;
-                            caps.insert("Readable".to_string(), Value::Bool(true));
-                        }
-                        "Writable" => {
-                            if has_readable {
-                                return Err(EvalError::user_error(
-                                    "open: cannot specify both Readable and Writable flags"
-                                        .to_string(),
-                                    call_span.clone(),
-                                )
-                                .into());
-                            }
-                            has_writable = true;
-                            caps.insert("Writable".to_string(), Value::Bool(true));
-                        }
-                        "Appendable" => {
-                            if has_readable {
-                                return Err(EvalError::user_error(
-                                    "open: cannot specify both Readable and Appendable flags"
-                                        .to_string(),
-                                    call_span.clone(),
-                                )
-                                .into());
-                            }
-                            has_appendable = true;
-                            caps.insert("Appendable".to_string(), Value::Bool(true));
-                        }
-                        "Binary" => {
-                            if has_text {
-                                return Err(EvalError::user_error(
-                                    "open: cannot specify both Binary and Text flags".to_string(),
-                                    call_span.clone(),
-                                )
-                                .into());
-                            }
-                            has_binary = true;
-                            caps.insert("Binary".to_string(), Value::Bool(true));
-                        }
-                        "Text" => {
-                            if has_binary {
-                                return Err(EvalError::user_error(
-                                    "open: cannot specify both Binary and Text flags".to_string(),
-                                    call_span.clone(),
-                                )
-                                .into());
-                            }
-                            has_text = true;
-                            caps.insert("Text".to_string(), Value::Bool(true));
-                        }
-                        "Seekable" => {
-                            has_seekable = true;
-                            caps.insert("Seekable".to_string(), Value::Bool(true));
-                        }
-                        other => {
-                            return Err(EvalError::user_error(
-                            format!(
-                                "open: unknown capability flag '{}' (expected Readable, Writable, Appendable, Binary, Text, or Seekable)",
-                                other
-                            ),
-                            call_span.clone(),
-                        )
-                        .into());
-                        }
-                    } // close match flag_name
-                }
-                other => {
-                    return Err(EvalError::type_mismatch_ctx(
-                        "open".to_string(),
-                        "Variant (capability flag)",
-                        other.type_name(),
-                        flag_arg.span.clone(),
-                    )
-                    .into());
-                }
-            }
-        }
-
-        // Require at least one of Readable, Writable, or Appendable
-        if !has_readable && !has_writable && !has_appendable {
-            return Err(EvalError::user_error(
-                "open: must specify at least one of Readable, Writable, or Appendable flags"
-                    .to_string(),
-                call_span.clone(),
-            )
-            .into());
-        }
-
-        // Check DirCap permissions based on mode
-        if has_readable {
-            check_perm(perms, "Readable", perms.readable, "open", call_span.clone())?;
-        }
-        if has_writable {
-            check_perm(perms, "Writable", perms.writable, "open", call_span.clone())?;
-        }
-        if has_appendable {
-            check_perm(
-                perms,
-                "Appendable",
-                perms.appendable,
-                "open",
-                call_span.clone(),
-            )?;
-        }
-
-        // Default to Text encoding if neither Binary nor Text specified
-        if !has_binary && !has_text {
-            caps.insert("Text".to_string(), Value::Bool(true));
-        }
-
-        // Open the file based on flags
-        use cap_std::fs::OpenOptions;
-        use std::io::{BufReader, BufWriter};
-        if has_readable {
-            // Read mode
-            let file = dir.open(&path).map_err(|e| {
-                EvalError::user_error(
-                    format!("open: failed to open file '{}': {}", path, e),
-                    call_span.clone(),
-                )
-            })?;
-
-            // If Seekable, clone the file handle for seeking operations
-            // We need two handles: one wrapped in BufReader for reading, one for seeking
-            let seek_inner = if has_seekable {
-                let seek_file = file.try_clone().map_err(|e| {
-                    EvalError::user_error(
-                        format!("open: failed to clone file handle for seeking: {}", e),
-                        call_span.clone(),
-                    )
-                })?;
-                Some(Rc::new(std::cell::RefCell::new(
-                    Box::new(BufReader::new(seek_file)) as Box<dyn std::io::Seek>,
-                )))
-            } else {
-                None
-            };
-
-            let handle: Box<dyn std::io::BufRead> = Box::new(BufReader::new(file));
-
-            ok_val(
-                Value::Handle {
-                    caps,
-                    inner: Rc::new(std::cell::RefCell::new(handle)),
-                    write_inner: None,
-                    seek_inner,
-                    raw_tcp: None,
-                    creation_span: call_span.clone(),
-                },
-                call_span,
-            )
-        } else if has_writable {
-            // Write mode: create/truncate
-            let file = dir
-                .open_with(
-                    &path,
-                    OpenOptions::new().write(true).create(true).truncate(true),
-                )
-                .map_err(|e| {
-                    EvalError::user_error(
-                        format!("open: failed to open file '{}' for writing: {}", path, e),
-                        call_span.clone(),
-                    )
-                })?;
-
-            let writer: Box<dyn std::io::Write> = Box::new(BufWriter::new(file));
-
-            ok_val(
-                Value::WriteHandle {
-                    caps,
-                    inner: Rc::new(std::cell::RefCell::new(writer)),
-                },
-                call_span,
-            )
-        } else if has_appendable {
-            // Append mode: append/create
-            let file = dir
-                .open_with(&path, OpenOptions::new().append(true).create(true))
-                .map_err(|e| {
-                    EvalError::user_error(
-                        format!("open: failed to open file '{}' for appending: {}", path, e),
-                        call_span.clone(),
-                    )
-                })?;
-
-            let writer: Box<dyn std::io::Write> = Box::new(BufWriter::new(file));
-
-            ok_val(
-                Value::WriteHandle {
-                    caps,
-                    inner: Rc::new(std::cell::RefCell::new(writer)),
-                },
-                call_span,
-            )
-        } else {
-            // Should never reach here due to earlier validation
-            Err(EvalError::user_error(
-                "open: internal error - no mode specified".to_string(),
-                call_span,
-            )
-            .into())
         }
     })
 }
@@ -786,299 +505,10 @@ pub(crate) fn builtin_revoke_cap(
     })
 }
 
-/// `string-handle`: Wrap a String as a readable Handle backed by std::io::Cursor.
-/// Takes a String and returns Handle[Readable] (text-mode, not Binary).
-/// Compatible with builtin-read-line and builtin-read-chunk.
-pub(crate) fn builtin_string_handle(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    Box::pin(async move {
-        let BuiltinArgs {
-            args,
-            named,
-            call_span,
-            ctx: _,
-        } = ctx_arg;
-
-        // Expect exactly 1 arg: String
-        if args.len() != 1 {
-            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
-        }
-        reject_named("string-handle", named.as_ref(), call_span.clone())?;
-
-        // Get string value (pre-materialized by Strictness::Seq)
-        let val = args[0]
-            .try_get_materialized()
-            .expect("pre-materialized by pos_strictness[0]=Seq");
-
-        let s = require_string("string-handle", val, args[0].span.clone())?;
-
-        // Create Cursor as reader
-        let cursor = std::io::Cursor::new(s.into_bytes());
-        let handle: Box<dyn std::io::BufRead> = Box::new(cursor);
-
-        // Create Handle with Readable + Text caps (matching stdin pattern from main.rs)
-        let mut caps = HashMap::new();
-        caps.insert("Readable".to_string(), Value::Bool(true));
-        caps.insert("Text".to_string(), Value::Bool(true));
-
-        ok_val(
-            Value::Handle {
-                caps,
-                inner: Rc::new(std::cell::RefCell::new(handle)),
-                write_inner: None,
-                seek_inner: None,
-                raw_tcp: None,
-                creation_span: call_span.clone(),
-            },
-            call_span,
-        )
-    })
-}
-
-/// `builtin-read-line`: Read a single line from a Handle (Text mode).
-/// Takes a Handle and returns String on success, [] (null) on EOF.
-/// Strips trailing `\n` and `\r\n` from the result.
-/// Rejects Binary-mode handles (error: "builtin-read-line requires a text-mode Handle, not Binary").
-///
-/// # EOF Behavior
-///
-/// When the handle is positioned at EOF, returns `Value::Dict(IndexMap::new())` — the tinct
-/// null value (`[]`). Callers must distinguish EOF from an empty-line read: an empty line
-/// returns `String("")`, while EOF returns `[]`. Use `[null? result]` or `[= result []]`
-/// to test for EOF.
-///
-/// # Corpus Tests
-///
-/// - `tests/corpus/eval/builtins/read_line_file.llt-eval` — successive reads, newline stripping, EOF detection
-/// - `tests/corpus/eval/builtins/read_line_eof.llt-eval` — empty handle returns [] immediately
-pub(crate) fn builtin_read_line(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    Box::pin(async move {
-        let BuiltinArgs {
-            args,
-            named,
-            call_span,
-            ctx: _,
-        } = ctx_arg;
-        let val = crate::builtins::expect_one_arg(
-            "builtin-read-line",
-            &args,
-            named.as_ref(),
-            &ctx_arg.ctx,
-            call_span.clone(),
-        )?;
-
-        // Extract Handle
-        let (handle, caps) = match val {
-            Value::Handle { inner, caps, .. } => (inner, caps),
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "builtin-read-line".to_string(),
-                    "Handle",
-                    other.type_name(),
-                    args[0].span.clone(),
-                )
-                .into())
-            }
-        };
-
-        // Reject Binary cap handles
-        if caps.contains_key("Binary") {
-            return Err(EvalError::user_error(
-                "builtin-read-line requires a text-mode Handle, not Binary".to_string(),
-                call_span,
-            )
-            .into());
-        }
-
-        use std::io::BufRead;
-        let mut line = String::new();
-
-        // Save match result before the RefMut borrow is dropped (avoids lifetime error in async).
-        let read_result = handle.borrow_mut().read_line(&mut line);
-        match read_result {
-            Ok(0) => {
-                // EOF — return null (empty dict)
-                ok_val(Value::Dict(IndexMap::new()), call_span)
-            }
-            Ok(_) => {
-                // Got a line — strip trailing newline if present
-                if line.ends_with('\n') {
-                    line.pop();
-                    if line.ends_with('\r') {
-                        line.pop();
-                    }
-                }
-                ok_val(string_val(&line), call_span)
-            }
-            Err(e) => Err(EvalError::user_error(
-                format!("builtin-read-line: read failed: {}", e),
-                call_span,
-            )
-            .into()),
-        }
-    })
-}
-
-/// `builtin-read-chunk`: Read n bytes from a Handle (works with both Text and Binary).
-/// Takes a Handle and Int (chunk size n), returns Bytes on success (partial reads OK), [] (null) on EOF.
-/// Errors on non-positive n: "builtin-read-chunk: chunk size must be positive".
-pub(crate) fn builtin_read_chunk(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    Box::pin(async move {
-        let BuiltinArgs {
-            args,
-            named,
-            call_span,
-            ctx,
-        } = ctx_arg;
-
-        // Expect exactly 2 args: Handle, Int
-        if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
-        }
-        reject_named("builtin-read-chunk", named.as_ref(), call_span.clone())?;
-
-        // First arg: Handle
-        let handle_val = crate::eval::materialize(&args[0], Some(&call_span), &ctx).await?; // H1: force_count migration pending
-        let handle = match handle_val {
-            Value::Handle { inner, .. } => Rc::clone(&inner),
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "builtin-read-chunk".to_string(),
-                    "Handle",
-                    other.type_name(),
-                    call_span,
-                )
-                .into())
-            }
-        };
-
-        // Second arg: Int (chunk size)
-        let size_val = crate::eval::materialize(&args[1], Some(&call_span), &ctx).await?; // H1: force_count migration pending
-        let n = match size_val {
-            Value::Int(i) => i,
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "builtin-read-chunk".to_string(),
-                    "Int",
-                    other.type_name(),
-                    call_span,
-                )
-                .into())
-            }
-        };
-
-        // Validate n > 0
-        if n <= 0 {
-            return Err(EvalError::user_error(
-                "builtin-read-chunk: chunk size must be positive".to_string(),
-                call_span,
-            )
-            .into());
-        }
-
-        use std::io::Read;
-        let mut buffer = vec![0u8; n as usize];
-
-        let read_result = handle.borrow_mut().read(&mut buffer);
-        match read_result {
-            Ok(0) => {
-                // EOF — return null (empty dict)
-                ok_val(Value::Dict(IndexMap::new()), call_span)
-            }
-            Ok(bytes_read) => {
-                // Got data (partial read is OK)
-                let result = buffer[..bytes_read].to_vec();
-                let len = result.len();
-                ok_val(
-                    Value::Bytes {
-                        source: Rc::from(result),
-                        start: 0,
-                        end: len,
-                    },
-                    call_span,
-                )
-            }
-            Err(e) => Err(EvalError::user_error(
-                format!("builtin-read-chunk: read failed: {}", e),
-                call_span,
-            )
-            .into()),
-        }
-    })
-}
-
-/// `builtin-read-all`: Read all bytes from a Handle to EOF, returning content as a String.
-///
-/// Takes a single Handle argument (text-mode or binary-mode) and reads until EOF using
-/// `read_to_string`. Returns the complete content as a String value.
-///
-/// This is an internal primitive used by the include pipeline (`prelude`'s `include` function
-/// reads file content via `builtin-read-all` directly). It is NOT exported from
-/// `stdlib/prelude.llt`.
-///
-/// # Errors
-///
-/// - Type mismatch: argument is not a Handle
-/// - Read error: underlying I/O failure during `read_to_string`
-/// - Encoding error: binary Handle content is not valid UTF-8
-///
-/// Registered via `builtin!("builtin-read-all", ...)` in `core_builtins()` (builtins_core.rs).
-/// T-736 (S-786) will wire prelude's include pipeline to call it.
-pub(crate) fn builtin_read_all(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    Box::pin(async move {
-        let BuiltinArgs {
-            args,
-            named,
-            call_span,
-            ctx: _,
-        } = ctx_arg;
-
-        // Expect exactly 1 positional arg: Handle (pre-materialized by Strictness::Seq).
-        if args.len() != 1 {
-            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
-        }
-        reject_named("builtin-read-all", named.as_ref(), call_span.clone())?;
-
-        let val = args[0]
-            .try_get_materialized()
-            .expect("pre-materialized by pos_strictness[0]=Seq");
-
-        // Extract the inner BufRead from a Handle.
-        let handle = match val {
-            Value::Handle { inner, .. } => inner,
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "builtin-read-all".to_string(),
-                    "Handle",
-                    other.type_name(),
-                    args[0].span.clone(),
-                )
-                .into())
-            }
-        };
-
-        use std::io::Read;
-        let mut content = String::new();
-        // read_to_string reads until EOF; errors on invalid UTF-8.
-        let read_result = handle.borrow_mut().read_to_string(&mut content);
-
-        match read_result {
-            Ok(_) => ok_val(string_val(&content), call_span),
-            Err(e) => Err(EvalError::user_error(
-                format!("builtin-read-all: read failed: {}", e),
-                call_span,
-            )
-            .into()),
-        }
-    })
-}
+// builtin_string_handle, builtin_read_line, builtin_read_chunk, builtin_read_all removed.
+// These operated on Value::Handle which is gone. Network streams (builtins_net.rs) are
+// redesigned separately. File reading uses builtin_file_read (Value::File).
+// The builtin-read-all registration in builtins_core.rs also removed.
 
 /// `write`: Write a String to a file.
 /// Takes a DirCap, String path, and String content.
@@ -1254,749 +684,10 @@ pub(crate) fn builtin_write_atomic(
     })
 }
 
-/// `cap-data`: Extract capability data from a Handle or WriteHandle.
-/// Takes a Handle/WriteHandle and a capability name (String).
-/// Returns the Value associated with that capability, or Null (empty dict) if the cap is absent.
-pub(crate) fn builtin_cap_data(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    Box::pin(async move {
-        let BuiltinArgs {
-            args,
-            named,
-            call_span,
-            ctx: _,
-        } = ctx_arg;
-
-        // Expect 2 args: Handle/WriteHandle, String cap_name
-        if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
-        }
-        reject_named("cap-data", named.as_ref(), call_span.clone())?;
-
-        let handle_val = args[0]
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
-        let cap_name_val = args[1]
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
-
-        // Extract caps from Handle or WriteHandle
-        let caps = match handle_val {
-            Value::Handle { caps, .. } => caps,
-            Value::WriteHandle { caps, .. } => caps,
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "cap-data".to_string(),
-                    "Handle or WriteHandle",
-                    other.type_name(),
-                    args[0].span.clone(),
-                )
-                .into())
-            }
-        };
-
-        let cap_name = require_string("cap-data", cap_name_val, args[1].span.clone())?;
-
-        // Lookup capability — return empty dict (Null) on miss so callers can use null?
-        match caps.get(&cap_name) {
-            Some(cap_value) => ok_val(cap_value.clone(), call_span),
-            None => ok_val(Value::Dict(IndexMap::new()), call_span),
-        }
-    })
-}
-
-/// `write-handle`: Write to a WriteHandle or a bidirectional Handle (e.g. TCP socket).
-/// Takes a WriteHandle (or Handle with write_inner) and content (String for Text, Bytes for Binary).
-/// Checks encoding via Binary cap: if present, content must be Bytes; otherwise String.
-/// Uses `inner.borrow_mut().write_all(bytes)`.
-/// Returns the original handle (WriteHandle or Handle) for chaining.
-pub(crate) fn builtin_write_handle(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    Box::pin(async move {
-        let BuiltinArgs {
-            args,
-            named,
-            call_span,
-            ctx: _,
-        } = ctx_arg;
-
-        // Expect 2 args: WriteHandle or Handle, content
-        if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
-        }
-        reject_named("write-handle", named.as_ref(), call_span.clone())?;
-
-        let handle_val = args[0]
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
-        let content_val = args[1]
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
-
-        // Determine the writer and the return value (preserve original handle type for chaining)
-        enum HandleKind {
-            Write {
-                inner: Rc<RefCell<Box<dyn std::io::Write>>>,
-                caps: HashMap<String, Value>,
-            },
-            Bidirectional {
-                write_inner: Rc<RefCell<Box<dyn std::io::Write>>>,
-                read_inner: Rc<RefCell<Box<dyn std::io::BufRead>>>,
-                caps: HashMap<String, Value>,
-            },
-        }
-
-        let kind = match &handle_val {
-            Value::WriteHandle { inner, caps } => HandleKind::Write {
-                inner: Rc::clone(inner),
-                caps: caps.clone(),
-            },
-            Value::Handle {
-                write_inner: Some(w),
-                inner,
-                caps,
-                ..
-            } => HandleKind::Bidirectional {
-                write_inner: Rc::clone(w),
-                read_inner: Rc::clone(inner),
-                caps: caps.clone(),
-            },
-            Value::Handle {
-                write_inner: None, ..
-            } => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "write-handle".to_string(),
-                    "WriteHandle or bidirectional Handle",
-                    "read-only Handle",
-                    args[0].span.clone(),
-                )
-                .into())
-            }
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "write-handle".to_string(),
-                    "WriteHandle or bidirectional Handle",
-                    other.type_name(),
-                    args[0].span.clone(),
-                )
-                .into())
-            }
-        };
-
-        let caps_ref = match &kind {
-            HandleKind::Write { caps, .. } => caps,
-            HandleKind::Bidirectional { caps, .. } => caps,
-        };
-
-        // Check encoding
-        let is_binary = caps_ref.contains_key("Binary");
-
-        use std::io::Write;
-        let bytes: Vec<u8> = if is_binary {
-            // Content must be Bytes
-            match content_val {
-                Value::Bytes { source, start, end } => source[start..end].to_vec(),
-                other => {
-                    return Err(EvalError::type_mismatch_ctx(
-                        "write-handle".to_string(),
-                        "Bytes (Binary handle)",
-                        other.type_name(),
-                        args[1].span.clone(),
-                    )
-                    .into())
-                }
-            }
-        } else {
-            // Content must be String (Text encoding)
-            let s = require_string("write-handle", content_val, args[1].span.clone())?;
-            s.as_bytes().to_vec()
-        };
-
-        // Write to handle
-        match &kind {
-            HandleKind::Write { inner, .. } => {
-                inner.borrow_mut().write_all(&bytes).map_err(|e| {
-                    EvalError::user_error(
-                        format!("write-handle: write failed: {}", e),
-                        call_span.clone(),
-                    )
-                })?;
-            }
-            HandleKind::Bidirectional { write_inner, .. } => {
-                write_inner.borrow_mut().write_all(&bytes).map_err(|e| {
-                    EvalError::user_error(
-                        format!("write-handle: write failed: {}", e),
-                        call_span.clone(),
-                    )
-                })?;
-            }
-        }
-
-        // Return the original handle (preserves type for chaining)
-        match kind {
-            HandleKind::Write { inner, caps } => ok_val(
-                Value::WriteHandle {
-                    caps,
-                    inner: Rc::clone(&inner),
-                },
-                call_span,
-            ),
-            HandleKind::Bidirectional {
-                write_inner,
-                read_inner,
-                caps,
-            } => ok_val(
-                Value::Handle {
-                    caps,
-                    inner: Rc::clone(&read_inner),
-                    write_inner: Some(Rc::clone(&write_inner)),
-                    seek_inner: None,
-                    raw_tcp: None,
-                    creation_span: call_span.clone(),
-                },
-                call_span,
-            ),
-        }
-    })
-}
-
-/// `flush`: Flush a WriteHandle or bidirectional Handle buffer.
-/// Takes a WriteHandle (or Handle with write_inner), flushes it, returns the same handle.
-pub(crate) fn builtin_flush(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    Box::pin(async move {
-        let BuiltinArgs {
-            args,
-            named,
-            call_span,
-            ctx,
-        } = ctx_arg;
-
-        let val = crate::builtins::expect_one_arg(
-            "flush",
-            &args,
-            named.as_ref(),
-            &ctx,
-            call_span.clone(),
-        )?;
-
-        use std::io::Write;
-        match val {
-            Value::WriteHandle {
-                ref inner,
-                ref caps,
-            } => {
-                inner.borrow_mut().flush().map_err(|e| {
-                    EvalError::user_error(format!("flush: flush failed: {}", e), call_span.clone())
-                })?;
-                ok_val(
-                    Value::WriteHandle {
-                        caps: caps.clone(),
-                        inner: Rc::clone(inner),
-                    },
-                    call_span,
-                )
-            }
-            Value::Handle {
-                write_inner: Some(ref w),
-                ref inner,
-                ref caps,
-                ..
-            } => {
-                w.borrow_mut().flush().map_err(|e| {
-                    EvalError::user_error(format!("flush: flush failed: {}", e), call_span.clone())
-                })?;
-                ok_val(
-                    Value::Handle {
-                        caps: caps.clone(),
-                        inner: Rc::clone(inner),
-                        write_inner: Some(Rc::clone(w)),
-                        seek_inner: None,
-                        raw_tcp: None,
-                        creation_span: call_span.clone(),
-                    },
-                    call_span,
-                )
-            }
-            Value::Handle {
-                write_inner: None, ..
-            } => Err(EvalError::type_mismatch_ctx(
-                "flush".to_string(),
-                "WriteHandle or bidirectional Handle",
-                "read-only Handle",
-                args[0].span.clone(),
-            )
-            .into()),
-            other => Err(EvalError::type_mismatch_ctx(
-                "flush".to_string(),
-                "WriteHandle or bidirectional Handle",
-                other.type_name(),
-                args[0].span.clone(),
-            )
-            .into()),
-        }
-    })
-}
-
-/// `close`: Close a WriteHandle or bidirectional Handle.
-/// Takes a WriteHandle (or Handle with write_inner), flushes and returns Null.
-/// The inner writer is dropped when the last Rc is dropped.
-pub(crate) fn builtin_close(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    Box::pin(async move {
-        let BuiltinArgs {
-            args,
-            named,
-            call_span,
-            ctx,
-        } = ctx_arg;
-
-        let val = crate::builtins::expect_one_arg(
-            "close",
-            &args,
-            named.as_ref(),
-            &ctx,
-            call_span.clone(),
-        )?;
-
-        use std::io::Write;
-        match val {
-            Value::WriteHandle { inner, .. } => {
-                inner.borrow_mut().flush().map_err(|e| {
-                    EvalError::user_error(format!("close: flush failed: {}", e), call_span.clone())
-                })?;
-            }
-            Value::Handle {
-                write_inner: Some(w),
-                ..
-            } => {
-                w.borrow_mut().flush().map_err(|e| {
-                    EvalError::user_error(format!("close: flush failed: {}", e), call_span.clone())
-                })?;
-            }
-            Value::Handle {
-                write_inner: None, ..
-            } => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "close".to_string(),
-                    "WriteHandle or bidirectional Handle",
-                    "read-only Handle",
-                    args[0].span.clone(),
-                )
-                .into())
-            }
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "close".to_string(),
-                    "WriteHandle or bidirectional Handle",
-                    other.type_name(),
-                    args[0].span.clone(),
-                )
-                .into())
-            }
-        }
-
-        // Return Null (the inner writer is dropped when the Rc goes out of scope)
-        ok_val(Value::Dict(IndexMap::new()), call_span)
-    })
-}
-
-/// `raw-create`: Open a file for writing (create/truncate), returning a WriteHandle.
-///
-/// Takes 2 args: `cap` (DirCap), `path` (String).
-/// Returns a WriteHandle with Writable and Text capabilities.
-/// This is a low-level primitive used to implement higher-level I/O functions in tinct.
-pub(crate) fn builtin_raw_create(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    Box::pin(async move {
-        let BuiltinArgs {
-            args,
-            named,
-            call_span,
-            ctx: _,
-        } = ctx_arg;
-
-        reject_named("raw-create", named.as_ref(), call_span.clone())?;
-        if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
-        }
-
-        let dir_val = args[0]
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
-        let path_val = args[1]
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
-
-        // Extract DirCap and permissions
-        let (dir, perms) = extract_dir_cap(&dir_val, "raw-create", args[0].span.clone())?;
-
-        // Check Writable permission
-        check_perm(
-            perms,
-            "Writable",
-            perms.writable,
-            "raw-create",
-            call_span.clone(),
-        )?;
-
-        let path = require_string("raw-create", path_val, args[1].span.clone())?;
-
-        // Open file for writing (create/truncate)
-        use cap_std::fs::OpenOptions;
-        let file = dir
-            .open_with(
-                &path,
-                OpenOptions::new().write(true).create(true).truncate(true),
-            )
-            .map_err(|e| {
-                EvalError::user_error(
-                    format!("raw-create: failed to create file '{}': {}", path, e),
-                    call_span.clone(),
-                )
-            })?;
-
-        // Create WriteHandle with Writable and Text capabilities
-        let mut caps = HashMap::new();
-        caps.insert("Writable".to_string(), Value::Bool(true));
-        caps.insert("Text".to_string(), Value::Bool(true));
-
-        use std::io::BufWriter;
-        let writer: Box<dyn std::io::Write> = Box::new(BufWriter::new(file));
-
-        ok_val(
-            Value::WriteHandle {
-                caps,
-                inner: Rc::new(std::cell::RefCell::new(writer)),
-            },
-            call_span,
-        )
-    })
-}
-
-/// `seek`: Seek to a byte offset from the start of the file.
-/// Takes a Handle and an Int offset, returns the Handle for chaining.
-/// Requires the Seekable capability.
-pub(crate) fn builtin_seek(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    Box::pin(async move {
-        let BuiltinArgs {
-            args,
-            named,
-            call_span,
-            ctx: _,
-        } = ctx_arg;
-
-        if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
-        }
-        reject_named("seek", named.as_ref(), call_span.clone())?;
-
-        let handle_val = args[0]
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
-        let offset_val = args[1]
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
-
-        // Extract offset as Int
-        let offset = match offset_val {
-            Value::Int(i) => i,
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "seek".to_string(),
-                    "Int",
-                    other.type_name(),
-                    args[1].span.clone(),
-                )
-                .into())
-            }
-        };
-
-        // Extract Handle and check for Seekable capability
-        match handle_val {
-            Value::Handle {
-                ref caps,
-                ref inner,
-                ref write_inner,
-                ref seek_inner,
-                ..
-            } => {
-                // Check for Seekable capability
-                if !caps.contains_key("Seekable") {
-                    return Err(EvalError::user_error(
-                        "seek: Handle does not have Seekable capability".to_string(),
-                        args[0].span.clone(),
-                    )
-                    .into());
-                }
-
-                // Get the seek_inner
-                let seek_handle = match seek_inner {
-                    Some(s) => s,
-                    None => {
-                        return Err(EvalError::user_error(
-                            "seek: Handle has Seekable capability but no seek interface"
-                                .to_string(),
-                            args[0].span.clone(),
-                        )
-                        .into())
-                    }
-                };
-
-                // Perform the seek on both the inner BufReader and seek_inner
-                // They are cloned File handles, so we need to seek both to keep them in sync
-                use std::io::Seek;
-
-                // Seek the seek_inner first
-                seek_handle
-                    .borrow_mut()
-                    .seek(std::io::SeekFrom::Start(offset as u64))
-                    .map_err(|e| {
-                        EvalError::user_error(
-                            format!("seek: seek failed: {}", e),
-                            call_span.clone(),
-                        )
-                    })?;
-
-                // Now seek the inner BufReader by downcasting
-                // Since both are BufReader<cap_std::fs::File>, we can use std::any::Any
-                use std::any::Any;
-                let mut inner_borrow = inner.borrow_mut();
-                if let Some(buf_reader) = (&mut *inner_borrow as &mut dyn Any)
-                    .downcast_mut::<BufReader<cap_std::fs::File>>()
-                {
-                    buf_reader
-                        .seek(std::io::SeekFrom::Start(offset as u64))
-                        .map_err(|e| {
-                            EvalError::user_error(
-                                format!("seek: inner buffer seek failed: {}", e),
-                                call_span.clone(),
-                            )
-                        })?;
-                } else {
-                    return Err(EvalError::user_error(
-                        "seek: failed to downcast BufRead to BufReader<File>".to_string(),
-                        call_span.clone(),
-                    )
-                    .into());
-                }
-                drop(inner_borrow); // Release the borrow before cloning
-
-                // Return the handle for chaining
-                ok_val(
-                    Value::Handle {
-                        caps: caps.clone(),
-                        inner: Rc::clone(inner),
-                        write_inner: write_inner.clone(),
-                        seek_inner: Some(Rc::clone(seek_handle)),
-                        raw_tcp: None,
-                        creation_span: call_span.clone(),
-                    },
-                    call_span,
-                )
-            }
-            other => Err(EvalError::type_mismatch_ctx(
-                "seek".to_string(),
-                "Handle",
-                other.type_name(),
-                args[0].span.clone(),
-            )
-            .into()),
-        }
-    })
-}
-
-/// `seek-end`: Seek to the end of the file.
-/// Takes a Handle, returns the Handle for chaining.
-/// Requires the Seekable capability.
-pub(crate) fn builtin_seek_end(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    Box::pin(async move {
-        let BuiltinArgs {
-            args,
-            named,
-            call_span,
-            ctx,
-        } = ctx_arg;
-
-        let val = crate::builtins::expect_one_arg(
-            "seek-end",
-            &args,
-            named.as_ref(),
-            &ctx,
-            call_span.clone(),
-        )?;
-
-        // Extract Handle and check for Seekable capability
-        match val {
-            Value::Handle {
-                ref caps,
-                ref inner,
-                ref write_inner,
-                ref seek_inner,
-                ..
-            } => {
-                // Check for Seekable capability
-                if !caps.contains_key("Seekable") {
-                    return Err(EvalError::user_error(
-                        "seek-end: Handle does not have Seekable capability".to_string(),
-                        args[0].span.clone(),
-                    )
-                    .into());
-                }
-
-                // Get the seek_inner
-                let seek_handle = match seek_inner {
-                    Some(s) => s,
-                    None => {
-                        return Err(EvalError::user_error(
-                            "seek-end: Handle has Seekable capability but no seek interface"
-                                .to_string(),
-                            args[0].span.clone(),
-                        )
-                        .into())
-                    }
-                };
-
-                // Perform the seek on both the inner BufReader and seek_inner
-                use std::io::Seek;
-
-                // Seek the seek_inner first
-                seek_handle
-                    .borrow_mut()
-                    .seek(std::io::SeekFrom::End(0))
-                    .map_err(|e| {
-                        EvalError::user_error(
-                            format!("seek-end: seek failed: {}", e),
-                            call_span.clone(),
-                        )
-                    })?;
-
-                // Now seek the inner BufReader by downcasting
-                use std::any::Any;
-                let mut inner_borrow = inner.borrow_mut();
-                if let Some(buf_reader) = (&mut *inner_borrow as &mut dyn Any)
-                    .downcast_mut::<BufReader<cap_std::fs::File>>()
-                {
-                    buf_reader.seek(std::io::SeekFrom::End(0)).map_err(|e| {
-                        EvalError::user_error(
-                            format!("seek-end: inner buffer seek failed: {}", e),
-                            call_span.clone(),
-                        )
-                    })?;
-                } else {
-                    return Err(EvalError::user_error(
-                        "seek-end: failed to downcast BufRead to BufReader<File>".to_string(),
-                        call_span.clone(),
-                    )
-                    .into());
-                }
-                drop(inner_borrow); // Release the borrow before cloning
-
-                // Return the handle for chaining
-                ok_val(
-                    Value::Handle {
-                        caps: caps.clone(),
-                        inner: Rc::clone(inner),
-                        write_inner: write_inner.clone(),
-                        seek_inner: Some(Rc::clone(seek_handle)),
-                        raw_tcp: None,
-                        creation_span: call_span.clone(),
-                    },
-                    call_span,
-                )
-            }
-            other => Err(EvalError::type_mismatch_ctx(
-                "seek-end".to_string(),
-                "Handle",
-                other.type_name(),
-                args[0].span.clone(),
-            )
-            .into()),
-        }
-    })
-}
-
-/// `position`: Get the current byte offset in the file.
-/// Takes a Handle, returns an Int.
-/// Requires the Seekable capability.
-pub(crate) fn builtin_position(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    Box::pin(async move {
-        let BuiltinArgs {
-            args,
-            named,
-            call_span,
-            ctx,
-        } = ctx_arg;
-
-        let val = crate::builtins::expect_one_arg(
-            "position",
-            &args,
-            named.as_ref(),
-            &ctx,
-            call_span.clone(),
-        )?;
-
-        // Extract Handle and check for Seekable capability
-        match val {
-            Value::Handle {
-                ref caps,
-                ref seek_inner,
-                ..
-            } => {
-                // Check for Seekable capability
-                if !caps.contains_key("Seekable") {
-                    return Err(EvalError::user_error(
-                        "position: Handle does not have Seekable capability".to_string(),
-                        args[0].span.clone(),
-                    )
-                    .into());
-                }
-
-                // Get the seek_inner
-                let seek_handle = match seek_inner {
-                    Some(s) => s,
-                    None => {
-                        return Err(EvalError::user_error(
-                            "position: Handle has Seekable capability but no seek interface"
-                                .to_string(),
-                            args[0].span.clone(),
-                        )
-                        .into())
-                    }
-                };
-
-                // Get the current position
-                use std::io::Seek;
-                let pos = seek_handle.borrow_mut().stream_position().map_err(|e| {
-                    EvalError::user_error(
-                        format!("position: failed to get position: {}", e),
-                        call_span.clone(),
-                    )
-                })?;
-
-                ok_val(Value::Int(pos as i64), call_span)
-            }
-            other => Err(EvalError::type_mismatch_ctx(
-                "position".to_string(),
-                "Handle",
-                other.type_name(),
-                args[0].span.clone(),
-            )
-            .into()),
-        }
-    })
-}
+// builtin_cap_data, builtin_write_handle, builtin_flush, builtin_close,
+// builtin_raw_create, builtin_seek, builtin_seek_end, builtin_position removed.
+// These all operated on Value::Handle / Value::WriteHandle which are gone.
+// Network I/O redesign is a separate effort in builtins_net.rs.
 
 /// `list-dir`: List directory entries with metadata.
 /// Takes a DirCap and String path, returns a Seq of metadata Dicts.
@@ -2086,40 +777,37 @@ pub(crate) fn builtin_list_dir(
                 .unwrap_or(0);
 
             // Build metadata dict
-            use crate::value::Key;
             let mut dict = IndexMap::new();
             dict.insert(
-                Key::String("name".into()),
+                HashableValue::Str("name".into()),
                 ctx.alloc_thunk(ok_val(string_val(&name), call_span.clone())?),
             );
             dict.insert(
-                Key::String("type".into()),
+                HashableValue::Str("type".into()),
                 ctx.alloc_thunk(ok_val(string_val(file_type), call_span.clone())?),
             );
             dict.insert(
-                Key::String("size".into()),
+                HashableValue::Str("size".into()),
                 ctx.alloc_thunk(ok_val(
                     Value::Int(metadata.len() as i64),
                     call_span.clone(),
                 )?),
             );
             dict.insert(
-                Key::String("mtime".into()),
+                HashableValue::Str("mtime".into()),
                 ctx.alloc_thunk(ok_val(Value::Int(mtime), call_span.clone())?),
             );
 
             entry_values.push(Value::Dict(dict));
         }
 
-        // Build a sequence from the collected entries
-        let mut seq = crate::value::make_seq_nil();
-        for entry in entry_values.into_iter().rev() {
-            let head_id = ctx.alloc_thunk(ok_val(entry, call_span.clone())?);
-            let tail_id = ctx.alloc_thunk(ok_val(seq, call_span.clone())?);
-            seq = crate::value::make_seq_cons(head_id, tail_id, &ctx);
+        // Build an integer-keyed Dict from the collected entries
+        let mut result: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+        for (i, entry) in entry_values.into_iter().enumerate() {
+            let id = ctx.alloc_thunk(ok_val(entry, call_span.clone())?);
+            result.insert(HashableValue::Int(i as i64), id);
         }
-
-        ok_val(seq, call_span)
+        ok_val(Value::Dict(result), call_span)
     })
 }
 
@@ -2196,43 +884,48 @@ pub(crate) fn builtin_stat(
         let mode = 0i64;
 
         // Build metadata dict
-        use crate::value::Key;
         let mut dict = IndexMap::new();
         dict.insert(
-            Key::String("name".into()),
+            HashableValue::Str("name".into()),
             ctx.alloc_thunk(ok_val(string_val(&path), call_span.clone())?),
         );
         dict.insert(
-            Key::String("type".into()),
+            HashableValue::Str("type".into()),
             ctx.alloc_thunk(ok_val(string_val(file_type), call_span.clone())?),
         );
         dict.insert(
-            Key::String("size".into()),
+            HashableValue::Str("size".into()),
             ctx.alloc_thunk(ok_val(
                 Value::Int(metadata.len() as i64),
                 call_span.clone(),
             )?),
         );
         dict.insert(
-            Key::String("mtime".into()),
+            HashableValue::Str("mtime".into()),
             ctx.alloc_thunk(ok_val(Value::Int(mtime), call_span.clone())?),
         );
         dict.insert(
-            Key::String("mode".into()),
+            HashableValue::Str("mode".into()),
             ctx.alloc_thunk(ok_val(Value::Int(mode), call_span.clone())?),
         );
         dict.insert(
-            Key::String("is-dir".into()),
-            ctx.alloc_thunk(ok_val(Value::Bool(metadata.is_dir()), call_span.clone())?),
-        );
-        dict.insert(
-            Key::String("is-file".into()),
-            ctx.alloc_thunk(ok_val(Value::Bool(metadata.is_file()), call_span.clone())?),
-        );
-        dict.insert(
-            Key::String("is-symlink".into()),
+            HashableValue::Str("is-dir".into()),
             ctx.alloc_thunk(ok_val(
-                Value::Bool(metadata.is_symlink()),
+                Value::boolean(metadata.is_dir()),
+                call_span.clone(),
+            )?),
+        );
+        dict.insert(
+            HashableValue::Str("is-file".into()),
+            ctx.alloc_thunk(ok_val(
+                Value::boolean(metadata.is_file()),
+                call_span.clone(),
+            )?),
+        );
+        dict.insert(
+            HashableValue::Str("is-symlink".into()),
+            ctx.alloc_thunk(ok_val(
+                Value::boolean(metadata.is_symlink()),
                 call_span.clone(),
             )?),
         );
@@ -2288,7 +981,7 @@ pub(crate) fn builtin_exists(
             )
         })?;
 
-        ok_val(Value::Bool(exists), call_span)
+        ok_val(Value::boolean(exists), call_span)
     })
 }
 
@@ -2370,43 +1063,48 @@ pub(crate) fn builtin_stat_symlink(
         let mode = 0i64;
 
         // Build metadata dict
-        use crate::value::Key;
         let mut dict = IndexMap::new();
         dict.insert(
-            Key::String("name".into()),
+            HashableValue::Str("name".into()),
             ctx.alloc_thunk(ok_val(string_val(&path), call_span.clone())?),
         );
         dict.insert(
-            Key::String("type".into()),
+            HashableValue::Str("type".into()),
             ctx.alloc_thunk(ok_val(string_val(file_type), call_span.clone())?),
         );
         dict.insert(
-            Key::String("size".into()),
+            HashableValue::Str("size".into()),
             ctx.alloc_thunk(ok_val(
                 Value::Int(metadata.len() as i64),
                 call_span.clone(),
             )?),
         );
         dict.insert(
-            Key::String("mtime".into()),
+            HashableValue::Str("mtime".into()),
             ctx.alloc_thunk(ok_val(Value::Int(mtime), call_span.clone())?),
         );
         dict.insert(
-            Key::String("mode".into()),
+            HashableValue::Str("mode".into()),
             ctx.alloc_thunk(ok_val(Value::Int(mode), call_span.clone())?),
         );
         dict.insert(
-            Key::String("is-dir".into()),
-            ctx.alloc_thunk(ok_val(Value::Bool(metadata.is_dir()), call_span.clone())?),
-        );
-        dict.insert(
-            Key::String("is-file".into()),
-            ctx.alloc_thunk(ok_val(Value::Bool(metadata.is_file()), call_span.clone())?),
-        );
-        dict.insert(
-            Key::String("is-symlink".into()),
+            HashableValue::Str("is-dir".into()),
             ctx.alloc_thunk(ok_val(
-                Value::Bool(metadata.is_symlink()),
+                Value::boolean(metadata.is_dir()),
+                call_span.clone(),
+            )?),
+        );
+        dict.insert(
+            HashableValue::Str("is-file".into()),
+            ctx.alloc_thunk(ok_val(
+                Value::boolean(metadata.is_file()),
+                call_span.clone(),
+            )?),
+        );
+        dict.insert(
+            HashableValue::Str("is-symlink".into()),
+            ctx.alloc_thunk(ok_val(
+                Value::boolean(metadata.is_symlink()),
                 call_span.clone(),
             )?),
         );
@@ -3056,25 +1754,16 @@ pub(crate) fn builtin_list_xattrs(
             )
         })?;
 
-        // Convert names to a Seq of Strings
+        // Convert names to an integer-keyed Dict of Strings
         use crate::value::string_val;
-        let name_values: Vec<_> = names
-            .into_iter()
-            .map(|name| {
-                let name_str = name.to_string_lossy().to_string();
-                string_val(&name_str)
-            })
-            .collect();
-
-        // Build a Seq from the list
-        let mut seq = crate::value::make_seq_nil();
-        for name_val in name_values.into_iter().rev() {
-            let head_id = ctx.alloc_thunk(ok_val(name_val, call_span.clone())?);
-            let tail_id = ctx.alloc_thunk(ok_val(seq, call_span.clone())?);
-            seq = crate::value::make_seq_cons(head_id, tail_id, &ctx);
+        let mut result: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+        for (i, name) in names.into_iter().enumerate() {
+            let name_str = name.to_string_lossy().to_string();
+            let id = ctx.alloc_thunk(ok_val(string_val(&name_str), call_span.clone())?);
+            result.insert(HashableValue::Int(i as i64), id);
         }
 
-        ok_val(seq, call_span)
+        ok_val(Value::Dict(result), call_span)
     })
 }
 
@@ -3360,6 +2049,620 @@ pub(crate) fn builtin_read_link(
     })
 }
 
+/// `builtin-path-dir`: Given a String path (file path), return a DirCap for its parent directory.
+///
+/// The path is interpreted relative to `ctx.config.base_dir` (the sandbox root). The parent
+/// directory component is extracted from the path and opened using cap_std's confined
+/// directory API (RESOLVE_BENEATH: no escaping the sandbox).
+///
+/// Takes 1 arg: String (file path). Returns DirCap with full permissions of the parent.
+///
+/// # Example
+///
+/// ```llt
+/// [builtin-path-dir "data/config/settings.json"]
+/// # → DirCap for "data/config/" (relative to base dir)
+/// ```
+pub(crate) fn builtin_path_dir(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+        } = ctx_arg;
+
+        let val = crate::builtins::expect_one_arg(
+            "builtin-path-dir",
+            &args,
+            named.as_ref(),
+            &ctx,
+            call_span.clone(),
+        )?;
+
+        let path_str = require_string("builtin-path-dir", val, args[0].span.clone())?;
+
+        // Extract parent directory component from the path string.
+        let path = std::path::Path::new(&path_str);
+        let parent = path.parent().unwrap_or(std::path::Path::new("."));
+
+        // Open the parent directory within the cap_std sandbox (RESOLVE_BENEATH).
+        // This prevents escape from ctx.config.base_dir regardless of the path content.
+        let parent_str = parent.to_string_lossy();
+        let opened = ctx
+            .config
+            .base_dir
+            .open_dir(parent_str.as_ref())
+            .map_err(|e| {
+                EvalError::user_error(
+                    format!(
+                        "builtin-path-dir: failed to open parent directory '{}' of path '{}': {}",
+                        parent_str, path_str, e
+                    ),
+                    call_span.clone(),
+                )
+            })?;
+
+        ok_val(
+            Value::DirCap {
+                dir: Rc::new(opened),
+                perms: DirPerms::full(),
+            },
+            call_span,
+        )
+    })
+}
+
+/// `builtin-file-open`: Open a file via a DirCap and return a raw `Value::File`.
+///
+/// Signature: `[builtin-file-open cap path mode]`
+///
+/// `mode` is a String:
+/// - `"read"` → open for reading
+/// - `"write"` → open for writing (truncate + create)
+/// - `"append"` → open in append mode (create if absent)
+/// - `"create"` → create file if it doesn't exist (write mode implied)
+/// - `"truncate"` → truncate to zero length (write mode implied)
+///
+/// Returns `Value::File(Rc<RefCell<cap_std::fs::File>>)`.
+/// All I/O protocol is built in tinct — `open` in prelude wraps this in a protocol dict.
+pub(crate) fn builtin_file_open(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx: _,
+        } = ctx_arg;
+
+        if args.len() != 3 {
+            return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
+        }
+        reject_named("builtin-file-open", named.as_ref(), call_span.clone())?;
+
+        let dir_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by pos_strictness[0]=Seq");
+        let path_val = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by pos_strictness[1]=Seq");
+        let mode_val = args[2]
+            .try_get_materialized()
+            .expect("pre-materialized by pos_strictness[2]=Seq");
+
+        let (dir, _perms) = extract_dir_cap(&dir_val, "builtin-file-open", args[0].span.clone())?;
+        let path = require_string("builtin-file-open", path_val, args[1].span.clone())?;
+        let mode = require_string("builtin-file-open", mode_val, args[2].span.clone())?;
+
+        use cap_std::fs::OpenOptions;
+
+        let file = match mode.as_str() {
+            "read" => dir.open(&path).map_err(|e| {
+                EvalError::user_error(
+                    format!("builtin-file-open: failed to open '{}' for reading: {}", path, e),
+                    call_span.clone(),
+                )
+            })?,
+            "write" => dir
+                .open_with(
+                    &path,
+                    OpenOptions::new().write(true).create(true).truncate(true),
+                )
+                .map_err(|e| {
+                    EvalError::user_error(
+                        format!("builtin-file-open: failed to open '{}' for writing: {}", path, e),
+                        call_span.clone(),
+                    )
+                })?,
+            "append" => dir
+                .open_with(&path, OpenOptions::new().append(true).create(true))
+                .map_err(|e| {
+                    EvalError::user_error(
+                        format!(
+                            "builtin-file-open: failed to open '{}' for appending: {}",
+                            path, e
+                        ),
+                        call_span.clone(),
+                    )
+                })?,
+            "create" => dir
+                .open_with(
+                    &path,
+                    OpenOptions::new().write(true).create(true).truncate(true),
+                )
+                .map_err(|e| {
+                    EvalError::user_error(
+                        format!("builtin-file-open: failed to create '{}': {}", path, e),
+                        call_span.clone(),
+                    )
+                })?,
+            "truncate" => dir
+                .open_with(
+                    &path,
+                    OpenOptions::new().write(true).create(true).truncate(true),
+                )
+                .map_err(|e| {
+                    EvalError::user_error(
+                        format!("builtin-file-open: failed to truncate '{}': {}", path, e),
+                        call_span.clone(),
+                    )
+                })?,
+            other => {
+                return Err(EvalError::user_error(
+                    format!(
+                        "builtin-file-open: unknown mode \"{}\" (expected \"read\", \"write\", \"append\", \"create\", or \"truncate\")",
+                        other
+                    ),
+                    call_span,
+                )
+                .into())
+            }
+        };
+
+        ok_val(
+            Value::File(Rc::new(std::cell::RefCell::new(file))),
+            call_span,
+        )
+    })
+}
+
+/// `builtin-file-read`: Read up to n bytes from a `Value::File`.
+///
+/// Calls `std::io::Read::read()` directly — no buffering.
+/// Returns `Value::Bytes` with the bytes read, or empty `Value::Bytes` on EOF.
+pub(crate) fn builtin_file_read(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx: _,
+        } = ctx_arg;
+
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+        reject_named("builtin-file-read", named.as_ref(), call_span.clone())?;
+
+        let file_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by pos_strictness[0]=Seq");
+        let n_val = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by pos_strictness[1]=Seq");
+
+        let file_rc = match file_val {
+            Value::File(rc) => rc,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-file-read".to_string(),
+                    "File",
+                    other.type_name(),
+                    args[0].span.clone(),
+                )
+                .into())
+            }
+        };
+
+        let n = match n_val {
+            Value::Int(i) if i > 0 => i as usize,
+            Value::Int(_) => {
+                return Err(EvalError::user_error(
+                    "builtin-file-read: byte count must be positive".to_string(),
+                    call_span,
+                )
+                .into())
+            }
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-file-read".to_string(),
+                    "Int",
+                    other.type_name(),
+                    args[1].span.clone(),
+                )
+                .into())
+            }
+        };
+
+        use std::io::Read;
+        let mut buf = vec![0u8; n];
+        let bytes_read = file_rc.borrow_mut().read(&mut buf).map_err(|e| {
+            EvalError::user_error(
+                format!("builtin-file-read: read failed: {}", e),
+                call_span.clone(),
+            )
+        })?;
+        buf.truncate(bytes_read);
+        let len = buf.len();
+        ok_val(
+            Value::Bytes {
+                source: Rc::from(buf),
+                start: 0,
+                end: len,
+            },
+            call_span,
+        )
+    })
+}
+
+/// `builtin-file-write`: Write a String to a `Value::File`.
+///
+/// Calls `std::io::Write::write_all()` directly — no buffering.
+/// Returns empty dict `[]` (null).
+pub(crate) fn builtin_file_write(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx: _,
+        } = ctx_arg;
+
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+        reject_named("builtin-file-write", named.as_ref(), call_span.clone())?;
+
+        let file_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by pos_strictness[0]=Seq");
+        let s_val = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by pos_strictness[1]=Seq");
+
+        let file_rc = match file_val {
+            Value::File(rc) => rc,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-file-write".to_string(),
+                    "File",
+                    other.type_name(),
+                    args[0].span.clone(),
+                )
+                .into())
+            }
+        };
+
+        let s = require_string("builtin-file-write", s_val, args[1].span.clone())?;
+
+        use std::io::Write;
+        file_rc.borrow_mut().write_all(s.as_bytes()).map_err(|e| {
+            EvalError::user_error(
+                format!("builtin-file-write: write failed: {}", e),
+                call_span.clone(),
+            )
+        })?;
+
+        ok_val(Value::Dict(IndexMap::new()), call_span)
+    })
+}
+
+/// `builtin-file-flush`: Flush a `Value::File`.
+///
+/// Calls `std::io::Write::flush()`. Returns empty dict `[]`.
+pub(crate) fn builtin_file_flush(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+        } = ctx_arg;
+
+        let val = crate::builtins::expect_one_arg(
+            "builtin-file-flush",
+            &args,
+            named.as_ref(),
+            &ctx,
+            call_span.clone(),
+        )?;
+
+        let file_rc = match val {
+            Value::File(rc) => rc,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-file-flush".to_string(),
+                    "File",
+                    other.type_name(),
+                    args[0].span.clone(),
+                )
+                .into())
+            }
+        };
+
+        use std::io::Write;
+        file_rc.borrow_mut().flush().map_err(|e| {
+            EvalError::user_error(
+                format!("builtin-file-flush: flush failed: {}", e),
+                call_span.clone(),
+            )
+        })?;
+
+        ok_val(Value::Dict(IndexMap::new()), call_span)
+    })
+}
+
+/// `builtin-file-close`: Close a `Value::File` by dropping it.
+///
+/// Drops the file reference. If no other clones exist, the OS file descriptor is closed.
+/// Returns empty dict `[]`.
+pub(crate) fn builtin_file_close(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+        } = ctx_arg;
+
+        let val = crate::builtins::expect_one_arg(
+            "builtin-file-close",
+            &args,
+            named.as_ref(),
+            &ctx,
+            call_span.clone(),
+        )?;
+
+        match val {
+            Value::File(_) => {
+                // Dropping the Rc here closes the file if no other references exist.
+                drop(val);
+                ok_val(Value::Dict(IndexMap::new()), call_span)
+            }
+            other => Err(EvalError::type_mismatch_ctx(
+                "builtin-file-close".to_string(),
+                "File",
+                other.type_name(),
+                args[0].span.clone(),
+            )
+            .into()),
+        }
+    })
+}
+
+/// `builtin-file-seek`: Seek to a byte position from the start of a `Value::File`.
+///
+/// Calls `std::io::Seek::seek(SeekFrom::Start(pos))`.
+/// Returns empty dict `[]`.
+pub(crate) fn builtin_file_seek(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx: _,
+        } = ctx_arg;
+
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+        reject_named("builtin-file-seek", named.as_ref(), call_span.clone())?;
+
+        let file_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by pos_strictness[0]=Seq");
+        let pos_val = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by pos_strictness[1]=Seq");
+
+        let file_rc = match file_val {
+            Value::File(rc) => rc,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-file-seek".to_string(),
+                    "File",
+                    other.type_name(),
+                    args[0].span.clone(),
+                )
+                .into())
+            }
+        };
+
+        let pos = match pos_val {
+            Value::Int(i) if i >= 0 => i as u64,
+            Value::Int(_) => {
+                return Err(EvalError::user_error(
+                    "builtin-file-seek: position must be non-negative".to_string(),
+                    call_span,
+                )
+                .into())
+            }
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-file-seek".to_string(),
+                    "Int",
+                    other.type_name(),
+                    args[1].span.clone(),
+                )
+                .into())
+            }
+        };
+
+        use std::io::Seek;
+        file_rc
+            .borrow_mut()
+            .seek(std::io::SeekFrom::Start(pos))
+            .map_err(|e| {
+                EvalError::user_error(
+                    format!("builtin-file-seek: seek failed: {}", e),
+                    call_span.clone(),
+                )
+            })?;
+
+        ok_val(Value::Dict(IndexMap::new()), call_span)
+    })
+}
+
+/// `builtin-write-stdout`: Write a String to `std::io::stdout()`.
+///
+/// Stateless: no handle argument, no capability check. Just writes to stdout directly.
+/// Returns empty dict `[]`.
+///
+/// Used by the `%stdout` protocol dict in loader.llt Dict 2:
+///   `write: [fn [let s] [builtin-write-stdout s]]`
+pub(crate) fn builtin_write_stdout(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+        } = ctx_arg;
+
+        let val = crate::builtins::expect_one_arg(
+            "builtin-write-stdout",
+            &args,
+            named.as_ref(),
+            &ctx,
+            call_span.clone(),
+        )?;
+
+        let s = require_string("builtin-write-stdout", val, args[0].span.clone())?;
+
+        use std::io::Write;
+        std::io::stdout()
+            .write_all(s.as_bytes())
+            .map_err(|e| EvalError::user_error(format!("builtin-write-stdout: {e}"), call_span.clone()))?;
+
+        ok_val(Value::Dict(IndexMap::new()), call_span)
+    })
+}
+
+/// `builtin-write-stderr`: Write a String to `std::io::stderr()`.
+///
+/// Stateless. Returns empty dict `[]`.
+pub(crate) fn builtin_write_stderr(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+        } = ctx_arg;
+
+        let val = crate::builtins::expect_one_arg(
+            "builtin-write-stderr",
+            &args,
+            named.as_ref(),
+            &ctx,
+            call_span.clone(),
+        )?;
+
+        let s = require_string("builtin-write-stderr", val, args[0].span.clone())?;
+
+        use std::io::Write;
+        std::io::stderr()
+            .write_all(s.as_bytes())
+            .map_err(|e| EvalError::user_error(format!("builtin-write-stderr: write failed: {e}"), call_span.clone()))?;
+
+        ok_val(Value::Dict(IndexMap::new()), call_span)
+    })
+}
+
+/// `builtin-read-stdin`: Read up to n bytes from `std::io::stdin()`.
+///
+/// Calls `std::io::Read::read()` directly — no buffering.
+/// Returns `Value::Bytes` (empty on EOF).
+pub(crate) fn builtin_read_stdin(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx: _,
+        } = ctx_arg;
+
+        if args.len() != 1 {
+            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+        }
+        reject_named("builtin-read-stdin", named.as_ref(), call_span.clone())?;
+
+        let n_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by pos_strictness[0]=Seq");
+
+        let n = match n_val {
+            Value::Int(i) if i > 0 => i as usize,
+            Value::Int(_) => {
+                return Err(EvalError::user_error(
+                    "builtin-read-stdin: byte count must be positive".to_string(),
+                    call_span,
+                )
+                .into())
+            }
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-read-stdin".to_string(),
+                    "Int",
+                    other.type_name(),
+                    args[0].span.clone(),
+                )
+                .into())
+            }
+        };
+
+        use std::io::Read;
+        let mut buf = vec![0u8; n];
+        let bytes_read = std::io::stdin().read(&mut buf).map_err(|e| {
+            EvalError::user_error(
+                format!("builtin-read-stdin: read failed: {}", e),
+                call_span.clone(),
+            )
+        })?;
+        buf.truncate(bytes_read);
+        let len = buf.len();
+        ok_val(
+            Value::Bytes {
+                source: Rc::from(buf),
+                start: 0,
+                end: len,
+            },
+            call_span,
+        )
+    })
+}
+
+
 /// Register `builtin-*` type aliases for I/O builtins (T-1102).
 ///
 /// Each alias copies the TypeScheme from the canonical name already registered in
@@ -3374,6 +2677,12 @@ pub fn io_builtin_types(env: &mut crate::types::TypeEnv) {
         ("builtin-write-handle", "write-handle"),
         ("builtin-flush", "flush"),
         ("builtin-close", "close"),
+        ("builtin-file-open", "open"),
+        ("builtin-file-read", "read-chunk"),
+        ("builtin-file-write", "write-handle"),
+        ("builtin-file-flush", "flush"),
+        ("builtin-file-close", "close"),
+        ("builtin-file-seek", "seek"),
         ("builtin-stat", "stat"),
         ("builtin-exists", "exists"),
         ("builtin-stat-symlink", "stat-symlink"),

@@ -1,5 +1,22 @@
 # Skipped Corpus Tests
 
+## UndefinedVariable via VarRef (E002) — varref_not_found and underscore_undefined
+
+**Files**: `varref_not_found.llt-eval` (stub), `underscore_undefined.llt-eval` (stub)
+
+**Reason**: These tests expected E002 ("undefined variable") for `$missing` and bare `_`
+respectively. The current evaluation pipeline produces E099 for unresolved VarRefs rather
+than E002 — the variable lookup runs at eval time and hits a different code path.
+
+Undefined-variable detection will be redesigned as a resolve-time error in a future sprint.
+At that point these stubs should be deleted and proper E002 corpus tests written against
+the resolve-time path.
+
+**Re-evaluate when**: Unresolved VarRef detection is moved to the resolve phase and
+produces E002 at resolve time rather than E099 at eval time.
+
+---
+
 ## FloatNotFinite via Overflow (E033)
 
 **File**: `float_overflow_add.llt-eval` (deleted)

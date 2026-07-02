@@ -6,7 +6,7 @@
 # cap: DirCap, path: String
 # Returns: [Ok seq] or [Error message]
 read-lines@[doc: "Read a file as a lazy sequence of lines"]: [fn@Dict [let cap@DirCap path@String]
-  [try [fn [let] [lines [open cap path OpenFlag.Readable]]]]]
+  [try [fn [let] [lines [open cap path Readable]]]]]
 
 # Print a string followed by a newline to stdout.
 println@[doc: "Print a string followed by a newline to stdout"]: [fn@Null [let s@String]
@@ -26,42 +26,43 @@ write-file@[doc: "Write a string to a file (creates or truncates)"]: [fn@Null [l
 write-file-atomic@[doc: "Atomically write a string to a file (write-to-temp + rename)"]: [fn@Null [let cap@DirCap path@String content@String]
   [write-atomic cap path content]]
 
-# Write a line to a WriteHandle, appending a newline and flushing.
-# handle: WriteHandle, line: String
-write-line@[doc: "Write a line to a WriteHandle, appending a newline and flushing"]: [fn@Null [let handle@WriteHandle line@String]
-  [flush [write-handle handle [str line "\n"]]]]
+# Write a line to a file handle (protocol dict), appending a newline and flushing.
+# handle: protocol dict (from open), line: String
+write-line@[doc: "Write a line to a file handle, appending a newline and flushing"]: [fn@Null [let handle line@String]
+  [>> [handle.write [str line "\n"]] [handle.flush]]]
 
 # Append content to a file (creates if doesn't exist).
 # cap: DirCap, path: String, content: String
 append-file@[doc: "Append content to a file (creates if doesn't exist)"]: [fn@Null [let cap@DirCap path@String content@String]
-  [write-handle [open cap path OpenFlag.Writable OpenFlag.Appendable] content]]
+  [h: [open cap path "append"]]
+  [>> [h.write content] [h.close]]]
 
-# Open a file for writing (creates or truncates, returns handle).
+# Open a file for writing (creates or truncates, returns protocol dict handle).
 # cap: DirCap, path: String
-# Returns: WriteHandle
-open-write@[doc: "Open a file for writing (creates or truncates, returns handle)"]: [fn@WriteHandle [let cap@DirCap path@String]
-  [open cap path OpenFlag.Writable]]
+# Returns: protocol dict {read-chunk, write, flush, close, seek}
+open-write@[doc: "Open a file for writing (creates or truncates, returns handle dict)"]: [fn [let cap@DirCap path@String]
+  [open cap path Writable]]
 
-# Open a file for appending (creates if doesn't exist, returns handle).
+# Open a file for appending (creates if doesn't exist, returns protocol dict handle).
 # cap: DirCap, path: String
-# Returns: WriteHandle
-open-append@[doc: "Open a file for appending (creates if doesn't exist, returns handle)"]: [fn@WriteHandle [let cap@DirCap path@String]
-  [open cap path OpenFlag.Writable OpenFlag.Appendable]]
+# Returns: protocol dict {read-chunk, write, flush, close, seek}
+open-append@[doc: "Open a file for appending (creates if doesn't exist, returns handle dict)"]: [fn [let cap@DirCap path@String]
+  [open cap path "append"]]
 
-# Write a sequence of lines to a WriteHandle.
-# handle: WriteHandle, lines: Seq
-write-lines@[doc: "Write a sequence of lines to a WriteHandle"]: [fn@WriteHandle [let handle@WriteHandle lines@Seq]
-  [reduce [fn [let h line] [write-line h line]] handle lines]]
+# Write a sequence of lines to a protocol dict handle.
+# handle: protocol dict (from open), lines: Seq of String
+write-lines@[doc: "Write a sequence of lines to a file handle (protocol dict)"]: [fn [let handle lines-seq]
+  [reduce [fn [let h line] [>> [h.write [str line "\n"]] h]] handle lines-seq]]
 
-# Check if a capability is present on a Handle or WriteHandle.
-# h: Handle or WriteHandle, cap: String capability name
-# Returns: Bool — true if cap-data returns non-null, false otherwise
-has-cap?@[doc: "Check if a capability is present on a Handle or WriteHandle"]: [fn@Bool [let h@[Handle WriteHandle] cap@String]
-  [not [null? [cap-data h cap]]]]
+# has-cap? removed — Handle/WriteHandle capability dict is gone.
+# Protocol dict handles (from `open`) use has? to check for method existence.
+has-cap?@[doc: "Check if a method key exists on a protocol dict handle."]: [fn@Bool [let h cap@String]
+  [has? cap h]]
 
 # Copy a file from src to dst.
 # cap: DirCap, src: String source path, dst: String destination path
-# Reads the source file line-by-line and writes it to the destination (create/truncate).
+# Reads the source file content and writes it to the destination (create/truncate).
 copy@[doc: "Copy a file from src to dst"]: [fn@Null [let cap@DirCap src@String dst@String]
-  [close [write-lines [raw-create cap dst] [lines [open cap src OpenFlag.Readable]]]]]
+  [content: [read-all [open cap src Readable]]]
+  [write cap dst content]]
 ]

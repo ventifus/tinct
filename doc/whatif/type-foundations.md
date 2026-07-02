@@ -1,10 +1,10 @@
 # What If: Type System Foundations — Primitives, Collections, and Dispatch
 
-**State:** Proposal
+**State:** Accepted — 2026-06-25
 
 These architectural changes address the general collection type hierarchy, typeclass dispatch, runtime annotation machinery, and bootstrap de-special-casing.
 
-The `doc/whatif/type-foundations/generator/` directory contains a tinct program that reads these typed declarations and generates Rust `TypeScheme` / `TyConDef` registrations. The declaration IS the spec; the Rust output is derived from it.
+The `doc/whatif/type-foundations/` directory contains proposed implementations of `loader.llt`, `prelude.llt`, and the `builtin_*.llt` declaration files (`builtin_core.llt`, `builtin_dict.llt`, `builtin_math.llt`, `builtin_io.llt`, `builtin_async.llt`, `builtin_net.llt`, `builtin_datetime.llt`, `builtin_meta.llt`). These are production files — they move to `stdlib/` during implementation alongside `loader.llt` and `prelude.llt`. No generator exists; the `--- uses:` type-checker sub-phase in `uses-scope` processes them directly at runtime.
 
 ## The Single Rust Primitive
 
@@ -112,11 +112,13 @@ Seq:    [type [let a] [Cons head: a  tail: [Seq a]]  End]  # lazy recursive cons
 ```tinct
 head: [fn [let s@[Seq a]] [match s  [Seq.Cons p]: p.head  Seq.End: [raise "head: empty"]]]
 tail: [fn [let s@[Seq a]] [match s  [Seq.Cons p]: p.tail  Seq.End: [raise "tail: empty"]]]
-map:  [fn [let f s@[Seq a]]   # cons-recursive — lazy, safe on infinite Seqs
+map:  [fn [let f s@[Seq a]]
   [match s
     [Seq.Cons p]: [Seq.Cons head: [f p.head]  tail: [map f p.tail]]
     Seq.End: Seq.End]]
 ```
+
+`map` is consumer-driven O(1) per element despite the recursive structure. `tail: [map f p.tail]` is a thunk — the `map f p.tail` call is suspended (not executed) at construction time. Each time the caller forces the next element via `[head ...]`, exactly one `Seq.Cons` cell is constructed and one thunk is allocated for the unseen tail. The recursive call happens only when the tail is forced. Stack depth never grows beyond one frame. This is not TCO — it is laziness. The distinction: TCO eliminates a stack frame *after* the call; laziness never makes the call until the result is demanded. `map` over an infinite `Seq` is safe as long as the consumer forces only finitely many elements.
 
 `Record` is not a Rust type at all — it is the ordinary `Value::Dict` value produced by dict literals. The name "Record" appears only in the type checker's structural type expressions; at runtime there is just a dict.
 
@@ -170,6 +172,8 @@ collect: [fn [let s@[Seq a]]
 
 `collect` materializes a lazy `[Seq a]` into a `[List a]` (finger tree) via successive `push-right` calls. Cost: O(n) — each `push-right` is O(1) amortized. Post-collect, `length` is O(1) and `get i` is O(log n).
 
+**Breaking change:** The current `collect` returns an integer-keyed `Dict` (`{0: a, 1: b, ...}`). After this change, `collect` returns `[List a]` (finger tree). Code that expects `collect` to return a Dict must migrate to `[build-dict [collect s]]` or equivalent. Code that uses `[get i [collect s]]` continues to work via `Indexable` dispatch — `List` has an `Indexable` instance with the same `[get i list]` API. Code that iterates the result with `[each [collect s]]` continues to work via the `Iterable` instance. The only callers that break are those pattern-matching on the raw Dict structure (integer keys, `builtin-dict-get`, etc.).
+
 Access patterns:
 
 | Pattern | How | Time | Memory |
@@ -220,7 +224,9 @@ Note: `#[derive(Hash, PartialEq)]` is NOT used for `Dict` — see manual impleme
    hash(Dict(pairs)) = Σ mix(hash(k), hash(v)) for each (k, v) pair
    ```
 
-   where `mix` is a fixed bijection (e.g. splitmix64 round). Sum is commutative — insertion order does not affect it. Dict keys are unique, so pair-cancellation (the XOR weakness) does not arise. This is the same technique used by Python's `frozenset` and Rust's `AHashSet` for unordered-collection hashing.
+   where `mix` is a **non-linear** bijection (e.g. splitmix64's multiply-xor-shift round). Sum is commutative — insertion order does not affect it. Dict keys are unique, so pair-cancellation (the XOR weakness) does not arise. This is the same technique used by Python's `frozenset` and Rust's `AHashSet` for unordered-collection hashing.
+
+   **`mix` must be non-linear in its second argument.** A linear mixer (e.g. `hash(k) XOR hash(v)`) would allow key-value-swap collisions: `{a:1, b:2}` and `{a:2, b:1}` could yield equal sums if `mix(h(a),h(1)) + mix(h(b),h(2)) == mix(h(a),h(2)) + mix(h(b),h(1))`. Splitmix64's multiply-xor-shift satisfies non-linearity — the multiplication mixes bits in a way that makes the above equality computationally infeasible. A purely additive or XOR combiner does NOT satisfy this requirement.
 
    **Manual `PartialEq` for `HashableValue::Dict`:** `#[derive(PartialEq)]` compares `Vec`s lexicographically (order-sensitive). Since dict equality is order-insensitive, `PartialEq` must be implemented manually:
 
@@ -392,6 +398,26 @@ The bypass list entries, resolved:
 - `"Unknown"` — becomes a TyConDef entry like all others; its special behavior (consistency relation `~`) is enforced by `is_consistent`, not by name resolution; no reason to keep it in the bypass list
 - `"Int"`, `"Float"`, `"Bytes"`, `"Handle"`, `"Dict"`, `"Map"`, `"Record"`, `"Fn"` — become TyConDef entries in the root scope, backed by Rust implementations but resolved through the env
 
+**Root-scope TyConDef registrations** (seeded by Rust before loader.llt runs, in `core_builtins_env()`):
+
+| Name | Rust backing | Kind |
+|------|-------------|------|
+| `Int` | `Type::Int` | `*` |
+| `Float` | `Type::Float` | `*` |
+| `Bytes` | `Type::Bytes` | `* → *` (parameterized by N for `[Bytes N]`) |
+| `Handle` | `Type::Handle` | `*` |
+| `Dict` | `Type::Record(Row::Open)` | `*` (raw dict alias) |
+| `Map` | `Type::App(TyCon("Map"), _)` | `* → * → *` |
+| `Record` | structural record type | `*` |
+| `Fn` | `Type::Function` | `* → * → *` |
+| `String` | `Type::Str` | `*` (until string-redesign) |
+| `Unknown` | `Type::Unknown` | `*` |
+| `Any` | `Type::Top` | `*` |
+
+`Boolean`, `Seq`, `Number`, `Never` are NOT in this table — they are declared in tinct (loader.llt or prelude.llt) and registered by the type-checker when processing those declarations, not pre-seeded by Rust.
+
+**Unknown audit:** Before deleting `Type::Bool`, `Type::Number`, and `Type::Seq`, audit all builtins currently typed with these variants. Each one must be rerouted through TyCon lookup or replaced by a typeclass constraint. Failure to audit will introduce silent `Unknown` regressions — builtins whose return types become `Unknown` when the `Type::Bool` match arm is deleted without a TyCon replacement. Run the full corpus with `--strict` before and after the deletion to detect new `Unknown` productions.
+
 This means:
 
 - All types resolve through a single env lookup path — no separate primitive path
@@ -518,6 +544,8 @@ The pipeline is lazy. Nothing evaluates until something forces it. The output fo
 2. **`%emit-channel`** — the shared channel. Draining the channel forces all lazy `emit` thunks in user programs that haven't yet been forced. Any `[emit v]` call that the user put in an auto-indexed dict entry (lazy) is only forced when the formatter drains the channel.
 
 Without the formatter, the entire pipeline stays inert. This is intentional: a tinct program with no output formatter simply does nothing. The formatter is not passive bookkeeping — it is the engine.
+
+**Span integrity through the async channel:** `[emit v]` sends a value across `builtin-send`/`builtin-recv`. Values carry no spans at runtime — spans are attached to thunks and evaluation errors, not to materialized values. When the formatter receives a value from `%emit-channel`, that value's spans were already resolved at the emit site. If an error occurs during the value's materialization (forced by `[emit v]`), the error carries the definition-site and materialization-site spans of the thunk that failed — the channel boundary does not lose this information. Implementors: verify that `Value::Error` variants passed through the channel retain their `EvalError` span chain, not just their message string.
 
 **`%emit-channel` threading — how it flows through the pipeline:**
 
@@ -664,37 +692,90 @@ The type system's two previously separate environments (type-stage env and TypeE
 | Type-stage env (`Arc<RwLock<Environment>>`) — TypeNode thunks from `--- stage: type` sections | Combined in TypeContext; same handle serves both annotation resolution and type inference |
 | TypeEnv (`Rc<TypeEnv>`) — TyConDefs, TypeSchemes, ClassDecls from `[type ...]` declarations | Combined in TypeContext |
 
-The annotation resolver no longer needs two separate lookups (type-stage env → fallback to TypeEnv). All type information is in TypeContext.
+**Internal Rust layout:** `TypeContext` is a `struct TypeContext { type_stage_env: Arc<RwLock<Environment>>, type_env: Rc<TypeEnv> }` — a dual structure behind one opaque handle. Annotation resolution performs two lookups: (1) type-stage env for `TypeNode` thunks; (2) TypeEnv TyConDef table as fallback. This dual lookup is the current implementation. As the equirecursive-types migration absorbs TyConDefs into TypeNode declarations, the fallback lookup shrinks until TypeEnv is empty and the handle becomes a single-env wrapper. Tinct's API (`builtin-get-type-context`, `builtin-typecheck`, etc.) never changes regardless of the internal layout.
 
-**Migration path:** TypeContext currently holds both structures internally. As the type-checker migrates to TypeNode values (per equirecursive-types whatif), TypeEnv is absorbed into the type-stage env and TypeContext becomes a single unified env. Tinct's API never changes — it's always an opaque handle.
+The annotation resolver no longer needs two separate lookups (type-stage env → fallback to TypeEnv) **from tinct's perspective** — the single handle encapsulates both. All type information is in TypeContext.
+
+**Migration path:** TypeContext currently holds both structures internally. As the type-checker migrates to TypeNode values (equirecursive-types — already landed), TypeEnv is absorbed into the type-stage env and TypeContext becomes a single unified env. Tinct's API never changes — it's always an opaque handle.
 
 **`create_type_stage_env` is deleted.** Its work is done by `builtin-make-type-ctx` (creates a seed context) and `builtin-typecheck` (updates it as files are processed). The two-structure bootstrap is replaced by one handle; tinct retrieves it via `builtin-get-type-context` without threading it through function parameters.
-
-**Full bootstrap-to-user-code sequence:**
 
 **Full bootstrap-to-user-code sequence:**
 
 | Step | Who | What happens |
 |------|-----|--------------|
 | 1 | Rust | Follow the CLI construction sequence above: parse argv, open files pre-sandbox, apply Landlock, build `%programs`/`%args` |
-| 2 | Rust | Assemble the initial dict; seed it with `builtin_module("core")` builtins; evaluate `stdlib/loader.llt` with this dict as the initial scope |
+| 2 | Rust | Seed the initial dict with `builtin_module("core")` `Value::Builtin` thunks. Create root TypeContext initialized **empty** — no pre-seeding from Rust. The TypeContext is populated incrementally as `builtin-typecheck` is called during loader.llt's execution (via `uses-scope` in `eval-file`). Then evaluate `stdlib/loader.llt` with the initial dict as scope. |
 | 3 | loader.llt dict 1 | `read-handle` defined; sees initial-env entries (`%cwd`, `%libdir`, etc.) as bare names |
 | 4 | loader.llt dict 2 | `Boolean`, `ProgramItem`, `DocName`, `include`, `expand`, `cli-pipeline`, `eval-*` defined. All closures capture the initial env in their scope chain. |
 | 5 | loader.llt dict 3 | `_prelude: [include %libdir "prelude.llt"]` thunk created. `emit-ch`, `formatter` defined. `[cli-pipeline %programs formatter [] %cwd _prelude emit-ch]` is the auto-indexed entry. |
 | 6 | cli-pipeline forced | `builtin-reduce` iterates `%programs` via `eval-pipeline-item` |
-| 7 | eval-file (per user file) | `[builtin-get-type-context prelude]` forces `_prelude` — loads prelude.llt, updates TypeContext. Then: `builtin-parse` → `expand` → `builtin-resolve` → `builtin-typecheck` → `builtin-eval` per document |
+| 7 | eval-file (per user file) | `[builtin-get-type-context prelude]` forces `_prelude` — loads prelude.llt, updates TypeContext, adds prelude macro values to env. Then per document: `builtin-parse` → `builtin-expand env: prelude-env` → `builtin-resolve` → `builtin-typecheck` → `builtin-eval`. `prelude-env` carries `Value::MacroTransformer` entries for `>>`, `tmpl`, `do`, etc. |
 | 8 | eval-document-runtime | Builds user doc scope: prelude + `%cwd`/`%libdir`/`%stdout`/`%args` (from closure) + `%include-dir` (file's own dir) + emit machinery |
 | 9 | output formatter | `eval-pipeline-item` runs it last with the final `%`; formatter drains `%emit-channel`, writes to `%stdout` |
 
 Rust exits after step 2's `eval_file` returns. All output has already occurred via side effects.
 
-**Construction sequence — three phases at every file boundary:**
+**Macros are values in the runtime env.**
 
-Every file processed by the pipeline goes through the same three phases in order: `--- uses:` → stage:type → runtime. The phases are described below for each file.
+`[macro name [let params] body]` is evaluated by the runtime, not skipped. It produces a `Value::MacroTransformer` (a tagged function) bound to `name` in the env — exactly as `[fn ...]` produces `Value::Function`. The Rust macro registry (`register_stdlib_macros_from_env`) is deleted. No macros are hardcoded in Rust.
+
+The consequence: macro declarations flow through the same env chain as all other values. Loader.llt defines `>>`, `begin`, `tmpl`, `do` as tinct `[macro ...]` declarations. When loader.llt is expanded, its own macros are discovered by the two-pass within-file pre-scan (B-304). After loader.llt evaluates, those macro values live in the loader env. When `eval-file` expands prelude, it passes the loader env to `builtin-expand env: loader-env`; the expander finds `>>`, `tmpl`, etc. as `Value::MacroTransformer` entries. After prelude evaluates, prelude's macro values join the env. User code gets the full accumulated macro set.
+
+`builtin-expand` gains an `env:` parameter (a `Value::Environment`). The expander reads macro declarations from that env rather than from a Rust-global registry. `pre_scan_follow_libdir_include` is deleted.
+
+**Include-time macros from user libraries are not supported.** When user code does `[include %libdir "lib.llt"]` at runtime, the user file has already been expanded. There is no retroactive macro injection into an expanded file without interleaving expand↔eval phases (a separate, more complex feature). Macros flow only through the loader→prelude→user chain via the env.
+
+**Construction sequence — four phases at every file boundary:**
+
+Every file processed by the pipeline goes through the same four phases in order: `--- uses:` → expand → stage:type → runtime. The phases are described below for each file.
 
 **Phase description:**
 
-*`--- uses:` phase:* The file's `--- uses:` declaration is read. For each declared module, `builtin_module(name)` returns `Vec<BuiltinDef>`. Each `BuiltinDef` is wrapped as `Value::Builtin(def)` → `Arc<Thunk::new_materialized(Value::Builtin(def), Span::origin())>` and inserted into the current type-stage env by name. The type-stage env is `Arc<RwLock<Environment>>` where `Environment.bindings: IndexMap<String, Arc<Thunk>>`. After this phase the env contains the declared module's callable Rust functions.
+*`--- uses:` phase:* The file's `--- uses:` declaration is read. For each declared module, `builtin_module(name)` is called. This has **two sub-phases** that must both complete before moving to expand:
+
+1. **Evaluator injection**: Each `BuiltinDef` is wrapped as `Value::Builtin(def)` → `Arc<Thunk::new_materialized(Value::Builtin(def), Span::origin())>` and inserted into the current type-stage env by name. After this sub-phase the env contains the declared module's callable Rust functions.
+
+2. **Type-checker injection**: The module's corresponding `builtin_X.llt` declaration file is type-checked through the normal pipeline (`builtin-parse` → `builtin-typecheck`) against the current TypeContext. This registers TypeSchemes for all `builtin-*` names declared in that file, and TyConDefs for all `[type ...]` entries. The TypeSchemes become available to the type checker when it subsequently type-checks the file's `stage:type` and runtime sections.
+
+**Why the type-checker injection is necessary:** Without it, calls to `builtin-open`, `builtin-read-chunk`, etc. inside prelude function bodies type as `Unknown`. The gradual typing consistency relation (`Unknown ~: T`) would then allow incorrect prelude code through silently — the opposite of "prelude type errors must surface." The `builtin_X.llt` declarations with their `fn@[...]` annotations are the type-checker's source of truth for what each builtin accepts and returns.
+
+*expand phase:* The parsed source is expanded using `builtin-expand ast env: accumulated-env`. The `accumulated-env` is the runtime env built from all previously evaluated files in the pipeline (loader env → prelude env → ...). The expander reads `Value::MacroTransformer` entries from this env to find available macros. For **loader.llt itself**, macro expansion uses only the within-file two-pass pre-scan (B-304) — loader's own `[macro >> ...]` etc. are discovered by pre-scanning all of loader's documents before expanding any of them. No `env:` seeding is required for loader's self-expansion. After expansion, the AST is ready for resolution.
+
+**Two-level split — Rust for loader.llt, tinct for everything else:**
+
+| File | `--- uses:` handled by |
+|------|----------------------|
+| `loader.llt` | Rust — reads `--- uses:` header before any tinct runs, injects core builtins into the initial dict; TypeContext starts empty |
+| Every other file | Tinct — `uses-scope` in loader.llt's `eval-file` processes each declared module name |
+
+This split is mandatory. Loader.llt's `--- uses:` cannot be handled by tinct because tinct has not run yet when loader.llt first executes. All subsequent files must be handled by tinct to avoid a second Rust-privileged path.
+
+**Tinct-side `--- uses:` implementation** — `uses-scope` in loader.llt dict 2 handles both phases inline, with no wrapper functions:
+
+```tinct
+uses-scope: [fn [let module-names]
+  [builtin-reduce
+    [fn [let scope name]
+      [decl-path:     [builtin-str "builtin_" name ".llt"]]
+      [decl-handle:   [builtin-open %libdir decl-path Readable]]
+      [decl-bytes:    [read-handle decl-handle [builtin-bytes]]]
+      [decl-raw:      [builtin-parse decl-bytes decl-path]]
+      [decl-expanded: [expand decl-raw]]
+      [decl-resolved: [builtin-resolve decl-expanded]]
+      # Type-check for TypeContext side-effect. Discard typed AST — no eval.
+      [builtin-typecheck decl-resolved [builtin-get-type-context]]
+      # Accumulate runtime implementations.
+      [builtin-merge scope [builtin-module name]]]
+    []
+    module-names]]
+```
+
+`uses-scope` is called once per file in `eval-file` with `resolved.uses` (the module name list from the resolved AST), **before** `builtin-typecheck` on the file body — TypeSchemes from `builtin_X.llt` must be in TypeContext before the file's own body is type-checked. The result (`mod-scope`, the merged impls dict) is threaded as a parameter into each `eval-document-runtime` call for that file.
+
+`eval-document-runtime` receives `mod-scope` directly — it does not call `uses-scope`. This is correct: `--- uses:` is a file-level header, not a per-document header.
+
+**`builtin_*.llt` files live in `stdlib/`** alongside `prelude.llt` and `loader.llt`. They are production files, not generator inputs. `BuiltinModule("core")` includes a path to `stdlib/builtin_core.llt`; the `--- uses:` processor resolves it via `%libdir`. No code generation step exists — the `.llt` files are processed directly at runtime by the type checker. The `doc/whatif/type-foundations/generator/` directory (including `generate.llt` and any generated `builtin_*.rs` files) is deleted as part of this sprint.
 
 *stage:type phase:* The file's `--- stage: type` documents are evaluated. Each expression item is evaluated **independently** against the current type-stage env (not chained as in normal document evaluation — independent evaluation ensures all dicts' bindings are exported, not just the last). Each expression returns a `Value::Dict`; its top-level bindings are inserted into the type-stage env as `Arc<Thunk>` values (lazily forced on first access). The resulting env becomes the **parent** for the next file's type-stage env — lexical parent-chain inheritance, same as runtime scope.
 
@@ -704,27 +785,31 @@ Every file processed by the pipeline goes through the same three phases in order
 
 **loader.llt** (steps 1–3, Rust bootstrap):
 
-- `--- uses: ["core"]` → inject `builtin_module("core")` thunks as the root type-stage env
+- `--- uses: ["core"]` → Rust handles the **evaluator side only**: injects `builtin_module("core")` `Value::Builtin` thunks into the initial dict. The **type-checker side** (registering TypeSchemes for core builtins) is deferred — the root TypeContext starts empty and is populated by `uses-scope` when the first file with `--- uses: ["core"]` is processed through `eval-file`.
+- expand → two-pass pre-scan within loader.llt itself discovers `[macro >> ...]`, `[macro begin ...]`, `[macro tmpl ...]`, `[macro do ...]` declared in loader's own body. No external env needed — the pre-scan runs before expansion of loader's own call sites, following B-304.
 - stage:type → currently empty; wired uniformly for future use
-- runtime → evaluate: defines `eval-programs`
+- runtime → evaluate: defines `uses-scope`, `eval-document-runtime`, `eval-file`, `cli-pipeline`. **Evaluating `[macro >> ...]` etc. produces `Value::MacroTransformer` values bound in the loader env.** These flow to prelude and user code via the env chain.
 
 **prelude.llt** (steps 4–6, driven by `eval-programs "prelude.llt"`):
 
-- `--- uses:` → inject any declared modules into a child of the loader type-stage env
+- `--- uses: ["core"]` → **Prelude declares `--- uses: ["core"]`** so that `uses-scope` type-checks `stdlib/builtin_core.llt` into the TypeContext before prelude itself is type-checked. This is how TypeSchemes for `builtin-open`, `builtin-raise`, `builtin-if`, etc. become available to the type checker when it analyzes prelude function bodies. `Value::Builtin` thunks are already in scope from Rust's initial dict seeding.
+- expand → `builtin-expand prelude-ast env: loader-env`. The loader env contains `>>`, `begin`, `tmpl`, `do` as `Value::MacroTransformer`. Prelude's body can use all loader-defined macros. Prelude may additionally declare its own macros; after evaluation they join the prelude env.
 - stage:type → produces: `Int`, `Float`, `Never`, `Any: [builtin-variant "TypeNode.Any"]`, `Unknown: [builtin-variant "TypeNode.Unknown"]`, type combinators (`union`, `all`, `without`, `Seq`, `Map`, `mu`), TypeNode ADT with traversal protocol (`children`, `map-children`, `as-type`). The arithmetic resolvers `AddResult`/`SubResult`/`MulResult`/`DivResult` are deleted (dead code — no callers since FD resolver design was superseded).
-- runtime → type-check registers TyConDefs (`Grapheme`, `Graphemes`, `Boolean`, `Seq`, `Absent`, `Never`, `Number` class, etc.) and constructor schemes (`Grapheme.Cluster`, `Boolean.True`, `Boolean.False`, `Seq.Cons`, `Seq.End`) in prelude TypeEnv; evaluate makes runtime bindings active. TypeEnv cached as `PRELUDE_CACHE`.
+- runtime → type-check registers TyConDefs (`Grapheme`, `Graphemes`, `Boolean`, `Seq`, `Absent`, `Never`, `Number` class, etc.) and constructor schemes (`Grapheme.Cluster`, `Boolean.True`, `Boolean.False`, `Seq.Cons`, `Seq.End`) in prelude TypeEnv; evaluate makes runtime bindings active.
 
 **user file** (steps 7–9, driven by `eval-programs user-code`):
 
 - `--- uses:` → inject declared modules (e.g. `--- uses: ["text"]` injects text.llt following steps 10–12 for that file before continuing)
+- expand → `builtin-expand user-ast env: prelude-env`. The prelude env contains the full accumulated set of macro values: loader macros + prelude macros. All standard macros (`>>`, `tmpl`, `do`, string interpolation, etc.) are available.
 - stage:type → evaluated in a child of the prelude type-stage env; user type-stage bindings shadow prelude's; all prelude type-stage bindings accessible via parent chain
-- runtime → type-check registers user TyConDefs in a child TypeEnv; evaluate produces output
+- runtime → type-check registers user TyConDefs in a child TypeEnv; evaluate produces output. **User-defined `[macro ...]` declarations produce `Value::MacroTransformer` values in the user env, but these are only usable as macros within the same file** (via the within-file two-pass pre-scan). They do not propagate to files that `[include ...]` this file at runtime — `include` is runtime, expansion has already occurred.
 
 **included file** (steps 10–12, driven by `[include ...]`):
 
 - `--- uses:` → inject declared modules
+- expand → `builtin-expand included-ast env: current-env`. The current env at include time carries all macros accumulated so far (loader + prelude + any previously evaluated user macros). The included file may use all of these.
 - stage:type → evaluated in a child of the current type-stage env
-- runtime → type-check and evaluate; exports merged into the including file's env
+- runtime → type-check and evaluate; exports merged into the including file's env. Macro values produced by `[macro ...]` in the included file become part of the exported env — usable by the including scope at runtime but **not retroactively available as macros in the including file** (which was already expanded).
 
 **Annotation resolution — the unified path:**
 
@@ -742,17 +827,15 @@ Every file processed by the pipeline goes through the same three phases in order
 
 **loader.llt and the type system:**
 
-The prelude type-stage env (step 1) and prelude TypeEnv (step 2) are built in Rust before loader.llt executes. This is necessary because type-checking requires the prelude type-stage env, and type-checking runs before user programs execute.
-
-User `--- stage: type` sections are different: they are built on-demand per-file during type-checking of user programs, which is invoked by `eval-programs` (from loader.llt) as part of the normal program execution pipeline. `build_user_type_stage_env()` creates a child of the prelude type-stage env and evaluates the user's `--- stage: type` documents into it, including processing their `--- uses:` declarations. This happens after loader.llt has run.
+The root TypeContext starts **empty** and is populated incrementally as files are processed through the pipeline — there is no Rust-side pre-seeding. The first `builtin-typecheck` call (triggered by `eval-file` processing a file with `--- uses: ["core"]`) registers TypeSchemes for core builtins. No Rust function pre-builds the type environment; everything goes through `builtin-typecheck` called from loader.llt.
 
 The three `--- uses:` wiring points:
 
 | Stage | Who wires it | When |
 |-------|-------------|------|
-| Prelude `--- stage: type` | `create_type_stage_env()` in Rust | Before loader.llt |
-| Prelude runtime-stage | `eval-programs` from loader.llt | During prelude runtime evaluation |
-| User `--- stage: type` | `build_user_type_stage_env()`, invoked by `eval-programs` | During user program type-checking |
+| Core builtins (runtime) | Rust step 2 bootstrap — seeds initial dict with `builtin_module("core")` thunks | Before loader.llt body runs |
+| Core builtins (TypeSchemes) | `uses-scope` in loader.llt's `eval-file` → `builtin-typecheck stdlib/builtin_core.llt` | When first user file with `--- uses: ["core"]` is processed |
+| User/included `--- uses:` | `uses-scope` in loader.llt's `eval-file` and `include` | Before `builtin-typecheck` on each file |
 
 **User `--- stage: type` sections:**
 
@@ -838,6 +921,10 @@ List: [type [let a] [FingerTree a]]
 **Size invariant:** `FTDeep.size` stores the TOTAL LEAF COUNT at every level of the tree. This enables:
 - `length list` — O(1), reads `FTDeep.size` from the root
 - `get i list` — O(log n), navigates by comparing `i` against subtree sizes
+
+**Digit-size invariant:** The `prefix` and `suffix` digits of any `FTDeep` node contain 1–4 elements (`Digit.One` through `Digit.Four`). This invariant is maintained by all operations: `push-left`/`push-right` promote `Digit.Four` into a spine node before the digit would exceed 4; `concat`'s middle-element combining (`ft-add-nodes`) processes only the suffix of the left tree and prefix of the right tree — at most 4+4=8 elements, chunked into 2- and 3-node spine entries. Because the digits are bounded to ≤4 elements, the concat step that processes them is O(1), giving the full O(log n) concat guarantee. An unbounded digit list would degrade concat to O(n).
+
+**Amortized complexity and lazy sharing:** Push-left/push-right achieve O(1) amortized (not O(1) worst-case) via the standard Okasaki (1998) lazy amortized analysis. The amortized bound holds **if and only if** thunks are shared (evaluated at most once per call site). Tinct's lazy evaluation satisfies this: a thunk result is memoized after first force. If a future optimization broke sharing (e.g., deep-copying thunks), the amortized bound would fail. The Launchbury (1993) sharing invariant is the prerequisite.
 
 **The `Iterable` typeclass and `each`:** `each` is a typeclass method of `Iterable`, not a plain function. The collection type determines the element type via functional dependency:
 
@@ -1004,6 +1091,7 @@ There is no reason for lowercase `true`/`false` to exist. Tinct constructors are
 | `builtin-bytes-concat` | Missing | Concatenate two `Value::Bytes` |
 | `builtin-path-dir` | Missing | `String → DirCap`; extract containing directory from a file path |
 | `builtin-encode` | Missing | `ByteOrder × a → Bytes` — general machine-level encoding for any numeric type (Int, Float, UInt8, UInt16, UInt32, UInt64). Replaces the float-specific `builtin-float-bits`. Enables `float-to-string` (Ryu), binary protocol encoding, and bit manipulation from pure tinct. |
+| `builtin-eval scope-merge:` | Extension | Add `scope-merge: Dict` named parameter to `builtin-eval`. Augments (not replaces) the implicit evaluation scope with the provided dict. Required so `include` can inject `mod-scope` (Value::Builtin impls from `--- uses:` of included files) without having to reconstruct the full caller scope explicitly. |
 
 **Bare-name violations to fix** (all core exports must use `builtin-*`; prelude re-exports as user-facing names). `channel`, `send`, `recv` and other async builtins are already correctly registered as `builtin-channel`, `builtin-send` etc. — no change needed for those.
 
@@ -1110,7 +1198,7 @@ When `Value::Bool` is replaced by `Value::Variant { tag: "Boolean.True", payload
 | Rewrite `head`, `tail`, `map`, `filter`, `reduce`, `collect`, `range`, `cons` | Currently wrap Rust builtins from `builtins_seq_prim.rs` | Pure tinct recursive implementations already designed in `doc/whatif/type-foundations/prelude.llt`; the Rust builtins are then deleted |
 | Add typeclass declarations | `Hashable`, `Sortable`, `Prependable`, `Appendable`, `Concatenable`, `Indexable` are absent or incomplete | Declare per whatif design |
 | Rename `Semigroup` → `Concatenable` | `Semigroup` exists for same-type combine | Rename for the collection hierarchy; `Semigroup` may coexist for non-collection uses |
-| `Boolean` location | Declared in prelude runtime section | The whatif declares it in loader.llt dict 2; loader.llt's closure makes it available to user programs. Decide whether to keep a copy in prelude or reference the one from loader.llt's scope |
+| `Boolean` location | Declared in prelude runtime section | **Decided:** `Boolean: [type True False]` lives in loader.llt dict 2 only. Prelude.llt must NOT redeclare it — it is already in scope via loader.llt's closure. `builtin-if` dispatches on Variant tag strings `"Boolean.True"`/`"Boolean.False"` directly, so no alias is needed in loader scope before prelude loads. Remove any `Boolean` declaration from prelude.llt. |
 | `AddResult`/`SubResult`/`MulResult`/`DivResult` | **Already removed** from prelude type-stage | No change needed |
 
 #### `stdlib/cli/out/*.llt`
@@ -1125,12 +1213,11 @@ No changes needed. The formatter files are already valid tinct and already use `
 4. **`Value::Bool` removal** — depends on Bool literal desugaring fix (`lower.rs:180`); affects coverage.rs, eval.rs, builtins_math.rs, ~25 construction sites
 5. **Coverage checker** (`coverage.rs`) — depends on `Type::Bool` deletion and Boolean TyConDef registration
 6. **`HashableValue` + Key enum removal** — depends on nothing but has the largest blast radius; blocks nothing else
-7. **Resolve B-309** (macro expansion circular recursion) — unblocks the loader.llt rewrite
-8. **`builtins_seq_prim.rs` deletion** — depends on prelude tinct seq implementations working end-to-end; also deletes the Seq-walking code in `builtins_bytes.rs` and `eval_core.rs`
-9. **loader.llt rewrite + bootstrap restructure** (`create_stdlib_env_inner` Phase 3 removal) — depends on B-309
-10. **`main.rs` rewrite** (initial env construction, pre-sandbox file opening, remove pipeline loop) — depends on loader.llt rewrite
+7. **`builtins_seq_prim.rs` deletion** — depends on prelude tinct seq implementations working end-to-end; also deletes the Seq-walking code in `builtins_bytes.rs` and `eval_core.rs`
+8. **loader.llt rewrite + bootstrap restructure** (`create_stdlib_env_inner` Phase 3 removal) — independent; B-309 was resolved 2026-06-02
+9. **`main.rs` rewrite** (initial env construction, pre-sandbox file opening, remove pipeline loop) — depends on loader.llt rewrite
 
-Items 1–3 can proceed in parallel immediately. B-309 is the critical path for items 9–10.
+Items 1–3 can proceed in parallel immediately.
 
 ## `Showable` Instances
 
@@ -1157,7 +1244,7 @@ Canonical `show` implementations for non-text built-in types:
 
 `int-to-string` is a pure tinct function in prelude — extract digits via `mod`/`/`, look up character strings from a table, concatenate with `builtin-str`. No Rust needed.
 
-`float-to-string` is also a pure tinct function in prelude, implementing a shortest-decimal algorithm (Ryu or equivalent). The algorithm uses: `builtin-encode` to obtain the float's byte representation, integer arithmetic to reassemble those bytes into a 64-bit integer, `builtin-big-int` for 128-bit-wide multiplications, bit operations (`builtin-band`, `builtin-shr`, `builtin-shl`), and precomputed tables as tinct dicts. The rest is pure tinct.
+`float-to-string` is deferred: a correct Ryu implementation requires 128-bit fixed-point arithmetic with exact rounding, which is feasible in principle via `builtin-encode` + `builtin-big-int` + bit operations, but the implementation risk and correctness surface are too high without a vetted reference. The irreducible form is `builtin-float-to-string` — a Rust primitive wrapping the `ryu` crate — which `float-to-string` calls directly. The `builtin-encode` primitive (below) remains necessary for other uses (binary protocol encoding, bit manipulation). A pure-tinct Ryu port is a future goal once the prelude infrastructure is stable.
 
 The irreducible primitive is **`builtin-encode: ByteOrder × a → Bytes`** — a general machine-level encoding primitive that converts any machine numeric type to its byte representation with explicit endianness. Not float-specific: the same primitive handles Int, Float, UInt8, UInt16, UInt32, UInt64. The bias is always toward generalizable functionality.
 
@@ -1342,6 +1429,18 @@ Two-stage decomposition enables independent swapping: replace `JsonCodec` with `
 
 The type chain: `MessageStream@Any → MessageStream@String → ByteStream → ByteStream → %stdout`. Each stage is independently swappable and the pipeline reads the same as the data flow.
 
+**`codec` wrapper function type:**
+
+```tinct
+# codec wraps a Codec instance value into a pipeline-stage function.
+# A pipeline stage takes its input and returns its output.
+codec: [fn@[bind: [c i o]  constraint: [c: [Codec c i o]]  return: [Fn@o [i]]]
+  [let inst@[Codec c i o]]
+  [fn [let x@i] [inst.encode x]]]
+```
+
+`codec` takes a `Codec` instance (which carries encode/decode), returns a function from `i` to `o`. The `|` pipe threads the LHS value as the function argument. `sink` similarly: `sink: [fn [let h@Handle] [fn [let data@Bytes] [builtin-write h data]]]`. Both have explicit types so the composition chain is type-checkable at each `|` step.
+
 The `Codec` typeclass declaration lives in `stdlib/net.llt` alongside `ByteStream`, `Datagram`, and `MessageStream`. Net-specific codec instances (`TlsRecordCodec`, `DtlsCodec`, `H2FrameCodec`, `HpackCodec`) are defined in their respective protocol files.
 
 ---
@@ -1436,6 +1535,8 @@ A fixed-size byte string of length N is isomorphic to a closed Map from integer 
 - `TypeNode.SizedBytes { n: M }` is incompatible with `TypeNode.SizedBytes { n: N }` when `M ≠ N` — the generic TypeNode structural equality check compares the `n` field; `4 ≠ 16` → type error with no special unification arm needed
 - A `Bytes` value narrows to `[Bytes N]` at a `TypeAssert` boundary when the `is:` predicate validates the length — the same runtime validation mechanism used by `UInt8`, `Port`, etc.
 
+**`N` is always a concrete type-stage integer.** `[Bytes N]` is a type-stage function application evaluated at type-check time; `N` must evaluate to a concrete `Int` in the type-stage evaluator. There are no type-stage integer variables — only concrete values or arithmetic expressions over them. `[Bytes [+ 16 16]]` evaluates to `[Bytes 32]` at type-check time. When the size cannot be statically determined, the annotation is simply `Bytes` (no size constraint). This means unification of `[Bytes M]` with `[Bytes N]` reduces to integer equality (`M == N`) with no need for a size variable unification rule.
+
 `N` is a plain `Int` value in the type stage — no `Kind::Nat` Rust enum variant is needed. `[Bytes N]` in annotation position is a type-stage function application: `Bytes` is a `TyConDef` whose body is `[fn [let n] TypeNode.SizedBytes n: n]`, applied to the integer literal `N`. Type-level arithmetic uses the existing type-stage evaluator's Int arithmetic: `[+ 32 32]` → `64` at type-check time.
 
 ### Construction and Operations
@@ -1494,7 +1595,17 @@ Every enumeration with associated constants (wire codes, error codes, opcodes, b
 
 ### Syntax
 
-Variants may carry named compile-time constants (lowercase identifiers followed by `:` and a literal value) alongside or instead of runtime payload fields (names followed by `@Type`). Constants and payload fields may appear in any order in the same variant:
+Variants may carry named compile-time constants (lowercase identifiers followed by `:` and a literal value) alongside or instead of runtime payload fields (names followed by `@Type`). Constants and payload fields may appear in any order in the same variant.
+
+**Formal grammar** for the extended variant declaration form:
+
+```
+variant_constructor = "[" UppercaseIdent (constant_entry | payload_field)* "]"
+constant_entry      = lowercase_ident ":" literal_expr
+payload_field       = lowercase_ident "@" type_expr
+```
+
+The disambiguation is unambiguous at a single token: `:` after a lowercase identifier → compile-time constant (literal value evaluated and stored as metadata on the constructor); `@` after a lowercase identifier → named runtime payload field (type annotation, value supplied at construction time). The parser reads the token after each lowercase identifier to decide which form it is.
 
 ```tinct
 DnsRcode: [type
@@ -1581,23 +1692,28 @@ DnsRcode: [type [NoError rcode: 0] [FormErr rcode: 1] ...]
 `[get field: value TypeName]` is not special syntax — it is a natural extension of the `Indexable` typeclass generalised to any key type `k`:
 
 ```tinct
+# 3-parameter Indexable with functional dependency: (s, k) → v
+# "the collection type and key type together determine the element type"
 [class [let Indexable s k v]
+  [determines: [[[s k] v]]  resolver: IndexResult]
   get:    [Fn@[or v Absent] [s k]]
   slice:  [Fn@s [s Int Int]]
   length: [Fn@Int [s]]]
 ```
 
+The functional dependency `(s, k) → v` is essential: given `[get 0 my-list]`, the type checker knows `s = [List T]` and `k = Int`, so it resolves `v = T` without ambiguity. Without the FD, `v` would be inferred as `Unknown`. The `determines:` annotation uses the same multi-parameter typeclass infrastructure as `Addable`/`Subtractable`.
+
 The key type determines which instance fires:
 
-| Expression | `s` | `k` | Instance |
-|---|---|---|---|
-| `[get 0 list]` | `[List T]` | `Int` | List by integer index (O(log n)) |
-| `[get "key" dict]` | `Dict` | `Graphemes` | Dict by string key (O(1)) |
-| `[get rcode: 2 DnsRcode]` | `[Seq DnsRcode]` | `[Map String Any]` | Type lookup table |
+| Expression | `s` | `k` | `v` | Instance |
+|---|---|---|---|---|
+| `[get 0 list]` | `[List T]` | `Int` | `T` | List by integer index (O(log n)) |
+| `[get "key" dict]` | `Dict` | `Graphemes` | `Any` | Dict by string key (O(1)) |
+| `[get rcode: 2 DnsRcode]` | `DnsRcode` (type dict) | `[Map String Any]` | `[or DnsRcode Absent]` | Type lookup table |
 
 Note: `[Seq T]` has no `Indexable` instance. `[get 0 seq]` is a compile-time type error — use `[head [drop n seq]]` for positional Seq access (O(n)), or `[collect seq]` to produce an `Indexable` `List` first.
 
-For type lookup tables, the type name evaluates at runtime to a `Seq` of all its variants (each carrying their compile-time constants as accessible fields). The named-argument dict `{rcode: 2}` is the key — `get` finds the first variant where all selector fields match. `Absent.Absent` for no match, consistent with `get?` on dicts. This unifies three previously separate concepts under one typeclass: sequential access, dictionary access, and enumeration lookup.
+**Type lookup table dispatch mechanism:** A type name used in lookup position (`[get rcode: 2 DnsRcode]`) evaluates to a runtime binding injected by the type declaration — a `Seq` of all the type's variants, each carrying its compile-time constants as accessible fields. This binding is named `DnsRcode` in scope (the same name as the type). `get` finds the first variant where all selector fields match the provided key dict `{rcode: 2}`. `Absent.Absent` for no match. The `Indexable` instance for type lookup tables has `s = TypeVariantSeq` (the runtime Seq of variants) and `k = [Map String Any]` (the named-field selector dict). This unifies sequential access, dictionary access, and enumeration lookup under one typeclass.
 
 ---
 

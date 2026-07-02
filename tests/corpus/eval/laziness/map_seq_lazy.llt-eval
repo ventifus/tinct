@@ -1,6 +1,6 @@
-# Lazy evaluation: $map on Seq does not apply the function until elements are accessed.
-# $take 0 returns nothing — if map were eager the $error would fire, but it's lazy so
-# the function is never called and the result is an empty dict.
+# Lazy evaluation: map on Seq does not apply the function until elements are accessed.
+# take 0 returns Seq.End — if map were eager the raise would fire, but it's lazy so
+# the function is never called and the result is an empty sequence terminal.
 [take 0 [map [fn [let x] [raise "forced eagerly"]] [range 0 3]]]
 === out
-Dict({})
+Seq()

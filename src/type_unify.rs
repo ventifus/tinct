@@ -2,7 +2,8 @@
 //! with Boolean-Algebraic Subtyping (BAS) and structural record types.
 
 use std::borrow::Cow;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
+use indexmap::IndexMap;
 use std::sync::Arc;
 
 use crate::ast::Span;
@@ -68,7 +69,7 @@ fn satisfies_constraint_inner(ty: &Type, class_name: &str, depth: usize) -> bool
     // [CONSTRAIN-TOP]: Showable(⊤) satisfied, all other classes ⊢ error.
     // Top concretizes only to itself (γ(⊤) = {⊤}), so class membership requires
     // a literal Top instance. Showable is the sole exception (total function policy).
-    if matches!(ty, Type::Top) {
+    if matches!(ty, Type::Any) {
         return class_name == "Showable";
     }
 
@@ -386,7 +387,8 @@ async fn check_constraints_on_var(
                 }
                 state.instance_resolution_depth += 1;
                 let inst_env = state.instance_env.clone();
-                let resolve_result = Box::pin(inst_env.resolve_instance(&class, concrete_ty, state)).await;
+                let resolve_result =
+                    Box::pin(inst_env.resolve_instance(&class, concrete_ty, state)).await;
                 state.instance_resolution_depth -= 1;
 
                 match resolve_result {
@@ -445,7 +447,8 @@ async fn check_constraints_on_var(
                     state,
                     constraints,
                     span.clone(),
-                ).await;
+                )
+                .await;
                 if was_inserted {
                     state.fd_in_progress.remove(var_name);
                 }
@@ -505,7 +508,8 @@ async fn improve_functional_dependency(
         state,
         constraints,
         span,
-    ).await;
+    )
+    .await;
     state.fd_depth -= 1;
     result
 }
@@ -581,15 +585,19 @@ async fn improve_functional_dependency_inner(
                 // Scan InstanceEnv for an instance whose determined-position type
                 // unifies with the ground determined types we have.
                 let instance_env = state.instance_env.clone();
-                if let Some((determining_types, det_pos_list)) = Box::pin(instance_env.reverse_lookup_mptc(
-                    class,
-                    ded_positions,
-                    &ded_types
-                        .iter()
-                        .map(|(_, ty)| ty.clone())
-                        .collect::<Vec<_>>(),
-                    state,
-                )).await {
+                if let Some((determining_types, det_pos_list)) = Box::pin(
+                    instance_env.reverse_lookup_mptc(
+                        class,
+                        ded_positions,
+                        &ded_types
+                            .iter()
+                            .map(|(_, ty)| ty.clone())
+                            .collect::<Vec<_>>(),
+                        state,
+                    ),
+                )
+                .await
+                {
                     // Unify each determining-position variable with the back-propagated type.
                     //
                     // Guard: skip variables already being processed by an outer FD improvement
@@ -621,7 +629,8 @@ async fn improve_functional_dependency_inner(
                             state,
                             constraints,
                             span.clone(),
-                        )).await;
+                        ))
+                        .await;
                         state.subst = local_subst;
                         state.fd_in_progress.remove(det_var.as_str());
                         result?;
@@ -699,7 +708,7 @@ async fn improve_functional_dependency_inner(
 
             match (container_ty, key_ty) {
                 (
-                    Type::Record(_) | Type::Intersection(_) | Type::Top,
+                    Type::Record(_) | Type::Intersection(_) | Type::Any,
                     Type::StringLiteral(field_name),
                 ) => {
                     // Route through resolve_has_field to apply [HAS-FIELD-REC],
@@ -729,7 +738,7 @@ async fn improve_functional_dependency_inner(
                     Some(Type::normalize_union(field_types))
                 }
                 (
-                    Type::Record(_) | Type::Union(_) | Type::Intersection(_) | Type::Top,
+                    Type::Record(_) | Type::Union(_) | Type::Intersection(_) | Type::Any,
                     Type::Str,
                 ) => {
                     // Str key (from promoted StringLiteral) — can't resolve statically
@@ -756,7 +765,8 @@ async fn improve_functional_dependency_inner(
                     .collect::<Vec<_>>(),
                 state,
                 span.clone(),
-            ).await?
+            )
+            .await?
         } else if let Some(class_decl) = state.class_env.get(class) {
             // Not an arithmetic class — check for resolver
             if let Some(ref resolver_name) = class_decl.resolver.clone() {
@@ -767,8 +777,10 @@ async fn improve_functional_dependency_inner(
                     fn_name: resolver_name.clone(),
                     args: det_arg_types,
                 };
-                let mut norm_ctx = crate::type_normalize::NormCtxt::new();
-                let resolved = crate::type_normalize::normalize(&stage_app, subst, &mut norm_ctx).await;
+                let mut norm_ctx =
+                    crate::type_normalize::NormCtxt::new(state.type_stage_env.clone());
+                let resolved =
+                    crate::type_normalize::normalize(&stage_app, subst, &mut norm_ctx).await;
 
                 // If normalization returned a stuck TypeStageApp, we can't improve yet.
                 // Defer: the deferred_equalities mechanism will retry when more types are ground.
@@ -922,7 +934,8 @@ async fn improve_functional_dependency_inner(
                 state,
                 constraints,
                 span.clone(),
-            )).await;
+            ))
+            .await;
             state.subst = local_subst;
             state.fd_in_progress.remove(ded_var.as_str());
             result?;
@@ -980,12 +993,6 @@ async fn lookup_arithmetic_instance(
             ("Int", "Int") => Ok(Type::Int),
             ("Float", "Float") => Ok(Type::Float),
             ("Int", "Float") | ("Float", "Int") => Ok(Type::Float),
-            // Number op Number — result is Number (could be Int or Float at runtime)
-            ("Number", "Number") | ("Number", "Int") | ("Int", "Number") => Ok(Type::Number),
-            // Number op Float or Float op Number — result is always Float.
-            // Reasoning: Int op Float = Float and Float op Float = Float, so either
-            // way the result is Float. This matches the Divisible rule below.
-            ("Number", "Float") | ("Float", "Number") => Ok(Type::Float),
             // T1 FIX: Never ∨ τ = Never (⊥ absorbs all operations)
             ("Never", _) | (_, "Never") => Ok(Type::Never),
             _ => Err(TypeErrorTyped::Generic(GenericTypeError {
@@ -999,12 +1006,6 @@ async fn lookup_arithmetic_instance(
             ("Int", "Int") | ("Float", "Float") | ("Int", "Float") | ("Float", "Int") => {
                 Ok(Type::Float)
             }
-            // Number / Number or Number / Int or Int / Number — result is Number
-            // (could be Float or Int depending on runtime values; Int/Int→Float though)
-            ("Number", "Number") | ("Number", "Int") | ("Int", "Number") => Ok(Type::Number),
-            // Number / Float or Float / Number — result is always Float.
-            // Int / Float = Float and Float / Float = Float.
-            ("Number", "Float") | ("Float", "Number") => Ok(Type::Float),
             // T1 FIX: Never ∨ τ = Never (⊥ absorbs all operations)
             ("Never", _) | (_, "Never") => Ok(Type::Never),
             _ => Err(TypeErrorTyped::Generic(GenericTypeError {
@@ -1099,14 +1100,12 @@ fn is_definitely_no_instance_for(class: &str, ty: &Type) -> bool {
         "Indexable" => {
             // A type is definitively non-Indexable only if it is a scalar/primitive
             // that cannot possibly be a container at runtime.
-            // Record, Union, Intersection, Top, Seq, Map, Unknown, NominalVariant — might work.
-            // Scalars (Int/Float/Bool/Str/Number and their literals), Function, Never — cannot.
+            // Record, Union, Intersection, Any, Seq, Map, Unknown, NominalVariant — might work.
+            // Scalars (Int/Float/Str and their literals), Function, Never — cannot.
             matches!(
                 ty,
                 Type::Int
                     | Type::Float
-                    | Type::Number
-                    | Type::Bool
                     | Type::Str
                     | Type::Never
                     | Type::Function { .. }
@@ -1128,7 +1127,6 @@ fn type_key(ty: &Type) -> &'static str {
     match ty {
         Type::Int => "Int",
         Type::Float => "Float",
-        Type::Number => "Number",
         Type::IntLiteral(_) => "Int", // Promoted
         Type::Never => "Never",       // T1 FIX: Never gets its own key (not "Unknown")
         _ => "_other", // F6 FIX: renamed from "Unknown" (clearer sentinel for unhandled types)
@@ -1277,7 +1275,7 @@ pub fn resolve_has_field(
         }
 
         // [HAS-FIELD-TOP]: Top → Top (accessing a field on an untyped dict yields Top)
-        Type::Top => Ok(Type::Top),
+        Type::Any => Ok(Type::Any),
 
         // [HAS-FIELD-UNKNOWN]: Unknown → Unknown
         Type::Unknown => Ok(Type::Unknown),
@@ -1465,13 +1463,11 @@ impl Substitution {
             Type::Int
             | Type::IntLiteral(_)
             | Type::Float
-            | Type::Bool
             | Type::Str
             | Type::StringLiteral(_)
             | Type::Bytes
-            | Type::Number
             | Type::Unknown
-            | Type::Top
+            | Type::Any
             | Type::Never
             | Type::Proxy
             | Type::Error
@@ -1704,7 +1700,7 @@ impl Substitution {
         }
 
         // Apply substitution to field types and to RowTail::Uniform key/value types.
-        let new_fields: BTreeMap<String, Type> = row
+        let new_fields: IndexMap<String, Type> = row
             .fields
             .iter()
             .map(|(k, v)| {
@@ -1794,10 +1790,6 @@ impl PartialEq for Substitution {
         *self.type_map.borrow() == *other.type_map.borrow()
     }
 }
-
-// Row variable occurs check functions removed — BAS Step 4: no RowVar tails exist.
-// row_var_occurs, row_var_occurs_in_type, row_var_occurs_pub, lower_row_var_levels_pub
-// were all removed. Tests in types.rs that used these functions have been updated.
 
 /// BAS record unification: unify only the fields shared between both rows, then unify tails.
 /// Fields unique to one row are ignored — BAS width subtyping handles openness
@@ -1940,7 +1932,8 @@ async fn unify_rows(
                         state,
                         constraints,
                         span.clone(),
-                    )).await?;
+                    ))
+                    .await?;
                 } else if !v_fixed.has_inference_vars() {
                     // Step 3: V is concrete — each named field Ti must be a subtype of V.
                     for field_ty in &all_fields {
@@ -2003,7 +1996,8 @@ async fn unify_rows(
                     state,
                     constraints,
                     span.clone(),
-                )).await?;
+                ))
+                .await?;
             } else if !v_fixed.has_inference_vars() {
                 // V is concrete: each named field Ti must be a subtype of V.
                 for field_ty in &field_types {
@@ -2112,12 +2106,10 @@ fn lower_levels_check_occurs(
         | Type::Float
         | Type::Str
         | Type::StringLiteral(_)
-        | Type::Bool
         | Type::Bytes
-        | Type::Number
         | Type::Proxy
         | Type::Unknown
-        | Type::Top
+        | Type::Any
         | Type::Error
         | Type::DirCap
         | Type::NetCap
@@ -2326,7 +2318,8 @@ async fn bind_single_type_var_from_compound(
         state,
         constraints,
         span.clone(),
-    ).await?;
+    )
+    .await?;
     let var_level = state.levels.get(var_name).copied().unwrap_or(0);
     subst.bind_at_level(var_name.clone(), var_level, concrete_promoted);
     subst.check_size(span)
@@ -2354,7 +2347,7 @@ pub async fn unify(
     // allow_eval is set to false inside unify to prevent runtime errors from propagating
     // into type inference (e.g., a failing resolver should produce a stuck TypeStageApp, not
     // a type error).
-    let mut norm_ctx = crate::type_normalize::NormCtxt::new();
+    let mut norm_ctx = crate::type_normalize::NormCtxt::new(state.type_stage_env.clone());
     norm_ctx.allow_eval = false;
     let a = crate::type_normalize::normalize(&a_substituted, subst, &mut norm_ctx).await;
     let b = crate::type_normalize::normalize(&b_substituted, subst, &mut norm_ctx).await;
@@ -2404,15 +2397,15 @@ pub async fn unify(
 
         // Top unification: Top should not appear in unification positions (it's for checking only).
         // If it does appear, treat it like Unknown for now (accepting unification with anything).
-        (Type::Top, Type::TypeVar(name, _)) => {
+        (Type::Any, Type::TypeVar(name, _)) => {
             state.levels.insert(name.clone(), 0);
             Ok(())
         }
-        (Type::TypeVar(name, _), Type::Top) => {
+        (Type::TypeVar(name, _), Type::Any) => {
             state.levels.insert(name.clone(), 0);
             Ok(())
         }
-        (Type::Top, other) | (other, Type::Top) => {
+        (Type::Any, other) | (other, Type::Any) => {
             let mut type_vars = HashSet::new();
             other.collect_all_vars(&mut type_vars);
             for var in &type_vars {
@@ -2605,9 +2598,7 @@ pub async fn unify(
         // `is_subtype(&b, &a)` arm fires. The "bidirectionality" is from the symmetric U-SUBSUME
         // check, not from asserting Int = IntLiteral(42) — Int is the wider type, IntLiteral(42)
         // is the narrower, and subtyping allows the narrower to satisfy the wider.
-        (Type::IntLiteral(_), Type::Int | Type::Number) | (Type::Int, Type::Number) => Ok(()),
-        (Type::Int | Type::Number, Type::IntLiteral(_)) | (Type::Number, Type::Int) => Ok(()),
-        (Type::Float, Type::Number) | (Type::Number, Type::Float) => Ok(()),
+        (Type::IntLiteral(_), Type::Int) | (Type::Int, Type::IntLiteral(_)) => Ok(()),
         (Type::StringLiteral(_), Type::Str) | (Type::Str, Type::StringLiteral(_)) => Ok(()),
         // Same-value literals: covered by the `a == b` early-return above.
         // Different-value INTEGER literals: allow unification without rebinding.
@@ -2718,7 +2709,9 @@ pub async fn unify(
         (Type::Never, _) | (_, Type::Never) => Ok(()),
 
         // Negation unification: structural (for now, basic support)
-        (Type::Negation(t1), Type::Negation(t2)) => Box::pin(unify(t1, t2, subst, state, constraints, span)).await,
+        (Type::Negation(t1), Type::Negation(t2)) => {
+            Box::pin(unify(t1, t2, subst, state, constraints, span)).await
+        }
 
         // Negation disjointness: if T <: A, then T & ~A = Never (provably empty intersection).
         // We can statically reject this case without full RDNF normalization — if is_subtype(T, A)
@@ -2993,10 +2986,26 @@ pub async fn unify(
                             let var = def.variance.get(i).copied().unwrap_or(Variance::Invariant);
                             match var {
                                 Variance::Covariant => {
-                                    Box::pin(unify(arg_a, arg_b, subst, state, constraints, span.clone())).await?;
+                                    Box::pin(unify(
+                                        arg_a,
+                                        arg_b,
+                                        subst,
+                                        state,
+                                        constraints,
+                                        span.clone(),
+                                    ))
+                                    .await?;
                                 }
                                 Variance::Contravariant => {
-                                    Box::pin(unify(arg_b, arg_a, subst, state, constraints, span.clone())).await?;
+                                    Box::pin(unify(
+                                        arg_b,
+                                        arg_a,
+                                        subst,
+                                        state,
+                                        constraints,
+                                        span.clone(),
+                                    ))
+                                    .await?;
                                 }
                                 Variance::Invariant => {
                                     // Invariant: bind TypeVars, but reject ground-type subsumption.
@@ -3005,7 +3014,15 @@ pub async fn unify(
                                     let ra = subst.apply(arg_a);
                                     let rb = subst.apply(arg_b);
                                     if ra.has_inference_vars() || rb.has_inference_vars() {
-                                        Box::pin(unify(&ra, &rb, subst, state, constraints, span.clone())).await?;
+                                        Box::pin(unify(
+                                            &ra,
+                                            &rb,
+                                            subst,
+                                            state,
+                                            constraints,
+                                            span.clone(),
+                                        ))
+                                        .await?;
                                     } else if ra != rb {
                                         return Err(TypeErrorTyped::UnificationFailure(
                                             UnificationFailure {
@@ -3155,7 +3172,8 @@ pub async fn unify(
                 state,
                 constraints,
                 span,
-            ).await
+            )
+            .await
         }
 
         // Symmetric C-Var1: Union on the left, concrete on the right
@@ -3169,7 +3187,8 @@ pub async fn unify(
                 state,
                 constraints,
                 span,
-            ).await
+            )
+            .await
         }
 
         // [C-VAR2] (BAS constraint rewriting, conservative):
@@ -3190,7 +3209,8 @@ pub async fn unify(
                 state,
                 constraints,
                 span,
-            ).await
+            )
+            .await
         }
 
         // Symmetric C-Var2: concrete on the left, Intersection on the right
@@ -3204,7 +3224,8 @@ pub async fn unify(
                 state,
                 constraints,
                 span,
-            ).await
+            )
+            .await
         }
 
         // TypeStageApp unification cases (after normalization in chr-normalization sprint).
@@ -3253,7 +3274,7 @@ pub async fn unify(
         // Defer to process_deferred_equalities (no resolvers available yet in chr-normalization)
         // In chr-prelude, this will attempt resolver evaluation before deferring
         (Type::TypeStageApp { .. }, concrete) | (concrete, Type::TypeStageApp { .. })
-            if !matches!(concrete, Type::TypeVar(..) | Type::Unknown | Type::Top) =>
+            if !matches!(concrete, Type::TypeVar(..) | Type::Unknown | Type::Any) =>
         {
             state.deferred_equalities.push((a.clone(), b.clone()));
             Ok(())
@@ -3326,7 +3347,7 @@ pub async fn process_deferred_equalities(
         }
         // One NormCtxt per outer iteration: the resolver cache is shared across all
         // equality pairs in this pass, amortizing the HashMap allocation cost.
-        let mut norm_ctx = crate::type_normalize::NormCtxt::new();
+        let mut norm_ctx = crate::type_normalize::NormCtxt::new(state.type_stage_env.clone());
         for (a, b) in deferred {
             // Normalize both sides
             let a_norm = crate::type_normalize::normalize(&a, subst, &mut norm_ctx).await;
@@ -3335,7 +3356,16 @@ pub async fn process_deferred_equalities(
             if !a_norm.has_type_stage_app() && !b_norm.has_type_stage_app() {
                 // Both sides fully reduced — attempt unification.
                 // F10 FIX: Emit diagnostic on unification failure instead of silently dropping.
-                match Box::pin(unify(&a_norm, &b_norm, subst, state, constraints, span.clone())).await {
+                match Box::pin(unify(
+                    &a_norm,
+                    &b_norm,
+                    subst,
+                    state,
+                    constraints,
+                    span.clone(),
+                ))
+                .await
+                {
                     Ok(()) => {
                         progress = true;
                     }

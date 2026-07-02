@@ -1,4 +1,4 @@
 # Laziness proof: cond does not evaluate error in later branch when earlier branch matches
-[result: [cond [[true 1] [true [/ 1 0]]]]]
+[result: [cond [[True 1] [True [/ 1 0]]]]]
 === out
 Dict({"result": Int(1)})

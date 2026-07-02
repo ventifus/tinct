@@ -13,7 +13,7 @@
 
   entries: [collect [map format-entry [each fn-names]]]
   count:   [length entries]
-  check:   [if [= count 10] true [raise "expected 10 entries"]]
+  check:   [if [= count 10] True [raise "expected 10 entries"]]
   page:    [begin check [join "\n\n" entries]]
 ]
 === out

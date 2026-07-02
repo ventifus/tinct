@@ -6,7 +6,7 @@
 #
 # This file is loaded via [include %libdir "strings.llt"]. The stdlib env
 # (prelude output) is available as the parent scope, providing access to:
-#   String:      str, str-slice (builtin, (start,end,string) semantics), str-length, replace, join
+#   String:      str, str-slice (builtin, (string,start,end) semantics), str-length, replace, join
 #   Arithmetic:  +, -, *, /
 #   Comparison:  <, =, >=
 #   Control:     if
@@ -22,7 +22,7 @@
 #   pad-*     Padding operations (left/right)
 #
 # str-slice is NOT exported from strings.llt. The prelude exports str-slice as
-# an alias for builtin-str-slice with (start, end, string) semantics. The
+# an alias for builtin-str-slice with (string, start, end) semantics. The
 # length-based form is str-substr (implemented in the public dict below).
 #
 # Structure: two-expression document.  The first dict holds private -impl/-check
@@ -39,14 +39,13 @@
 [
 
 # str-at-impl: extract single character at char-index `n` from string `s`.
-# Uses str-slice (raw Rust primitive with (start, end, string) semantics).
 # Precondition: n is already a valid non-negative character index.
 str-at-impl: [fn@String [let s@String n@Int]
-    [str-slice n [+ n 1] s]]
+    [str-slice s n [+ n 1]]]
 
 str-reverse-impl: [fn@String [let s@String i@Int len@Int acc@String]
     [if [< i len]
-        [str-reverse-impl s [+ i 1] len [str [str-slice i [+ i 1] s] acc]]
+        [str-reverse-impl s [+ i 1] len [str [str-slice s i [+ i 1]] acc]]
         acc]]
 
 ]
@@ -91,7 +90,7 @@ str-substr@[doc: "Extract substring starting at start with length len. Raises er
             [raise [str "str-substr: len " len " must be >= 0"]]
             [if [> end str-len]
                 [raise [str "str-substr: end position " end " exceeds string length " str-len]]
-                [str-slice start end s]]]]]
+                [str-slice s start end]]]]]
 
 # str-reverse: reverse a string (codepoint-by-codepoint).
 # Type: (String -> String)

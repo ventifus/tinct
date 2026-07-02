@@ -13,7 +13,8 @@ use std::time::Instant;
 use indexmap::IndexMap;
 
 use crate::eval::EvalContext;
-use crate::value::{string_val, Key, Thunk, Value};
+use crate::rust_span;
+use crate::value::{string_val, HashableValue, Thunk, Value};
 
 /// Format a string as a tinct string literal with proper escaping.
 ///
@@ -124,12 +125,11 @@ impl SpanRecord {
     ///
     /// Produces a dict with kebab-case keys matching the schema in doc/12-tooling.md.
     /// Empty optional fields use Value::Dict(IndexMap::new()) — the tinct empty-dict sentinel.
-    /// Used for converting span sequences to Seq.Cons/Seq.Nil variants for final output.
+    /// Used for converting span records to an integer-keyed Dict for output.
     pub fn to_value(&self, ctx: &Arc<EvalContext>) -> Value {
         /// Allocate a materialized thunk into the arena and return the ThunkId.
         fn alloc(val: Value, ctx: &Arc<EvalContext>) -> crate::value::ThunkId {
-            use crate::ast::Span;
-            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(val, Span::origin())))
+            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(val, rust_span!())))
         }
 
         /// The tinct empty-value sentinel (empty dict = `[]`).
@@ -137,15 +137,15 @@ impl SpanRecord {
             Value::Dict(IndexMap::new())
         }
 
-        let mut entries: IndexMap<Key, crate::value::ThunkId> = IndexMap::new();
+        let mut entries: IndexMap<HashableValue, crate::value::ThunkId> = IndexMap::new();
 
         entries.insert(
-            Key::String("id".into()),
+            HashableValue::Str("id".into()),
             alloc(Value::Int(self.id as i64), ctx),
         );
 
         entries.insert(
-            Key::String("materialize-parent".into()),
+            HashableValue::Str("materialize-parent".into()),
             alloc(
                 self.materialize_parent
                     .map(|id| Value::Int(id as i64))
@@ -155,7 +155,7 @@ impl SpanRecord {
         );
 
         entries.insert(
-            Key::String("create-parent".into()),
+            HashableValue::Str("create-parent".into()),
             alloc(
                 self.create_parent
                     .map(|id| Value::Int(id as i64))
@@ -165,12 +165,12 @@ impl SpanRecord {
         );
 
         entries.insert(
-            Key::String("create-time-us".into()),
+            HashableValue::Str("create-time-us".into()),
             alloc(Value::Int(self.create_time_us as i64), ctx),
         );
 
         entries.insert(
-            Key::String("source-file".into()),
+            HashableValue::Str("source-file".into()),
             alloc(
                 self.source_file
                     .clone()
@@ -181,7 +181,7 @@ impl SpanRecord {
         );
 
         entries.insert(
-            Key::String("source-start".into()),
+            HashableValue::Str("source-start".into()),
             alloc(
                 self.source_start
                     .map(|(line, col)| Value::Int((line * 1000000 + col) as i64))
@@ -191,7 +191,7 @@ impl SpanRecord {
         );
 
         entries.insert(
-            Key::String("source-end".into()),
+            HashableValue::Str("source-end".into()),
             alloc(
                 self.source_end
                     .map(|(line, col)| Value::Int((line * 1000000 + col) as i64))
@@ -201,7 +201,7 @@ impl SpanRecord {
         );
 
         entries.insert(
-            Key::String("source-text".into()),
+            HashableValue::Str("source-text".into()),
             alloc(
                 self.source_text
                     .clone()
@@ -212,7 +212,7 @@ impl SpanRecord {
         );
 
         entries.insert(
-            Key::String("builtin".into()),
+            HashableValue::Str("builtin".into()),
             alloc(
                 self.builtin_name
                     .clone()
@@ -223,7 +223,7 @@ impl SpanRecord {
         );
 
         entries.insert(
-            Key::String("origin-builtin".into()),
+            HashableValue::Str("origin-builtin".into()),
             alloc(
                 self.origin_builtin
                     .clone()
@@ -234,20 +234,20 @@ impl SpanRecord {
         );
 
         entries.insert(
-            Key::String("start-us".into()),
+            HashableValue::Str("start-us".into()),
             alloc(Value::Int(self.start_us as i64), ctx),
         );
         entries.insert(
-            Key::String("end-us".into()),
+            HashableValue::Str("end-us".into()),
             alloc(Value::Int(self.end_us as i64), ctx),
         );
         entries.insert(
-            Key::String("stall-us".into()),
+            HashableValue::Str("stall-us".into()),
             alloc(Value::Int(self.stall_us as i64), ctx),
         );
 
         entries.insert(
-            Key::String("stall-kind".into()),
+            HashableValue::Str("stall-kind".into()),
             alloc(
                 self.stall_kind
                     .clone()
@@ -419,7 +419,7 @@ impl ProfilingCollector {
         std::mem::take(&mut self.spans)
     }
 
-    /// Convert all collected spans to a tinct Seq.Cons/Seq.Nil linked list of dicts.
+    /// Convert all collected spans to an integer-keyed Dict of span dicts.
     ///
     /// Each span becomes a dict with kebab-case keys matching the schema in doc/12-tooling.md.
     /// Empty optional fields use Value::Dict(IndexMap::new()) — the tinct empty-dict sentinel.
@@ -427,27 +427,17 @@ impl ProfilingCollector {
         Self::spans_to_value(self.spans, ctx)
     }
 
-    /// Convert a vector of spans to a tinct Seq.Cons/Seq.Nil linked list of dicts.
+    /// Convert a vector of spans to an integer-keyed Dict of span dicts.
     /// Public to allow main.rs to serialize extracted spans.
     pub fn spans_to_value(spans: Vec<SpanRecord>, ctx: &Arc<EvalContext>) -> Value {
-        /// Allocate a materialized thunk into the arena and return the ThunkId.
-        fn alloc(val: Value, ctx: &Arc<EvalContext>) -> crate::value::ThunkId {
-            use crate::ast::Span;
-            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(val, Span::origin())))
+        use crate::value::HashableValue;
+        let mut dict = IndexMap::new();
+        for (i, s) in spans.into_iter().enumerate() {
+            let span_dict = s.to_value(ctx);
+            let id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(span_dict, rust_span!())));
+            dict.insert(HashableValue::Int(i as i64), id);
         }
-
-        // Build the Seq from right to left (tail-first linked list).
-        // Start from the Seq.Nil terminal and prepend each span dict.
-        let mut acc: Value = crate::value::make_seq_nil();
-
-        for s in spans.into_iter().rev() {
-            let dict = s.to_value(ctx);
-            let head_id = alloc(dict, ctx);
-            let tail_id = alloc(acc, ctx);
-            acc = crate::value::make_seq_cons(head_id, tail_id, ctx);
-        }
-
-        acc
+        Value::Dict(dict)
     }
 }
 
@@ -461,14 +451,14 @@ impl Default for ProfilingCollector {
 mod tests {
     use super::*;
 
-    fn test_ctx() -> Arc<EvalContext> {
+    async fn test_ctx() -> Arc<EvalContext> {
         let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();
-        let stdlib_env = crate::async_rt::block_on_anywhere(crate::builtins::create_stdlib_env()).expect("stdlib failed");
-        crate::eval::EvalContext::new(base_dir, Arc::clone(&stdlib_env), stdlib_env, false)
+        let env = crate::builtins::build_core_env();
+        crate::eval::EvalContext::new_empty(base_dir, Arc::clone(&env), false)
     }
 
-    #[test]
-    fn test_span_record_roundtrip() {
+    #[tokio::test]
+    async fn test_span_record_roundtrip() {
         let mut collector = ProfilingCollector::new();
 
         let id = collector.open_span(
@@ -484,44 +474,32 @@ mod tests {
 
         collector.close_span(id);
 
-        // Convert to Value — one span produces a non-empty Seq.Cons (head=dict, tail=Seq.Nil).
-        let ctx = test_ctx();
+        // Convert to Value — one span produces a single-entry integer-keyed Dict.
+        let ctx = test_ctx().await;
         let value = collector.into_value(&ctx);
         match value {
-            Value::Variant {
-                ref tag,
-                payload: Some(payload_id),
-            } if tag == "Seq.Cons" => {
-                // Extract head from Seq.Cons payload
-                let payload_thunk = ctx.get_thunk(payload_id);
-                let payload_val = payload_thunk
-                    .try_get_materialized()
-                    .expect("payload should be materialized");
-                let head_id = match payload_val {
-                    Value::Dict(ref d) => *d
-                        .get(&Key::String("head".into()))
-                        .expect("Seq.Cons must have head"),
-                    _ => panic!("Seq.Cons payload should be a Dict"),
-                };
-                // head is the span dict thunk
-                let head_thunk = ctx.get_thunk(head_id);
-                let head_val = head_thunk
+            Value::Dict(ref outer) => {
+                assert_eq!(outer.len(), 1, "expected one span entry");
+                let span_id = outer.get(&HashableValue::Int(0)).expect("entry 0 missing");
+                let span_thunk = ctx.get_thunk(*span_id);
+                let span_val = span_thunk
                     .try_get_materialized()
                     .expect("span dict should be materialized");
-                match head_val {
+                match span_val {
                     Value::Dict(entries) => {
-                        // Verify kebab-case keys exist
-                        assert!(entries.contains_key(&Key::String("id".into())));
-                        assert!(entries.contains_key(&Key::String("materialize-parent".into())));
-                        assert!(entries.contains_key(&Key::String("create-parent".into())));
-                        assert!(entries.contains_key(&Key::String("source-file".into())));
-                        assert!(entries.contains_key(&Key::String("start-us".into())));
-                        assert!(entries.contains_key(&Key::String("end-us".into())));
+                        assert!(entries.contains_key(&HashableValue::Str("id".into())));
+                        assert!(
+                            entries.contains_key(&HashableValue::Str("materialize-parent".into()))
+                        );
+                        assert!(entries.contains_key(&HashableValue::Str("create-parent".into())));
+                        assert!(entries.contains_key(&HashableValue::Str("source-file".into())));
+                        assert!(entries.contains_key(&HashableValue::Str("start-us".into())));
+                        assert!(entries.contains_key(&HashableValue::Str("end-us".into())));
                     }
-                    _ => panic!("Expected dict as head of Seq"),
+                    _ => panic!("Expected Dict as span entry"),
                 }
             }
-            _ => panic!("Expected Seq.Cons for non-empty span list"),
+            _ => panic!("Expected Dict for span output"),
         }
     }
 

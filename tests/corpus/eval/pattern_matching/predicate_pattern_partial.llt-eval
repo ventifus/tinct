@@ -1,6 +1,6 @@
 # T-1140: Predicate pattern with a partial call expression.
 # [starts-with? "foo"] in pattern position becomes [starts-with? "foo" scrutinee].
-# The predicate returns Bool(true), so the first arm matches.
+# The predicate returns Variant(Boolean.True), so the first arm matches.
 [
   word: "foobar"
   result: [match word

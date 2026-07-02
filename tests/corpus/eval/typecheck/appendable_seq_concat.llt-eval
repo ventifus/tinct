@@ -1,4 +1,4 @@
 # Appendable class infrastructure: AppendableSeq instance declares append-one = concat.
 # Verifies the Appendable class and Seq instance are accessible and the concat operation works.
-# Uses range to create Seqs without builtin-variant (which is not in the type env).
+# Uses range to create Seqs (builtin-variant eliminated).
 [result: [collect [concat [range 1 3] [range 3 5]]]]

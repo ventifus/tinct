@@ -1,7 +1,7 @@
 # Laziness proof: $take does not force the tail thunk when n reaches zero.
 # The third element of the seq is an error sentinel. After taking 2 elements,
-# the recursive take(0, tail) PendingBuiltin returns Seq.Nil immediately without
-# forcing `tail`, so the raise never fires (B-383 fix).
-[collect [take 2 [seq 1 [seq 2 [seq [raise "tail past n should not fire"] []]]]]]
+# take(0, tail) returns Seq.End immediately without forcing `tail`,
+# so the raise never fires (B-383 fix, S-896: now uses tinct Seq.Cons syntax).
+[collect [take 2 [Seq.Cons head: 1  tail: [Seq.Cons head: 2  tail: [Seq.Cons head: [raise "tail past n should not fire"]  tail: Seq.End]]]]]
 === out
 Dict({0: Int(1), 1: Int(2)})

@@ -7,7 +7,7 @@
   [macro my-add [let macro-args]
     [
       type: "call"
-      implied: true
+      implied: True
       fn: [type: "var" name: "+"]
       args: [
         [get 0 macro-args]

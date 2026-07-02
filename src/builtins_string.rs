@@ -30,7 +30,7 @@ use crate::builtins::{
 use crate::error::{EvalError, EvalResult};
 use crate::eval::materialize;
 use crate::eval_call::CallContext;
-use crate::value::{string_val, BuiltinArgs, Key, Thunk, ThunkId, Value};
+use crate::value::{string_val, BuiltinArgs, HashableValue, Thunk, ThunkId, Value};
 
 /// Maximum number of parts produced by `$split` (1,000,000 elements).
 /// Prevents heap exhaustion from splitting by empty separator or small patterns.
@@ -120,7 +120,7 @@ pub(crate) fn builtin_split(
         // Bound allocation before the guard fires: take at most MAX_SPLIT_PARTS + 1 entries
         // so that adversarial input (e.g., splitting a large string by empty separator) cannot
         // heap-exhaust the process before the check.
-        let mut map: IndexMap<Key, ThunkId> = IndexMap::new();
+        let mut map: IndexMap<HashableValue, ThunkId> = IndexMap::new();
 
         // Use match_indices to get byte offsets of each separator occurrence.
         if sep.is_empty() {
@@ -150,7 +150,7 @@ pub(crate) fn builtin_split(
                 },
                 call_span.clone(),
             ));
-            map.insert(Key::Int(0), ctx.alloc_thunk(thunk));
+            map.insert(HashableValue::Int(0), ctx.alloc_thunk(thunk));
 
             // Each character
             for (i, window) in char_boundaries.windows(2).enumerate() {
@@ -165,7 +165,7 @@ pub(crate) fn builtin_split(
                     call_span.clone(),
                 ));
                 map.insert(
-                    Key::Int(i64::try_from(i + 1).map_err(|_| {
+                    HashableValue::Int(i64::try_from(i + 1).map_err(|_| {
                         EvalError::resource_limit_exceeded(
                             "$split: result index too large".to_string(),
                             call_span.clone(),
@@ -186,7 +186,7 @@ pub(crate) fn builtin_split(
                 call_span.clone(),
             ));
             map.insert(
-                Key::Int(i64::try_from(last_idx).map_err(|_| {
+                HashableValue::Int(i64::try_from(last_idx).map_err(|_| {
                     EvalError::resource_limit_exceeded(
                         "$split: result index too large".to_string(),
                         call_span.clone(),
@@ -220,7 +220,7 @@ pub(crate) fn builtin_split(
                     call_span.clone(),
                 ));
                 map.insert(
-                    Key::Int(i64::try_from(part_count).map_err(|_| {
+                    HashableValue::Int(i64::try_from(part_count).map_err(|_| {
                         EvalError::resource_limit_exceeded(
                             "$split: result index too large".to_string(),
                             call_span.clone(),
@@ -252,7 +252,7 @@ pub(crate) fn builtin_split(
                 call_span.clone(),
             ));
             map.insert(
-                Key::Int(i64::try_from(part_count).map_err(|_| {
+                HashableValue::Int(i64::try_from(part_count).map_err(|_| {
                     EvalError::resource_limit_exceeded(
                         "$split: result index too large".to_string(),
                         call_span.clone(),
@@ -389,7 +389,7 @@ pub(crate) fn builtin_str_length(
 
 /// `str-slice`: Extract a substring by character indices [start, end).
 ///
-/// Takes 3 args: `start` (Int), `end` (Int), `input` (String).
+/// Takes 3 args: `input` (String), `start` (Int), `end` (Int).
 /// Returns a zero-copy slice of the input string.
 /// Inherently materializing: must inspect string content to find character boundaries.
 pub(crate) fn builtin_str_slice(
@@ -407,14 +407,14 @@ pub(crate) fn builtin_str_slice(
             return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
         }
 
-        // Get pre-materialized arguments
-        let start_val = args[0]
+        // Get pre-materialized arguments — calling convention: (string, start, end)
+        let input_val = args[0]
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let end_val = args[1]
+        let start_val = args[1]
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
-        let input_val = args[2]
+        let end_val = args[2]
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
@@ -426,7 +426,7 @@ pub(crate) fn builtin_str_slice(
                     "str-slice".to_string(),
                     "String",
                     input_val.type_name(),
-                    args[2].span.clone(),
+                    args[0].span.clone(),
                 )
                 .into());
             }
@@ -440,7 +440,7 @@ pub(crate) fn builtin_str_slice(
                     "str-slice".to_string(),
                     "non-negative Int",
                     &format!("Int({n})"),
-                    args[0].span.clone(),
+                    args[1].span.clone(),
                 )
                 .into());
             }
@@ -449,7 +449,7 @@ pub(crate) fn builtin_str_slice(
                     "str-slice".to_string(),
                     "Int",
                     start_val.type_name(),
-                    args[0].span.clone(),
+                    args[1].span.clone(),
                 )
                 .into());
             }
@@ -462,7 +462,7 @@ pub(crate) fn builtin_str_slice(
                     "str-slice".to_string(),
                     "non-negative Int",
                     &format!("Int({n})"),
-                    args[1].span.clone(),
+                    args[2].span.clone(),
                 )
                 .into());
             }
@@ -471,7 +471,7 @@ pub(crate) fn builtin_str_slice(
                     "str-slice".to_string(),
                     "Int",
                     end_val.type_name(),
-                    args[1].span.clone(),
+                    args[2].span.clone(),
                 )
                 .into());
             }
@@ -519,13 +519,14 @@ pub(crate) fn builtin_str_slice(
     })
 }
 
-/// `str-chars`: Convert a string to a lazy sequence of single-character strings.
+/// `builtin-str-nth-char`: Get the character at Unicode codepoint index `i` in a string.
 ///
-/// Takes 1 arg: `input` (String).
-/// Returns a lazy Seq where each element is a zero-copy String slice of one Unicode codepoint.
-/// Each slice shares the original Rc<str> source.
-/// Inherently materializing: must inspect string content to identify character boundaries.
-pub(crate) fn builtin_str_chars(
+/// Takes 2 args: (s: String, i: Int). Returns the character at that position as a
+/// zero-copy String slice, or `Absent.Absent` if `i` is out of bounds.
+/// O(n) to find the position (Unicode requires sequential scan), but drives laziness
+/// from the tinct side — the tinct `str-chars` wrapper calls this step by step.
+/// `String → Int → String | Absent`
+pub(crate) fn builtin_str_nth_char(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
     Box::pin(async move {
@@ -533,56 +534,64 @@ pub(crate) fn builtin_str_chars(
             args,
             named,
             call_span,
-            ctx,
+            ctx: _ctx,
         } = ctx_arg;
-        let val = expect_one_arg("str-chars", &args, named.as_ref(), &ctx, call_span.clone())?;
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+        reject_named("str-nth-char", named.as_ref(), call_span.clone())?;
 
-        let (input_source, input_start, input_end) = match val {
+        let s_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by pos_strictness[0]=Seq");
+        let (source, str_start, str_end) = match s_val {
             Value::String { source, start, end } => (source, start, end),
-            _ => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "str-chars".to_string(),
-                    "String",
-                    val.type_name(),
-                    args[0].span.clone(),
-                )
-                .into());
+            other => {
+                return Err(EvalError::type_mismatch("String", other.type_name(), call_span).into())
             }
         };
 
-        let input_str = &input_source[input_start..input_end];
+        let idx = match args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by pos_strictness[1]=Seq")
+        {
+            Value::Int(n) => n,
+            other => {
+                return Err(EvalError::type_mismatch("Int", other.type_name(), call_span).into())
+            }
+        };
 
-        // Build character ranges: each character is [start_byte, end_byte)
-        let mut char_ranges: Vec<(usize, usize)> = Vec::new();
-        for (byte_idx, ch) in input_str.char_indices() {
-            char_ranges.push((byte_idx, byte_idx + ch.len_utf8()));
-        }
-
-        // Build the sequence from the end to the beginning (right-to-left)
-        let mut result = Arc::new(Thunk::new_materialized(
-            crate::value::make_seq_nil(),
-            call_span.clone(),
-        ));
-
-        for (char_start, char_end) in char_ranges.into_iter().rev() {
-            let head = Arc::new(Thunk::new_materialized(
-                Value::String {
-                    source: Rc::clone(&input_source),
-                    start: input_start + char_start,
-                    end: input_start + char_end,
+        if idx < 0 {
+            return ok_val(
+                Value::Variant {
+                    tag: "Absent.Absent".into(),
+                    payload: None,
                 },
-                call_span.clone(),
-            ));
-
-            let head_id = ctx.alloc_thunk(head);
-            let tail_id = ctx.alloc_thunk(result);
-            result = Arc::new(Thunk::new_materialized(
-                crate::value::make_seq_cons(head_id, tail_id, &ctx),
-                call_span.clone(),
-            ));
+                call_span,
+            );
         }
 
-        Ok(result)
+        let s = &source[str_start..str_end];
+        match s.char_indices().nth(idx as usize) {
+            Some((byte_start, ch)) => {
+                let byte_end = byte_start + ch.len_utf8();
+                ok_val(
+                    Value::String {
+                        source,
+                        start: str_start + byte_start,
+                        end: str_start + byte_end,
+                    },
+                    call_span,
+                )
+            }
+            None => ok_val(
+                Value::Variant {
+                    tag: "Absent.Absent".into(),
+                    payload: None,
+                },
+                call_span,
+            ),
+        }
     })
 }
 
@@ -634,8 +643,13 @@ mod tests {
     use super::*;
     use crate::ast::Span;
     use crate::error::ErrorKind;
-    fn materialize(t: &crate::value::Thunk, s: Option<&crate::ast::Span>, ctx: &std::sync::Arc<crate::eval::EvalContext>) -> crate::error::EvalResult<crate::value::Value> {
-        crate::async_rt::block_on_anywhere(crate::eval::materialize(t, s, ctx))
+    use crate::rust_span;
+    async fn materialize(
+        t: &crate::value::Thunk,
+        s: Option<&crate::ast::Span>,
+        ctx: &std::sync::Arc<crate::eval::EvalContext>,
+    ) -> crate::error::EvalResult<crate::value::Value> {
+        crate::eval::materialize(t, s, ctx).await
     }
     use crate::test_util::test_span;
     use crate::value::Environment;
@@ -660,7 +674,7 @@ mod tests {
         if let Some(defs) = crate::builtins::builtin_module("core") {
             for def in defs {
                 let name = def.name.to_string();
-                let thunk = Arc::new(Thunk::new_materialized(Value::Builtin(def), Span::origin()));
+                let thunk = Arc::new(Thunk::new_materialized(Value::Builtin(def), rust_span!()));
                 env.write().unwrap().insert(name, thunk);
             }
         }
@@ -675,14 +689,14 @@ mod tests {
         assert_eq!(MAX_SPLIT_PARTS, 1_000_000);
     }
 
-    fn call_builtin<F: std::future::Future>(f: F) -> F::Output {
-        crate::async_rt::block_on_anywhere(f)
+    async fn call_builtin<F: std::future::Future>(f: F) -> F::Output {
+        f.await
     }
 
     /// Splitting a string with a non-empty separator that would produce exactly 2 parts
     /// succeeds (well within the limit).
-    #[test]
-    fn test_split_two_parts_succeeds() {
+    #[tokio::test]
+    async fn test_split_two_parts_succeeds() {
         let span = call_span();
         let ctx = test_ctx();
         let result = call_builtin(builtin_split(BuiltinArgs {
@@ -690,9 +704,10 @@ mod tests {
             named: no_named(),
             call_span: span,
             ctx: Arc::clone(&ctx),
-        }));
+        }))
+        .await;
         assert!(result.is_ok(), "splitting 'a,b' by ',' should succeed");
-        let val = materialize(&result.unwrap(), None, &ctx).unwrap();
+        let val = materialize(&result.unwrap(), None, &ctx).await.unwrap();
         // Should produce a 2-entry dict {0: "a", 1: "b"}
         assert!(
             matches!(val, Value::Dict(_)),
@@ -701,8 +716,8 @@ mod tests {
     }
 
     /// Empty separator on a very short string succeeds (char_count + 1 is small).
-    #[test]
-    fn test_split_empty_separator_short_string() {
+    #[tokio::test]
+    async fn test_split_empty_separator_short_string() {
         let span = call_span();
         let ctx = test_ctx();
         let result = call_builtin(builtin_split(BuiltinArgs {
@@ -710,7 +725,8 @@ mod tests {
             named: no_named(),
             call_span: span,
             ctx: Arc::clone(&ctx),
-        }));
+        }))
+        .await;
         assert!(
             result.is_ok(),
             "splitting 'abc' by empty string should succeed: {:?}",
@@ -722,8 +738,8 @@ mod tests {
 
     /// `builtin_str` is a pure primitive: no typeclass dispatch.
     /// The result is the decimal representation of the integer.
-    #[test]
-    fn test_str_no_showable_instance_falls_through() {
+    #[tokio::test]
+    async fn test_str_no_showable_instance_falls_through() {
         let span = call_span();
         let ctx = test_ctx();
         let int_thunk = Arc::new(Thunk::new_materialized(Value::Int(42), span.clone()));
@@ -732,9 +748,10 @@ mod tests {
             named: no_named(),
             call_span: span,
             ctx: Arc::clone(&ctx),
-        }));
+        }))
+        .await;
         assert!(result.is_ok(), "builtin_str(42) should succeed");
-        let val = materialize(&result.unwrap(), None, &ctx).unwrap();
+        let val = materialize(&result.unwrap(), None, &ctx).await.unwrap();
         assert!(
             matches!(&val, Value::String { source, start, end } if &source[*start..*end] == "42"),
             "expected string '42', got: {:?}",
@@ -743,8 +760,8 @@ mod tests {
     }
 
     /// `builtin_str` with zero args returns an empty string.
-    #[test]
-    fn test_str_zero_args_returns_empty_string() {
+    #[tokio::test]
+    async fn test_str_zero_args_returns_empty_string() {
         let span = call_span();
         let ctx = test_ctx();
         let result = call_builtin(builtin_str(BuiltinArgs {
@@ -752,9 +769,10 @@ mod tests {
             named: no_named(),
             call_span: span,
             ctx: Arc::clone(&ctx),
-        }));
+        }))
+        .await;
         assert!(result.is_ok(), "builtin_str() with 0 args should succeed");
-        let val = materialize(&result.unwrap(), None, &ctx).unwrap();
+        let val = materialize(&result.unwrap(), None, &ctx).await.unwrap();
         assert!(
             matches!(&val, Value::String { source, start, end } if source[*start..*end].is_empty()),
             "expected empty string, got: {:?}",
@@ -763,8 +781,8 @@ mod tests {
     }
 
     /// Arity error: `builtin_split` with 1 arg returns an arity mismatch error.
-    #[test]
-    fn test_split_arity_error() {
+    #[tokio::test]
+    async fn test_split_arity_error() {
         let span = call_span();
         let ctx = test_ctx();
         let result = call_builtin(builtin_split(BuiltinArgs {
@@ -772,7 +790,8 @@ mod tests {
             named: no_named(),
             call_span: span,
             ctx,
-        }));
+        }))
+        .await;
         assert!(result.is_err(), "split with 1 arg should return an error");
         let err = result.unwrap_err();
         assert!(
@@ -874,8 +893,7 @@ pub(crate) fn builtin_str_bytes(
 /// Returns the byte index of the first occurrence as an Int, or -1 if not found.
 /// Note: returns a *byte* index (not a character index). For ASCII strings, byte
 /// index equals character index. The stdlib `str-find` delegates to this builtin.
-/// This primitive uses Rust's O(n) `str::find` (two-way algorithm), replacing the
-/// O(n²) recursive `str-find-impl` that was previously in prelude.
+/// This primitive uses Rust's O(n) `str::find` (two-way algorithm).
 /// Inherently materializing: must inspect string content to search for substring.
 pub(crate) fn builtin_str_index_of(
     ctx_arg: BuiltinArgs,
@@ -1132,7 +1150,8 @@ pub(crate) fn builtin_str_map_chars(
                         call_span: call_span.clone(),
                         origin: Some(Arc::from("str-map-chars")),
                         ctx: &ctx,
-                    }).await?
+                    })
+                    .await?
                 }
                 Value::Builtin(def) => {
                     let builtin_args = BuiltinArgs {
@@ -1284,7 +1303,7 @@ pub(crate) fn builtin_regex_match(
         let haystack = require_string("regex-match?", haystack_val, args[1].span.clone())?;
 
         match regex::Regex::new(&pattern) {
-            Ok(re) => ok_val(Value::Bool(re.is_match(&haystack)), call_span),
+            Ok(re) => ok_val(Value::boolean(re.is_match(&haystack)), call_span),
             Err(e) => Err(EvalError::internal(
                 format!("regex-match?: invalid regex pattern {:?}: {}", pattern, e),
                 call_span,

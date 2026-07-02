@@ -198,10 +198,6 @@ Supplemental modules are available but must be loaded explicitly with `[include 
 | `protocols/socks5.llt` | SOCKS5 proxy wire helpers |
 | `protocols/grpc.llt` | gRPC frame encoding/decoding |
 
-### Interactive REPL
-
-`tinct repl` — incremental evaluation with persistent scope chains, bracket matching, line editing, and history.
-
 ### Source formatter
 
 `tinct fmt` — idempotent formatter that canonicalizes whitespace and layout. `--check` mode for CI, `--in-place` for editor integration.
@@ -210,7 +206,7 @@ Supplemental modules are available but must be loaded explicitly with `[include 
 
 ### Runtime reflection
 
-`[describe f]` returns a dict with the function's signature, doc string, annotation, and source AST. `[ast-of f]` returns the full body as a tinct dict using the canonical `[type: "..." span: [...] ...]` schema. Enables docgen, REPL `:describe`, and metaprogramming without a separate tooling layer.
+`[describe f]` returns a dict with the function's signature, doc string, annotation, and source AST. `[ast-of f]` returns the full body as a tinct dict using the canonical `[type: "..." span: [...] ...]` schema. Enables docgen and metaprogramming without a separate tooling layer.
 
 ```tinct
 doc: [describe my-fn].doc   # "Computes the running total"
@@ -283,7 +279,6 @@ just build          # Build debug version
 just test           # Run all tests (unit + corpus)
 just test-corpus    # Run only corpus tests
 just run            # Eval samples/basic.llt (the demo program), output JSON
-just repl           # Start interactive REPL
 just ci             # Run full CI pipeline
 just --list         # See all commands
 ```
@@ -301,7 +296,6 @@ echo '{"x": 1}' | cargo run -- run -i json -    # Read Tinct from stdin with JSO
 cargo run -- fmt samples/basic.llt               # Format source file (stdout)
 cargo run -- fmt --in-place samples/basic.llt    # Format source file in place
 cargo run -- fmt --check samples/basic.llt       # Check formatting without writing
-cargo run --features repl -- repl                # Start interactive REPL
 cargo run --features lsp -- lsp                  # Start LSP server (stdio)
 ```
 

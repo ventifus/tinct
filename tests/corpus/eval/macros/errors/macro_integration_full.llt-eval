@@ -2,7 +2,7 @@
 [macro add-one [let x]
   [
     type: "call"
-    implied: true
+    implied: True
     fn: [type: "var" name: "+"]
     args: [
       x
@@ -14,7 +14,7 @@
 [macro double [let x]
   [
     type: "call"
-    implied: true
+    implied: True
     fn: [type: "var" name: "*"]
     args: [
       x

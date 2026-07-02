@@ -8,7 +8,7 @@
    fn: [type: "var"  name: "+"]
    args: [0: arg  1: [type: "literal"  kind: "int"  value: 10]]
    named-args: []
-   implied: true]
+   implied: True]
 ]
 
 [add-ten [id 5]]

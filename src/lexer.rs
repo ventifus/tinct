@@ -48,8 +48,6 @@ pub enum Token {
     QuotedString(String),
     /// Escaped reference `$name` (disambiguator in head/key positions)
     EscapedRef(String),
-    /// Boolean literal (`true` or `false`)
-    BoolLit(bool),
     /// Interpolated string `i"..."` with parts: literals and variable references
     InterpolatedString(Vec<InterpolatedPart>),
     /// Triple-quoted string `"""..."""` (raw content, no escape processing except `\"\"\"`)
@@ -97,7 +95,6 @@ impl fmt::Display for Token {
             Token::Identifier(s) => write!(f, "{s}"),
             Token::QuotedString(s) => write!(f, "\"{s}\""),
             Token::EscapedRef(name) => write!(f, "${name}"),
-            Token::BoolLit(b) => write!(f, "{b}"),
             Token::InterpolatedString(parts) => {
                 write!(f, "i\"")?;
                 for part in parts {
@@ -446,7 +443,7 @@ impl<'a> Lexer<'a> {
                         Ok(())
                     } else {
                         // `..` — two consecutive dots. Emit the first Dot and let the next
-                        // iteration handle the second. Range syntax has been removed.
+                        // iteration handle the second.
                         self.advance();
                         let end = self.current_position();
                         self.tokens
@@ -1107,16 +1104,8 @@ impl<'a> Lexer<'a> {
         let word = self.input[word_start..word_end].to_string();
         let end = self.current_position();
 
-        // Check for reserved keywords and boolean literals
-        if word == "true" {
-            self.tokens
-                .push(Spanned::new(Token::BoolLit(true), Span::new(start, end)));
-            self.last_was_identifier = false; // BoolLit does not trigger ImmediateAt
-        } else if word == "false" {
-            self.tokens
-                .push(Spanned::new(Token::BoolLit(false), Span::new(start, end)));
-            self.last_was_identifier = false; // BoolLit does not trigger ImmediateAt
-        } else if word == "let" {
+        // Check for reserved keywords
+        if word == "let" {
             self.tokens
                 .push(Spanned::new(Token::Let, Span::new(start, end)));
             self.last_was_identifier = false; // Keywords do not trigger ImmediateAt
@@ -1135,15 +1124,11 @@ impl<'a> Lexer<'a> {
         Ok(())
     }
 
-    fn is_access_field_char(&self, c: char, is_first: bool) -> bool {
-        // Access field names (after dot in access chain) use allowlist from grammar.
-        // `?` is allowed anywhere in continuation to support predicate naming (`int?`, `dict?`).
-        // Grammar: access_field = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-" | "?")* }
-        if is_first {
-            c.is_ascii_alphabetic() || c == '_'
-        } else {
-            c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '?'
-        }
+    fn is_access_field_char(&self, c: char, _is_first: bool) -> bool {
+        // Access field names use the same expansive identifier rules as general identifiers.
+        // Tinct identifiers allow nearly any character — the denylist is very short.
+        // Using a restrictive allowlist here would reject valid identifiers like `%`, `!`, etc.
+        self.is_var_ident_char(c)
     }
 
     fn lex_number(
@@ -1680,15 +1665,6 @@ pub(crate) fn fmt_float(f: f64) -> Result<String, String> {
     }
 }
 
-/// Format a boolean as a tinct literal.
-pub(crate) fn fmt_bool(b: bool) -> &'static str {
-    if b {
-        "true"
-    } else {
-        "false"
-    }
-}
-
 /// Format a string as a tinct quoted literal with proper escaping.
 ///
 /// Escapes: `\"`, `\\`, `\n`, `\r`, `\t`
@@ -1894,11 +1870,15 @@ mod tests {
 
     #[test]
     fn test_booleans() {
-        assert_eq!(tok("true"), vec![Token::BoolLit(true)]);
-        assert_eq!(tok("false"), vec![Token::BoolLit(false)]);
+        // true/false are now plain identifiers — Boolean is a user-defined type (Boolean: [type True False])
+        assert_eq!(tok("true"), vec![Token::Identifier("true".into())]);
+        assert_eq!(tok("false"), vec![Token::Identifier("false".into())]);
         assert_eq!(
             tok("true false"),
-            vec![Token::BoolLit(true), Token::BoolLit(false)]
+            vec![
+                Token::Identifier("true".into()),
+                Token::Identifier("false".into())
+            ]
         );
     }
 
@@ -1977,14 +1957,14 @@ mod tests {
                 Token::Identifier("c".into())
             ]
         );
-        // Access field names only allow [a-zA-Z0-9_-?] per grammar
+        // Access field names use the same denylist as general identifiers, so !
+        // is allowed — "foo!bar" is a single identifier token.
         assert_eq!(
             tok("$a.foo!bar"),
             vec![
                 Token::EscapedRef("a".into()),
                 Token::Dot,
-                Token::Identifier("foo".into()),
-                Token::Identifier("!bar".into())
+                Token::Identifier("foo!bar".into()),
             ]
         );
     }
@@ -2024,8 +2004,6 @@ mod tests {
 
     #[test]
     fn test_bracket_is_always_open_bracket() {
-        // BracketAccess has been removed. `[` always emits OpenBracket regardless of
-        // what preceded it. Bracket access syntax ($a[0]) no longer exists in the grammar.
         assert_eq!(
             tok("$a[0]"),
             vec![

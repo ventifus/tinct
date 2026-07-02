@@ -6,7 +6,7 @@
 [
   dict1: [f: [fn [let x] x]]
   dict2: [f: [fn [let y] y]]
-  result: true
+  result: True
 ]
 === out
 Dict({"dict1": Dict({"f": Function(x)}), "dict2": Dict({"f": Function(y)}), "result": Bool(true)})

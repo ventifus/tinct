@@ -2,6 +2,8 @@
 //!
 //! Bidirectional conversion between AST nodes and tinct `Value::Variant` (Expr nodes) or `Value::Dict`
 //! (structural nodes) matching the canonical schema in `doc/feature/ast-schema.md`.
+//!
+//! The canonical runtime representation of AST nodes is `Value::Variant { tag: "Expr.<Tag>", .. }`.
 
 use std::fmt;
 use std::rc::Rc;
@@ -9,14 +11,15 @@ use std::sync::Arc;
 
 use indexmap::IndexMap;
 
-use crate::arena::ThunkId;
 use crate::ast::{
     Annotation, DotKey, Position, Span, Spanned, Stage, SurfaceDeclaration, SurfaceDocument,
     SurfaceEntry, SurfaceExpression, SurfaceItem, SurfaceNamedArg, SurfaceNode, SurfaceParam,
     SurfaceProgram,
 };
+use crate::rust_span;
 use crate::error::EvalResult;
-use crate::value::{string_val, Key, Thunk, Value};
+use crate::value::ThunkId;
+use crate::value::{string_val, HashableValue, Thunk, Value};
 
 /// Error type for AST dict validation failures during dict-to-AST conversion.
 #[derive(Debug, Clone)]
@@ -44,6 +47,72 @@ impl fmt::Display for AstError {
 
 impl std::error::Error for AstError {}
 
+/// Convert a `SurfaceNode` to a `Value::Variant { tag: "Expr.<Tag>", payload: Some(..) }`.
+///
+/// This is the canonical runtime representation of AST nodes. The tag is qualified
+/// (e.g. `"Expr.VarRef"`) so that pattern matching against `Expr.*` constructors works.
+/// The payload is a materialized dict with the node's fields.
+///
+/// Delegates to the `ExprConvert`-generated `to_expr_variant` method on `SurfaceExpression`.
+pub fn surface_node_to_expr_variant(
+    node: &Arc<SurfaceNode>,
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> Value {
+    let val = SurfaceExpression::to_expr_variant(node, ctx);
+    // Inject the node's span into the Expr.* payload so round-trips through
+    // Expr.* (macro expansion, metaprogramming) preserve source positions.
+    // Synthetic nodes (origin span) serialize span fields as zero, which
+    // dict_to_surface_node_inner reads back as a synthetic origin span.
+    inject_span_into_expr_variant(val, &node.span, ctx)
+}
+
+/// Add `span: {start: {line, col, offset}, end: {...}}` to an Expr.* variant's payload.
+fn inject_span_into_expr_variant(
+    val: Value,
+    span: &Span,
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> Value {
+    use crate::value::{HashableValue, Thunk, Value};
+
+    let synth = rust_span!(); // span for the synthetic thunks wrapping position integers
+
+    let make_pos = |pos: &Position| -> crate::value::ThunkId {
+        let mut d: IndexMap<HashableValue, crate::value::ThunkId> = IndexMap::new();
+        let mk = |n: i64| ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Int(n), synth.clone())));
+        d.insert(HashableValue::Str("line".into()),   mk(pos.line as i64));
+        d.insert(HashableValue::Str("col".into()),    mk(pos.column as i64));
+        d.insert(HashableValue::Str("offset".into()), mk(pos.offset as i64));
+        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Dict(d), synth.clone())))
+    };
+
+    let span_val = {
+        let mut d: IndexMap<HashableValue, crate::value::ThunkId> = IndexMap::new();
+        d.insert(HashableValue::Str("start".into()), make_pos(&span.start));
+        d.insert(HashableValue::Str("end".into()),   make_pos(&span.end));
+        Value::Dict(d)
+    };
+
+    match val {
+        Value::Variant { tag, payload: Some(payload_id) } => {
+            let payload_thunk = ctx.get_thunk(payload_id);
+            if let Some(Value::Dict(mut payload_dict)) = payload_thunk.try_get_materialized() {
+                let span_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(span_val, synth.clone())));
+                payload_dict.insert(HashableValue::Str("span".into()), span_id);
+                let new_payload_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    Value::Dict(payload_dict),
+                    span.clone(),
+                )));
+                Value::Variant { tag, payload: Some(new_payload_id) }
+            } else {
+                Value::Variant { tag, payload: Some(payload_id) }
+            }
+        }
+        // Unit variants (no payload) or non-variant values: pass through unchanged.
+        other => other,
+    }
+}
+
+
 /// Convert a dict representation back to a SurfaceNode.
 ///
 /// Reads the Variant tag or `type:` field and dispatches to the native `SurfaceExpression`
@@ -53,439 +122,47 @@ pub fn dict_to_surface_node(
     val: &Value,
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<Arc<SurfaceNode>, AstError> {
-    // Short-circuit: Value::Expression is already a SurfaceNode, no dict deserialization needed.
-    // Post-runtime-v2, [quote expr] returns Value::Expression(SurfaceNode) directly.
-    if let Value::Expression(node) = val {
-        return Ok(Arc::clone(node));
-    }
     dict_to_surface_node_inner(val, ctx)
 }
 
 /// Inner implementation of `dict_to_surface_node`.
 ///
-/// Extracts the Variant tag (or legacy `type:` string) and dispatches to the native
-/// `SurfaceExpression` constructor. All known variants are handled here. Unknown tags
-/// return a hard `AstError` — there is no Expr-based fallback bridge.
-///
-/// Variants handled here:
-/// - `"VarRef"`, `"Literal"` (Int/Float/Bool/Str), `"Dict"`, `"Fn"`,
-///   `"Call"`, `"DotAccess"`, `"Pipe"`
+/// Delegates to the `ExprConvert`-generated `from_expr_variant` method on `SurfaceExpression`.
+/// All known `Expr.*` Variant tags are handled there. Unknown tags return a hard `AstError`.
 fn dict_to_surface_node_inner(
     val: &Value,
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<Arc<SurfaceNode>, AstError> {
-    // Accept both Variant (canonical form from surface_node_to_thunk_id) and
-    // Dict (legacy form with type: field).
-    let (tag, dict) = match val {
-        Value::Variant { tag, payload } => {
-            let payload_thunk = payload.as_ref().ok_or_else(|| AstError {
-                message: format!("Expr variant {} has no payload", tag),
-                field_path: vec![],
-            })?;
-            let payload_val = ctx
-                .get_thunk(*payload_thunk)
-                .try_get_materialized()
-                .ok_or_else(|| AstError {
-                    message: "variant payload is not materialized".into(),
-                    field_path: vec![],
-                })?;
-            match payload_val {
-                Value::Dict(d) => (tag.clone(), d),
-                _ => {
-                    return Err(AstError {
-                        message: format!(
-                            "Expr variant payload must be Dict, got {}",
-                            payload_val.type_name()
-                        ),
-                        field_path: vec![],
-                    })
-                }
+    // AstError is a skip variant — to_expr_variant produces a unit Expr.AstError (no payload).
+    // Handle it here before from_expr_variant tries to read a non-existent payload.
+    if let Value::Variant { tag, payload: None } = val {
+        let stripped = if tag.starts_with("Expr.") {
+            &tag[5..]
+        } else {
+            tag.as_str()
+        };
+        if stripped == "AstError" {
+            return Ok(Arc::new(SurfaceNode::new(
+                SurfaceExpression::Error(rust_span!()),
+                rust_span!(),
+            )));
+        }
+    }
+
+    let node = SurfaceExpression::from_expr_variant(val, ctx)?;
+
+    // Extract the span from the Expr.* payload (injected by surface_node_to_expr_variant).
+    // If present, use it — it encodes the original user source position for round-trips.
+    if let Value::Variant { payload: Some(payload_id), .. } = val {
+        let payload_thunk = ctx.get_thunk(*payload_id);
+        if let Some(Value::Dict(dict)) = payload_thunk.try_get_materialized() {
+            if let Some(span) = extract_span(&dict, ctx) {
+                return Ok(Arc::new(SurfaceNode::new(node.expr.clone(), span)));
             }
         }
-        Value::Dict(d) => {
-            let type_str = get_string_field(d, "type", &[], ctx)?;
-            (type_str, d.clone())
-        }
-        _ => {
-            return Err(AstError {
-                message: "expected Variant or Dict".into(),
-                field_path: vec![],
-            })
-        }
-    };
+    }
 
-    let span = extract_span(&dict, ctx).unwrap_or_else(Span::origin);
-
-    let expr = match tag.as_str() {
-        // ---- Literals (Int, Float, Bool, Str) ----
-        "literal" | "Literal" => {
-            let kind = get_string_field(&dict, "kind", &["type"], ctx)?;
-            match kind.as_str() {
-                "int" => {
-                    let value = get_int_field(&dict, "value", &["kind"], ctx)?;
-                    SurfaceExpression::Int(value)
-                }
-                "u64" => {
-                    let value = get_u64_field(&dict, "value", &["kind"], ctx)?;
-                    SurfaceExpression::U64(value)
-                }
-                "float" => {
-                    let value = get_float_field(&dict, "value", &["kind"], ctx)?;
-                    SurfaceExpression::Float(value)
-                }
-                "bool" => {
-                    let value = get_bool_field(&dict, "value", &["kind"], ctx)?;
-                    SurfaceExpression::Bool(value)
-                }
-                "str" => {
-                    let value = get_string_field(&dict, "value", &["kind"], ctx)?;
-                    SurfaceExpression::Str(value)
-                }
-                _ => {
-                    return Err(AstError {
-                        message: format!("unknown literal kind: {}", kind),
-                        field_path: vec!["kind".into()],
-                    })
-                }
-            }
-        }
-
-        // ---- VarRef ----
-        "var" | "VarRef" => {
-            let name = get_string_field(&dict, "name", &["type"], ctx)?;
-            SurfaceExpression::VarRef {
-                name,
-                escaped: false,
-            }
-        }
-
-        // ---- DotAccess ----
-        "dot-access" | "DotAccess" => {
-            let target_val = get_dict_field(&dict, "target", &["type"], ctx)?;
-            let target = dict_to_surface_node(&target_val, ctx)?;
-            let field_val = get_field(&dict, "field", &["type"], ctx)?;
-            let field = match field_val {
-                Value::String {
-                    ref source,
-                    start,
-                    end,
-                } => DotKey::Ident(source[start..end].to_string()),
-                Value::Int(n) => DotKey::Int(n),
-                _ => {
-                    return Err(AstError {
-                        message: "field must be String or Int".into(),
-                        field_path: vec!["field".into()],
-                    })
-                }
-            };
-            SurfaceExpression::DotAccess {
-                expr: target,
-                field,
-            }
-        }
-
-        // ---- Pipe ----
-        "pipe" | "Pipe" => {
-            let lhs_val = get_dict_field(&dict, "lhs", &["type"], ctx)?;
-            let rhs_val = get_dict_field(&dict, "rhs", &["type"], ctx)?;
-            SurfaceExpression::Pipe {
-                lhs: dict_to_surface_node(&lhs_val, ctx)?,
-                rhs: dict_to_surface_node(&rhs_val, ctx)?,
-            }
-        }
-
-        // ---- Dict ----
-        "dict" | "Dict" => {
-            let entries_val = get_dict_field(&dict, "entries", &["type"], ctx)?;
-            let entries_list = extract_list(&entries_val, &["entries"], ctx)?;
-            let mut entries = Vec::new();
-            for (i, entry_val) in entries_list.into_iter().enumerate() {
-                let i_str = i.to_string();
-                let entry = dict_to_surface_entry(&entry_val, &["entries", &i_str], ctx)?;
-                entries.push(entry);
-            }
-            SurfaceExpression::Dict(entries)
-        }
-
-        // ---- Call ----
-        "call" | "Call" => {
-            let fn_val = get_dict_field(&dict, "fn", &["type"], ctx)?;
-            let func = dict_to_surface_node(&fn_val, ctx)?;
-
-            let args_val = get_dict_field(&dict, "args", &["type"], ctx)?;
-            let args_list = extract_list(&args_val, &["args"], ctx)?;
-            let mut args = Vec::new();
-            for arg_val in args_list {
-                args.push(dict_to_surface_node(&arg_val, ctx)?);
-            }
-
-            let named_args_val = get_dict_field(&dict, "named-args", &["type"], ctx)?;
-            let named_args_list = extract_list(&named_args_val, &["named-args"], ctx)?;
-            let mut named_args = Vec::new();
-            for (i, na_val) in named_args_list.into_iter().enumerate() {
-                let i_str = i.to_string();
-                named_args.push(dict_to_surface_named_arg(
-                    &na_val,
-                    &["named-args", &i_str],
-                    ctx,
-                )?);
-            }
-
-            let implied = get_bool_field(&dict, "implied", &["type"], ctx)?;
-
-            SurfaceExpression::Call {
-                func,
-                args,
-                named_args,
-                implied,
-            }
-        }
-
-        // ---- Fn ----
-        "fn" | "Fn" => {
-            let params_val = get_dict_field(&dict, "params", &["type"], ctx)?;
-            let params_list = extract_list(&params_val, &["params"], ctx)?;
-            let mut params = Vec::new();
-            for (i, param_val) in params_list.into_iter().enumerate() {
-                let i_str = i.to_string();
-                params.push(dict_to_surface_param(&param_val, &["params", &i_str], ctx)?);
-            }
-
-            let return_ann = match get_optional_dict_field(&dict, "return-ann", ctx)? {
-                Some(ann_val) if !is_empty_dict(&ann_val) => {
-                    Some(dict_to_annotation(&ann_val, &["return-ann"], ctx)?)
-                }
-                _ => None,
-            };
-
-            let body_val = get_dict_field(&dict, "body", &["type"], ctx)?;
-            let body = dict_to_surface_node(&body_val, ctx)?;
-
-            let desugared = get_bool_field(&dict, "desugared", &["type"], ctx)?;
-
-            SurfaceExpression::Fn {
-                return_ann,
-                params,
-                body,
-                desugared,
-            }
-        }
-
-        // ---- TypeAssert ----
-        "type-assert" | "TypeAssert" => {
-            let annotation_val = get_dict_field(&dict, "annotation", &["type"], ctx)?;
-            let annotation = dict_to_annotation(&annotation_val, &["annotation"], ctx)?;
-            let expr_val = get_dict_field(&dict, "expr", &["type"], ctx)?;
-            let expr = dict_to_surface_node(&expr_val, ctx)?;
-            SurfaceExpression::TypeAssert { annotation, expr }
-        }
-
-        // ---- Annotated ----
-        "annotated" | "Annotated" => {
-            let name = get_string_field(&dict, "name", &["type"], ctx)?;
-            let annotation_val = get_dict_field(&dict, "annotation", &["type"], ctx)?;
-            let annotation = dict_to_annotation(&annotation_val, &["annotation"], ctx)?;
-            SurfaceExpression::Annotated { name, annotation }
-        }
-
-        // ---- Rest ----
-        "rest" | "Rest" => {
-            let name_val = get_dict_field(&dict, "name", &["type"], ctx)?;
-            let name = match name_val {
-                Value::Dict(ref d) if d.is_empty() => None,
-                Value::String {
-                    ref source,
-                    start,
-                    end,
-                } => Some(source[start..end].to_string()),
-                _ => {
-                    return Err(AstError {
-                        message: "name must be String or empty dict".into(),
-                        field_path: vec!["name".into()],
-                    })
-                }
-            };
-            SurfaceExpression::Rest(name)
-        }
-
-        // ---- Quote ----
-        "quote" | "Quote" => {
-            let expr_val = get_dict_field(&dict, "expr", &["type"], ctx)?;
-            let expr = dict_to_surface_node(&expr_val, ctx)?;
-            SurfaceExpression::Quote(expr)
-        }
-
-        // ---- Unquote ----
-        "unquote" | "Unquote" => {
-            let expr_val = get_dict_field(&dict, "expr", &["type"], ctx)?;
-            let expr = dict_to_surface_node(&expr_val, ctx)?;
-            SurfaceExpression::Unquote(expr)
-        }
-
-        // ---- UnquoteSplice ----
-        "unquote-splice" | "UnquoteSplice" => {
-            let expr_val = get_dict_field(&dict, "expr", &["type"], ctx)?;
-            let expr = dict_to_surface_node(&expr_val, ctx)?;
-            SurfaceExpression::UnquoteSplice(expr)
-        }
-
-        // ---- Sequential ----
-        "sequential" | "Sequential" => {
-            let exprs_val = get_dict_field(&dict, "exprs", &["type"], ctx)?;
-            let exprs_list = extract_list(&exprs_val, &["exprs"], ctx)?;
-            let mut exprs = Vec::new();
-            for expr_val in exprs_list {
-                exprs.push(dict_to_surface_node(&expr_val, ctx)?);
-            }
-            SurfaceExpression::Sequential(exprs)
-        }
-
-        // ---- PatternDecl ----
-        "pattern-decl" | "PatternDecl" => {
-            let bindings_val = get_dict_field(&dict, "bindings", &["type"], ctx)?;
-            let bindings_list = extract_list(&bindings_val, &["bindings"], ctx)?;
-            let mut bindings = Vec::new();
-            for binding_val in bindings_list {
-                bindings.push(dict_to_surface_node(&binding_val, ctx)?);
-            }
-            SurfaceExpression::PatternDecl { bindings }
-        }
-
-        // ---- LetDecl ----
-        "let-decl" | "LetDecl" => {
-            let bindings_val = get_dict_field(&dict, "bindings", &["type"], ctx)?;
-            let bindings_list = extract_list(&bindings_val, &["bindings"], ctx)?;
-            let mut bindings = Vec::new();
-            for binding_val in bindings_list {
-                bindings.push(dict_to_surface_node(&binding_val, ctx)?);
-            }
-            SurfaceExpression::LetDecl { bindings }
-        }
-
-        // ---- Placeholder ----
-        "placeholder" | "Placeholder" => SurfaceExpression::Placeholder,
-
-        // ---- Error ----
-        "ast-error" | "AstError" => {
-            let error_span_val = get_dict_field(&dict, "span", &["type"], ctx)?;
-            let error_span = match &error_span_val {
-                Value::Dict(span_dict) => {
-                    let start_id =
-                        span_dict
-                            .get(&Key::String("start".into()))
-                            .ok_or_else(|| AstError {
-                                message: "span dict missing 'start' field".into(),
-                                field_path: vec!["span".into()],
-                            })?;
-                    let start_thunk = ctx.get_thunk(*start_id);
-                    let start_val = start_thunk.try_get_materialized().ok_or_else(|| AstError {
-                        message: "span.start is not materialized".into(),
-                        field_path: vec!["span".into(), "start".into()],
-                    })?;
-
-                    let end_id =
-                        span_dict
-                            .get(&Key::String("end".into()))
-                            .ok_or_else(|| AstError {
-                                message: "span dict missing 'end' field".into(),
-                                field_path: vec!["span".into()],
-                            })?;
-                    let end_thunk = ctx.get_thunk(*end_id);
-                    let end_val = end_thunk.try_get_materialized().ok_or_else(|| AstError {
-                        message: "span.end is not materialized".into(),
-                        field_path: vec!["span".into(), "end".into()],
-                    })?;
-
-                    let start = extract_position(&start_val, ctx).ok_or_else(|| AstError {
-                        message: "invalid start position".into(),
-                        field_path: vec!["span".into(), "start".into()],
-                    })?;
-                    let end = extract_position(&end_val, ctx).ok_or_else(|| AstError {
-                        message: "invalid end position".into(),
-                        field_path: vec!["span".into(), "end".into()],
-                    })?;
-
-                    Span::new(start, end)
-                }
-                _ => {
-                    return Err(AstError {
-                        message: "span must be Dict".into(),
-                        field_path: vec!["span".into()],
-                    })
-                }
-            };
-            SurfaceExpression::Error(error_span)
-        }
-
-        // ---- Match ----
-        "match" | "Match" => {
-            use crate::ast::SurfaceMatchArm;
-            let scrutinee_val = get_dict_field(&dict, "scrutinee", &["type"], ctx)?;
-            let scrutinee = dict_to_surface_node(&scrutinee_val, ctx)?;
-
-            let arms_val = get_dict_field(&dict, "arms", &["type"], ctx)?;
-            let arms_list = extract_list(&arms_val, &["arms"], ctx)?;
-            let mut arms = Vec::new();
-            for (i, arm_val) in arms_list.into_iter().enumerate() {
-                let i_str = i.to_string();
-                let arm_dict = match arm_val {
-                    Value::Dict(d) => d,
-                    _ => {
-                        return Err(AstError {
-                            message: format!("match arm {} must be Dict", i),
-                            field_path: vec!["arms".into(), i_str.clone()],
-                        })
-                    }
-                };
-                let pattern_val = get_dict_field(&arm_dict, "pattern", &["arms", &i_str], ctx)?;
-                let pattern = dict_to_pattern(&pattern_val, &["arms", &i_str, "pattern"], ctx)?;
-                let guard = match get_optional_dict_field(&arm_dict, "guard", ctx)? {
-                    Some(guard_val) if !is_empty_dict(&guard_val) => {
-                        Some(dict_to_surface_node(&guard_val, ctx)?)
-                    }
-                    _ => None,
-                };
-                let body_val = get_dict_field(&arm_dict, "body", &["arms", &i_str], ctx)?;
-                let body = dict_to_surface_node(&body_val, ctx)?;
-                arms.push(SurfaceMatchArm {
-                    pattern,
-                    guard,
-                    body,
-                });
-            }
-            SurfaceExpression::Match { scrutinee, arms }
-        }
-
-        // ---- CaseArm ----
-        "case-arm" | "CaseArm" => {
-            // Optional let_bindings field (present only in 3-arg form)
-            let let_bindings = match get_optional_dict_field(&dict, "let_bindings", ctx)? {
-                Some(v) if !matches!(v, Value::Dict(ref m) if m.is_empty()) => {
-                    Some(dict_to_surface_node(&v, ctx)?)
-                }
-                _ => None,
-            };
-            let pattern_val = get_dict_field(&dict, "pattern", &["type"], ctx)?;
-            let pattern = dict_to_surface_node(&pattern_val, ctx)?;
-            let body_val = get_dict_field(&dict, "body", &["type"], ctx)?;
-            let body = dict_to_surface_node(&body_val, ctx)?;
-            SurfaceExpression::CaseArm {
-                let_bindings,
-                pattern,
-                body,
-            }
-        }
-
-        // ---- Unknown variant: hard error (all variants must be handled natively) ----
-        _ => {
-            return Err(AstError {
-                message: format!("dict_to_surface_node: unknown node type: {}", tag),
-                field_path: vec![],
-            });
-        }
-    };
-
-    Ok(Arc::new(SurfaceNode { expr, span }))
+    Ok(node)
 }
 
 /// Convert a dict to a `Spanned<SurfaceEntry>`.
@@ -515,98 +192,72 @@ fn dict_to_surface_entry(
     let value_val = get_dict_field(dict, "value", path, ctx)?;
     let value = dict_to_surface_node(&value_val, ctx)?;
 
-    let span = extract_span(dict, ctx).unwrap_or_else(Span::origin);
+    let span = extract_span(dict, ctx).unwrap_or_else(|| rust_span!());
 
     Ok(Spanned::new(SurfaceEntry { key, value }, span))
 }
 
-/// Convert a dict to a `Spanned<SurfaceNamedArg>`.
+/// Deserialize an `Annotation` from a value produced by `annotation_to_value` or the old thunk format.
 ///
-/// Surface-native reverse for `surface_named_arg_to_thunk_id`.
-fn dict_to_surface_named_arg(
-    val: &Value,
-    path: &[&str],
-    ctx: &Arc<crate::eval::EvalContext>,
-) -> Result<Spanned<SurfaceNamedArg>, AstError> {
-    let dict = match val {
-        Value::Dict(d) => d,
-        _ => {
-            return Err(AstError {
-                message: "named-arg must be Dict".into(),
-                field_path: path.iter().map(|s| s.to_string()).collect(),
-            })
-        }
-    };
-
-    let name = get_string_field(dict, "name", path, ctx)?;
-    let value_val = get_dict_field(dict, "value", path, ctx)?;
-    let value = dict_to_surface_node(&value_val, ctx)?;
-
-    let span = extract_span(dict, ctx).unwrap_or_else(Span::origin);
-
-    Ok(Spanned::new(
-        SurfaceNamedArg {
-            name,
-            value,
-            annotation: None,
-        },
-        span,
-    ))
-}
-
-/// Convert a dict to a `Spanned<SurfaceParam>`.
-///
-/// Surface-native reverse for `surface_param_to_thunk_id`.
-fn dict_to_surface_param(
-    val: &Value,
-    path: &[&str],
-    ctx: &Arc<crate::eval::EvalContext>,
-) -> Result<Spanned<SurfaceParam>, AstError> {
-    let dict = match val {
-        Value::Dict(d) => d,
-        _ => {
-            return Err(AstError {
-                message: "param must be Dict".into(),
-                field_path: path.iter().map(|s| s.to_string()).collect(),
-            })
-        }
-    };
-
-    let name = get_string_field(dict, "name", path, ctx)?;
-
-    let annotation = match get_optional_dict_field(dict, "annotation", ctx)? {
-        Some(ann_val) if !is_empty_dict(&ann_val) => {
-            let mut new_path: Vec<String> = path.iter().map(|s| s.to_string()).collect();
-            new_path.push("annotation".to_string());
-            let path_refs: Vec<&str> = new_path.iter().map(|s| s.as_str()).collect();
-            Some(dict_to_annotation(&ann_val, &path_refs, ctx)?)
-        }
-        _ => None,
-    };
-
-    let variadic = get_bool_field(dict, "variadic", path, ctx)?;
-
-    let span = extract_span(dict, ctx).unwrap_or_else(Span::origin);
-
-    Ok(Spanned::new(
-        SurfaceParam {
-            name,
-            annotation,
-            variadic,
-        },
-        span,
-    ))
-}
-
-/// Deserialize an `Annotation` from a dict produced by `annotation_to_thunk_id`.
+/// Handles two formats:
+/// 1. Variant format from `annotation_to_value`: `Value::Variant { tag: "Annotation.Simple"|..., payload: Dict{text, name} }`
+/// 2. Dict format with `kind` key: `Value::Dict { kind: "simple"|..., ... }`
 ///
 /// Used by `dict_to_surface_node_inner` (Fn return annotation) and `dict_to_surface_param`.
-/// The `"dict"` arm handles `Annotation::PropertyDict` using `dict_to_surface_entry`.
 fn dict_to_annotation(
     val: &Value,
     path: &[&str],
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<Spanned<Annotation>, AstError> {
+    // Handle the Variant format produced by annotation_to_value / annotation_inner_to_value.
+    // Tags: "Annotation.Simple", "Annotation.PropertyDict", "Annotation.Annotated", "Annotation.Unknown"
+    if let Value::Variant {
+        tag,
+        payload: Some(payload_id),
+    } = val
+    {
+        let stripped = if tag.starts_with("Annotation.") {
+            &tag[11..]
+        } else {
+            tag.as_str()
+        };
+        let payload_thunk = ctx.get_thunk(*payload_id);
+        let payload_val = payload_thunk
+            .try_get_materialized()
+            .unwrap_or_else(|| Value::Dict(indexmap::IndexMap::new()));
+        let ann = match stripped {
+            "Simple" => match &payload_val {
+                Value::Dict(d) => {
+                    let name = get_string_field(d, "name", path, ctx).unwrap_or_else(|_| {
+                        get_string_field(d, "text", path, ctx).unwrap_or_default()
+                    });
+                    Annotation::Simple(name)
+                }
+                _ => Annotation::Simple(String::new()),
+            },
+            "PropertyDict" | "Unknown" => {
+                // Reconstruct as a simple annotation using the text field
+                match &payload_val {
+                    Value::Dict(d) => {
+                        let text = get_string_field(d, "text", path, ctx).unwrap_or_default();
+                        Annotation::Simple(text)
+                    }
+                    _ => Annotation::Simple(String::new()),
+                }
+            }
+            "Annotated" => match &payload_val {
+                Value::Dict(d) => {
+                    let name = get_string_field(d, "name", path, ctx).unwrap_or_default();
+                    let inner = get_string_field(d, "inner", path, ctx).unwrap_or_default();
+                    Annotation::Annotated(name, Box::new(Annotation::Simple(inner)))
+                }
+                _ => Annotation::Simple(String::new()),
+            },
+            _ => Annotation::Simple(String::new()),
+        };
+        return Ok(Spanned::new(ann, rust_span!()));
+    }
+
     let dict = match val {
         Value::Dict(d) => d,
         _ => {
@@ -657,7 +308,7 @@ fn dict_to_annotation(
         }
     };
 
-    let span = extract_span(dict, ctx).unwrap_or_else(Span::origin);
+    let span = extract_span(dict, ctx).unwrap_or_else(|| rust_span!());
 
     Ok(Spanned::new(ann, span))
 }
@@ -682,7 +333,7 @@ fn dict_to_pattern(
         }
     };
 
-    let span = extract_span(dict, ctx).unwrap_or_else(Span::origin);
+    let span = extract_span(dict, ctx).unwrap_or_else(|| rust_span!());
     let kind = get_string_field(dict, "type", path, ctx)?;
 
     let pattern = match kind.as_str() {
@@ -690,12 +341,12 @@ fn dict_to_pattern(
 
         "variable" => {
             let name = get_string_field(dict, "name", path, ctx)?;
-            Pattern::Pin(name)
+            Pattern::Pin(name, crate::ast::Resolution::new())
         }
 
         "pin" => {
             let name = get_string_field(dict, "name", path, ctx)?;
-            Pattern::Pin(name)
+            Pattern::Pin(name, crate::ast::Resolution::new())
         }
 
         "literal" => {
@@ -704,7 +355,6 @@ fn dict_to_pattern(
                 Value::Int(n) => LiteralPattern::Int(n),
                 Value::U64(n) => LiteralPattern::U64(n),
                 Value::Float(f) => LiteralPattern::Float(f),
-                Value::Bool(b) => LiteralPattern::Bool(b),
                 Value::String {
                     ref source,
                     start,
@@ -747,23 +397,6 @@ fn dict_to_pattern(
             }
             let rest = get_bool_field(dict, "rest", path, ctx)?;
             Pattern::Dict { fields, rest }
-        }
-
-        "seq" => {
-            let head_val = get_dict_field(dict, "head", path, ctx)?;
-            let tail_val = get_dict_field(dict, "tail", path, ctx)?;
-            let mut head_path: Vec<String> = path.iter().map(|s| s.to_string()).collect();
-            head_path.push("head".to_string());
-            let mut tail_path: Vec<String> = path.iter().map(|s| s.to_string()).collect();
-            tail_path.push("tail".to_string());
-            let head_path_refs: Vec<&str> = head_path.iter().map(|s| s.as_str()).collect();
-            let tail_path_refs: Vec<&str> = tail_path.iter().map(|s| s.as_str()).collect();
-            let head = dict_to_pattern(&head_val, &head_path_refs, ctx)?;
-            let tail = dict_to_pattern(&tail_val, &tail_path_refs, ctx)?;
-            Pattern::Seq {
-                head: Box::new(head),
-                tail: Box::new(tail),
-            }
         }
 
         "constructor" => {
@@ -813,15 +446,17 @@ fn dict_to_pattern(
 // ============================================================================
 
 fn get_field(
-    dict: &IndexMap<Key, ThunkId>,
+    dict: &IndexMap<HashableValue, ThunkId>,
     key: &str,
     path: &[&str],
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<Value, AstError> {
-    let thunk_id = dict.get(&Key::String(key.into())).ok_or_else(|| AstError {
-        message: format!("missing required field: {}", key),
-        field_path: path.iter().map(|s| s.to_string()).collect(),
-    })?;
+    let thunk_id = dict
+        .get(&HashableValue::Str(key.into()))
+        .ok_or_else(|| AstError {
+            message: format!("missing required field: {}", key),
+            field_path: path.iter().map(|s| s.to_string()).collect(),
+        })?;
 
     let thunk = ctx.get_thunk(*thunk_id);
     thunk.try_get_materialized().ok_or_else(|| AstError {
@@ -831,7 +466,7 @@ fn get_field(
 }
 
 fn get_string_field(
-    dict: &IndexMap<Key, ThunkId>,
+    dict: &IndexMap<HashableValue, ThunkId>,
     key: &str,
     path: &[&str],
     ctx: &Arc<crate::eval::EvalContext>,
@@ -843,23 +478,6 @@ fn get_string_field(
             start,
             end,
         } => Ok(source[start..end].to_string()),
-        Value::Expression(node) => {
-            // Handle the case where AST field extraction returns a VarRef Expression node.
-            // This happens when macro helpers pass VarRef nodes instead of extracting
-            // the name string. Extract the name field from the VarRef.
-            match &node.expr {
-                crate::ast::SurfaceExpression::Str(s) => Ok(s.clone()),
-                crate::ast::SurfaceExpression::VarRef { name, .. } => Ok(name.clone()),
-                _ => Err(AstError {
-                    message: format!(
-                        "field '{}' must be String or VarRef, got Expression({})",
-                        key,
-                        crate::surface_fields::surface_expr_tag(&node.expr)
-                    ),
-                    field_path: path.iter().map(|s| s.to_string()).collect(),
-                }),
-            }
-        }
         Value::Dict(d) if d.is_empty() => {
             // Empty dict represents "null" in tinct - field access failed silently
             Err(AstError {
@@ -885,64 +503,16 @@ fn get_string_field(
     }
 }
 
-fn get_int_field(
-    dict: &IndexMap<Key, ThunkId>,
-    key: &str,
-    path: &[&str],
-    ctx: &Arc<crate::eval::EvalContext>,
-) -> Result<i64, AstError> {
-    let val = get_field(dict, key, path, ctx)?;
-    match val {
-        Value::Int(n) => Ok(n),
-        _ => Err(AstError {
-            message: format!("field '{}' must be Int", key),
-            field_path: path.iter().map(|s| s.to_string()).collect(),
-        }),
-    }
-}
-
-fn get_u64_field(
-    dict: &IndexMap<Key, ThunkId>,
-    key: &str,
-    path: &[&str],
-    ctx: &Arc<crate::eval::EvalContext>,
-) -> Result<u64, AstError> {
-    let val = get_field(dict, key, path, ctx)?;
-    match val {
-        Value::U64(n) => Ok(n),
-        _ => Err(AstError {
-            message: format!("field '{}' must be U64", key),
-            field_path: path.iter().map(|s| s.to_string()).collect(),
-        }),
-    }
-}
-
-fn get_float_field(
-    dict: &IndexMap<Key, ThunkId>,
-    key: &str,
-    path: &[&str],
-    ctx: &Arc<crate::eval::EvalContext>,
-) -> Result<f64, AstError> {
-    let val = get_field(dict, key, path, ctx)?;
-    match val {
-        Value::Float(f) => Ok(f),
-        _ => Err(AstError {
-            message: format!("field '{}' must be Float", key),
-            field_path: path.iter().map(|s| s.to_string()).collect(),
-        }),
-    }
-}
-
 fn get_bool_field(
-    dict: &IndexMap<Key, ThunkId>,
+    dict: &IndexMap<HashableValue, ThunkId>,
     key: &str,
     path: &[&str],
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<bool, AstError> {
     let val = get_field(dict, key, path, ctx)?;
-    match val {
-        Value::Bool(b) => Ok(b),
-        _ => Err(AstError {
+    match val.as_bool() {
+        Some(b) => Ok(b),
+        None => Err(AstError {
             message: format!("field '{}' must be Bool", key),
             field_path: path.iter().map(|s| s.to_string()).collect(),
         }),
@@ -950,27 +520,27 @@ fn get_bool_field(
 }
 
 fn get_dict_field(
-    dict: &IndexMap<Key, ThunkId>,
+    dict: &IndexMap<HashableValue, ThunkId>,
     key: &str,
     path: &[&str],
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<Value, AstError> {
     let val = get_field(dict, key, path, ctx)?;
     match val {
-        Value::Dict(_) | Value::Variant { .. } | Value::Expression(_) => Ok(val),
+        Value::Dict(_) | Value::Variant { .. } => Ok(val),
         _ => Err(AstError {
-            message: format!("field '{}' must be Dict, Variant, or Expression", key),
+            message: format!("field '{}' must be Dict or Variant", key),
             field_path: path.iter().map(|s| s.to_string()).collect(),
         }),
     }
 }
 
 fn get_optional_dict_field(
-    dict: &IndexMap<Key, ThunkId>,
+    dict: &IndexMap<HashableValue, ThunkId>,
     key: &str,
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<Option<Value>, AstError> {
-    match dict.get(&Key::String(key.into())) {
+    match dict.get(&HashableValue::Str(key.into())) {
         Some(thunk_id) => {
             let thunk = ctx.get_thunk(*thunk_id);
             Ok(thunk.try_get_materialized())
@@ -984,20 +554,20 @@ fn is_empty_dict(val: &Value) -> bool {
 }
 
 fn extract_span(
-    dict: &IndexMap<Key, ThunkId>,
+    dict: &IndexMap<HashableValue, ThunkId>,
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> Option<Span> {
-    let span_thunk_id = dict.get(&Key::String("span".into()))?;
+    let span_thunk_id = dict.get(&HashableValue::Str("span".into()))?;
     let span_thunk = ctx.get_thunk(*span_thunk_id);
     let span_val = span_thunk.try_get_materialized()?;
 
     match span_val {
         Value::Dict(span_dict) => {
-            let start_id = span_dict.get(&Key::String("start".into()))?;
+            let start_id = span_dict.get(&HashableValue::Str("start".into()))?;
             let start_thunk = ctx.get_thunk(*start_id);
             let start_val = start_thunk.try_get_materialized()?;
 
-            let end_id = span_dict.get(&Key::String("end".into()))?;
+            let end_id = span_dict.get(&HashableValue::Str("end".into()))?;
             let end_thunk = ctx.get_thunk(*end_id);
             let end_val = end_thunk.try_get_materialized()?;
 
@@ -1013,21 +583,21 @@ fn extract_span(
 fn extract_position(val: &Value, ctx: &Arc<crate::eval::EvalContext>) -> Option<Position> {
     match val {
         Value::Dict(dict) => {
-            let line_id = dict.get(&Key::String("line".into()))?;
+            let line_id = dict.get(&HashableValue::Str("line".into()))?;
             let line_thunk = ctx.get_thunk(*line_id);
             let line = match line_thunk.try_get_materialized()? {
                 Value::Int(n) => n as usize,
                 _ => return None,
             };
 
-            let col_id = dict.get(&Key::String("col".into()))?;
+            let col_id = dict.get(&HashableValue::Str("col".into()))?;
             let col_thunk = ctx.get_thunk(*col_id);
             let column = match col_thunk.try_get_materialized()? {
                 Value::Int(n) => n as usize,
                 _ => return None,
             };
 
-            let offset_id = dict.get(&Key::String("offset".into()))?;
+            let offset_id = dict.get(&HashableValue::Str("offset".into()))?;
             let offset_thunk = ctx.get_thunk(*offset_id);
             let offset = match offset_thunk.try_get_materialized()? {
                 Value::Int(n) => n as usize,
@@ -1051,10 +621,9 @@ fn extract_list(
 ) -> Result<Vec<Value>, AstError> {
     match val {
         Value::Dict(d) => {
-            // A list is represented as a dict with integer keys 0, 1, 2, ...
             let mut result = Vec::new();
             for i in 0.. {
-                match d.get(&Key::Int(i)) {
+                match d.get(&HashableValue::Int(i)) {
                     Some(thunk_id) => {
                         let thunk = ctx.get_thunk(*thunk_id);
                         let val = thunk.try_get_materialized().ok_or_else(|| AstError {
@@ -1069,10 +638,804 @@ fn extract_list(
             Ok(result)
         }
         _ => Err(AstError {
-            message: "expected list (dict with integer keys)".into(),
+            message: "expected integer-keyed Dict".into(),
             field_path: path.iter().map(|s| s.to_string()).collect(),
         }),
     }
+}
+
+// ============================================================================
+// pub(crate) helpers called by proc-macro generated code (ExprConvert derive)
+// ============================================================================
+//
+// These are the "build" (to-expr) and "extract" (from-expr) primitives that
+// the generated `to_expr_variant` / `from_expr_variant` implementations call.
+// They wrap the private helpers above and expose a stable interface for the
+// generated code to use.
+
+pub(crate) fn alloc_str(s: &str, span: &Span, ctx: &Arc<crate::eval::EvalContext>) -> ThunkId {
+    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+        string_val(s),
+        span.clone(),
+    )))
+}
+
+pub(crate) fn alloc_bool(b: bool, span: &Span, ctx: &Arc<crate::eval::EvalContext>) -> ThunkId {
+    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+        Value::boolean(b),
+        span.clone(),
+    )))
+}
+
+pub(crate) fn alloc_int(n: i64, span: &Span, ctx: &Arc<crate::eval::EvalContext>) -> ThunkId {
+    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+        Value::Int(n),
+        span.clone(),
+    )))
+}
+
+pub(crate) fn alloc_u64(n: u64, span: &Span, ctx: &Arc<crate::eval::EvalContext>) -> ThunkId {
+    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+        Value::U64(n),
+        span.clone(),
+    )))
+}
+
+pub(crate) fn alloc_float(f: f64, span: &Span, ctx: &Arc<crate::eval::EvalContext>) -> ThunkId {
+    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+        Value::Float(f),
+        span.clone(),
+    )))
+}
+
+pub(crate) fn alloc_expr_child(
+    node: &Arc<SurfaceNode>,
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> ThunkId {
+    let val = surface_node_to_expr_variant(node, ctx);
+    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(val, node.span.clone())))
+}
+
+/// Allocate an optional child expression node.
+/// `None` produces an empty dict (null) — consistent with how annotation_opt and string_opt
+/// handle absent optional fields.
+pub(crate) fn alloc_expr_child_opt(
+    node: Option<&Arc<SurfaceNode>>,
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> ThunkId {
+    match node {
+        Some(n) => alloc_expr_child(n, ctx),
+        None => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+            Value::Dict(IndexMap::new()),
+            rust_span!(),
+        ))),
+    }
+}
+
+pub(crate) fn alloc_child_list(
+    nodes: &[Arc<SurfaceNode>],
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> ThunkId {
+    let mut map = IndexMap::new();
+    for (i, n) in nodes.iter().enumerate() {
+        let tid = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+            surface_node_to_expr_variant(n, ctx),
+            n.span.clone(),
+        )));
+        map.insert(HashableValue::Int(i as i64), tid);
+    }
+    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+        Value::Dict(map),
+        rust_span!(),
+    )))
+}
+
+pub(crate) fn alloc_entry_list(
+    entries: &[Spanned<SurfaceEntry>],
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> ThunkId {
+    let mut dict: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+    for (i, entry) in entries.iter().enumerate() {
+        // key: Some(node) → Expr.* variant, None → null (empty dict)
+        let key_val = match &entry.node.key {
+            Some(key_node) => SurfaceExpression::to_expr_variant(key_node, ctx),
+            None => Value::Dict(IndexMap::new()),
+        };
+        let key_thunk = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+            key_val,
+            entry.span.clone(),
+        )));
+        // value: Expr.* variant
+        let val_val = SurfaceExpression::to_expr_variant(&entry.node.value, ctx);
+        let val_thunk = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+            val_val,
+            entry.span.clone(),
+        )));
+        // Build payload dict for Expr.Entry
+        let mut payload: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+        payload.insert(HashableValue::Str("key".into()), key_thunk);
+        payload.insert(HashableValue::Str("value".into()), val_thunk);
+        let payload_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+            Value::Dict(payload),
+            entry.span.clone(),
+        )));
+        // Expr.Entry variant
+        let entry_variant = Value::Variant {
+            tag: "Expr.Entry".to_string(),
+            payload: Some(payload_id),
+        };
+        let entry_thunk = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+            entry_variant,
+            entry.span.clone(),
+        )));
+        dict.insert(HashableValue::Int(i as i64), entry_thunk);
+    }
+    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+        Value::Dict(dict),
+        rust_span!(),
+    )))
+}
+
+pub(crate) fn alloc_named_arg_list(
+    args: &[Spanned<SurfaceNamedArg>],
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> ThunkId {
+    let mut na_map = IndexMap::new();
+    for (i, na) in args.iter().enumerate() {
+        let mut na_payload = IndexMap::new();
+        na_payload.insert(
+            HashableValue::Str("name".into()),
+            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                string_val(&na.node.name),
+                na.span.clone(),
+            ))),
+        );
+        na_payload.insert(
+            HashableValue::Str("value".into()),
+            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                surface_node_to_expr_variant(&na.node.value, ctx),
+                na.span.clone(),
+            ))),
+        );
+        let payload_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+            Value::Dict(na_payload),
+            na.span.clone(),
+        )));
+        let na_tid = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+            Value::Variant {
+                tag: "Expr.NamedArg".into(),
+                payload: Some(payload_id),
+            },
+            na.span.clone(),
+        )));
+        na_map.insert(HashableValue::Int(i as i64), na_tid);
+    }
+    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+        Value::Dict(na_map),
+        rust_span!(),
+    )))
+}
+
+pub(crate) fn alloc_param_list(
+    params: &[Spanned<SurfaceParam>],
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> ThunkId {
+    let mut params_map = IndexMap::new();
+    for (i, p) in params.iter().enumerate() {
+        let mut p_payload = IndexMap::new();
+        p_payload.insert(
+            HashableValue::Str("name".into()),
+            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                string_val(&p.node.name),
+                p.span.clone(),
+            ))),
+        );
+        p_payload.insert(
+            HashableValue::Str("variadic".into()),
+            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                Value::boolean(p.node.variadic),
+                p.span.clone(),
+            ))),
+        );
+        let ann_val =
+            crate::surface_fields::annotation_opt_to_value(p.node.annotation.as_ref(), ctx);
+        p_payload.insert(
+            HashableValue::Str("annotation".into()),
+            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(ann_val, p.span.clone()))),
+        );
+        let param_payload_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+            Value::Dict(p_payload),
+            p.span.clone(),
+        )));
+        let p_tid = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+            Value::Variant {
+                tag: "Expr.Param".into(),
+                payload: Some(param_payload_id),
+            },
+            p.span.clone(),
+        )));
+        params_map.insert(HashableValue::Int(i as i64), p_tid);
+    }
+    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+        Value::Dict(params_map),
+        rust_span!(),
+    )))
+}
+
+pub(crate) fn alloc_match_arm_list(
+    arms: &[crate::ast::SurfaceMatchArm],
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> ThunkId {
+    let val = crate::surface_fields::match_arms_to_list_dict_pub(arms, ctx);
+    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(val, rust_span!())))
+}
+
+pub(crate) fn alloc_annotation(
+    ann: &Spanned<Annotation>,
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> ThunkId {
+    let val = crate::surface_fields::annotation_to_value(ann, ctx);
+    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(val, ann.span.clone())))
+}
+
+pub(crate) fn alloc_annotation_opt(
+    ann: Option<&Spanned<Annotation>>,
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> ThunkId {
+    let val = crate::surface_fields::annotation_opt_to_value(ann, ctx);
+    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(val, rust_span!())))
+}
+
+pub(crate) fn alloc_string_opt(s: Option<&str>, ctx: &Arc<crate::eval::EvalContext>) -> ThunkId {
+    let val = match s {
+        Some(name) => string_val(name),
+        None => Value::Dict(IndexMap::new()),
+    };
+    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(val, rust_span!())))
+}
+
+pub(crate) fn alloc_dot_key(
+    key: &DotKey,
+    span: &Span,
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> ThunkId {
+    let val = match key {
+        DotKey::Ident(name) => string_val(name),
+        DotKey::Int(n) => string_val(&n.to_string()),
+    };
+    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(val, span.clone())))
+}
+
+pub(crate) fn alloc_span(span: &Span, ctx: &Arc<crate::eval::EvalContext>) -> ThunkId {
+    let val = crate::surface_fields::span_to_value(span, ctx);
+    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(val, span.clone())))
+}
+
+pub(crate) fn make_variant_with_payload(
+    tag: &str,
+    payload: IndexMap<HashableValue, ThunkId>,
+    span: &Span,
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> Value {
+    let payload_val = Value::Dict(payload);
+    let payload_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(payload_val, span.clone())));
+    Value::Variant {
+        tag: tag.to_string(),
+        payload: Some(payload_id),
+    }
+}
+
+pub(crate) fn make_unit_variant(tag: &str) -> Value {
+    Value::Variant {
+        tag: tag.to_string(),
+        payload: None,
+    }
+}
+
+pub(crate) fn make_surface_node(expr: SurfaceExpression, span: Span) -> Arc<SurfaceNode> {
+    Arc::new(SurfaceNode::new(expr, span))
+}
+
+// ---- Extract helpers (from-expr direction, called by generated from_expr_variant) ----
+
+/// Extract a (stripped_tag, dict) pair from a Value::Variant with an "Expr." prefix.
+///
+/// Strips the "Expr." prefix from the tag (e.g., "Expr.Sequential" → "Sequential"),
+/// materializes the payload dict, and returns both. Used as the first step in
+/// generated `from_expr_variant` implementations.
+pub(crate) fn extract_tag_and_dict(
+    val: &Value,
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> Result<(String, IndexMap<HashableValue, ThunkId>), AstError> {
+    match val {
+        Value::Variant { tag, payload } => {
+            let stripped = if tag.starts_with("Expr.") {
+                tag[5..].to_string()
+            } else {
+                tag.clone()
+            };
+            let payload_thunk_id = payload.as_ref().ok_or_else(|| AstError {
+                message: format!("Expr variant {} has no payload", stripped),
+                field_path: vec![],
+            })?;
+            let payload_val = ctx
+                .get_thunk(*payload_thunk_id)
+                .try_get_materialized()
+                .ok_or_else(|| AstError {
+                    message: "variant payload is not materialized".into(),
+                    field_path: vec![],
+                })?;
+            match payload_val {
+                Value::Dict(d) => Ok((stripped, d)),
+                _ => Err(AstError {
+                    message: format!(
+                        "Expr variant payload must be Dict, got {}",
+                        payload_val.type_name()
+                    ),
+                    field_path: vec![],
+                }),
+            }
+        }
+        _ => Err(AstError {
+            message: "expected Expr.* Variant".into(),
+            field_path: vec![],
+        }),
+    }
+}
+
+/// Try a primary key then each alias in order; return the first materialized value found.
+fn get_field_with_aliases(
+    dict: &IndexMap<HashableValue, ThunkId>,
+    key: &str,
+    aliases: &[&str],
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> Result<Value, AstError> {
+    // Try primary key first
+    if let Some(thunk_id) = dict.get(&HashableValue::Str(key.into())) {
+        let thunk = ctx.get_thunk(*thunk_id);
+        return thunk.try_get_materialized().ok_or_else(|| AstError {
+            message: format!("field '{}' is not materialized", key),
+            field_path: vec![key.to_string()],
+        });
+    }
+    // Try aliases
+    for alias in aliases {
+        if let Some(thunk_id) = dict.get(&HashableValue::Str((*alias).into())) {
+            let thunk = ctx.get_thunk(*thunk_id);
+            return thunk.try_get_materialized().ok_or_else(|| AstError {
+                message: format!("field '{}' (alias '{}') is not materialized", key, alias),
+                field_path: vec![key.to_string()],
+            });
+        }
+    }
+    Err(AstError {
+        message: format!("missing required field: {}", key),
+        field_path: vec![key.to_string()],
+    })
+}
+
+pub(crate) fn get_string_field_with_aliases(
+    dict: &IndexMap<HashableValue, ThunkId>,
+    key: &str,
+    aliases: &[&str],
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> Result<String, AstError> {
+    let val = get_field_with_aliases(dict, key, aliases, ctx)?;
+    match val {
+        Value::String {
+            ref source,
+            start,
+            end,
+        } => Ok(source[start..end].to_string()),
+        Value::Dict(d) if d.is_empty() => Err(AstError {
+            message: format!("field '{}' is empty dict (null)", key),
+            field_path: vec![key.to_string()],
+        }),
+        _ => Err(AstError {
+            message: format!("field '{}' must be String, got {}", key, val.type_name()),
+            field_path: vec![key.to_string()],
+        }),
+    }
+}
+
+pub(crate) fn get_bool_field_with_aliases(
+    dict: &IndexMap<HashableValue, ThunkId>,
+    key: &str,
+    aliases: &[&str],
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> Result<bool, AstError> {
+    let val = get_field_with_aliases(dict, key, aliases, ctx)?;
+    val.as_bool().ok_or_else(|| AstError {
+        message: format!("field '{}' must be Bool", key),
+        field_path: vec![key.to_string()],
+    })
+}
+
+pub(crate) fn get_int_field_with_aliases(
+    dict: &IndexMap<HashableValue, ThunkId>,
+    key: &str,
+    aliases: &[&str],
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> Result<i64, AstError> {
+    let val = get_field_with_aliases(dict, key, aliases, ctx)?;
+    match val {
+        Value::Int(n) => Ok(n),
+        _ => Err(AstError {
+            message: format!("field '{}' must be Int", key),
+            field_path: vec![key.to_string()],
+        }),
+    }
+}
+
+pub(crate) fn get_u64_field_with_aliases(
+    dict: &IndexMap<HashableValue, ThunkId>,
+    key: &str,
+    aliases: &[&str],
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> Result<u64, AstError> {
+    let val = get_field_with_aliases(dict, key, aliases, ctx)?;
+    match val {
+        Value::U64(n) => Ok(n),
+        _ => Err(AstError {
+            message: format!("field '{}' must be U64", key),
+            field_path: vec![key.to_string()],
+        }),
+    }
+}
+
+pub(crate) fn get_float_field_with_aliases(
+    dict: &IndexMap<HashableValue, ThunkId>,
+    key: &str,
+    aliases: &[&str],
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> Result<f64, AstError> {
+    let val = get_field_with_aliases(dict, key, aliases, ctx)?;
+    match val {
+        Value::Float(f) => Ok(f),
+        _ => Err(AstError {
+            message: format!("field '{}' must be Float", key),
+            field_path: vec![key.to_string()],
+        }),
+    }
+}
+
+pub(crate) fn get_child_field_with_aliases(
+    dict: &IndexMap<HashableValue, ThunkId>,
+    key: &str,
+    aliases: &[&str],
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> Result<Arc<SurfaceNode>, AstError> {
+    let val = get_field_with_aliases(dict, key, aliases, ctx)?;
+    dict_to_surface_node(&val, ctx).map_err(|mut e| {
+        e.field_path.insert(0, key.to_string());
+        e
+    })
+}
+
+/// Get an optional child expression node.
+/// Returns `Ok(None)` when the field is absent or null (empty dict).
+pub(crate) fn get_child_opt_field_with_aliases(
+    dict: &IndexMap<HashableValue, ThunkId>,
+    key: &str,
+    aliases: &[&str],
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> Result<Option<Arc<SurfaceNode>>, AstError> {
+    match get_field_with_aliases(dict, key, aliases, ctx) {
+        Ok(val) if !is_empty_dict(&val) => {
+            dict_to_surface_node(&val, ctx).map(Some).map_err(|mut e| {
+                e.field_path.insert(0, key.to_string());
+                e
+            })
+        }
+        Ok(_) => Ok(None),
+        Err(_) => Ok(None),
+    }
+}
+
+pub(crate) fn get_child_list_field_with_aliases(
+    dict: &IndexMap<HashableValue, ThunkId>,
+    key: &str,
+    aliases: &[&str],
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> Result<Vec<Arc<SurfaceNode>>, AstError> {
+    let val = get_field_with_aliases(dict, key, aliases, ctx)?;
+    let list = extract_list(&val, &[key], ctx)?;
+    list.into_iter()
+        .map(|v| dict_to_surface_node(&v, ctx))
+        .collect::<Result<Vec<_>, _>>()
+}
+
+pub(crate) fn get_entry_list_field_with_aliases(
+    dict: &IndexMap<HashableValue, ThunkId>,
+    key: &str,
+    aliases: &[&str],
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> Result<Vec<Spanned<SurfaceEntry>>, AstError> {
+    let val = get_field_with_aliases(dict, key, aliases, ctx)?;
+    let list = extract_list(&val, &[key], ctx)?;
+    let mut entries = Vec::with_capacity(list.len());
+    for (i, element_val) in list.into_iter().enumerate() {
+        let i_str = i.to_string();
+        let (tag, payload_dict) = extract_tag_and_dict(&element_val, ctx).map_err(|mut e| {
+            e.field_path.insert(0, i_str.clone());
+            e.field_path.insert(0, key.to_string());
+            e
+        })?;
+        if tag != "Entry" {
+            return Err(AstError {
+                message: format!("expected Expr.Entry, got Expr.{}", tag),
+                field_path: vec![key.to_string(), i_str],
+            });
+        }
+        // key field: Expr.* or null (empty dict)
+        let key_thunk_id = payload_dict
+            .get(&HashableValue::Str("key".into()))
+            .ok_or_else(|| AstError {
+                message: "Expr.Entry missing key field".into(),
+                field_path: vec![key.to_string(), i_str.clone(), "key".to_string()],
+            })?;
+        let key_val = ctx
+            .get_thunk(*key_thunk_id)
+            .try_get_materialized()
+            .ok_or_else(|| AstError {
+                message: "Expr.Entry key not materialized".into(),
+                field_path: vec![key.to_string(), i_str.clone(), "key".to_string()],
+            })?;
+        let key_node = match &key_val {
+            Value::Dict(d) if d.is_empty() => None,
+            _ => Some(dict_to_surface_node(&key_val, ctx).map_err(|mut e| {
+                e.field_path.insert(0, "key".to_string());
+                e.field_path.insert(0, i_str.clone());
+                e.field_path.insert(0, key.to_string());
+                e
+            })?),
+        };
+        // value field: Expr.*
+        let value_thunk_id = payload_dict
+            .get(&HashableValue::Str("value".into()))
+            .ok_or_else(|| AstError {
+                message: "Expr.Entry missing value field".into(),
+                field_path: vec![key.to_string(), i_str.clone(), "value".to_string()],
+            })?;
+        let value_val = ctx
+            .get_thunk(*value_thunk_id)
+            .try_get_materialized()
+            .ok_or_else(|| AstError {
+                message: "Expr.Entry value not materialized".into(),
+                field_path: vec![key.to_string(), i_str.clone(), "value".to_string()],
+            })?;
+        let value_node = dict_to_surface_node(&value_val, ctx).map_err(|mut e| {
+            e.field_path.insert(0, "value".to_string());
+            e.field_path.insert(0, i_str.clone());
+            e.field_path.insert(0, key.to_string());
+            e
+        })?;
+        entries.push(Spanned::new(
+            SurfaceEntry {
+                key: key_node,
+                value: value_node,
+            },
+            rust_span!(),
+        ));
+    }
+    Ok(entries)
+}
+
+pub(crate) fn get_named_arg_list_field_with_aliases(
+    dict: &IndexMap<HashableValue, ThunkId>,
+    key: &str,
+    aliases: &[&str],
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> Result<Vec<Spanned<SurfaceNamedArg>>, AstError> {
+    let val = get_field_with_aliases(dict, key, aliases, ctx)?;
+    let list = extract_list(&val, &[key], ctx)?;
+    let mut named_args = Vec::with_capacity(list.len());
+    for (i, element_val) in list.into_iter().enumerate() {
+        let i_str = i.to_string();
+        let (tag, payload_dict) = extract_tag_and_dict(&element_val, ctx).map_err(|mut e| {
+            e.field_path.insert(0, i_str.clone());
+            e.field_path.insert(0, key.to_string());
+            e
+        })?;
+        if tag != "NamedArg" {
+            return Err(AstError {
+                message: format!("expected Expr.NamedArg, got Expr.{}", tag),
+                field_path: vec![key.to_string(), i_str],
+            });
+        }
+        // name field: String
+        let name = get_string_field(&payload_dict, "name", &[key, &i_str], ctx)?;
+        // value field: Expr.*
+        let value_thunk_id = payload_dict
+            .get(&HashableValue::Str("value".into()))
+            .ok_or_else(|| AstError {
+                message: "Expr.NamedArg missing value field".into(),
+                field_path: vec![key.to_string(), i_str.clone(), "value".to_string()],
+            })?;
+        let value_val = ctx
+            .get_thunk(*value_thunk_id)
+            .try_get_materialized()
+            .ok_or_else(|| AstError {
+                message: "Expr.NamedArg value not materialized".into(),
+                field_path: vec![key.to_string(), i_str.clone(), "value".to_string()],
+            })?;
+        let value_node = dict_to_surface_node(&value_val, ctx).map_err(|mut e| {
+            e.field_path.insert(0, "value".to_string());
+            e.field_path.insert(0, i_str.clone());
+            e.field_path.insert(0, key.to_string());
+            e
+        })?;
+        named_args.push(Spanned::new(
+            SurfaceNamedArg {
+                name,
+                value: value_node,
+                annotation: None,
+            },
+            rust_span!(),
+        ));
+    }
+    Ok(named_args)
+}
+
+pub(crate) fn get_param_list_field_with_aliases(
+    dict: &IndexMap<HashableValue, ThunkId>,
+    key: &str,
+    aliases: &[&str],
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> Result<Vec<Spanned<SurfaceParam>>, AstError> {
+    let val = get_field_with_aliases(dict, key, aliases, ctx)?;
+    let list = extract_list(&val, &[key], ctx)?;
+    let mut params = Vec::with_capacity(list.len());
+    for (i, element_val) in list.into_iter().enumerate() {
+        let i_str = i.to_string();
+        let (tag, payload_dict) = extract_tag_and_dict(&element_val, ctx).map_err(|mut e| {
+            e.field_path.insert(0, i_str.clone());
+            e.field_path.insert(0, key.to_string());
+            e
+        })?;
+        if tag != "Param" {
+            return Err(AstError {
+                message: format!("expected Expr.Param, got Expr.{}", tag),
+                field_path: vec![key.to_string(), i_str],
+            });
+        }
+        // name field: String
+        let name = get_string_field(&payload_dict, "name", &[key, &i_str], ctx)?;
+        // variadic field: Bool
+        let variadic = get_bool_field(&payload_dict, "variadic", &[key, &i_str], ctx)?;
+        // annotation field: Expr.* or null (empty dict) → Option<Spanned<Annotation>>
+        let annotation =
+            get_annotation_opt_field_with_aliases(&payload_dict, "annotation", &[], ctx)?;
+        params.push(Spanned::new(
+            SurfaceParam {
+                name,
+                annotation,
+                variadic,
+            },
+            rust_span!(),
+        ));
+    }
+    Ok(params)
+}
+
+pub(crate) fn get_match_arm_list_field_with_aliases(
+    dict: &IndexMap<HashableValue, ThunkId>,
+    key: &str,
+    aliases: &[&str],
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> Result<Vec<crate::ast::SurfaceMatchArm>, AstError> {
+    use crate::ast::SurfaceMatchArm;
+    let val = get_field_with_aliases(dict, key, aliases, ctx)?;
+    let list = extract_list(&val, &[key], ctx)?;
+    let mut arms = Vec::new();
+    for (i, arm_val) in list.into_iter().enumerate() {
+        let i_str = i.to_string();
+        let arm_dict = match arm_val {
+            Value::Dict(d) => d,
+            _ => {
+                return Err(AstError {
+                    message: format!("match arm {} must be Dict", i),
+                    field_path: vec![key.to_string(), i_str.clone()],
+                })
+            }
+        };
+        let pattern_val = get_dict_field(&arm_dict, "pattern", &[key, &i_str], ctx)?;
+        let pattern = dict_to_pattern(&pattern_val, &[key, &i_str, "pattern"], ctx)?;
+        let guard = match get_optional_dict_field(&arm_dict, "guard", ctx)? {
+            Some(guard_val) if !is_empty_dict(&guard_val) => {
+                Some(dict_to_surface_node(&guard_val, ctx)?)
+            }
+            _ => None,
+        };
+        let body_val = get_dict_field(&arm_dict, "body", &[key, &i_str], ctx)?;
+        let body = dict_to_surface_node(&body_val, ctx)?;
+        arms.push(SurfaceMatchArm {
+            pattern,
+            guard,
+            body,
+        });
+    }
+    Ok(arms)
+}
+
+pub(crate) fn get_annotation_field_with_aliases(
+    dict: &IndexMap<HashableValue, ThunkId>,
+    key: &str,
+    aliases: &[&str],
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> Result<Spanned<Annotation>, AstError> {
+    let val = get_field_with_aliases(dict, key, aliases, ctx)?;
+    dict_to_annotation(&val, &[key], ctx)
+}
+
+pub(crate) fn get_annotation_opt_field_with_aliases(
+    dict: &IndexMap<HashableValue, ThunkId>,
+    key: &str,
+    aliases: &[&str],
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> Result<Option<Spanned<Annotation>>, AstError> {
+    match get_field_with_aliases(dict, key, aliases, ctx) {
+        Ok(val) if !is_empty_dict(&val) => dict_to_annotation(&val, &[key], ctx).map(Some),
+        Ok(_) => Ok(None),
+        Err(_) => Ok(None),
+    }
+}
+
+pub(crate) fn get_string_opt_field_with_aliases(
+    dict: &IndexMap<HashableValue, ThunkId>,
+    key: &str,
+    aliases: &[&str],
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> Result<Option<String>, AstError> {
+    let val = get_field_with_aliases(dict, key, aliases, ctx)?;
+    match val {
+        Value::Dict(d) if d.is_empty() => Ok(None),
+        Value::String {
+            ref source,
+            start,
+            end,
+        } => Ok(Some(source[start..end].to_string())),
+        _ => Err(AstError {
+            message: format!("field '{}' must be String or empty dict", key),
+            field_path: vec![key.to_string()],
+        }),
+    }
+}
+
+pub(crate) fn get_dot_key_field_with_aliases(
+    dict: &IndexMap<HashableValue, ThunkId>,
+    key: &str,
+    aliases: &[&str],
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> Result<DotKey, AstError> {
+    let val = get_field_with_aliases(dict, key, aliases, ctx)?;
+    match val {
+        Value::String {
+            ref source,
+            start,
+            end,
+        } => {
+            let s = source[start..end].to_string();
+            // Try to parse as integer first, fall back to Ident
+            if let Ok(n) = s.parse::<i64>() {
+                Ok(DotKey::Int(n))
+            } else {
+                Ok(DotKey::Ident(s))
+            }
+        }
+        Value::Int(n) => Ok(DotKey::Int(n)),
+        _ => Err(AstError {
+            message: format!("field '{}' must be String or Int for DotKey", key),
+            field_path: vec![key.to_string()],
+        }),
+    }
+}
+
+pub(crate) fn get_span_from_dict(
+    dict: &IndexMap<HashableValue, ThunkId>,
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> Span {
+    extract_span(dict, ctx).unwrap_or_else(|| rust_span!())
 }
 
 // ============================================================================
@@ -1121,11 +1484,11 @@ pub fn surface_program_to_dict(
         .documents
         .first()
         .map(|d| d.span.clone())
-        .unwrap_or_else(Span::origin);
+        .unwrap_or_else(|| rust_span!());
     let mut root = IndexMap::new();
 
     root.insert(
-        Key::String("type".into()),
+        HashableValue::Str("type".into()),
         ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             string_val("file"),
             span.clone(),
@@ -1133,7 +1496,7 @@ pub fn surface_program_to_dict(
     );
 
     root.insert(
-        Key::String("schema-version".into()),
+        HashableValue::Str("schema-version".into()),
         ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Int(1),
             span.clone(),
@@ -1148,12 +1511,12 @@ pub fn surface_program_to_dict(
         .collect::<EvalResult<Vec<_>>>()?;
 
     root.insert(
-        Key::String("documents".into()),
+        HashableValue::Str("documents".into()),
         list_to_thunk_id(docs.into_iter(), span.clone(), ctx)?,
     );
 
     root.insert(
-        Key::String("span".into()),
+        HashableValue::Str("span".into()),
         span_to_thunk_id(span.clone(), ctx)?,
     );
 
@@ -1166,21 +1529,21 @@ fn span_to_thunk_id(span: Span, ctx: &Arc<crate::eval::EvalContext>) -> EvalResu
     // start position
     let mut start_dict = IndexMap::new();
     start_dict.insert(
-        Key::String("line".into()),
+        HashableValue::Str("line".into()),
         ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Int(span.start.line as i64),
             span.clone(),
         ))),
     );
     start_dict.insert(
-        Key::String("col".into()),
+        HashableValue::Str("col".into()),
         ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Int(span.start.column as i64),
             span.clone(),
         ))),
     );
     start_dict.insert(
-        Key::String("offset".into()),
+        HashableValue::Str("offset".into()),
         ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Int(span.start.offset as i64),
             span.clone(),
@@ -1190,21 +1553,21 @@ fn span_to_thunk_id(span: Span, ctx: &Arc<crate::eval::EvalContext>) -> EvalResu
     // end position
     let mut end_dict = IndexMap::new();
     end_dict.insert(
-        Key::String("line".into()),
+        HashableValue::Str("line".into()),
         ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Int(span.end.line as i64),
             span.clone(),
         ))),
     );
     end_dict.insert(
-        Key::String("col".into()),
+        HashableValue::Str("col".into()),
         ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Int(span.end.column as i64),
             span.clone(),
         ))),
     );
     end_dict.insert(
-        Key::String("offset".into()),
+        HashableValue::Str("offset".into()),
         ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Int(span.end.offset as i64),
             span.clone(),
@@ -1212,14 +1575,14 @@ fn span_to_thunk_id(span: Span, ctx: &Arc<crate::eval::EvalContext>) -> EvalResu
     );
 
     dict.insert(
-        Key::String("start".into()),
+        HashableValue::Str("start".into()),
         ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Dict(start_dict),
             span.clone(),
         ))),
     );
     dict.insert(
-        Key::String("end".into()),
+        HashableValue::Str("end".into()),
         ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Dict(end_dict),
             span.clone(),
@@ -1237,360 +1600,8 @@ pub(crate) fn list_to_thunk_id(
 ) -> EvalResult<ThunkId> {
     let mut dict = IndexMap::with_capacity(items.len());
     for (i, item) in items.enumerate() {
-        dict.insert(Key::Int(i as i64), item);
+        dict.insert(HashableValue::Int(i as i64), item);
     }
-    Ok(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Dict(dict), span))))
-}
-
-/// Surface-native equivalent of `named_arg_to_thunk_id`. Uses `SurfaceNamedArg`.
-fn surface_named_arg_to_thunk_id(
-    named_arg: &SurfaceNamedArg,
-    span: Span,
-    opts: &AstToDictOpts,
-    ctx: &Arc<crate::eval::EvalContext>,
-) -> EvalResult<ThunkId> {
-    let mut dict = IndexMap::new();
-    dict.insert(
-        Key::String("name".into()),
-        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            string_val(&named_arg.name),
-            span.clone(),
-        ))),
-    );
-    dict.insert(
-        Key::String("value".into()),
-        surface_node_to_thunk_id(&named_arg.value, opts, ctx)?,
-    );
-    Ok(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Dict(dict), span))))
-}
-
-/// Surface-native equivalent of `param_to_thunk_id`. Uses `SurfaceParam`.
-fn surface_param_to_thunk_id(
-    param: &SurfaceParam,
-    span: Span,
-    ctx: &Arc<crate::eval::EvalContext>,
-) -> EvalResult<ThunkId> {
-    let mut dict = IndexMap::new();
-    dict.insert(
-        Key::String("name".into()),
-        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            string_val(&param.name),
-            span.clone(),
-        ))),
-    );
-    dict.insert(
-        Key::String("annotation".into()),
-        match &param.annotation {
-            Some(a) => annotation_to_thunk_id(&a.node, span.clone(), ctx)?,
-            None => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                Value::Dict(IndexMap::new()),
-                span.clone(),
-            ))),
-        },
-    );
-    dict.insert(
-        Key::String("variadic".into()),
-        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            Value::Bool(param.variadic),
-            span.clone(),
-        ))),
-    );
-    Ok(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Dict(dict), span))))
-}
-
-/// Surface-native equivalent of `entry_to_thunk_id`. Uses `SurfaceEntry` instead of `Entry`.
-fn surface_entry_to_thunk_id(
-    entry: &SurfaceEntry,
-    entry_span: Span,
-    opts: &AstToDictOpts,
-    ctx: &Arc<crate::eval::EvalContext>,
-) -> EvalResult<ThunkId> {
-    let span = entry.value.span.clone();
-    let mut dict = IndexMap::new();
-
-    dict.insert(
-        Key::String("type".into()),
-        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            string_val("entry"),
-            span.clone(),
-        ))),
-    );
-
-    dict.insert(
-        Key::String("key".into()),
-        match &entry.key {
-            Some(k) => surface_node_to_thunk_id(k, opts, ctx)?,
-            None => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                Value::Dict(IndexMap::new()),
-                span.clone(),
-            ))),
-        },
-    );
-
-    dict.insert(
-        Key::String("value".into()),
-        surface_node_to_thunk_id(&entry.value, opts, ctx)?,
-    );
-
-    let blank_before = opts
-        .comments
-        .as_ref()
-        .and_then(|maps| maps.blank_before.get(&entry_span.start.offset))
-        .copied()
-        .unwrap_or(false);
-    dict.insert(
-        Key::String("blank-before".into()),
-        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            Value::Bool(blank_before),
-            span.clone(),
-        ))),
-    );
-
-    if let Some(comment_maps) = &opts.comments {
-        if let Some(comments) = comment_maps.leading_comments.get(&entry_span.start.offset) {
-            if !comments.is_empty() {
-                let comment_ids: Vec<ThunkId> = comments
-                    .iter()
-                    .map(|c| {
-                        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                            string_val(c),
-                            span.clone(),
-                        )))
-                    })
-                    .collect();
-                dict.insert(
-                    Key::String("leading-comments".into()),
-                    list_to_thunk_id(comment_ids.into_iter(), span.clone(), ctx)?,
-                );
-            }
-        }
-        if let Some(comment) = comment_maps.trailing_comments.get(&entry_span.start.offset) {
-            dict.insert(
-                Key::String("trailing-comment".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    string_val(comment),
-                    span.clone(),
-                ))),
-            );
-        }
-    }
-
-    Ok(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Dict(dict), span))))
-}
-
-fn pattern_to_thunk_id(
-    pattern: &crate::ast::Pattern,
-    span: Span,
-    ctx: &Arc<crate::eval::EvalContext>,
-) -> EvalResult<ThunkId> {
-    use crate::ast::{LiteralPattern, Pattern};
-    let mut dict = IndexMap::new();
-
-    match pattern {
-        Pattern::Wildcard => {
-            dict.insert(
-                Key::String("type".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    string_val("wildcard"),
-                    span.clone(),
-                ))),
-            );
-        }
-        Pattern::TypeAssertPending { annotation, inner } => {
-            dict.insert(
-                Key::String("type".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    string_val("type_assert_pending"),
-                    span.clone(),
-                ))),
-            );
-            dict.insert(
-                Key::String("annotation".into()),
-                annotation_to_thunk_id(&annotation.node, annotation.span.clone(), ctx)?,
-            );
-            if let Some(inner_pat) = inner {
-                dict.insert(
-                    Key::String("inner".into()),
-                    pattern_to_thunk_id(&inner_pat.node, inner_pat.span.clone(), ctx)?,
-                );
-            }
-        }
-        Pattern::TypeAssert { inner, .. } => {
-            // TypeAssert is a post-elaboration form; serialize as a stub.
-            dict.insert(
-                Key::String("type".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    string_val("type_assert"),
-                    span.clone(),
-                ))),
-            );
-            if let Some(inner_pat) = inner {
-                dict.insert(
-                    Key::String("inner".into()),
-                    pattern_to_thunk_id(&inner_pat.node, inner_pat.span.clone(), ctx)?,
-                );
-            }
-        }
-        Pattern::Pin(name) => {
-            dict.insert(
-                Key::String("type".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    string_val("pin"),
-                    span.clone(),
-                ))),
-            );
-            dict.insert(
-                Key::String("name".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    string_val(name),
-                    span.clone(),
-                ))),
-            );
-        }
-        Pattern::Literal(lit) => {
-            dict.insert(
-                Key::String("type".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    string_val("literal"),
-                    span.clone(),
-                ))),
-            );
-            let value = match lit {
-                LiteralPattern::Int(n) => Value::Int(*n),
-                LiteralPattern::U64(n) => Value::U64(*n),
-                LiteralPattern::Float(f) => Value::Float(*f),
-                LiteralPattern::Bool(b) => Value::Bool(*b),
-                LiteralPattern::Str(s) => string_val(s),
-            };
-            dict.insert(
-                Key::String("value".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(value, span.clone()))),
-            );
-        }
-        Pattern::Dict { fields, rest } => {
-            dict.insert(
-                Key::String("type".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    string_val("dict"),
-                    span.clone(),
-                ))),
-            );
-            // Convert fields to a dict
-            let mut fields_dict = IndexMap::new();
-            for (i, (key, pat)) in fields.iter().enumerate() {
-                let mut field_dict = IndexMap::new();
-                field_dict.insert(
-                    Key::String("key".into()),
-                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                        string_val(key),
-                        pat.span.clone(),
-                    ))),
-                );
-                field_dict.insert(
-                    Key::String("pattern".into()),
-                    pattern_to_thunk_id(&pat.node, pat.span.clone(), ctx)?,
-                );
-                fields_dict.insert(
-                    Key::String(Rc::from(i.to_string().as_str())),
-                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                        Value::Dict(field_dict),
-                        pat.span.clone(),
-                    ))),
-                );
-            }
-            dict.insert(
-                Key::String("fields".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    Value::Dict(fields_dict),
-                    span.clone(),
-                ))),
-            );
-            dict.insert(
-                Key::String("rest".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    Value::Bool(*rest),
-                    span.clone(),
-                ))),
-            );
-        }
-        Pattern::Seq { head, tail } => {
-            dict.insert(
-                Key::String("type".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    string_val("seq"),
-                    span.clone(),
-                ))),
-            );
-            dict.insert(
-                Key::String("head".into()),
-                pattern_to_thunk_id(&head.node, head.span.clone(), ctx)?,
-            );
-            dict.insert(
-                Key::String("tail".into()),
-                pattern_to_thunk_id(&tail.node, tail.span.clone(), ctx)?,
-            );
-        }
-        Pattern::Constructor { tag, binding } => {
-            dict.insert(
-                Key::String("type".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    string_val("constructor"),
-                    span.clone(),
-                ))),
-            );
-            dict.insert(
-                Key::String("tag".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    string_val(tag),
-                    span.clone(),
-                ))),
-            );
-            if let Some(pat) = binding {
-                dict.insert(
-                    Key::String("binding".into()),
-                    pattern_to_thunk_id(&pat.node, pat.span.clone(), ctx)?,
-                );
-            }
-        }
-        Pattern::Or(patterns) => {
-            dict.insert(
-                Key::String("type".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    string_val("or"),
-                    span.clone(),
-                ))),
-            );
-            let pattern_thunks: Vec<_> = patterns
-                .iter()
-                .map(|pat| pattern_to_thunk_id(&pat.node, pat.span.clone(), ctx))
-                .collect::<EvalResult<Vec<_>>>()?;
-            let patterns_dict: IndexMap<Key, ThunkId> = pattern_thunks
-                .into_iter()
-                .enumerate()
-                .map(|(i, thunk_id)| (Key::Int(i as i64), thunk_id))
-                .collect();
-            dict.insert(
-                Key::String("patterns".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    Value::Dict(patterns_dict),
-                    span.clone(),
-                ))),
-            );
-        }
-        // T-1140: Predicate patterns — serialize as { type: "predicate" }.
-        // The SurfaceNode cannot be round-tripped through the thunk-dict format;
-        // only the type discriminant is preserved.
-        Pattern::Predicate(_) => {
-            dict.insert(
-                Key::String("type".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    string_val("predicate"),
-                    span.clone(),
-                ))),
-            );
-        }
-    }
-
     Ok(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Dict(dict), span))))
 }
 
@@ -1602,7 +1613,7 @@ pub(crate) fn annotation_to_thunk_id(
     let mut dict = IndexMap::new();
 
     dict.insert(
-        Key::String("type".into()),
+        HashableValue::Str("type".into()),
         ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             string_val("annotation"),
             span.clone(),
@@ -1612,14 +1623,14 @@ pub(crate) fn annotation_to_thunk_id(
     match ann {
         Annotation::Simple(name) => {
             dict.insert(
-                Key::String("kind".into()),
+                HashableValue::Str("kind".into()),
                 ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     string_val("simple"),
                     span.clone(),
                 ))),
             );
             dict.insert(
-                Key::String("value".into()),
+                HashableValue::Str("value".into()),
                 ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     string_val(name),
                     span.clone(),
@@ -1628,27 +1639,27 @@ pub(crate) fn annotation_to_thunk_id(
         }
         Annotation::Annotated(name, inner) => {
             dict.insert(
-                Key::String("kind".into()),
+                HashableValue::Str("kind".into()),
                 ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     string_val("annotated"),
                     span.clone(),
                 ))),
             );
             dict.insert(
-                Key::String("name".into()),
+                HashableValue::Str("name".into()),
                 ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     string_val(name),
                     span.clone(),
                 ))),
             );
             dict.insert(
-                Key::String("inner".into()),
+                HashableValue::Str("inner".into()),
                 annotation_to_thunk_id(inner, span.clone(), ctx)?,
             );
         }
         Annotation::PropertyDict(entries) => {
             dict.insert(
-                Key::String("kind".into()),
+                HashableValue::Str("kind".into()),
                 ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     string_val("dict"),
                     span.clone(),
@@ -1661,7 +1672,7 @@ pub(crate) fn annotation_to_thunk_id(
                 .map(|e| {
                     let mut entry_dict = IndexMap::new();
                     entry_dict.insert(
-                        Key::String("type".into()),
+                        HashableValue::Str("type".into()),
                         ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                             string_val("entry"),
                             e.span.clone(),
@@ -1686,7 +1697,7 @@ pub(crate) fn annotation_to_thunk_id(
                         ))),
                     };
 
-                    entry_dict.insert(Key::String("key".into()), key_id);
+                    entry_dict.insert(HashableValue::Str("key".into()), key_id);
 
                     // Annotation entry values are strings/ints for simple cases,
                     // or full AST dicts for compound values like [a: Numeric] or Seq@Int.
@@ -1705,7 +1716,7 @@ pub(crate) fn annotation_to_thunk_id(
                         }
                     };
 
-                    entry_dict.insert(Key::String("value".into()), value_id);
+                    entry_dict.insert(HashableValue::Str("value".into()), value_id);
                     Ok(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                         Value::Dict(entry_dict),
                         e.span.clone(),
@@ -1714,7 +1725,7 @@ pub(crate) fn annotation_to_thunk_id(
                 .collect::<EvalResult<Vec<_>>>()?;
 
             dict.insert(
-                Key::String("entries".into()),
+                HashableValue::Str("entries".into()),
                 list_to_thunk_id(entry_ids.into_iter(), span.clone(), ctx)?,
             );
         }
@@ -1738,7 +1749,7 @@ fn surface_document_to_thunk_id(
     let mut dict = IndexMap::new();
 
     dict.insert(
-        Key::String("type".into()),
+        HashableValue::Str("type".into()),
         ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             string_val("document"),
             span.clone(),
@@ -1758,13 +1769,13 @@ fn surface_document_to_thunk_id(
         .collect::<EvalResult<Vec<_>>>()?;
 
     dict.insert(
-        Key::String("expressions".into()),
+        HashableValue::Str("expressions".into()),
         list_to_thunk_id(item_ids.into_iter(), span.clone(), ctx)?,
     );
 
     // name: string or []
     dict.insert(
-        Key::String("name".into()),
+        HashableValue::Str("name".into()),
         match &doc.name {
             Some(s) => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 string_val(s),
@@ -1779,7 +1790,7 @@ fn surface_document_to_thunk_id(
 
     // output-type: annotation or []
     dict.insert(
-        Key::String("output-type".into()),
+        HashableValue::Str("output-type".into()),
         match &doc.output_type {
             Some(a) => annotation_to_thunk_id(&a.node, span.clone(), ctx)?,
             None => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
@@ -1791,7 +1802,7 @@ fn surface_document_to_thunk_id(
 
     // expects: annotation or []
     dict.insert(
-        Key::String("expects".into()),
+        HashableValue::Str("expects".into()),
         match &doc.expects {
             Some(a) => annotation_to_thunk_id(&a.node, span.clone(), ctx)?,
             None => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
@@ -1807,7 +1818,7 @@ fn surface_document_to_thunk_id(
         Some(Stage::Runtime) | None => "DocStage.Runtime",
     };
     dict.insert(
-        Key::String("stage".into()),
+        HashableValue::Str("stage".into()),
         ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Variant {
                 tag: stage_tag.to_string(),
@@ -1831,7 +1842,7 @@ fn surface_document_to_thunk_id(
                     })
                     .collect();
                 dict.insert(
-                    Key::String("leading-comments".into()),
+                    HashableValue::Str("leading-comments".into()),
                     list_to_thunk_id(comment_ids.into_iter(), span.clone(), ctx)?,
                 );
             }
@@ -1839,7 +1850,7 @@ fn surface_document_to_thunk_id(
     }
 
     dict.insert(
-        Key::String("span".into()),
+        HashableValue::Str("span".into()),
         span_to_thunk_id(span.clone(), ctx)?,
     );
 
@@ -1875,12 +1886,12 @@ fn surface_decl_to_thunk_id(
                     })
                     .collect();
                 dict.insert(
-                    Key::String("params".into()),
+                    HashableValue::Str("params".into()),
                     list_to_thunk_id(params_thunk_ids.into_iter(), span.clone(), ctx)?,
                 );
             }
             dict.insert(
-                Key::String("expr".into()),
+                HashableValue::Str("expr".into()),
                 surface_node_to_thunk_id(body, opts, ctx)?,
             );
         }
@@ -1896,19 +1907,19 @@ fn surface_decl_to_thunk_id(
         } => {
             variant_tag = "ClassDecl";
             dict.insert(
-                Key::String("name".into()),
+                HashableValue::Str("name".into()),
                 ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     string_val(name),
                     span.clone(),
                 ))),
             );
             // params: integer-keyed list of param name strings
-            let params_dict: IndexMap<Key, ThunkId> = params
+            let params_dict: IndexMap<HashableValue, ThunkId> = params
                 .iter()
                 .enumerate()
                 .map(|(i, p)| {
                     (
-                        Key::Int(i as i64),
+                        HashableValue::Int(i as i64),
                         ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                             string_val(p),
                             span.clone(),
@@ -1917,7 +1928,7 @@ fn surface_decl_to_thunk_id(
                 })
                 .collect();
             dict.insert(
-                Key::String("params".into()),
+                HashableValue::Str("params".into()),
                 ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     Value::Dict(params_dict),
                     span.clone(),
@@ -1929,8 +1940,8 @@ fn surface_decl_to_thunk_id(
                 let pair_thunk_ids: Vec<ThunkId> = superclasses
                     .iter()
                     .map(|(class_name, var_names)| {
-                        let mut entries: Vec<(Key, ThunkId)> = vec![(
-                            Key::Int(0),
+                        let mut entries: Vec<(HashableValue, ThunkId)> = vec![(
+                            HashableValue::Int(0),
                             ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                                 string_val(class_name),
                                 span.clone(),
@@ -1938,14 +1949,14 @@ fn surface_decl_to_thunk_id(
                         )];
                         for (i, var_name) in var_names.iter().enumerate() {
                             entries.push((
-                                Key::Int((i + 1) as i64),
+                                HashableValue::Int((i + 1) as i64),
                                 ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                                     string_val(var_name),
                                     span.clone(),
                                 ))),
                             ));
                         }
-                        let inner: IndexMap<Key, ThunkId> = entries.into_iter().collect();
+                        let inner: IndexMap<HashableValue, ThunkId> = entries.into_iter().collect();
                         ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                             Value::Dict(inner),
                             span.clone(),
@@ -1953,19 +1964,19 @@ fn surface_decl_to_thunk_id(
                     })
                     .collect();
                 dict.insert(
-                    Key::String("superclasses".into()),
+                    HashableValue::Str("superclasses".into()),
                     list_to_thunk_id(pair_thunk_ids.into_iter(), span.clone(), ctx)?,
                 );
             }
             // methods: string-keyed dict of method expression dicts
             // Keys are SurfaceExpression::Str bare words; values are the full entry value nodes.
-            let methods_dict: IndexMap<Key, ThunkId> = methods
+            let methods_dict: IndexMap<HashableValue, ThunkId> = methods
                 .iter()
                 .filter_map(|method| {
                     method.node.key.as_ref().and_then(|key| {
                         if let SurfaceExpression::Str(key_str) = &key.expr {
                             Some((
-                                Key::String(Rc::from(key_str.as_str())),
+                                HashableValue::Str(Rc::from(key_str.as_str())),
                                 surface_node_to_thunk_id(&method.node.value, opts, ctx).ok()?,
                             ))
                         } else {
@@ -1975,7 +1986,7 @@ fn surface_decl_to_thunk_id(
                 })
                 .collect();
             dict.insert(
-                Key::String("methods".into()),
+                HashableValue::Str("methods".into()),
                 ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     Value::Dict(methods_dict),
                     span.clone(),
@@ -1983,18 +1994,18 @@ fn surface_decl_to_thunk_id(
             );
             // determines: optional integer-keyed list of expression dicts
             if !determines.is_empty() {
-                let determines_dict: IndexMap<Key, ThunkId> = determines
+                let determines_dict: IndexMap<HashableValue, ThunkId> = determines
                     .iter()
                     .enumerate()
                     .filter_map(|(i, fd_node)| {
                         Some((
-                            Key::Int(i as i64),
+                            HashableValue::Int(i as i64),
                             surface_node_to_thunk_id(fd_node, opts, ctx).ok()?,
                         ))
                     })
                     .collect();
                 dict.insert(
-                    Key::String("determines".into()),
+                    HashableValue::Str("determines".into()),
                     ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                         Value::Dict(determines_dict),
                         span.clone(),
@@ -2004,16 +2015,16 @@ fn surface_decl_to_thunk_id(
             // resolver: optional expression dict
             if let Some(resolver_node) = resolver {
                 dict.insert(
-                    Key::String("resolver".into()),
+                    HashableValue::Str("resolver".into()),
                     surface_node_to_thunk_id(resolver_node, opts, ctx)?,
                 );
             }
             // injective: optional bool (only emitted when true)
             if *resolver_injective {
                 dict.insert(
-                    Key::String("injective".into()),
+                    HashableValue::Str("injective".into()),
                     ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                        Value::Bool(true),
+                        Value::boolean(true),
                         span.clone(),
                     ))),
                 );
@@ -2023,30 +2034,30 @@ fn surface_decl_to_thunk_id(
         SurfaceDeclaration::InstanceDecl { class_name, arms } => {
             variant_tag = "InstanceDecl";
             dict.insert(
-                Key::String("class".into()),
+                HashableValue::Str("class".into()),
                 ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     string_val(class_name),
                     span.clone(),
                 ))),
             );
             // arms: integer-keyed list of {pattern, methods} dicts
-            let arms_dict: IndexMap<Key, ThunkId> = arms
+            let arms_dict: IndexMap<HashableValue, ThunkId> = arms
                 .iter()
                 .enumerate()
                 .filter_map(|(i, (pattern_node, methods))| {
                     let mut arm_dict = IndexMap::new();
                     arm_dict.insert(
-                        Key::String("pattern".into()),
+                        HashableValue::Str("pattern".into()),
                         surface_node_to_thunk_id(pattern_node, opts, ctx).ok()?,
                     );
                     // methods: string-keyed dict matching ClassDecl.methods format
-                    let methods_dict: IndexMap<Key, ThunkId> = methods
+                    let methods_dict: IndexMap<HashableValue, ThunkId> = methods
                         .iter()
                         .filter_map(|method| {
                             method.node.key.as_ref().and_then(|key| {
                                 if let SurfaceExpression::Str(key_str) = &key.expr {
                                     Some((
-                                        Key::String(Rc::from(key_str.as_str())),
+                                        HashableValue::Str(Rc::from(key_str.as_str())),
                                         surface_node_to_thunk_id(&method.node.value, opts, ctx)
                                             .ok()?,
                                     ))
@@ -2057,14 +2068,14 @@ fn surface_decl_to_thunk_id(
                         })
                         .collect();
                     arm_dict.insert(
-                        Key::String("methods".into()),
+                        HashableValue::Str("methods".into()),
                         ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                             Value::Dict(methods_dict),
                             span.clone(),
                         ))),
                     );
                     Some((
-                        Key::Int(i as i64),
+                        HashableValue::Int(i as i64),
                         ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                             Value::Dict(arm_dict),
                             span.clone(),
@@ -2073,7 +2084,7 @@ fn surface_decl_to_thunk_id(
                 })
                 .collect();
             dict.insert(
-                Key::String("arms".into()),
+                HashableValue::Str("arms".into()),
                 ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     Value::Dict(arms_dict),
                     span.clone(),
@@ -2084,18 +2095,18 @@ fn surface_decl_to_thunk_id(
         SurfaceDeclaration::MacroDecl { name, params, body } => {
             variant_tag = "MacroDecl";
             dict.insert(
-                Key::String("name".into()),
+                HashableValue::Str("name".into()),
                 ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     string_val(name),
                     span.clone(),
                 ))),
             );
             dict.insert(
-                Key::String("params".into()),
+                HashableValue::Str("params".into()),
                 surface_node_to_thunk_id(params, opts, ctx)?,
             );
             dict.insert(
-                Key::String("body".into()),
+                HashableValue::Str("body".into()),
                 surface_node_to_thunk_id(body, opts, ctx)?,
             );
         }
@@ -2107,19 +2118,19 @@ fn surface_decl_to_thunk_id(
         } => {
             variant_tag = "SyntaxClass";
             dict.insert(
-                Key::String("name".into()),
+                HashableValue::Str("name".into()),
                 ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     string_val(name),
                     span.clone(),
                 ))),
             );
             dict.insert(
-                Key::String("pattern".into()),
+                HashableValue::Str("pattern".into()),
                 surface_node_to_thunk_id(pattern, opts, ctx)?,
             );
             if let Some(msg) = message {
                 dict.insert(
-                    Key::String("message".into()),
+                    HashableValue::Str("message".into()),
                     ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                         string_val(msg),
                         span.clone(),
@@ -2135,13 +2146,13 @@ fn surface_decl_to_thunk_id(
                 form_list.push(surface_node_to_thunk_id(form, opts, ctx)?);
             }
             dict.insert(
-                Key::String("forms".into()),
+                HashableValue::Str("forms".into()),
                 ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     Value::Dict(
                         form_list
                             .into_iter()
                             .enumerate()
-                            .map(|(i, v)| (Key::Int(i as i64), v))
+                            .map(|(i, v)| (HashableValue::Int(i as i64), v))
                             .collect(),
                     ),
                     span.clone(),
@@ -2151,7 +2162,7 @@ fn surface_decl_to_thunk_id(
     }
 
     dict.insert(
-        Key::String("span".into()),
+        HashableValue::Str("span".into()),
         span_to_thunk_id(span.clone(), ctx)?,
     );
     let payload_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
@@ -2167,515 +2178,15 @@ fn surface_decl_to_thunk_id(
     ))))
 }
 
-/// Convert a SurfaceNode to a ThunkId containing its dict representation.
-///
-/// Handles all `SurfaceExpression` variants. Schema (Variant tags, key names) is the
-/// canonical AST schema — existing tinct metaprogramming code sees no change.
+/// Convert a SurfaceNode to a ThunkId containing its `Expr.*` variant representation.
+/// Uses `surface_node_to_expr_variant` — produces `Expr.*` variants consumable by `builtin-eval`.
 fn surface_node_to_thunk_id(
     node: &Arc<SurfaceNode>,
-    opts: &AstToDictOpts,
+    _opts: &AstToDictOpts,
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> EvalResult<ThunkId> {
-    let expr = &node.expr;
-    let span = node.span.clone();
-
-    let capacity = match expr {
-        SurfaceExpression::Int(_)
-        | SurfaceExpression::U64(_)
-        | SurfaceExpression::Float(_)
-        | SurfaceExpression::Bool(_) => 2,
-        SurfaceExpression::Str(_) => 3,
-        SurfaceExpression::VarRef { .. } => 1,
-        SurfaceExpression::DotAccess { .. } => 2,
-        SurfaceExpression::Pipe { .. } => 2,
-        SurfaceExpression::Sequential(_) => 1,
-        SurfaceExpression::Dict(_) => 1,
-        SurfaceExpression::Call { .. } => 4,
-        SurfaceExpression::Fn { .. } => 4,
-        SurfaceExpression::TypeAssert { .. } => 2,
-        SurfaceExpression::Annotated { .. } => 2,
-        SurfaceExpression::Rest(_) => 1,
-        SurfaceExpression::Quote(_)
-        | SurfaceExpression::Unquote(_)
-        | SurfaceExpression::UnquoteSplice(_) => 1,
-        SurfaceExpression::Match { .. } => 2,
-        SurfaceExpression::PatternDecl { .. } | SurfaceExpression::LetDecl { .. } => 1,
-        SurfaceExpression::CaseArm { .. } => 3,
-        SurfaceExpression::Placeholder | SurfaceExpression::Decl(_) => 0,
-        SurfaceExpression::Error(_) => 1,
-    };
-
-    let mut dict = IndexMap::with_capacity(capacity);
-    let variant_tag: &str;
-
-    match expr {
-        SurfaceExpression::Int(n) => {
-            variant_tag = "Literal";
-            dict.insert(
-                Key::String("kind".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    string_val("int"),
-                    span.clone(),
-                ))),
-            );
-            dict.insert(
-                Key::String("value".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    Value::Int(*n),
-                    span.clone(),
-                ))),
-            );
-        }
-
-        SurfaceExpression::U64(n) => {
-            variant_tag = "Literal";
-            dict.insert(
-                Key::String("kind".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    string_val("u64"),
-                    span.clone(),
-                ))),
-            );
-            dict.insert(
-                Key::String("value".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    Value::U64(*n),
-                    span.clone(),
-                ))),
-            );
-        }
-
-        SurfaceExpression::Float(f) => {
-            variant_tag = "Literal";
-            dict.insert(
-                Key::String("kind".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    string_val("float"),
-                    span.clone(),
-                ))),
-            );
-            dict.insert(
-                Key::String("value".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    Value::Float(*f),
-                    span.clone(),
-                ))),
-            );
-        }
-
-        SurfaceExpression::Bool(b) => {
-            variant_tag = "Literal";
-            dict.insert(
-                Key::String("kind".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    string_val("bool"),
-                    span.clone(),
-                ))),
-            );
-            dict.insert(
-                Key::String("value".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    Value::Bool(*b),
-                    span.clone(),
-                ))),
-            );
-        }
-
-        SurfaceExpression::Str(s) => {
-            variant_tag = "Literal";
-            dict.insert(
-                Key::String("kind".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    string_val("str"),
-                    span.clone(),
-                ))),
-            );
-            dict.insert(
-                Key::String("value".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    string_val(s),
-                    span.clone(),
-                ))),
-            );
-            let bare = opts
-                .source
-                .map(|src| {
-                    let offset = span.start.offset;
-                    src.as_bytes()
-                        .get(offset)
-                        .map(|&b| b != b'"')
-                        .unwrap_or(false)
-                })
-                .unwrap_or(false);
-            dict.insert(
-                Key::String("bare".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    Value::Bool(bare),
-                    span.clone(),
-                ))),
-            );
-        }
-
-        SurfaceExpression::VarRef { name, .. } => {
-            variant_tag = "VarRef";
-            dict.insert(
-                Key::String("name".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    string_val(name),
-                    span.clone(),
-                ))),
-            );
-        }
-
-        SurfaceExpression::DotAccess {
-            expr: target,
-            field,
-        } => {
-            variant_tag = "DotAccess";
-            dict.insert(
-                Key::String("target".into()),
-                surface_node_to_thunk_id(target, opts, ctx)?,
-            );
-            match field {
-                DotKey::Ident(s) => {
-                    dict.insert(
-                        Key::String("field".into()),
-                        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                            string_val(s),
-                            span.clone(),
-                        ))),
-                    );
-                }
-                DotKey::Int(n) => {
-                    dict.insert(
-                        Key::String("field".into()),
-                        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                            Value::Int(*n),
-                            span.clone(),
-                        ))),
-                    );
-                }
-            }
-        }
-
-        SurfaceExpression::Pipe { lhs, rhs } => {
-            variant_tag = "Pipe";
-            dict.insert(
-                Key::String("lhs".into()),
-                surface_node_to_thunk_id(lhs, opts, ctx)?,
-            );
-            dict.insert(
-                Key::String("rhs".into()),
-                surface_node_to_thunk_id(rhs, opts, ctx)?,
-            );
-        }
-
-        SurfaceExpression::Sequential(exprs) => {
-            variant_tag = "Sequential";
-            let expr_ids: Vec<_> = exprs
-                .iter()
-                .map(|e| surface_node_to_thunk_id(e, opts, ctx))
-                .collect::<EvalResult<Vec<_>>>()?;
-            dict.insert(
-                Key::String("exprs".into()),
-                list_to_thunk_id(expr_ids.into_iter(), span.clone(), ctx)?,
-            );
-        }
-
-        SurfaceExpression::Dict(entries) => {
-            variant_tag = "Dict";
-            let entry_ids: Vec<_> = entries
-                .iter()
-                .map(|e| surface_entry_to_thunk_id(&e.node, e.span.clone(), opts, ctx))
-                .collect::<EvalResult<Vec<_>>>()?;
-            dict.insert(
-                Key::String("entries".into()),
-                list_to_thunk_id(entry_ids.into_iter(), span.clone(), ctx)?,
-            );
-        }
-
-        SurfaceExpression::Call {
-            func,
-            args,
-            named_args,
-            implied,
-        } => {
-            variant_tag = "Call";
-            dict.insert(
-                Key::String("fn".into()),
-                surface_node_to_thunk_id(func, opts, ctx)?,
-            );
-            let arg_ids: Vec<_> = args
-                .iter()
-                .map(|a| surface_node_to_thunk_id(a, opts, ctx))
-                .collect::<EvalResult<Vec<_>>>()?;
-            dict.insert(
-                Key::String("args".into()),
-                list_to_thunk_id(arg_ids.into_iter(), span.clone(), ctx)?,
-            );
-            let named_arg_ids: Vec<_> = named_args
-                .iter()
-                .map(|na| surface_named_arg_to_thunk_id(&na.node, na.span.clone(), opts, ctx))
-                .collect::<EvalResult<Vec<_>>>()?;
-            dict.insert(
-                Key::String("named-args".into()),
-                list_to_thunk_id(named_arg_ids.into_iter(), span.clone(), ctx)?,
-            );
-            dict.insert(
-                Key::String("implied".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    Value::Bool(*implied),
-                    span.clone(),
-                ))),
-            );
-        }
-
-        SurfaceExpression::Fn {
-            return_ann,
-            params,
-            body,
-            desugared,
-        } => {
-            variant_tag = "Fn";
-            let param_ids: Vec<_> = params
-                .iter()
-                .map(|p| surface_param_to_thunk_id(&p.node, span.clone(), ctx))
-                .collect::<EvalResult<Vec<_>>>()?;
-            dict.insert(
-                Key::String("params".into()),
-                list_to_thunk_id(param_ids.into_iter(), span.clone(), ctx)?,
-            );
-            dict.insert(
-                Key::String("return-ann".into()),
-                match return_ann {
-                    Some(a) => annotation_to_thunk_id(&a.node, span.clone(), ctx)?,
-                    None => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                        Value::Dict(IndexMap::new()),
-                        span.clone(),
-                    ))),
-                },
-            );
-            dict.insert(
-                Key::String("body".into()),
-                surface_node_to_thunk_id(body, opts, ctx)?,
-            );
-            dict.insert(
-                Key::String("desugared".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    Value::Bool(*desugared),
-                    span.clone(),
-                ))),
-            );
-        }
-
-        SurfaceExpression::TypeAssert {
-            annotation,
-            expr: inner,
-        } => {
-            variant_tag = "TypeAssert";
-            dict.insert(
-                Key::String("annotation".into()),
-                annotation_to_thunk_id(&annotation.node, span.clone(), ctx)?,
-            );
-            dict.insert(
-                Key::String("expr".into()),
-                surface_node_to_thunk_id(inner, opts, ctx)?,
-            );
-        }
-
-        SurfaceExpression::Annotated { name, annotation } => {
-            variant_tag = "Annotated";
-            dict.insert(
-                Key::String("name".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    string_val(name),
-                    span.clone(),
-                ))),
-            );
-            dict.insert(
-                Key::String("annotation".into()),
-                annotation_to_thunk_id(&annotation.node, span.clone(), ctx)?,
-            );
-        }
-
-        SurfaceExpression::Rest(name_opt) => {
-            variant_tag = "Rest";
-            dict.insert(
-                Key::String("name".into()),
-                match name_opt {
-                    Some(s) => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                        string_val(s),
-                        span.clone(),
-                    ))),
-                    None => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                        Value::Dict(IndexMap::new()),
-                        span.clone(),
-                    ))),
-                },
-            );
-        }
-
-        SurfaceExpression::Quote(inner) => {
-            variant_tag = "Quote";
-            dict.insert(
-                Key::String("expr".into()),
-                surface_node_to_thunk_id(inner, opts, ctx)?,
-            );
-        }
-
-        SurfaceExpression::Unquote(inner) => {
-            variant_tag = "Unquote";
-            dict.insert(
-                Key::String("expr".into()),
-                surface_node_to_thunk_id(inner, opts, ctx)?,
-            );
-        }
-
-        SurfaceExpression::UnquoteSplice(inner) => {
-            variant_tag = "UnquoteSplice";
-            dict.insert(
-                Key::String("expr".into()),
-                surface_node_to_thunk_id(inner, opts, ctx)?,
-            );
-        }
-
-        SurfaceExpression::Match { scrutinee, arms } => {
-            variant_tag = "Match";
-            dict.insert(
-                Key::String("scrutinee".into()),
-                surface_node_to_thunk_id(scrutinee, opts, ctx)?,
-            );
-            let arms_thunks: Vec<ThunkId> = arms
-                .iter()
-                .map(|arm| {
-                    let mut arm_dict = IndexMap::new();
-                    arm_dict.insert(
-                        Key::String("pattern".into()),
-                        pattern_to_thunk_id(&arm.pattern.node, arm.pattern.span.clone(), ctx)?,
-                    );
-                    if let Some(guard) = &arm.guard {
-                        arm_dict.insert(
-                            Key::String("guard".into()),
-                            surface_node_to_thunk_id(guard, opts, ctx)?,
-                        );
-                    }
-                    arm_dict.insert(
-                        Key::String("body".into()),
-                        surface_node_to_thunk_id(&arm.body, opts, ctx)?,
-                    );
-                    Ok(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                        Value::Dict(arm_dict),
-                        arm.pattern.span.clone(),
-                    ))))
-                })
-                .collect::<EvalResult<Vec<_>>>()?;
-            let arms_dict: IndexMap<Key, ThunkId> = arms_thunks
-                .into_iter()
-                .enumerate()
-                .map(|(i, id)| (Key::Int(i as i64), id))
-                .collect();
-            dict.insert(
-                Key::String("arms".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    Value::Dict(arms_dict),
-                    span.clone(),
-                ))),
-            );
-        }
-
-        SurfaceExpression::PatternDecl { bindings } => {
-            variant_tag = "PatternDecl";
-            let bindings_dict: IndexMap<Key, ThunkId> = bindings
-                .iter()
-                .enumerate()
-                .map(|(i, b)| Ok((Key::Int(i as i64), surface_node_to_thunk_id(b, opts, ctx)?)))
-                .collect::<EvalResult<IndexMap<_, _>>>()?;
-            dict.insert(
-                Key::String("bindings".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    Value::Dict(bindings_dict),
-                    span.clone(),
-                ))),
-            );
-        }
-
-        SurfaceExpression::LetDecl { bindings } => {
-            variant_tag = "LetDecl";
-            let bindings_dict: IndexMap<Key, ThunkId> = bindings
-                .iter()
-                .enumerate()
-                .map(|(i, b)| Ok((Key::Int(i as i64), surface_node_to_thunk_id(b, opts, ctx)?)))
-                .collect::<EvalResult<IndexMap<_, _>>>()?;
-            dict.insert(
-                Key::String("bindings".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    Value::Dict(bindings_dict),
-                    span.clone(),
-                ))),
-            );
-        }
-
-        SurfaceExpression::CaseArm {
-            let_bindings,
-            pattern,
-            body,
-        } => {
-            variant_tag = "CaseArm";
-            if let Some(lb) = let_bindings {
-                dict.insert(
-                    Key::String("let_bindings".into()),
-                    surface_node_to_thunk_id(lb, opts, ctx)?,
-                );
-            }
-            dict.insert(
-                Key::String("pattern".into()),
-                surface_node_to_thunk_id(pattern, opts, ctx)?,
-            );
-            dict.insert(
-                Key::String("body".into()),
-                surface_node_to_thunk_id(body, opts, ctx)?,
-            );
-        }
-
-        SurfaceExpression::Placeholder | SurfaceExpression::Decl(_) => {
-            variant_tag = "Placeholder";
-        }
-
-        SurfaceExpression::Error(error_span) => {
-            variant_tag = "AstError";
-            dict.insert(
-                Key::String("span".into()),
-                span_to_thunk_id(error_span.clone(), ctx)?,
-            );
-            let payload_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                Value::Dict(dict),
-                error_span.clone(),
-            )));
-            return Ok(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                Value::Variant {
-                    tag: variant_tag.to_string(),
-                    payload: Some(payload_id),
-                },
-                error_span.clone(),
-            ))));
-        }
-    }
-
-    dict.insert(
-        Key::String("span".into()),
-        span_to_thunk_id(span.clone(), ctx)?,
-    );
-    let payload_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-        Value::Dict(dict),
-        span.clone(),
-    )));
-    Ok(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-        Value::Variant {
-            tag: variant_tag.to_string(),
-            payload: Some(payload_id),
-        },
-        span,
-    ))))
+    let val = surface_node_to_expr_variant(node, ctx);
+    Ok(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(val, node.span.clone()))))
 }
 
 #[cfg(test)]
@@ -2696,7 +2207,7 @@ mod tests {
     fn peel_variant(
         val: Value,
         ctx: &Arc<crate::eval::EvalContext>,
-    ) -> (String, IndexMap<Key, ThunkId>) {
+    ) -> (String, IndexMap<HashableValue, ThunkId>) {
         match val {
             Value::Variant {
                 tag,
@@ -2723,11 +2234,13 @@ mod tests {
 
         match thunk.try_get_materialized() {
             Some(Value::Dict(map)) => {
-                let type_id = map.get(&Key::String("type".into())).unwrap();
+                let type_id = map.get(&HashableValue::Str("type".into())).unwrap();
                 let type_thunk = ctx.get_thunk(*type_id);
                 assert_eq!(type_thunk.try_get_materialized(), Some(string_val("file")));
 
-                let version_id = map.get(&Key::String("schema-version".into())).unwrap();
+                let version_id = map
+                    .get(&HashableValue::Str("schema-version".into()))
+                    .unwrap();
                 let version_thunk = ctx.get_thunk(*version_id);
                 assert_eq!(version_thunk.try_get_materialized(), Some(Value::Int(1)));
             }
@@ -2753,20 +2266,24 @@ mod tests {
         // Navigate to the first document's first expression (the dict)
         match thunk.try_get_materialized() {
             Some(Value::Dict(file_dict)) => {
-                let docs_id = file_dict.get(&Key::String("documents".into())).unwrap();
+                let docs_id = file_dict
+                    .get(&HashableValue::Str("documents".into()))
+                    .unwrap();
                 let docs_thunk = ctx.get_thunk(*docs_id);
                 match docs_thunk.try_get_materialized() {
                     Some(Value::Dict(docs_list)) => {
-                        let doc_id = docs_list.get(&Key::Int(0)).unwrap();
+                        let doc_id = docs_list.get(&HashableValue::Int(0)).unwrap();
                         let doc_thunk = ctx.get_thunk(*doc_id);
                         match doc_thunk.try_get_materialized() {
                             Some(Value::Dict(doc_dict)) => {
-                                let exprs_id =
-                                    doc_dict.get(&Key::String("expressions".into())).unwrap();
+                                let exprs_id = doc_dict
+                                    .get(&HashableValue::Str("expressions".into()))
+                                    .unwrap();
                                 let exprs_thunk = ctx.get_thunk(*exprs_id);
                                 match exprs_thunk.try_get_materialized() {
                                     Some(Value::Dict(exprs_list)) => {
-                                        let expr_id = exprs_list.get(&Key::Int(0)).unwrap();
+                                        let expr_id =
+                                            exprs_list.get(&HashableValue::Int(0)).unwrap();
                                         let expr_thunk = ctx.get_thunk(*expr_id);
                                         let expr_val = expr_thunk
                                             .try_get_materialized()
@@ -2775,40 +2292,47 @@ mod tests {
                                         {
                                             // Get the entries list
                                             let entries_id = dict_node
-                                                .get(&Key::String("entries".into()))
+                                                .get(&HashableValue::Str("entries".into()))
                                                 .unwrap();
                                             let entries_thunk = ctx.get_thunk(*entries_id);
                                             match entries_thunk.try_get_materialized() {
                                                 Some(Value::Dict(entries_list)) => {
-                                                    let entry_id =
-                                                        entries_list.get(&Key::Int(0)).unwrap();
+                                                    let entry_id = entries_list
+                                                        .get(&HashableValue::Int(0))
+                                                        .unwrap();
                                                     let entry_thunk = ctx.get_thunk(*entry_id);
-                                                    match entry_thunk.try_get_materialized() {
-                                                        Some(Value::Dict(entry_dict)) => {
-                                                            // Get the key expression
-                                                            let key_id = entry_dict
-                                                                .get(&Key::String("key".into()))
-                                                                .unwrap();
-                                                            let key_thunk = ctx.get_thunk(*key_id);
-                                                            let key_val = key_thunk
-                                                                .try_get_materialized()
-                                                                .expect("key not materialized");
-                                                            let (_key_tag, key_dict) =
-                                                                peel_variant(key_val, &ctx);
-                                                            // Check bare: true
-                                                            let bare_id = key_dict
-                                                                .get(&Key::String("bare".into()))
-                                                                .expect("bare field missing");
-                                                            let bare_thunk =
-                                                                ctx.get_thunk(*bare_id);
-                                                            assert_eq!(
-                                                                bare_thunk
-                                                                    .try_get_materialized(),
-                                                                Some(Value::Bool(true)),
-                                                                "bare should be true for bare word 'foo'"
-                                                            );
-                                                        }
-                                                        _ => panic!("expected Dict for entry"),
+                                                    let entry_val = entry_thunk
+                                                        .try_get_materialized()
+                                                        .expect("entry not materialized");
+                                                    let (_entry_tag, entry_dict) =
+                                                        peel_variant(entry_val, &ctx);
+                                                    {
+                                                        // Get the key expression
+                                                        let key_id = entry_dict
+                                                            .get(&HashableValue::Str(
+                                                                "key".into(),
+                                                            ))
+                                                            .unwrap();
+                                                        let key_thunk = ctx.get_thunk(*key_id);
+                                                        let key_val = key_thunk
+                                                            .try_get_materialized()
+                                                            .expect("key not materialized");
+                                                        let (_key_tag, key_dict) =
+                                                            peel_variant(key_val, &ctx);
+                                                        // Check bare: true
+                                                        let bare_id = key_dict
+                                                            .get(&HashableValue::Str(
+                                                                "bare".into(),
+                                                            ))
+                                                            .expect("bare field missing");
+                                                        let bare_thunk =
+                                                            ctx.get_thunk(*bare_id);
+                                                        assert_eq!(
+                                                            bare_thunk
+                                                                .try_get_materialized(),
+                                                            Some(Value::boolean(true)),
+                                                            "bare should be true for bare word 'foo'"
+                                                        );
                                                     }
                                                 }
                                                 _ => panic!("expected Dict for entries list"),
@@ -2846,20 +2370,24 @@ mod tests {
         // Navigate to the key and check bare: false
         match thunk.try_get_materialized() {
             Some(Value::Dict(file_dict)) => {
-                let docs_id = file_dict.get(&Key::String("documents".into())).unwrap();
+                let docs_id = file_dict
+                    .get(&HashableValue::Str("documents".into()))
+                    .unwrap();
                 let docs_thunk = ctx.get_thunk(*docs_id);
                 match docs_thunk.try_get_materialized() {
                     Some(Value::Dict(docs_list)) => {
-                        let doc_id = docs_list.get(&Key::Int(0)).unwrap();
+                        let doc_id = docs_list.get(&HashableValue::Int(0)).unwrap();
                         let doc_thunk = ctx.get_thunk(*doc_id);
                         match doc_thunk.try_get_materialized() {
                             Some(Value::Dict(doc_dict)) => {
-                                let exprs_id =
-                                    doc_dict.get(&Key::String("expressions".into())).unwrap();
+                                let exprs_id = doc_dict
+                                    .get(&HashableValue::Str("expressions".into()))
+                                    .unwrap();
                                 let exprs_thunk = ctx.get_thunk(*exprs_id);
                                 match exprs_thunk.try_get_materialized() {
                                     Some(Value::Dict(exprs_list)) => {
-                                        let expr_id = exprs_list.get(&Key::Int(0)).unwrap();
+                                        let expr_id =
+                                            exprs_list.get(&HashableValue::Int(0)).unwrap();
                                         let expr_thunk = ctx.get_thunk(*expr_id);
                                         let expr_val = expr_thunk
                                             .try_get_materialized()
@@ -2867,38 +2395,45 @@ mod tests {
                                         let (_tag, dict_node) = peel_variant(expr_val, &ctx);
                                         {
                                             let entries_id = dict_node
-                                                .get(&Key::String("entries".into()))
+                                                .get(&HashableValue::Str("entries".into()))
                                                 .unwrap();
                                             let entries_thunk = ctx.get_thunk(*entries_id);
                                             match entries_thunk.try_get_materialized() {
                                                 Some(Value::Dict(entries_list)) => {
-                                                    let entry_id =
-                                                        entries_list.get(&Key::Int(0)).unwrap();
+                                                    let entry_id = entries_list
+                                                        .get(&HashableValue::Int(0))
+                                                        .unwrap();
                                                     let entry_thunk = ctx.get_thunk(*entry_id);
-                                                    match entry_thunk.try_get_materialized() {
-                                                        Some(Value::Dict(entry_dict)) => {
-                                                            let key_id = entry_dict
-                                                                .get(&Key::String("key".into()))
-                                                                .unwrap();
-                                                            let key_thunk = ctx.get_thunk(*key_id);
-                                                            let key_val = key_thunk
-                                                                .try_get_materialized()
-                                                                .expect("key not materialized");
-                                                            let (_key_tag, key_dict) =
-                                                                peel_variant(key_val, &ctx);
-                                                            let bare_id = key_dict
-                                                                .get(&Key::String("bare".into()))
-                                                                .expect("bare field missing");
-                                                            let bare_thunk =
-                                                                ctx.get_thunk(*bare_id);
-                                                            assert_eq!(
-                                                                bare_thunk
-                                                                    .try_get_materialized(),
-                                                                Some(Value::Bool(false)),
-                                                                "bare should be false for quoted string \"foo\""
-                                                            );
-                                                        }
-                                                        _ => panic!("expected Dict for entry"),
+                                                    let entry_val = entry_thunk
+                                                        .try_get_materialized()
+                                                        .expect("entry not materialized");
+                                                    let (_entry_tag, entry_dict) =
+                                                        peel_variant(entry_val, &ctx);
+                                                    {
+                                                        let key_id = entry_dict
+                                                            .get(&HashableValue::Str(
+                                                                "key".into(),
+                                                            ))
+                                                            .unwrap();
+                                                        let key_thunk = ctx.get_thunk(*key_id);
+                                                        let key_val = key_thunk
+                                                            .try_get_materialized()
+                                                            .expect("key not materialized");
+                                                        let (_key_tag, key_dict) =
+                                                            peel_variant(key_val, &ctx);
+                                                        let bare_id = key_dict
+                                                            .get(&HashableValue::Str(
+                                                                "bare".into(),
+                                                            ))
+                                                            .expect("bare field missing");
+                                                        let bare_thunk =
+                                                            ctx.get_thunk(*bare_id);
+                                                        assert_eq!(
+                                                            bare_thunk
+                                                                .try_get_materialized(),
+                                                            Some(Value::boolean(false)),
+                                                            "bare should be false for quoted string \"foo\""
+                                                        );
                                                     }
                                                 }
                                                 _ => panic!("expected Dict for entries list"),
@@ -2941,20 +2476,24 @@ mod tests {
         // Navigate to the entry and check for leading-comments
         match thunk.try_get_materialized() {
             Some(Value::Dict(file_dict)) => {
-                let docs_id = file_dict.get(&Key::String("documents".into())).unwrap();
+                let docs_id = file_dict
+                    .get(&HashableValue::Str("documents".into()))
+                    .unwrap();
                 let docs_thunk = ctx.get_thunk(*docs_id);
                 match docs_thunk.try_get_materialized() {
                     Some(Value::Dict(docs_list)) => {
-                        let doc_id = docs_list.get(&Key::Int(0)).unwrap();
+                        let doc_id = docs_list.get(&HashableValue::Int(0)).unwrap();
                         let doc_thunk = ctx.get_thunk(*doc_id);
                         match doc_thunk.try_get_materialized() {
                             Some(Value::Dict(doc_dict)) => {
-                                let exprs_id =
-                                    doc_dict.get(&Key::String("expressions".into())).unwrap();
+                                let exprs_id = doc_dict
+                                    .get(&HashableValue::Str("expressions".into()))
+                                    .unwrap();
                                 let exprs_thunk = ctx.get_thunk(*exprs_id);
                                 match exprs_thunk.try_get_materialized() {
                                     Some(Value::Dict(exprs_list)) => {
-                                        let expr_id = exprs_list.get(&Key::Int(0)).unwrap();
+                                        let expr_id =
+                                            exprs_list.get(&HashableValue::Int(0)).unwrap();
                                         let expr_thunk = ctx.get_thunk(*expr_id);
                                         let expr_val = expr_thunk
                                             .try_get_materialized()
@@ -2962,49 +2501,52 @@ mod tests {
                                         let (_tag, dict_node) = peel_variant(expr_val, &ctx);
                                         {
                                             let entries_id = dict_node
-                                                .get(&Key::String("entries".into()))
+                                                .get(&HashableValue::Str("entries".into()))
                                                 .unwrap();
                                             let entries_thunk = ctx.get_thunk(*entries_id);
                                             match entries_thunk.try_get_materialized() {
                                                 Some(Value::Dict(entries_list)) => {
-                                                    let entry_id =
-                                                        entries_list.get(&Key::Int(0)).unwrap();
+                                                    let entry_id = entries_list
+                                                        .get(&HashableValue::Int(0))
+                                                        .unwrap();
                                                     let entry_thunk = ctx.get_thunk(*entry_id);
-                                                    match entry_thunk.try_get_materialized() {
-                                                        Some(Value::Dict(entry_dict)) => {
-                                                            // Check for leading-comments field
-                                                            let comments_id = entry_dict
-                                                                .get(&Key::String(
-                                                                    "leading-comments".into(),
-                                                                ))
-                                                                .expect("leading-comments field missing");
-                                                            let comments_thunk =
-                                                                ctx.get_thunk(*comments_id);
-                                                            match comments_thunk
-                                                                .try_get_materialized()
-                                                            {
-                                                                Some(Value::Dict(
-                                                                    comments_list,
-                                                                )) => {
-                                                                    let comment_id =
-                                                                        comments_list
-                                                                            .get(&Key::Int(0))
-                                                                            .expect("comment 0 missing");
-                                                                    let comment_thunk =
-                                                                        ctx.get_thunk(*comment_id);
-                                                                    assert_eq!(
-                                                                        comment_thunk
-                                                                            .try_get_materialized(),
-                                                                        Some(string_val(" comment")),
-                                                                        "leading comment should be ' comment'"
-                                                                    );
-                                                                }
-                                                                _ => panic!(
-                                                                    "expected Dict for comments list"
-                                                                ),
+                                                    let entry_val = entry_thunk
+                                                        .try_get_materialized()
+                                                        .expect("entry not materialized");
+                                                    let (_entry_tag, entry_dict) =
+                                                        peel_variant(entry_val, &ctx);
+                                                    {
+                                                        // Check for leading-comments field
+                                                        let comments_id = entry_dict
+                                                            .get(&HashableValue::Str(
+                                                                "leading-comments".into(),
+                                                            ))
+                                                            .expect("leading-comments field missing");
+                                                        let comments_thunk =
+                                                            ctx.get_thunk(*comments_id);
+                                                        match comments_thunk
+                                                            .try_get_materialized()
+                                                        {
+                                                            Some(Value::Dict(
+                                                                comments_list,
+                                                            )) => {
+                                                                let comment_id =
+                                                                    comments_list
+                                                                        .get(&HashableValue::Int(0))
+                                                                        .expect("comment 0 missing");
+                                                                let comment_thunk =
+                                                                    ctx.get_thunk(*comment_id);
+                                                                assert_eq!(
+                                                                    comment_thunk
+                                                                        .try_get_materialized(),
+                                                                    Some(string_val(" comment")),
+                                                                    "leading comment should be ' comment'"
+                                                                );
                                                             }
+                                                            _ => panic!(
+                                                                "expected Dict for comments list"
+                                                            ),
                                                         }
-                                                        _ => panic!("expected Dict for entry"),
                                                     }
                                                 }
                                                 _ => panic!("expected Dict for entries list"),
@@ -3056,20 +2598,24 @@ mod tests {
         // Navigate to the second entry and check blank-before: true
         match thunk.try_get_materialized() {
             Some(Value::Dict(file_dict)) => {
-                let docs_id = file_dict.get(&Key::String("documents".into())).unwrap();
+                let docs_id = file_dict
+                    .get(&HashableValue::Str("documents".into()))
+                    .unwrap();
                 let docs_thunk = ctx.get_thunk(*docs_id);
                 match docs_thunk.try_get_materialized() {
                     Some(Value::Dict(docs_list)) => {
-                        let doc_id = docs_list.get(&Key::Int(0)).unwrap();
+                        let doc_id = docs_list.get(&HashableValue::Int(0)).unwrap();
                         let doc_thunk = ctx.get_thunk(*doc_id);
                         match doc_thunk.try_get_materialized() {
                             Some(Value::Dict(doc_dict)) => {
-                                let exprs_id =
-                                    doc_dict.get(&Key::String("expressions".into())).unwrap();
+                                let exprs_id = doc_dict
+                                    .get(&HashableValue::Str("expressions".into()))
+                                    .unwrap();
                                 let exprs_thunk = ctx.get_thunk(*exprs_id);
                                 match exprs_thunk.try_get_materialized() {
                                     Some(Value::Dict(exprs_list)) => {
-                                        let expr_id = exprs_list.get(&Key::Int(0)).unwrap();
+                                        let expr_id =
+                                            exprs_list.get(&HashableValue::Int(0)).unwrap();
                                         let expr_thunk = ctx.get_thunk(*expr_id);
                                         let expr_val = expr_thunk
                                             .try_get_materialized()
@@ -3077,34 +2623,37 @@ mod tests {
                                         let (_tag, dict_node) = peel_variant(expr_val, &ctx);
                                         {
                                             let entries_id = dict_node
-                                                .get(&Key::String("entries".into()))
+                                                .get(&HashableValue::Str("entries".into()))
                                                 .unwrap();
                                             let entries_thunk = ctx.get_thunk(*entries_id);
                                             match entries_thunk.try_get_materialized() {
                                                 Some(Value::Dict(entries_list)) => {
-                                                    let entry_id =
-                                                        entries_list.get(&Key::Int(1)).unwrap();
+                                                    let entry_id = entries_list
+                                                        .get(&HashableValue::Int(1))
+                                                        .unwrap();
                                                     let entry_thunk = ctx.get_thunk(*entry_id);
-                                                    match entry_thunk.try_get_materialized() {
-                                                        Some(Value::Dict(entry_dict)) => {
-                                                            // Check blank-before: true
-                                                            let blank_id = entry_dict
-                                                                .get(&Key::String(
-                                                                    "blank-before".into(),
-                                                                ))
-                                                                .expect(
-                                                                    "blank-before field missing",
-                                                                );
-                                                            let blank_thunk =
-                                                                ctx.get_thunk(*blank_id);
-                                                            assert_eq!(
-                                                                blank_thunk
-                                                                    .try_get_materialized(),
-                                                                Some(Value::Bool(true)),
-                                                                "blank-before should be true for second entry"
+                                                    let entry_val = entry_thunk
+                                                        .try_get_materialized()
+                                                        .expect("entry not materialized");
+                                                    let (_entry_tag, entry_dict) =
+                                                        peel_variant(entry_val, &ctx);
+                                                    {
+                                                        // Check blank-before: true
+                                                        let blank_id = entry_dict
+                                                            .get(&HashableValue::Str(
+                                                                "blank-before".into(),
+                                                            ))
+                                                            .expect(
+                                                                "blank-before field missing",
                                                             );
-                                                        }
-                                                        _ => panic!("expected Dict for entry"),
+                                                        let blank_thunk =
+                                                            ctx.get_thunk(*blank_id);
+                                                        assert_eq!(
+                                                            blank_thunk
+                                                                .try_get_materialized(),
+                                                            Some(Value::boolean(true)),
+                                                            "blank-before should be true for second entry"
+                                                        );
                                                     }
                                                 }
                                                 _ => panic!("expected Dict for entries list"),
@@ -3142,20 +2691,24 @@ mod tests {
         // Navigate to the key and check bare: false (default when source is None)
         match thunk.try_get_materialized() {
             Some(Value::Dict(file_dict)) => {
-                let docs_id = file_dict.get(&Key::String("documents".into())).unwrap();
+                let docs_id = file_dict
+                    .get(&HashableValue::Str("documents".into()))
+                    .unwrap();
                 let docs_thunk = ctx.get_thunk(*docs_id);
                 match docs_thunk.try_get_materialized() {
                     Some(Value::Dict(docs_list)) => {
-                        let doc_id = docs_list.get(&Key::Int(0)).unwrap();
+                        let doc_id = docs_list.get(&HashableValue::Int(0)).unwrap();
                         let doc_thunk = ctx.get_thunk(*doc_id);
                         match doc_thunk.try_get_materialized() {
                             Some(Value::Dict(doc_dict)) => {
-                                let exprs_id =
-                                    doc_dict.get(&Key::String("expressions".into())).unwrap();
+                                let exprs_id = doc_dict
+                                    .get(&HashableValue::Str("expressions".into()))
+                                    .unwrap();
                                 let exprs_thunk = ctx.get_thunk(*exprs_id);
                                 match exprs_thunk.try_get_materialized() {
                                     Some(Value::Dict(exprs_list)) => {
-                                        let expr_id = exprs_list.get(&Key::Int(0)).unwrap();
+                                        let expr_id =
+                                            exprs_list.get(&HashableValue::Int(0)).unwrap();
                                         let expr_thunk = ctx.get_thunk(*expr_id);
                                         let expr_val = expr_thunk
                                             .try_get_materialized()
@@ -3163,65 +2716,72 @@ mod tests {
                                         let (_tag, dict_node) = peel_variant(expr_val, &ctx);
                                         {
                                             let entries_id = dict_node
-                                                .get(&Key::String("entries".into()))
+                                                .get(&HashableValue::Str("entries".into()))
                                                 .unwrap();
                                             let entries_thunk = ctx.get_thunk(*entries_id);
                                             match entries_thunk.try_get_materialized() {
                                                 Some(Value::Dict(entries_list)) => {
-                                                    let entry_id =
-                                                        entries_list.get(&Key::Int(0)).unwrap();
+                                                    let entry_id = entries_list
+                                                        .get(&HashableValue::Int(0))
+                                                        .unwrap();
                                                     let entry_thunk = ctx.get_thunk(*entry_id);
-                                                    match entry_thunk.try_get_materialized() {
-                                                        Some(Value::Dict(entry_dict)) => {
-                                                            let key_id = entry_dict
-                                                                .get(&Key::String("key".into()))
-                                                                .unwrap();
-                                                            let key_thunk = ctx.get_thunk(*key_id);
-                                                            let key_val = key_thunk
-                                                                .try_get_materialized()
-                                                                .expect("key not materialized");
-                                                            let (_key_tag, key_dict) =
-                                                                peel_variant(key_val, &ctx);
-                                                            let bare_id = key_dict
-                                                                .get(&Key::String("bare".into()))
-                                                                .expect("bare field missing");
-                                                            let bare_thunk =
-                                                                ctx.get_thunk(*bare_id);
-                                                            assert_eq!(
-                                                                bare_thunk
-                                                                    .try_get_materialized(),
-                                                                Some(Value::Bool(false)),
-                                                                "bare should be false when source is None"
-                                                            );
+                                                    let entry_val = entry_thunk
+                                                        .try_get_materialized()
+                                                        .expect("entry not materialized");
+                                                    let (_entry_tag, entry_dict) =
+                                                        peel_variant(entry_val, &ctx);
+                                                    {
+                                                        let key_id = entry_dict
+                                                            .get(&HashableValue::Str(
+                                                                "key".into(),
+                                                            ))
+                                                            .unwrap();
+                                                        let key_thunk = ctx.get_thunk(*key_id);
+                                                        let key_val = key_thunk
+                                                            .try_get_materialized()
+                                                            .expect("key not materialized");
+                                                        let (_key_tag, key_dict) =
+                                                            peel_variant(key_val, &ctx);
+                                                        let bare_id = key_dict
+                                                            .get(&HashableValue::Str(
+                                                                "bare".into(),
+                                                            ))
+                                                            .expect("bare field missing");
+                                                        let bare_thunk =
+                                                            ctx.get_thunk(*bare_id);
+                                                        assert_eq!(
+                                                            bare_thunk
+                                                                .try_get_materialized(),
+                                                            Some(Value::boolean(false)),
+                                                            "bare should be false when source is None"
+                                                        );
 
-                                                            // Check that blank-before is still present (always included)
-                                                            let blank_id = entry_dict
-                                                                .get(&Key::String(
-                                                                    "blank-before".into(),
+                                                        // Check that blank-before is still present (always included)
+                                                        let blank_id = entry_dict
+                                                            .get(&HashableValue::Str(
+                                                                "blank-before".into(),
+                                                            ))
+                                                            .expect(
+                                                                "blank-before field missing",
+                                                            );
+                                                        let blank_thunk =
+                                                            ctx.get_thunk(*blank_id);
+                                                        assert_eq!(
+                                                            blank_thunk
+                                                                .try_get_materialized(),
+                                                            Some(Value::boolean(false)),
+                                                            "blank-before should be false when comments is None"
+                                                        );
+
+                                                        // Check that leading-comments is absent
+                                                        assert!(
+                                                            entry_dict
+                                                                .get(&HashableValue::Str(
+                                                                    "leading-comments".into()
                                                                 ))
-                                                                .expect(
-                                                                    "blank-before field missing",
-                                                                );
-                                                            let blank_thunk =
-                                                                ctx.get_thunk(*blank_id);
-                                                            assert_eq!(
-                                                                blank_thunk
-                                                                    .try_get_materialized(),
-                                                                Some(Value::Bool(false)),
-                                                                "blank-before should be false when comments is None"
-                                                            );
-
-                                                            // Check that leading-comments is absent
-                                                            assert!(
-                                                                entry_dict
-                                                                    .get(&Key::String(
-                                                                        "leading-comments".into()
-                                                                    ))
-                                                                    .is_none(),
-                                                                "leading-comments should be absent when comments is None"
-                                                            );
-                                                        }
-                                                        _ => panic!("expected Dict for entry"),
+                                                                .is_none(),
+                                                            "leading-comments should be absent when comments is None"
+                                                        );
                                                     }
                                                 }
                                                 _ => panic!("expected Dict for entries list"),

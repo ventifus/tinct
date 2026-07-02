@@ -11,19 +11,19 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use indexmap::IndexMap;
 
-use crate::ast::{Annotation, CoreExpr, Span, Spanned, SurfaceExpression, SurfaceNode};
+use crate::ast::{Annotation, CoreExpr, Span, Spanned};
+use crate::rust_span;
 use crate::builtins::flatten_overlay;
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{
     as_record_row_merged, format_field_path, format_type_for_assert, match_pattern, materialize,
-    maybe_wrap_guard, validate_and_wrap_record, value_matches_type, values_equal, EvalContext,
+    validate_and_wrap_record, value_matches_type, values_equal, EvalContext,
     DEFAULT_ANNOTATION_KEY, IS_ANNOTATION_KEY,
 };
-use crate::eval_access::invoke_proxy_handler;
 use crate::eval_call::{invoke_function, invoke_function_tco, CallContext};
 use crate::eval_core::eval_core_expr;
 use crate::types::Type;
-use crate::value::{string_val, Environment, Key, Thunk, Value};
+use crate::value::{string_val, Environment, HashableValue, Thunk, ThunkId, Value};
 
 /// RAII guard for profiling spans. Automatically closes the span on drop.
 struct ProfilingSpanGuard {
@@ -42,7 +42,7 @@ impl ProfilingSpanGuard {
                 .file
                 .as_ref()
                 .map(|sf| sf.path.as_ref().to_string());
-            let (source_start, source_end) = if thunk.span != crate::ast::Span::origin() {
+            let (source_start, source_end) = if thunk.span != rust_span!() {
                 (
                     Some((thunk.span.start.line, thunk.span.start.column)),
                     Some((thunk.span.end.line, thunk.span.end.column)),
@@ -161,10 +161,9 @@ pub(crate) enum RestoreState {
     },
     /// Restore a Surface thunk for non-cacheable errors.
     /// Holds the raw SurfaceNode so the thunk can be re-lowered on retry.
+    /// All cross-phase data is stored inline on AST nodes.
     Surface {
         node: std::sync::Arc<crate::ast::SurfaceNode>,
-        res: std::sync::Arc<crate::ast::ResolutionTable>,
-        types: std::sync::Arc<crate::ast::TypeAnnotationTable>,
         env: Arc<RwLock<Environment>>,
         ctx: Arc<EvalContext>,
     },
@@ -229,14 +228,10 @@ impl RestoreState {
             },
             RestoreState::Surface {
                 node,
-                res,
-                types,
                 env,
                 ctx,
             } => UnevaluatedState::Surface {
                 node,
-                res,
-                types,
                 env,
                 ctx,
             },
@@ -331,22 +326,6 @@ pub(crate) struct BuiltinForceArgData {
     pub(crate) thunk_span: Span,
     pub(crate) mat_span: Option<Span>,
     pub(crate) arg_idx: usize,
-}
-
-/// Payload for Cont::DotAccessForce. Boxed to keep the Cont enum ≤96 bytes.
-pub(crate) struct DotAccessForceData {
-    pub(crate) field: crate::ast::DotKey,
-    /// Span of the entire dot-access expression (e.g. `dict.field`).
-    pub(crate) access_span: Span,
-    /// Definition-site span of the target expression (the dict being accessed).
-    /// Used to annotate key-not-found and type-mismatch errors with where the
-    /// bad value was defined, complementing `access_span` (where it was accessed).
-    pub(crate) target_def_span: Span,
-    /// Outermost materialization span from the access chain (e.g., for `a.b.c`,
-    /// this is the span where the entire chain was first accessed, not the `.c` access).
-    /// Used to provide better error context for chained accesses.
-    pub(crate) outer_mat_span: Option<Span>,
-    pub(crate) ctx: Arc<EvalContext>,
 }
 
 /// Payload for Cont::SequentialStep. Boxed to keep the Cont enum ≤96 bytes.
@@ -480,8 +459,6 @@ pub(crate) enum Cont {
     /// arg[0] in the iterative loop, the chain stays on the continuation stack instead
     /// of the Rust call stack.
     BuiltinForceArg(Box<BuiltinForceArgData>),
-    /// Access a field from a materialized dict. Pushed after target thunk is materialized.
-    DotAccessForce(Box<DotAccessForceData>),
     /// Validate a materialized value against a TypeAssert annotation.
     /// Pushed by force_step's Expr::TypeAssert inline handler after evaluating the inner
     /// expression thunk; replaces the synchronous materialize() call that was the laziness
@@ -613,6 +590,48 @@ pub(crate) enum Action {
 /// returned thunk is **not** yet materialized — callers must drive it through the
 /// CEK machine (e.g., by emitting `Action::Materialize`).
 ///
+/// Build a tinct span dict: `{file, start-line, start-col, end-line, end-col}`.
+///
+/// Used by unified error dicts across pipeline builtins (builtin-parse, builtin-expand,
+/// builtin-typecheck). The `call_span` argument is used as the creation span for the
+/// materialized thunks that hold each field value.
+///
+/// `file` is the path string if present, or `[]` (empty dict) when no source file is known.
+pub(crate) fn make_span_dict(
+    span: &crate::ast::Span,
+    ctx: &Arc<EvalContext>,
+    call_span: &crate::ast::Span,
+) -> ThunkId {
+    let alloc = |v: Value| {
+        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(v, call_span.clone())))
+    };
+    let mut w = indexmap::IndexMap::new();
+    w.insert(
+        HashableValue::Str("file".into()),
+        alloc(match &span.file {
+            Some(sf) => string_val(sf.path.as_ref()),
+            None => Value::Dict(indexmap::IndexMap::new()),
+        }),
+    );
+    w.insert(
+        HashableValue::Str("start-line".into()),
+        alloc(Value::Int(span.start.line as i64)),
+    );
+    w.insert(
+        HashableValue::Str("start-col".into()),
+        alloc(Value::Int(span.start.column as i64)),
+    );
+    w.insert(
+        HashableValue::Str("end-line".into()),
+        alloc(Value::Int(span.end.line as i64)),
+    );
+    w.insert(
+        HashableValue::Str("end-col".into()),
+        alloc(Value::Int(span.end.column as i64)),
+    );
+    alloc(Value::Dict(w))
+}
+
 /// Used by:
 /// - `Cont::PredicateCheck` — `is:` predicate checks in TypeAssert annotations.
 /// - Predicate match patterns (T-1140).
@@ -981,76 +1000,23 @@ pub(crate) async fn force_step(
             thunk: Arc::clone(&inner),
             mat_span,
         }
-    } else if let Some((node, res, types, env, thunk_ctx)) = thunk.take_surface() {
+    } else if let Some((node, env, thunk_ctx)) = thunk.take_surface() {
         // Surface thunk handling in the CEK machine.
         //
         // The round-trip here is: SurfaceNode → lower() → Spanned<CoreExpr> → eval_core_expr()
-        // → Arc<Thunk>. The lower() call is done here; the result is a CoreExpr thunk.
+        // → Arc<Thunk>. All cross-phase data (type annotations, field slots) is inline on nodes.
+        // The lower() call reads inline fields directly — no external tables.
         //
         // After lower() we call eval_core_expr() to get a result thunk, then push a Memoize
         // continuation and return Action::Materialize to force the result thunk iteratively.
         // This keeps the Rust call stack flat (no recursive materialize() call).
-        //
-        // Contrast with the monolithic path in eval.rs::materialize() (line 2580) which calls
-        // run() recursively (async stack frame). The CEK machine path below uses the shared
-        // continuation stack instead — consistent with the iterative evaluation model.
         let restore = RestoreState::Surface {
             node: Arc::clone(&node),
-            res: Arc::clone(&res),
-            types: Arc::clone(&types),
             env: Arc::clone(&env),
             ctx: Arc::clone(&thunk_ctx),
         };
 
-        let lowered = crate::lower::lower(&node, &res, &types);
-
-        // Handle CoreExpr::DotAccess inline after lowering, for the same reason as the
-        // take_core_expr branch above: avoids the looping extra Memoize continuation that
-        // eval_core_expr(DotAccess) would add via new_unevaluated_core(DotAccess).
-        if let crate::ast::CoreExpr::DotAccess {
-            expr: target,
-            field,
-        } = &lowered.node
-        {
-            match eval_core_expr(target, &env, &thunk_ctx).await {
-                Ok(target_thunk) => {
-                    stack.push(Cont::Memoize(Box::new(MemoizeData {
-                        thunk: Arc::clone(thunk),
-                        origin,
-                        thunk_span: thunk_span.clone(),
-                        mat_span: mat_span.clone(),
-                        restore: Some(restore),
-                        ctx: Arc::clone(&thunk_ctx),
-                    })));
-                    stack.push(Cont::DotAccessForce(Box::new(DotAccessForceData {
-                        field: field.clone(),
-                        access_span: lowered.span.clone(),
-                        target_def_span: target_thunk.span.clone(),
-                        outer_mat_span: mat_span,
-                        ctx: Arc::clone(&thunk_ctx),
-                    })));
-                    return Action::Materialize {
-                        thunk: target_thunk,
-                        mat_span: Some(lowered.span.clone()),
-                    };
-                }
-                Err(mut e) => {
-                    e.push_frame(format!("accessing .{field}"), lowered.span.clone());
-                    let decorated = attach_materialization_context(
-                        e,
-                        mat_span.as_ref(),
-                        origin.as_deref(),
-                        thunk_span.clone(),
-                    );
-                    if decorated.kind.is_cacheable() {
-                        thunk.cache_failure_once(&decorated);
-                    } else {
-                        restore.restore(thunk);
-                    }
-                    return Action::Continue(Err(decorated));
-                }
-            }
-        }
+        let lowered = crate::lower::lower(&node);
 
         // Handle CoreExpr::TypeAssert inline after lowering — same loop risk as take_core_expr.
         if let crate::ast::CoreExpr::TypeAssert {
@@ -1161,59 +1127,6 @@ pub(crate) async fn force_step(
             env: Arc::clone(&env),
             ctx: Arc::clone(&thunk_ctx),
         };
-
-        // Handle CoreExpr::DotAccess inline. MUST NOT delegate to eval_core_expr_pub
-        // here: eval_core_expr(CoreExpr::DotAccess) returns new_unevaluated_core(DotAccess),
-        // which loops back into this branch and adds an extra Memoize continuation per
-        // access level, causing unbounded stack growth on deeply-nested DotAccess chains.
-        if let crate::ast::CoreExpr::DotAccess {
-            expr: target,
-            field,
-        } = &core_expr.node
-        {
-            match eval_core_expr(target, &env, &thunk_ctx).await {
-                Ok(target_thunk) => {
-                    stack.push(Cont::Memoize(Box::new(MemoizeData {
-                        thunk: Arc::clone(thunk),
-                        origin,
-                        thunk_span: thunk_span.clone(),
-                        mat_span: mat_span.clone(),
-                        restore: Some(RestoreState::CoreExpr {
-                            expr: Arc::clone(&core_expr),
-                            env: Arc::clone(&env),
-                            ctx: Arc::clone(&thunk_ctx),
-                        }),
-                        ctx: Arc::clone(&thunk_ctx),
-                    })));
-                    stack.push(Cont::DotAccessForce(Box::new(DotAccessForceData {
-                        field: field.clone(),
-                        access_span: core_expr.span.clone(),
-                        target_def_span: target_thunk.span.clone(),
-                        outer_mat_span: mat_span,
-                        ctx: Arc::clone(&thunk_ctx),
-                    })));
-                    return Action::Materialize {
-                        thunk: target_thunk,
-                        mat_span: Some(core_expr.span.clone()),
-                    };
-                }
-                Err(mut e) => {
-                    e.push_frame(format!("accessing .{field}"), core_expr.span.clone());
-                    let decorated = attach_materialization_context(
-                        e,
-                        mat_span.as_ref(),
-                        origin.as_deref(),
-                        thunk_span.clone(),
-                    );
-                    if decorated.kind.is_cacheable() {
-                        thunk.cache_failure_once(&decorated);
-                    } else {
-                        thunk.restore_unevaluated(restore);
-                    }
-                    return Action::Continue(Err(decorated));
-                }
-            }
-        }
 
         // Handle CoreExpr::TypeAssert inline. eval_core_expr(CoreExpr::TypeAssert) wraps
         // in new_unevaluated_core(CoreExpr::TypeAssert), which would loop back into this branch.
@@ -1811,128 +1724,6 @@ pub(crate) async fn apply_cont(
                             }
                             Action::Continue(Ok(result_val))
                         }
-                        // Multi-method dispatch sentinel: FreeVar found no regular binding but
-                        // method arms exist. Dispatch based on runtime argument types.
-                        Value::MethodDispatcher(method_name) => {
-                            let collected_args = args.as_ref().expect("args set above");
-                            // Collect all visible method arms from the caller's env chain.
-                            let all_arms = crate::value::Environment::collect_method_arms(
-                                &caller_env,
-                                &method_name,
-                            );
-                            let max_tags = all_arms
-                                .iter()
-                                .map(|a| a.type_tags.len())
-                                .max()
-                                .unwrap_or(0);
-                            let n_to_check = max_tags.min(collected_args.len());
-                            // Materialize only the args needed for dispatch.
-                            let mut arg_type_names: Vec<String> = Vec::with_capacity(n_to_check);
-                            for i in 0..n_to_check {
-                                match crate::eval::materialize(&collected_args[i], None, &thunk_ctx)
-                                    .await
-                                {
-                                    Ok(v) => {
-                                        let raw = v.type_name();
-                                        let prefix =
-                                            raw.split_once('.').map(|(t, _)| t).unwrap_or(raw);
-                                        arg_type_names.push(prefix.to_string());
-                                    }
-                                    Err(e) => {
-                                        let decorated = decorate(e);
-                                        if decorated.kind.is_cacheable() {
-                                            thunk.cache_failure_once(&decorated);
-                                        }
-                                        return Action::Continue(Err(decorated));
-                                    }
-                                }
-                            }
-                            // Select best arm: most Some(_) tags wins; innermost scope wins on ties.
-                            // collect_method_arms returns arms innermost-first, so index 0 = innermost.
-                            // We want: highest specificity first, then lowest index (innermost) on ties.
-                            // Use (specificity, usize::MAX - i) as the sort key so max_by_key picks
-                            // the innermost arm when specificities are equal.
-                            let winner = all_arms
-                                .into_iter()
-                                .enumerate()
-                                .filter(|(_, arm)| {
-                                    arm.type_tags.iter().enumerate().all(|(i, tag)| {
-                                        if i >= n_to_check {
-                                            return true;
-                                        } // beyond checked range
-                                        match tag {
-                                            None => true,
-                                            Some(t) => arg_type_names
-                                                .get(i)
-                                                .map(|n| n == t)
-                                                .unwrap_or(true),
-                                        }
-                                    })
-                                })
-                                .max_by_key(|(i, arm)| {
-                                    let specificity = arm
-                                        .type_tags
-                                        .iter()
-                                        .take(n_to_check)
-                                        .filter(|t| t.is_some())
-                                        .count();
-                                    (specificity, usize::MAX - i)
-                                })
-                                .map(|(_, arm)| arm);
-
-                            match winner {
-                                Some(arm) => {
-                                    // Dispatch: create a new PendingCall with the arm body as function.
-                                    // The arm body thunk (when forced) is a Value::Function.
-                                    let dispatch_thunk =
-                                        Arc::new(crate::value::Thunk::new_pending_call(
-                                            Arc::clone(&arm.body),
-                                            collected_args.to_vec(),
-                                            named
-                                                .take()
-                                                .expect("named set above")
-                                                .map(|b| *b)
-                                                .unwrap_or_default(),
-                                            call_span.clone(),
-                                            Arc::clone(&caller_env),
-                                            call_span.clone(),
-                                            None,
-                                            Arc::clone(&thunk_ctx),
-                                            original_call.clone(),
-                                        ));
-                                    let restore = RestoreState::CoreExpr {
-                                        expr: original_call.clone(),
-                                        env: caller_env,
-                                        ctx: Arc::clone(&thunk_ctx),
-                                    };
-                                    stack.push(Cont::Memoize(Box::new(MemoizeData {
-                                        thunk: Arc::clone(&thunk),
-                                        origin,
-                                        thunk_span: thunk_span.clone(),
-                                        mat_span: mat_span.clone(),
-                                        restore: Some(restore),
-                                        ctx: thunk_ctx,
-                                    })));
-                                    eval_stack_guard.disarm();
-                                    Action::Materialize {
-                                        thunk: dispatch_thunk,
-                                        mat_span,
-                                    }
-                                }
-                                None => {
-                                    let err = EvalError::no_method(
-                                        &method_name,
-                                        arg_type_names,
-                                        call_span.clone(),
-                                    );
-                                    let decorated = decorate(Box::new(err));
-                                    if decorated.kind.is_cacheable() {
-                                        thunk.cache_failure_once(&decorated);
-                                    }
-                                    Action::Continue(Err(decorated))
-                                }
-                            }
-                        }
                         other => {
                             let err = EvalError::type_mismatch(
                                 "Function or Builtin",
@@ -2508,417 +2299,6 @@ pub(crate) async fn apply_cont(
                 }
             }
         }
-        Cont::DotAccessForce(data) => {
-            let DotAccessForceData {
-                field,
-                access_span,
-                target_def_span,
-                outer_mat_span,
-                ctx,
-            } = *data;
-
-            // Convert DotKey to string for error messages and Proxy dispatch.
-            // NOTE: this string is NOT used for Dict lookup when field is DotKey::Int —
-            // integer dot access uses Key::Int(n) directly (auto-indexed dicts store Key::Int).
-            let field_str = match &field {
-                crate::ast::DotKey::Ident(s) => s.clone(),
-                crate::ast::DotKey::Int(n) => n.to_string(),
-            };
-
-            // Result is the materialized target value
-            match result {
-                Ok(target_val) => {
-                    // Flatten Overlay to Dict before key lookup.
-                    let target_val = match target_val {
-                        Value::Overlay(l, r) => {
-                            match flatten_overlay(
-                                &l,
-                                &r,
-                                &format!(".{field_str}"),
-                                &ctx,
-                                access_span.clone(),
-                            )
-                            .await
-                            {
-                                Ok(map) => Value::Dict(map),
-                                Err(mut e) => {
-                                    e.push_frame(
-                                        format!("accessing .{field_str}"),
-                                        access_span.clone(),
-                                    );
-                                    return Action::Continue(Err(e));
-                                }
-                            }
-                        }
-                        other => other,
-                    };
-                    match target_val {
-                        Value::Dict(map) => {
-                            // For DotKey::Int, look up Key::Int(n) directly —
-                            // auto-indexed dicts store Key::Int, not Key::String.
-                            // For DotKey::Ident, use StrKey wrapper to avoid allocation.
-                            let thunk_id_opt = match &field {
-                                crate::ast::DotKey::Int(n) => map.get(&crate::value::Key::Int(*n)),
-                                crate::ast::DotKey::Ident(_) => {
-                                    map.get(&crate::value::StrKey(&field_str))
-                                }
-                            };
-                            match thunk_id_opt {
-                                Some(thunk_id) => {
-                                    // Field found - need to materialize it.
-                                    // Use outer_mat_span if available (preserves outermost call-site in chains
-                                    // like a.b.c), otherwise fall back to access_span (the current access).
-                                    let thunk = ctx.get_thunk(*thunk_id);
-                                    // Apply boundary guards if this access site has a guard registered.
-                                    let thunk = maybe_wrap_guard(thunk, access_span.clone(), &ctx);
-                                    Action::Materialize {
-                                        thunk,
-                                        mat_span: outer_mat_span.or(Some(access_span.clone())),
-                                    }
-                                }
-                                None => {
-                                    // Key not found: report definition site and access site.
-                                    let available_keys: Vec<String> =
-                                        map.keys().map(|k| k.to_string()).collect();
-                                    let mut err = EvalError::key_not_found(
-                                        &field_str,
-                                        available_keys,
-                                        target_def_span,
-                                    )
-                                    .with_materialization_span(access_span.clone());
-                                    err.push_frame(
-                                        format!("accessing .{field_str}"),
-                                        access_span.clone(),
-                                    );
-                                    Action::Continue(Err(err.into()))
-                                }
-                            }
-                        }
-                        Value::Proxy { handler } => {
-                            // Proxy handler invocation
-                            let handler_thunk = ctx.get_thunk(handler);
-                            match invoke_proxy_handler(
-                                &handler_thunk,
-                                string_val(&field_str),
-                                &ctx,
-                                &access_span,
-                            )
-                            .await
-                            {
-                                Ok(thunk) => {
-                                    // Use outer_mat_span for proxy handler results (same as Dict case above).
-                                    // Apply boundary guards if this access site has a guard registered.
-                                    let thunk = maybe_wrap_guard(thunk, access_span.clone(), &ctx);
-                                    Action::Materialize {
-                                        thunk,
-                                        mat_span: outer_mat_span.or(Some(access_span.clone())),
-                                    }
-                                }
-                                Err(mut e) => {
-                                    e.push_frame(
-                                        format!("accessing .{field_str}"),
-                                        access_span.clone(),
-                                    );
-                                    Action::Continue(Err(e))
-                                }
-                            }
-                        }
-                        Value::Variant { tag: _, payload } => {
-                            // Variant auto-unpacking: dot-access on a variant accesses the payload.
-                            // If payload is None, report an error.
-                            // If payload is Some(thunk_id), materialize the payload and retry the access.
-                            match payload {
-                                Some(payload_id) => {
-                                    let payload_thunk = ctx.get_thunk(payload_id);
-                                    // Materialize the payload, then re-push a DotAccessForce continuation
-                                    // to access the field from the materialized payload value.
-                                    stack.push(Cont::DotAccessForce(Box::new(
-                                        DotAccessForceData {
-                                            field,
-                                            access_span: access_span.clone(),
-                                            target_def_span,
-                                            outer_mat_span,
-                                            ctx: Arc::clone(&ctx),
-                                        },
-                                    )));
-                                    Action::Materialize {
-                                        thunk: payload_thunk,
-                                        mat_span: Some(access_span.clone()),
-                                    }
-                                }
-                                None => {
-                                    // Unit variant has no payload — cannot access fields.
-                                    let mut err = EvalError::internal(
-                                        format!(
-                                            "cannot access field .{} on unit variant (no payload)",
-                                            field_str
-                                        ),
-                                        target_def_span,
-                                    )
-                                    .with_materialization_span(access_span.clone());
-                                    err.push_frame(
-                                        format!("accessing .{field_str}"),
-                                        access_span.clone(),
-                                    );
-                                    Action::Continue(Err(err.into()))
-                                }
-                            }
-                        }
-                        // runtime-v2: dot-access on native AST value types
-                        Value::Expression(node) => {
-                            let field_value = crate::surface_fields::surface_node_get_field(
-                                &node, &field_str, &ctx,
-                            );
-                            let thunk =
-                                Arc::new(Thunk::new_materialized(field_value, access_span.clone()));
-                            // Apply boundary guards if this access site has a guard registered.
-                            let thunk = maybe_wrap_guard(thunk, access_span.clone(), &ctx);
-                            Action::Materialize {
-                                thunk,
-                                mat_span: outer_mat_span.or(Some(access_span.clone())),
-                            }
-                        }
-                        Value::Program { program: prog, .. } => {
-                            // Program.documents → LLT Seq linked list of Value::Document
-                            let val = match field_str.as_str() {
-                                "documents" => {
-                                    if prog.documents.is_empty() {
-                                        crate::value::make_seq_nil()
-                                    } else {
-                                        // End-of-Seq sentinel
-                                        let mut tail_id =
-                                            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                                                crate::value::make_seq_nil(),
-                                                access_span.clone(),
-                                            )));
-                                        // Wrap elements from second-to-last down to index 1
-                                        for doc_spanned in prog
-                                            .documents
-                                            .iter()
-                                            .rev()
-                                            .take(prog.documents.len() - 1)
-                                        {
-                                            let head_id =
-                                                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                                                    Value::Document(std::sync::Arc::new(
-                                                        doc_spanned.node.clone(),
-                                                    )),
-                                                    access_span.clone(),
-                                                )));
-                                            tail_id =
-                                                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                                                    crate::value::make_seq_cons(
-                                                        head_id, tail_id, &ctx,
-                                                    ),
-                                                    access_span.clone(),
-                                                )));
-                                        }
-                                        // First document is the outermost head
-                                        let head_id =
-                                            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                                                Value::Document(std::sync::Arc::new(
-                                                    prog.documents[0].node.clone(),
-                                                )),
-                                                access_span.clone(),
-                                            )));
-                                        crate::value::make_seq_cons(head_id, tail_id, &ctx)
-                                    }
-                                }
-                                _ => Value::Dict(indexmap::IndexMap::new()),
-                            };
-                            let thunk = Arc::new(Thunk::new_materialized(val, access_span.clone()));
-                            // Apply boundary guards if this access site has a guard registered.
-                            let thunk = maybe_wrap_guard(thunk, access_span.clone(), &ctx);
-                            Action::Materialize {
-                                thunk,
-                                mat_span: outer_mat_span.or(Some(access_span.clone())),
-                            }
-                        }
-                        Value::Document(doc) => {
-                            // Document field access — expressions, declarations, name, etc.
-                            let val = match field_str.as_str() {
-                                "expressions" => {
-                                    // Build a LLT Seq linked list (not integer-keyed Dict)
-                                    // because builtin_eval expects [Seq Expression].
-                                    let expr_nodes: Vec<std::sync::Arc<crate::ast::SurfaceNode>> =
-                                        doc.items
-                                            .iter()
-                                            .filter_map(|item| {
-                                                if let crate::ast::SurfaceItem::Expr(node) = item {
-                                                    Some(std::sync::Arc::clone(node))
-                                                } else {
-                                                    None
-                                                }
-                                            })
-                                            .collect();
-                                    if expr_nodes.is_empty() {
-                                        crate::value::make_seq_nil()
-                                    } else {
-                                        // End-of-Seq sentinel
-                                        let mut tail_id =
-                                            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                                                crate::value::make_seq_nil(),
-                                                access_span.clone(),
-                                            )));
-                                        // Wrap elements from second-to-last down to index 1
-                                        for node in
-                                            expr_nodes.iter().rev().take(expr_nodes.len() - 1)
-                                        {
-                                            let head_id =
-                                                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                                                    Value::Expression(std::sync::Arc::clone(node)),
-                                                    access_span.clone(),
-                                                )));
-                                            tail_id =
-                                                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                                                    crate::value::make_seq_cons(
-                                                        head_id, tail_id, &ctx,
-                                                    ),
-                                                    access_span.clone(),
-                                                )));
-                                        }
-                                        // First expression is the outermost head
-                                        let head_id =
-                                            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                                                Value::Expression(std::sync::Arc::clone(
-                                                    &expr_nodes[0],
-                                                )),
-                                                access_span.clone(),
-                                            )));
-                                        crate::value::make_seq_cons(head_id, tail_id, &ctx)
-                                    }
-                                }
-                                "name" => match &doc.name {
-                                    Some(n) => Value::Variant {
-                                        tag: "Named".into(),
-                                        payload: Some(ctx.alloc_thunk(Arc::new(
-                                            Thunk::new_materialized(
-                                                crate::value::string_val(n),
-                                                access_span.clone(),
-                                            ),
-                                        ))),
-                                    },
-                                    None => Value::Variant {
-                                        tag: "Unnamed".into(),
-                                        payload: None,
-                                    },
-                                },
-                                "stage" => {
-                                    // stage: DocStage.Type | DocStage.Runtime — nominal variant
-                                    // Default to Runtime when stage is None (matches ast_dict.rs behavior)
-                                    let stage_tag = match &doc.stage {
-                                        Some(crate::ast::Stage::Type) => "DocStage.Type",
-                                        Some(crate::ast::Stage::Runtime) | None => {
-                                            "DocStage.Runtime"
-                                        }
-                                    };
-                                    Value::Variant {
-                                        tag: stage_tag.to_string(),
-                                        payload: None,
-                                    }
-                                }
-                                "uses" => {
-                                    // Build a LLT Seq linked list of module names
-                                    // When absent or empty → [] (empty dict)
-                                    match &doc.uses {
-                                        None => Value::Dict(indexmap::IndexMap::new()),
-                                        Some(crate::Spanned { node: modules, .. })
-                                            if modules.is_empty() =>
-                                        {
-                                            Value::Dict(indexmap::IndexMap::new())
-                                        }
-                                        Some(crate::Spanned { node: modules, .. }) => {
-                                            // End-of-Seq sentinel
-                                            let mut tail_id =
-                                                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                                                    crate::value::make_seq_nil(),
-                                                    access_span.clone(),
-                                                )));
-                                            // Wrap module names from last to second
-                                            for module_spanned in
-                                                modules.iter().rev().take(modules.len() - 1)
-                                            {
-                                                let head_id = ctx.alloc_thunk(Arc::new(
-                                                    Thunk::new_materialized(
-                                                        crate::value::string_val(
-                                                            &module_spanned.node,
-                                                        ),
-                                                        access_span.clone(),
-                                                    ),
-                                                ));
-                                                tail_id = ctx.alloc_thunk(Arc::new(
-                                                    Thunk::new_materialized(
-                                                        crate::value::make_seq_cons(
-                                                            head_id, tail_id, &ctx,
-                                                        ),
-                                                        access_span.clone(),
-                                                    ),
-                                                ));
-                                            }
-                                            // First module name is the outermost head
-                                            let head_id =
-                                                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                                                    crate::value::string_val(&modules[0].node),
-                                                    access_span.clone(),
-                                                )));
-                                            crate::value::make_seq_cons(head_id, tail_id, &ctx)
-                                        }
-                                    }
-                                }
-                                "expects" => match &doc.expects {
-                                    None => Value::Dict(indexmap::IndexMap::new()),
-                                    Some(spanned_ann) => {
-                                        // Return a TypeAssert expression node: `%@annotation`.
-                                        // The inner expression is `VarRef("%")` — when T-833
-                                        // evaluates this, it will bind `%` to the pipeline input
-                                        // and validate it against the annotation.
-                                        let inner = Arc::new(SurfaceNode {
-                                            expr: SurfaceExpression::VarRef {
-                                                name: "%".to_string(),
-                                                escaped: false,
-                                            },
-                                            span: spanned_ann.span.clone(),
-                                        });
-                                        Value::Expression(Arc::new(SurfaceNode {
-                                            expr: SurfaceExpression::TypeAssert {
-                                                annotation: spanned_ann.clone(),
-                                                expr: inner,
-                                            },
-                                            span: spanned_ann.span.clone(),
-                                        }))
-                                    }
-                                },
-                                _ => Value::Dict(indexmap::IndexMap::new()),
-                            };
-                            let thunk = Arc::new(Thunk::new_materialized(val, access_span.clone()));
-                            // Apply boundary guards if this access site has a guard registered.
-                            let thunk = maybe_wrap_guard(thunk, access_span.clone(), &ctx);
-                            Action::Materialize {
-                                thunk,
-                                mat_span: outer_mat_span.or(Some(access_span.clone())),
-                            }
-                        }
-                        other => {
-                            // Type mismatch: report definition site and access site.
-                            let mut err = EvalError::type_mismatch_ctx(
-                                "dot access".to_string(),
-                                "Dict, Proxy, or Variant",
-                                other.type_name(),
-                                target_def_span,
-                            )
-                            .with_materialization_span(access_span.clone());
-                            err.push_frame(format!("accessing .{field_str}"), access_span.clone());
-                            Action::Continue(Err(err.into()))
-                        }
-                    }
-                }
-                Err(mut e) => {
-                    // Target materialization failed
-                    e.push_frame(format!("accessing .{field_str}"), access_span.clone());
-                    Action::Continue(Err(e))
-                }
-            }
-        }
         Cont::TypeAssertCheck(data) => {
             let TypeAssertCheckData {
                 annotation,
@@ -2960,11 +2340,7 @@ pub(crate) async fn apply_cont(
                                 .get_property(DEFAULT_ANNOTATION_KEY)
                                 .map(|node| {
                                     (
-                                        Arc::new(crate::lower::lower(
-                                            node,
-                                            crate::ast::empty_resolution_table(),
-                                            crate::ast::empty_type_annotation_table(),
-                                        )),
+                                        Arc::new(crate::lower::lower(node)),
                                         Arc::clone(&env),
                                     )
                                 });
@@ -3012,11 +2388,7 @@ pub(crate) async fn apply_cont(
                                 // Evaluate default expression iteratively.
                                 // The result will flow to the next continuation on the stack.
                                 Action::EvalCore {
-                                    expr: Arc::new(crate::lower::lower(
-                                        default_node,
-                                        crate::ast::empty_resolution_table(),
-                                        crate::ast::empty_type_annotation_table(),
-                                    )),
+                                    expr: Arc::new(crate::lower::lower(default_node)),
                                     env,
                                     ctx: Arc::clone(&ctx),
                                 }
@@ -3055,11 +2427,7 @@ pub(crate) async fn apply_cont(
                                 callable_invoked: false,
                             })));
                             Action::EvalCore {
-                                expr: Arc::new(crate::lower::lower(
-                                    &predicate_node,
-                                    crate::ast::empty_resolution_table(),
-                                    crate::ast::empty_type_annotation_table(),
-                                )),
+                                expr: Arc::new(crate::lower::lower(&predicate_node)),
                                 env,
                                 ctx: Arc::clone(&ctx),
                             }
@@ -3070,11 +2438,7 @@ pub(crate) async fn apply_cont(
                         annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
                     {
                         Action::EvalCore {
-                            expr: Arc::new(crate::lower::lower(
-                                default_node,
-                                crate::ast::empty_resolution_table(),
-                                crate::ast::empty_type_annotation_table(),
-                            )),
+                            expr: Arc::new(crate::lower::lower(default_node)),
                             env,
                             ctx: Arc::clone(&ctx),
                         }
@@ -3157,7 +2521,8 @@ pub(crate) async fn apply_cont(
                             let mut i = 0;
                             while i + 1 < bindings.len() {
                                 match &bindings[i].node {
-                                    CoreExpr::FreeVar(name)
+                                    // lower_let_decl_binding converts declaration names to Str literals.
+                                    CoreExpr::Str(name)
                                     | CoreExpr::Var { name, .. }
                                     | CoreExpr::Annotated { name, .. } => {
                                         keys.insert(name.clone());
@@ -3261,7 +2626,7 @@ pub(crate) async fn apply_cont(
                         {
                             let mut env_write = child_env.write().unwrap();
                             for (key, thunk_id) in map.into_iter() {
-                                if let Key::String(name) = key {
+                                if let HashableValue::Str(name) = key {
                                     if static_key_set.contains(name.as_ref()) {
                                         let val_thunk = ctx.get_thunk(thunk_id);
                                         env_write.insert(name.to_string(), val_thunk);
@@ -3344,7 +2709,7 @@ pub(crate) async fn apply_cont(
                     {
                         let mut env_write = child_env.write().unwrap();
                         for (key, thunk_id) in map.into_iter() {
-                            if let Key::String(name) = key {
+                            if let HashableValue::Str(name) = key {
                                 if static_key_set.contains(name.as_ref()) {
                                     let val_thunk = ctx.get_thunk(thunk_id);
                                     env_write.insert(name.to_string(), val_thunk);
@@ -3399,18 +2764,14 @@ pub(crate) async fn apply_cont(
                         // apply_predicate_to_subject (callable_invoked=false path).
                         //
                         // Scrutinee injection: a gensym name `%pred_subj` is inserted into a
-                        // child env bound to the scrutinee value. A FreeVar(`%pred_subj`)
+                        // child env bound to the scrutinee value. A Var(`%pred_subj`)
                         // core expression is appended as the final arg. The % prefix is
                         // reserved and cannot appear in user-written identifiers.
                         if let crate::ast::Pattern::Predicate(pred_node) = &arm.pattern.node {
-                            let lowered_pred = crate::lower::lower(
-                                pred_node,
-                                crate::ast::empty_resolution_table(),
-                                crate::ast::empty_type_annotation_table(),
-                            );
+                            let lowered_pred = crate::lower::lower(pred_node);
                             let pred_span = lowered_pred.span.clone();
                             // Check if the lowered predicate is a Call expression.
-                            // If so, extend its arg list with a FreeVar referencing the scrutinee.
+                            // If so, extend its arg list with a Var referencing the scrutinee.
                             // If not (e.g., a Fn literal), evaluate it first and call the result.
                             let (eval_expr, eval_env) = match lowered_pred.node {
                                 crate::ast::CoreExpr::Call {
@@ -3432,9 +2793,14 @@ pub(crate) async fn apply_cont(
                                         .write()
                                         .unwrap()
                                         .insert(subj_name.clone(), scrutinee_thunk);
-                                    // Append FreeVar(`%pred_subj`) as the final positional arg.
+                                    // Append a Var referencing `%pred_subj` as the final positional arg.
+                                    // The name is bound at slot 0 in child_env (the only binding).
                                     args.push(Arc::new(Spanned::new(
-                                        crate::ast::CoreExpr::FreeVar(subj_name),
+                                        crate::ast::CoreExpr::Var {
+                                            name: subj_name,
+                                            level: 0,
+                                            slot: 0,
+                                        },
                                         pred_span.clone(),
                                     )));
                                     let extended_call = Arc::new(Spanned::new(
@@ -3510,36 +2876,29 @@ pub(crate) async fn apply_cont(
                                 body,
                             } = &arm.body.node
                             {
-                                if let Some(lb) = let_bindings {
-                                    // 3-arg form: [case [let bindings] pattern body]
-                                    // Extract the binding name set from the let_bindings node.
-                                    // Walk the structural pattern, binding names in the set and
-                                    // pin-comparing names not in the set.
-                                    let binding_set = extract_let_binding_names(&lb.node);
-                                    match eval_case_arm_structural_pattern(
-                                        pattern,
-                                        &binding_set,
-                                        &scrutinee_value,
-                                        &env,
-                                        match_span.clone(),
-                                        &ctx,
-                                    )
-                                    .await
-                                    {
-                                        Some(bound_env) => (bound_env, Arc::clone(body)),
-                                        None => {
-                                            // Pattern did not match — soft skip to next arm
-                                            continue;
-                                        }
+                                // 3-arg form: [case [let bindings] pattern body]
+                                // Extract the binding name set from the let_bindings node.
+                                // Walk the structural pattern, binding names in the set and
+                                // pin-comparing names not in the set.
+                                let binding_set = extract_let_binding_names(&let_bindings.node);
+                                match eval_case_arm_structural_pattern(
+                                    pattern,
+                                    &binding_set,
+                                    &scrutinee_value,
+                                    &env,
+                                    match_span.clone(),
+                                    &ctx,
+                                )
+                                .await
+                                {
+                                    Some(bound_env) => (bound_env, Arc::clone(body)),
+                                    None => {
+                                        // Pattern did not match — soft skip to next arm
+                                        continue;
                                     }
-                                } else {
-                                    // 2-arg legacy form: unreachable for user code (T-1151 enforces 3-arg).
-                                    // Fall through with arm_env as the final env.
-                                    (arm_env, Arc::clone(body))
                                 }
                             } else {
                                 // Not a CaseArm body — use the arm environment as-is.
-                                // This is the legacy match arm path.
                                 (arm_env, Arc::clone(&arm.body))
                             };
 
@@ -3650,7 +3009,7 @@ pub(crate) async fn apply_cont(
                     // Check if the guard result is truthy (guard_value is either a non-callable,
                     // or the result of invoking the callable guard via the CEK machine above).
                     let is_truthy = match &guard_value {
-                        Value::Bool(b) => *b,
+                        _ if let Some(b) = guard_value.as_bool() => b,
                         Value::Dict(map) => !map.is_empty(),
                         _ => true,
                     };
@@ -3734,9 +3093,9 @@ pub(crate) async fn apply_cont(
                     // Unlike guards (which treat any truthy value as passing),
                     // predicate patterns require an explicit Bool(true) return.
                     // This matches the task spec: "If the result is `true`, the arm matches."
-                    let matched = match &predicate_value {
-                        Value::Bool(b) => *b,
-                        _ => false,
+                    let matched = match predicate_value.as_bool() {
+                        Some(b) => b,
+                        None => false,
                     };
 
                     if matched {
@@ -3830,7 +3189,7 @@ pub(crate) async fn apply_cont(
                     // Check if the predicate result is truthy (predicate_value is either a
                     // non-callable, or the result of invoking the callable predicate above).
                     let is_truthy = match &predicate_value {
-                        Value::Bool(b) => *b,
+                        _ if let Some(b) = predicate_value.as_bool() => b,
                         Value::Dict(map) => !map.is_empty(),
                         _ => true,
                     };
@@ -3845,11 +3204,7 @@ pub(crate) async fn apply_cont(
                         {
                             // Evaluate default expression iteratively
                             Action::EvalCore {
-                                expr: Arc::new(crate::lower::lower(
-                                    default_node,
-                                    crate::ast::empty_resolution_table(),
-                                    crate::ast::empty_type_annotation_table(),
-                                )),
+                                expr: Arc::new(crate::lower::lower(default_node)),
                                 env,
                                 ctx: Arc::clone(&ctx),
                             }
@@ -3890,9 +3245,9 @@ fn extract_let_binding_names(let_decl: &CoreExpr) -> std::collections::HashSet<S
     if let CoreExpr::LetDecl { bindings } = let_decl {
         for binding in bindings {
             match &binding.node {
-                // Only variable references can be binding names — string literals cannot
-                // be binding targets, so CoreExpr::Str is intentionally excluded here.
-                CoreExpr::FreeVar(name) if name != "_" => {
+                // lower_let_decl_binding converts declaration-position names to CoreExpr::Str.
+                // The "_" wildcard is excluded — it binds nothing.
+                CoreExpr::Str(name) if name != "_" => {
                     names.insert(name.clone());
                 }
                 CoreExpr::Var { name, .. } if name != "_" => {
@@ -3957,7 +3312,10 @@ async fn eval_case_arm_structural_pattern(
         {
             let mut env_write = arm_env.write().unwrap();
             for name in binding_set {
-                if name != "_" && env_write.get(name).is_none() {
+                // Check only arm_env's own slot_names (not the parent chain).
+                // arm_env is fresh — the only bindings it contains were inserted by the pattern.
+                // Using slot_names directly avoids get_by_name's parent-chain walk.
+                if name != "_" && !env_write.slot_names.iter().any(|n| n == name) {
                     let thunk = Arc::new(Thunk::new_materialized(
                         scrutinee_value.clone(),
                         match_span.clone(),
@@ -4001,13 +3359,13 @@ fn eval_structural_pattern_inner<'a>(
     Box::pin(async move {
         match pattern {
             // Wildcard: always succeeds, no binding.
-            // Only FreeVar("_") and Var { name: "_" } are wildcards — CoreExpr::Str("_")
-            // is a string literal and must do exact-value comparison (handled by the Str arm below).
-            CoreExpr::FreeVar(name) if name == "_" => true,
+            // Var { name: "_" } is the wildcard — CoreExpr::Str("_") is a string literal
+            // and must do exact-value comparison (handled by the Str arm below).
             CoreExpr::Var { name, .. } if name == "_" => true,
 
-            // Plain name: bind or pin based on binding_set
-            CoreExpr::FreeVar(name) => {
+            // Plain name: bind or pin based on binding_set.
+            // level and slot carry de Bruijn coordinates for the pin case.
+            CoreExpr::Var { name, level, slot } => {
                 bind_or_pin_name(
                     name,
                     binding_set,
@@ -4016,24 +3374,16 @@ fn eval_structural_pattern_inner<'a>(
                     arm_env,
                     &match_span,
                     ctx,
-                )
-                .await
-            }
-            CoreExpr::Var { name, .. } => {
-                bind_or_pin_name(
-                    name,
-                    binding_set,
-                    scrutinee_value,
-                    env,
-                    arm_env,
-                    &match_span,
-                    ctx,
+                    *level,
+                    *slot,
                 )
                 .await
             }
 
             // Annotated name (name@Type): the annotation is a static constraint — at runtime,
             // treat as bind if in set, pin if not (type constraint is checked at compile time).
+            // CoreExpr::Annotated has no de Bruijn coords, so pin uses u32::MAX sentinel
+            // (soft-skips when name is not in binding_set).
             CoreExpr::Annotated { name, annotation } => {
                 // First, perform the bind-or-pin operation
                 let bind_result = bind_or_pin_name(
@@ -4044,6 +3394,8 @@ fn eval_structural_pattern_inner<'a>(
                     arm_env,
                     &match_span,
                     ctx,
+                    u32::MAX, // no de Bruijn coords available for Annotated; pin soft-skips
+                    u32::MAX,
                 )
                 .await;
 
@@ -4054,11 +3406,7 @@ fn eval_structural_pattern_inner<'a>(
                 // Check if annotation contains an "is:" property (predicate)
                 if let Some(pred_surface_node) = annotation.node.get_property(IS_ANNOTATION_KEY) {
                     // Evaluate the predicate expression to get a callable (function or builtin)
-                    let pred_expr_core = Arc::new(crate::lower::lower(
-                        pred_surface_node,
-                        crate::ast::empty_resolution_table(),
-                        crate::ast::empty_type_annotation_table(),
-                    ));
+                    let pred_expr_core = Arc::new(crate::lower::lower(pred_surface_node));
 
                     let pred_thunk = Arc::new(Thunk::new_unevaluated_core(
                         pred_expr_core,
@@ -4072,12 +3420,17 @@ fn eval_structural_pattern_inner<'a>(
                         Err(_) => return false,
                     };
 
-                    // Get the bound value from arm_env
-                    let bound_value_thunk = if let Some(thunk) = arm_env.read().unwrap().get(name) {
-                        thunk
-                    } else {
-                        // Name not bound (shouldn't happen after bind_or_pin succeeded)
-                        return false;
+                    // Get the bound value from arm_env.
+                    // Since arm_env is a fresh environment (only contains what the pattern bound),
+                    // look up `name` in arm_env's own slots directly without walking the parent chain.
+                    let bound_value_thunk = {
+                        let env_read = arm_env.read().unwrap();
+                        if let Some(idx) = env_read.slot_names.iter().rposition(|n| n == name) {
+                            Arc::clone(&env_read.slots[idx])
+                        } else {
+                            // Name not bound (shouldn't happen after bind_or_pin succeeded)
+                            return false;
+                        }
                     };
 
                     let bound_value =
@@ -4105,7 +3458,7 @@ fn eval_structural_pattern_inner<'a>(
 
                     // Check if result is truthy (not false, not null/empty-dict)
                     let is_falsy = match &pred_result {
-                        Value::Bool(false) => true,
+                        _ if pred_result.as_bool() == Some(false) => true,
                         Value::Dict(m) => m.is_empty(),
                         _ => false,
                     };
@@ -4128,9 +3481,6 @@ fn eval_structural_pattern_inner<'a>(
             CoreExpr::Float(f) => {
                 matches!(scrutinee_value, Value::Float(v) if v == f)
             }
-            CoreExpr::Bool(b) => {
-                matches!(scrutinee_value, Value::Bool(v) if v == b)
-            }
             CoreExpr::Str(s) => {
                 // Not a wildcard (handled above): literal string comparison
                 scrutinee_value.as_str().is_some_and(|v| v == s.as_str())
@@ -4148,7 +3498,7 @@ fn eval_structural_pattern_inner<'a>(
                 // First, check if this is a guard expression (lowercase name or operator)
                 // rather than a constructor pattern (uppercase name or qualified Type.Ctor).
                 let is_guard_expr = match &func.node {
-                    CoreExpr::FreeVar(name) | CoreExpr::Str(name) | CoreExpr::Var { name, .. } => {
+                    CoreExpr::Str(name) | CoreExpr::Var { name, .. } => {
                         // Lowercase initial char → guard expression
                         // Operator chars (>, <, =, !, +, -, *, /, etc.) → guard expression
                         name.chars().next().is_some_and(|c| {
@@ -4214,28 +3564,19 @@ fn eval_structural_pattern_inner<'a>(
                     };
 
                     // Return true if result is truthy (not false, not null/empty-dict)
-                    let is_falsy = matches!(guard_result, Value::Bool(false))
+                    let is_falsy = guard_result.as_bool() == Some(false)
                         || matches!(&guard_result, Value::Dict(m) if m.is_empty());
                     return !is_falsy;
                 }
 
                 // Not a guard expression — proceed with constructor pattern matching.
-                // Determine the constructor tag from the function position
+                // Determine the constructor tag from the function position.
+                // Note: Type.Ctor syntax now compiles to Call(field-get, [Str("Ctor"), Var("Type")]).
+                // The tag is derived from the Var or Str name directly; qualified dot-access
+                // constructors are flattened by the parser to a dotted string before lowering
+                // (e.g., `Result.Ok` → Var{name:"Result.Ok"} or resolved to its instance).
                 let ctor_tag = match &func.node {
-                    CoreExpr::FreeVar(name) | CoreExpr::Str(name) => Some(name.clone()),
-                    CoreExpr::Var { name, .. } => Some(name.clone()),
-                    CoreExpr::DotAccess { expr, field } => {
-                        // Qualified: Type.Ctor
-                        if let CoreExpr::FreeVar(type_name)
-                        | CoreExpr::Var {
-                            name: type_name, ..
-                        } = &expr.node
-                        {
-                            Some(format!("{}.{}", type_name, field))
-                        } else {
-                            None
-                        }
-                    }
+                    CoreExpr::Str(name) | CoreExpr::Var { name, .. } => Some(name.clone()),
                     _ => None,
                 };
 
@@ -4299,7 +3640,7 @@ fn eval_structural_pattern_inner<'a>(
 
                         for (idx, arg) in args.iter().enumerate() {
                             // Get the field value at integer key idx
-                            let field_key = Key::Int(idx as i64);
+                            let field_key = HashableValue::Int(idx as i64);
                             let Some(field_thunk_id) = payload_map.get(&field_key) else {
                                 return false;
                             };
@@ -4338,8 +3679,8 @@ fn eval_structural_pattern_inner<'a>(
                 for entry in entries {
                     // Key must be a static string or int
                     let key = match entry.node.key.as_ref().map(|k| &k.node) {
-                        Some(CoreExpr::Str(s)) => Key::String(s.clone().into()),
-                        Some(CoreExpr::Int(n)) => Key::Int(*n),
+                        Some(CoreExpr::Str(s)) => HashableValue::Str(s.clone().into()),
+                        Some(CoreExpr::Int(n)) => HashableValue::Int(*n),
                         _ => return false, // Dynamic key in pattern — not supported
                     };
                     let Some(field_thunk_id) = scrutinee_map.get(&key) else {
@@ -4403,8 +3744,12 @@ fn eval_structural_pattern_inner<'a>(
 /// Implement bind-or-pin at a single name position in a 3-arg structural pattern.
 ///
 /// - If `name` is in `binding_set`: insert a new_materialized thunk into `arm_env`
-/// - If `name` is NOT in `binding_set`: look up `name` in `env`, compare with
-///   `values_equal`; return false (soft skip) if not equal
+/// - If `name` is NOT in `binding_set`: look up `name` in `env` via de Bruijn coordinates
+///   (`pin_level`, `pin_slot`), compare with `values_equal`; return false (soft skip) if not equal
+///
+/// `pin_level` and `pin_slot` are the de Bruijn coordinates of `name` in the enclosing scope,
+/// assigned by the resolver. Both must be `u32::MAX` to indicate "no resolver info available"
+/// (e.g., for `CoreExpr::Annotated` patterns), in which case the pin always soft-skips.
 async fn bind_or_pin_name(
     name: &str,
     binding_set: &std::collections::HashSet<String>,
@@ -4413,6 +3758,8 @@ async fn bind_or_pin_name(
     arm_env: &Arc<RwLock<Environment>>,
     match_span: &Span,
     ctx: &Arc<EvalContext>,
+    pin_level: u32,
+    pin_slot: u32,
 ) -> bool {
     if binding_set.contains(name) {
         // Bind: associate name with the scrutinee value in arm_env
@@ -4423,11 +3770,15 @@ async fn bind_or_pin_name(
         arm_env.write().unwrap().insert(name.to_string(), thunk);
         true
     } else {
-        // Pin: look up name in env, compare with scrutinee
-        let pin_thunk = match env.read().unwrap().get(name) {
+        // Pin: look up name via de Bruijn coordinates in env, compare with scrutinee.
+        // u32::MAX sentinel means no resolver coordinates available — soft-skip.
+        if pin_level == u32::MAX || pin_slot == u32::MAX {
+            return false;
+        }
+        let pin_thunk = match env.read().unwrap().get_slot(pin_level, pin_slot) {
             Some(t) => t,
             None => {
-                // Name not in scope — soft skip (treat as mismatch)
+                // Name not in scope at runtime — soft skip (treat as mismatch)
                 return false;
             }
         };
@@ -4513,7 +3864,7 @@ mod tests {
     use super::*;
     use crate::ast::CoreExpr;
     use crate::test_util::{sp, test_span};
-    use crate::value::{Environment, Key, Thunk};
+    use crate::value::{Environment, HashableValue, Thunk, ThunkId};
     fn empty_env() -> Arc<RwLock<Environment>> {
         Arc::new(RwLock::new(Environment::new()))
     }
@@ -4528,22 +3879,22 @@ mod tests {
         EvalContext::new(base_dir, Arc::clone(&env), Arc::clone(&env), false)
     }
 
-    /// Synchronous shadow of `materialize()` for test contexts.
-    fn materialize(
+    /// Async shadow of `materialize()` for test contexts.
+    async fn materialize(
         thunk: &crate::value::Thunk,
         mat_span: Option<&crate::ast::Span>,
         ctx: &Arc<EvalContext>,
     ) -> crate::error::EvalResult<Value> {
-        crate::async_rt::block_on_anywhere(crate::eval::materialize(thunk, mat_span, ctx))
+        crate::eval::materialize(thunk, mat_span, ctx).await
     }
 
-    /// Synchronous shadow of `run()` for test contexts.
-    fn run(initial: Action, ctx: &Arc<EvalContext>) -> crate::error::EvalResult<Value> {
-        crate::async_rt::block_on_anywhere(super::run(initial, ctx))
+    /// Async shadow of `run()` for test contexts.
+    async fn run(initial: Action, ctx: &Arc<EvalContext>) -> crate::error::EvalResult<Value> {
+        super::run(initial, ctx).await
     }
 
-    #[test]
-    fn test_restore_state_pending_builtin() {
+    #[tokio::test]
+    async fn test_restore_state_pending_builtin() {
         use crate::value::BuiltinFn;
 
         let span = test_span(1, 1, 1, 10);
@@ -4594,8 +3945,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_restore_state_core_expr() {
+    #[tokio::test]
+    async fn test_restore_state_core_expr() {
         let span = test_span(1, 1, 1, 10);
         let ctx = test_ctx();
 
@@ -4635,8 +3986,8 @@ mod tests {
         assert!(!thunk.is_materialized());
     }
 
-    #[test]
-    fn test_core_expr_restore_preserves_state() {
+    #[tokio::test]
+    async fn test_core_expr_restore_preserves_state() {
         let span = test_span(1, 1, 1, 10);
         let ctx = test_ctx();
 
@@ -4699,8 +4050,8 @@ mod tests {
         // process the Call expression and create fresh arg thunks from the CoreExpr.
     }
 
-    #[test]
-    fn test_attach_materialization_context_adds_frame() {
+    #[tokio::test]
+    async fn test_attach_materialization_context_adds_frame() {
         let thunk_span = test_span(1, 1, 1, 10);
         let err = EvalError::undefined_variable("x".to_string(), thunk_span.clone());
         let mat_span = test_span(10, 5, 10, 6);
@@ -4728,8 +4079,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_guarded_type_assertion_failure_has_secondary_span() {
+    #[tokio::test]
+    async fn test_guarded_type_assertion_failure_has_secondary_span() {
         // Test that when a Guarded type assertion fails, the error includes
         // a secondary_span pointing to where the value was produced (if different
         // from the assertion site).
@@ -4757,7 +4108,7 @@ mod tests {
 
         // Try to materialize - should fail
         let ctx = test_ctx();
-        let result = materialize(&guarded, Some(&guard_span), &ctx);
+        let result = materialize(&guarded, Some(&guard_span), &ctx).await;
 
         assert!(result.is_err(), "Expected type assertion to fail");
         let err = result.unwrap_err();
@@ -4778,8 +4129,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_guarded_secondary_span_suppressed_when_same_as_definition() {
+    #[tokio::test]
+    async fn test_guarded_secondary_span_suppressed_when_same_as_definition() {
         // Test that when the value production site is the same as the assertion site,
         // secondary_span is NOT set (would be redundant).
         // materialize is the local sync shadow defined at the top of this test module
@@ -4804,7 +4155,7 @@ mod tests {
         );
 
         let ctx = test_ctx();
-        let result = materialize(&guarded, Some(&same_span), &ctx);
+        let result = materialize(&guarded, Some(&same_span), &ctx).await;
 
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -4816,8 +4167,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_cont_memoize_caches_result() {
+    #[tokio::test]
+    async fn test_cont_memoize_caches_result() {
         // Test that Cont::Memoize caches the materialization result into the parent thunk.
         // Create an Unevaluated thunk, force it via the CEK machine (run), and verify
         // it transitions to Materialized state with the correct cached value.
@@ -4845,7 +4196,8 @@ mod tests {
                 mat_span: None,
             },
             &ctx,
-        );
+        )
+        .await;
 
         // Verify the result is correct
         assert!(result.is_ok(), "Expected successful materialization");
@@ -4866,23 +4218,28 @@ mod tests {
                 mat_span: None,
             },
             &ctx,
-        );
+        )
+        .await;
         assert_eq!(result2.unwrap(), Value::Int(42));
     }
 
-    #[test]
-    fn test_cont_memoize_caches_error_in_failed_state() {
+    #[tokio::test]
+    async fn test_cont_memoize_caches_error_in_failed_state() {
         // Test that when a thunk errors during materialization, the error is cached
         // in Failed state and subsequent materializations return the cached error.
         let span = test_span(1, 1, 1, 10);
         let ctx = test_ctx();
         let env = empty_env();
 
-        // Create a thunk that will fail: reference an undefined variable
-        // FreeVar performs name-based env lookup and fails when not found.
+        // Create a thunk that will fail: reference a variable with no resolution entry.
+        // slot u32::MAX is out of bounds — get_slot returns None → undefined variable error.
         let thunk = Arc::new(Thunk::new_unevaluated_core(
             Arc::new(Spanned::new(
-                CoreExpr::FreeVar("undefined_var".into()),
+                CoreExpr::Var {
+                    name: "undefined_var".to_string(),
+                    level: 0,
+                    slot: u32::MAX,
+                },
                 span.clone(),
             )),
             env,
@@ -4903,7 +4260,8 @@ mod tests {
                 mat_span: None,
             },
             &ctx,
-        );
+        )
+        .await;
 
         // Verify the result is an error
         assert!(result.is_err(), "Expected error for undefined variable");
@@ -4933,7 +4291,8 @@ mod tests {
                 mat_span: None,
             },
             &ctx,
-        );
+        )
+        .await;
         assert!(
             result2.is_err(),
             "Expected cached error on second materialization"
@@ -4946,11 +4305,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_error_propagation_through_continuation() {
+    #[tokio::test]
+    async fn test_error_propagation_through_continuation() {
         // Test that errors propagate correctly through the continuation stack.
-        // Create a nested structure (dict access) where the inner thunk errors,
-        // and verify the error propagates through the DotAccessForce continuation.
+        // Force a dict thunk that contains an error-producing value and verify
+        // the error propagates correctly through the materialization machinery.
         let span = test_span(1, 1, 1, 10);
         let ctx = test_ctx();
         let env = empty_env();
@@ -4958,7 +4317,11 @@ mod tests {
         // Create a dict with an entry that will error when materialized
         let error_thunk = Arc::new(Thunk::new_unevaluated_core(
             Arc::new(Spanned::new(
-                CoreExpr::FreeVar("undefined_var".into()),
+                CoreExpr::Var {
+                    name: "undefined_var".to_string(),
+                    level: 0,
+                    slot: u32::MAX,
+                },
                 span.clone(),
             )),
             Arc::clone(&env),
@@ -4966,45 +4329,13 @@ mod tests {
             span.clone(),
         ));
 
-        let error_id = ctx.alloc_thunk(error_thunk);
-        let mut dict_map: IndexMap<Key, crate::arena::ThunkId> = IndexMap::new();
-        dict_map.insert(Key::String("field".into()), error_id);
-        let dict_value = Value::Dict(dict_map);
-        let dict_thunk = Arc::new(Thunk::new_materialized(dict_value, span.clone()));
-
-        // Insert the dict into the environment
-        env.write().unwrap().insert("my_dict".into(), dict_thunk);
-
-        // Create a dot access expression: my_dict.field
-        let access_thunk = Arc::new(Thunk::new_unevaluated_core(
-            Arc::new(Spanned::new(
-                CoreExpr::DotAccess {
-                    expr: Arc::new(Spanned::new(
-                        CoreExpr::FreeVar("my_dict".into()),
-                        span.clone(),
-                    )),
-                    field: crate::ast::DotKey::Ident("field".to_string()),
-                },
-                span.clone(),
-            )),
-            env,
-            Arc::clone(&ctx),
-            span,
-        ));
-
-        // Force the access thunk — should propagate the error from the field value
-        let result = run(
-            Action::Materialize {
-                thunk: access_thunk,
-                mat_span: None,
-            },
-            &ctx,
-        );
+        // Directly materialize the error thunk — should produce an undefined variable error.
+        let result = crate::eval::materialize(&error_thunk, None, &ctx).await;
 
         // Verify the error propagated
         assert!(
             result.is_err(),
-            "Expected error to propagate through DotAccessForce"
+            "Expected error to propagate through continuation"
         );
         let err = result.unwrap_err();
         assert!(
@@ -5026,8 +4357,8 @@ mod tests {
     // Each test drives the full CEK machine through `run()` so the entire
     // force_step → push Cont::GuardedValidate → apply_cont path executes.
 
-    #[test]
-    fn test_guarded_validate_success_materializes_thunk() {
+    #[tokio::test]
+    async fn test_guarded_validate_success_materializes_thunk() {
         // Branch 1: inner value matches expected type.
         // A Guarded thunk wrapping an Int value with an Int type expectation
         // should succeed and leave the thunk in Materialized state.
@@ -5047,7 +4378,7 @@ mod tests {
             span,
         ));
 
-        let result = materialize(&guarded, None, &ctx);
+        let result = materialize(&guarded, None, &ctx).await;
         assert!(
             result.is_ok(),
             "Int value should pass Int guard, got: {:?}",
@@ -5063,8 +4394,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_guarded_validate_failure_with_default_evaluates_default_in_caller_env() {
+    #[tokio::test]
+    async fn test_guarded_validate_failure_with_default_evaluates_default_in_caller_env() {
         // Branch 2: inner value fails type check but a default expression is present.
         // The default expression should be evaluated in the caller's environment,
         // and the thunk should memoize the default result.
@@ -5087,9 +4418,12 @@ mod tests {
             span.clone(),
         ));
 
-        // Default expression: a variable reference to `fallback_val` in caller's env.
-        // Uses CoreExpr::FreeVar for name-based env lookup at runtime.
-        let default_expr = Arc::new(sp(CoreExpr::FreeVar("fallback_val".into())));
+        // Default expression: a variable reference to `fallback_val` at slot 0 in this env.
+        let default_expr = Arc::new(sp(CoreExpr::Var {
+            name: "fallback_val".to_string(),
+            level: 0,
+            slot: 0,
+        }));
 
         let guarded = Arc::new(Thunk::new_guarded_full(
             Arc::clone(&inner),
@@ -5101,7 +4435,7 @@ mod tests {
         ));
 
         // Should succeed, returning the default value (99) evaluated in caller's env.
-        let result = materialize(&guarded, None, &ctx);
+        let result = materialize(&guarded, None, &ctx).await;
         assert!(
             result.is_ok(),
             "validation failure with default should succeed, got: {:?}",
@@ -5121,8 +4455,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_guarded_validate_failure_without_default_propagates_error() {
+    #[tokio::test]
+    async fn test_guarded_validate_failure_without_default_propagates_error() {
         // Branch 3: inner value fails type check and no default is present.
         // The error should propagate to the caller and the thunk should cache the
         // failure (transition to Failed state) so subsequent access returns the
@@ -5134,7 +4468,7 @@ mod tests {
         let ctx = test_ctx();
 
         // Inner thunk: a Bool value — fails the Int guard.
-        let inner = Arc::new(Thunk::new_materialized(Value::Bool(true), span.clone()));
+        let inner = Arc::new(Thunk::new_materialized(Value::boolean(true), span.clone()));
 
         let guarded = Arc::new(Thunk::new_guarded(
             Arc::clone(&inner),
@@ -5144,7 +4478,7 @@ mod tests {
         ));
 
         // First materialization: guard fires, Bool ≠ Int → type assertion failure.
-        let result1 = materialize(&guarded, None, &ctx);
+        let result1 = materialize(&guarded, None, &ctx).await;
         assert!(
             result1.is_err(),
             "Bool value should fail Int guard (no default), but got success"
@@ -5163,7 +4497,7 @@ mod tests {
         );
 
         // Second materialization: returns cached error, does not re-run guard.
-        let result2 = materialize(&guarded, None, &ctx);
+        let result2 = materialize(&guarded, None, &ctx).await;
         assert!(
             result2.is_err(),
             "second materialization should also fail (cached error)"
@@ -5190,8 +4524,8 @@ mod tests {
     ///
     /// If `Cont::BuiltinForceArg` is not reached or does not properly force the arg,
     /// `builtin_keys` will panic at `try_get_materialized().expect(...)`.
-    #[test]
-    fn test_builtin_force_arg_cek_forces_arg_before_dispatch() {
+    #[tokio::test]
+    async fn test_builtin_force_arg_cek_forces_arg_before_dispatch() {
         use crate::value::{BuiltinDef, BuiltinFn, Strictness};
 
         let ctx = test_ctx();
@@ -5239,7 +4573,8 @@ mod tests {
                 mat_span: None,
             },
             &ctx,
-        );
+        )
+        .await;
 
         assert!(
             result.is_ok(),
@@ -5270,8 +4605,8 @@ mod tests {
     ///
     /// This ensures the BuiltinForceArg continuation correctly iterates through all
     /// force_count positions before dispatching.
-    #[test]
-    fn test_builtin_force_arg_cek_force_count_two() {
+    #[tokio::test]
+    async fn test_builtin_force_arg_cek_force_count_two() {
         use crate::value::{BuiltinDef, BuiltinFn, Strictness};
 
         let ctx = test_ctx();
@@ -5319,7 +4654,12 @@ mod tests {
                 .try_get_materialized()
                 .expect("pre-materialized by force_count/pos_strictness");
             let span = args.call_span;
-            Box::pin(async move { Ok(Arc::new(Thunk::new_materialized(Value::Bool(true), span))) })
+            Box::pin(async move {
+                Ok(Arc::new(Thunk::new_materialized(
+                    Value::boolean(true),
+                    span,
+                )))
+            })
         };
 
         const DUMMY_STRICTNESS: &[Strictness] = &[];
@@ -5346,7 +4686,8 @@ mod tests {
                 mat_span: None,
             },
             &ctx,
-        );
+        )
+        .await;
 
         assert!(
             result.is_ok(),
@@ -5355,7 +4696,7 @@ mod tests {
         );
         assert_eq!(
             result.unwrap(),
-            Value::Bool(true),
+            Value::boolean(true),
             "dummy builtin must succeed with both args pre-materialized"
         );
     }
@@ -5366,8 +4707,8 @@ mod deep_tests {
     use super::*;
     use crate::test_util::test_span;
 
-    #[test]
-    fn test_attach_materialization_context_preserves_spans() {
+    #[tokio::test]
+    async fn test_attach_materialization_context_preserves_spans() {
         // Test that attach_materialization_context correctly adds materialization
         // span and origin frame to errors.
         //
@@ -5423,7 +4764,7 @@ mod deep_tests {
 /// Handles four container types:
 /// - `Value::Dict` — materializes all entry thunks and recurses into each value
 /// - `Value::Variant` — materializes the payload thunk and recurses into it
-/// - `Value::Variant` (Seq.Cons/Seq.Nil) — handled by the Variant arm; Seq.Cons payload contains head/tail ThunkIds
+/// - `Value::Variant` (nominal types including Seq) — handled by the Variant arm above
 /// - `Value::Overlay` — flattens and recurses (same as Dict path after flatten)
 ///
 /// All other value types (Int, String, Float, Bool, Function, Channel, ReactiveCell,
@@ -5434,8 +4775,7 @@ mod deep_tests {
 /// Uses cycle detection to avoid infinite loops.
 ///
 /// Exported for use by:
-/// - `expand_macro_call_surface` in expand.rs (fallback path for Dict/Variant macro results)
-/// - `builtin_variant` in builtins_meta.rs (deep-materialize AST variant payloads)
+/// - `expand_macro_call_surface` in expand.rs (Expr.* typed macro results)
 /// - `builtin_to_tinct` in stream.rs (pre-force all nested values before SCN serialization)
 pub(crate) async fn force_dict_tree(val: &Value, ctx: &Arc<EvalContext>) -> EvalResult<Value> {
     force_dict_tree_impl(val, ctx, &mut HashSet::new()).await
@@ -5495,9 +4835,7 @@ fn force_dict_tree_impl<'a>(
                     Ok(val.clone())
                 }
             }
-            // Seq.Cons and Seq.Nil are now Value::Variant — handled by the Variant arm above.
-            // No separate Seq arm needed: force_dict_tree_impl recurses into Variant payloads,
-            // and Seq.Cons payload is {head: ThunkId, tail: ThunkId} which the Dict arm processes.
+            // Nominal variants (including Seq) handled by the Variant arm above.
             Value::Overlay(left, right) => {
                 // Flatten the overlay to a dict, then recurse on the result
                 let flattened_map = flatten_overlay(
@@ -5505,19 +4843,20 @@ fn force_dict_tree_impl<'a>(
                     right,
                     "force_dict_tree",
                     ctx,
-                    crate::ast::Span::origin(),
+                    rust_span!(),
                 )
                 .await?;
                 let dict_val = Value::Dict(flattened_map);
                 force_dict_tree_impl(&dict_val, ctx, visited).await
             }
-            // Explicit passthrough for Expression values — these are already fully formed AST nodes
-            Value::Expression(_) => Ok(val.clone()),
-            // Primitives and other types are already fully materialized
-            // Includes: Int, Float, Bool, String, Function, Builtin, DirCap, NetCap, Handle,
-            // WriteHandle, RevocableDirCap, Decimal, BigInt, Bytes, Uri, Timestamp, Duration,
-            // ClockCap, Timezone, QuicSession, Http2Session, Http3Session, QuicDatagramHandle,
-            // DatagramHandle, Program, Document, Builder, Proxy
+            // Primitives and other types are already fully materialized.
+            // Includes: Int, Float, Bool, String, Function, Builtin, DirCap, NetCap,
+            // File, RevocableDirCap, Decimal, BigInt, Bytes, Uri, Timestamp,
+            // Duration, ClockCap, Timezone, QuicSession, Http2Session, Http3Session,
+            // QuicDatagramHandle, DatagramHandle, Program, Document, Builder, Proxy.
+            // Note: Handle and WriteHandle were removed in the File redesign sprint.
+            // Expr.* variants (Value::Variant with tag starting with "Expr.") are handled above
+            // by the Dict recursion path — their payload dicts are forced recursively.
             _ => Ok(val.clone()),
         }
     })

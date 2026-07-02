@@ -5,7 +5,7 @@
 # Absence of === warn asserts annotation_to_variance("Contravariant") resolves cleanly.
 [
   Callback: [type [let a@Contravariant] [fn: [fn@a []]]]
-  result: true
+  result: True
 ]
 === out
 Dict({"Callback": Dict({}), "result": Bool(true)})

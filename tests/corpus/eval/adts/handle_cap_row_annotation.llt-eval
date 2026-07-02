@@ -18,7 +18,7 @@
   # Previously broken: resolved to Union(Handle(Unknown), DirCap) instead of Handle(DirCap).
   passthru-dir: [fn@[return: [Handle DirCap]] [let h@Handle@DirCap] h]
 
-  always-true: true
+  always-true: True
 ]
 
 === out

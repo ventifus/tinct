@@ -228,7 +228,7 @@ v = Function{..} ∨ v = Builtin{..}
 ────────────────────────────────── [VM-FN]
 v ∈ Fn(τ₁...τₙ → τᵣ)
 
-v = Variant { tag: "Seq.Nil" } ∨ v = Variant { tag: "Seq.Cons", .. }
+v = Variant { tag: "Seq.End" } ∨ v = Variant { tag: "Seq.Cons", .. }
 ────────────────────────────────── [VM-SEQ]
 v ∈ App(TyCon("Seq"), τ)    (tag-only check; element type not validated eagerly)
 
@@ -633,6 +633,122 @@ The walkers that require explicit Rust arms (semantically special cases only):
 | `PartialEq` | Recursive only | Structural equality: same `.var` name AND same `body` TypeNode. This is sufficient given globally unique gensym `.var` names — two `Recursive` nodes with the same `.var` must be the same binder. TypeVar uses structural equality on `name` (level ignored per Kiselyov — levels are stored in `state.levels`, not in the equality relation) |
 
 `collect_type_vars` reads level from `state.levels[name]`, not from the TypeNode `level` field. `state.levels` is the authoritative current level (updated by level lowering). DICT-GEN generalization checks `state.levels[name] > enclosing_level`.
+
+---
+
+## Collection Typeclasses — Complexity Promises
+
+Collection typeclasses enforce **complexity promises**: every typeclass method is O(log n) or better. The `-able` suffix names a computational promise, not category membership.
+
+### Hierarchy
+
+```tinct
+[class [let Prependable c]
+  push-left:  [Fn@c      [a c]]
+  peek-left:  [Fn@a      [c]]
+  pop-left:   [Fn@c      [c]]]
+
+[class [let Appendable c]
+  push-right: [Fn@c      [c a]]
+  peek-right: [Fn@a      [c]]
+  pop-right:  [Fn@c      [c]]]
+
+[class [let Concatenable c]
+  <>: [Fn@c [c c]]]        # O(log n) join of two same-type collections
+
+[class [let Indexable c k v]
+  [determines: [[[c k] v]]  resolver: IndexResult]
+  get:    [Fn@v   [k c]]
+  slice:  [Fn@c   [c Int Int]]
+  length: [Fn@Int [c]]]
+
+[class [let Iterable c a]
+  [determines: [[[c] a]]  resolver: IterResult]
+  each: [Fn@[Seq a] [c]]]   # O(1) to initiate; produces lazy Seq
+
+[class [let Hashable k]  [Equatable k]
+  hash: [Fn@Int [k]]]       # consistent with =: [= a b] → [= [hash a] [hash b]]
+
+[class [let Sortable k]
+  <: [Fn@Boolean [k k]]]    # strict total order (NaN-free by design)
+```
+
+**O(n) operations are not typeclasses**: `map`, `filter`, `reduce`, `collect`, `sort`, `length` of `Seq` are plain prelude functions. Making them typeclasses would imply an O(log n) bound that cannot be delivered.
+
+**`Dict` has no `Concatenable` instance**: `merge` is O(n) — it violates the O(log n) promise. Use `merge` explicitly.
+
+**Deque**: any type that is both `Prependable` and `Appendable`. `List` is a deque; `Seq` is `Prependable` only (appending requires O(n) spine traversal).
+
+### `Hashable` and `Sortable` Orthogonality
+
+`Sortable` does NOT imply `Equatable`. `Float` is `Sortable` (`<` follows IEEE 754) but NOT `Equatable` (NaN violates reflexivity `[= a a] = True`) and NOT `Hashable`. `Boolean` is `Equatable` and `Hashable` but NOT `Sortable` (no natural ordering). `Int` and `Graphemes` are both.
+
+---
+
+## IO Shape Typeclasses — `ByteStream`, `Datagram`, `Seekable`
+
+Abstract IO shapes for the network and file-IO layers. Every transport and framing layer is one of these three shapes.
+
+### `ByteStream`
+
+Ordered, reliable, connection-oriented byte pipe. Base instance: `Handle` (the opaque Rust I/O handle).
+
+```tinct
+[class [let ByteStream h]
+  read:  [Fn@Bytes [h Int]]   # reads up to n bytes
+  write: [Fn@h     [h Bytes]]]
+
+[instance ByteStream [let h@Handle]:
+  [read:  [fn [let handle n] [builtin-read-chunk handle n]]
+   write: [fn [let handle bytes] [builtin-write handle bytes]]]]
+```
+
+Protocol layers above `Handle` produce new `ByteStream` instances — tinct records wrapping the lower layer. All `*-accept` and `*-layer` functions are parametric over `ByteStream`.
+
+### `Seekable`
+
+Random-access extension of `ByteStream`. Only file `Handle`s implement this — network streams and pipes do not.
+
+```tinct
+[class [let Seekable h] [ByteStream h]
+  seek: [Fn@Int [h SeekFrom]]]
+
+SeekFrom: [type [Start pos: Int] [End pos: Int] [Current pos: Int]]
+```
+
+`tell = [seek h [SeekFrom.Current 0]]`. `size = [seek h [SeekFrom.End 0]]`.
+
+### `Datagram`
+
+Unordered, unreliable packet socket. Each send/receive is a discrete unit with its own address.
+
+```tinct
+[class [Datagram d]
+  send: [Fn [d@d addr@SocketAddress data@Bytes] Null]
+  recv: [Fn [d@d] UdpDatagram]]
+```
+
+### `Codec`
+
+Transforms between two IO shapes — enabling encryption, compression, framing, and serialization. Lives in `stdlib/net.llt`.
+
+```tinct
+[class [let Codec c input output]
+  encode:     [Fn@output [c input]]
+  decode:     [Fn@{value: input  next: Int} [c output Int [or [CodecInvalidHandler input output] Absent]]]
+  codec-name: [Fn@String [c]]]
+```
+
+Codec layers compose by type: the `output` type of one codec is the `input` type of the next. The `codec` wrapper function (type: `Codec c i o → (i → o)`) enables pipeline composition:
+
+```tinct
+[rebind %emit
+  [%emit
+    | [codec JsonCodec]      # Any → String
+    | [codec NdjsonFramer]   # String → Bytes
+    | [codec GzipCodec]      # Bytes → Bytes
+    | [sink %stdout]]]
+```
 
 ---
 

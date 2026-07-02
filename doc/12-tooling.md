@@ -767,7 +767,7 @@ Filesystem access is controlled via the object capability model: `$include` requ
 - `--cap-fs data=/var/data` injects `%data` as a DirCap for `/var/data`. Repeatable.
 - `--no-fs` disables all filesystem access — `$include` returns an error immediately, bypassing cap checks.
 - Stdlib is embedded via `include_str!` at compile time — no filesystem access, unaffected by sandboxing.
-- REPL: `%cwd` defaults to cwd. LSP: `%cwd` defaults to workspace root (or document directory if no workspace).
+- LSP: `%cwd` defaults to workspace root (or document directory if no workspace).
 
 **Check ordering in `$include`:** cap-std RESOLVE_BENEATH → cache lookup → cycle detection → read file → **hash check (if hash provided)** → cache store → parse. Cache lookup and cycle detection are cheap in-memory operations; the read and hash are deferred until after both pass. On a cache hit, the stored hash map (recorded on first read) is checked against the caller's expected algorithm and digest; if they match, the cached result is returned without re-reading. The cache is session-scoped (in-memory only; not persisted to disk).
 
@@ -868,7 +868,7 @@ Prevents evaluation from consuming unbounded resources (DoS protection, runaway 
 
 `RLIMIT_CPU` and `--timeout` apply only to `eval`. `RLIMIT_CPU` measures CPU time (time the process spends on-CPU); `--timeout` measures wall-clock time (elapsed real time). For adversarial inputs where the distinction matters (e.g. a program that sleeps or performs many syscalls), use `--timeout`. Both limits coexist — whichever fires first terminates evaluation.
 
-`--timeout` is specified as a duration string: `30s`, `500ms`, `2m`. Implemented via `alarm(2)` + SIGALRM. When the timeout fires, the process exits with code 2. The `lsp` and `repl` subcommands are long-lived processes where cumulative CPU time is expected — a 30-second CPU cap would kill them during normal use. Memory and file descriptor limits still apply to all subcommands as safety nets.
+`--timeout` is specified as a duration string: `30s`, `500ms`, `2m`. Implemented via `alarm(2)` + SIGALRM. When the timeout fires, the process exits with code 2. The `lsp` subcommand is a long-lived process where cumulative CPU time is expected — a 30-second CPU cap would kill it during normal use. Memory and file descriptor limits still apply to all subcommands as safety nets.
 
 ### Process Sandbox (seccomp-bpf)
 

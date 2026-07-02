@@ -2,9 +2,9 @@
 # to avoid capturing caller's variables.
 [macro my-const [let value]
   [type: "fn"
-   params: [[name: [gensym]  variadic: false]]
+   params: [[name: [gensym]  variadic: False]]
    body: value
-   desugared: false]
+   desugared: False]
 ]
 
 # The macro creates [fn [ℊꜱʏᴍ⧼gensym⧽N] <arg0>].

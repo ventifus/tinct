@@ -1,5 +1,5 @@
 # tmpl macro: verify string interpolation still works after Expression migration
-# The tmpl macro in stdlib/prelude.llt now uses builtin-variant to construct AST nodes
+# The tmpl macro in stdlib/prelude.llt now uses Expr.* typed constructors
 # This test ensures the macro expansion boundary works correctly with Value::Expression
 [
   name: "world"

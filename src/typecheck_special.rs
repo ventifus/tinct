@@ -14,7 +14,7 @@
 //!
 //! Callers live in `infer_surface_expr`'s name-match dispatch block in `typecheck.rs`.
 
-use std::collections::BTreeMap;
+
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -127,12 +127,13 @@ pub(crate) async fn check_open(
     // Inspect flag arguments (arg[2..]) by AST to extract flag names.
     // We inspect AST rather than inferred types because the prelude registers Readable etc.
     // as `[variant "Readable"]` which types as Unknown — type-level inspection provides no info.
-    let mut cap_fields: BTreeMap<String, Type> = BTreeMap::new();
+    let mut cap_fields: indexmap::IndexMap<String, Type> = indexmap::IndexMap::new();
     let mut all_flags_known = true;
 
     for flag_arg in args.iter().skip(2) {
         // Infer the flag arg for type map population (side effect: records hover type for LSP).
-        if let Ok(_flag_ty) = infer_surface_expr(flag_arg, env, state, constraints, type_map).await {
+        if let Ok(_flag_ty) = infer_surface_expr(flag_arg, env, state, constraints, type_map).await
+        {
             // Type map already populated by infer_surface_expr above.
         }
 
@@ -159,7 +160,7 @@ pub(crate) async fn check_open(
                 cap_fields.insert(
                     format!("__cap_flag_{}", canonical),
                     Type::Record(Row {
-                        fields: BTreeMap::new(),
+                        fields: indexmap::IndexMap::new(),
                         tail: crate::type_def::RowTail::Empty,
                     }),
                 );
@@ -238,18 +239,18 @@ pub(crate) async fn check_connect(
     match transport_name {
         Some("Tcp") | Some("UnixStream") => {
             // Stream transports → Handle[Readable, Writable]
-            let cap_fields = BTreeMap::from([
+            let cap_fields: indexmap::IndexMap<String, Type> = indexmap::IndexMap::from_iter([
                 (
                     "__cap_flag_readable".to_string(),
                     Type::Record(Row {
-                        fields: BTreeMap::new(),
+                        fields: indexmap::IndexMap::new(),
                         tail: crate::type_def::RowTail::Empty,
                     }),
                 ),
                 (
                     "__cap_flag_writable".to_string(),
                     Type::Record(Row {
-                        fields: BTreeMap::new(),
+                        fields: indexmap::IndexMap::new(),
                         tail: crate::type_def::RowTail::Empty,
                     }),
                 ),
@@ -265,18 +266,18 @@ pub(crate) async fn check_connect(
         }
         _ => {
             // Unknown or non-VarRef transport → return union fallback
-            let cap_fields = BTreeMap::from([
+            let cap_fields: indexmap::IndexMap<String, Type> = indexmap::IndexMap::from_iter([
                 (
                     "__cap_flag_readable".to_string(),
                     Type::Record(Row {
-                        fields: BTreeMap::new(),
+                        fields: indexmap::IndexMap::new(),
                         tail: crate::type_def::RowTail::Empty,
                     }),
                 ),
                 (
                     "__cap_flag_writable".to_string(),
                     Type::Record(Row {
-                        fields: BTreeMap::new(),
+                        fields: indexmap::IndexMap::new(),
                         tail: crate::type_def::RowTail::Empty,
                     }),
                 ),
@@ -484,7 +485,7 @@ pub(crate) async fn check_get_in(
                             return Ok(Type::Unknown);
                         }
                     }
-                    Type::Union(_) | Type::Intersection(_) | Type::Top => {
+                    Type::Union(_) | Type::Intersection(_) | Type::Any => {
                         // Resolve via resolve_has_field
                         match resolve_has_field(
                             &Label::Concrete(key),
@@ -523,8 +524,7 @@ pub(crate) async fn check_get_in(
 ///   1. Resolves the monad variable name (Rule 1: from `state.expected_return`, Rule 2: from
 ///      the first arg's inferred type, AST fallback: from syntactic constructor pattern,
 ///      Rule 3: emit TypeError).
-///   2. Records `sentinel_name → monad_name` in `state.do_infer_resolutions` so the evaluator
-///      can substitute the sentinel with the concrete monad dict at runtime.
+///   2. (do_infer_resolutions removed) Resolves the monad name for type inference purposes only.
 ///   3. Infers all argument expressions for type-map population and side effects.
 ///   4. Returns the expected return type (if available) or a fresh TypeVar.
 ///
@@ -564,29 +564,9 @@ pub(crate) async fn check_do_infer(
     };
 
     // Step 1: Resolve the monad name from context.
-    // Check if we've already resolved this sentinel (fast path).
-    if let Some(_existing) = state.do_infer_resolutions.get(sentinel_name) {
-        // Already resolved — infer remaining args for side effects and return the expected type.
-        for arg in args {
-            let _ = infer_surface_expr(arg, env, state, constraints, type_map).await;
-        }
-        for na in named_args {
-            let _ = infer_surface_expr(&na.node.value, env, state, constraints, type_map).await;
-        }
-        let ret = match method_str {
-            "bind" | "pure" => {
-                if let Some(ret_ty) = state.expected_return.clone() {
-                    state.subst.apply(&ret_ty)
-                } else {
-                    // Gradual: no expected_return context — bind? return type unknown
-                    Type::Unknown
-                }
-            }
-            // Gradual: non-Result monad type — bind? return type unknown
-            _ => Type::Unknown,
-        };
-        return Ok(ret);
-    }
+    // Note: do_infer_resolutions was removed from InferState — monad resolution is now
+    // purely type-level without a side-channel cache.
+    // Always proceed to monad resolution below.
 
     // Rule 1: Check state.expected_return for a Result-like type.
     let resolved = if let Some(ret_ty) = state.expected_return.clone() {
@@ -601,7 +581,8 @@ pub(crate) async fn check_do_infer(
     // first_arg_already_inferred tracks whether we consumed the first arg here,
     // so Step 3 can skip it to avoid double-inference.
     let (resolved, first_arg_already_inferred) = if resolved.is_none() && !args.is_empty() {
-        let first_arg_ty = infer_surface_expr(&args[0], env, state, constraints, type_map).await
+        let first_arg_ty = infer_surface_expr(&args[0], env, state, constraints, type_map)
+            .await
             .ok()
             .map(|ty| state.subst.apply(&ty));
         let rule2_result = first_arg_ty.and_then(|ty| resolve_monad_from_type(&ty, state));
@@ -638,10 +619,9 @@ pub(crate) async fn check_do_infer(
         }
     };
 
-    // Step 2: Record sentinel_name → monad_name for eval wiring.
-    state
-        .do_infer_resolutions
-        .insert(sentinel_name.to_string(), monad_name.clone());
+    // Step 2: (do_infer_resolutions was removed — no recording needed)
+    // The evaluator no longer reads a side-table for monad resolution.
+    let _monad_name = monad_name; // acknowledged: was used for do_infer_resolutions recording
 
     // Step 3: Infer all remaining args for type-map population and side effects.
     // Skip the first arg if Rule 2 already inferred it (avoid double-inference side effects).

@@ -73,9 +73,8 @@ per-session mutable state structure.
 Push/pop on every thunk force. At `materialize()`'s call frequency (hot path),
 this adds one `Vec::push` + `Vec::pop` per thunk. At the common case where
 there's no cycle, the push/pop is ~4 ns each. This is measurable on tight inner
-loops. Gated behind `EvalConfig.track_cycle_path: bool` (default true for
-interactive/REPL, optional for `--no-cycle-track` in performance-critical batch
-mode).
+loops. Gated behind `EvalConfig.track_cycle_path: bool` (default true,
+optional via `--no-cycle-track` in performance-critical batch mode).
 
 ## Implementation
 

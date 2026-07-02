@@ -557,6 +557,51 @@ impl ErrorKind {
         }
     }
 
+    /// Returns a stable kebab-case kind name for this error (used in unified error dicts).
+    ///
+    /// Unlike `code()` (which returns legacy E-codes), `kind_name()` returns a
+    /// human-readable kebab-case identifier suitable for programmatic use in tinct code.
+    pub fn kind_name(&self) -> &'static str {
+        match self {
+            Self::KeyNotFound { .. } => "key-not-found",
+            Self::UndefinedVariable { .. } => "undefined-variable",
+            Self::TypeMismatch { .. } => "type-mismatch",
+            Self::TypeAssertFailed { .. } => "type-assert-failed",
+            Self::NoInstance { .. } => "no-instance",
+            Self::MacroError { .. } => "macro-error",
+            Self::ArityMismatch { .. } => "arity-mismatch",
+            Self::MissingRequiredParam { .. } => "missing-required-param",
+            Self::NamedArgConflict { .. } => "named-arg-conflict",
+            Self::UnknownNamedArg { .. } => "unknown-named-arg",
+            Self::NamedArgRejected { .. } => "named-arg-rejected",
+            Self::DuplicateKey { .. } => "duplicate-key",
+            Self::DivisionByZero { .. } => "division-by-zero",
+            Self::IntegerOverflow { .. } => "integer-overflow",
+            Self::FloatNotFinite { .. } => "float-not-finite",
+            Self::EmptyCollection { .. } => "empty-collection",
+            Self::ValueNotSerializable { .. } => "value-not-serializable",
+            Self::FloatOutOfRange { .. } => "float-out-of-range",
+            Self::ResourceLimitExceeded { .. } => "resource-limit",
+            Self::CapabilityRequired { .. } => "capability-required",
+            Self::IncludeIoError { .. } => "include-io-error",
+            Self::IncludeCycle { .. } => "include-cycle",
+            Self::IncludeFileTooLarge { .. } => "include-file-too-large",
+            Self::IncludeHashMismatch { .. } => "include-hash-mismatch",
+            Self::IncludeHashRequired { .. } => "include-hash-required",
+            Self::ParseConversion { .. } => "parse-conversion",
+            Self::UriParseError { .. } => "uri-parse-error",
+            Self::CircularDependency { .. } => "circular-dependency",
+            Self::MatchExhaustion { .. } => "match-exhaustion",
+            Self::DuplicateVariable { .. } => "duplicate-variable",
+            Self::UserError { .. } => "user-error",
+            Self::Unimplemented { .. } => "unimplemented",
+            Self::BuilderFinished { .. } => "builder-finished",
+            Self::SchemaViolation { .. } => "schema-violation",
+            Self::KindMismatch { .. } => "kind-mismatch",
+            Self::Internal { .. } => "internal-error",
+        }
+    }
+
     /// Check if a name is a known builtin (for "did you mean string?" heuristic).
     /// This is a curated subset — not an exhaustive mirror of the `builtin_module()` groups.
     fn is_known_builtin(name: &str) -> bool {
@@ -738,6 +783,24 @@ impl ErrorKind {
                 | "builtin-cap-identity"
                 | "builtin-include-cache-get"
                 | "builtin-include-cache-put"
+                // S-894: renamed bare builtins — prelude re-exports the user-facing names
+                | "get?"
+                | "materialize"
+                | "validate"
+                | "bytes"
+                | "bytes-find"
+                | "bytes-of"
+                | "bytes-equal?"
+                | "ct-equal?"
+                | "builtin-get?"
+                | "builtin-materialize"
+                | "builtin-until"
+                | "builtin-validate"
+                | "builtin-bytes"
+                | "builtin-bytes-find"
+                | "builtin-bytes-of"
+                | "builtin-bytes-equal?"
+                | "builtin-ct-equal?"
         )
     }
 
@@ -1473,24 +1536,6 @@ impl EvalError {
         }
     }
 
-    pub fn no_method(method_name: &str, type_names: Vec<String>, definition_span: Span) -> Self {
-        let type_list = type_names.join(", ");
-        Self {
-            kind: ErrorKind::TypeMismatch {
-                context: Some(format!("calling `{method_name}`")),
-                expected: "a registered method arm".to_string(),
-                got: format!("no match for types [{type_list}]"),
-            },
-            definition_span,
-            materialization_span: None,
-            stack: SmallVec::new(),
-            secondary_span: None,
-            macro_expansion: None,
-            blame: None,
-            pipeline_stage: None,
-        }
-    }
-
     pub fn no_instance(class_name: &str, type_tags: Vec<String>, definition_span: Span) -> Self {
         Self {
             kind: ErrorKind::NoInstance {
@@ -1697,15 +1742,12 @@ impl EvalError {
     }
 }
 
-/// Returns `true` if the stack frame should appear in user-facing error output.
-/// Returns `false` only for synthetic origin spans (Span::origin() = offset 0, line 1, col 1)
-/// from stdlib/builtin calls — these have no meaningful source location.
-///
-/// NOTE: No suffix-based filtering is applied. Every frame with a real source location
-/// is shown, including stdlib internal helpers (-impl, -step, -check, -merge). This is
-/// necessary for diagnosing bugs in macro transformers and stdlib code.
-fn should_display_frame(frame: &StackFrame) -> bool {
-    frame.definition_span != Span::origin()
+/// All stack frames appear in user-facing error output.
+/// Every frame has a real source location — either a user source span or a Rust
+/// source span from `rust_span!()`. There is no legitimate reason to suppress a frame.
+#[inline(always)]
+fn should_display_frame(_frame: &StackFrame) -> bool {
+    true
 }
 
 /// Infer a context-appropriate verb for the materialization span label.
@@ -1910,8 +1952,8 @@ pub struct TypeDiagnostic {
 
 /// Render a source snippet with caret annotations for the given span.
 ///
-/// Returns `None` for synthetic spans (`Span::origin()` at 0:0-0:0), which have no source line.
-/// Returns `None` if the span is out of bounds for the source.
+/// Returns `None` if the span's line/offset is out of bounds for the provided source text
+/// (e.g. spans from Rust source via `rust_span!()`, which refer to Rust files not user source).
 ///
 /// # Design note: hand-rolled vs `codespan-reporting`
 ///
@@ -1947,11 +1989,6 @@ pub struct TypeDiagnostic {
 /// This is a rustc-style snippet renderer. Callers hold the source text (REPL has `input: &str`,
 /// CLI has the file contents) and pass it alongside the error's `definition_span`.
 pub fn render_span_snippet(source: &str, span: Span) -> Option<String> {
-    // Suppress synthetic spans (Span::origin() is 0:0-0:0)
-    if span.start.offset == 0 && span.end.offset == 0 {
-        return None;
-    }
-
     // Split source into lines
     let lines: Vec<&str> = source.lines().collect();
 
@@ -2032,6 +2069,7 @@ pub fn render_span_snippet(source: &str, span: Span) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rust_span;
     use crate::test_util::test_span;
 
     #[test]
@@ -3263,9 +3301,9 @@ mod tests {
     }
 
     #[test]
-    fn test_origin_span_frames_filtered_from_display() {
-        // Verify that stack frames with Span::origin() (synthetic stdlib/builtin frames)
-        // are NOT shown in error display output
+    fn test_all_frames_appear_in_display() {
+        // All frames must appear in error display output, including those from Rust-synthesized
+        // code (which carry rust_span!() locations). No suppression based on span value.
         let def_span = test_span(3, 5, 3, 10);
         let mat_span = test_span(20, 1, 20, 5);
         let real_frame_span = test_span(10, 2, 10, 8);
@@ -3273,30 +3311,18 @@ mod tests {
         let mut err = EvalError::internal("bad value".to_string(), def_span)
             .with_materialization_span(mat_span);
 
-        // Add a real user frame
         err.push_frame("user_function".to_string(), real_frame_span);
+        err.push_frame("stdlib_internal".to_string(), rust_span!());
 
-        // Add a synthetic origin frame (should be filtered out)
-        err.push_frame("stdlib_internal".to_string(), Span::origin());
-
-        // Add another real frame
         let real_frame2_span = test_span(15, 1, 15, 12);
         err.push_frame("another_user_function".to_string(), real_frame2_span);
 
         let display = format!("{err}");
 
-        // Should contain the real frames
+        // All three frames must be present.
         assert!(display.contains("in user_function at 10:2-10:8"));
         assert!(display.contains("in another_user_function at 15:1-15:12"));
-
-        // Should NOT contain the origin frame (1:1-1:1).
-        // Note: Span::origin() uses exact structural equality — offset=0, line=1, col=1
-        // for both start and end.  Real user code at line 1 col 1 would NOT be filtered
-        // because it would have a non-zero byte offset, making the spans structurally
-        // distinct.  Only the synthetic Span::origin() sentinel (offset 0, empty range)
-        // triggers the filter at error.rs:829.
-        assert!(!display.contains("stdlib_internal"));
-        assert!(!display.contains("1:1-1:1"));
+        assert!(display.contains("stdlib_internal")); // Rust-synthesized frame also shows up.
     }
 
     #[test]
@@ -3523,19 +3549,17 @@ mod tests {
     }
 
     #[test]
-    fn test_should_display_frame_origin_span() {
-        // A frame whose span is Span::origin() (synthetic stdlib/builtin location)
-        // must not be displayed regardless of its label.
-        let origin_frame = StackFrame {
+    fn test_should_display_frame_all_spans() {
+        // should_display_frame returns true for all frames — no suppression.
+        let rust_frame = StackFrame {
             label: "[builtin-fn ...]".to_string(),
-            definition_span: Span::origin(),
-            materialization_span: Span::origin(),
+            definition_span: rust_span!(),
+            materialization_span: rust_span!(),
         };
         assert!(
-            !should_display_frame(&origin_frame),
-            "frame with Span::origin() must return false"
+            should_display_frame(&rust_frame),
+            "frame with rust_span!() must return true"
         );
-        // A frame with a real span and a non-hidden label must be displayed.
         let real_frame = StackFrame {
             label: "[user-fn ...]".to_string(),
             definition_span: test_span(3, 1, 3, 10),
@@ -3543,22 +3567,22 @@ mod tests {
         };
         assert!(
             should_display_frame(&real_frame),
-            "frame with real span and non-hidden label must return true"
+            "frame with user source span must return true"
         );
     }
 
     #[test]
-    fn test_infer_materialization_verb_skips_origin_span() {
-        // Stack where the first frame has Span::origin() (skipped) and the second
-        // has a real "[X ...]" label — verb must be "called at", not "materialized at".
+    fn test_infer_materialization_verb_uses_first_frame() {
+        // infer_materialization_verb inspects the first frame's label to pick the verb.
+        // All frames are visible — the first with a "[...]" label drives "called at".
         let frames = vec![
             StackFrame {
-                label: "stdlib-internal".to_string(),
-                definition_span: Span::origin(),
-                materialization_span: Span::origin(),
+                label: "[user-fn ...]".to_string(),
+                definition_span: rust_span!(),
+                materialization_span: rust_span!(),
             },
             StackFrame {
-                label: "[user-fn ...]".to_string(),
+                label: "[user-fn2 ...]".to_string(),
                 definition_span: test_span(7, 1, 7, 20),
                 materialization_span: test_span(7, 1, 7, 20),
             },
@@ -3566,7 +3590,7 @@ mod tests {
         assert_eq!(
             infer_materialization_verb(&frames),
             "called at",
-            "origin-span frame must be skipped; second frame's '[...]' label must drive the verb"
+            "first frame's '[...]' label must drive the verb"
         );
     }
 
@@ -3960,10 +3984,14 @@ mod tests {
     }
 
     #[test]
-    fn test_render_span_snippet_origin_suppressed() {
+    fn test_render_span_snippet_no_source_for_rust_spans() {
+        // rust_span!() encodes Rust file:line. The user source text has no content
+        // at those coordinates, so render returns None (no snippet to show).
         let source = "test source";
-        let snippet = render_span_snippet(source, Span::origin());
-        assert_eq!(snippet, None); // Span::origin() is 0:0-0:0, should return None
+        let snippet = render_span_snippet(source, rust_span!());
+        // rust_span!() has a line number from Rust source (e.g. 3950), which is
+        // out of bounds for "test source" (1 line), so no snippet can be rendered.
+        assert_eq!(snippet, None);
     }
 
     #[test]
@@ -4246,19 +4274,17 @@ mod tests {
     #[test]
     fn test_format_span_location_without_file() {
         // A span with file: None must format as position-only (no file prefix, no panic).
-        // Synthetic spans (Span::origin(), macro-synthesized) always have file: None.
+        // Spans with file: None (e.g. test_span) format as position-only.
         let span = test_span(3, 5, 3, 10);
         let location = format_span_location(&span);
         assert_eq!(
             location, "3:5-3:10",
             "format_span_location must not show a file prefix when span.file is None"
         );
-        // Verify origin span is also panic-free (extra guard for Span::origin()).
-        let origin_location = format_span_location(&Span::origin());
-        assert!(
-            !origin_location.contains('/'),
-            "origin span location must not contain a file path: {origin_location}"
-        );
+        // rust_span!() carries a Rust file path — verify it doesn't panic.
+        let rust_location = format_span_location(&rust_span!());
+        // Rust file paths use '/' on Unix; this just verifies no panic occurs.
+        let _ = rust_location;
     }
 
     #[test]
@@ -4282,25 +4308,19 @@ mod tests {
     }
 
     #[test]
-    fn test_display_error_synthetic_span_no_panic() {
-        // Span::origin() (file: None) must display gracefully — no panic, no file shown.
-        // Mutation guard: if format_span_location panics on None, this test catches it.
-        let err = EvalError::internal("synthetic error".to_string(), Span::origin());
+    fn test_display_error_rust_span_no_panic() {
+        // rust_span!() (file: Some(rust_file)) must display gracefully — no panic.
+        // Mutation guard: if format_span_location panics on Rust spans, this test catches it.
+        let err = EvalError::internal("synthetic error".to_string(), rust_span!());
         // Must not panic.
         let display = format!("{err}");
         assert!(
             display.contains("[E099]"),
             "display must include error code; got: {display}"
         );
-        // Origin span has no file path — no slash, no '.llt', no ':' before the position.
-        // The position itself is "1:1-1:1" (origin) — verify no file prefix.
-        assert!(
-            display.contains("defined at 1:1-1:1"),
-            "synthetic span must show position only without file prefix; got: {display}"
-        );
         assert!(
             !display.contains(".llt"),
-            "synthetic span must not show any file path; got: {display}"
+            "rust span must not show any llt file path; got: {display}"
         );
     }
 

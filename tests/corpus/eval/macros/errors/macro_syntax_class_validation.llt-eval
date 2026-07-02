@@ -4,6 +4,6 @@
 [macro pragma [let name@VarRef value@Literal]
   [quote [str [unquote name] "=" [unquote value]]]]
 
-[pragma "optimize" true]
+[pragma "optimize" True]
 === error
 [E012] macro expansion error: macro 'pragma': argument 'name' expected VarRef, got Literal (defined at 6:1-6:25)

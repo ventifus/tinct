@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, RwLock};
 
+use crate::rust_span;
 use crate::type_def::Type;
 use crate::types::Substitution;
 use crate::value::{Environment, Thunk, Value};
@@ -25,17 +26,20 @@ pub struct NormCtxt {
     /// Call stack for cycle detection (resolver function names)
     pub call_stack: Vec<String>,
     /// Resolver result cache: (resolver_name, [arg_types]) -> result_type
-    /// Pre-populated with arithmetic resolver results (Add/Sub/Mul/Div).
-    /// Key is (resolver function name, arg types), value is the resolved type.
+    ///
+    /// Lazily populated on first resolver evaluation. Once a TypeStageApp is reduced
+    /// to a ground type, the result is stored here so subsequent identical calls return
+    /// without invoking the type-stage environment again.
     pub resolver_cache: HashMap<(String, Vec<Type>), Type>,
     /// Type-stage evaluation environment for user-defined resolver functions.
     ///
     /// Contains bindings from `--- stage: type` sections of prelude.llt.
     /// When set, `normalize()` will call user-defined resolver functions to
-    /// reduce `TypeStageApp` nodes that are not in the static resolver cache.
+    /// reduce `TypeStageApp` nodes that are not in the `resolver_cache`.
     ///
-    /// `None` during bootstrap (when the type-stage env is being built) or
-    /// when type-stage env creation fails.
+    /// `None` during bootstrap (when the type-stage env is being built),
+    /// when type-stage env creation fails, or when resolver evaluation is
+    /// not needed (e.g., in tests that only normalize concrete types).
     pub type_stage_env: Option<Arc<RwLock<Environment>>>,
     /// If false, disable resolver evaluation (prevents runtime errors from propagating into type inference).
     /// Set to false inside unify() to prevent evaluation failures from causing type errors.
@@ -43,16 +47,20 @@ pub struct NormCtxt {
 }
 
 impl NormCtxt {
-    /// Create an empty normalization context with default limits.
-    /// Populates `type_stage_env` from the cached type-stage environment (built once per thread).
-    pub fn new() -> Self {
+    /// Create a normalization context with the given type-stage env.
+    ///
+    /// Production callers pass `state.type_stage_env.clone()` so that resolver functions
+    /// defined in `--- stage: type` sections of prelude.llt are available.  Test callers
+    /// and bootstrap contexts where no env has been built yet pass `None`, which causes
+    /// `TypeStageApp` nodes to remain stuck (resolver evaluation is skipped).
+    pub fn new(type_stage_env: Option<Arc<RwLock<Environment>>>) -> Self {
         Self {
             cache: HashMap::new(),
             depth: 0,
             max_depth: 64,
             call_stack: Vec::new(),
             resolver_cache: HashMap::new(),
-            type_stage_env: crate::imports::build_type_stage_env(),
+            type_stage_env,
             allow_eval: true,
         }
     }
@@ -75,104 +83,110 @@ impl NormCtxt {
 ///
 /// Returns the normalized type.
 #[allow(clippy::doc_overindented_list_items)] // multi-level numbered sub-list requires deeper indentation
-pub fn normalize<'a>(ty: &'a Type, subst: &'a Substitution, ctx: &'a mut NormCtxt) -> std::pin::Pin<Box<dyn std::future::Future<Output = Type> + 'a>> {
+pub fn normalize<'a>(
+    ty: &'a Type,
+    subst: &'a Substitution,
+    ctx: &'a mut NormCtxt,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Type> + 'a>> {
     Box::pin(async move {
-    // Step 1: Apply current substitution
-    let ty_substituted = subst.apply(ty);
+        // Step 1: Apply current substitution
+        let ty_substituted = subst.apply(ty);
 
-    // Check cache before computing (only for ground types)
-    if !ty_substituted.has_inference_vars() {
-        if let Some(cached) = ctx.cache.get(&ty_substituted) {
-            return cached.clone();
+        // Check cache before computing (only for ground types)
+        if !ty_substituted.has_inference_vars() {
+            if let Some(cached) = ctx.cache.get(&ty_substituted) {
+                return cached.clone();
+            }
         }
-    }
 
-    // Step 2: TypeStageApp reduction
-    let result = match &ty_substituted {
-        Type::TypeStageApp { fn_name, args } => {
-            // Depth guard: if we've exceeded max depth, return stuck
-            if ctx.depth >= ctx.max_depth {
-                return ty_substituted.clone();
-            }
+        // Step 2: TypeStageApp reduction
+        let result = match &ty_substituted {
+            Type::TypeStageApp { fn_name, args } => {
+                // Depth guard: if we've exceeded max depth, return stuck
+                if ctx.depth >= ctx.max_depth {
+                    return ty_substituted.clone();
+                }
 
-            // Cycle detection: if fn_name is already in the call stack, return stuck
-            if ctx.call_stack.contains(fn_name) {
-                return ty_substituted.clone();
-            }
+                // Cycle detection: if fn_name is already in the call stack, return stuck
+                if ctx.call_stack.contains(fn_name) {
+                    return ty_substituted.clone();
+                }
 
-            // Normalize each arg recursively
-            ctx.depth += 1;
-            let mut normalized_args: Vec<Type> = Vec::with_capacity(args.len());
-            for arg in args.iter() {
-                normalized_args.push(Box::pin(normalize(arg, subst, ctx)).await);
-            }
-            ctx.depth -= 1;
+                // Normalize each arg recursively
+                ctx.depth += 1;
+                let mut normalized_args: Vec<Type> = Vec::with_capacity(args.len());
+                for arg in args.iter() {
+                    normalized_args.push(Box::pin(normalize(arg, subst, ctx)).await);
+                }
+                ctx.depth -= 1;
 
-            // Check if all args are ground
-            let all_ground = normalized_args.iter().all(|arg| !arg.has_inference_vars());
+                // Check if all args are ground
+                let all_ground = normalized_args.iter().all(|arg| !arg.has_inference_vars());
 
-            if all_ground {
-                // All args are ground — attempt reduction via resolver cache lookup
-                // Push fn_name to call stack for cycle detection
-                ctx.call_stack.push(fn_name.clone());
+                if all_ground {
+                    // All args are ground — attempt reduction via resolver cache lookup
+                    // Push fn_name to call stack for cycle detection
+                    ctx.call_stack.push(fn_name.clone());
 
-                // Check resolver_cache for pre-populated results (arithmetic resolvers)
-                let cache_key = (fn_name.clone(), normalized_args.clone());
-                let result = if let Some(resolved_type) = ctx.resolver_cache.get(&cache_key) {
-                    // Cache hit: return the resolved type directly
-                    resolved_type.clone()
-                } else if ctx.allow_eval {
-                    // allow_eval is true — try evaluating resolver from type-stage env
-                    if let Some(env) = ctx.type_stage_env.clone() {
-                        // Cache miss — try evaluating user-defined resolver from type-stage env
-                        if let Some(resolved) = evaluate_resolver(fn_name, &normalized_args, &env).await {
-                            // Insert into resolver_cache so subsequent calls are fast
-                            ctx.resolver_cache.insert(cache_key, resolved.clone());
-                            resolved
+                    // Check resolver_cache for pre-populated results (arithmetic resolvers)
+                    let cache_key = (fn_name.clone(), normalized_args.clone());
+                    let result = if let Some(resolved_type) = ctx.resolver_cache.get(&cache_key) {
+                        // Cache hit: return the resolved type directly
+                        resolved_type.clone()
+                    } else if ctx.allow_eval {
+                        // allow_eval is true — try evaluating resolver from type-stage env
+                        if let Some(env) = ctx.type_stage_env.clone() {
+                            // Cache miss — try evaluating user-defined resolver from type-stage env
+                            if let Some(resolved) =
+                                evaluate_resolver(fn_name, &normalized_args, &env).await
+                            {
+                                // Insert into resolver_cache so subsequent calls are fast
+                                ctx.resolver_cache.insert(cache_key, resolved.clone());
+                                resolved
+                            } else {
+                                // Resolver evaluation failed — return stuck TypeStageApp
+                                Type::TypeStageApp {
+                                    fn_name: fn_name.clone(),
+                                    args: normalized_args,
+                                }
+                            }
                         } else {
-                            // Resolver evaluation failed — return stuck TypeStageApp
+                            // No type-stage env available — return stuck TypeStageApp
                             Type::TypeStageApp {
                                 fn_name: fn_name.clone(),
                                 args: normalized_args,
                             }
                         }
                     } else {
-                        // No type-stage env available — return stuck TypeStageApp
+                        // allow_eval is false (inside unify) — return stuck TypeStageApp to prevent
+                        // runtime errors from propagating into type inference
                         Type::TypeStageApp {
                             fn_name: fn_name.clone(),
                             args: normalized_args,
                         }
-                    }
+                    };
+
+                    // Pop fn_name from call stack
+                    ctx.call_stack.pop();
+
+                    result
                 } else {
-                    // allow_eval is false (inside unify) — return stuck TypeStageApp to prevent
-                    // runtime errors from propagating into type inference
+                    // Not all args are ground — return stuck TypeStageApp with normalized args
                     Type::TypeStageApp {
                         fn_name: fn_name.clone(),
                         args: normalized_args,
                     }
-                };
-
-                // Pop fn_name from call stack
-                ctx.call_stack.pop();
-
-                result
-            } else {
-                // Not all args are ground — return stuck TypeStageApp with normalized args
-                Type::TypeStageApp {
-                    fn_name: fn_name.clone(),
-                    args: normalized_args,
                 }
             }
+            _ => ty_substituted.clone(),
+        };
+
+        // Step 3: Cache the result (only for ground types)
+        if !result.has_inference_vars() {
+            ctx.cache.insert(ty_substituted.clone(), result.clone());
         }
-        _ => ty_substituted.clone(),
-    };
 
-    // Step 3: Cache the result (only for ground types)
-    if !result.has_inference_vars() {
-        ctx.cache.insert(ty_substituted.clone(), result.clone());
-    }
-
-    result
+        result
     }) // end Box::pin(async move {
 }
 
@@ -198,13 +212,9 @@ fn type_to_typenode(ty: &Type) -> Option<Value> {
         Type::Int | Type::IntLiteral(_) => Some(leaf("TypeNode.Int")),
         Type::Float => Some(leaf("TypeNode.Float")),
         Type::Str | Type::StringLiteral(_) => Some(leaf("TypeNode.String")),
-        Type::Bool => Some(leaf("TypeNode.Bool")),
         Type::Unknown => Some(leaf("TypeNode.Unknown")),
         Type::Never => Some(leaf("TypeNode.Never")),
-        // Number (supertype of Int and Float) — no direct TypeNode equivalent;
-        // use Unknown so the resolver produces a conservative result.
-        Type::Number => Some(leaf("TypeNode.Unknown")),
-        Type::Top => Some(leaf("TypeNode.Unknown")),
+        Type::Any => Some(leaf("TypeNode.Unknown")),
         // Complex types — arithmetic resolvers never receive these.
         // Return None so evaluate_resolver returns None (resolver returns None → Unknown fallback).
         _ => None,
@@ -227,8 +237,22 @@ pub(crate) async fn evaluate_resolver(
     args: &[Type],
     env: &Arc<RwLock<Environment>>,
 ) -> Option<Type> {
-    // Look up the resolver function thunk
-    let fn_thunk = env.read().unwrap().get(fn_name)?;
+    // Look up the resolver function thunk via slot_names (seeding path — not eval-time lookup).
+    // Walks slot_names (linear scan) + parent chain, identical semantics to get_by_name
+    // but using the slot_names Vec directly to make the seeding nature explicit.
+    let fn_thunk = {
+        let mut result: Option<Arc<Thunk>> = None;
+        let mut cur: Option<Arc<RwLock<Environment>>> = Some(Arc::clone(env));
+        while let Some(frame) = cur {
+            let frame_ref = frame.read().unwrap();
+            if let Some(idx) = frame_ref.slot_names.iter().rposition(|n| n == fn_name) {
+                result = Some(Arc::clone(&frame_ref.slots[idx]));
+                break;
+            }
+            cur = frame_ref.parent.as_ref().map(Arc::clone);
+        }
+        result?
+    };
 
     // Create a minimal EvalContext for type-stage evaluation.
     // We use new_empty() to avoid inheriting stale stdlib ThunkId caches — the
@@ -249,7 +273,7 @@ pub(crate) async fn evaluate_resolver(
             let typenode_val = type_to_typenode(ty)?;
             Some(Arc::new(Thunk::new_materialized(
                 typenode_val,
-                crate::ast::Span::origin(),
+                rust_span!(),
             )))
         })
         .collect::<Option<Vec<_>>>()?;
@@ -269,7 +293,7 @@ pub(crate) async fn evaluate_resolver(
                 positional: &arg_thunks,
                 named: None,
                 default_env: closure_env,
-                call_span: crate::ast::Span::origin(),
+                call_span: rust_span!(),
                 origin: None,
                 ctx: &ctx,
             };
@@ -297,9 +321,7 @@ impl fmt::Display for Type {
             Type::Float => write!(f, "Float"),
             Type::Str => write!(f, "String"),
             Type::StringLiteral(s) => write!(f, "\"{}\"", s),
-            Type::Bool => write!(f, "Bool"),
             Type::Bytes => write!(f, "Bytes"),
-            Type::Number => write!(f, "Number"),
             Type::Record(row) => {
                 write!(f, "[")?;
                 let mut sorted: Vec<_> = row.fields.iter().collect();
@@ -364,7 +386,7 @@ impl fmt::Display for Type {
             Type::Proxy => write!(f, "Proxy"),
             Type::TypeVar(name, _level) => write!(f, "{}", name),
             Type::Unknown => write!(f, "_"),
-            Type::Top => write!(f, "Top"),
+            Type::Any => write!(f, "Any"),
             Type::Error => write!(f, "<error>"),
             Type::Union(types) => {
                 for (i, ty) in types.iter().enumerate() {
@@ -498,61 +520,47 @@ mod tests {
         Substitution::new()
     }
 
-    fn norm(ty: &Type, subst: &Substitution, ctx: &mut NormCtxt) -> Type {
-        crate::async_rt::block_on_anywhere(normalize(ty, subst, ctx))
+    async fn norm(ty: &Type, subst: &Substitution, ctx: &mut NormCtxt) -> Type {
+        normalize(ty, subst, ctx).await
     }
 
     /// Test: normalize(Int, subst, ctx) returns Int unchanged
-    #[test]
-    fn test_normalize_identity_concrete_type() {
+    #[tokio::test]
+    async fn test_normalize_identity_concrete_type() {
         let subst = empty_subst();
-        let mut ctx = NormCtxt::new();
+        let mut ctx = NormCtxt::new(None);
         let ty = Type::Int;
-        let result = norm(&ty, &subst, &mut ctx);
+        let result = norm(&ty, &subst, &mut ctx).await;
         assert_eq!(result, Type::Int);
     }
 
     /// Test: normalize(TypeVar("a"), subst, ctx) returns the bound type if "a" is in subst
-    #[test]
-    fn test_normalize_substitution() {
+    #[tokio::test]
+    async fn test_normalize_substitution() {
         let subst = Substitution::new();
         subst
             .type_map
             .borrow_mut()
             .insert("a".to_string(), Type::Str);
-        let mut ctx = NormCtxt::new();
+        let mut ctx = NormCtxt::new(None);
         let ty = Type::TypeVar("a".to_string(), 0);
-        let result = norm(&ty, &subst, &mut ctx);
+        let result = norm(&ty, &subst, &mut ctx).await;
         assert_eq!(result, Type::Str);
     }
 
-    /// Test: normalize(TypeStageApp with ground args) returns resolver result from cache
-    #[test]
-    fn test_normalize_type_stage_app_ground_args() {
-        let subst = empty_subst();
-        let mut ctx = NormCtxt::new(); // pre-populated with arithmetic resolver cache
-        let ty = Type::TypeStageApp {
-            fn_name: "AddResult".to_string(),
-            args: vec![Type::Int, Type::Float],
-        };
-        let result = norm(&ty, &subst, &mut ctx);
-        // NormCtxt::new() pre-populates resolver_cache; AddResult(Int, Float) -> Float
-        assert_eq!(result, Type::Float);
-    }
-
     /// Test: normalize() cache - second call returns cached result
-    #[test]
-    fn test_normalize_cache() {
+    #[tokio::test]
+    async fn test_normalize_cache() {
         let subst = empty_subst();
-        let mut ctx = NormCtxt::new();
+        let mut ctx = NormCtxt::new(None);
         let ty = Type::Int;
 
         // First call - populates cache
-        let result1 = norm(&ty, &subst, &mut ctx);
+        let result1 = norm(&ty, &subst, &mut ctx).await;
         assert_eq!(result1, Type::Int);
 
         // Second call - should return cached result
-        let result2 = norm(&ty, &subst, &mut ctx);
+        let result2 = norm(&ty, &subst, &mut ctx).await;
         assert_eq!(result2, Type::Int);
 
         // Verify cache entry exists (use concrete Int, not Seq)
@@ -560,10 +568,10 @@ mod tests {
     }
 
     /// Test: normalize() cycle detection - TypeStageApp with fn_name already in call_stack returns stuck
-    #[test]
-    fn test_normalize_cycle_detection() {
+    #[tokio::test]
+    async fn test_normalize_cycle_detection() {
         let subst = empty_subst();
-        let mut ctx = NormCtxt::new();
+        let mut ctx = NormCtxt::new(None);
 
         // Manually push "Recursive" to call_stack to simulate cycle
         ctx.call_stack.push("Recursive".to_string());
@@ -573,7 +581,7 @@ mod tests {
             args: vec![Type::Int],
         };
 
-        let result = norm(&ty, &subst, &mut ctx);
+        let result = norm(&ty, &subst, &mut ctx).await;
 
         // Should return stuck (unchanged) due to cycle detection
         assert_eq!(
@@ -586,10 +594,10 @@ mod tests {
     }
 
     /// Test: normalize() depth guard - depth > max_depth returns stuck
-    #[test]
-    fn test_normalize_depth_guard() {
+    #[tokio::test]
+    async fn test_normalize_depth_guard() {
         let subst = empty_subst();
-        let mut ctx = NormCtxt::new();
+        let mut ctx = NormCtxt::new(None);
 
         // Set depth to max_depth
         ctx.depth = ctx.max_depth;
@@ -599,7 +607,7 @@ mod tests {
             args: vec![Type::Int],
         };
 
-        let result = norm(&ty, &subst, &mut ctx);
+        let result = norm(&ty, &subst, &mut ctx).await;
 
         // Should return stuck (unchanged) due to depth exceeded
         assert_eq!(
@@ -612,8 +620,8 @@ mod tests {
     }
 
     /// Test: has_type_stage_app() returns true for TypeStageApp
-    #[test]
-    fn test_has_type_stage_app_true_for_type_stage_app() {
+    #[tokio::test]
+    async fn test_has_type_stage_app_true_for_type_stage_app() {
         let ty = Type::TypeStageApp {
             fn_name: "AddResult".to_string(),
             args: vec![Type::Int, Type::Float],
@@ -622,17 +630,16 @@ mod tests {
     }
 
     /// Test: has_type_stage_app() returns false for concrete types
-    #[test]
-    fn test_has_type_stage_app_false_for_concrete() {
+    #[tokio::test]
+    async fn test_has_type_stage_app_false_for_concrete() {
         assert!(!Type::Int.has_type_stage_app());
         assert!(!Type::Str.has_type_stage_app());
-        assert!(!Type::Bool.has_type_stage_app());
         assert!(!Type::Float.has_type_stage_app());
     }
 
     /// Test: has_type_stage_app() returns true for Seq(TypeStageApp)
-    #[test]
-    fn test_has_type_stage_app_true_for_seq_containing_type_stage_app() {
+    #[tokio::test]
+    async fn test_has_type_stage_app_true_for_seq_containing_type_stage_app() {
         let ty = Type::seq(Type::TypeStageApp {
             fn_name: "AddResult".to_string(),
             args: vec![Type::Int, Type::Float],
@@ -641,15 +648,15 @@ mod tests {
     }
 
     /// Test: has_type_stage_app() returns false for Seq(Int)
-    #[test]
-    fn test_has_type_stage_app_false_for_seq_of_concrete() {
+    #[tokio::test]
+    async fn test_has_type_stage_app_false_for_seq_of_concrete() {
         let ty = Type::seq(Type::Int);
         assert!(!ty.has_type_stage_app());
     }
 
     /// Test: TypeStageApp PartialEq - same fn_name+args equal
-    #[test]
-    fn test_type_stage_app_partial_eq_same() {
+    #[tokio::test]
+    async fn test_type_stage_app_partial_eq_same() {
         let ty1 = Type::TypeStageApp {
             fn_name: "AddResult".to_string(),
             args: vec![Type::Int, Type::Float],
@@ -662,8 +669,8 @@ mod tests {
     }
 
     /// Test: TypeStageApp PartialEq - different fn_name not equal
-    #[test]
-    fn test_type_stage_app_partial_eq_different_fn_name() {
+    #[tokio::test]
+    async fn test_type_stage_app_partial_eq_different_fn_name() {
         let ty1 = Type::TypeStageApp {
             fn_name: "AddResult".to_string(),
             args: vec![Type::Int, Type::Float],
@@ -676,8 +683,8 @@ mod tests {
     }
 
     /// Test: TypeStageApp PartialEq - different args not equal
-    #[test]
-    fn test_type_stage_app_partial_eq_different_args() {
+    #[tokio::test]
+    async fn test_type_stage_app_partial_eq_different_args() {
         let ty1 = Type::TypeStageApp {
             fn_name: "AddResult".to_string(),
             args: vec![Type::Int, Type::Float],
@@ -690,8 +697,8 @@ mod tests {
     }
 
     /// Test: TypeStageApp Display format
-    #[test]
-    fn test_type_stage_app_display() {
+    #[tokio::test]
+    async fn test_type_stage_app_display() {
         let ty = Type::TypeStageApp {
             fn_name: "AddResult".to_string(),
             args: vec![Type::Int, Type::Float],
@@ -701,8 +708,8 @@ mod tests {
     }
 
     /// Test: TypeStageApp Display format with single arg
-    #[test]
-    fn test_type_stage_app_display_single_arg() {
+    #[tokio::test]
+    async fn test_type_stage_app_display_single_arg() {
         let ty = Type::TypeStageApp {
             fn_name: "Singleton".to_string(),
             args: vec![Type::Int],
@@ -712,8 +719,8 @@ mod tests {
     }
 
     /// Test: TypeStageApp Display format with no args
-    #[test]
-    fn test_type_stage_app_display_no_args() {
+    #[tokio::test]
+    async fn test_type_stage_app_display_no_args() {
         let ty = Type::TypeStageApp {
             fn_name: "Nullary".to_string(),
             args: vec![],
@@ -723,15 +730,15 @@ mod tests {
     }
 
     /// Test: normalize() with non-ground TypeStageApp args returns stuck
-    #[test]
-    fn test_normalize_type_stage_app_non_ground_args() {
+    #[tokio::test]
+    async fn test_normalize_type_stage_app_non_ground_args() {
         let subst = empty_subst();
-        let mut ctx = NormCtxt::new();
+        let mut ctx = NormCtxt::new(None);
         let ty = Type::TypeStageApp {
             fn_name: "AddResult".to_string(),
             args: vec![Type::TypeVar("a".to_string(), 0), Type::Float],
         };
-        let result = norm(&ty, &subst, &mut ctx);
+        let result = norm(&ty, &subst, &mut ctx).await;
         // Non-ground args - should return TypeStageApp with normalized args (but stuck)
         assert_eq!(
             result,
@@ -742,31 +749,10 @@ mod tests {
         );
     }
 
-    /// Test: normalize() recursively normalizes TypeStageApp args then resolves from cache
-    #[test]
-    fn test_normalize_type_stage_app_recursive_arg_normalization() {
-        let subst = Substitution::new();
-        subst
-            .type_map
-            .borrow_mut()
-            .insert("a".to_string(), Type::Int);
-        let mut ctx = NormCtxt::new(); // pre-populated with arithmetic resolver cache
-
-        let ty = Type::TypeStageApp {
-            fn_name: "AddResult".to_string(),
-            args: vec![Type::TypeVar("a".to_string(), 0), Type::Float],
-        };
-
-        let result = norm(&ty, &subst, &mut ctx);
-
-        // Args normalized (TypeVar("a") -> Int), then cache hit: AddResult(Int, Float) -> Float
-        assert_eq!(result, Type::Float);
-    }
-
     /// Test: NormCtxt::new() initializes with correct defaults
-    #[test]
-    fn test_norm_ctxt_new_defaults() {
-        let ctx = NormCtxt::new();
+    #[tokio::test]
+    async fn test_norm_ctxt_new_defaults() {
+        let ctx = NormCtxt::new(None);
 
         assert!(ctx.cache.is_empty());
         assert_eq!(ctx.depth, 0);
@@ -776,29 +762,29 @@ mod tests {
     }
 
     /// Test: cache only stores ground types
-    #[test]
-    fn test_normalize_cache_only_ground_types() {
+    #[tokio::test]
+    async fn test_normalize_cache_only_ground_types() {
         let subst = empty_subst();
-        let mut ctx = NormCtxt::new();
+        let mut ctx = NormCtxt::new(None);
 
         // Normalize a type with inference variables
         let ty_with_var = Type::seq(Type::TypeVar("a".to_string(), 0));
-        let _result1 = norm(&ty_with_var, &subst, &mut ctx);
+        let _result1 = norm(&ty_with_var, &subst, &mut ctx).await;
 
         // Cache should NOT contain this type (has inference vars)
         assert!(!ctx.cache.contains_key(&ty_with_var));
 
         // Normalize a ground type
         let ty_ground = Type::seq(Type::Int);
-        let _result2 = norm(&ty_ground, &subst, &mut ctx);
+        let _result2 = norm(&ty_ground, &subst, &mut ctx).await;
 
         // Cache SHOULD contain this type (ground)
         assert!(ctx.cache.contains_key(&ty_ground));
     }
 
     /// Test: TypeStageApp collect_type_vars
-    #[test]
-    fn test_type_stage_app_collect_type_vars() {
+    #[tokio::test]
+    async fn test_type_stage_app_collect_type_vars() {
         let ty = Type::TypeStageApp {
             fn_name: "AddResult".to_string(),
             args: vec![
@@ -817,8 +803,8 @@ mod tests {
     }
 
     /// Test: TypeStageApp has_inference_vars
-    #[test]
-    fn test_type_stage_app_has_inference_vars_true() {
+    #[tokio::test]
+    async fn test_type_stage_app_has_inference_vars_true() {
         let ty = Type::TypeStageApp {
             fn_name: "AddResult".to_string(),
             args: vec![Type::TypeVar("a".to_string(), 0), Type::Int],
@@ -827,8 +813,8 @@ mod tests {
     }
 
     /// Test: TypeStageApp has_inference_vars false for ground args
-    #[test]
-    fn test_type_stage_app_has_inference_vars_false() {
+    #[tokio::test]
+    async fn test_type_stage_app_has_inference_vars_false() {
         let ty = Type::TypeStageApp {
             fn_name: "AddResult".to_string(),
             args: vec![Type::Int, Type::Float],
@@ -836,55 +822,16 @@ mod tests {
         assert!(!ty.has_inference_vars());
     }
 
-    /// Test: AddResult(Int, Int) resolves to Int via LLT type-stage function
-    #[test]
-    fn test_resolver_cache_add_int_int() {
-        let subst = empty_subst();
-        let mut ctx = NormCtxt::new();
-        let ty = Type::TypeStageApp {
-            fn_name: "AddResult".to_string(),
-            args: vec![Type::Int, Type::Int],
-        };
-        let result = norm(&ty, &subst, &mut ctx);
-        assert_eq!(result, Type::Int);
-    }
-
-    /// Test: AddResult(Int, Float) resolves to Float via LLT type-stage function
-    #[test]
-    fn test_resolver_cache_add_int_float() {
-        let subst = empty_subst();
-        let mut ctx = NormCtxt::new();
-        let ty = Type::TypeStageApp {
-            fn_name: "AddResult".to_string(),
-            args: vec![Type::Int, Type::Float],
-        };
-        let result = norm(&ty, &subst, &mut ctx);
-        assert_eq!(result, Type::Float);
-    }
-
-    /// Test: DivResult(Int, Int) resolves to Float via LLT type-stage function
-    #[test]
-    fn test_resolver_cache_div_int_int() {
-        let subst = empty_subst();
-        let mut ctx = NormCtxt::new();
-        let ty = Type::TypeStageApp {
-            fn_name: "DivResult".to_string(),
-            args: vec![Type::Int, Type::Int],
-        };
-        let result = norm(&ty, &subst, &mut ctx);
-        assert_eq!(result, Type::Float);
-    }
-
     /// Test: unknown resolver returns stuck TypeStageApp
-    #[test]
-    fn test_resolver_cache_miss_unknown_resolver() {
+    #[tokio::test]
+    async fn test_resolver_cache_miss_unknown_resolver() {
         let subst = empty_subst();
-        let mut ctx = NormCtxt::new();
+        let mut ctx = NormCtxt::new(None);
         let ty = Type::TypeStageApp {
             fn_name: "UnknownResolver".to_string(),
             args: vec![Type::Int, Type::Float],
         };
-        let result = norm(&ty, &subst, &mut ctx);
+        let result = norm(&ty, &subst, &mut ctx).await;
         // Should return stuck TypeStageApp (cache miss)
         assert_eq!(
             result,

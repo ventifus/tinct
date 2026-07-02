@@ -61,13 +61,15 @@ For each identifier from Step 1, verify in source:
 | Struct field | relevant `src/*.rs` struct definitions |
 | CLI flag | `src/main.rs` clap definitions |
 
-Check for stubs: `unimplemented!()`, `todo!()`, `// TODO/DEFERRED/STUB`, `#[allow(dead_code)]` on active paths, `Type::Unknown`/`None` where specific values were promised.
-
-Check for de-scoped features: tracker context notes with CANCELLED/removed, comments saying "was going to do X".
+Check for incomplete work — any of the following is `INCOMPLETE`:
+- `unimplemented!()`, `todo!()`, `// TODO/DEFERRED/STUB`, `#[allow(dead_code)]` on active paths, `Type::Unknown`/`None` where specific values were promised
+- Comments or code containing "transitional", "backwards-compat", "backward-compat", "back-compat", "compat shim", "legacy", "migration path", "for now", "temporary" — these create alternate execution paths where intended behavior can be bypassed
+- Tracker context notes with CANCELLED/removed, comments saying "was going to do X", or work deferred to future tracker items — deferred work is still incomplete, even if it's tracked
+- Behavioral claims from the whatif that don't match what the source code actually does
 
 Spot-check 3–5 behavioral claims against source code.
 
-Record: `PRESENT/MISSING: <identifier>`, `STUB: <file>:<line> — <desc>`, `DE-SCOPED: <loc> — <desc>`, `DIVERGENCE: <file>:<line> — expected: <X> / found: <Y>`
+Record: `PRESENT/MISSING: <identifier>`, `INCOMPLETE: <file>:<line> — <desc>`
 
 ## Step 5: Doc Consistency
 
@@ -111,9 +113,7 @@ SPRINT-ALIGN: <slug> — <misalignment>
 
 ### Implementation
 PRESENT/MISSING: <identifier>
-STUB: <file>:<line> — <desc>
-DE-SCOPED: <loc> — <desc>
-DIVERGENCE: <file>:<line> — expected: <X> / found: <Y>
+INCOMPLETE: <file>:<line> — <desc>
 
 ### Feature Doc
 [EXISTS | MISSING] — VIOLATION/TEMPORAL/GAP entries
@@ -152,6 +152,7 @@ Create tracker items for rescheduled work. If a complete sprint is still showing
 - **Whatifs are read-only.** Never edit them.
 - **Sprint coverage first.** Untracked work outranks undocumented work.
 - **Implementation before docs.** MISSING/DIVERGENCE outranks any doc gap.
+- **INCOMPLETE covers everything unfinished.** Stubs, transitional/backwards-compatible code, de-scoped work, and behavioral divergences are all the same thing: the implementation isn't done. Any alternate execution path that preserves old behavior alongside new behavior means the intended path can be bypassed. All go in the report as `INCOMPLETE` and must be rescheduled as tracker items.
 - **Reschedule, don't delete.** De-scoped features need a tracker item or a whatif note.
 - **Feature docs are standalone.** No whatif references.
 - **Main docs are atemporal.** Any phrase revealing when something was added is a violation.

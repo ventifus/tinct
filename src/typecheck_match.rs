@@ -53,84 +53,86 @@ pub(crate) fn elaborate_pattern<'a>(
     span: &'a Span,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Pattern, Vec<TypeError>>> + 'a>> {
     Box::pin(async move {
-    match pat {
-        Pattern::TypeAssertPending { annotation, inner } => {
-            // Resolve the annotation to a concrete Type.
-            let mut pat_constraints: Vec<Constraint> = Vec::new();
-            let resolved_type = resolve_annotation(
-                &annotation.node,
-                env,
-                annotation.span.clone(),
-                state,
-                &mut pat_constraints,
-                &mut None,
-                &mut None,
-                None,
-            ).await
-            .map_err(|e| vec![e])?;
-
-            // Recursively elaborate the inner sub-pattern if present.
-            let elaborated_inner = if let Some(ref boxed_spanned) = inner {
-                let elaborated = elaborate_pattern(
-                    &boxed_spanned.node,
+        match pat {
+            Pattern::TypeAssertPending { annotation, inner, .. } => {
+                // Resolve the annotation to a concrete Type.
+                let mut pat_constraints: Vec<Constraint> = Vec::new();
+                let resolved_type = resolve_annotation(
+                    &annotation.node,
                     env,
+                    annotation.span.clone(),
                     state,
-                    &boxed_spanned.span,
-                ).await?;
-                Some(Box::new(Spanned::new(elaborated, boxed_spanned.span.clone())))
-            } else {
-                None
-            };
+                    &mut pat_constraints,
+                    &mut None,
+                    &mut None,
+                    None,
+                )
+                .await
+                .map_err(|e| vec![e])?;
 
-            Ok(Pattern::TypeAssert {
-                resolved_type,
-                inner: elaborated_inner,
-            })
-        }
+                // Recursively elaborate the inner sub-pattern if present.
+                let elaborated_inner = if let Some(ref boxed_spanned) = inner {
+                    let elaborated =
+                        elaborate_pattern(&boxed_spanned.node, env, state, &boxed_spanned.span)
+                            .await?;
+                    Some(Box::new(Spanned::new(
+                        elaborated,
+                        boxed_spanned.span.clone(),
+                    )))
+                } else {
+                    None
+                };
 
-        Pattern::Or(branches) => {
-            let mut elaborated_branches = Vec::with_capacity(branches.len());
-            for spanned_pat in branches.iter() {
-                let elaborated = elaborate_pattern(&spanned_pat.node, env, state, &spanned_pat.span).await?;
-                elaborated_branches.push(Spanned::new(elaborated, spanned_pat.span.clone()));
+                Ok(Pattern::TypeAssert {
+                    resolved_type,
+                    inner: elaborated_inner,
+                })
             }
-            Ok(Pattern::Or(elaborated_branches))
-        }
 
-        Pattern::Constructor { tag, binding } => {
-            // Inline helper: elaborate optional payload binding asynchronously.
-            let elaborated_binding = if let Some(ref boxed_spanned) = binding {
-                let elaborated = elaborate_pattern(
-                    &boxed_spanned.node,
-                    env,
-                    state,
-                    &boxed_spanned.span,
-                ).await?;
-                Some(Box::new(Spanned::new(elaborated, boxed_spanned.span.clone())))
-            } else {
-                None
-            };
-
-            let tycon_lookup = state.tycon_env.get(tag.as_str()).cloned();
-            if let Some(ref def) = tycon_lookup {
-                if def.builtin_type.is_some() {
-                    // Case b: builtin-type TyConDef (e.g., Int:, Str:, Bool: used as patterns).
-                    // Rewrite to TypeAssert so the pattern-matching logic can use value_matches_type.
-                    return Ok(Pattern::TypeAssert {
-                        resolved_type: Type::TyCon(tag.clone()),
-                        inner: elaborated_binding,
-                    });
+            Pattern::Or(branches) => {
+                let mut elaborated_branches = Vec::with_capacity(branches.len());
+                for spanned_pat in branches.iter() {
+                    let elaborated =
+                        elaborate_pattern(&spanned_pat.node, env, state, &spanned_pat.span).await?;
+                    elaborated_branches.push(Spanned::new(elaborated, spanned_pat.span.clone()));
                 }
-                if !def.constructors.is_empty() {
-                    // Case a: nominal user-defined type.
-                    // If the tag is unqualified (no '.'), this is a hard error (T-1109).
-                    // Bare constructor pattern tags silently misbehave at runtime because the
-                    // evaluator matches against qualified runtime variant tags.
-                    if !tag.contains('.') {
-                        let qualified = env
-                            .resolve_constructor_tag(tag)
-                            .unwrap_or_else(|| tag.clone());
-                        return Err(vec![crate::type_errors::TypeErrorTyped::Generic(
+                Ok(Pattern::Or(elaborated_branches))
+            }
+
+            Pattern::Constructor { tag, binding } => {
+                // Inline helper: elaborate optional payload binding asynchronously.
+                let elaborated_binding = if let Some(ref boxed_spanned) = binding {
+                    let elaborated =
+                        elaborate_pattern(&boxed_spanned.node, env, state, &boxed_spanned.span)
+                            .await?;
+                    Some(Box::new(Spanned::new(
+                        elaborated,
+                        boxed_spanned.span.clone(),
+                    )))
+                } else {
+                    None
+                };
+
+                let tycon_lookup = state.tycon_env.get(tag.as_str()).cloned();
+                if let Some(ref def) = tycon_lookup {
+                    if def.builtin_type.is_some() {
+                        // Case b: builtin-type TyConDef (e.g., Int:, Str:, Bool: used as patterns).
+                        // Rewrite to TypeAssert so the pattern-matching logic can use value_matches_type.
+                        return Ok(Pattern::TypeAssert {
+                            resolved_type: Type::TyCon(tag.clone()),
+                            inner: elaborated_binding,
+                        });
+                    }
+                    if !def.constructors.is_empty() {
+                        // Case a: nominal user-defined type.
+                        // If the tag is unqualified (no '.'), this is a hard error (T-1109).
+                        // Bare constructor pattern tags silently misbehave at runtime because the
+                        // evaluator matches against qualified runtime variant tags.
+                        if !tag.contains('.') {
+                            let qualified = env
+                                .resolve_constructor_tag(tag)
+                                .unwrap_or_else(|| tag.clone());
+                            return Err(vec![crate::type_errors::TypeErrorTyped::Generic(
                             crate::type_errors::GenericTypeError {
                                 message: format!(
                                     "unqualified constructor pattern tag '{tag}' — use qualified form '{qualified}'"
@@ -139,74 +141,69 @@ pub(crate) fn elaborate_pattern<'a>(
                                 notes: vec![], call_stack: vec![],
                             },
                         )]);
+                        }
+                        return Ok(Pattern::Constructor {
+                            tag: tag.clone(),
+                            binding: elaborated_binding,
+                        });
                     }
-                    return Ok(Pattern::Constructor {
-                        tag: tag.clone(),
-                        binding: elaborated_binding,
-                    });
                 }
+                // Case c: not found in TyConEnv, or found with empty constructors and no
+                // builtin_type — this is an open type or a non-nominal user type.
+                Ok(Pattern::Constructor {
+                    tag: tag.clone(),
+                    binding: elaborated_binding,
+                })
             }
-            // Case c: not found in TyConEnv, or found with empty constructors and no
-            // builtin_type — this is an open type or a non-nominal user type.
-            Ok(Pattern::Constructor {
-                tag: tag.clone(),
-                binding: elaborated_binding,
-            })
-        }
 
-        Pattern::Dict { fields, rest } => {
-            let mut elaborated_fields = Vec::with_capacity(fields.len());
-            for (key, spanned_pat) in fields.iter() {
-                let elaborated = elaborate_pattern(&spanned_pat.node, env, state, &spanned_pat.span).await?;
-                elaborated_fields.push((key.clone(), Spanned::new(elaborated, spanned_pat.span.clone())));
+            Pattern::Dict { fields, rest } => {
+                let mut elaborated_fields = Vec::with_capacity(fields.len());
+                for (key, spanned_pat) in fields.iter() {
+                    let elaborated =
+                        elaborate_pattern(&spanned_pat.node, env, state, &spanned_pat.span).await?;
+                    elaborated_fields.push((
+                        key.clone(),
+                        Spanned::new(elaborated, spanned_pat.span.clone()),
+                    ));
+                }
+                Ok(Pattern::Dict {
+                    fields: elaborated_fields,
+                    rest: *rest,
+                })
             }
-            Ok(Pattern::Dict {
-                fields: elaborated_fields,
-                rest: *rest,
-            })
+
+            Pattern::TypeAssert {
+                resolved_type,
+                inner,
+            } => {
+                // Already elaborated — recurse into inner sub-pattern if present.
+                let elaborated_inner = if let Some(ref boxed_spanned) = inner {
+                    let elaborated =
+                        elaborate_pattern(&boxed_spanned.node, env, state, &boxed_spanned.span)
+                            .await?;
+                    Some(Box::new(Spanned::new(
+                        elaborated,
+                        boxed_spanned.span.clone(),
+                    )))
+                } else {
+                    None
+                };
+                Ok(Pattern::TypeAssert {
+                    resolved_type: resolved_type.clone(),
+                    inner: elaborated_inner,
+                })
+            }
+
+            // Pass-through patterns: Wildcard, Literal, Pin carry no
+            // sub-patterns and require no annotation resolution.
+            Pattern::Wildcard | Pattern::Literal(_) | Pattern::Pin(..) => Ok(pat.clone()),
+
+            // T-1140: Predicate patterns — pass through unchanged.
+            // The contained SurfaceNode is not type-checked here; it will be evaluated at runtime.
+            // Return type is checked to be Bool/Unknown only by convention, not enforced here.
+            // Predicate patterns do not affect exhaustiveness (treated as wildcard).
+            Pattern::Predicate(_) => Ok(pat.clone()),
         }
-
-        Pattern::Seq { head, tail } => {
-            let elaborated_head = elaborate_pattern(&head.node, env, state, &head.span).await?;
-            let elaborated_tail = elaborate_pattern(&tail.node, env, state, &tail.span).await?;
-            Ok(Pattern::Seq {
-                head: Box::new(Spanned::new(elaborated_head, head.span.clone())),
-                tail: Box::new(Spanned::new(elaborated_tail, tail.span.clone())),
-            })
-        }
-
-        Pattern::TypeAssert {
-            resolved_type,
-            inner,
-        } => {
-            // Already elaborated — recurse into inner sub-pattern if present.
-            let elaborated_inner = if let Some(ref boxed_spanned) = inner {
-                let elaborated = elaborate_pattern(
-                    &boxed_spanned.node,
-                    env,
-                    state,
-                    &boxed_spanned.span,
-                ).await?;
-                Some(Box::new(Spanned::new(elaborated, boxed_spanned.span.clone())))
-            } else {
-                None
-            };
-            Ok(Pattern::TypeAssert {
-                resolved_type: resolved_type.clone(),
-                inner: elaborated_inner,
-            })
-        }
-
-        // Pass-through patterns: Wildcard, Literal, Pin carry no
-        // sub-patterns and require no annotation resolution.
-        Pattern::Wildcard | Pattern::Literal(_) | Pattern::Pin(_) => Ok(pat.clone()),
-
-        // T-1140: Predicate patterns — pass through unchanged.
-        // The contained SurfaceNode is not type-checked here; it will be evaluated at runtime.
-        // Return type is checked to be Bool/Unknown only by convention, not enforced here.
-        // Predicate patterns do not affect exhaustiveness (treated as wildcard).
-        Pattern::Predicate(_) => Ok(pat.clone()),
-    }
     }) // end Box::pin(async move {
 }
 
@@ -280,9 +277,9 @@ pub(crate) async fn typecheck_case_arm(
                             // as Type::Function { params: [(None, payload_ty)], ret: ... } when
                             // the type system has full constructor type information.
                             //
-                            // ADT constructors from `[type ...]` declarations are injected by the
-                            // desugar pass as `[builtin-variant "TypeName.CtorName"]` expressions.
-                            // Their TypeEnv entries may be Type::Top when constructor type information
+                            // ADT constructors from `[type ...]` declarations are lowered by lower.rs
+                            // as `CoreExpr::Variant { tag: "TypeName.CtorName", .. }` expressions.
+                            // Their TypeEnv entries may be Type::Any when constructor type information
                             // is unavailable. In that case, fall back to Type::Unknown as the payload
                             // type (sound under gradual typing).
                             // SAFETY: is_structural_test is only true when constructor_name_opt is Some.
@@ -381,7 +378,8 @@ pub(crate) async fn typecheck_case_arm(
                                 &mut None,
                                 &mut None,
                                 None,
-                            ).await
+                            )
+                            .await
                             .map_err(|e| vec![e])?;
 
                             // T020: Dead-arm warning — check if pattern type is disjoint from scrutinee type.
@@ -438,7 +436,8 @@ pub(crate) async fn typecheck_case_arm(
                                         &mut None,
                                         &mut None,
                                         None,
-                                    ).await
+                                    )
+                                    .await
                                     .map_err(|e| vec![e])?;
                                     arm_env.insert(name.clone(), ann_ty);
                                 }
@@ -493,8 +492,7 @@ pub(crate) async fn typecheck_case_arm(
                 | Type::IntLiteral(_)
                 | Type::Float
                 | Type::Str
-                | Type::StringLiteral(_)
-                | Type::Bool => {
+                | Type::StringLiteral(_) => {
                     // Valid scalar type - OK
                 }
                 _ => {
@@ -556,7 +554,9 @@ pub(crate) async fn infer_fn(
                 &mut ann_mapping_opt,
                 &mut row_ann_mapping_opt,
                 None,
-            ).await.map_err(|e| vec![e])?,
+            )
+            .await
+            .map_err(|e| vec![e])?,
             // Unannotated params use Unknown (gradual typing escape hatch).
             //
             // WHY NOT fresh_type_var(): Using fresh TypeVars for unannotated params
@@ -632,7 +632,8 @@ pub(crate) async fn infer_fn(
                             &mut ann_mapping_opt,
                             &mut row_ann_mapping_opt,
                             None,
-                        ).await
+                        )
+                        .await
                         .map_err(|e| vec![e])?;
                         ret
                     } else {
@@ -647,7 +648,8 @@ pub(crate) async fn infer_fn(
                             &mut ann_mapping_opt,
                             &mut row_ann_mapping_opt,
                             None,
-                        ).await
+                        )
+                        .await
                         .map_err(|e| vec![e])?
                     }
                 }
@@ -662,7 +664,8 @@ pub(crate) async fn infer_fn(
                         &mut ann_mapping_opt,
                         &mut row_ann_mapping_opt,
                         None,
-                    ).await
+                    )
+                    .await
                     .map_err(|e| vec![e])?
                 }
             };
@@ -678,7 +681,8 @@ pub(crate) async fn infer_fn(
             // is_subtype(IntLiteral(42), TypeVar("_t5")) = false would reject valid code.
             // Unification mode binds the TypeVars via constraint solving.
             let result = if actual_ann.has_inference_vars() {
-                let body_ty = infer_surface_expr(body, &fn_env, state, constraints, type_map).await?;
+                let body_ty =
+                    infer_surface_expr(body, &fn_env, state, constraints, type_map).await?;
                 // Borrow-split: mem::take + restore avoids simultaneous &mut state.subst and &mut state
                 let mut subst = std::mem::take(&mut state.subst);
                 let result = Box::pin(unify(
@@ -688,7 +692,8 @@ pub(crate) async fn infer_fn(
                     state,
                     constraints,
                     body.span.clone(),
-                )).await;
+                ))
+                .await;
                 state.subst = subst;
                 result.map_err(|e| vec![e])?;
                 // Apply substitution to resolve any TypeVars bound during unification.
@@ -698,7 +703,8 @@ pub(crate) async fn infer_fn(
                 state.subst.apply(&actual_ann)
             } else {
                 // Use checking mode for concrete return types (no type variables)
-                check_surface_expr(body, &actual_ann, &fn_env, state, constraints, type_map).await?;
+                check_surface_expr(body, &actual_ann, &fn_env, state, constraints, type_map)
+                    .await?;
                 actual_ann
             };
 

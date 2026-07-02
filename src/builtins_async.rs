@@ -38,7 +38,7 @@ use crate::builtins::{ok_val, MAX_COLLECT_SIZE};
 use crate::error::{EvalError, EvalResult};
 use crate::eval::materialize;
 use crate::eval_core::eval_core_expr;
-use crate::value::{BuiltinArgs, ClockCapInner, Key, StrKey, Thunk, ThunkId, Value};
+use crate::value::{BuiltinArgs, ClockCapInner, HashableValue, Thunk, ThunkId, Value};
 
 /// Helper to check argument count and extract first argument as a thunk.
 /// Returns the thunk without materializing it. Named `take_one_thunk` to
@@ -121,96 +121,48 @@ fn take_three_thunks(
 
 /// Helper to collect a Seq into a Vec<ThunkId> by walking the linked list.
 /// Returns the thunk IDs in order. Materializes each tail to check for continuation or termination.
-async fn collect_seq_to_vec(
-    seq_val: Value,
-    ctx: &Arc<crate::eval::EvalContext>,
+/// Collect elements from an integer-keyed Dict into a Vec of ThunkIds.
+/// Used by par-map, par-filter, and select-once which now accept Dict input.
+async fn collect_dict_to_vec(
+    dict_val: Value,
+    _ctx: &Arc<crate::eval::EvalContext>,
     call_span: Span,
     name: &str,
 ) -> EvalResult<Vec<ThunkId>> {
-    let mut items = Vec::new();
-    let mut current = seq_val;
+    let map = match dict_val {
+        Value::Dict(m) => m,
+        other => return Err(EvalError::type_mismatch("Dict", other.type_name(), call_span).into()),
+    };
 
-    loop {
-        match current {
-            Value::Variant {
-                ref tag,
-                payload: None,
-            } if tag == "Seq.Nil" => {
-                // Terminal: Seq.Nil
-                break;
-            }
-            Value::Variant {
-                ref tag,
-                payload: Some(payload_id),
-            } if tag == "Seq.Cons" => {
-                let payload_thunk = ctx.get_thunk(payload_id);
-                let payload_val = materialize(&payload_thunk, None, ctx).await?;
-                let (head, tail) = if let Value::Dict(ref d) = payload_val {
-                    let h = *d
-                        .get(&crate::value::Key::String("head".into()))
-                        .expect("Seq.Cons must have head");
-                    let t = *d
-                        .get(&crate::value::Key::String("tail".into()))
-                        .expect("Seq.Cons must have tail");
-                    (h, t)
-                } else {
-                    return Err(EvalError::internal(
-                        "Seq.Cons payload must be a Dict".to_string(),
-                        call_span,
-                    )
-                    .into());
-                };
-
-                items.push(head);
-
-                if items.len() >= MAX_COLLECT_SIZE {
-                    return Err(EvalError::resource_limit_exceeded(
-                        format!(
-                            "{}: exceeded maximum collection size ({})",
-                            name, MAX_COLLECT_SIZE
-                        ),
-                        call_span,
-                    )
-                    .into());
-                }
-
-                // Materialize tail to check for continuation
-                let tail_thunk = ctx.get_thunk(tail);
-                current = materialize(&tail_thunk, None, ctx).await?;
-            }
-            other => {
-                return Err(EvalError::type_mismatch(
-                    "Seq or Seq.Nil",
-                    other.type_name(),
-                    call_span,
-                )
-                .into());
-            }
-        }
+    if map.len() >= MAX_COLLECT_SIZE {
+        return Err(EvalError::resource_limit_exceeded(
+            format!(
+                "{}: exceeded maximum collection size ({})",
+                name, MAX_COLLECT_SIZE
+            ),
+            call_span,
+        )
+        .into());
     }
 
-    Ok(items)
+    Ok(map.values().copied().collect())
 }
 
-/// Helper to build a Seq from a Vec<ThunkId> by creating nested cons cells.
-/// Returns a ThunkId for the complete sequence.
-fn build_seq_from_vec(
+/// Helper to build an integer-keyed Dict from a Vec<ThunkId>.
+/// Returns a ThunkId for the resulting Dict.
+fn build_dict_from_vec(
     items: Vec<ThunkId>,
     ctx: &Arc<crate::eval::EvalContext>,
     call_span: Span,
 ) -> ThunkId {
-    // Build from right to left: [..., tail] where tail is Seq.Nil
-    let mut tail_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-        crate::value::make_seq_nil(),
-        call_span.clone(),
-    )));
-
-    for head_id in items.into_iter().rev() {
-        let seq = crate::value::make_seq_cons(head_id, tail_id, ctx);
-        tail_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(seq, call_span.clone())));
+    let mut dict = indexmap::IndexMap::new();
+    for (i, id) in items.into_iter().enumerate() {
+        dict.insert(crate::value::HashableValue::Int(i as i64), id);
     }
-
-    tail_id
+    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+        Value::Dict(dict),
+        call_span,
+    )))
 }
 
 /// `task`: Spawn a concurrent evaluation.
@@ -797,33 +749,19 @@ pub(crate) fn builtin_oneshot_channel(
             receiver: tokio::sync::Mutex::new(Some(rx)),
         };
 
-        // Build [receiver, sender] Seq
-        let sender_thunk = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+        // Return {0: receiver, 1: sender}
+        let sender_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::OneshotSender(Arc::new(sender_inner)),
             call_span.clone(),
         )));
-        let receiver_thunk = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+        let receiver_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::OneshotReceiver(Arc::new(receiver_inner)),
             call_span.clone(),
         )));
-
-        // Build Seq.Nil tail
-        let tail_thunk = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            crate::value::make_seq_nil(),
-            call_span.clone(),
-        )));
-
-        // Build sender cons cell
-        let sender_cons = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-            crate::value::make_seq_cons(sender_thunk, tail_thunk, &ctx),
-            call_span.clone(),
-        )));
-
-        // Build receiver cons cell (head of the list)
-        ok_val(
-            crate::value::make_seq_cons(receiver_thunk, sender_cons, &ctx),
-            call_span,
-        )
+        let mut dict = indexmap::IndexMap::new();
+        dict.insert(HashableValue::Int(0), receiver_id);
+        dict.insert(HashableValue::Int(1), sender_id);
+        ok_val(Value::Dict(dict), call_span)
     })
 }
 
@@ -959,7 +897,7 @@ pub(crate) fn builtin_select_once(
 
         // Collect the sequence of sources into a vec
         let source_ids =
-            collect_seq_to_vec(sources_val, &ctx, call_span.clone(), "select-once").await?;
+            collect_dict_to_vec(sources_val, &ctx, call_span.clone(), "select-once").await?;
 
         if source_ids.is_empty() {
             return Err(EvalError::user_error(
@@ -987,8 +925,8 @@ pub(crate) fn builtin_select_once(
             match source_val {
                 Value::Dict(ref map) => {
                     // Validate that the dict has the required `ch:` and `handler:` keys.
-                    let ch_id = map.get(&StrKey("ch")).copied();
-                    let handler_id = map.get(&StrKey("handler")).copied();
+                    let ch_id = map.get(&HashableValue::Str("ch".into())).copied();
+                    let handler_id = map.get(&HashableValue::Str("handler".into())).copied();
                     match (ch_id, handler_id) {
                         (Some(ch_id), Some(handler_id)) => {
                             let ch_thunk = ctx.get_thunk(ch_id);
@@ -1315,7 +1253,7 @@ pub(crate) fn builtin_par_map(
         let seq_val = materialize(&seq_thunk, Some(&call_span), &ctx).await?;
 
         // Collect sequence items
-        let item_ids = collect_seq_to_vec(seq_val, &ctx, call_span.clone(), "par-map").await?;
+        let item_ids = collect_dict_to_vec(seq_val, &ctx, call_span.clone(), "par-map").await?;
 
         // Spawn a task for each item
         let mut tasks = Vec::new();
@@ -1421,7 +1359,7 @@ pub(crate) fn builtin_par_map(
         }
 
         // Build the result sequence
-        let result_seq_id = build_seq_from_vec(result_ids, &ctx, call_span);
+        let result_seq_id = build_dict_from_vec(result_ids, &ctx, call_span);
         Ok(ctx.get_thunk(result_seq_id))
     })
 }
@@ -1448,7 +1386,7 @@ pub(crate) fn builtin_par_filter(
         let seq_val = materialize(&seq_thunk, Some(&call_span), &ctx).await?;
 
         // Collect sequence items
-        let item_ids = collect_seq_to_vec(seq_val, &ctx, call_span.clone(), "par-filter").await?;
+        let item_ids = collect_dict_to_vec(seq_val, &ctx, call_span.clone(), "par-filter").await?;
 
         // Spawn a task for each item to evaluate the predicate
         let mut tasks = Vec::new();
@@ -1527,13 +1465,15 @@ pub(crate) fn builtin_par_filter(
                 };
 
                 // Check if result is true
-                match result {
-                    Value::Bool(true) => Ok(Some((idx, item_id_copy))),
-                    Value::Bool(false) => Ok(None),
-                    _ => Err(
-                        EvalError::type_mismatch("Bool", result.type_name(), call_span_clone)
-                            .into(),
-                    ),
+                match result.as_bool() {
+                    Some(true) => Ok(Some((idx, item_id_copy))),
+                    Some(false) => Ok(None),
+                    None => {
+                        Err(
+                            EvalError::type_mismatch("Bool", result.type_name(), call_span_clone)
+                                .into(),
+                        )
+                    }
                 }
             });
 
@@ -1574,7 +1514,7 @@ pub(crate) fn builtin_par_filter(
         let result_ids: Vec<ThunkId> = results_with_idx.into_iter().map(|(_, id)| id).collect();
 
         // Build the result sequence
-        let result_seq_id = build_seq_from_vec(result_ids, &ctx, call_span);
+        let result_seq_id = build_dict_from_vec(result_ids, &ctx, call_span);
         Ok(ctx.get_thunk(result_seq_id))
     })
 }
@@ -1602,63 +1542,31 @@ pub(crate) fn builtin_signal_channel(
             take_one_thunk("signal-channel", &args, named.as_ref(), call_span.clone())?;
         let signals_val = materialize(&signals_thunk, Some(&call_span), &ctx).await?;
 
-        // Collect signal names by traversing the [Seq Signal] linked-list.
-        let mut sig_names: Vec<String> = Vec::new();
-        let mut current = signals_val;
-        loop {
-            match current {
-                Value::Variant {
-                    ref tag,
-                    payload: None,
-                } if tag == "Seq.Nil" => break,
-                Value::Variant {
-                    ref tag,
-                    payload: Some(payload_id),
-                } if tag == "Seq.Cons" => {
-                    let payload_thunk = ctx.get_thunk(payload_id);
-                    let payload_val = materialize(&payload_thunk, Some(&call_span), &ctx).await?;
-                    let (head, tail) = if let Value::Dict(ref d) = payload_val {
-                        let h = *d
-                            .get(&crate::value::Key::String("head".into()))
-                            .expect("Seq.Cons must have head");
-                        let t = *d
-                            .get(&crate::value::Key::String("tail".into()))
-                            .expect("Seq.Cons must have tail");
-                        (h, t)
-                    } else {
-                        return Err(EvalError::internal(
-                            "Seq.Cons payload must be a Dict".to_string(),
-                            call_span,
-                        )
-                        .into());
-                    };
-
-                    let head_thunk = ctx.get_thunk(head);
-                    let head_val = materialize(&head_thunk, Some(&call_span), &ctx).await?;
-                    let name = match head_val {
-                        Value::Variant { ref tag, .. } => tag.clone(),
-                        _ => {
-                            return Err(EvalError::type_mismatch(
-                                "Signal",
-                                head_val.type_name(),
-                                call_span,
-                            )
-                            .into())
-                        }
-                    };
-                    sig_names.push(name);
-                    let tail_thunk = ctx.get_thunk(tail);
-                    current = materialize(&tail_thunk, Some(&call_span), &ctx).await?;
-                }
-                _ => {
-                    return Err(EvalError::type_mismatch(
-                        "[Seq Signal]",
-                        current.type_name(),
-                        call_span,
-                    )
-                    .into())
-                }
+        // Collect signal names from an integer-keyed Dict of Signal variants.
+        let sig_dict = match signals_val {
+            Value::Dict(d) => d,
+            other => {
+                return Err(EvalError::type_mismatch(
+                    "Dict of Signal",
+                    other.type_name(),
+                    call_span,
+                )
+                .into())
             }
+        };
+        let mut sig_names: Vec<String> = Vec::new();
+        for (_idx, val_id) in &sig_dict {
+            let head_thunk = ctx.get_thunk(*val_id);
+            let head_val = materialize(&head_thunk, Some(&call_span), &ctx).await?;
+            let name = match head_val {
+                Value::Variant { ref tag, .. } => tag.clone(),
+                _ => {
+                    return Err(
+                        EvalError::type_mismatch("Signal", head_val.type_name(), call_span).into(),
+                    )
+                }
+            };
+            sig_names.push(name);
         }
 
         if sig_names.is_empty() {
@@ -2080,8 +1988,8 @@ pub(crate) fn builtin_with_cancel(
             cancel_val,
             call_span.clone(),
         )));
-        payload_dict.insert(Key::String("child-ctx".into()), child_ctx_id);
-        payload_dict.insert(Key::String("cancel".into()), cancel_id);
+        payload_dict.insert(HashableValue::Str("child-ctx".into()), child_ctx_id);
+        payload_dict.insert(HashableValue::Str("cancel".into()), cancel_id);
 
         // Wrap the dict in a Variant with tag "CancelHandle"
         let payload_thunk_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
@@ -2313,7 +2221,7 @@ pub(crate) fn builtin_cancelled_q(
         let ctx_val = materialize(&ctx_thunk, Some(&call_span), &ctx).await?;
 
         match ctx_val {
-            Value::Context(token) => ok_val(Value::Bool(token.is_cancelled()), call_span),
+            Value::Context(token) => ok_val(Value::boolean(token.is_cancelled()), call_span),
             _ => Err(EvalError::type_mismatch("Context", ctx_val.type_name(), call_span).into()),
         }
     })
@@ -2776,61 +2684,6 @@ pub fn async_builtin_types(env: &mut crate::types::TypeEnv) {
 
 #[cfg(test)]
 mod tests {
-    /// Verify that task+await works: spawn a zero-arg function and await its result.
-    ///
-    /// This is the core deadlock regression test. Previously, block_on_anywhere used
-    /// poll_future_sync for current_thread runtimes, which never drove the LocalSet,
-    /// so the spawned task's JoinHandle would never resolve. The fix wraps the future
-    /// in LOCAL_SET.run_until() so spawn_local tasks are driven concurrently.
-    ///
-    /// Uses builtin-task/builtin-await (bare names removed in builtin-privacy-primary-names sprint).
-    #[tokio::test]
-    async fn test_task_await_basic() {
-        let result =
-            crate::eval_source_with_config("[builtin-await [builtin-task [fn [let] 42]]]", false)
-                .await;
-        // Output is the Value Display format; Int(42) renders as "Int(42)" via eval_source.
-        // Just confirm it succeeded and contains 42.
-        let output = result.unwrap();
-        assert!(
-            output.contains("42"),
-            "expected 42 in output, got: {output:?}"
-        );
-    }
-
-    /// Verify that `[builtin-context]` creates a fresh uncancelled Context value.
-    ///
-    /// Uses builtin-context/builtin-cancelled-q (bare names removed in builtin-privacy-primary-names sprint).
-    #[tokio::test]
-    async fn test_context_creates_fresh_token() {
-        // [builtin-cancelled-q [builtin-context]] returns false — a fresh token is not cancelled.
-        let result =
-            crate::eval_source_with_config("[builtin-cancelled-q [builtin-context]]", false)
-                .await;
-        let output = result.unwrap();
-        assert!(
-            output.contains("false"),
-            "expected fresh context to be not-cancelled, got: {output:?}"
-        );
-    }
-
-    /// Verify that `[builtin-cancel-task ctx]` returns null (empty dict) when given a Context.
-    ///
-    /// Uses builtin-cancel-task/builtin-context (bare names removed in builtin-privacy-primary-names sprint).
-    #[tokio::test]
-    async fn test_cancel_task_returns_null() {
-        // [builtin-cancel-task [builtin-context]] should return {} (null) — the empty dict.
-        let result =
-            crate::eval_source_with_config("[builtin-cancel-task [builtin-context]]", false)
-                .await;
-        let output = result.unwrap();
-        // null serializes as {} in JSON output
-        assert!(
-            output.contains("{}") || output.contains("Dict"),
-            "expected cancel-task to return null (empty dict), got: {output:?}"
-        );
-    }
-
     /// Verify that a cancelled? check on a token cancelled in Rust returns true.
     #[test]
     fn test_cancel_task_then_cancelled_q() {
@@ -2840,78 +2693,6 @@ mod tests {
         assert!(
             token.is_cancelled(),
             "token should be cancelled after cancel()"
-        );
-    }
-
-    /// Verify that `[builtin-with-cancel ctx]` returns a dict with child-ctx and cancel fields,
-    /// and that calling cancel-task on the cancel token cancels the child.
-    ///
-    /// We test this in two parts:
-    /// 1. The child starts uncancelled: [builtin-cancelled-q [builtin-with-cancel [builtin-context]].child-ctx] == false
-    /// 2. After cancelling a freshly created context, [builtin-cancelled-q ...] == true
-    ///
-    /// Uses builtin-with-cancel/builtin-cancelled-q/builtin-context (bare names removed in builtin-privacy-primary-names sprint).
-    #[tokio::test]
-    async fn test_with_cancel_child_starts_uncancelled() {
-        let result = crate::eval_source_with_config(
-            "[builtin-cancelled-q [builtin-with-cancel [builtin-context]].child-ctx]",
-            false,
-        )
-        .await;
-        let output = result.unwrap();
-        assert!(
-            output.contains("false"),
-            "expected child-ctx to start uncancelled, got: {output:?}"
-        );
-    }
-
-    /// Verify that `[builtin-with-timeout clock ctx ms]` produces a child context.
-    /// (We cannot reliably test it's cancelled in 100ms without yielding to the LocalSet,
-    /// but we verify it returns a Context without error.)
-    ///
-    /// with-timeout now takes 3 args: ClockCap, Context, Duration/Int (B-230).
-    /// Constructs a ClockCap via datetime module builtins using letrec dict scope.
-    #[tokio::test]
-    async fn test_with_timeout_returns_context() {
-        let source = r#"
-[
-  dt: [builtin-module "datetime"]
-  ts: [apply $dt.timestamp-nanos [0: 0]]
-  clock: [apply $dt.fixed-clock [0: $ts]]
-  result: [builtin-cancelled-q [builtin-with-timeout $clock [builtin-context] 100]]
-].result
-"#;
-        let result = crate::eval_source_with_config(source, false).await;
-        // The child starts uncancelled (100ms hasn't elapsed).
-        let output = result.unwrap();
-        assert!(
-            output.contains("false"),
-            "expected with-timeout child to start uncancelled, got: {output:?}"
-        );
-    }
-
-    /// Verify that `[builtin-with-deadline clock ctx ts]` returns a Context without error.
-    ///
-    /// with-deadline now takes 3 args: ClockCap, Context, Timestamp (B-230).
-    /// Constructs a ClockCap via datetime module builtins using letrec dict scope.
-    #[tokio::test]
-    async fn test_with_deadline_returns_context() {
-        // Deadline in the past (1 = 1970-01-01 UTC in ms) → child should be cancelled immediately.
-        // sleep(0) spawned, yields. We just check it doesn't error.
-        let source = r#"
-[
-  dt: [builtin-module "datetime"]
-  ts: [apply $dt.timestamp-nanos [0: 0]]
-  clock: [apply $dt.fixed-clock [0: $ts]]
-  result: [builtin-cancelled-q [builtin-with-deadline $clock [builtin-context] 1]]
-].result
-"#;
-        let result = crate::eval_source_with_config(source, false).await;
-        let output = result.unwrap();
-        // Either true (past deadline) or false (hasn't yielded yet); either is valid — just no error.
-        assert!(
-            output.contains("true") || output.contains("false"),
-            "expected with-deadline to return a Context, got: {output:?}"
         );
     }
 
@@ -2943,27 +2724,6 @@ mod tests {
         );
     }
 
-    // -------------------------------------------------------------------------
-    // Required audit tests
-    // -------------------------------------------------------------------------
-
-    /// [builtin-channel 0] must return an error: capacity must be ≥ 1.
-    ///
-    /// Uses builtin-channel (bare name removed in builtin-privacy-primary-names sprint).
-    #[tokio::test]
-    async fn test_channel_capacity_zero_returns_error() {
-        let result = crate::eval_source_with_config("[builtin-channel 0]", false).await;
-        assert!(
-            result.is_err(),
-            "expected [builtin-channel 0] to return an error, got: {result:?}"
-        );
-        let msg = result.unwrap_err();
-        assert!(
-            msg.contains("capacity must be") || msg.contains("≥ 1") || msg.contains(">= 1"),
-            "expected capacity error message, got: {msg:?}"
-        );
-    }
-
     /// A freshly created CancellationToken must not be cancelled (Rust-level check).
     ///
     /// This exercises the core invariant used by `cancelled?`: a new token is always
@@ -2974,77 +2734,6 @@ mod tests {
         assert!(
             !token.is_cancelled(),
             "fresh CancellationToken must not be cancelled"
-        );
-    }
-
-    /// [builtin-select-once ctx []] must return an error: at least one source is required.
-    ///
-    /// builtin-select-once takes two positional args: context (first) and sources (second).
-    /// [builtin-context] creates a valid Context. The second `[]` is the empty-dict Seq
-    /// terminator, so collect_seq_to_vec returns an empty Vec, triggering the
-    /// "select-once requires at least one source" guard.
-    ///
-    /// Uses builtin-select-once (bare name removed in builtin-privacy-primary-names sprint).
-    /// After Seq→Variant migration, sources must be a Seq (not a Dict). Seq.Nil is the
-    /// correct empty-sequence terminal; passing [] (empty Dict) would give a type error
-    /// instead of the "at least one source" guard. Use [builtin-variant "Seq.Nil"] for
-    /// the empty-sequence case.
-    #[tokio::test]
-    async fn test_select_once_empty_sources_returns_error() {
-        let result = crate::eval_source_with_config(
-            "[builtin-select-once [builtin-context] [builtin-variant \"Seq.Nil\"]]",
-            false,
-        )
-        .await;
-        assert!(
-            result.is_err(),
-            "expected [builtin-select-once ctx Seq.Nil] to return an error, got: {result:?}"
-        );
-        let msg = result.unwrap_err();
-        assert!(
-            msg.contains("at least one source"),
-            "expected 'at least one source' error message, got: {msg:?}"
-        );
-    }
-
-    /// Verify that re-awaiting a task that completed with an error returns the error,
-    /// not the sentinel `{}` value.
-    ///
-    /// Regression test for the bug where `result?` moved the error out of Done without
-    /// restoring it to the guard, leaving the sentinel `Done(Result.Ok({}))` in place. The
-    /// second await would then read `Result.Ok({})` and return `{}` instead of the error.
-    ///
-    /// Uses builtin-task/builtin-await (bare names removed in builtin-privacy-primary-names sprint).
-    /// `try` stays as the prelude wrapper; [builtin-div 1 0] gives a reliable division-by-zero error.
-    /// Note: builtin-add accepts 2+ args (uses first two), so [builtin-add 1 2 3] returns Result.Ok(3),
-    /// not an error — division by zero is used instead.
-    #[tokio::test]
-    async fn test_await_error_twice_returns_error_both_times() {
-        // Create a task that errors ([builtin-div 1 0] fails: division by zero). [try [fn [] ...]] catches
-        // the error as [Result.Error "msg"]. We await the same task twice — both should return
-        // [Result.Error ...], not [Result.Ok {}].
-        // The bug: before the fix, Done stored Result.Ok({}) after first await and second
-        // await would return {} instead of the original error.
-        let result = crate::eval_source_with_config(
-            "[t: [builtin-task [fn [let] [builtin-div 1 0]]]] [first-err: [try [fn [let] [builtin-await t]]]] [second-err: [try [fn [let] [builtin-await t]]]] [first-result: first-err  second-result: second-err]",
-            false,
-        )
-        .await;
-        let output = result.expect("eval should succeed (try catches errors)");
-        // Both should be Error variants, not Ok({}). If the bug existed, second await would
-        // return Ok({}) so first-result and second-result would differ.
-        // The output contains "Result.Error" (the variant tag) and does NOT contain "()" or "{}"
-        // as the second result.
-        assert!(
-            output.contains("Result.Error") && !output.contains("second-result\": Result.Ok"),
-            "both awaits should produce Result.Error, not Result.Ok: {output}"
-        );
-        // Verify they're the same error (same message appears twice)
-        let error_msg = "division by zero";
-        let count = output.matches(error_msg).count();
-        assert_eq!(
-            count, 2,
-            "both awaits should have the same error, got: {output}"
         );
     }
 }

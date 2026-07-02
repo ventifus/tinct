@@ -1,6 +1,6 @@
 //! Dict type inference with multi-pass binding and generalization.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -8,7 +8,7 @@ use super::{infer_surface_expr, resolve_annotation, resolve_type_expr, TypeMap};
 use crate::ast::{Span, Spanned, SurfaceDeclaration, SurfaceEntry, SurfaceExpression, SurfaceNode};
 use crate::type_def::{TyConDef, Variance};
 use crate::types::{
-    generalize_with_doc, unify, ClassEnv, Constraint, InferState, InstanceEnv, Row, Substitution,
+    generalize_with_doc, unify, Constraint, InferState, Row, Substitution,
     Type, TypeEnv, TypeError, TypeScheme,
 };
 
@@ -76,9 +76,8 @@ fn inject_single_constructor(
 ) {
     let constructor_ty = if fields.fields.is_empty() {
         if !type_vars.is_empty() {
-            // Parameterized unit constructor (e.g. Seq.Nil where Seq has type param [a]):
+            // Parameterized unit constructor (e.g. the End/None ctor of a parameterized type):
             // the constructor has type ∀type_vars. App(TyCon(TypeName), type_var_1, ...).
-            // An empty Seq is still a Seq[a] for any element type a.
             // Extract the ADT name from the qualified tag "TypeName.CtorName".
             let adt_name = tag.split('.').next().unwrap_or(tag).to_string();
             let mut result: Type = Type::TyCon(adt_name);
@@ -92,7 +91,7 @@ fn inject_single_constructor(
             Type::NominalVariant {
                 tag: tag.to_string(),
                 fields: Row {
-                    fields: std::collections::BTreeMap::new(),
+                    fields: indexmap::IndexMap::new(),
                     tail: crate::type_def::RowTail::Empty,
                 },
             }
@@ -304,8 +303,7 @@ fn collect_dependencies(
             SurfaceExpression::Int(_)
             | SurfaceExpression::U64(_)
             | SurfaceExpression::Float(_)
-            | SurfaceExpression::Str(_)
-            | SurfaceExpression::Bool(_) => {}
+            | SurfaceExpression::Str(_) => {}
             SurfaceExpression::Dict(entries) => {
                 for entry in entries {
                     if let Some(ref key) = entry.node.key {
@@ -340,9 +338,12 @@ fn collect_dependencies(
                     }
                 }
             }
-            SurfaceExpression::DotAccess { expr, .. } => {
-                worklist.push(expr);
+            SurfaceExpression::DotAccess {
+                expr: Some(inner), ..
+            } => {
+                worklist.push(inner);
             }
+            SurfaceExpression::DotAccess { expr: None, .. } => {}
             SurfaceExpression::Pipe { lhs, rhs } => {
                 worklist.push(lhs);
                 worklist.push(rhs);
@@ -359,7 +360,7 @@ fn collect_dependencies(
             SurfaceExpression::TypeAssert { expr, .. } => {
                 worklist.push(expr);
             }
-            SurfaceExpression::Rest(_) => {}
+            SurfaceExpression::Rest(..) => {}
             SurfaceExpression::Quote(e)
             | SurfaceExpression::Unquote(e)
             | SurfaceExpression::UnquoteSplice(e) => {
@@ -421,18 +422,6 @@ pub(crate) async fn infer_dict(
     // frame pattern from T-926: each dict scope owns its levels entries, and the enclosing dict's
     // entries are invisible during nested inference, then restored when nesting exits.
     let saved_levels = std::mem::take(&mut state.levels);
-
-    // ClassEnv parent-chain scoping (T-954): create a child ClassEnv frame for this dict scope.
-    // Classes declared in this dict's body (via [class ...]) are local to this scope.
-    // Lookups walk the child → parent chain so outer classes remain visible.
-    // We use mem::take to extract the current class_env (replacing state.class_env with a
-    // temporary empty env), then wrap it in Arc and create a child frame.
-    let outer_class_env = Arc::new(std::mem::take(&mut state.class_env));
-    state.class_env = ClassEnv::child(Arc::clone(&outer_class_env));
-
-    // InstanceEnv parent-chain scoping (T-955): same pattern as ClassEnv.
-    let outer_instance_env = Arc::new(std::mem::take(&mut state.instance_env));
-    state.instance_env = InstanceEnv::child(Arc::clone(&outer_instance_env));
 
     let mut dict_env = TypeEnv::with_parent(env);
     let mut key_entries: Vec<(Option<String>, bool)> = Vec::new();
@@ -533,6 +522,7 @@ pub(crate) async fn infer_dict(
                                 builtin_type: Some(discriminant),
                                 annotation,
                                 field_annotations: indexmap::IndexMap::new(),
+                                constructor_constants: indexmap::IndexMap::new(),
                             });
                             dict_env.insert_tycon_def(alias_name.clone(), Arc::clone(&tycon_def));
                             state.tycon_env.insert(alias_name.clone(), tycon_def);
@@ -569,7 +559,8 @@ pub(crate) async fn infer_dict(
                         &mut Some(&mut alias_ann_map),
                         &mut None,
                         Some((&param_scope, true)), // strict: TypeAlias rejects undeclared names
-                    ).await;
+                    )
+                    .await;
 
                     if let Ok(alias_ty) = alias_result {
                         // B-362: Compute remapped_params before inject_adt_constructor_schemes
@@ -604,6 +595,8 @@ pub(crate) async fn infer_dict(
                                     .and_then(super::eval_type_annotation_property_dict);
                                 let field_annotations =
                                     super::extract_field_annotations_from_body(body);
+                                let constructor_constants =
+                                    super::extract_constructor_constants_from_body(body, name);
                                 let tycon_def = Arc::new(TyConDef {
                                     params: remapped_params.clone(),
                                     body: alias_ty.clone(),
@@ -613,6 +606,7 @@ pub(crate) async fn infer_dict(
                                     builtin_type: None,
                                     annotation,
                                     field_annotations,
+                                    constructor_constants,
                                 });
                                 dict_env.insert_tycon_def(name.clone(), Arc::clone(&tycon_def));
                                 state.tycon_env.insert(name.clone(), tycon_def);
@@ -653,7 +647,7 @@ pub(crate) async fn infer_dict(
     // Start with empty local substitution and incrementally merge state.subst entries per SCC.
     // Eliminates O(n) upfront clone of state.subst.type_map (cycle-31 major item).
     let mut subst = Substitution::new();
-    let mut field_types: BTreeMap<String, Type> = BTreeMap::new();
+    let mut field_types: indexmap::IndexMap<String, Type> = indexmap::IndexMap::new();
     let mut errors = Vec::new();
 
     // state.subst entries are fully re-merged into local subst after each SCC iteration.
@@ -689,7 +683,9 @@ pub(crate) async fn infer_dict(
                 state,
                 &mut cls_inst_constraints,
                 type_map,
-            ).await {
+            )
+            .await
+            {
                 Ok(ty) => {
                     let (ref key_name, _) = key_entries[idx];
                     if let Some(name) = key_name {
@@ -799,7 +795,7 @@ pub(crate) async fn infer_dict(
             // Skip type aliases (already processed in Pass 2), Rest markers,
             // and class/instance declarations (already processed in Pass 0c)
             let skip = is_alias
-                || matches!(&entry.node.value.expr, SurfaceExpression::Rest(_))
+                || matches!(&entry.node.value.expr, SurfaceExpression::Rest(..))
                 || matches!(
                     &entry.node.value.expr,
                     SurfaceExpression::Decl(d)
@@ -862,7 +858,8 @@ pub(crate) async fn infer_dict(
                         &mut ann_mapping_opt,
                         &mut row_ann_mapping_opt,
                         None,
-                    ).await
+                    )
+                    .await
                     .ok()
                 } else {
                     None
@@ -877,7 +874,8 @@ pub(crate) async fn infer_dict(
                             state,
                             type_map,
                             entry.node.value.span.clone(),
-                        )).await;
+                        ))
+                        .await;
                         errors.append(&mut nested_errs);
                         (Ok(ty), Some(schemes))
                     } else {
@@ -888,7 +886,8 @@ pub(crate) async fn infer_dict(
                                 state,
                                 &mut this_entry_constraints,
                                 type_map,
-                            ).await,
+                            )
+                            .await,
                             None,
                         )
                     };
@@ -925,7 +924,9 @@ pub(crate) async fn infer_dict(
                                 state,
                                 &mut this_entry_constraints,
                                 entry.node.value.span.clone(),
-                            )).await {
+                            ))
+                            .await
+                            {
                                 errors.push(e);
                                 field_types.insert(name.clone(), Type::Error);
                                 state
@@ -999,7 +1000,9 @@ pub(crate) async fn infer_dict(
                             state,
                             &mut merge_constraints,
                             span.clone(),
-                        )).await {
+                        ))
+                        .await
+                        {
                             errors.push(e);
                             subst.type_map.borrow_mut().insert(k, existing);
                             continue;
@@ -1024,7 +1027,8 @@ pub(crate) async fn infer_dict(
                 &mut subst,
                 &mut deferred_constraints,
                 span.clone(),
-            ).await;
+            )
+            .await;
         }
 
         // Apply substitution to this SCC's field types
@@ -1229,79 +1233,6 @@ pub(crate) async fn infer_dict(
     // entries, exactly mirroring the child Substitution frame restore above.
     state.levels = saved_levels;
 
-    // Restore enclosing ClassEnv and InstanceEnv frames (T-954, T-955).
-    //
-    // T-954/T-955 BUG FIX: classes and instances declared inside this dict's body (via
-    // [class ...] / [instance ...]) were registered into the CHILD frame (state.class_env /
-    // state.instance_env during inference). Simply restoring the outer frame discards them,
-    // preventing prelude-declared classes (MonadResult, FunctorResult, etc.) from appearing
-    // in PRELUDE_INSTANCE_CACHE and thus from being visible in user code.
-    //
-    // Fix: collect locally-declared classes/instances from the child frame and merge them into
-    // the outer frame BEFORE restoring. iter_classes() / iter_instances() iterate only the
-    // current frame (no parent traversal), so this propagates exactly the dict-local declarations
-    // without double-inserting the parent-chain entries already in the outer frame.
-    //
-    // This makes class/instance declarations propagate upward from any dict scope, which matches
-    // the observed semantics: prelude-level class/instance declarations must be visible globally.
-    // If future work requires true local-scoped classes (invisible outside the declaring dict),
-    // a separate mechanism (export list or explicit opt-out) would be needed.
-    //
-    // T-1110: Per-declaration propagation gate via `prelude_origin`.
-    //
-    // The unconditional merge-back (B-330/B-346 root cause) propagated ALL child-frame
-    // class/instance declarations into the outer frame. This was necessary for prelude loading
-    // (MonadResult, FunctorResult, etc. must be globally visible) but incorrect for user code
-    // (a class declared inside a nested dict should NOT escape into the outer scope).
-    //
-    // B-346 FIX refined by T-1110: filter by `decl.prelude_origin` instead of the coarse
-    // `state.in_prelude_load` gate. Each ClassDecl/InstanceDecl carries `prelude_origin: bool`
-    // set at construction time (true when `state.in_prelude_load` was true, or for bootstrap
-    // instances pre-seeded in `InferState::new()`). Only declarations with `prelude_origin = true`
-    // propagate upward — user code declarations (`prelude_origin = false`) stay scoped to the
-    // declaring dict, regardless of the current loading phase.
-    //
-    // This is semantically equivalent to the old `state.in_prelude_load` gate (since
-    // `prelude_origin` is set from `state.in_prelude_load` at construction), but enables future
-    // per-declaration refinement independent of the loading phase.
-    {
-        // Recover the outer frame (try_unwrap succeeds if no other Arc clone holds a reference
-        // to the outer env; falls back to clone if the child still holds a parent reference).
-        let mut outer_ce = Arc::try_unwrap(outer_class_env).unwrap_or_else(|arc| (*arc).clone());
-        let mut outer_ie = Arc::try_unwrap(outer_instance_env).unwrap_or_else(|arc| (*arc).clone());
-
-        // Propagate only prelude-origin declarations to the outer frame.
-        // Prelude-origin declarations must reach PRELUDE_INSTANCE_CACHE via the seeding path
-        // in imports.rs to become globally visible. User-code declarations stay scoped.
-        let child_classes: Vec<_> = state.class_env.iter_classes().cloned().collect();
-        let child_instances: Vec<_> = state.instance_env.iter_instances().cloned().collect();
-
-        for class_decl in child_classes {
-            if class_decl.prelude_origin {
-                // S-886: Always overwrite when the child class has method_signatures.
-                // InferState::new() pre-registers Addable/Equatable/Comparable with
-                // empty method_signatures. The prelude's class declarations populate
-                // method_signatures ("+": Fn for Addable, "=": Fn for Equatable, etc.).
-                // insert_if_absent would skip the update, leaving the outer frame with
-                // the empty-signature version. The imports.rs S-886 injection then has
-                // no method_signatures to inject as TypeSchemes for +, =, <.
-                if !class_decl.method_signatures.is_empty() {
-                    outer_ce.insert(class_decl);
-                } else {
-                    outer_ce.insert_if_absent(class_decl);
-                }
-            }
-        }
-        for inst_decl in child_instances {
-            if inst_decl.prelude_origin {
-                let _ = outer_ie.insert(inst_decl);
-            }
-        }
-
-        state.class_env = outer_ce;
-        state.instance_env = outer_ie;
-    }
-
     // Restore enclosing level
     state.level = enclosing_level;
 
@@ -1336,7 +1267,9 @@ pub(crate) async fn entry_key_name(
             SurfaceExpression::U64(n) => Some(n.to_string()),
             // Annotated key: name@[doc: "..."] — extract name directly
             SurfaceExpression::Annotated { name, .. } => Some(name.clone()),
-            _ => match infer_surface_expr(key_node, env, state, &mut _key_constraints, type_map).await {
+            _ => match infer_surface_expr(key_node, env, state, &mut _key_constraints, type_map)
+                .await
+            {
                 Ok(Type::StringLiteral(s)) => Some(s),
                 Ok(Type::IntLiteral(n)) => Some(n.to_string()),
                 _ => None,
@@ -1383,14 +1316,12 @@ pub(crate) async fn entry_key_name(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rust_span;
     use crate::test_util::sp;
 
     /// Helper: build a zero-origin [`SurfaceNode`] from a [`SurfaceExpression`].
     fn sn(expr: SurfaceExpression) -> Arc<SurfaceNode> {
-        Arc::new(SurfaceNode {
-            expr,
-            span: Span::origin(),
-        })
+        Arc::new(SurfaceNode::new(expr, rust_span!()))
     }
 
     /// Helper: build a `Spanned<SurfaceEntry>` whose value is a `VarRef` to `ref_name`.
@@ -1401,6 +1332,7 @@ mod tests {
             value: sn(SurfaceExpression::VarRef {
                 name: ref_name.to_string(),
                 escaped: false,
+                resolution: crate::ast::Resolution::new(),
             }),
         })
     }
@@ -1456,6 +1388,7 @@ mod tests {
             value: sn(SurfaceExpression::VarRef {
                 name: "b".to_string(),
                 escaped: false,
+                resolution: crate::ast::Resolution::new(),
             }),
         });
         let entries = vec![a_entry, b_entry];
@@ -1485,6 +1418,7 @@ mod tests {
             value: sn(SurfaceExpression::VarRef {
                 name: "b".to_string(),
                 escaped: false,
+                resolution: crate::ast::Resolution::new(),
             }),
         });
         let b_entry = sp(SurfaceEntry {
@@ -1492,6 +1426,7 @@ mod tests {
             value: sn(SurfaceExpression::VarRef {
                 name: "a".to_string(),
                 escaped: false,
+                resolution: crate::ast::Resolution::new(),
             }),
         });
         let entries = vec![a_entry, b_entry];
@@ -1517,6 +1452,7 @@ mod tests {
                     value: sn(SurfaceExpression::VarRef {
                         name: "b".to_string(),
                         escaped: false,
+                        resolution: crate::ast::Resolution::new(),
                     }),
                 }),
                 sp(SurfaceEntry {
@@ -1524,6 +1460,7 @@ mod tests {
                     value: sn(SurfaceExpression::VarRef {
                         name: "c".to_string(),
                         escaped: false,
+                        resolution: crate::ast::Resolution::new(),
                     }),
                 }),
             ])),

@@ -5,7 +5,7 @@
 # Absence of === warn asserts annotation_to_variance("Covariant") resolves cleanly.
 [
   Tree: [type [let a@Covariant] [node: a]]
-  result: true
+  result: True
 ]
 === out
 Dict({"Tree": Dict({}), "result": Bool(true)})

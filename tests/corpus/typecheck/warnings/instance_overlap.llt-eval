@@ -10,7 +10,7 @@
     [pattern [Int]]:
       eq: [fn [let x y] [= x y]]]
 
-  result: true
+  result: True
 ]
 
 ---

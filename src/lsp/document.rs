@@ -6,7 +6,7 @@ use std::sync::{Arc, RwLock};
 use lsp_types::Uri;
 
 use crate::ast::SurfaceProgram;
-use crate::builtins::create_stdlib_env_with_arena;
+use crate::builtins::build_core_env;
 use crate::error::{EvalError, TypeDiagnostic};
 use crate::parser::{parse, ParseError};
 use crate::typecheck::{DocMap, SchemeMap, TypeMap};
@@ -85,7 +85,7 @@ impl DocumentState {
         let mut scheme_map = SchemeMap::new();
 
         // PIPELINE INVARIANT: expand → desugar → resolve → typecheck
-        // This order is enforced across all entry points (main.rs, lib.rs, repl.rs).
+        // This order is enforced across all entry points (main.rs, lib.rs).
         // Macros expand first (on SurfaceProgram), then $_ placeholders are desugared,
         // then variable resolution runs, then the type checker sees the fully elaborated AST.
         //
@@ -102,6 +102,7 @@ impl DocumentState {
                 // production entry points).
                 match crate::async_rt::block_on_anywhere(crate::expand::expand_surface_program(
                     &mut program,
+                    Arc::clone(&eval_ctx.config.stdlib_env),
                     eval_ctx.config.no_fs,
                     &eval_ctx.config.base_dir,
                 )) {
@@ -148,10 +149,15 @@ impl DocumentState {
                 // Pass the eval context's cap_std Dir so that %cwd file reads use RESOLVE_BENEATH
                 // semantics (kernel-level path confinement) instead of plain std::fs calls.
                 let type_cap_dir = &eval_ctx.config.base_dir;
-                let (seeded_env, include_bindings) =
-                    crate::async_rt::block_on_anywhere(crate::imports::build_type_env_with_cap(&program, type_base_dir, type_cap_dir));
+                let (seeded_env_rc, include_bindings) = crate::async_rt::block_on_anywhere(
+                    crate::imports::build_type_env_with_cap(&program, type_base_dir, type_cap_dir),
+                );
+                // typecheck_surface_program takes Arc<TypeEnv>; build_type_env_with_cap returns Rc.
+                let seeded_env = std::sync::Arc::new((*seeded_env_rc).clone());
                 let (errs, mut map, docs, smap, tc_diagnostics) =
-                    crate::async_rt::block_on_anywhere(crate::typecheck::typecheck_surface_program(&program, seeded_env));
+                    crate::async_rt::block_on_anywhere(
+                        crate::typecheck::typecheck_surface_program(&program, seeded_env),
+                    );
                 // Post-pass: inject precise Record types for [include %cap "path"] expressions.
                 crate::imports::apply_include_type_post_pass(&program, &include_bindings, &mut map);
                 type_errors = errs;
@@ -177,10 +183,6 @@ impl DocumentState {
                 //
                 // If pure-eval diagnostics are added in future, gate them on the document
                 // declaring no caps and using no % variables.
-                //
-                // Historical note: Prior to security-sprint, this code constructed DirPerms::full()
-                // DirCaps for %cwd and %libdir, then immediately discarded them. That construction
-                // has been removed — the LSP does not evaluate code, so eval env setup is unnecessary.
             }
         }
 
@@ -455,18 +457,9 @@ pub struct DocumentStore {
 }
 
 impl DocumentStore {
-    pub fn new() -> Result<Self, String> {
-        // Load stdlib once. If it fails, fall back to an empty environment + empty arena
-        // so the LSP can still provide parsing/type-checking diagnostics.
-        let (stdlib_env, stdlib_arena) = crate::async_rt::block_on_anywhere(create_stdlib_env_with_arena()).unwrap_or_else(|_| {
-            (
-                Arc::new(RwLock::new(Environment::new())),
-                Arc::new(std::sync::Mutex::new(crate::arena::ThunkArena::new())),
-            )
-        });
-        // Build type-stage environment (for builtin_eval_types). Falls back to stdlib_env if unavailable.
-        let type_stage_env =
-            crate::imports::build_type_stage_env().unwrap_or_else(|| Arc::clone(&stdlib_env));
+    pub async fn new() -> Result<Self, String> {
+        // Build a fresh core env with only the core Rust builtins.
+        let stdlib_env = build_core_env();
         // Create base evaluation context.
         // no_fs=true prevents executing $include with user-controlled paths when
         // opening malicious .llt files in an editor (CWE-22 path traversal mitigation).
@@ -483,14 +476,18 @@ impl DocumentStore {
                 return Err(format!("LSP: cannot open CWD as base_dir: {}", e));
             }
         };
-        let base_eval_ctx = crate::eval::EvalContext::new_sharing_arena(
+        let base_eval_ctx = crate::eval::EvalContext::new_empty(
             base_dir,
             Arc::clone(&stdlib_env),
-            type_stage_env,
             true, // no_fs=true prevents $include path traversal (CWE-22)
-            stdlib_arena,
-            std::collections::HashMap::new(), // LSP doesn't track macro injects yet
         );
+        // Initialize TypeContext so loader.llt builtins don't error on type context access.
+        base_eval_ctx.init_type_context(crate::eval::TypeContextData {
+            type_stage_env: Arc::new(std::sync::RwLock::new(Environment::new())),
+            inference_env: crate::imports::get_builtin_core_type_env()
+                .await
+                .expect("builtin_core type env unavailable"),
+        });
 
         // Parse the embedded prelude source once for go-to-definition support.
         // If parsing fails, store None — prelude go-to-definition will be unavailable
@@ -654,11 +651,8 @@ impl DocumentStore {
     }
 }
 
-impl Default for DocumentStore {
-    fn default() -> Self {
-        Self::new().expect("DocumentStore::default: failed to open CWD as base_dir")
-    }
-}
+// DocumentStore::new() is async — Default cannot be implemented.
+// Use DocumentStore::new().await at call sites.
 
 /// Load and analyze a document from a file URI without adding it to the store.
 ///
@@ -668,7 +662,7 @@ impl Default for DocumentStore {
 ///
 /// Returns `None` if the URI cannot be converted to a file path or the file
 /// cannot be read.
-pub fn load_doc_from_uri(uri: &Uri) -> Option<DocumentState> {
+pub async fn load_doc_from_uri(uri: &Uri) -> Option<DocumentState> {
     use crate::lsp::MAX_DOCUMENT_SIZE;
     use std::io::Read as _;
 
@@ -710,20 +704,12 @@ pub fn load_doc_from_uri(uri: &Uri) -> Option<DocumentState> {
 
     // Create minimal environment for LSP analysis.
     // base_dir is the document's parent directory (Fix 6: replaces open_ambient_dir(".")).
-    let (stdlib_env, stdlib_arena) = crate::async_rt::block_on_anywhere(create_stdlib_env_with_arena()).ok()?;
-    let type_stage_env =
-        crate::imports::build_type_stage_env().unwrap_or_else(|| Arc::clone(&stdlib_env));
+    let stdlib_env = build_core_env();
     // Clone the parent_dir handle to give ownership to the EvalContext
     // (open_dir(".") duplicates the fd without acquiring new ambient authority).
     let eval_base_dir = parent_dir.open_dir(".").ok()?;
-    let eval_ctx = crate::eval::EvalContext::new_sharing_arena(
-        eval_base_dir,
-        Arc::clone(&stdlib_env),
-        type_stage_env,
-        false,
-        stdlib_arena,
-        std::collections::HashMap::new(),
-    );
+    let eval_ctx =
+        crate::eval::EvalContext::new_empty(eval_base_dir, Arc::clone(&stdlib_env), false);
 
     // Create document state with the file's directory as base_dir for include resolution
     let is_markdown = uri.as_str().ends_with(".md");
@@ -739,43 +725,27 @@ pub fn load_doc_from_uri(uri: &Uri) -> Option<DocumentState> {
 mod tests {
     use super::*;
 
-    /// Helper: create a stdlib env and arena for tests.
-    fn test_env_and_arena() -> (
-        Arc<RwLock<Environment>>,
-        Arc<std::sync::Mutex<crate::arena::ThunkArena>>,
-    ) {
-        crate::async_rt::block_on_anywhere(create_stdlib_env_with_arena()).unwrap()
+    /// Helper: create a core env for tests.
+    async fn test_env() -> Arc<RwLock<Environment>> {
+        build_core_env()
     }
 
-    fn test_env() -> Arc<RwLock<Environment>> {
-        test_env_and_arena().0
-    }
-
-    fn test_ctx() -> Arc<crate::eval::EvalContext> {
-        let (env, arena) = test_env_and_arena();
-        let type_stage_env =
-            crate::imports::build_type_stage_env().unwrap_or_else(|| Arc::clone(&env));
+    async fn test_ctx() -> Arc<crate::eval::EvalContext> {
+        let env = test_env().await;
         // AMBIENT-OK: LSP test helper — no prior Dir available, test context only.
         #[allow(clippy::disallowed_methods)]
         let base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
             .expect("failed to open test base_dir");
-        crate::eval::EvalContext::new_sharing_arena(
-            base_dir,
-            Arc::clone(&env),
-            type_stage_env,
-            false,
-            arena,
-            std::collections::HashMap::new(),
-        )
+        crate::eval::EvalContext::new_empty(base_dir, Arc::clone(&env), false)
     }
 
-    #[test]
-    fn test_document_state_valid_source() {
-        let env = test_env();
+    #[tokio::test]
+    async fn test_document_state_valid_source() {
+        let env = test_env().await;
         let state = DocumentState::new(
             "[x: 42]".to_string(),
             &env,
-            &test_ctx(),
+            &test_ctx().await,
             None, // No base_dir for simple test
         );
         assert!(state.fatal_parse_error.is_none());
@@ -783,38 +753,41 @@ mod tests {
         assert!(state.eval_errors.is_empty());
     }
 
-    #[test]
-    fn test_document_state_parse_error() {
-        let env = test_env();
-        let state = DocumentState::new("[unterminated".to_string(), &env, &test_ctx(), None);
+    #[tokio::test]
+    async fn test_document_state_parse_error() {
+        let env = test_env().await;
+        let state = DocumentState::new("[unterminated".to_string(), &env, &test_ctx().await, None);
         assert!(state.fatal_parse_error.is_some());
         assert!(state.type_errors.is_empty());
         assert!(state.eval_errors.is_empty());
     }
 
-    #[test]
-    fn test_document_state_type_error() {
-        let env = test_env();
-        let state = DocumentState::new("[@Number hello]".to_string(), &env, &test_ctx(), None);
+    #[tokio::test]
+    async fn test_document_state_type_error() {
+        let env = test_env().await;
+        let state =
+            DocumentState::new("[@Number hello]".to_string(), &env, &test_ctx().await, None);
         assert!(state.fatal_parse_error.is_none());
         assert!(!state.type_errors.is_empty());
         // LSP skips eval — eval_errors always empty; type_errors covers the diagnostic.
         assert!(state.eval_errors.is_empty());
     }
 
-    #[test]
-    fn test_document_state_eval_error() {
-        let env = test_env();
-        let state = DocumentState::new("$undefined".to_string(), &env, &test_ctx(), None);
+    #[tokio::test]
+    async fn test_document_state_eval_error() {
+        let env = test_env().await;
+        let state = DocumentState::new("$undefined".to_string(), &env, &test_ctx().await, None);
         assert!(state.fatal_parse_error.is_none());
         assert!(!state.type_errors.is_empty()); // undefined variable caught by type checker
                                                 // LSP skips eval — eval_errors always empty.
         assert!(state.eval_errors.is_empty());
     }
 
-    #[test]
-    fn test_document_store_insert_get() {
-        let mut store = DocumentStore::new().expect("DocumentStore::new in test");
+    #[tokio::test]
+    async fn test_document_store_insert_get() {
+        let mut store = DocumentStore::new()
+            .await
+            .expect("DocumentStore::new in test");
         let url = "file:///test.llt".parse::<Uri>().unwrap();
 
         store.update_document(url.clone(), "[x: 1]".to_string());
@@ -823,9 +796,11 @@ mod tests {
         assert!(doc.fatal_parse_error.is_none());
     }
 
-    #[test]
-    fn test_document_store_update_replaces() {
-        let mut store = DocumentStore::new().expect("DocumentStore::new in test");
+    #[tokio::test]
+    async fn test_document_store_update_replaces() {
+        let mut store = DocumentStore::new()
+            .await
+            .expect("DocumentStore::new in test");
         let url = "file:///test.llt".parse::<Uri>().unwrap();
 
         store.update_document(url.clone(), "[x: 1]".to_string());
@@ -835,9 +810,11 @@ mod tests {
         assert_eq!(doc.text, "[x: 2]");
     }
 
-    #[test]
-    fn test_document_store_remove() {
-        let mut store = DocumentStore::new().expect("DocumentStore::new in test");
+    #[tokio::test]
+    async fn test_document_store_remove() {
+        let mut store = DocumentStore::new()
+            .await
+            .expect("DocumentStore::new in test");
         let url = "file:///test.llt".parse::<Uri>().unwrap();
 
         store.update_document(url.clone(), "[x: 1]".to_string());
@@ -847,13 +824,13 @@ mod tests {
         assert!(store.get(&url).is_none());
     }
 
-    #[test]
-    fn test_document_state_underscore_desugared() {
+    #[tokio::test]
+    async fn test_document_state_underscore_desugared() {
         // Regression: before the desugar pass was wired up, $_ was seen by the type checker as
         // VarRef("_"), producing a spurious "undefined variable _" type error. After the fix, the
         // desugar pass rewrites $_ to an explicit lambda, so no type error should be emitted.
-        let env = test_env();
-        let ctx = test_ctx();
+        let env = test_env().await;
+        let ctx = test_ctx().await;
         let state = DocumentState::new("[f: $_]".to_string(), &env, &ctx, None);
         assert!(state.fatal_parse_error.is_none(), "parse should succeed");
         assert!(
@@ -863,9 +840,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_document_store_multiple_docs() {
-        let mut store = DocumentStore::new().expect("DocumentStore::new in test");
+    #[tokio::test]
+    async fn test_document_store_multiple_docs() {
+        let mut store = DocumentStore::new()
+            .await
+            .expect("DocumentStore::new in test");
         let url1 = "file:///a.llt".parse::<Uri>().unwrap();
         let url2 = "file:///b.llt".parse::<Uri>().unwrap();
 
@@ -876,13 +855,13 @@ mod tests {
         assert_eq!(store.get(&url2).unwrap().text, "[b: 2]");
     }
 
-    #[test]
-    fn test_lsp_capless_include_rejected() {
+    #[tokio::test]
+    async fn test_lsp_capless_include_rejected() {
         // Capless [include "foo"] is no longer supported — include requires a DirCap.
         // LSP skips eval entirely, so eval_errors is always empty.
         // The type checker catches arity/type issues; this test verifies no eval side-effects.
-        let env = test_env();
-        let ctx = test_ctx();
+        let env = test_env().await;
+        let ctx = test_ctx().await;
         let state = DocumentState::new(
             "[call $include \"some_file.llt\"]".to_string(),
             &env,
@@ -897,26 +876,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_prelude_env_non_empty() {
-        // Verify that the shared imports module provides prelude types
-        let env = crate::imports::build_prelude_env();
-        // The prelude should contain at least these well-known functions
-        assert!(env.get("map").is_some(), "prelude env should contain 'map'");
-        assert!(
-            env.get("filter").is_some(),
-            "prelude env should contain 'filter'"
-        );
-        assert!(
-            env.get("identity").is_some(),
-            "prelude env should contain 'identity'"
-        );
-    }
-
-    #[test]
-    fn test_no_false_undefined_for_prelude() {
-        let env = test_env();
-        let ctx = test_ctx();
+    #[tokio::test]
+    async fn test_no_false_undefined_for_prelude() {
+        let env = test_env().await;
+        let ctx = test_ctx().await;
         let state = DocumentState::new(
             "[call $map [fn [let x] x] [1 2 3]]".to_string(),
             &env,
@@ -931,8 +894,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_resolve_include_uri_relative_path() {
+    #[tokio::test]
+    async fn test_resolve_include_uri_relative_path() {
         let base_url = "file:///home/user/project/main.llt".parse::<Uri>().unwrap();
         let include_path = "lib/utils.llt";
         // resolve_include_uri calls canonicalize, which requires the file to exist
@@ -946,8 +909,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_resolve_include_uri_absolute_path() {
+    #[tokio::test]
+    async fn test_resolve_include_uri_absolute_path() {
         let base_url = "file:///home/user/project/main.llt".parse::<Uri>().unwrap();
         let include_path = "/etc/hosts"; // absolute path outside the workspace
         let result = resolve_include_uri(&base_url, include_path);
@@ -960,8 +923,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_resolve_include_uri_parent_directory() {
+    #[tokio::test]
+    async fn test_resolve_include_uri_parent_directory() {
         let base_url = "file:///home/user/project/src/main.llt"
             .parse::<Uri>()
             .unwrap();
@@ -975,18 +938,18 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_resolve_include_uri_non_file_scheme() {
+    #[tokio::test]
+    async fn test_resolve_include_uri_non_file_scheme() {
         let base_url = "http://example.com/main.llt".parse::<Uri>().unwrap();
         let include_path = "lib/utils.llt";
         let result = resolve_include_uri(&base_url, include_path);
         assert!(result.is_none(), "should return None for non-file:// URLs");
     }
 
-    #[test]
-    fn test_document_state_markdown_extraction() {
-        let env = test_env();
-        let ctx = test_ctx();
+    #[tokio::test]
+    async fn test_document_state_markdown_extraction() {
+        let env = test_env().await;
+        let ctx = test_ctx().await;
         let markdown = r#"# Test
 
 ```tinct
@@ -1004,10 +967,10 @@ Some prose.
         assert_eq!(state.literate_blocks[1].code, "[y: 2]\n");
     }
 
-    #[test]
-    fn test_document_state_markdown_no_ast() {
-        let env = test_env();
-        let ctx = test_ctx();
+    #[tokio::test]
+    async fn test_document_state_markdown_no_ast() {
+        let env = test_env().await;
+        let ctx = test_ctx().await;
         let markdown = "# Just prose, no code blocks";
         let state = DocumentState::new_markdown(markdown.to_string(), &env, &ctx, None);
         // Markdown files don't produce a fatal_parse_error — the format is valid,

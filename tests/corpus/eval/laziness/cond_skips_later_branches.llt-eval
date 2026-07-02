@@ -1,7 +1,7 @@
-# $cond skips evaluation of earlier branches' value when condition is false,
+# $cond skips evaluation of earlier branches' value when condition is False,
 # and correctly evaluates the first matching branch's value.
-# Distinct from cond_unused_branch_error: tests the false-then-true path,
+# Distinct from cond_unused_branch_error: tests the False-then-True path,
 # not that an error in a later branch is skipped.
-[cond [[false [raise "first branch is false, value must not be forced"]] [true "second"]]]
+[cond [[False [raise "first branch is False, value must not be forced"]] [True "second"]]]
 === out
 String("second")

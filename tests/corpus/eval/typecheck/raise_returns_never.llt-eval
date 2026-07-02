@@ -2,6 +2,6 @@
 # `[if cond 42 [raise "err"]]` should infer Int: Union(Int, Never) = Int.
 # This verifies that raise's return type is Never (not Type::Error), so it does not
 # cascade-infect the enclosing expression's inferred type.
-[result: [if true 42 [raise "unreachable"]]]
+[result: [if True 42 [raise "unreachable"]]]
 === out
 Dict({"result": Int(42)})

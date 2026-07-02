@@ -9,9 +9,9 @@
      2: body
    ]
    named-args: []
-   implied: true]
+   implied: True]
 ]
 
-[my-unless false 42]
+[my-unless False 42]
 === out
 Int(42)

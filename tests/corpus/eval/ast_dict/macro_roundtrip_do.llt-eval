@@ -1,5 +1,5 @@
 # dict_to_surface_node_inner via do macro: verifies Call, DotAccess, Fn variant
-# reconstruction. The `do` macro uses builtin-variant internally to build Call,
+# reconstruction. The `do` macro uses Expr.* typed constructors to build Call,
 # DotAccess, and Fn AST nodes — all go through dict_to_surface_node_inner.
 # This test was blocked until the macro-runtime-v2-regression fix.
 [do [x: [Ok 5]] [y: [Ok 7]] [Ok [+ x y]]]

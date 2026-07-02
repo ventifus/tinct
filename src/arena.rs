@@ -15,6 +15,8 @@ use crate::value::Thunk;
 
 #[cfg(test)]
 use crate::ast::Span;
+#[cfg(test)]
+use crate::rust_span;
 
 /// A handle to a thunk in the arena. Copy-cheap (4 bytes), indexes into `ThunkArena`.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
@@ -77,26 +79,8 @@ impl ThunkArena {
     /// Phase 3 (arena-eval): used when the evaluator builds letrec dicts via FlatEnv.
     #[cfg(test)]
     pub fn alloc_placeholder(&mut self) -> ThunkId {
-        let thunk = Arc::new(Thunk::new_placeholder(Span::origin()));
+        let thunk = Arc::new(Thunk::new_placeholder(rust_span!()));
         self.alloc(thunk)
-    }
-
-    /// Create a new arena pre-populated with clones of this arena's entries.
-    ///
-    /// Used to give each EvalContext its own growable arena while still sharing
-    /// stdlib thunks: the child arena starts with Arc::clone of every thunk in self,
-    /// preserving ThunkId validity (same indices 0..N), then appends its own thunks
-    /// starting at N.  Dropping the child does not affect the parent's thunks.
-    pub(crate) fn clone_for_child(&self) -> Self {
-        Self {
-            thunks: self.thunks.iter().map(Arc::clone).collect(),
-        }
-    }
-
-    /// Number of thunks currently in the arena.
-    #[cfg(test)]
-    pub(crate) fn len(&self) -> usize {
-        self.thunks.len()
     }
 }
 
@@ -257,9 +241,8 @@ pub(crate) struct FlatEnv {
     pub(crate) slots: Vec<Option<ThunkId>>,
     /// Computed keys (resolver returned None) indexed by name.
     ///
-    /// Future optimization: computed-key dict entries (e.g., `[$expr: value]`) currently work
-    /// via the name-based fallback in `Environment::get()` at `src/eval.rs:1427`. This field
-    /// is scaffolding for arena-phase3 when computed keys will be stored directly in FlatEnv
+    /// Future optimization: computed-key dict entries (e.g., `[$expr: value]`) are
+    /// scaffolding for arena-phase3 when computed keys will be stored directly in FlatEnv
     /// to avoid Environment chain traversal overhead.
     #[allow(dead_code)]
     pub(crate) overflow: HashMap<String, ThunkId>,
@@ -339,10 +322,11 @@ impl FlatEnv {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rust_span;
     use crate::value::{Thunk, Value};
 
     fn test_span() -> Span {
-        Span::origin()
+        rust_span!()
     }
 
     #[test]
@@ -443,11 +427,8 @@ mod tests {
         assert_eq!(arena.get(id_y).try_get_materialized(), Some(Value::Int(20)));
     }
 
-    #[test]
-    fn test_placeholder_force_panics() {
-        let materialize = |t: &crate::value::Thunk, s: Option<&crate::ast::Span>, c: &std::sync::Arc<crate::eval::EvalContext>| {
-            crate::async_rt::block_on_anywhere(crate::eval::materialize(t, s, c))
-        };
+    #[tokio::test]
+    async fn test_placeholder_force_panics() {
         use crate::eval::EvalContext;
         use crate::value::Environment;
 
@@ -465,7 +446,7 @@ mod tests {
         // (unevaluated=None, result=None) are indistinguishable from InProgress thunks
         // at runtime. Forcing a placeholder now returns a circular_dependency Err instead
         // of panicking. Both behaviors correctly prevent use of unfilled letrec slots.
-        let result = materialize(thunk, None, &ctx);
+        let result = crate::eval::materialize(thunk, None, &ctx).await;
         assert!(
             result.is_err(),
             "materializing an unfilled placeholder should fail, got Ok"
@@ -650,106 +631,5 @@ mod tests {
         assert_eq!(id, id_copy);
         assert_eq!(id.0, 456);
         assert_eq!(id_copy.0, 456);
-    }
-
-    #[test]
-    fn test_clone_for_child_snapshot_size() {
-        // Test (a): snapshot.len() == parent.len() at snapshot time
-        let mut parent = ThunkArena::new();
-        let id1 = parent.alloc(Arc::new(Thunk::new_materialized(
-            Value::Int(1),
-            test_span(),
-        )));
-        let id2 = parent.alloc(Arc::new(Thunk::new_materialized(
-            Value::Int(2),
-            test_span(),
-        )));
-        let id3 = parent.alloc(Arc::new(Thunk::new_materialized(
-            Value::Int(3),
-            test_span(),
-        )));
-
-        let snapshot = parent.clone_for_child();
-
-        // Snapshot should have the same length as parent at snapshot time
-        assert_eq!(snapshot.len(), parent.len());
-        assert_eq!(snapshot.len(), 3);
-
-        // Verify snapshot contains the same ThunkIds
-        assert_eq!(
-            snapshot.get(id1).try_get_materialized(),
-            Some(Value::Int(1))
-        );
-        assert_eq!(
-            snapshot.get(id2).try_get_materialized(),
-            Some(Value::Int(2))
-        );
-        assert_eq!(
-            snapshot.get(id3).try_get_materialized(),
-            Some(Value::Int(3))
-        );
-    }
-
-    #[test]
-    fn test_clone_for_child_independent_growth() {
-        // Test (b): parent grows independently after snapshot
-        let mut parent = ThunkArena::new();
-        let id1 = parent.alloc(Arc::new(Thunk::new_materialized(
-            Value::Int(1),
-            test_span(),
-        )));
-
-        let mut snapshot = parent.clone_for_child();
-
-        // Parent grows
-        let id2 = parent.alloc(Arc::new(Thunk::new_materialized(
-            Value::Int(2),
-            test_span(),
-        )));
-
-        // Snapshot grows independently
-        let id3 = snapshot.alloc(Arc::new(Thunk::new_materialized(
-            Value::Int(3),
-            test_span(),
-        )));
-
-        // Parent should have 2 thunks
-        assert_eq!(parent.len(), 2);
-        assert_eq!(parent.get(id1).try_get_materialized(), Some(Value::Int(1)));
-        assert_eq!(parent.get(id2).try_get_materialized(), Some(Value::Int(2)));
-
-        // Snapshot should have 2 thunks (original + new allocation)
-        assert_eq!(snapshot.len(), 2);
-        assert_eq!(
-            snapshot.get(id1).try_get_materialized(),
-            Some(Value::Int(1))
-        );
-        assert_eq!(
-            snapshot.get(id3).try_get_materialized(),
-            Some(Value::Int(3))
-        );
-    }
-
-    #[test]
-    fn test_clone_for_child_shared_rc_identity() {
-        // Test (c): mutating a pre-snapshot thunk's state is visible in the snapshot
-        let mut parent = ThunkArena::new();
-        let thunk = Arc::new(Thunk::new_placeholder(test_span()));
-        let id = parent.alloc(Arc::clone(&thunk));
-
-        let snapshot = parent.clone_for_child();
-
-        // Mutate the thunk's state via the parent's reference
-        thunk.set_materialized(Value::Int(42));
-
-        // The mutation should be visible in both parent and snapshot (shared Rc)
-        assert_eq!(parent.get(id).try_get_materialized(), Some(Value::Int(42)));
-        assert_eq!(
-            snapshot.get(id).try_get_materialized(),
-            Some(Value::Int(42))
-        );
-
-        // Verify they point to the same underlying Thunk (Rc identity)
-        assert!(Arc::ptr_eq(parent.get(id), snapshot.get(id)));
     }
 }

@@ -1,6 +1,6 @@
 # annotation-of on a unit constructor with a @[...] annotation (T-1121).
 # Unit constructors with @[...] annotations are wrapped in Value::Annotated at eval time.
-# lower.rs emits [builtin-make-annotated [builtin-variant "Tag"] [key: val ...]]
+# lower.rs emits CoreExpr::Variant wrapped in builtin-make-annotated
 # annotation-of on the resulting Value::Annotated returns the annotation dict directly.
 #
 # MyType.Red → Value::Annotated{inner: Variant("MyType.Red", Null), annotation: {category: "primary"}}

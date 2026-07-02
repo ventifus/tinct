@@ -11,7 +11,7 @@
 [
   # Coercible class with FD: src determines dst (injective resolver)
   Coercible: [class [let Coercible src dst]
-    [determines: [[[src] dst]]  resolver: CoercibleResolver  injective: true]
+    [determines: [[[src] dst]]  resolver: CoercibleResolver  injective: True]
     coerce: [Fn@dst [src]]]
 
   # Prove the class declaration was accepted: return a simple value

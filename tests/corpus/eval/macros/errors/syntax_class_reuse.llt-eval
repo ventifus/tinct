@@ -4,7 +4,7 @@
 
 [syntax-class literal-value
   pattern: [let _ : Literal]
-  message: "literal value (e.g., 42, true, \"text\")"]
+  message: "literal value (e.g., 42, True, \"text\")"]
 
 [macro const-val [let name@VarRef value@literal-value]
   [quote [let [[[unquote name]: [unquote value]]]]]]
@@ -16,7 +16,7 @@
 [
   x: [const-val x 42]
 ]
-[assert-lit true]
+[assert-lit True]
 [str x]
 
 

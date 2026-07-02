@@ -1,22 +1,26 @@
 //! Lowering pass: converts `SurfaceExpression` to `CoreExpr` for the evaluator.
 //!
 //! `lower()` is called per-thunk when a `Surface` thunk is first forced.
-//! It is a pure function of `(SurfaceNode, ResolutionTable, TypeAnnotationTable)`.
+//! It is a pure function of `SurfaceNode` — all cross-phase data lives inline on nodes.
+//! De Bruijn coordinates are read from the inline `resolution` field on VarRef/DotAccess nodes.
 //!
 //! Key transformations:
-//! - `VarRef` → `Var` (resolved de Bruijn coordinates) or `FreeVar` (unresolvable)
+//! - `VarRef` → `Var` (resolved de Bruijn coordinates) or `Error` (unresolvable — genuine compile error)
 //! - `Pipe { lhs, rhs }` → `Call { func: rhs, args: [lhs], implied: true }` (syntactic sugar)
-//! - `TypeAssert` → `TypeAssert` (with resolved_type from TypeAnnotationTable or Type::Unknown)
-//! - `TypeAssertPending` in patterns → `TypeAssert` (using TypeAnnotationTable.pattern_types)
+//! - `TypeAssert` → `TypeAssert` (with resolved_type from the inline TypeAnnotation field or Type::Unknown)
+//! - `TypeAssertPending` in patterns → `TypeAssert` (using the inline `resolved` TypeAnnotation field)
+//! - `DotAccess` with `field_slot` set → `Call(slot-get, [Int(slot), target])` (O(1) positional access)
+//! - `DotAccess` without `field_slot` → `Call(field-get, [Str/Int(key), target])` (key-based lookup)
+//! - `SurfaceNode.type_guard` set → wraps the lowered CoreExpr in `CoreExpr::TypeAssert`
 //! - All other variants: structural lowering, recursing into child nodes
 
 use std::sync::Arc;
 
 use crate::ast::{
-    node_id, CoreEntry, CoreExpr, CoreMatchArm, CoreNamedArg, CoreParam, Pattern, ResolutionTable,
-    Spanned, SurfaceEntry, SurfaceExpression, SurfaceNode, TypeAnnotationTable,
+    CoreEntry, CoreExpr, CoreMatchArm, CoreNamedArg, CoreParam, Pattern,
+    Spanned, SurfaceEntry, SurfaceExpression, SurfaceNode,
 };
-use crate::type_def::Type;
+use crate::rust_span;
 
 /// Lower a single surface node to a CoreExpr.
 ///
@@ -26,20 +30,35 @@ use crate::type_def::Type;
 /// Lowering errors (malformed AST, impossible variant combinations) propagate as
 /// `CoreExpr::Error` — consistent with tinct's lazy semantics where errors surface
 /// at force time, not at construction time.
-pub fn lower(
-    arc: &Arc<SurfaceNode>,
-    res: &ResolutionTable,
-    types: &TypeAnnotationTable,
-) -> Spanned<CoreExpr> {
+///
+/// All cross-phase data (type annotations, field slots, provenance) is read from inline
+/// fields on the AST nodes — no external tables are consulted.
+pub fn lower(arc: &Arc<SurfaceNode>) -> Spanned<CoreExpr> {
     let span = arc.span.clone();
-    let core_expr = lower_expr(arc, &arc.expr, res, types);
+    let core_expr = lower_expr(arc, &arc.expr);
+
+    // Apply type guard if the type checker set one on this node.
+    let core_expr = if let Some(guard_type) = arc.type_guard.get() {
+        CoreExpr::TypeAssert {
+            annotation: crate::ast::Spanned::new(
+                crate::ast::Annotation::Simple("__guard__".to_string()),
+                span.clone(),
+            ),
+            expr: Arc::new(crate::ast::Spanned::new(core_expr, span.clone())),
+            resolved_type: guard_type.clone(),
+            pipeline_blame: None,
+        }
+    } else {
+        core_expr
+    };
+
     Spanned::new(core_expr, span)
 }
 
 /// Resolve an annotation name to a Type for TypeAssertPending pattern lowering.
 ///
 /// Mirrors typecheck_annot.rs::resolve_type_name for the builtin type names prelude
-/// uses in [@Type _]: patterns. Used when TypeAnnotationTable.pattern_types has no
+/// uses in [@Type _]: patterns. Used when the inline `resolved` TypeAnnotation has no
 /// entry (which is always the case currently, as populate is not yet wired up).
 /// Unknown is the accept-all fallback for unrecognized names (--no-typecheck, macros).
 pub(crate) fn annotation_name_to_type(name: &str) -> crate::type_def::Type {
@@ -48,24 +67,23 @@ pub(crate) fn annotation_name_to_type(name: &str) -> crate::type_def::Type {
         "Int" => Type::Int,
         "Float" => Type::Float,
         "String" | "Str" => Type::Str,
-        "Bool" => Type::Bool,
-        "Number" | "Num" => Type::Number,
         "Bytes" => Type::Bytes,
         "Proxy" => Type::Proxy,
-        // Type::seq(Unknown) = Type::App(TyCon("Seq"), Unknown) — matches Seq.Cons/Seq.Nil.
-        "Seq" => Type::seq(Type::Unknown),
         // Empty record = "any dict" under BAS width subtyping.
         "Dict" | "Record" | "Null" => Type::Record(Row {
-            fields: std::collections::BTreeMap::new(),
+            fields: indexmap::IndexMap::new(),
             tail: RowTail::Empty,
         }),
         // Variadic 0-required-param function = any callable (Function or Builtin).
         "Fn" | "Function" | "Builtin" => Type::Function {
             params: vec![],
-            ret: Box::new(Type::Top),
+            ret: Box::new(Type::Any),
             variadic: true,
             required_count: 0,
         },
+        // Named types: look up via TyCon for Boolean, Seq, etc.
+        "Bool" | "Boolean" => Type::TyCon("Boolean".to_string()),
+        "Seq" => Type::TyCon("Seq".to_string()),
         _ => Type::Unknown,
     }
 }
@@ -73,17 +91,17 @@ pub(crate) fn annotation_name_to_type(name: &str) -> crate::type_def::Type {
 /// Lower a `Pattern`, converting `TypeAssertPending → TypeAssert`.
 ///
 /// TypeAssertPending is ALWAYS converted to TypeAssert — never left as-is.
-/// The TypeAnnotationTable.pattern_types is checked first (populated by the type
-/// checker when it elaborates patterns). If not found, annotation_name_to_type
-/// provides a direct name→Type mapping that mirrors what the type checker would
-/// produce. Unknown is the fallback for unrecognized names (accept-all).
+/// The inline `resolved` TypeAnnotation field is checked first (set by the type checker).
+/// If not set, `annotation_name_to_type` provides a direct name→Type mapping.
+/// Unknown is the fallback for unrecognized names (accept-all).
 ///
 /// Recursively walks all sub-patterns so nested TypeAssertPending nodes are
 /// also converted (e.g., inside Or, Dict, Seq, Constructor bindings).
-fn lower_pattern(pat: &Pattern, types: &TypeAnnotationTable) -> Pattern {
+fn lower_pattern(pat: &Pattern) -> Pattern {
     match pat {
-        Pattern::TypeAssertPending { annotation, inner } => {
-            let resolved_type = types.get_pattern(&annotation.span).cloned().unwrap_or_else(|| {
+        Pattern::TypeAssertPending { annotation, inner, resolved } => {
+            // Read the inline resolved type — set by the type checker, or fall back to name→Type.
+            let resolved_type = resolved.get().cloned().unwrap_or_else(|| {
                 if let crate::ast::Annotation::Simple(name) = &annotation.node {
                     annotation_name_to_type(name)
                 } else {
@@ -92,7 +110,7 @@ fn lower_pattern(pat: &Pattern, types: &TypeAnnotationTable) -> Pattern {
             });
             let lowered_inner = inner.as_ref().map(|boxed| {
                 Box::new(Spanned::new(
-                    lower_pattern(&boxed.node, types),
+                    lower_pattern(&boxed.node),
                     boxed.span.clone(),
                 ))
             });
@@ -109,7 +127,7 @@ fn lower_pattern(pat: &Pattern, types: &TypeAnnotationTable) -> Pattern {
             // Already elaborated — recurse into inner.
             let elaborated_inner = inner.as_ref().map(|boxed| {
                 Box::new(Spanned::new(
-                    lower_pattern(&boxed.node, types),
+                    lower_pattern(&boxed.node),
                     boxed.span.clone(),
                 ))
             });
@@ -122,7 +140,7 @@ fn lower_pattern(pat: &Pattern, types: &TypeAnnotationTable) -> Pattern {
         Pattern::Or(branches) => Pattern::Or(
             branches
                 .iter()
-                .map(|b| Spanned::new(lower_pattern(&b.node, types), b.span.clone()))
+                .map(|b| Spanned::new(lower_pattern(&b.node), b.span.clone()))
                 .collect(),
         ),
 
@@ -130,7 +148,7 @@ fn lower_pattern(pat: &Pattern, types: &TypeAnnotationTable) -> Pattern {
             tag: tag.clone(),
             binding: binding
                 .as_ref()
-                .map(|b| Box::new(Spanned::new(lower_pattern(&b.node, types), b.span.clone()))),
+                .map(|b| Box::new(Spanned::new(lower_pattern(&b.node), b.span.clone()))),
         },
 
         Pattern::Dict { fields, rest } => Pattern::Dict {
@@ -139,69 +157,135 @@ fn lower_pattern(pat: &Pattern, types: &TypeAnnotationTable) -> Pattern {
                 .map(|(k, s)| {
                     (
                         k.clone(),
-                        Spanned::new(lower_pattern(&s.node, types), s.span.clone()),
+                        Spanned::new(lower_pattern(&s.node), s.span.clone()),
                     )
                 })
                 .collect(),
             rest: *rest,
         },
 
-        Pattern::Seq { head, tail } => Pattern::Seq {
-            head: Box::new(Spanned::new(
-                lower_pattern(&head.node, types),
-                head.span.clone(),
-            )),
-            tail: Box::new(Spanned::new(
-                lower_pattern(&tail.node, types),
-                tail.span.clone(),
-            )),
-        },
-
         // Leaf patterns: no sub-patterns to lower.
-        Pattern::Wildcard | Pattern::Literal(_) | Pattern::Pin(_) => pat.clone(),
+        Pattern::Wildcard | Pattern::Literal(_) | Pattern::Pin(..) => pat.clone(),
 
         // T-1140: Predicate patterns carry a SurfaceNode — passed through unchanged.
-        // The SurfaceNode is lowered on demand inside MatchDispatch at eval time,
-        // using empty resolution/type tables (same as other surface-in-core eval sites).
+        // The SurfaceNode is lowered on demand inside MatchDispatch at eval time.
         Pattern::Predicate(_) => pat.clone(),
     }
 }
 
-fn lower_expr(
-    arc: &Arc<SurfaceNode>,
-    expr: &SurfaceExpression,
-    res: &ResolutionTable,
-    types: &TypeAnnotationTable,
-) -> CoreExpr {
+fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
     match expr {
         SurfaceExpression::Int(n) => CoreExpr::Int(*n),
         SurfaceExpression::U64(n) => CoreExpr::U64(*n),
         SurfaceExpression::Float(n) => CoreExpr::Float(*n),
-        SurfaceExpression::Bool(b) => CoreExpr::Bool(*b),
         SurfaceExpression::Str(s) => CoreExpr::Str(s.clone()),
 
-        SurfaceExpression::VarRef { name, .. } => {
-            let id = node_id(arc);
-            match res.get(&id) {
-                Some(&(level, slot)) => CoreExpr::Var {
+        SurfaceExpression::VarRef { name, resolution, .. } => {
+            match resolution.get() {
+                Some(Some((level, slot))) => CoreExpr::Var {
                     name: name.clone(),
                     level,
                     slot,
                 },
-                None => CoreExpr::FreeVar(name.clone()),
+                _ => {
+                    // Some(None) = unresolvable; None = resolver never ran.
+                    // Both are genuine compile errors — produce Error so the evaluator
+                    // surfaces it at force time.
+                    CoreExpr::Error(arc.span.clone())
+                }
             }
         }
 
-        SurfaceExpression::DotAccess { expr: inner, field } => CoreExpr::DotAccess {
-            expr: Arc::new(lower(inner, res, types)),
-            field: field.clone(),
-        },
+        SurfaceExpression::DotAccess {
+            expr: Some(inner),
+            field,
+            field_slot,
+            resolution,
+        } => {
+            // Get the root scope level from the resolver-written resolution field.
+            // The resolver writes the (level, slot) of "field-get" (slot 0 in root scope).
+            // slot-get lives at slot 1 in the same root scope (same level, slot 1).
+            let root_level = match resolution.get() {
+                Some(Some((level, _slot))) => level,
+                _ => {
+                    // Resolver did not find "field-get" in scope — emit Error.
+                    return CoreExpr::Error(arc.span.clone());
+                }
+            };
+
+            // Build the getter function Var and the key argument.
+            let (getter_root_slot, key_arg) = if let Some(slot) = field_slot.get() {
+                // Typed: use slot-get (positional O(1) access) at root scope slot 1.
+                (
+                    crate::builtins_core::SLOT_GET_ROOT_SLOT,
+                    CoreExpr::Int(slot as i64),
+                )
+            } else {
+                // Untyped: use field-get (key-based lookup) at root scope slot 0.
+                let key_core = match field {
+                    crate::ast::DotKey::Int(n) => CoreExpr::Int(*n),
+                    crate::ast::DotKey::Ident(s) => CoreExpr::Str(s.clone()),
+                };
+                (crate::builtins_core::FIELD_GET_ROOT_SLOT, key_core)
+            };
+
+            let getter_name = if getter_root_slot == crate::builtins_core::FIELD_GET_ROOT_SLOT {
+                "field-get"
+            } else {
+                "slot-get"
+            };
+
+            let getter_var = Arc::new(crate::ast::Spanned::new(
+                CoreExpr::Var {
+                    name: getter_name.to_string(),
+                    level: root_level,
+                    slot: getter_root_slot,
+                },
+                arc.span.clone(),
+            ));
+            let key_node = Arc::new(crate::ast::Spanned::new(key_arg, arc.span.clone()));
+            let target_node = Arc::new(lower(inner));
+
+            CoreExpr::Call {
+                func: getter_var,
+                args: vec![key_node, target_node],
+                named_args: vec![],
+                implied: true,
+            }
+        }
+
+        // Leading-dot form: `.name` with no preceding expression.
+        // The resolver has written parent-scope coordinates into the node's `resolution` field.
+        // Read them directly — the lowered result is indistinguishable from a normal variable reference.
+        SurfaceExpression::DotAccess {
+            expr: None,
+            field: crate::ast::DotKey::Ident(name),
+            resolution,
+            ..
+        } => {
+            match resolution.get() {
+                Some(Some((level, slot))) => CoreExpr::Var {
+                    name: name.clone(),
+                    level,
+                    slot,
+                },
+                _ => CoreExpr::Error(arc.span.clone()),
+            }
+        }
+
+        // Leading-dot with integer key: `.0` — no parent-scope numeric lookup. The parser
+        // rejects this at parse time, so this is a safety fallback only.
+        SurfaceExpression::DotAccess {
+            expr: None,
+            field: crate::ast::DotKey::Int(_),
+            ..
+        } => CoreExpr::Error(arc.span.clone()),
 
         // Pipe is syntactic sugar — rewrite to Call(rhs, [lhs]) so the evaluator
         // sees only Call nodes. Equivalent to: f |> g  ==  g(f).
         SurfaceExpression::Pipe { lhs, rhs } => CoreExpr::Call {
-            func: Arc::new(lower(rhs, res, types)),
-            args: vec![Arc::new(lower(lhs, res, types))],
+            func: Arc::new(lower(rhs)),
+            args: vec![Arc::new(lower(lhs))],
             named_args: vec![],
             implied: true,
         },
@@ -209,58 +293,58 @@ fn lower_expr(
         SurfaceExpression::Sequential(exprs) => CoreExpr::Sequential(
             exprs
                 .iter()
-                .map(|e| Arc::new(lower(e, res, types)))
+                .map(|e| Arc::new(lower(e)))
                 .collect(),
         ),
 
         SurfaceExpression::Dict(entries) => {
             let mut core_entries: Vec<Spanned<CoreEntry>> = Vec::with_capacity(entries.len());
             for se in entries {
-                // Most Decl forms (TypeAlias, ClassDecl, MacroDecl) are processed at type-check time.
-                // At runtime:
-                //
-                // EXCEPTION 1 (B-353): InstanceDecl with non-empty arms produces a method dict.
-                // desugar_instance_decls_surface_program is NOT called in lib.rs eval path so
-                // the type checker's Pass 0c sees InstanceDecl entries for instance registration.
-                // lower.rs handles the eval-side transformation here.
-                //
-                // EXCEPTION 2 (T-1193): TypeAlias produces a constructor dict at runtime.
-                // `Color: [type Red Green Blue]` → `Color` is a dict `{Red: Variant("Color.Red"), ...}`
                 if let SurfaceExpression::Decl(decl) = &se.node.value.expr {
                     match decl.as_ref() {
-                        crate::ast::SurfaceDeclaration::InstanceDecl { arms, .. }
-                            if !arms.is_empty() =>
-                        {
-                            // InstanceDecl: pass through to lower() which handles it
-                            let key = se.node.key.as_ref().map(|k| Arc::new(lower(k, res, types)));
-                            let value = Arc::new(lower(&se.node.value, res, types));
-                            core_entries
-                                .push(Spanned::new(CoreEntry { key, value }, se.span.clone()));
+                        crate::ast::SurfaceDeclaration::InstanceDecl { .. } => {
+                            if se.node.key.is_some() {
+                                let lowered =
+                                    lower_expr(&se.node.value, &se.node.value.expr);
+                                let key =
+                                    se.node.key.as_ref().map(|k| Arc::new(lower(k)));
+                                let value = Arc::new(Spanned::new(lowered, se.span.clone()));
+                                core_entries
+                                    .push(Spanned::new(CoreEntry { key, value }, se.span.clone()));
+                            }
                         }
                         crate::ast::SurfaceDeclaration::TypeAlias { body, .. } => {
-                            // T-1193: TypeAlias produces a constructor dict at runtime.
-                            // Extract type name from the dict entry key for qualified tags.
                             let type_name_opt = extract_type_name_from_key(&se.node.key);
                             let ctor_dict = lower_type_alias_to_constructor_dict(
                                 type_name_opt,
                                 body,
-                                res,
-                                types,
                             );
-                            let key = se.node.key.as_ref().map(|k| Arc::new(lower(k, res, types)));
+                            let key = se.node.key.as_ref().map(|k| {
+                                let lowered = match &k.expr {
+                                    SurfaceExpression::VarRef { name, .. } => CoreExpr::Str(name.clone()),
+                                    SurfaceExpression::Annotated { name, .. } => CoreExpr::Str(name.clone()),
+                                    _ => lower_expr(k, &k.expr),
+                                };
+                                Arc::new(Spanned::new(lowered, k.span.clone()))
+                            });
                             let value = Arc::new(Spanned::new(ctor_dict, se.span.clone()));
                             core_entries
                                 .push(Spanned::new(CoreEntry { key, value }, se.span.clone()));
                         }
                         _ => {
-                            // Other Decl forms (ClassDecl, MacroDecl, SyntaxClass) are skipped.
                             continue;
                         }
                     }
                 } else {
-                    // Non-Decl entries: lower normally
-                    let key = se.node.key.as_ref().map(|k| Arc::new(lower(k, res, types)));
-                    let value = Arc::new(lower(&se.node.value, res, types));
+                    let key = se.node.key.as_ref().map(|k| {
+                        let lowered = match &k.expr {
+                            SurfaceExpression::VarRef { name, .. } => CoreExpr::Str(name.clone()),
+                            SurfaceExpression::Annotated { name, .. } => CoreExpr::Str(name.clone()),
+                            _ => lower_expr(k, &k.expr),
+                        };
+                        Arc::new(Spanned::new(lowered, k.span.clone()))
+                    });
+                    let value = Arc::new(lower(&se.node.value));
                     core_entries.push(Spanned::new(CoreEntry { key, value }, se.span.clone()));
                 }
             }
@@ -272,26 +356,55 @@ fn lower_expr(
             args,
             named_args,
             implied,
-        } => CoreExpr::Call {
-            func: Arc::new(lower(func, res, types)),
-            args: args
-                .iter()
-                .map(|a| Arc::new(lower(a, res, types)))
-                .collect(),
-            named_args: named_args
-                .iter()
-                .map(|na| {
-                    Spanned::new(
-                        CoreNamedArg {
-                            name: na.node.name.clone(),
-                            value: Arc::new(lower(&na.node.value, res, types)),
-                        },
-                        na.span.clone(),
-                    )
-                })
-                .collect(),
-            implied: *implied,
-        },
+        } => {
+            // Compile-time instance dispatch rewriting: if the VarRef node for the function
+            // has a call_dispatch annotation set by the type checker, rewrite the function
+            // reference to the instance binding name.
+            let lowered_func = if let SurfaceExpression::VarRef { name: _, resolution, call_dispatch, .. } = &func.expr {
+                if let Some(binding_name) = call_dispatch.get() {
+                    // Read inline resolution from the func VarRef node.
+                    match resolution.get() {
+                        Some(Some((level, slot))) => Arc::new(Spanned::new(
+                            CoreExpr::Var {
+                                name: binding_name.to_string(),
+                                level,
+                                slot,
+                            },
+                            func.span.clone(),
+                        )),
+                        _ => Arc::new(Spanned::new(
+                            CoreExpr::Error(func.span.clone()),
+                            func.span.clone(),
+                        )),
+                    }
+                } else {
+                    Arc::new(lower(func))
+                }
+            } else {
+                Arc::new(lower(func))
+            };
+
+            CoreExpr::Call {
+                func: lowered_func,
+                args: args
+                    .iter()
+                    .map(|a| Arc::new(lower(a)))
+                    .collect(),
+                named_args: named_args
+                    .iter()
+                    .map(|na| {
+                        Spanned::new(
+                            CoreNamedArg {
+                                name: na.node.name.clone(),
+                                value: Arc::new(lower(&na.node.value)),
+                            },
+                            na.span.clone(),
+                        )
+                    })
+                    .collect(),
+                implied: *implied,
+            }
+        }
 
         SurfaceExpression::Fn {
             return_ann,
@@ -313,35 +426,27 @@ fn lower_expr(
                     )
                 })
                 .collect(),
-            body: Arc::new(lower(body, res, types)),
+            body: Arc::new(lower(body)),
             desugared: *desugared,
         },
 
         SurfaceExpression::TypeAssert {
             annotation,
             expr: inner,
+            resolved_type,
         } => {
-            let id = node_id(arc);
-            match types.get(&id) {
-                Some(Type::Error) | None => {
-                    // Type::Error: failed_bindings entry — emit TypeAssert with Unknown.
-                    // None: Macro-synthesized node — bypassed typechecking.
-                    // Unknown passes via consistent subtyping (always compatible), so the
-                    // annotation check is a no-op. The real error surfaces as the
-                    // undefined_variable error at the failed-binding use-site.
-                    CoreExpr::TypeAssert {
-                        annotation: annotation.clone(),
-                        expr: Arc::new(lower(inner, res, types)),
-                        resolved_type: Type::Unknown,
-                        pipeline_blame: None,
-                    }
-                }
-                Some(ty) => CoreExpr::TypeAssert {
-                    annotation: annotation.clone(),
-                    expr: Arc::new(lower(inner, res, types)),
-                    resolved_type: ty.clone(),
-                    pipeline_blame: None,
-                },
+            // Read the inline resolved type set by the type checker.
+            // Type::Error (failed inference) → fall back to Type::Unknown (accept-all).
+            // None (type checker didn't run, or --no-typecheck) → Type::Unknown.
+            let ty = match resolved_type.get() {
+                Some(crate::type_def::Type::Error) | None => crate::type_def::Type::Unknown,
+                Some(ty) => ty.clone(),
+            };
+            CoreExpr::TypeAssert {
+                annotation: annotation.clone(),
+                expr: Arc::new(lower(inner)),
+                resolved_type: ty,
+                pipeline_blame: None,
             }
         }
 
@@ -350,40 +455,47 @@ fn lower_expr(
             annotation: annotation.clone(),
         },
 
-        SurfaceExpression::Rest(name) => CoreExpr::Rest(name.clone()),
+        SurfaceExpression::Rest(name, _) => CoreExpr::Rest(name.clone()),
 
         SurfaceExpression::Match { scrutinee, arms } => CoreExpr::Match {
-            scrutinee: Arc::new(lower(scrutinee, res, types)),
+            scrutinee: Arc::new(lower(scrutinee)),
             arms: arms
                 .iter()
                 .map(|arm| CoreMatchArm {
-                    // B-338: lower_pattern converts TypeAssertPending → TypeAssert using
-                    // the TypeAnnotationTable.pattern_types map populated by the type checker.
-                    // This replaces the fragile runtime name-mapping fallback in eval.rs.
                     pattern: Spanned::new(
-                        lower_pattern(&arm.pattern.node, types),
+                        lower_pattern(&arm.pattern.node),
                         arm.pattern.span.clone(),
                     ),
-                    guard: arm.guard.as_ref().map(|g| Arc::new(lower(g, res, types))),
-                    body: Arc::new(lower(&arm.body, res, types)),
+                    guard: arm.guard.as_ref().map(|g| Arc::new(lower(g))),
+                    body: Arc::new(lower(&arm.body)),
                 })
                 .collect(),
         },
 
-        SurfaceExpression::Quote(inner) => CoreExpr::Quote(Arc::new(lower(inner, res, types))),
+        SurfaceExpression::Quote(inner) => CoreExpr::Quote(Arc::new(lower(inner))),
 
-        SurfaceExpression::Unquote(inner) => CoreExpr::Unquote(Arc::new(lower(inner, res, types))),
+        SurfaceExpression::Unquote(inner) => CoreExpr::Unquote(Arc::new(lower(inner))),
 
         SurfaceExpression::UnquoteSplice(inner) => {
-            CoreExpr::UnquoteSplice(Arc::new(lower(inner, res, types)))
+            CoreExpr::UnquoteSplice(Arc::new(lower(inner)))
         }
 
         SurfaceExpression::PatternDecl { bindings } => CoreExpr::PatternDecl {
-            bindings: bindings.iter().map(|b| lower(b, res, types)).collect(),
+            bindings: bindings.iter().map(|b| lower(b)).collect(),
         },
 
         SurfaceExpression::LetDecl { bindings } => CoreExpr::LetDecl {
-            bindings: bindings.iter().map(|b| lower(b, res, types)).collect(),
+            bindings: bindings
+                .iter()
+                .enumerate()
+                .map(|(i, b)| {
+                    if i % 2 == 0 {
+                        lower_let_decl_binding(b)
+                    } else {
+                        lower(b)
+                    }
+                })
+                .collect(),
         },
 
         SurfaceExpression::CaseArm {
@@ -391,64 +503,58 @@ fn lower_expr(
             pattern,
             body,
         } => CoreExpr::CaseArm {
-            let_bindings: let_bindings
-                .as_ref()
-                .map(|lb| Arc::new(lower(lb, res, types))),
-            pattern: Arc::new(lower(pattern, res, types)),
-            body: Arc::new(lower(body, res, types)),
+            let_bindings: Arc::new(lower(let_bindings)),
+            pattern: Arc::new(lower(pattern)),
+            body: Arc::new(lower(body)),
         },
 
         SurfaceExpression::Placeholder => CoreExpr::Placeholder,
 
-        // Declaration forms embedded in expression position (e.g., dict entry values).
-        // Most Decl forms produce Placeholder (an error when forced); the type checker
-        // registers them via Pass 0c before evaluation occurs.
-        //
-        // EXCEPTION 1 (B-353): InstanceDecl with non-empty arms produces a method dict at runtime.
-        // desugar_instance_decls_surface_program is NOT called before lower.rs in lib.rs so
-        // the type checker sees InstanceDecl. lower.rs handles the runtime transformation here.
-        //
-        // EXCEPTION 2 (T-1193): TypeAlias produces a constructor dict when accessed directly
-        // (not via a dict entry). Dict entries are handled in the Dict arm above.
         SurfaceExpression::Decl(decl) => {
             match decl.as_ref() {
-                crate::ast::SurfaceDeclaration::InstanceDecl { arms, .. } => {
-                    // Emit RegisterMethods: all arms across ALL instance arms (not just arms[0]).
-                    // Named instances (e.g., `EquatableInt: [instance ...]`) produce null just
-                    // like anonymous ones — instances are purely dispatch registrations.
-                    let mut register_arms: Vec<(
-                        Vec<Option<String>>,
-                        String,
-                        Arc<Spanned<CoreExpr>>,
-                    )> = Vec::new();
+                crate::ast::SurfaceDeclaration::InstanceDecl { class_name, arms } => {
+                    let mut core_entries: Vec<Spanned<CoreEntry>> = Vec::new();
+                    let syn_span = rust_span!();
+
                     for (pattern, method_entries) in arms {
                         let dispatch_tags = extract_dispatch_tags(&pattern.expr);
+                        let type_args: Vec<&str> =
+                            dispatch_tags.iter().filter_map(|t| t.as_deref()).collect();
+
                         for me in method_entries {
-                            // Extract method name from the entry key (e.g., "+:", "=:")
                             let method_name = match me.node.key.as_ref() {
                                 Some(key_node) => match &key_node.expr {
                                     SurfaceExpression::Str(s) => s.clone(),
                                     SurfaceExpression::VarRef { name, .. } => name.clone(),
                                     SurfaceExpression::Annotated { name, .. } => name.clone(),
-                                    _ => continue, // skip computed/unrecognized keys
+                                    _ => continue,
                                 },
-                                None => continue, // skip positional entries
+                                None => continue,
                             };
-                            let lowered_body = Arc::new(lower(&me.node.value, res, types));
-                            register_arms.push((dispatch_tags.clone(), method_name, lowered_body));
+
+                            let binding_name = crate::type_def::instance_binding_name(
+                                class_name,
+                                &method_name,
+                                &type_args,
+                            );
+
+                            let key = Some(Arc::new(Spanned::new(
+                                CoreExpr::Str(binding_name),
+                                syn_span.clone(),
+                            )));
+                            let value = Arc::new(lower(&me.node.value));
+                            core_entries
+                                .push(Spanned::new(CoreEntry { key, value }, syn_span.clone()));
                         }
                     }
-                    if !register_arms.is_empty() {
-                        return CoreExpr::RegisterMethods {
-                            arms: register_arms,
-                        };
+
+                    if !core_entries.is_empty() {
+                        return CoreExpr::Dict(core_entries);
                     }
                     CoreExpr::Placeholder
                 }
                 crate::ast::SurfaceDeclaration::TypeAlias { body, .. } => {
-                    // T-1193: TypeAlias accessed directly (not via dict entry).
-                    // No type name available, use unqualified tags.
-                    lower_type_alias_to_constructor_dict(None, body, res, types)
+                    lower_type_alias_to_constructor_dict(None, body)
                 }
                 _ => CoreExpr::Placeholder,
             }
@@ -471,10 +577,10 @@ fn lower_expr(
 pub fn core_expr_to_surface_node(
     expr: &crate::ast::Spanned<crate::ast::CoreExpr>,
 ) -> Arc<SurfaceNode> {
-    Arc::new(SurfaceNode {
-        expr: core_expr_to_surface_expr(&expr.node),
-        span: expr.span.clone(),
-    })
+    Arc::new(SurfaceNode::new(
+        core_expr_to_surface_expr(&expr.node),
+        expr.span.clone(),
+    ))
 }
 
 fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
@@ -483,15 +589,12 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
         CoreExpr::Int(n) => SurfaceExpression::Int(*n),
         CoreExpr::U64(n) => SurfaceExpression::U64(*n),
         CoreExpr::Float(f) => SurfaceExpression::Float(*f),
-        CoreExpr::Bool(b) => SurfaceExpression::Bool(*b),
         CoreExpr::Str(s) => SurfaceExpression::Str(s.clone()),
-        CoreExpr::Var { name, .. } | CoreExpr::FreeVar(name) => SurfaceExpression::VarRef {
+        CoreExpr::Var { name, .. } => SurfaceExpression::VarRef {
             name: name.clone(),
             escaped: false,
-        },
-        CoreExpr::DotAccess { expr, field } => SurfaceExpression::DotAccess {
-            expr: core_expr_to_surface_node(expr),
-            field: field.clone(),
+            resolution: crate::ast::Resolution::new(),
+            call_dispatch: crate::ast::CallDispatch::new(),
         },
         CoreExpr::Sequential(exprs) => SurfaceExpression::Sequential(
             exprs.iter().map(|e| core_expr_to_surface_node(e)).collect(),
@@ -547,12 +650,13 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
         } => SurfaceExpression::TypeAssert {
             annotation: annotation.clone(),
             expr: core_expr_to_surface_node(expr),
+            resolved_type: crate::ast::TypeAnnotation::new(),
         },
         CoreExpr::Annotated { name, annotation } => SurfaceExpression::Annotated {
             name: name.clone(),
             annotation: annotation.clone(),
         },
-        CoreExpr::Rest(name) => SurfaceExpression::Rest(name.clone()),
+        CoreExpr::Rest(name) => SurfaceExpression::Rest(name.clone(), None),
         CoreExpr::Match { scrutinee, arms } => SurfaceExpression::Match {
             scrutinee: core_expr_to_surface_node(scrutinee),
             arms: arms
@@ -594,16 +698,45 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
             pattern,
             body,
         } => SurfaceExpression::CaseArm {
-            let_bindings: let_bindings
-                .as_ref()
-                .map(|lb| core_expr_to_surface_node(lb.as_ref())),
+            let_bindings: core_expr_to_surface_node(let_bindings.as_ref()),
             pattern: core_expr_to_surface_node(pattern),
             body: core_expr_to_surface_node(body),
         },
         CoreExpr::Error(span) => SurfaceExpression::Error(span.clone()),
         CoreExpr::Placeholder => SurfaceExpression::Placeholder,
-        CoreExpr::RegisterMethods { .. } => SurfaceExpression::Placeholder,
+        // Variant: emitted by lower.rs for type declarations; not user-writable in quotes.
+        // Represent as a VarRef to the tag so quote round-trips see a name.
+        CoreExpr::Variant { tag, .. } => SurfaceExpression::VarRef {
+            name: tag.clone(),
+            escaped: false,
+            resolution: crate::ast::Resolution::new(),
+            call_dispatch: crate::ast::CallDispatch::new(),
+        },
     }
+}
+
+/// Lower a single binding node from a `[let ...]` declaration.
+///
+/// In `[let name value]` pairs (e.g., from `CoreExpr::LetDecl`), the binding name is a
+/// declaration, not a variable reference. It is lowered as `CoreExpr::Str(name)` so the
+/// LetDecl eval arm can extract the name directly. The value expression is lowered normally.
+///
+/// For annotated bindings (`name@Type`), the name is extracted and lowered as `CoreExpr::Str`.
+/// For all other nodes (VarRef, Annotated, Rest), the name is extracted if possible; otherwise
+/// the node is lowered normally (producing an error if unresolvable).
+fn lower_let_decl_binding(arc: &Arc<SurfaceNode>) -> Spanned<CoreExpr> {
+    let span = arc.span.clone();
+    let core_expr = match &arc.expr {
+        // Declaration name forms: lower as string literal (name extraction path)
+        SurfaceExpression::VarRef { name, .. } => CoreExpr::Str(name.clone()),
+        SurfaceExpression::Annotated { name, .. } => CoreExpr::Str(name.clone()),
+        SurfaceExpression::Rest(Some(name), _) => CoreExpr::Str(name.clone()),
+        // Wildcard / unnamed rest: use empty string (skipped by LetDecl eval arm)
+        SurfaceExpression::Rest(None, _) => CoreExpr::Str(String::new()),
+        // All other forms: lower normally (will produce Error if unresolvable)
+        _ => lower_expr(arc, &arc.expr),
+    };
+    Spanned::new(core_expr, span)
 }
 
 /// Extract dispatch type tags from an instance arm pattern like `[let a@Int b@Float c]`.
@@ -612,9 +745,9 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
 /// - `Some("Int")` if the binding has a concrete uppercase type annotation
 /// - `None` if unannotated or annotated with a TypeVar/complex annotation
 ///
-/// Used by RegisterMethods emission in lower.rs to build the dispatch_tags for each arm.
-/// The dispatcher uses `min(dispatch_tags.len(), args.len())` at call time, so trailing
-/// None entries (like the return-type param `c` in Addable) are harmlessly ignored.
+/// Used by instance binding name generation in lower.rs to build the type_args for each arm.
+/// Only `Some(_)` tags contribute to the binding name; trailing None entries (like the
+/// return-type param `c` in Addable) are harmlessly ignored.
 pub(crate) fn extract_dispatch_tags(arm_pattern: &SurfaceExpression) -> Vec<Option<String>> {
     let bindings = match arm_pattern {
         SurfaceExpression::LetDecl { bindings } => bindings,
@@ -670,9 +803,9 @@ fn extract_type_name_from_key(key: &Option<Arc<SurfaceNode>>) -> Option<String> 
 /// Lower a TypeAlias body to a constructor dict at runtime (T-1193).
 ///
 /// Produces a `CoreExpr::Dict` containing constructor entries:
-/// - Unit constructors (no annotation) → `CtorName: [builtin-variant "TypeName.CtorName"]`
-/// - Unit constructors (with annotation) → `CtorName: [builtin-make-annotated [builtin-variant "TypeName.CtorName"] [key: val ...]]`
-/// - Payload constructors → `CtorName: [fn [...fields] [builtin-variant "TypeName.CtorName" payload]]`
+/// - Unit constructors (no annotation) → `CtorName: CoreExpr::Variant { tag, payload: None }`
+/// - Unit constructors (with annotation) → `CtorName: [builtin-make-annotated CoreExpr::Variant { tag, payload: None } [key: val ...]]`
+/// - Payload constructors → `CtorName: [fn [...fields] CoreExpr::Variant { tag, payload: Some(payload_dict) }]`
 ///
 /// The type name (if present) qualifies the variant tags. When absent, uses unqualified tags.
 ///
@@ -680,16 +813,14 @@ fn extract_type_name_from_key(key: &Option<Arc<SurfaceNode>>) -> Option<String> 
 fn lower_type_alias_to_constructor_dict(
     type_name_opt: Option<String>,
     body: &Arc<SurfaceNode>,
-    res: &ResolutionTable,
-    types: &TypeAnnotationTable,
 ) -> CoreExpr {
-    use crate::ast::{CoreEntry, CoreParam, Span};
+    use crate::ast::{CoreEntry, CoreParam};
 
     // Extract constructors from the body using the desugar.rs helpers.
     // We need to import the extraction logic. For now, we'll inline a simplified version.
     let ctors = extract_constructors_from_body(&body.expr);
 
-    let syn_span = Span::origin();
+    let syn_span = rust_span!();
     let mut core_entries: Vec<Spanned<CoreEntry>> = Vec::new();
 
     for ctor in ctors {
@@ -706,20 +837,12 @@ fn lower_type_alias_to_constructor_dict(
 
         // Create the value: either a unit variant or a constructor function
         let value = if ctor.is_unit {
-            // Unit constructor: [builtin-variant "TypeName.CtorName"]
+            // Unit constructor: CoreExpr::Variant { tag: "TypeName.CtorName", payload: None }
             // If the constructor carries a @[...] annotation (T-1121), wrap with make-annotated.
             let variant_call = Arc::new(Spanned::new(
-                CoreExpr::Call {
-                    func: Arc::new(Spanned::new(
-                        CoreExpr::FreeVar("builtin-variant".to_string()),
-                        syn_span.clone(),
-                    )),
-                    args: vec![Arc::new(Spanned::new(
-                        CoreExpr::Str(qualified_tag),
-                        syn_span.clone(),
-                    ))],
-                    named_args: vec![],
-                    implied: false,
+                CoreExpr::Variant {
+                    tag: qualified_tag,
+                    payload: None,
                 },
                 syn_span.clone(),
             ));
@@ -731,8 +854,8 @@ fn lower_type_alias_to_constructor_dict(
                 let ann_core_entries: Vec<Spanned<CoreEntry>> = ann_entries
                     .iter()
                     .map(|se| {
-                        let key = se.node.key.as_ref().map(|k| Arc::new(lower(k, res, types)));
-                        let value = Arc::new(lower(&se.node.value, res, types));
+                        let key = se.node.key.as_ref().map(|k| Arc::new(lower(k)));
+                        let value = Arc::new(lower(&se.node.value));
                         Spanned::new(CoreEntry { key, value }, se.span.clone())
                     })
                     .collect();
@@ -740,11 +863,15 @@ fn lower_type_alias_to_constructor_dict(
                     CoreExpr::Dict(ann_core_entries),
                     syn_span.clone(),
                 ));
-                // [builtin-make-annotated [builtin-variant "TypeName.CtorName"] [ann_entries...]]
+                // [builtin-make-annotated CoreExpr::Variant{tag} [ann_entries...]]
                 Arc::new(Spanned::new(
                     CoreExpr::Call {
                         func: Arc::new(Spanned::new(
-                            CoreExpr::FreeVar("builtin-make-annotated".to_string()),
+                            CoreExpr::Var {
+                                name: "builtin-make-annotated".to_string(),
+                                level: 0,
+                                slot: 0,
+                            },
                             syn_span.clone(),
                         )),
                         args: vec![variant_call, ann_dict],
@@ -758,7 +885,7 @@ fn lower_type_alias_to_constructor_dict(
             }
         } else {
             // Payload constructor: function that takes named args and returns a variant
-            // [fn [let ...fields] [builtin-variant "TypeName.CtorName" [dict field: value ...]]]
+            // [fn [let ...fields] CoreExpr::Variant{tag, payload: Some(payload_dict)}]
             let params: Vec<Spanned<CoreParam>> = ctor
                 .fields
                 .iter()
@@ -776,13 +903,11 @@ fn lower_type_alias_to_constructor_dict(
 
             // Build the payload dict: [dict field: field-value ...]
             //
-            // CRITICAL: Use CoreExpr::Var { level: 1, slot: idx } instead of
-            // CoreExpr::FreeVar(field_name) here. The payload dict is evaluated by
-            // eval_dict_core which creates a letrec environment where each field name
-            // is bound as a key. Using FreeVar(field_name) would shadow the function
-            // param of the same name: FreeVar lookup starts from the dict's own letrec
-            // env, finds the dict's own "field" entry (which is the thunk being forced),
-            // and triggers E070 circular dependency.
+            // CRITICAL: Use CoreExpr::Var { level: 1, slot: idx } here. The payload dict
+            // is evaluated by eval_dict_core which creates a letrec environment where each
+            // field name is bound as a key. Using Var { level: 0 } would resolve in the dict's
+            // own letrec env, finding the dict's own "field" entry (the thunk being forced),
+            // and triggering E070 circular dependency.
             //
             // Var { level: 1 } skips one level up past the dict's letrec env to the
             // function's call env (created by bind_args_thunks), where the param is
@@ -819,18 +944,10 @@ fn lower_type_alias_to_constructor_dict(
 
             let payload_dict = CoreExpr::Dict(payload_entries);
 
-            // Build [builtin-variant "TypeName.CtorName" payload]
-            let variant_call = CoreExpr::Call {
-                func: Arc::new(Spanned::new(
-                    CoreExpr::FreeVar("builtin-variant".to_string()),
-                    syn_span.clone(),
-                )),
-                args: vec![
-                    Arc::new(Spanned::new(CoreExpr::Str(qualified_tag), syn_span.clone())),
-                    Arc::new(Spanned::new(payload_dict, syn_span.clone())),
-                ],
-                named_args: vec![],
-                implied: false,
+            // Build CoreExpr::Variant { tag: "TypeName.CtorName", payload: Some(payload_dict) }
+            let variant_call = CoreExpr::Variant {
+                tag: qualified_tag,
+                payload: Some(Arc::new(Spanned::new(payload_dict, syn_span.clone()))),
             };
 
             let fn_expr = Arc::new(Spanned::new(
@@ -848,8 +965,8 @@ fn lower_type_alias_to_constructor_dict(
                 let ann_core_entries: Vec<Spanned<CoreEntry>> = ann_entries
                     .iter()
                     .map(|se| {
-                        let key = se.node.key.as_ref().map(|k| Arc::new(lower(k, res, types)));
-                        let value = Arc::new(lower(&se.node.value, res, types));
+                        let key = se.node.key.as_ref().map(|k| Arc::new(lower(k)));
+                        let value = Arc::new(lower(&se.node.value));
                         Spanned::new(CoreEntry { key, value }, se.span.clone())
                     })
                     .collect();
@@ -860,7 +977,11 @@ fn lower_type_alias_to_constructor_dict(
                 Arc::new(Spanned::new(
                     CoreExpr::Call {
                         func: Arc::new(Spanned::new(
-                            CoreExpr::FreeVar("builtin-make-annotated".to_string()),
+                            CoreExpr::Var {
+                                name: "builtin-make-annotated".to_string(),
+                                level: 0,
+                                slot: 0,
+                            },
                             syn_span.clone(),
                         )),
                         args: vec![fn_expr, ann_dict],
@@ -937,29 +1058,62 @@ fn extract_constructors_from_body(body: &SurfaceExpression) -> Vec<ConstructorIn
             // Call with uppercase func → unit or named-field constructor
             // [Ok a] → Call { func: VarRef("Ok"), args: [VarRef("a")], named_args: [] } → unit
             // [Circle r: Int] → Call { func: VarRef("Circle"), named_args: [(r, Int)] } → named-field
+            //
+            // T-1357: With lookup-table constants, `named_args` may contain a mix of:
+            //   - Constant entries: `name: literal` (Int/Float/Str/U64 value) → NOT a runtime field
+            //   - Payload field entries: `name: TypeExpr` (non-literal) → runtime field
+            // And `args` may contain:
+            //   - Annotated positional entries: `name@TypeExpr` → named runtime payload field
+            //   - Bare positional entries: old-style positional payload (type params for unit ctors)
             SurfaceExpression::Call {
-                func, named_args, ..
+                func,
+                args,
+                named_args,
+                ..
             } => {
                 if let SurfaceExpression::VarRef { name, .. } = &func.expr {
                     if is_ctor(name) {
-                        if named_args.is_empty() {
-                            // Positional-only args are type params → unit constructor at runtime
-                            ctors.push(ConstructorInfo {
-                                name: name.clone(),
-                                is_unit: true,
-                                fields: Vec::new(),
-                                annotation: None,
-                            });
-                        } else {
-                            // Named args → named-field constructor
-                            let fields = named_args.iter().map(|na| na.node.name.clone()).collect();
-                            ctors.push(ConstructorInfo {
-                                name: name.clone(),
-                                is_unit: false,
-                                fields,
-                                annotation: None,
-                            });
-                        }
+                        // Payload fields from named_args: only non-literal values are runtime fields.
+                        // Literal values (Int/Float/Str/U64) are compile-time constants.
+                        let is_literal = |expr: &SurfaceExpression| {
+                            matches!(
+                                expr,
+                                SurfaceExpression::Int(_)
+                                    | SurfaceExpression::U64(_)
+                                    | SurfaceExpression::Float(_)
+                                    | SurfaceExpression::Str(_)
+                            )
+                        };
+                        let payload_named_fields: Vec<String> = named_args
+                            .iter()
+                            .filter(|na| !is_literal(&na.node.value.expr))
+                            .map(|na| na.node.name.clone())
+                            .collect();
+
+                        // Payload fields from annotated positional args (data@String form).
+                        let payload_annotated_fields: Vec<String> = args
+                            .iter()
+                            .filter_map(|arg| {
+                                if let SurfaceExpression::Annotated { name, .. } = &arg.expr {
+                                    Some(name.clone())
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+
+                        let fields: Vec<String> = payload_named_fields
+                            .into_iter()
+                            .chain(payload_annotated_fields)
+                            .collect();
+
+                        let is_unit = fields.is_empty();
+                        ctors.push(ConstructorInfo {
+                            name: name.clone(),
+                            is_unit,
+                            fields,
+                            annotation: None,
+                        });
                     }
                 }
             }
@@ -1045,21 +1199,24 @@ fn extract_constructors_from_body(body: &SurfaceExpression) -> Vec<ConstructorIn
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::{ResolutionTable, SurfaceExpression, SurfaceNode, TypeAnnotationTable};
+    use crate::ast::{Provenance, Resolution, SurfaceExpression, SurfaceNode, TypeAnnotation, CallDispatch};
     use std::sync::Arc;
 
     fn make_node(expr: SurfaceExpression, span: crate::ast::Span) -> Arc<SurfaceNode> {
-        Arc::new(SurfaceNode { expr, span })
+        Arc::new(SurfaceNode {
+            expr,
+            span,
+            type_guard: TypeAnnotation::new(),
+            provenance: Provenance::new(),
+        })
     }
 
     #[test]
     fn test_lower_int_literal() {
-        let span = crate::ast::Span::origin();
+        let span = rust_span!();
         let node = make_node(SurfaceExpression::Int(42), span.clone());
-        let res = ResolutionTable::new();
-        let types = TypeAnnotationTable::new();
 
-        let lowered = lower(&node, &res, &types);
+        let lowered = lower(&node);
 
         assert_eq!(lowered.span, span);
         assert!(matches!(lowered.node, CoreExpr::Int(42)));
@@ -1067,22 +1224,21 @@ mod tests {
 
     #[test]
     fn test_lower_varref_with_resolution() {
-        let span = crate::ast::Span::origin();
+        let span = rust_span!();
+        // Build a VarRef node with pre-set inline resolution (level=0, slot=3).
+        let resolution = Resolution::new();
+        resolution.set(Some((0, 3)));
         let node = make_node(
             SurfaceExpression::VarRef {
                 name: "x".into(),
                 escaped: false,
+                resolution,
+                call_dispatch: CallDispatch::new(),
             },
             span,
         );
-        let mut res = ResolutionTable::new();
-        let types = TypeAnnotationTable::new();
 
-        // Simulate resolver inserting a binding: level 0, slot 3
-        let id = crate::ast::node_id(&node);
-        res.insert(id, (0, 3));
-
-        let lowered = lower(&node, &res, &types);
+        let lowered = lower(&node);
 
         match lowered.node {
             CoreExpr::Var { name, level, slot } => {
@@ -1096,24 +1252,25 @@ mod tests {
 
     #[test]
     fn test_lower_varref_without_resolution() {
-        let span = crate::ast::Span::origin();
+        let span = rust_span!();
+        // VarRef with no resolution set (resolution field left at default = not yet resolved).
         let node = make_node(
             SurfaceExpression::VarRef {
                 name: "unbound".into(),
                 escaped: false,
+                resolution: Resolution::new(), // Not set — resolver never ran
+                call_dispatch: CallDispatch::new(),
             },
-            span,
+            span.clone(),
         );
-        let res = ResolutionTable::new(); // Empty — no resolution entry
-        let types = TypeAnnotationTable::new();
 
-        let lowered = lower(&node, &res, &types);
+        let lowered = lower(&node);
 
-        match lowered.node {
-            CoreExpr::FreeVar(name) => {
-                assert_eq!(name, "unbound");
-            }
-            _ => panic!("expected CoreExpr::FreeVar, got {:?}", lowered.node),
-        }
+        // Unresolvable VarRef produces CoreExpr::Error — a genuine compile error.
+        assert!(
+            matches!(lowered.node, CoreExpr::Error(_)),
+            "expected CoreExpr::Error for unresolvable VarRef, got {:?}",
+            lowered.node
+        );
     }
 }

@@ -1,5 +1,5 @@
-# Lazy evaluation: $or short-circuits when first argument is true
-# If $or were eager, the $raise would fire. Since it's lazy, true is returned.
-[or true [raise "should not evaluate"]]
+# Lazy evaluation: $or short-circuits when first argument is True
+# If $or were eager, the $raise would fire. Since it's lazy, True is returned.
+[or True [raise "should not evaluate"]]
 === out
 Bool(true)

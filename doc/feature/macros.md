@@ -141,7 +141,7 @@ Macros that introduce literal binding names (e.g. `[quote [let [x: ...] ...]]` w
   [quote [let [it: [unquote cond]] [if it [unquote then] [unquote else]]]]]
 
 # Reflect: [macro-injects "aif"] => Seq("it")
-# Reflect: [macro-injects "when"] => Seq.Nil  (gensym-hygienic, no inject)
+# Reflect: [macro-injects "when"] => Seq.End  (gensym-hygienic, no inject)
 ```
 
 ### AST-as-Dict Representation

@@ -1,4 +1,4 @@
-# seq: tail is not evaluated when only head is accessed
-[head [seq 1 [raise "tail should not be evaluated"]]]
+# Seq.Cons: tail is not evaluated when only head is accessed
+[head [Seq.Cons head: 1  tail: [raise "tail should not be evaluated"]]]
 === out
 Int(1)

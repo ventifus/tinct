@@ -80,10 +80,7 @@ fn desugar_instance_decls_node(node: Arc<SurfaceNode>) -> Arc<SurfaceNode> {
         // No change — return original Arc (avoids clone)
         return node;
     }
-    Arc::new(SurfaceNode {
-        expr: new_expr,
-        span,
-    })
+    Arc::new(SurfaceNode::new(new_expr, span))
 }
 
 fn desugar_instance_decls_expr(expr: &SurfaceExpression, _span: Span) -> SurfaceExpression {
@@ -120,10 +117,10 @@ fn desugar_instance_decls_expr(expr: &SurfaceExpression, _span: Span) -> Surface
                                     )
                                 })
                                 .collect();
-                            Some(Arc::new(SurfaceNode {
-                                expr: SurfaceExpression::Dict(desugared_methods),
-                                span: se.node.value.span.clone(),
-                            }))
+                            Some(Arc::new(SurfaceNode::new(
+                                SurfaceExpression::Dict(desugared_methods),
+                                se.node.value.span.clone(),
+                            )))
                         } else {
                             None
                         }
@@ -303,6 +300,7 @@ fn desugar_instance_decls_expr(expr: &SurfaceExpression, _span: Span) -> Surface
         SurfaceExpression::TypeAssert {
             annotation,
             expr: inner,
+            ..
         } => {
             let new_inner = desugar_instance_decls_node(Arc::clone(inner));
             if Arc::ptr_eq(&new_inner, inner) {
@@ -311,6 +309,7 @@ fn desugar_instance_decls_expr(expr: &SurfaceExpression, _span: Span) -> Surface
                 SurfaceExpression::TypeAssert {
                     annotation: annotation.clone(),
                     expr: new_inner,
+                    resolved_type: crate::ast::TypeAnnotation::new(),
                 }
             }
         }
@@ -404,14 +403,18 @@ fn try_wrap_surface(node: &mut Arc<SurfaceNode>) -> bool {
             false
         }
 
-        // WRAP-DOT: target is DIRECT (single $_ or access chain on $_)
-        SurfaceExpression::DotAccess { expr: target, .. } => {
+        // WRAP-DOT: target is DIRECT (single $_ or access chain on $_).
+        // Leading-dot (expr: None) is never a $_ chain — it references a parent-scope name.
+        SurfaceExpression::DotAccess {
+            expr: Some(target), ..
+        } => {
             if is_direct_underscore_surface(&target.expr) {
                 wrap_surface_in_lambda(node);
                 return true;
             }
             false
         }
+        SurfaceExpression::DotAccess { expr: None, .. } => false,
 
         // WRAP-PIPE: LHS is DIRECT (e.g., `$_ | f` becomes `[fn [_] $_ | f]`)
         SurfaceExpression::Pipe { lhs, .. } => {
@@ -431,10 +434,12 @@ fn try_wrap_surface(node: &mut Arc<SurfaceNode>) -> bool {
 fn is_direct_underscore_surface(expr: &SurfaceExpression) -> bool {
     match expr {
         SurfaceExpression::VarRef { name, .. } => name == "_",
-        // Access chains on $_ count as DIRECT (e.g., $_.name)
-        SurfaceExpression::DotAccess { expr: inner, .. } => {
-            is_direct_underscore_surface(&inner.expr)
-        }
+        // Access chains on $_ count as DIRECT (e.g., $_.name).
+        // Leading-dot (expr: None) is a parent-scope ref, not a $_ chain.
+        SurfaceExpression::DotAccess {
+            expr: Some(inner), ..
+        } => is_direct_underscore_surface(&inner.expr),
+        SurfaceExpression::DotAccess { expr: None, .. } => false,
         // Pipe chains: check LHS (e.g., $_ | f becomes [fn [_] $_ | f])
         SurfaceExpression::Pipe { lhs, .. } => is_direct_underscore_surface(&lhs.expr),
         // All other expressions: not DIRECT
@@ -451,8 +456,8 @@ fn wrap_surface_in_lambda(node: &mut Arc<SurfaceNode>) {
     // Clone the Arc to preserve the original node as the body
     let body = Arc::clone(node);
 
-    *node = Arc::new(SurfaceNode {
-        expr: SurfaceExpression::Fn {
+    *node = Arc::new(SurfaceNode::new(
+        SurfaceExpression::Fn {
             return_ann: None,
             params: vec![Spanned::new(
                 SurfaceParam {
@@ -466,7 +471,7 @@ fn wrap_surface_in_lambda(node: &mut Arc<SurfaceNode>) {
             desugared: true,
         },
         span,
-    });
+    ));
 }
 
 /// Recurse into all children of a SurfaceNode at the given depth.
@@ -481,18 +486,19 @@ fn recurse_children_surface(node: &mut Arc<SurfaceNode>, depth: usize) {
         SurfaceExpression::Int(_)
         | SurfaceExpression::U64(_)
         | SurfaceExpression::Float(_)
-        | SurfaceExpression::Bool(_)
         | SurfaceExpression::Str(_)
         | SurfaceExpression::VarRef { .. }
-        | SurfaceExpression::Rest(_)
+        | SurfaceExpression::Rest(..)
         | SurfaceExpression::Placeholder
         | SurfaceExpression::Decl(_) // type-level declaration, no evaluable children
         | SurfaceExpression::Error(_) => {}
 
-        // Access expressions: recurse into target
-        SurfaceExpression::DotAccess { expr: target, .. } => {
+        // Access expressions: recurse into target.
+        // Leading-dot (expr: None) has no child to recurse into.
+        SurfaceExpression::DotAccess { expr: Some(target), .. } => {
             desugar_surface(target, depth);
         }
+        SurfaceExpression::DotAccess { expr: None, .. } => {}
 
         // Pipe: collect the right-associative chain into a flat list of stages, desugar each
         // stage independently, then left-fold into nested calls.
@@ -572,6 +578,7 @@ fn recurse_children_surface(node: &mut Arc<SurfaceNode>, depth: usize) {
         SurfaceExpression::TypeAssert {
             annotation,
             expr: inner,
+            ..
         } => {
             desugar_surface_annotation(&mut annotation.node, depth);
             desugar_surface(inner, depth);
@@ -724,16 +731,18 @@ fn apply_pipe_step(
                 implied: *implied,
             }
         }
-        SurfaceExpression::VarRef { name, escaped } => {
+        SurfaceExpression::VarRef { name, escaped, .. } => {
             // Bare name (e.g., `a | f`): call it with lhs as the sole argument.
             SurfaceExpression::Call {
-                func: Arc::new(SurfaceNode {
-                    expr: SurfaceExpression::VarRef {
+                func: Arc::new(SurfaceNode::new(
+                    SurfaceExpression::VarRef {
                         name: name.clone(),
                         escaped: *escaped,
+                        resolution: crate::ast::Resolution::new(),
+                        call_dispatch: crate::ast::CallDispatch::new(),
                     },
-                    span: rhs_stage.span.clone(),
-                }),
+                    rhs_stage.span.clone(),
+                )),
                 args: vec![lhs],
                 named_args: vec![],
                 implied: true,
@@ -750,10 +759,7 @@ fn apply_pipe_step(
         }
     };
 
-    Arc::new(SurfaceNode {
-        expr: new_expr,
-        span,
-    })
+    Arc::new(SurfaceNode::new(new_expr, span))
 }
 
 /// Desugar an optional annotation.

@@ -114,7 +114,6 @@ desugar-children: [fn [let expr@Expression depth@Int]
     # Literals: no children
     [case [let _] [IntLiteral value: _ span: _]   expr]
     [case [let _] [FloatLiteral value: _ span: _] expr]
-    [case [let _] [BoolLiteral value: _ span: _]  expr]
     [case [let _] [StrLiteral value: _ span: _]   expr]
     [case [let _] [Var name: _ escaped: _ span: _] expr]
     [case [let _] [Rest name: _ span: _]           expr]

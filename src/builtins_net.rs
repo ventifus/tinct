@@ -1,3 +1,7 @@
+// Network builtins are stubbed pending the Handle → protocol redesign sprint.
+// Internal helpers are dead code until that sprint lands.
+#![allow(dead_code)]
+
 //! Net builtin module — network I/O and URI parsing.
 //!
 //! This module provides:
@@ -28,7 +32,7 @@
 //! Extracted from `builtins_io.rs` in T-915.
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap};
+
 use std::future::Future;
 use std::pin::Pin;
 use std::rc::Rc;
@@ -38,10 +42,10 @@ use indexmap::IndexMap;
 
 use crate::ast::Span;
 use crate::builtins::{builtin, expect_one_arg, ok_val, reject_named, require_string};
-use crate::builtins_io::extract_dir_cap;
+
 use crate::error::{EvalError, EvalResult};
 use crate::types::{Row, Type, TypeAlias, TypeEnv};
-use crate::value::{string_val, BuiltinArgs, BuiltinDef, Key, Strictness, Thunk, Value};
+use crate::value::{string_val, BuiltinArgs, BuiltinDef, HashableValue, Strictness, Thunk, Value};
 
 /// `connect`: Open a TCP or UDP connection within a NetCap.
 /// Takes a NetCap, hostname String, port Int, and optional Transport variant (default: Tcp).
@@ -50,509 +54,20 @@ use crate::value::{string_val, BuiltinArgs, BuiltinDef, Key, Strictness, Thunk, 
 pub(crate) fn builtin_connect(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx: _,
-    } = ctx_arg;
+    // Network redesign in progress: Handle/WriteHandle removed. TCP/Unix connections
+    // will be reimplemented on a new stream type. See File redesign sprint.
+    let BuiltinArgs { call_span, .. } = ctx_arg;
     Box::pin(async move {
-        reject_named("connect", named.as_ref(), call_span.clone())?;
-
-        // Force args[1] (Transport tag) first — this is a STRICTNESS POINT
-        // Minimum 2 args: cap and transport
-        if args.len() < 2 {
-            return Err(EvalError::user_error(
-                format!(
-                    "connect: expected at least 2 arguments (cap transport [...address]), got {}",
-                    args.len()
-                ),
-                call_span,
-            )
-            .into());
-        }
-
-        let cap_val = args[0]
-            .try_get_materialized()
-            .expect("pre-materialized by pos_strictness[0]=Seq");
-        let transport_val = args[1]
-            .try_get_materialized()
-            .expect("pre-materialized by pos_strictness[1]=Seq");
-
-        // Extract Transport variant tag
-        let transport_tag = match transport_val {
-            Value::Variant { tag, .. } => tag,
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "connect".to_string(),
-                    "Transport variant (e.g., Tcp, Udp)",
-                    other.type_name(),
-                    args[1].span.clone(),
-                )
-                .into())
-            }
-        };
-
-        // Dispatch on transport tag to determine address format and arg count
-        match transport_tag.as_str() {
-            "Tcp" => {
-                // Tcp requires: cap Tcp host port (4 args total)
-                if args.len() != 4 {
-                    return Err(EvalError::user_error(
-                        format!(
-                            "connect: Tcp transport requires host and port (4 args total), got {}",
-                            args.len()
-                        ),
-                        call_span,
-                    )
-                    .into());
-                }
-                // Continue with TCP connection below
-            }
-            "Udp" => {
-                // Udp requires: cap Udp host port (4 args total)
-                if args.len() != 4 {
-                    return Err(EvalError::user_error(
-                        format!(
-                            "connect: Udp transport requires host and port (4 args total), got {}",
-                            args.len()
-                        ),
-                        call_span,
-                    )
-                    .into());
-                }
-                // Continue with UDP connection below
-            }
-            "UnixStream" => {
-                // UnixStream requires: cap UnixStream path (3 args total)
-                if args.len() != 3 {
-                    return Err(EvalError::user_error(
-                        format!(
-                            "connect: UnixStream transport requires path (3 args total), got {}",
-                            args.len()
-                        ),
-                        call_span,
-                    )
-                    .into());
-                }
-                // Continue with Unix stream connection below
-            }
-            "UnixDatagram" => {
-                // UnixDatagram requires: cap UnixDatagram path (3 args total)
-                if args.len() != 3 {
-                    return Err(EvalError::user_error(
-                        format!(
-                            "connect: UnixDatagram transport requires path (3 args total), got {}",
-                            args.len()
-                        ),
-                        call_span,
-                    )
-                    .into());
-                }
-                // Continue with Unix datagram connection below
-            }
-            "NamedPipe" => {
-                // NamedPipe is a Windows-only IPC mechanism; not available on Unix platforms.
-                return Err(EvalError::user_error(
-                "connect: NamedPipe is a Windows-only transport and is not supported on this platform"
-                    .to_string(),
-                call_span,
-            )
-            .into());
-            }
-            "Icmp" => {
-                // ICMP requires CAP_NET_RAW or root privileges; use icmp-ping builtin instead.
-                return Err(EvalError::user_error(
-                "connect: ICMP is not supported via connect; use the icmp-ping builtin for ICMP echo requests"
-                    .to_string(),
-                call_span,
-            )
-            .into());
-            }
-            other => {
-                return Err(EvalError::user_error(
-                    format!("connect: unsupported transport '{}'", other),
-                    call_span,
-                )
-                .into());
-            }
-        }
-
-        // Branch based on transport type
-        match transport_tag.as_str() {
-            "Tcp" => {
-                // TCP path
-                // Safe conditional: transport_tag (discriminant) pre-materialized by pos_strictness,
-                // arity validated above (structural check, no forcing)
-                let host_val = args[2]
-                    .try_get_materialized()
-                    .expect("pre-materialized by pos_strictness[2]=Seq");
-                let port_val = args[3]
-                    .try_get_materialized()
-                    .expect("pre-materialized by pos_strictness[3]=Seq");
-
-                // Extract NetCap
-                let entries = match cap_val {
-                    Value::NetCap(e) => e,
-                    other => {
-                        return Err(EvalError::type_mismatch_ctx(
-                            "connect".to_string(),
-                            "NetCap",
-                            other.type_name(),
-                            args[0].span.clone(),
-                        )
-                        .into())
-                    }
-                };
-
-                let host = require_string("connect", host_val, args[2].span.clone())?;
-                let port = match port_val {
-                    Value::Int(n) if (1..=65535).contains(&n) => n as u16,
-                    Value::Int(_) => {
-                        return Err(EvalError::user_error(
-                            "connect: port must be 1-65535".to_string(),
-                            args[3].span.clone(),
-                        )
-                        .into())
-                    }
-                    other => {
-                        return Err(EvalError::type_mismatch_ctx(
-                            "connect".to_string(),
-                            "Int",
-                            other.type_name(),
-                            args[3].span.clone(),
-                        )
-                        .into())
-                    }
-                };
-
-                // Check NetCap allowlist before connecting
-                // Returns Some(ip) if we need to connect to a resolved IP (DNS rebinding mitigation)
-                let resolved_ip =
-                    check_net_cap_allowlist(&entries, &host, Some(port), call_span.clone())?;
-
-                // Open TCP connection
-                // If DNS resolution was required, connect to the resolved IP to mitigate DNS rebinding
-                let addr = if let Some(ip) = resolved_ip {
-                    format!("{}:{}", ip, port)
-                } else {
-                    format!("{}:{}", host, port)
-                };
-                let stream = std::net::TcpStream::connect(&addr).map_err(|e| {
-                    EvalError::user_error(
-                        format!("connect: failed to connect to {}: {}", addr, e),
-                        call_span.clone(),
-                    )
-                })?;
-
-                // Clone stream for write half before consuming the original into BufReader
-                let write_stream = stream.try_clone().map_err(|e| {
-                    EvalError::user_error(
-                        format!("connect: failed to clone TcpStream for write half: {}", e),
-                        call_span.clone(),
-                    )
-                })?;
-
-                // Clone stream for tls-layer extraction before consuming into BufReader
-                let raw_tcp_stream = stream.try_clone().map_err(|e| {
-                    EvalError::user_error(
-                        format!("connect: failed to clone TcpStream for raw_tcp: {}", e),
-                        call_span.clone(),
-                    )
-                })?;
-
-                let write_inner: Option<Rc<RefCell<Box<dyn std::io::Write>>>> =
-                    Some(Rc::new(RefCell::new(Box::new(write_stream))));
-
-                // Wrap read half in BufReader for Handle
-                let buf_reader = std::io::BufReader::new(stream);
-                let inner = Rc::new(RefCell::new(
-                    Box::new(buf_reader) as Box<dyn std::io::BufRead>
-                ));
-
-                // Caps for TCP connection: Binary Readable Writable Stream
-                let mut caps = HashMap::new();
-                caps.insert("Readable".to_string(), Value::Bool(true));
-                caps.insert("Writable".to_string(), Value::Bool(true));
-                caps.insert("Binary".to_string(), Value::Bool(true));
-                caps.insert("Stream".to_string(), Value::Bool(true));
-
-                ok_val(
-                    Value::Handle {
-                        caps,
-                        inner,
-                        write_inner,
-                        seek_inner: None,
-                        raw_tcp: Some(Rc::new(RefCell::new(Some(raw_tcp_stream)))),
-                        creation_span: call_span.clone(),
-                    },
-                    call_span,
-                )
-            }
-            "UnixStream" => {
-                // Unix stream socket path
-                #[cfg(target_os = "linux")]
-                {
-                    // Safe conditional: transport_tag (discriminant) pre-materialized by pos_strictness,
-                    // arity validated above (structural check, no forcing)
-                    let path_val = args[2]
-                        .try_get_materialized()
-                        .expect("pre-materialized by pos_strictness[2]=Seq");
-
-                    // Extract DirCap for path validation (Unix socket)
-                    let (dir, _perms) = extract_dir_cap(&cap_val, "connect", args[0].span.clone())?;
-
-                    let path = require_string("connect", path_val, args[2].span.clone())?;
-
-                    // Validate path is relative (no absolute paths or '..' traversal)
-                    if path.starts_with('/') || path.contains("..") {
-                        return Err(EvalError::user_error(
-                        "connect UnixStream: path must be relative (no absolute paths or '..' traversal)"
-                            .to_string(),
-                        call_span,
-                    )
-                    .into());
-                    }
-
-                    // Get the directory's file descriptor and resolve the full path via /proc/self/fd
-                    // This is necessary because Unix domain sockets need an absolute path to connect
-                    // AMBIENT-OK: Unix socket connection requires resolving fd path via /proc/self/fd.
-                    use std::os::unix::io::AsRawFd;
-                    let dir_fd = dir.as_raw_fd();
-                    let proc_path = std::path::PathBuf::from(format!("/proc/self/fd/{}", dir_fd));
-                    let dir_path = std::fs::read_link(&proc_path).map_err(|e| {
-                        EvalError::user_error(
-                            format!("connect: failed to resolve DirCap path: {}", e),
-                            call_span.clone(),
-                        )
-                    })?;
-                    let full_path = dir_path.join(&path);
-
-                    // Connect to Unix stream socket
-                    let stream =
-                        std::os::unix::net::UnixStream::connect(&full_path).map_err(|e| {
-                            EvalError::user_error(
-                                format!(
-                                    "connect: failed to connect to Unix socket '{}': {}",
-                                    path, e
-                                ),
-                                call_span.clone(),
-                            )
-                        })?;
-
-                    // Clone stream for write half
-                    let write_stream = stream.try_clone().map_err(|e| {
-                        EvalError::user_error(
-                            format!("connect: failed to clone UnixStream for write half: {}", e),
-                            call_span.clone(),
-                        )
-                    })?;
-
-                    let write_inner: Option<Rc<RefCell<Box<dyn std::io::Write>>>> =
-                        Some(Rc::new(RefCell::new(Box::new(write_stream))));
-
-                    // Wrap read half in BufReader for Handle
-                    let buf_reader = std::io::BufReader::new(stream);
-                    let inner = Rc::new(RefCell::new(
-                        Box::new(buf_reader) as Box<dyn std::io::BufRead>
-                    ));
-
-                    // Caps for Unix stream: Binary Readable Writable Stream
-                    let mut caps = HashMap::new();
-                    caps.insert("Readable".to_string(), Value::Bool(true));
-                    caps.insert("Writable".to_string(), Value::Bool(true));
-                    caps.insert("Binary".to_string(), Value::Bool(true));
-                    caps.insert("Stream".to_string(), Value::Bool(true));
-
-                    ok_val(
-                        Value::Handle {
-                            caps,
-                            inner,
-                            write_inner,
-                            seek_inner: None,
-                            raw_tcp: None, // Not TCP
-                            creation_span: call_span.clone(),
-                        },
-                        call_span,
-                    )
-                }
-                #[cfg(not(target_os = "linux"))]
-                {
-                    Err(EvalError::user_error(
-                    "connect: Unix sockets not yet supported on this platform (requires Linux /proc/self/fd access)".to_string(),
-                    call_span,
-                )
-                .into())
-                }
-            }
-            "Udp" => {
-                // UDP datagram socket path
-                // Safe conditional: transport_tag (discriminant) pre-materialized by pos_strictness,
-                // arity validated above (structural check, no forcing)
-                let host_val = args[2]
-                    .try_get_materialized()
-                    .expect("pre-materialized by pos_strictness[2]=Seq");
-                let port_val = args[3]
-                    .try_get_materialized()
-                    .expect("pre-materialized by pos_strictness[3]=Seq");
-
-                // Extract NetCap
-                let entries = match cap_val {
-                    Value::NetCap(e) => e,
-                    other => {
-                        return Err(EvalError::type_mismatch_ctx(
-                            "connect".to_string(),
-                            "NetCap",
-                            other.type_name(),
-                            args[0].span.clone(),
-                        )
-                        .into())
-                    }
-                };
-
-                let host = require_string("connect", host_val, args[2].span.clone())?;
-                let port = match port_val {
-                    Value::Int(n) if (1..=65535).contains(&n) => n as u16,
-                    Value::Int(_) => {
-                        return Err(EvalError::user_error(
-                            "connect: port must be 1-65535".to_string(),
-                            args[3].span.clone(),
-                        )
-                        .into())
-                    }
-                    other => {
-                        return Err(EvalError::type_mismatch_ctx(
-                            "connect".to_string(),
-                            "Int",
-                            other.type_name(),
-                            args[3].span.clone(),
-                        )
-                        .into())
-                    }
-                };
-
-                // Check NetCap allowlist before connecting
-                let resolved_ip =
-                    check_net_cap_allowlist(&entries, &host, Some(port), call_span.clone())?;
-
-                let addr = if let Some(ip) = resolved_ip {
-                    format!("{}:{}", ip, port)
-                } else {
-                    format!("{}:{}", host, port)
-                };
-
-                // Bind to any local address (OS assigns ephemeral port)
-                let socket = std::net::UdpSocket::bind("0.0.0.0:0").map_err(|e| {
-                    EvalError::user_error(
-                        format!("connect: failed to bind UDP socket: {}", e),
-                        call_span.clone(),
-                    )
-                })?;
-
-                // connect() associates the remote address so send()/recv() work without addresses
-                socket.connect(&addr).map_err(|e| {
-                    EvalError::user_error(
-                        format!("connect: failed to connect UDP socket to {}: {}", addr, e),
-                        call_span.clone(),
-                    )
-                })?;
-
-                use crate::value::DatagramSocket;
-                ok_val(
-                    Value::DatagramHandle {
-                        socket: DatagramSocket::Udp(Rc::new(RefCell::new(socket))),
-                        creation_span: call_span.clone(),
-                    },
-                    call_span,
-                )
-            }
-            "UnixDatagram" => {
-                // Unix-domain datagram socket — uses DirCap for path-based capability enforcement.
-                #[cfg(unix)]
-                {
-                    // Safe conditional: transport_tag (discriminant) pre-materialized by pos_strictness,
-                    // arity validated above (structural check, no forcing)
-                    let path_val = args[2]
-                        .try_get_materialized()
-                        .expect("pre-materialized by pos_strictness[2]=Seq");
-
-                    // Extract DirCap for path validation (Unix socket)
-                    let (dir, _perms) = extract_dir_cap(&cap_val, "connect", args[0].span.clone())?;
-
-                    let path = require_string("connect", path_val, args[2].span.clone())?;
-
-                    // Validate path is relative (no absolute paths or '..' traversal)
-                    if path.starts_with('/') || path.contains("..") {
-                        return Err(EvalError::user_error(
-                        "connect UnixDatagram: path must be relative (no absolute paths or '..' traversal)"
-                            .to_string(),
-                        call_span,
-                    )
-                    .into());
-                    }
-
-                    // Resolve the full socket path via the DirCap's file descriptor
-                    // AMBIENT-OK: Unix datagram socket requires resolving fd path via /proc/self/fd.
-                    use std::os::unix::io::AsRawFd;
-                    let dir_fd = dir.as_raw_fd();
-                    let proc_path = std::path::PathBuf::from(format!("/proc/self/fd/{}", dir_fd));
-                    let dir_path = std::fs::read_link(&proc_path).map_err(|e| {
-                        EvalError::user_error(
-                            format!("connect: failed to resolve DirCap path: {}", e),
-                            call_span.clone(),
-                        )
-                    })?;
-                    let full_path = dir_path.join(&path);
-
-                    // Autobind (anonymous local address): bind to empty string so the OS
-                    // assigns an abstract socket name in the Linux autobind namespace.
-                    let socket = std::os::unix::net::UnixDatagram::bind("").map_err(|e| {
-                        EvalError::user_error(
-                            format!("connect: failed to autobind Unix datagram socket: {}", e),
-                            call_span.clone(),
-                        )
-                    })?;
-
-                    // Connect to the remote path so send()/recv() work without addresses
-                    socket.connect(&full_path).map_err(|e| {
-                        EvalError::user_error(
-                            format!(
-                                "connect: failed to connect Unix datagram socket to '{}': {}",
-                                path, e
-                            ),
-                            call_span.clone(),
-                        )
-                    })?;
-
-                    use crate::value::DatagramSocket;
-                    ok_val(
-                        Value::DatagramHandle {
-                            socket: DatagramSocket::UnixDgram(Rc::new(RefCell::new(socket))),
-                            creation_span: call_span.clone(),
-                        },
-                        call_span,
-                    )
-                }
-                #[cfg(not(unix))]
-                {
-                    Err(EvalError::user_error(
-                        "connect: UnixDatagram is not supported on this platform".to_string(),
-                        call_span,
-                    )
-                    .into())
-                }
-            }
-            _ => {
-                // NamedPipe and Icmp already handled in first match with early returns.
-                // This is unreachable — all transport types have been handled above.
-                unreachable!(
-                    "connect: transport '{}' should have been handled in first match",
-                    transport_tag
-                )
-            }
-        }
+        Err(EvalError::user_error(
+            "connect: network not yet available — tcp redesign in progress".to_string(),
+            call_span,
+        )
+        .into())
     })
 }
+
+// builtin_connect old body removed. Network redesign sprint will rewrite with a new stream type.
+
 
 /// Check if a connection to host:port is allowed by the NetCap allowlist.
 /// Returns Ok(None) for hostname-only match, Ok(Some(ip)) for IP-based match requiring DNS resolution.
@@ -795,18 +310,18 @@ pub(crate) async fn build_tls_config(
 
     // Check no-system-roots
     let no_system_roots = if let Some(thunk_id) =
-        opts_dict.get(&crate::value::Key::String("no-system-roots".into()))
+        opts_dict.get(&crate::value::HashableValue::Str("no-system-roots".into()))
     {
         let thunk = ctx.get_thunk(*thunk_id);
         let val = crate::eval::materialize(&thunk, Some(&opts_span), ctx).await?;
-        match val {
-            Value::Bool(b) => b,
-            Value::Dict(ref d) if d.is_empty() => false, // Null
-            other => {
+        match val.as_bool() {
+            Some(b) => b,
+            None if matches!(val, Value::Dict(ref d) if d.is_empty()) => false, // Null
+            None => {
                 return Err(EvalError::type_mismatch_ctx(
                     "tls-connect opts.no-system-roots".to_string(),
                     "Bool",
-                    other.type_name(),
+                    val.type_name(),
                     opts_span.clone(),
                 )
                 .into())
@@ -846,33 +361,34 @@ pub(crate) async fn build_tls_config(
     }
 
     // Load mozilla-roots if requested
-    let mozilla_roots =
-        if let Some(thunk_id) = opts_dict.get(&crate::value::Key::String("mozilla-roots".into())) {
-            let thunk = ctx.get_thunk(*thunk_id);
-            let val = crate::eval::materialize(&thunk, Some(&opts_span), ctx).await?;
-            match val {
-                Value::Bool(b) => b,
-                Value::Dict(ref d) if d.is_empty() => false, // Null
-                other => {
-                    return Err(EvalError::type_mismatch_ctx(
-                        "tls-connect opts.mozilla-roots".to_string(),
-                        "Bool",
-                        other.type_name(),
-                        opts_span.clone(),
-                    )
-                    .into())
-                }
+    let mozilla_roots = if let Some(thunk_id) =
+        opts_dict.get(&crate::value::HashableValue::Str("mozilla-roots".into()))
+    {
+        let thunk = ctx.get_thunk(*thunk_id);
+        let val = crate::eval::materialize(&thunk, Some(&opts_span), ctx).await?;
+        match val.as_bool() {
+            Some(b) => b,
+            None if matches!(val, Value::Dict(ref d) if d.is_empty()) => false, // Null
+            None => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "tls-connect opts.mozilla-roots".to_string(),
+                    "Bool",
+                    val.type_name(),
+                    opts_span.clone(),
+                )
+                .into())
             }
-        } else {
-            false
-        };
+        }
+    } else {
+        false
+    };
 
     if mozilla_roots {
         root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
     }
 
     // Load ca-bundle if provided
-    if let Some(thunk_id) = opts_dict.get(&crate::value::Key::String("ca-bundle".into())) {
+    if let Some(thunk_id) = opts_dict.get(&crate::value::HashableValue::Str("ca-bundle".into())) {
         let thunk = ctx.get_thunk(*thunk_id);
         let handle_val = crate::eval::materialize(&thunk, Some(&opts_span), ctx).await?;
         let pem_bytes = slurp_handle_bytes(&handle_val, opts_span.clone())?;
@@ -898,8 +414,10 @@ pub(crate) async fn build_tls_config(
     }
 
     // Build config with client auth
-    let has_client_cert = opts_dict.contains_key(&crate::value::Key::String("client-cert".into()));
-    let has_client_key = opts_dict.contains_key(&crate::value::Key::String("client-key".into()));
+    let has_client_cert =
+        opts_dict.contains_key(&crate::value::HashableValue::Str("client-cert".into()));
+    let has_client_key =
+        opts_dict.contains_key(&crate::value::HashableValue::Str("client-key".into()));
 
     let mut config = if has_client_cert || has_client_key {
         if !has_client_cert || !has_client_key {
@@ -912,13 +430,13 @@ pub(crate) async fn build_tls_config(
         }
 
         let cert_thunk_id = opts_dict
-            .get(&crate::value::Key::String("client-cert".into()))
+            .get(&crate::value::HashableValue::Str("client-cert".into()))
             .unwrap();
         let cert_thunk = ctx.get_thunk(*cert_thunk_id);
         let cert_handle = crate::eval::materialize(&cert_thunk, Some(&opts_span), ctx).await?;
 
         let key_thunk_id = opts_dict
-            .get(&crate::value::Key::String("client-key".into()))
+            .get(&crate::value::HashableValue::Str("client-key".into()))
             .unwrap();
         let key_thunk = ctx.get_thunk(*key_thunk_id);
         let key_handle = crate::eval::materialize(&key_thunk, Some(&opts_span), ctx).await?;
@@ -967,7 +485,7 @@ pub(crate) async fn build_tls_config(
     };
 
     // Set ALPN protocols
-    if let Some(thunk_id) = opts_dict.get(&crate::value::Key::String("alpn".into())) {
+    if let Some(thunk_id) = opts_dict.get(&crate::value::HashableValue::Str("alpn".into())) {
         let thunk = ctx.get_thunk(*thunk_id);
         let alpn_val = crate::eval::materialize(&thunk, Some(&opts_span), ctx).await?;
         let alpn_protocols = extract_alpn_protocols(&alpn_val, opts_span, ctx).await?;
@@ -980,98 +498,54 @@ pub(crate) async fn build_tls_config(
     Ok(config)
 }
 
-/// Extract ALPN protocol list from a Seq of Strings
+/// Extract ALPN protocol list from a Dict of Strings (integer-keyed).
 async fn extract_alpn_protocols(
     val: &Value,
     span: Span,
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> EvalResult<Vec<Vec<u8>>> {
+    let map = match val {
+        Value::Dict(d) => d,
+        other => {
+            return Err(EvalError::type_mismatch_ctx(
+                "tls-connect opts.alpn".to_string(),
+                "Dict of String",
+                other.type_name(),
+                span,
+            )
+            .into())
+        }
+    };
     let mut protocols = Vec::new();
-    let mut current = val.clone();
-
-    loop {
-        match current {
-            Value::Variant {
-                ref tag,
-                payload: None,
-            } if tag == "Seq.Nil" => break,
-            Value::Variant {
-                ref tag,
-                payload: Some(payload_id),
-            } if tag == "Seq.Cons" => {
-                let payload_thunk = ctx.get_thunk(payload_id);
-                let payload_val = crate::eval::materialize(&payload_thunk, Some(&span), ctx).await?;
-                let (head, tail) = if let Value::Dict(ref d) = payload_val {
-                    let h = *d
-                        .get(&crate::value::Key::String("head".into()))
-                        .expect("Seq.Cons must have head");
-                    let t = *d
-                        .get(&crate::value::Key::String("tail".into()))
-                        .expect("Seq.Cons must have tail");
-                    (h, t)
-                } else {
-                    return Err(EvalError::internal(
-                        "Seq.Cons payload must be a Dict".to_string(),
-                        span,
-                    )
-                    .into());
-                };
-
-                // Materialize head
-                let head_thunk = ctx.get_thunk(head);
-                let head_val = crate::eval::materialize(&head_thunk, Some(&span), ctx).await?;
-
-                let protocol_str = match head_val {
-                    Value::String { source, start, end } => source[start..end].to_string(),
-                    other => {
-                        return Err(EvalError::type_mismatch_ctx(
-                            "tls-connect opts.alpn".to_string(),
-                            "Seq of String",
-                            other.type_name(),
-                            span,
-                        )
-                        .into())
-                    }
-                };
-                protocols.push(protocol_str.into_bytes());
-
-                let tail_thunk = ctx.get_thunk(tail);
-                current = crate::eval::materialize(&tail_thunk, Some(&span), ctx).await?;
-            }
+    for (_idx, val_id) in map {
+        let thunk = ctx.get_thunk(*val_id);
+        let v = crate::eval::materialize(&thunk, Some(&span), ctx).await?;
+        let protocol_str = match v {
+            Value::String { source, start, end } => source[start..end].to_string(),
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "tls-connect opts.alpn".to_string(),
-                    "Seq of String",
+                    "String",
                     other.type_name(),
                     span,
                 )
                 .into())
             }
-        }
+        };
+        protocols.push(protocol_str.into_bytes());
     }
-
     Ok(protocols)
 }
 
 /// Slurp a Handle into bytes (for reading PEM files)
-fn slurp_handle_bytes(val: &Value, span: Span) -> EvalResult<Vec<u8>> {
-    match val {
-        Value::Handle { inner, .. } => {
-            use std::io::Read;
-            let mut bytes = Vec::new();
-            inner.borrow_mut().read_to_end(&mut bytes).map_err(|e| {
-                EvalError::user_error(format!("tls-connect: failed to read Handle: {}", e), span)
-            })?;
-            Ok(bytes)
-        }
-        other => Err(EvalError::type_mismatch_ctx(
-            "tls-connect opts.ca-bundle/client-cert/client-key".to_string(),
-            "Handle",
-            other.type_name(),
-            span,
-        )
-        .into()),
-    }
+fn slurp_handle_bytes(_val: &Value, span: Span) -> EvalResult<Vec<u8>> {
+    // Handle removed — this function can no longer read PEM data from a Handle.
+    // When the network layer is redesigned, this will accept a File or Bytes value instead.
+    Err(EvalError::user_error(
+        "tls-connect: ca-bundle/client-cert/client-key via Handle not available — tcp redesign in progress".to_string(),
+        span,
+    )
+    .into())
 }
 
 /// Validate SPKI pins against the peer certificate
@@ -1081,55 +555,24 @@ pub(crate) async fn validate_spki_pins(
     span: Span,
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> EvalResult<()> {
-    // Extract list of pins
-    let mut pins = Vec::new();
-    let mut current = pins_val.clone();
-
-    loop {
-        match current {
-            Value::Variant {
-                ref tag,
-                payload: None,
-            } if tag == "Seq.Nil" => break,
-            Value::Variant {
-                ref tag,
-                payload: Some(payload_id),
-            } if tag == "Seq.Cons" => {
-                let payload_thunk = ctx.get_thunk(payload_id);
-                let payload_val = crate::eval::materialize(&payload_thunk, Some(&span), ctx).await?;
-                let (head, tail) = if let Value::Dict(ref d) = payload_val {
-                    let h = *d
-                        .get(&crate::value::Key::String("head".into()))
-                        .expect("Seq.Cons must have head");
-                    let t = *d
-                        .get(&crate::value::Key::String("tail".into()))
-                        .expect("Seq.Cons must have tail");
-                    (h, t)
-                } else {
-                    return Err(EvalError::internal(
-                        "Seq.Cons payload must be a Dict".to_string(),
-                        span,
-                    )
-                    .into());
-                };
-
-                let head_thunk = ctx.get_thunk(head);
-                let pin_val = crate::eval::materialize(&head_thunk, Some(&span), ctx).await?;
-                pins.push(pin_val);
-
-                let tail_thunk = ctx.get_thunk(tail);
-                current = crate::eval::materialize(&tail_thunk, Some(&span), ctx).await?;
-            }
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "tls-connect opts.pins".to_string(),
-                    "Seq of SpkiPin",
-                    other.type_name(),
-                    span.clone(),
-                )
-                .into())
-            }
+    // Extract list of pins from an integer-keyed Dict
+    let pins_map = match pins_val {
+        Value::Dict(d) => d,
+        other => {
+            return Err(EvalError::type_mismatch_ctx(
+                "tls-connect opts.pins".to_string(),
+                "Dict of SpkiPin",
+                other.type_name(),
+                span.clone(),
+            )
+            .into())
         }
+    };
+    let mut pins = Vec::new();
+    for (_idx, val_id) in pins_map {
+        let thunk = ctx.get_thunk(*val_id);
+        let pin_val = crate::eval::materialize(&thunk, Some(&span), ctx).await?;
+        pins.push(pin_val);
     }
 
     if pins.is_empty() {
@@ -1173,7 +616,7 @@ pub(crate) async fn validate_spki_pins(
         };
 
         let algorithm_thunk_id = pin_dict
-            .get(&crate::value::Key::String("algorithm".into()))
+            .get(&crate::value::HashableValue::Str("algorithm".into()))
             .ok_or_else(|| {
                 EvalError::user_error(
                     "tls-connect: SpkiPin missing 'algorithm' field".to_string(),
@@ -1184,7 +627,7 @@ pub(crate) async fn validate_spki_pins(
         let algorithm_val = crate::eval::materialize(&algorithm_thunk, Some(&span), ctx).await?;
 
         let fingerprint_thunk_id = pin_dict
-            .get(&crate::value::Key::String("fingerprint".into()))
+            .get(&crate::value::HashableValue::Str("fingerprint".into()))
             .ok_or_else(|| {
                 EvalError::user_error(
                     "tls-connect: SpkiPin missing 'fingerprint' field".to_string(),
@@ -1192,7 +635,8 @@ pub(crate) async fn validate_spki_pins(
                 )
             })?;
         let fingerprint_thunk = ctx.get_thunk(*fingerprint_thunk_id);
-        let fingerprint_val = crate::eval::materialize(&fingerprint_thunk, Some(&span), ctx).await?;
+        let fingerprint_val =
+            crate::eval::materialize(&fingerprint_thunk, Some(&span), ctx).await?;
 
         let algorithm_tag = match algorithm_val {
             Value::Variant { tag, .. } => tag,
@@ -1291,9 +735,9 @@ fn extract_cert_info(
     let mut info = IndexMap::new();
 
     // Store the raw cert DER bytes so tls-peer-cert can parse it later
-    use crate::value::Key;
+    use crate::value::HashableValue;
     info.insert(
-        Key::String("_raw_der".into()),
+        HashableValue::Str("_raw_der".into()),
         ctx.alloc_thunk(ok_val(
             Value::Bytes {
                 source: Rc::from(cert_der.as_ref()),
@@ -1387,365 +831,58 @@ async fn extract_sans(
         }
     }
 
-    // Convert Vec<Value> to a Seq by building from right to left
-    // End of Seq is Seq.Nil
-    let mut result = ctx.alloc_thunk(ok_val(crate::value::make_seq_nil(), span.clone())?);
-    for val in sans_list.into_iter().rev() {
-        let head_thunk = ctx.alloc_thunk(ok_val(val, span.clone())?);
-        result = ctx.alloc_thunk(ok_val(
-            crate::value::make_seq_cons(head_thunk, result, ctx),
-            span.clone(),
-        )?);
+    // Build an integer-keyed Dict from the collected SAN values
+    let mut dict: indexmap::IndexMap<crate::value::HashableValue, crate::value::ThunkId> =
+        indexmap::IndexMap::new();
+    for (i, val) in sans_list.into_iter().enumerate() {
+        let id = ctx.alloc_thunk(ok_val(val, span.clone())?);
+        dict.insert(crate::value::HashableValue::Int(i as i64), id);
     }
-
-    // Materialize the final Seq
-    crate::eval::materialize(&ctx.get_thunk(result), Some(&span), ctx).await
+    Ok(Value::Dict(dict))
 }
 
 /// `tls-layer`: Layer TLS on an existing TCP Handle (STARTTLS use case).
-/// Takes (sni, opts, handle). Extracts raw_tcp from Handle, wraps in TLS, returns new Handle.
-/// Signature: tls-layer sni@String opts@Dict handle@Handle → Handle[... Stream Tls]
+/// Stubbed: Handle/WriteHandle removed. Will be reimplemented with new stream type.
 pub(crate) fn builtin_tls_layer(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    let BuiltinArgs { call_span, .. } = ctx_arg;
     Box::pin(async move {
-        let BuiltinArgs {
-            args,
-            named,
-            call_span,
-            ctx,
-        } = ctx_arg;
-
-        // Expect 3 args: sni, opts, handle
-        if args.len() != 3 {
-            return Err(EvalError::user_error(
-                format!(
-                    "tls-layer: expected 3 arguments (sni opts handle), got {}",
-                    args.len()
-                ),
-                call_span,
-            )
-            .into());
-        }
-        reject_named("tls-layer", named.as_ref(), call_span.clone())?;
-
-        let sni_val = args[0]
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
-        let opts_val = args[1]
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
-        let handle_val = args[2]
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
-
-        let sni = require_string("tls-layer", sni_val, args[0].span.clone())?;
-
-        // Extract Handle and its raw_tcp
-        let (raw_tcp_slot, caps, creation_span) = match handle_val {
-            Value::Handle {
-                raw_tcp: Some(slot),
-                caps,
-                creation_span,
-                ..
-            } => (slot, caps, creation_span),
-            Value::Handle {
-                raw_tcp: None,
-                creation_span,
-                ..
-            } => {
-                // Dual-span error: call_span (primary) + creation_span (secondary)
-                return Err(EvalError::user_error(
-                "tls-layer: handle does not have a raw TCP stream (not created by connect cap Tcp)"
-                    .to_string(),
-                call_span.clone(),
-            )
-            .with_secondary_span(creation_span, "handle created here")
-            .into());
-            }
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "tls-layer".to_string(),
-                    "Handle",
-                    other.type_name(),
-                    args[2].span.clone(),
-                )
-                .into())
-            }
-        };
-
-        // Check Handle has Stream capability
-        if !caps.contains_key("Stream") {
-            return Err(EvalError::user_error(
-                "tls-layer: handle must have Stream capability".to_string(),
-                args[2].span.clone(),
-            )
-            .into());
-        }
-
-        // Take the TcpStream from the shared slot (invalidates all aliases)
-        let tcp_stream = raw_tcp_slot.borrow_mut().take().ok_or_else(|| {
-            // Dual-span error: call_span (primary) + creation_span (secondary)
-            EvalError::user_error(
-                "tls-layer: raw TCP stream already consumed by a previous tls-layer call"
-                    .to_string(),
-                call_span.clone(),
-            )
-            .with_secondary_span(creation_span, "handle created here")
-        })?;
-
-        // Build TLS config
-        let tls_config = build_tls_config(&opts_val, args[1].span.clone(), &ctx).await?;
-
-        // Create TLS connection
-        let server_name = rustls::pki_types::ServerName::try_from(sni.clone())
-            .map_err(|e| {
-                EvalError::user_error(
-                    format!("tls-layer: invalid server name '{}': {}", sni, e),
-                    args[0].span.clone(),
-                )
-            })?
-            .to_owned();
-
-        let client_conn =
-            rustls::ClientConnection::new(std::sync::Arc::new(tls_config), server_name).map_err(
-                |e| {
-                    EvalError::user_error(
-                        format!("tls-layer: failed to create TLS connection: {}", e),
-                        call_span.clone(),
-                    )
-                },
-            )?;
-
-        let tls_stream = rustls::StreamOwned::new(client_conn, tcp_stream);
-        let shared_stream = Rc::new(RefCell::new(tls_stream));
-
-        // Perform TLS handshake by attempting to flush
-        {
-            use std::io::Write;
-            shared_stream.borrow_mut().flush().map_err(|e| {
-                EvalError::user_error(
-                    format!("tls-layer: TLS handshake failed: {}", e),
-                    call_span.clone(),
-                )
-            })?;
-        }
-
-        // Validate SPKI pins if provided
-        if let Value::Dict(opts_map) = &opts_val {
-            if let Some(pins_thunk_id) = opts_map.get(&crate::value::Key::String("pins".into())) {
-                let pins_thunk = ctx.get_thunk(*pins_thunk_id);
-                let pins_val = crate::eval::materialize(&pins_thunk, Some(&call_span), &ctx).await?;
-                let stream_borrow_for_pins = shared_stream.borrow();
-                validate_spki_pins(
-                    &stream_borrow_for_pins.conn,
-                    &pins_val,
-                    call_span.clone(),
-                    &ctx,
-                ).await?;
-                drop(stream_borrow_for_pins);
-            }
-        }
-
-        // Extract peer certificate info for the Tls capability
-        let tls_info = {
-            let stream_borrow = shared_stream.borrow();
-            let peer_certs = stream_borrow.conn.peer_certificates();
-            if let Some(certs) = peer_certs {
-                if !certs.is_empty() {
-                    // Clone the cert DER bytes before dropping the borrow
-                    let cert_der = certs[0].clone();
-                    drop(stream_borrow);
-                    extract_cert_info(&cert_der, call_span.clone(), &ctx)?
-                } else {
-                    Value::Dict(IndexMap::new()) // No cert
-                }
-            } else {
-                Value::Dict(IndexMap::new()) // No cert
-            }
-        };
-
-        // Create read and write wrappers
-        let reader = TlsReader {
-            stream: Rc::clone(&shared_stream),
-            buf: Vec::new(),
-            buf_pos: 0,
-        };
-        let writer = TlsWriter {
-            stream: Rc::clone(&shared_stream),
-        };
-
-        let inner = Rc::new(RefCell::new(Box::new(reader) as Box<dyn std::io::BufRead>));
-        let write_inner = Some(Rc::new(RefCell::new(
-            Box::new(writer) as Box<dyn std::io::Write>
-        )));
-
-        // Build capabilities: Binary Readable Writable Stream Tls
-        let mut new_caps = HashMap::new();
-        new_caps.insert("Readable".to_string(), Value::Bool(true));
-        new_caps.insert("Writable".to_string(), Value::Bool(true));
-        new_caps.insert("Binary".to_string(), Value::Bool(true));
-        new_caps.insert("Stream".to_string(), Value::Bool(true));
-        new_caps.insert("Tls".to_string(), tls_info);
-
-        ok_val(
-            Value::Handle {
-                caps: new_caps,
-                inner,
-                write_inner,
-                seek_inner: None,
-                raw_tcp: None, // Consumed by this operation
-                creation_span: call_span.clone(),
-            },
+        Err(EvalError::user_error(
+            "tls-layer: network not yet available — tcp redesign in progress".to_string(),
             call_span,
         )
+        .into())
     })
 }
 
-/// `tls-peer-cert`: Extract TLS certificate metadata from a TLS handle.
-/// Requires Handle[... Tls ...].
-/// Returns a dict with: subject, issuer, sans, not-before, not-after, spki-sha256.
+// Old tls-layer body removed (used Value::Handle). Network redesign sprint will rewrite.
+
+// FINAL DEAD CODE REMOVAL: Lines from here to the tls-peer-cert doc are dead.
+// They reference Value::Handle which no longer exists.
+// The stub builtin_tls_layer above returns an error.
+
+// UNIQUE_SENTINEL_TLS_LAYER_END
+
+        // DEAD CODE: TLS stream setup removed (used Value::Handle)
+
+// tls-layer dead body fully removed.
+
+/// `tls-peer-cert`: Extract TLS certificate metadata. Stubbed: Handle removed.
 pub(crate) fn builtin_tls_peer_cert(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    let BuiltinArgs { call_span, .. } = ctx_arg;
     Box::pin(async move {
-        let BuiltinArgs {
-            args,
-            named,
+        Err(EvalError::user_error(
+            "tls-peer-cert: network not yet available — tcp redesign in progress".to_string(),
             call_span,
-            ctx,
-        } = ctx_arg;
-
-        let val = crate::builtins::expect_one_arg(
-            "tls-peer-cert",
-            &args,
-            named.as_ref(),
-            &ctx,
-            call_span.clone(),
-        )?;
-
-        // Extract Handle and check for Tls capability
-        let caps = match val {
-            Value::Handle { caps, .. } => caps,
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "tls-peer-cert".to_string(),
-                    "Handle",
-                    other.type_name(),
-                    args[0].span.clone(),
-                )
-                .into())
-            }
-        };
-
-        let tls_info = caps.get("Tls").ok_or_else(|| {
-            EvalError::user_error(
-                "tls-peer-cert: handle must have Tls capability (created by tls-connect)"
-                    .to_string(),
-                call_span.clone(),
-            )
-        })?;
-
-        // The TlsInfo is stored in the Tls capability — it's a dict with _raw_der
-        match tls_info {
-            Value::Dict(dict) => {
-                use crate::value::Key;
-
-                // Extract the _raw_der bytes from the dict
-                let raw_der_thunk_id =
-                    dict.get(&Key::String("_raw_der".into())).ok_or_else(|| {
-                        EvalError::user_error(
-                            "tls-peer-cert: TLS capability missing _raw_der field".to_string(),
-                            call_span.clone(),
-                        )
-                    })?;
-
-                // Get the thunk and materialize it
-                let raw_der_thunk = ctx.get_thunk(*raw_der_thunk_id);
-                let raw_der_val = crate::eval::materialize(&raw_der_thunk, Some(&call_span), &ctx).await?;
-                let cert_der = match &raw_der_val {
-                    Value::Bytes { source, start, end } => &source[*start..*end],
-                    other => {
-                        return Err(EvalError::type_mismatch_ctx(
-                            "tls-peer-cert".to_string(),
-                            "Bytes",
-                            other.type_name(),
-                            call_span.clone(),
-                        )
-                        .into())
-                    }
-                };
-
-                // Parse the X.509 certificate
-                let (_, cert) = x509_parser::parse_x509_certificate(cert_der).map_err(|e| {
-                    EvalError::user_error(
-                        format!("tls-peer-cert: failed to parse certificate: {}", e),
-                        call_span.clone(),
-                    )
-                })?;
-
-                // Extract subject CN (Common Name)
-                let subject =
-                    extract_cn(&cert.tbs_certificate.subject).unwrap_or("(none)".to_string());
-
-                // Extract issuer CN
-                let issuer =
-                    extract_cn(&cert.tbs_certificate.issuer).unwrap_or("(none)".to_string());
-
-                // Extract validity dates (convert to Unix timestamps)
-                let not_before = cert.tbs_certificate.validity.not_before.timestamp();
-                let not_after = cert.tbs_certificate.validity.not_after.timestamp();
-
-                // Extract SANs (Subject Alternative Names)
-                let sans = extract_sans(&cert, call_span.clone(), &ctx).await?;
-
-                // Compute SPKI SHA-256 hash
-                let spki_der = cert.tbs_certificate.subject_pki.raw;
-                let spki_hash = {
-                    use sha2::{Digest, Sha256};
-                    Sha256::digest(spki_der)
-                };
-                let spki_hex = hex::encode(spki_hash);
-
-                // Build the result dict
-                let mut cert_info = IndexMap::new();
-                cert_info.insert(
-                    Key::String("subject".into()),
-                    ctx.alloc_thunk(ok_val(string_val(&subject), call_span.clone())?),
-                );
-                cert_info.insert(
-                    Key::String("issuer".into()),
-                    ctx.alloc_thunk(ok_val(string_val(&issuer), call_span.clone())?),
-                );
-                cert_info.insert(
-                    Key::String("sans".into()),
-                    ctx.alloc_thunk(ok_val(sans, call_span.clone())?),
-                );
-                cert_info.insert(
-                    Key::String("not-before".into()),
-                    ctx.alloc_thunk(ok_val(Value::Int(not_before), call_span.clone())?),
-                );
-                cert_info.insert(
-                    Key::String("not-after".into()),
-                    ctx.alloc_thunk(ok_val(Value::Int(not_after), call_span.clone())?),
-                );
-                cert_info.insert(
-                    Key::String("spki-sha256".into()),
-                    ctx.alloc_thunk(ok_val(string_val(&spki_hex), call_span.clone())?),
-                );
-
-                ok_val(Value::Dict(cert_info), call_span)
-            }
-            other => Err(EvalError::type_mismatch_ctx(
-                "tls-peer-cert".to_string(),
-                "TlsInfo dict",
-                other.type_name(),
-                call_span,
-            )
-            .into()),
-        }
+        )
+        .into())
     })
 }
+
+// Old tls-peer-cert body fully removed (it used Value::Handle and async/? in non-async context).
 
 #[allow(clippy::items_after_test_module)]
 // QUIC/HTTP structs and builtins come after test module; moving them before would break organization
@@ -1753,10 +890,11 @@ pub(crate) fn builtin_tls_peer_cert(
 mod tests {
     use super::*;
     use crate::ast::Span;
+    use crate::rust_span;
     use crate::value::NetCapEntry;
 
     fn dummy_span() -> Span {
-        Span::origin()
+        rust_span!()
     }
 
     #[test]
@@ -2034,7 +1172,7 @@ pub(crate) fn builtin_quic_session(
         // build_tls_config sets alpn_protocols to ["http/1.1"] by default; replace with h3.
         // We check opts for an explicit alpn key to respect caller overrides.
         let has_explicit_alpn = matches!(&opts_val, Value::Dict(d)
-        if d.contains_key(&crate::value::Key::String("alpn".into())));
+        if d.contains_key(&crate::value::HashableValue::Str("alpn".into())));
         if !has_explicit_alpn {
             tls_config.alpn_protocols = vec![b"h3".to_vec()];
         }
@@ -2084,82 +1222,15 @@ pub(crate) fn builtin_quic_session(
 pub(crate) fn builtin_quic_open_stream(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    // Stubbed: returned Value::Handle which no longer exists.
+    // Will be reimplemented with a new stream type in the network redesign sprint.
+    let BuiltinArgs { call_span, .. } = ctx_arg;
     Box::pin(async move {
-        let BuiltinArgs {
-            args,
-            named,
-            call_span,
-            ctx: _,
-        } = ctx_arg;
-
-        reject_named("quic-open-stream", named.as_ref(), call_span.clone())?;
-
-        if args.len() != 1 {
-            return Err(EvalError::user_error(
-                format!(
-                    "quic-open-stream: expected 1 argument (quic_session), got {}",
-                    args.len()
-                ),
-                call_span,
-            )
-            .into());
-        }
-
-        let session_val = args[0]
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
-
-        let conn = match session_val {
-            Value::QuicSession(c) => c,
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "quic-open-stream".to_string(),
-                    "QuicSession",
-                    other.type_name(),
-                    args[0].span.clone(),
-                )
-                .into())
-            }
-        };
-
-        // Open a bidirectional stream (async → sync)
-        let (send, recv) = crate::async_rt::block_on(conn.open_bi()).map_err(|e| {
-            EvalError::user_error(
-                format!("quic-open-stream: failed to open stream: {}", e),
-                call_span.clone(),
-            )
-        })?;
-
-        let reader = QuicRecvReader {
-            recv,
-            buf: Vec::new(),
-            buf_pos: 0,
-            bytes_read: 0,
-        };
-        let writer = QuicSendWriter { send };
-
-        let inner = Rc::new(RefCell::new(Box::new(reader) as Box<dyn std::io::BufRead>));
-        let write_inner = Some(Rc::new(RefCell::new(
-            Box::new(writer) as Box<dyn std::io::Write>
-        )));
-
-        let mut caps = HashMap::new();
-        caps.insert("Readable".to_string(), Value::Bool(true));
-        caps.insert("Writable".to_string(), Value::Bool(true));
-        caps.insert("Binary".to_string(), Value::Bool(true));
-        caps.insert("Stream".to_string(), Value::Bool(true));
-
-        ok_val(
-            Value::Handle {
-                caps,
-                inner,
-                write_inner,
-                seek_inner: None,
-                raw_tcp: None,
-                creation_span: call_span.clone(),
-            },
+        Err(EvalError::user_error(
+            "quic-open-stream: network not yet available — stream redesign in progress".to_string(),
             call_span,
         )
+        .into())
     })
 }
 
@@ -2534,11 +1605,13 @@ pub(crate) fn builtin_http_request(
                 let mut out = Vec::with_capacity(map.len());
                 for (key, val_id) in map.iter() {
                     let key_str = match key {
-                        crate::value::Key::String(s) => s.to_string(),
-                        crate::value::Key::Int(i) => i.to_string(),
+                        crate::value::HashableValue::Str(s) => s.to_string(),
+                        crate::value::HashableValue::Int(i) => i.to_string(),
+                        _ => "<other>".to_string(),
                     };
                     let thunk = ctx.thunk_arena.lock().unwrap().get(*val_id).clone();
-                    let val_materialized = crate::eval::materialize(&thunk, Some(&call_span), &ctx).await?;
+                    let val_materialized =
+                        crate::eval::materialize(&thunk, Some(&call_span), &ctx).await?;
                     let val_str = require_string(
                         "http-request header value",
                         val_materialized,
@@ -2674,7 +1747,7 @@ async fn http_request_h2(config: &Http2RequestConfig<'_>) -> EvalResult<Arc<Thun
     // Collect response headers.
     let mut headers_map = IndexMap::new();
     for (name, value) in response.headers() {
-        let k = crate::value::Key::String(name.as_str().into());
+        let k = crate::value::HashableValue::Str(name.as_str().into());
         let v = match value.to_str() {
             Ok(s) => s.to_string(),
             Err(_) => String::from_utf8_lossy(value.as_bytes()).into_owned(),
@@ -2698,15 +1771,15 @@ async fn http_request_h2(config: &Http2RequestConfig<'_>) -> EvalResult<Arc<Thun
     // Build inner response dict: {status: Int, headers: Dict, body: String}
     let mut inner = IndexMap::new();
     inner.insert(
-        crate::value::Key::String("status".into()),
+        crate::value::HashableValue::Str("status".into()),
         ctx.alloc_thunk(ok_val(Value::Int(status), span.clone())?),
     );
     inner.insert(
-        crate::value::Key::String("headers".into()),
+        crate::value::HashableValue::Str("headers".into()),
         ctx.alloc_thunk(ok_val(Value::Dict(headers_map), span.clone())?),
     );
     inner.insert(
-        crate::value::Key::String("body".into()),
+        crate::value::HashableValue::Str("body".into()),
         ctx.alloc_thunk(ok_val(string_val(&body_string), span.clone())?),
     );
 
@@ -2805,7 +1878,7 @@ fn http_request_h3(
     // Collect response headers into an LLT dict.
     let mut headers_map = IndexMap::new();
     for (name, value) in response.headers() {
-        let k = crate::value::Key::String(name.as_str().into());
+        let k = crate::value::HashableValue::Str(name.as_str().into());
         let v = match value.to_str() {
             Ok(s) => s.to_string(),
             Err(_) => {
@@ -2846,15 +1919,15 @@ fn http_request_h3(
     // Build inner response dict: {status: Int, headers: Dict, body: String}
     let mut inner = IndexMap::new();
     inner.insert(
-        crate::value::Key::String("status".into()),
+        crate::value::HashableValue::Str("status".into()),
         ctx.alloc_thunk(ok_val(Value::Int(status), span.clone())?),
     );
     inner.insert(
-        crate::value::Key::String("headers".into()),
+        crate::value::HashableValue::Str("headers".into()),
         ctx.alloc_thunk(ok_val(Value::Dict(headers_map), span.clone())?),
     );
     inner.insert(
-        crate::value::Key::String("body".into()),
+        crate::value::HashableValue::Str("body".into()),
         ctx.alloc_thunk(ok_val(string_val(&body_string), span.clone())?),
     );
 
@@ -2970,10 +2043,10 @@ pub(crate) fn builtin_icmp_ping(
 
 /// Build a `{err: String}` result dict value.
 fn icmp_err_val(msg: String, span: Span, ctx: &crate::eval::EvalContext) -> EvalResult<Arc<Thunk>> {
-    use crate::value::Key;
+    use crate::value::HashableValue;
     let mut result = IndexMap::new();
     result.insert(
-        Key::String("err".into()),
+        HashableValue::Str("err".into()),
         ctx.alloc_thunk(ok_val(string_val(&msg), span.clone())?),
     );
     ok_val(Value::Dict(result), span)
@@ -2985,17 +2058,17 @@ fn icmp_ok_val(
     span: Span,
     ctx: &crate::eval::EvalContext,
 ) -> EvalResult<Arc<Thunk>> {
-    use crate::value::Key;
+    use crate::value::HashableValue;
     // Inner dict: {latency-ms: Int}
     let mut inner = IndexMap::new();
     inner.insert(
-        Key::String("latency-ms".into()),
+        HashableValue::Str("latency-ms".into()),
         ctx.alloc_thunk(ok_val(Value::Int(latency_ms), span.clone())?),
     );
     // Outer dict: {ok: {latency-ms: Int}}
     let mut result = IndexMap::new();
     result.insert(
-        Key::String("ok".into()),
+        HashableValue::Str("ok".into()),
         ctx.alloc_thunk(ok_val(Value::Dict(inner), span.clone())?),
     );
     ok_val(Value::Dict(result), span)
@@ -3364,7 +2437,7 @@ pub(crate) fn builtin_recv_datagram(
             call_span.clone(),
         )?;
 
-        use crate::value::Key;
+        use crate::value::HashableValue;
 
         // Helper: build the `{data: Bytes}` result dict from a received byte buffer.
         let make_data_dict =
@@ -3377,7 +2450,7 @@ pub(crate) fn builtin_recv_datagram(
                 };
                 let mut dict = IndexMap::new();
                 dict.insert(
-                    Key::String("data".into()),
+                    HashableValue::Str("data".into()),
                     ctx.alloc_thunk(ok_val(data_bytes, call_span.clone())?),
                 );
                 ok_val(Value::Dict(dict), call_span.clone())
@@ -3464,7 +2537,7 @@ pub(crate) fn builtin_uri(
 
             // scheme (lowercase)
             dict.insert(
-                Key::String("scheme".into()),
+                HashableValue::Str("scheme".into()),
                 ctx.alloc_thunk(ok_val(string_val(parsed.scheme()), call_span.clone())?),
             );
 
@@ -3475,7 +2548,7 @@ pub(crate) fn builtin_uri(
                 string_val(parsed.username())
             };
             dict.insert(
-                Key::String("username".into()),
+                HashableValue::Str("username".into()),
                 ctx.alloc_thunk(ok_val(username, call_span.clone())?),
             );
 
@@ -3485,7 +2558,7 @@ pub(crate) fn builtin_uri(
                 None => Value::Dict(IndexMap::new()),
             };
             dict.insert(
-                Key::String("password".into()),
+                HashableValue::Str("password".into()),
                 ctx.alloc_thunk(ok_val(password, call_span.clone())?),
             );
 
@@ -3495,7 +2568,7 @@ pub(crate) fn builtin_uri(
                 None => Value::Dict(IndexMap::new()),
             };
             dict.insert(
-                Key::String("host".into()),
+                HashableValue::Str("host".into()),
                 ctx.alloc_thunk(ok_val(host, call_span.clone())?),
             );
 
@@ -3505,13 +2578,13 @@ pub(crate) fn builtin_uri(
                 None => Value::Dict(IndexMap::new()),
             };
             dict.insert(
-                Key::String("port".into()),
+                HashableValue::Str("port".into()),
                 ctx.alloc_thunk(ok_val(port, call_span.clone())?),
             );
 
             // path (always present per RFC 3986)
             dict.insert(
-                Key::String("path".into()),
+                HashableValue::Str("path".into()),
                 ctx.alloc_thunk(ok_val(string_val(parsed.path()), call_span.clone())?),
             );
 
@@ -3521,7 +2594,7 @@ pub(crate) fn builtin_uri(
                 None => Value::Dict(IndexMap::new()),
             };
             dict.insert(
-                Key::String("query".into()),
+                HashableValue::Str("query".into()),
                 ctx.alloc_thunk(ok_val(query, call_span.clone())?),
             );
 
@@ -3531,7 +2604,7 @@ pub(crate) fn builtin_uri(
                 None => Value::Dict(IndexMap::new()),
             };
             dict.insert(
-                Key::String("fragment".into()),
+                HashableValue::Str("fragment".into()),
                 ctx.alloc_thunk(ok_val(fragment, call_span.clone())?),
             );
 
@@ -3554,7 +2627,7 @@ pub(crate) fn builtin_uri(
         let mut dict = IndexMap::new();
 
         dict.insert(
-            Key::String("scheme".into()),
+            HashableValue::Str("scheme".into()),
             ctx.alloc_thunk(ok_val(
                 string_val(&scheme.to_lowercase()),
                 call_span.clone(),
@@ -3564,7 +2637,7 @@ pub(crate) fn builtin_uri(
         // Non-hierarchical URIs: all null for userinfo/host/port
         for key in ["username", "password", "host", "port"] {
             dict.insert(
-                Key::String(key.into()),
+                HashableValue::Str(key.into()),
                 ctx.alloc_thunk(ok_val(Value::Dict(IndexMap::new()), call_span.clone())?),
             );
         }
@@ -3573,14 +2646,14 @@ pub(crate) fn builtin_uri(
         // For mailto:user@example.com, path is "user@example.com"
         // For urn:isbn:123, path is "isbn:123"
         dict.insert(
-            Key::String("path".into()),
+            HashableValue::Str("path".into()),
             ctx.alloc_thunk(ok_val(string_val(rest), call_span.clone())?),
         );
 
         // query and fragment: null (non-hierarchical URIs typically don't have these)
         for key in ["query", "fragment"] {
             dict.insert(
-                Key::String(key.into()),
+                HashableValue::Str(key.into()),
                 ctx.alloc_thunk(ok_val(Value::Dict(IndexMap::new()), call_span.clone())?),
             );
         }
@@ -3632,7 +2705,7 @@ pub(crate) fn builtin_url(
 
         // scheme (lowercase)
         dict.insert(
-            Key::String("scheme".into()),
+            HashableValue::Str("scheme".into()),
             ctx.alloc_thunk(ok_val(string_val(parsed.scheme()), call_span.clone())?),
         );
 
@@ -3643,7 +2716,7 @@ pub(crate) fn builtin_url(
             string_val(parsed.username())
         };
         dict.insert(
-            Key::String("username".into()),
+            HashableValue::Str("username".into()),
             ctx.alloc_thunk(ok_val(username, call_span.clone())?),
         );
 
@@ -3653,13 +2726,13 @@ pub(crate) fn builtin_url(
             None => Value::Dict(IndexMap::new()),
         };
         dict.insert(
-            Key::String("password".into()),
+            HashableValue::Str("password".into()),
             ctx.alloc_thunk(ok_val(password, call_span.clone())?),
         );
 
         // host (always present for URLs; unwrap is safe)
         dict.insert(
-            Key::String("host".into()),
+            HashableValue::Str("host".into()),
             ctx.alloc_thunk(ok_val(
                 string_val(parsed.host_str().unwrap()),
                 call_span.clone(),
@@ -3673,7 +2746,7 @@ pub(crate) fn builtin_url(
             0
         });
         dict.insert(
-            Key::String("port".into()),
+            HashableValue::Str("port".into()),
             ctx.alloc_thunk(ok_val(Value::Int(i64::from(port)), call_span.clone())?),
         );
 
@@ -3684,7 +2757,7 @@ pub(crate) fn builtin_url(
             parsed.path()
         };
         dict.insert(
-            Key::String("path".into()),
+            HashableValue::Str("path".into()),
             ctx.alloc_thunk(ok_val(string_val(path), call_span.clone())?),
         );
 
@@ -3694,7 +2767,7 @@ pub(crate) fn builtin_url(
             None => Value::Dict(IndexMap::new()),
         };
         dict.insert(
-            Key::String("query".into()),
+            HashableValue::Str("query".into()),
             ctx.alloc_thunk(ok_val(query, call_span.clone())?),
         );
 
@@ -3704,7 +2777,7 @@ pub(crate) fn builtin_url(
             None => Value::Dict(IndexMap::new()),
         };
         dict.insert(
-            Key::String("fragment".into()),
+            HashableValue::Str("fragment".into()),
             ctx.alloc_thunk(ok_val(fragment, call_span.clone())?),
         );
 
@@ -3792,11 +2865,11 @@ pub(crate) fn builtin_urn(
         let mut dict = IndexMap::new();
 
         dict.insert(
-            Key::String("nid".into()),
+            HashableValue::Str("nid".into()),
             ctx.alloc_thunk(ok_val(string_val(nid), call_span.clone())?),
         );
         dict.insert(
-            Key::String("nss".into()),
+            HashableValue::Str("nss".into()),
             ctx.alloc_thunk(ok_val(string_val(nss), call_span.clone())?),
         );
 
@@ -3806,7 +2879,7 @@ pub(crate) fn builtin_urn(
             None => Value::Dict(IndexMap::new()),
         };
         dict.insert(
-            Key::String("r-component".into()),
+            HashableValue::Str("r-component".into()),
             ctx.alloc_thunk(ok_val(r_val, call_span.clone())?),
         );
 
@@ -3816,7 +2889,7 @@ pub(crate) fn builtin_urn(
             None => Value::Dict(IndexMap::new()),
         };
         dict.insert(
-            Key::String("q-component".into()),
+            HashableValue::Str("q-component".into()),
             ctx.alloc_thunk(ok_val(q_val, call_span.clone())?),
         );
 
@@ -3826,7 +2899,7 @@ pub(crate) fn builtin_urn(
             None => Value::Dict(IndexMap::new()),
         };
         dict.insert(
-            Key::String("fragment".into()),
+            HashableValue::Str("fragment".into()),
             ctx.alloc_thunk(ok_val(frag_val, call_span.clone())?),
         );
 
@@ -3949,11 +3022,11 @@ pub fn net_type_env() -> TypeEnv {
 pub fn populate_net_type_env(env: &mut TypeEnv) {
     // Helper: create Handle capability flag type (Readable, Writable, etc.)
     fn cap_flag(flag_name: &str) -> Type {
-        let mut fields = BTreeMap::new();
+        let mut fields = indexmap::IndexMap::new();
         fields.insert(
             format!("__cap_flag_{}", flag_name.to_lowercase()),
             Type::Record(Row {
-                fields: BTreeMap::new(),
+                fields: indexmap::IndexMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             }),
         );
@@ -4016,7 +3089,7 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
                 (
                     None,
                     Type::Record(Row {
-                        fields: BTreeMap::new(),
+                        fields: indexmap::IndexMap::new(),
                         tail: crate::type_def::RowTail::Empty,
                     }),
                 ), // opts dict: no required fields (BAS width subtyping)
@@ -4035,7 +3108,7 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
         Type::Function {
             params: vec![(None, Type::handle(cap_flag("readable")))],
             ret: Box::new(Type::Record(Row {
-                fields: BTreeMap::from([
+                fields: indexmap::IndexMap::from_iter([
                     ("subject".to_string(), Type::Str),
                     ("issuer".to_string(), Type::Str),
                     ("sans".to_string(), Type::seq(Type::Str)),
@@ -4062,7 +3135,7 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
                 ),
             ],
             ret: Box::new(Type::Record(Row {
-                fields: BTreeMap::new(),
+                fields: indexmap::IndexMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             })),
             variadic: false,
@@ -4079,7 +3152,7 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
                 Type::normalize_union(vec![Type::DatagramHandle, Type::QuicDatagramHandle]),
             )],
             ret: Box::new(Type::Record(Row {
-                fields: BTreeMap::from([
+                fields: indexmap::IndexMap::from_iter([
                     ("data".to_string(), Type::Bytes),
                     ("addr".to_string(), Type::Str),
                     ("port".to_string(), Type::Int),
@@ -4102,7 +3175,7 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
                 (
                     None,
                     Type::Record(Row {
-                        fields: BTreeMap::new(),
+                        fields: indexmap::IndexMap::new(),
                         tail: crate::type_def::RowTail::Empty,
                     }),
                 ), // opts dict (TLS options; no required fields)
@@ -4145,7 +3218,7 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
                 (
                     None,
                     Type::Record(Row {
-                        fields: BTreeMap::new(),
+                        fields: indexmap::IndexMap::new(),
                         tail: crate::type_def::RowTail::Empty,
                     }),
                 ), // opts dict (reserved; no required fields)
@@ -4183,14 +3256,14 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
                 (
                     None,
                     Type::Record(Row {
-                        fields: BTreeMap::new(),
+                        fields: indexmap::IndexMap::new(),
                         tail: crate::type_def::RowTail::Empty,
                     }),
                 ), // headers dict (any dict; BAS width subtyping)
                 (None, Type::Str), // body: runtime calls require_string — Bytes not accepted
             ],
             // Returns {ok: {status headers body}} or {err: msg} — Top since Result variant is nominal.
-            ret: Box::new(Type::Top),
+            ret: Box::new(Type::Any),
             variadic: false,
             required_count: 5,
         },
@@ -4208,17 +3281,17 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
             ],
             ret: Box::new(Type::normalize_union(vec![
                 Type::Record(Row {
-                    fields: BTreeMap::from([(
+                    fields: indexmap::IndexMap::from_iter([(
                         "ok".to_string(),
                         Type::Record(Row {
-                            fields: BTreeMap::from([("latency-ms".to_string(), Type::Int)]),
+                            fields: indexmap::IndexMap::from_iter([("latency-ms".to_string(), Type::Int)]),
                             tail: crate::type_def::RowTail::Empty,
                         }),
                     )]),
                     tail: crate::type_def::RowTail::Empty,
                 }),
                 Type::Record(Row {
-                    fields: BTreeMap::from([("err".to_string(), Type::Str)]),
+                    fields: indexmap::IndexMap::from_iter([("err".to_string(), Type::Str)]),
                     tail: crate::type_def::RowTail::Empty,
                 }),
             ])),

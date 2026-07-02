@@ -1,7 +1,7 @@
 # T-1042: ADT constructor type mismatch — comparing variants of different tags.
 # The type checker detects when two nominal variants from the same type have different tags
 # and emits "cannot unify nominal variants with different tags".
-# Evaluation proceeds (type errors are advisory) — [= Ok Error] returns Bool(false)
+# Evaluation proceeds (type errors are advisory) — [= Ok Error] returns Variant(Boolean.False)
 # because the variants have different tags at runtime.
 [
   Result: [type Ok Error]

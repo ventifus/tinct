@@ -18,7 +18,7 @@ error E020: type mismatch: expected Int, got String
 Now errors include the source line and caret annotation pointing at the
 problematic expression.
 
-All phases implemented, including REPL, CLI, and LSP `related_information`
+All phases implemented, including CLI and LSP `related_information`
 (completed 2026-05-05).
 
 ## Design
@@ -43,28 +43,6 @@ pub fn render_span_snippet(source: &str, span: Span) -> Option<String> {
     ...
 }
 ```
-
-### REPL integration (`src/repl.rs`)
-
-`eval_input` has `input: &str` in scope when errors occur. Error conversion
-uses `render_eval_error(input, &e)`:
-
-```rust
-// Before:
-.map_err(|e| format!("{e}"))?
-
-// After:
-.map_err(|e| {
-    let mut msg = format!("{e}");
-    if let Some(snippet) = render_span_snippet(input, e.definition_span) {
-        msg.push('\n');
-        msg.push_str(&snippet);
-    }
-    msg
-})?
-```
-
-`StepResult = Result<String, String>` is unchanged. No interface change required.
 
 ### CLI integration (`src/main.rs`)
 
@@ -95,11 +73,6 @@ available in `DocumentState`.
 `EvalError::Display` renders coordinates only; no change to the struct or its
 `Display` impl. Added `pub fn render_span_snippet(source: &str, span: Span) ->
 Option<String>` as a public helper.
-
-### `src/repl.rs`
-
-`eval_input` converts `EvalError` to `String` via `render_eval_error(input,
-&e)`, which renders error + snippet. `StepResult` signature unchanged.
 
 ### `src/main.rs`
 

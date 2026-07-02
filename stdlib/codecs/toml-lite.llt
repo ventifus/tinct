@@ -50,14 +50,14 @@ parse-section-name: [fn@Dict [let name@String]
 # Parse a [[array-table]] header into a path list.
 # Type: (String -> Dict String)
 parse-array-table-header: [fn@Dict [let line@String]
-    [parse-section-name [trim [str-slice 2 [- [length line] 2] line]]]]
+    [parse-section-name [trim [str-slice line 2 [- [length line] 2]]]]]
 
 # Split on = and build the key-value entry.
 # Type: (String -> Int -> Dict)
 parse-kv-split: [fn@Dict [let line@String eq-pos@Int]
     [parse-kv-build
-        [trim [str-slice 0 eq-pos line]]
-        [trim [str-slice [+ eq-pos 1] [length line] line]]]]
+        [trim [str-slice line 0 eq-pos]]
+        [trim [str-slice line [+ eq-pos 1] [length line]]]]]
 
 # Build the key-value dict entry.
 # Type: (String -> String -> Dict)
@@ -84,7 +84,7 @@ parse-value-try-bool: [fn [let value@String]
 # Type: (String -> Any)
 parse-value-impl: [fn [let value@String]
     [if [starts-with? "\"" value]
-        [str-slice 1 [- [length value] 1] value]
+        [str-slice value 1 [- [length value] 1]]
         [parse-value-try-int value]]]
 
 # Parse a key = value line into a single-entry dict — internal impl.
@@ -118,7 +118,7 @@ parse-line-dispatch: [fn@Dict [let lines i@Int len@Int acc@Dict current-path lin
 # Parse a [section] header into a path list — internal impl.
 # Type: (String -> Dict String)
 parse-section-header-impl: [fn@Dict [let line@String]
-    [parse-section-name [trim [str-slice 1 [- [length line] 1] line]]]]
+    [parse-section-name [trim [str-slice line 1 [- [length line] 1]]]]]
 
 # Process a list of non-blank, non-comment lines — internal impl.
 # Type: (Dict String -> Dict)

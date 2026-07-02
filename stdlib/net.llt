@@ -123,4 +123,64 @@
       u.path
       [if [match u.query []: true _: false] "" [str "?" u.query]]
       [if [match u.fragment []: true _: false] "" [str "#" u.fragment]]]]
+
+  # ============================================================================
+  # SocketAddress and UdpDatagram types (T-1377)
+  # ============================================================================
+
+  SocketAddress: [type
+    [IPv4 host: String  port: Int]
+    [IPv6 host: String  port: Int]
+    [Unix path: String]]
+
+  UdpDatagram: [type
+    [UdpDatagram data: Bytes  source: SocketAddress]]
+
+  # ============================================================================
+  # Datagram typeclass (T-1359)
+  # ============================================================================
+  #
+  # Unordered, unreliable packet socket. Each send and receive is a discrete unit
+  # with its own source/destination address. UdpSocket is the base instance.
+  # Net-specific instances (UdpSocket, QuicDatagramHandle) are defined separately.
+  #
+  # send: fire-and-forget to addr; returns Null (no delivery guarantee)
+  # recv: blocks until a packet arrives; returns UdpDatagram {data source}
+  Datagram@[doc: "Unordered, unreliable packet socket."]:
+    [class [let Datagram d]
+      send: [Fn@Null [d@d  addr@SocketAddress  data@Bytes]]
+      recv: [Fn@UdpDatagram [d]]]
+
+  # ============================================================================
+  # Codec typeclass (T-1360)
+  # ============================================================================
+  #
+  # Data transform between IO shapes: encode/decode + name.
+  # Every codec bridges two IO shapes: ByteStream, Datagram, MessageStream, or
+  # another codec stage. The input/output type parameters name which shapes
+  # are connected (e.g. GzipCodec: ByteStream → ByteStream, input=Bytes output=Bytes).
+  #
+  # encode: forward transform — input → output
+  # decode: reverse transform — reads from a Bytes buffer at `offset`, returns
+  #         {value: decoded-output, next: new-offset}. The `handler` argument is
+  #         called on invalid input; pass Absent to use the codec's built-in default.
+  # codec-name: human-readable name for logging and debugging
+
+  # CodecInvalidHandler: error recovery callback parameterized by codec input/output.
+  # Called when decode encounters invalid or incomplete data. Returns {value: fallback, next: Int}.
+  CodecInvalidHandler: [type [let input output] [Fn@[value: input  next: Int] [output Int]]]
+
+  Codec@[doc: "Data transform between IO shapes: encode/decode + name."]:
+    [class [let Codec c input output]
+      encode:     [Fn@output [c input]]
+      decode:     [Fn@[value: output  next: Int]
+                   [c input Int [or [CodecInvalidHandler input output] Absent]]]
+      codec-name: [Fn@String [c]]]
+
+  # codec: wrap a Codec instance into a pipeline-stage function input → output.
+  # The returned function encodes a single input value using inst.encode.
+  # Used in pipeline composition: [data | [codec GzipCodec] | [sink %stdout]]
+  # Type: forall c i o. [Codec c i o] → [Fn@o [i]]
+  codec: [fn [let inst]
+    [fn [let x] [inst.encode x]]]
 ]

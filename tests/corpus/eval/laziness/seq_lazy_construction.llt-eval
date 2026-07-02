@@ -1,7 +1,7 @@
-# Laziness: $seq does not force head argument when only tail is accessed
-[r: [seq [/ 1 0] []]]
+# Laziness: Seq.Cons does not force head argument when only tail is accessed
+[r: [Seq.Cons head: [/ 1 0]  tail: Seq.End]]
 ---
 [result: [tail %.r]]
 
 === out
-Dict({"result": Dict({})})
+Dict({"result": Seq()})

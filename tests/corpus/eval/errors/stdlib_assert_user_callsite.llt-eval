@@ -1,4 +1,4 @@
-[assert false "user assertion failed"]
+[assert False "user assertion failed"]
 === error
 [E080] user assertion failed (defined at stdlib/prelude.llt:2471:28-2471:47)
   --> stdlib/prelude.llt:2471:28-2471:47

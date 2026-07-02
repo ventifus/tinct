@@ -18,7 +18,7 @@
 [
   EvenList: [type [or Absent [head: Int  tail: OddList]]]
   OddList:  [type [or Absent [head: Int  tail: EvenList]]]
-  result: true
+  result: True
 ]
 === out
 Dict({"EvenList": Dict({}), "OddList": Dict({}), "result": Bool(true)})

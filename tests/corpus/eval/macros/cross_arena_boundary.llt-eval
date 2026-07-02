@@ -4,23 +4,22 @@
 # What this exercises: the output deep_materialize at the macro expansion
 # boundary runs on the dict returned by the transformer and correctly
 # traverses all ThunkIds in the output Value::Dict. The transformer returns
-# a shallow AST dict with primitive field values (Value::Bool), which
+# a shallow AST dict with primitive field values (Int), which
 # validates the happy path of the boundary with no lazy thunks.
 #
-# Note: `true` here is a parser literal (Value::Bool), not a prelude binding.
 # Environment stores Rc<Thunk> (not ThunkId), so closure captures from the
 # prelude env do not leak ThunkIds between arenas. The cross-arena panic
 # requires a ThunkId from the stdlib arena to end up inside a Value::Dict
 # or Value::Seq in the transformer output — which this test does not
 # produce (primitives contain no ThunkId).
 
-[macro const-true [let arg]
-  # Returns an AST dict for the literal `true`.
+[macro const-42 [let arg]
+  # Returns an AST dict for the integer literal 42.
   # The dict itself (Value::Dict with ThunkIds) is traversed by
   # deep_materialize at the output boundary.
-  [type: "literal"  kind: "bool"  value: true]
+  [type: "literal"  kind: "int"  value: 42]
 ]
 
-[const-true 42]
+[const-42 0]
 === out
-Bool(true)
+42

@@ -3,12 +3,12 @@
   [
     type: "fn"
     params: [
-      [name: "a" annotation: [] variadic: false]
-      [name: "b" annotation: [] variadic: false]
+      [name: "a" annotation: [] variadic: False]
+      [name: "b" annotation: [] variadic: False]
     ]
     body: [
       type: "call"
-      implied: true
+      implied: True
       fn: [type: "var" name: "+"]
       args: [
         [type: "var" name: "a"]
@@ -17,7 +17,7 @@
       named-args: []
     ]
     return-ann: []
-    desugared: false
+    desugared: False
   ]]
 
 [

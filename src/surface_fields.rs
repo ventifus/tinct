@@ -1,62 +1,22 @@
 //! Surface AST field extraction for match dispatch and dot-access.
 //!
 //! These functions bridge the Surface AST types and the runtime value layer:
-//! - `surface_expr_tag()` — O(1) variant name extraction, used by the match evaluator
 //! - `surface_node_get_field()` — field extraction for `AstNodeField` thunk evaluation
-//!   and dot-access on `Value::Expression`
+//!   and dot-access on `Expr.*` variants
 //! - `surface_doc_match_view()`, `surface_program_match_view()` — match payload views
 //!   for `Value::Document` and `Value::Program`
 //!
-//! The field extraction functions return `Value` variants. The new `Value::Expression`,
-//! `Value::Document`, `Value::Program` variants are added in Sprint 1, Part F.
-//! Until Part F lands, this module provides only the tag extraction functions that
-//! do not require the new Value variants.
+//! The field extraction functions return `Value` variants. Child expression nodes are
+//! returned as `Value::Variant { tag: "Expr.<Tag>", .. }` — the canonical runtime
+//! representation. `Value::Document` and `Value::Program` carry their original Arc
+//! wrappers for efficient sharing.
 
 use std::sync::Arc;
 
 use crate::ast::{
     SurfaceDeclaration, SurfaceDocument, SurfaceExpression, SurfaceNode, SurfaceProgram,
 };
-
-// ============================================================================
-// Tag extraction — O(1), used by the match evaluator for Value::Expression dispatch
-// ============================================================================
-
-/// Extract the variant tag from a `SurfaceExpression` as a static string.
-///
-/// Returns the tinct-visible type name (e.g. `"Var"`, `"Call"`, `"IntLiteral"`).
-/// This is called O(1) — no allocation, no recursion.
-///
-/// These names match the `Expression` tinct type declaration in prelude.llt.
-pub fn surface_expr_tag(expr: &SurfaceExpression) -> &'static str {
-    match expr {
-        SurfaceExpression::Int(_) => "IntLiteral",
-        SurfaceExpression::U64(_) => "U64Literal",
-        SurfaceExpression::Float(_) => "FloatLiteral",
-        SurfaceExpression::Bool(_) => "BoolLiteral",
-        SurfaceExpression::Str(_) => "StrLiteral",
-        SurfaceExpression::VarRef { .. } => "Var",
-        SurfaceExpression::DotAccess { .. } => "DotAccess",
-        SurfaceExpression::Pipe { .. } => "Pipe",
-        SurfaceExpression::Sequential(_) => "Sequential",
-        SurfaceExpression::Dict(_) => "Dict",
-        SurfaceExpression::Call { .. } => "Call",
-        SurfaceExpression::Fn { .. } => "Fn",
-        SurfaceExpression::TypeAssert { .. } => "TypeAssert",
-        SurfaceExpression::Annotated { .. } => "Annotated",
-        SurfaceExpression::Rest(_) => "Rest",
-        SurfaceExpression::Match { .. } => "Match",
-        SurfaceExpression::Quote(_) => "Quote",
-        SurfaceExpression::Unquote(_) => "Unquote",
-        SurfaceExpression::UnquoteSplice(_) => "UnquoteSplice",
-        SurfaceExpression::PatternDecl { .. } => "PatternDecl",
-        SurfaceExpression::LetDecl { .. } => "LetDecl",
-        SurfaceExpression::CaseArm { .. } => "CaseArm",
-        SurfaceExpression::Placeholder => "Placeholder",
-        SurfaceExpression::Decl(_) => "Placeholder", // Tag name for macro/AST round-trip; InstanceDecl lowers to Dict at runtime (B-353), other Decl forms to Placeholder
-        SurfaceExpression::Error(_) => "Error",
-    }
-}
+use crate::rust_span;
 
 /// Extract the variant tag from a `SurfaceDeclaration` as a static string.
 #[allow(dead_code)] // Used in Part E when Value::Declaration is added
@@ -93,52 +53,20 @@ pub fn surface_program_tag(_prog: &SurfaceProgram) -> &'static str {
 // Surface node field names for each variant
 // ============================================================================
 
-/// Returns the list of field names that a given expression variant exposes.
-///
-/// Used by the match evaluator to know which bindings to create for a given arm.
-/// The caller creates one `AstNodeField` thunk per field name in the match pattern.
-pub fn surface_expr_field_names(expr: &SurfaceExpression) -> &'static [&'static str] {
-    match expr {
-        SurfaceExpression::Int(_) => &["value", "span"],
-        SurfaceExpression::U64(_) => &["value", "span"],
-        SurfaceExpression::Float(_) => &["value", "span"],
-        SurfaceExpression::Bool(_) => &["value", "span"],
-        SurfaceExpression::Str(_) => &["value", "span"],
-        SurfaceExpression::VarRef { .. } => &["name", "escaped", "span"],
-        SurfaceExpression::DotAccess { .. } => &["target", "field", "span"],
-        SurfaceExpression::Pipe { .. } => &["lhs", "rhs", "span"],
-        SurfaceExpression::Sequential(_) => &["exprs", "span"],
-        SurfaceExpression::Dict(_) => &["entries", "span"],
-        SurfaceExpression::Call { .. } => &["fn", "args", "named", "implied", "span"],
-        SurfaceExpression::Fn { .. } => &["params", "body", "return-ann", "desugared", "span"],
-        SurfaceExpression::TypeAssert { .. } => &["annotation", "expr", "span"],
-        SurfaceExpression::Annotated { .. } => &["name", "annotation", "span"],
-        SurfaceExpression::Rest(_) => &["name", "span"],
-        SurfaceExpression::Match { .. } => &["scrutinee", "arms", "span"],
-        SurfaceExpression::Quote(_) => &["expr", "span"],
-        SurfaceExpression::Unquote(_) => &["expr", "span"],
-        SurfaceExpression::UnquoteSplice(_) => &["expr", "span"],
-        SurfaceExpression::PatternDecl { .. } => &["bindings", "span"],
-        SurfaceExpression::LetDecl { .. } => &["bindings", "span"],
-        SurfaceExpression::CaseArm { .. } => &["let_bindings", "pattern", "body", "span"],
-        SurfaceExpression::Placeholder | SurfaceExpression::Decl(_) => &["span"],
-        SurfaceExpression::Error(_) => &["span"],
-    }
-}
-
 // ============================================================================
-// Field extraction — returns Value for field access on Value::Expression
+// Field extraction — returns Value for field access on Expr.* variants
 // ============================================================================
 
 use crate::ast::{Annotation, DotKey, Spanned};
-use crate::value::{string_val, Key, Value};
+use crate::value::{string_val, HashableValue, Value};
 
 /// Extract a named field from a `SurfaceNode` as a `Value`.
 ///
-/// Primitive and expression-typed fields return values directly.
+/// Primitive fields return scalar values. Expression-typed fields (child nodes) return
+/// `Value::Variant { tag: "Expr.<Tag>", .. }` — the canonical runtime representation.
 /// Sequence-typed fields (args, params, entries, bindings, arms) return
-/// `Value::Dict(IndexMap<Key::Int, ThunkId>)` — integer-keyed lists of
-/// `Value::Expression` entries, allocated into the EvalContext arena.
+/// `Value::Dict(IndexMap<HashableValue::Int, ThunkId>)` — integer-keyed lists of
+/// `Expr.*` variants, allocated into the EvalContext arena.
 /// The `span` field returns a Dict with start_line, start_col, end_line, end_col, start_offset, end_offset fields.
 /// Unrecognized fields return null.
 pub fn surface_node_get_field(
@@ -148,6 +76,8 @@ pub fn surface_node_get_field(
 ) -> Value {
     // null sentinel — returned for absent optional fields and unrecognized fields
     let null = || Value::Dict(indexmap::IndexMap::new());
+    let expr_variant =
+        |n: &Arc<SurfaceNode>| crate::surface_convert::surface_node_to_expr_variant(n, ctx);
 
     match (&node.expr, field) {
         // span field — convert to Dict with position fields
@@ -162,27 +92,31 @@ pub fn surface_node_get_field(
         // --- FloatLiteral ---
         (SurfaceExpression::Float(n), "value") => Value::Float(*n),
 
-        // --- BoolLiteral ---
-        (SurfaceExpression::Bool(b), "value") => Value::Bool(*b),
-
         // --- StrLiteral ---
         (SurfaceExpression::Str(s), "value") => string_val(s),
 
         // --- Var ---
         (SurfaceExpression::VarRef { name, .. }, "name") => string_val(name),
-        (SurfaceExpression::VarRef { escaped, .. }, "escaped") => Value::Bool(*escaped),
+        (SurfaceExpression::VarRef { escaped, .. }, "escaped") => Value::boolean(*escaped),
 
         // --- DotAccess ---
-        (SurfaceExpression::DotAccess { expr: inner, .. }, "target") => {
-            Value::Expression(Arc::clone(inner))
+        (
+            SurfaceExpression::DotAccess {
+                expr: Some(inner), ..
+            },
+            "target",
+        ) => expr_variant(inner),
+        (SurfaceExpression::DotAccess { expr: None, .. }, "target") => {
+            // Leading-dot has no target expression — return null (empty dict)
+            null()
         }
         (SurfaceExpression::DotAccess { field: dot_key, .. }, "field") => {
             dot_key_to_value(dot_key, ctx)
         }
 
         // --- Pipe ---
-        (SurfaceExpression::Pipe { lhs, .. }, "lhs") => Value::Expression(Arc::clone(lhs)),
-        (SurfaceExpression::Pipe { rhs, .. }, "rhs") => Value::Expression(Arc::clone(rhs)),
+        (SurfaceExpression::Pipe { lhs, .. }, "lhs") => expr_variant(lhs),
+        (SurfaceExpression::Pipe { rhs, .. }, "rhs") => expr_variant(rhs),
 
         // --- Sequential ---
         (SurfaceExpression::Sequential(exprs), "exprs") => nodes_to_list_dict(exprs, ctx),
@@ -191,28 +125,26 @@ pub fn surface_node_get_field(
         (SurfaceExpression::Dict(entries), "entries") => surface_entries_to_list_dict(entries, ctx),
 
         // --- Call ---
-        (SurfaceExpression::Call { func, .. }, "fn") => Value::Expression(Arc::clone(func)),
+        (SurfaceExpression::Call { func, .. }, "fn") => expr_variant(func),
         (SurfaceExpression::Call { args, .. }, "args") => nodes_to_list_dict(args, ctx),
         (SurfaceExpression::Call { named_args, .. }, "named") => {
             named_args_to_list_dict(named_args, ctx)
         }
-        (SurfaceExpression::Call { implied, .. }, "implied") => Value::Bool(*implied),
+        (SurfaceExpression::Call { implied, .. }, "implied") => Value::boolean(*implied),
 
         // --- Fn ---
         (SurfaceExpression::Fn { params, .. }, "params") => params_to_list_dict(params, ctx),
-        (SurfaceExpression::Fn { body, .. }, "body") => Value::Expression(Arc::clone(body)),
+        (SurfaceExpression::Fn { body, .. }, "body") => expr_variant(body),
         (SurfaceExpression::Fn { return_ann, .. }, "return-ann") => {
             annotation_opt_to_value(return_ann.as_ref(), ctx)
         }
-        (SurfaceExpression::Fn { desugared, .. }, "desugared") => Value::Bool(*desugared),
+        (SurfaceExpression::Fn { desugared, .. }, "desugared") => Value::boolean(*desugared),
 
         // --- TypeAssert ---
         (SurfaceExpression::TypeAssert { annotation, .. }, "annotation") => {
             annotation_to_value(annotation, ctx)
         }
-        (SurfaceExpression::TypeAssert { expr: inner, .. }, "expr") => {
-            Value::Expression(Arc::clone(inner))
-        }
+        (SurfaceExpression::TypeAssert { expr: inner, .. }, "expr") => expr_variant(inner),
 
         // --- Annotated ---
         (SurfaceExpression::Annotated { name, .. }, "name") => string_val(name),
@@ -221,19 +153,17 @@ pub fn surface_node_get_field(
         }
 
         // --- Rest ---
-        (SurfaceExpression::Rest(Some(n)), "name") => string_val(n),
-        (SurfaceExpression::Rest(None), "name") => null(),
+        (SurfaceExpression::Rest(Some(n), _), "name") => string_val(n),
+        (SurfaceExpression::Rest(None, _), "name") => null(),
 
         // --- Match ---
-        (SurfaceExpression::Match { scrutinee, .. }, "scrutinee") => {
-            Value::Expression(Arc::clone(scrutinee))
-        }
+        (SurfaceExpression::Match { scrutinee, .. }, "scrutinee") => expr_variant(scrutinee),
         (SurfaceExpression::Match { arms, .. }, "arms") => match_arms_to_list_dict(arms, ctx),
 
         // --- Quote / Unquote / UnquoteSplice ---
         (SurfaceExpression::Quote(inner), "expr")
         | (SurfaceExpression::Unquote(inner), "expr")
-        | (SurfaceExpression::UnquoteSplice(inner), "expr") => Value::Expression(Arc::clone(inner)),
+        | (SurfaceExpression::UnquoteSplice(inner), "expr") => expr_variant(inner),
 
         // --- PatternDecl / LetDecl ---
         (SurfaceExpression::PatternDecl { bindings }, "bindings")
@@ -242,23 +172,22 @@ pub fn surface_node_get_field(
         }
 
         // --- CaseArm ---
-        (
-            SurfaceExpression::CaseArm {
-                let_bindings: Some(lb),
-                ..
-            },
-            "let_bindings",
-        ) => Value::Expression(Arc::clone(lb)),
-        (
-            SurfaceExpression::CaseArm {
-                let_bindings: None, ..
-            },
-            "let_bindings",
-        ) => null(),
-        (SurfaceExpression::CaseArm { pattern, .. }, "pattern") => {
-            Value::Expression(Arc::clone(pattern))
+        (SurfaceExpression::CaseArm { let_bindings, .. }, "let_bindings") => {
+            expr_variant(let_bindings)
         }
-        (SurfaceExpression::CaseArm { body, .. }, "body") => Value::Expression(Arc::clone(body)),
+        (SurfaceExpression::CaseArm { pattern, .. }, "pattern") => expr_variant(pattern),
+        (SurfaceExpression::CaseArm { body, .. }, "body") => expr_variant(body),
+
+        // --- Decl (TypeAlias) — expose arity for type declarations ---
+        // Allows generate.llt to determine how many type parameters a type has
+        // without executing the declaration (which is compile-time-only).
+        (SurfaceExpression::Decl(decl), "arity") => {
+            if let SurfaceDeclaration::TypeAlias { params, .. } = decl.as_ref() {
+                Value::Int(params.len() as i64)
+            } else {
+                null()
+            }
+        }
 
         // Field not applicable to this variant — return null sentinel
         _ => null(),
@@ -266,7 +195,7 @@ pub fn surface_node_get_field(
 }
 
 /// Build an integer-keyed list Dict from a sequence of SurfaceNodes.
-/// Each entry is `Value::Expression(Arc<SurfaceNode>)`, allocated into the arena.
+/// Each entry is an `Expr.*` variant, allocated into the arena.
 fn nodes_to_list_dict(
     nodes: &[Arc<SurfaceNode>],
     ctx: &std::sync::Arc<crate::eval::EvalContext>,
@@ -276,13 +205,21 @@ fn nodes_to_list_dict(
         use crate::value::Thunk;
 
         let thunk = Arc::new(Thunk::new_materialized(
-            Value::Expression(Arc::clone(node)),
+            crate::surface_convert::surface_node_to_expr_variant(node, ctx),
             node.span.clone(),
         ));
         let tid = ctx.alloc_thunk(thunk);
-        map.insert(Key::Int(i as i64), tid);
+        map.insert(HashableValue::Int(i as i64), tid);
     }
     Value::Dict(map)
+}
+
+/// Public wrapper for use by `surface_node_to_expr_variant` in surface_convert.rs.
+pub fn match_arms_to_list_dict_pub(
+    arms: &[crate::ast::SurfaceMatchArm],
+    ctx: &std::sync::Arc<crate::eval::EvalContext>,
+) -> Value {
+    match_arms_to_list_dict(arms, ctx)
 }
 
 /// Build a list Dict from SurfaceEntry nodes (for Dict.entries field).
@@ -294,23 +231,23 @@ fn surface_entries_to_list_dict(
 
     let mut map = indexmap::IndexMap::new();
     for (i, entry) in entries.iter().enumerate() {
-        // Build Entry Variant: {key: Expression, value: Expression, span: []}
+        // Build Entry Variant: {key: Expr.* variant, value: Expr.* variant, span: []}
         let key_val = entry.node.key.as_ref().map_or_else(
             || Value::Dict(indexmap::IndexMap::new()),
-            |k| Value::Expression(Arc::clone(k)),
+            |k| crate::surface_convert::surface_node_to_expr_variant(k, ctx),
         );
-        let val_val = Value::Expression(Arc::clone(&entry.node.value));
+        let val_val = crate::surface_convert::surface_node_to_expr_variant(&entry.node.value, ctx);
         // Pack as a Variant("Entry", {key: ..., value: ...})
         let mut payload = indexmap::IndexMap::new();
         payload.insert(
-            Key::String("key".into()),
+            HashableValue::Str("key".into()),
             ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 key_val,
                 entry.span.clone(),
             ))),
         );
         payload.insert(
-            Key::String("value".into()),
+            HashableValue::Str("value".into()),
             ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 val_val,
                 entry.span.clone(),
@@ -327,7 +264,7 @@ fn surface_entries_to_list_dict(
             entry_variant,
             entry.span.clone(),
         )));
-        map.insert(Key::Int(i as i64), tid);
+        map.insert(HashableValue::Int(i as i64), tid);
     }
     Value::Dict(map)
 }
@@ -343,16 +280,16 @@ fn named_args_to_list_dict(
     for (i, na) in named_args.iter().enumerate() {
         let mut payload = indexmap::IndexMap::new();
         payload.insert(
-            Key::String("name".into()),
+            HashableValue::Str("name".into()),
             ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 string_val(&na.node.name),
                 na.span.clone(),
             ))),
         );
         payload.insert(
-            Key::String("value".into()),
+            HashableValue::Str("value".into()),
             ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                Value::Expression(Arc::clone(&na.node.value)),
+                crate::surface_convert::surface_node_to_expr_variant(&na.node.value, ctx),
                 na.span.clone(),
             ))),
         );
@@ -367,7 +304,7 @@ fn named_args_to_list_dict(
             na_variant,
             na.span.clone(),
         )));
-        map.insert(Key::Int(i as i64), tid);
+        map.insert(HashableValue::Int(i as i64), tid);
     }
     Value::Dict(map)
 }
@@ -383,16 +320,16 @@ fn params_to_list_dict(
     for (i, p) in params.iter().enumerate() {
         let mut payload = indexmap::IndexMap::new();
         payload.insert(
-            Key::String("name".into()),
+            HashableValue::Str("name".into()),
             ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 string_val(&p.node.name),
                 p.span.clone(),
             ))),
         );
         payload.insert(
-            Key::String("variadic".into()),
+            HashableValue::Str("variadic".into()),
             ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                Value::Bool(p.node.variadic),
+                Value::boolean(p.node.variadic),
                 p.span.clone(),
             ))),
         );
@@ -400,7 +337,7 @@ fn params_to_list_dict(
         // full signatures (e.g. "n@Int") without source text parsing.
         let ann_val = annotation_opt_to_value(p.node.annotation.as_ref(), ctx);
         payload.insert(
-            Key::String("annotation".into()),
+            HashableValue::Str("annotation".into()),
             ctx.alloc_thunk(Arc::new(Thunk::new_materialized(ann_val, p.span.clone()))),
         );
         let p_variant = Value::Variant {
@@ -411,9 +348,136 @@ fn params_to_list_dict(
             )))),
         };
         let tid = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(p_variant, p.span.clone())));
-        map.insert(Key::Int(i as i64), tid);
+        map.insert(HashableValue::Int(i as i64), tid);
     }
     Value::Dict(map)
+}
+
+/// Serialize a Pattern to a dict Value in the format expected by dict_to_pattern.
+fn pattern_to_value(
+    pat: &crate::ast::Spanned<crate::ast::Pattern>,
+    ctx: &std::sync::Arc<crate::eval::EvalContext>,
+) -> Value {
+    use crate::ast::{LiteralPattern, Pattern};
+    use crate::value::{string_val, Thunk};
+    use indexmap::IndexMap;
+
+    let span = rust_span!();
+    let mk_str = |s: &str| string_val(s);
+    let alloc = |v: Value| ctx.alloc_thunk(Arc::new(Thunk::new_materialized(v, span.clone())));
+
+    let mut d: IndexMap<crate::value::HashableValue, crate::value::ThunkId> = IndexMap::new();
+
+    match &pat.node {
+        Pattern::Wildcard => {
+            d.insert(
+                crate::value::HashableValue::Str("type".into()),
+                alloc(mk_str("wildcard")),
+            );
+        }
+        Pattern::Pin(name, _) => {
+            d.insert(
+                crate::value::HashableValue::Str("type".into()),
+                alloc(mk_str("variable")),
+            );
+            d.insert(
+                crate::value::HashableValue::Str("name".into()),
+                alloc(mk_str(name)),
+            );
+        }
+        Pattern::Literal(lit) => {
+            d.insert(
+                crate::value::HashableValue::Str("type".into()),
+                alloc(mk_str("literal")),
+            );
+            let val = match lit {
+                LiteralPattern::Int(n) => Value::Int(*n),
+                LiteralPattern::U64(n) => Value::U64(*n),
+                LiteralPattern::Float(f) => Value::Float(*f),
+                LiteralPattern::Str(s) => string_val(s),
+            };
+            d.insert(crate::value::HashableValue::Str("value".into()), alloc(val));
+        }
+        Pattern::Dict { fields, rest } => {
+            d.insert(
+                crate::value::HashableValue::Str("type".into()),
+                alloc(mk_str("dict")),
+            );
+            let mut fields_map: IndexMap<crate::value::HashableValue, crate::value::ThunkId> =
+                IndexMap::new();
+            for (i, (key, sub_pat)) in fields.iter().enumerate() {
+                let mut field_dict: IndexMap<crate::value::HashableValue, crate::value::ThunkId> =
+                    IndexMap::new();
+                field_dict.insert(
+                    crate::value::HashableValue::Str("key".into()),
+                    alloc(mk_str(key)),
+                );
+                field_dict.insert(
+                    crate::value::HashableValue::Str("pattern".into()),
+                    alloc(pattern_to_value(sub_pat, ctx)),
+                );
+                fields_map.insert(
+                    crate::value::HashableValue::Int(i as i64),
+                    alloc(Value::Dict(field_dict)),
+                );
+            }
+            d.insert(
+                crate::value::HashableValue::Str("fields".into()),
+                alloc(Value::Dict(fields_map)),
+            );
+            d.insert(
+                crate::value::HashableValue::Str("rest".into()),
+                alloc(Value::boolean(*rest)),
+            );
+        }
+        Pattern::Constructor { tag, binding } => {
+            d.insert(
+                crate::value::HashableValue::Str("type".into()),
+                alloc(mk_str("constructor")),
+            );
+            d.insert(
+                crate::value::HashableValue::Str("tag".into()),
+                alloc(mk_str(tag)),
+            );
+            if let Some(sub_pat) = binding {
+                d.insert(
+                    crate::value::HashableValue::Str("binding".into()),
+                    alloc(pattern_to_value(sub_pat, ctx)),
+                );
+            } else {
+                d.insert(
+                    crate::value::HashableValue::Str("binding".into()),
+                    alloc(Value::Dict(IndexMap::new())),
+                );
+            }
+        }
+        Pattern::Or(pats) => {
+            d.insert(
+                crate::value::HashableValue::Str("type".into()),
+                alloc(mk_str("or")),
+            );
+            let mut pats_map: IndexMap<crate::value::HashableValue, crate::value::ThunkId> =
+                IndexMap::new();
+            for (i, sub_pat) in pats.iter().enumerate() {
+                pats_map.insert(
+                    crate::value::HashableValue::Int(i as i64),
+                    alloc(pattern_to_value(sub_pat, ctx)),
+                );
+            }
+            d.insert(
+                crate::value::HashableValue::Str("patterns".into()),
+                alloc(Value::Dict(pats_map)),
+            );
+        }
+        _ => {
+            // Unsupported pattern type — store as wildcard to avoid conversion errors
+            d.insert(
+                crate::value::HashableValue::Str("type".into()),
+                alloc(mk_str("wildcard")),
+            );
+        }
+    }
+    Value::Dict(d)
 }
 
 /// Build a list Dict from SurfaceMatchArm nodes.
@@ -421,53 +485,54 @@ fn match_arms_to_list_dict(
     arms: &[crate::ast::SurfaceMatchArm],
     ctx: &std::sync::Arc<crate::eval::EvalContext>,
 ) -> Value {
-    use crate::ast::Span;
     use crate::value::Thunk;
 
-    let span = Span::origin();
+    let span = rust_span!();
     let mut map = indexmap::IndexMap::new();
     for (i, arm) in arms.iter().enumerate() {
-        let body_val = Value::Expression(Arc::clone(&arm.body));
+        let pattern_val = pattern_to_value(&arm.pattern, ctx);
+        let body_val = crate::surface_convert::surface_node_to_expr_variant(&arm.body, ctx);
         let guard_val = arm.guard.as_ref().map_or_else(
             || Value::Dict(indexmap::IndexMap::new()),
-            |g| Value::Expression(Arc::clone(g)),
+            |g| crate::surface_convert::surface_node_to_expr_variant(g, ctx),
         );
-        let mut payload = indexmap::IndexMap::new();
-        payload.insert(
-            Key::String("body".into()),
+        // Arms are stored as plain Dicts (not Variants) so get_match_arm_list_field_with_aliases
+        // can read them directly.
+        let mut arm_dict = indexmap::IndexMap::new();
+        arm_dict.insert(
+            HashableValue::Str("pattern".into()),
+            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(pattern_val, span.clone()))),
+        );
+        arm_dict.insert(
+            HashableValue::Str("body".into()),
             ctx.alloc_thunk(Arc::new(Thunk::new_materialized(body_val, span.clone()))),
         );
-        payload.insert(
-            Key::String("guard".into()),
+        arm_dict.insert(
+            HashableValue::Str("guard".into()),
             ctx.alloc_thunk(Arc::new(Thunk::new_materialized(guard_val, span.clone()))),
         );
-        let arm_variant = Value::Variant {
-            tag: "MatchArm".into(),
-            payload: Some(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                Value::Dict(payload),
-                span.clone(),
-            )))),
-        };
-        let tid = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(arm_variant, span.clone())));
-        map.insert(Key::Int(i as i64), tid);
+        let tid = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+            Value::Dict(arm_dict),
+            span.clone(),
+        )));
+        map.insert(HashableValue::Int(i as i64), tid);
     }
     Value::Dict(map)
 }
 
 /// Convert a DotKey to a Value::Variant (Ident | Index) with payload containing the actual value.
 pub fn dot_key_to_value(key: &DotKey, ctx: &std::sync::Arc<crate::eval::EvalContext>) -> Value {
-    use crate::ast::Span;
-    use crate::value::Key;
+    use crate::value::HashableValue;
     use crate::value::{string_val, Thunk};
     use indexmap::IndexMap;
     use std::sync::Arc;
 
-    let span = Span::origin();
+    let span = rust_span!();
     match key {
         DotKey::Ident(name) => {
             let mut payload_dict = IndexMap::new();
             payload_dict.insert(
-                Key::String("name".into()),
+                HashableValue::Str("name".into()),
                 ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     string_val(name),
                     span.clone(),
@@ -484,7 +549,7 @@ pub fn dot_key_to_value(key: &DotKey, ctx: &std::sync::Arc<crate::eval::EvalCont
         DotKey::Int(index) => {
             let mut payload_dict = IndexMap::new();
             payload_dict.insert(
-                Key::String("index".into()),
+                HashableValue::Str("index".into()),
                 ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     Value::Int(*index),
                     span.clone(),
@@ -531,7 +596,7 @@ fn annotation_inner_to_value(
 
     let mut payload_map = indexmap::IndexMap::new();
     payload_map.insert(
-        Key::String("text".into()),
+        HashableValue::Str("text".into()),
         ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             string_val(&text),
             span.clone(),
@@ -541,29 +606,131 @@ fn annotation_inner_to_value(
     let tag = match ann {
         Annotation::Simple(name) => {
             payload_map.insert(
-                Key::String("name".into()),
+                HashableValue::Str("name".into()),
                 ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     string_val(name),
                     span.clone(),
                 ))),
             );
-            "Simple"
+            "Annotation.Simple"
         }
         Annotation::PropertyDict(entries) => {
-            // Expose well-known property keys: doc: and return:
+            // Expose positional entries as a "parts" list (integer-keyed dict of annotation values).
+            // This allows tinct code to access the structure of type annotations like @[Seq k]
+            // without string parsing. Named entries (doc:, return:) are also exposed by name.
+            let positional: Vec<_> = entries.iter().filter(|e| e.node.key.is_none()).collect();
+            let mut parts_map = indexmap::IndexMap::new();
+            for (i, pos_entry) in positional.iter().enumerate() {
+                // Convert the positional entry value to an annotation-like value using its text.
+                // For simple names (VarRef), expose as Simple. Otherwise expose text.
+                let part_val = match &pos_entry.node.value.expr {
+                    SurfaceExpression::VarRef { name, .. } => {
+                        // Simple name like "Seq", "k", "union"
+                        let mut p = indexmap::IndexMap::new();
+                        p.insert(
+                            HashableValue::Str("text".into()),
+                            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                                string_val(name),
+                                pos_entry.span.clone(),
+                            ))),
+                        );
+                        p.insert(
+                            HashableValue::Str("name".into()),
+                            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                                string_val(name),
+                                pos_entry.span.clone(),
+                            ))),
+                        );
+                        Value::Variant {
+                            tag: "Annotation.Simple".into(),
+                            payload: Some(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                                Value::Dict(p),
+                                pos_entry.span.clone(),
+                            )))),
+                        }
+                    }
+                    SurfaceExpression::Annotated { name, annotation } => {
+                        // e.g. Fn@a → Annotated
+                        let inner_text = annotation.node.to_string();
+                        let full_text = format!("{}@{}", name, inner_text);
+                        let mut p = indexmap::IndexMap::new();
+                        p.insert(
+                            HashableValue::Str("text".into()),
+                            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                                string_val(&full_text),
+                                pos_entry.span.clone(),
+                            ))),
+                        );
+                        p.insert(
+                            HashableValue::Str("name".into()),
+                            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                                string_val(name),
+                                pos_entry.span.clone(),
+                            ))),
+                        );
+                        p.insert(
+                            HashableValue::Str("inner".into()),
+                            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                                string_val(&inner_text),
+                                pos_entry.span.clone(),
+                            ))),
+                        );
+                        Value::Variant {
+                            tag: "Annotation.Annotated".into(),
+                            payload: Some(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                                Value::Dict(p),
+                                pos_entry.span.clone(),
+                            )))),
+                        }
+                    }
+                    _ => {
+                        // Complex expression (e.g. [Map k v] parsed as Call) — expose as text only.
+                        // Uses "Annotation.Unknown" to distinguish from real PropertyDict annotations.
+                        let text = pos_entry.node.value.to_string();
+                        let mut p = indexmap::IndexMap::new();
+                        p.insert(
+                            HashableValue::Str("text".into()),
+                            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                                string_val(&text),
+                                pos_entry.span.clone(),
+                            ))),
+                        );
+                        Value::Variant {
+                            tag: "Annotation.Unknown".into(),
+                            payload: Some(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                                Value::Dict(p),
+                                pos_entry.span.clone(),
+                            )))),
+                        }
+                    }
+                };
+                parts_map.insert(
+                    HashableValue::Int(i as i64),
+                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                        part_val,
+                        pos_entry.span.clone(),
+                    ))),
+                );
+            }
+            payload_map.insert(
+                HashableValue::Str("parts".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    Value::Dict(parts_map),
+                    span.clone(),
+                ))),
+            );
+            // Also expose well-known named keys: doc: and return:
             for entry in entries {
                 if let Some(key_node) = &entry.node.key {
                     if let SurfaceExpression::Str(key_name) = &key_node.expr {
                         if key_name == "doc" || key_name == "return" {
-                            // For string literals (doc: "..."), use the raw string.
-                            // For other expressions, use Display.
                             let clean = if let SurfaceExpression::Str(s) = &entry.node.value.expr {
                                 s.clone()
                             } else {
                                 entry.node.value.to_string()
                             };
                             payload_map.insert(
-                                Key::String(key_name.clone().into()),
+                                HashableValue::Str(key_name.clone().into()),
                                 ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                                     string_val(&clean),
                                     entry.span.clone(),
@@ -573,25 +740,25 @@ fn annotation_inner_to_value(
                     }
                 }
             }
-            "PropertyDict"
+            "Annotation.PropertyDict"
         }
         Annotation::Annotated(name, inner) => {
             let inner_text = inner.to_string();
             payload_map.insert(
-                Key::String("name".into()),
+                HashableValue::Str("name".into()),
                 ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     string_val(name),
                     span.clone(),
                 ))),
             );
             payload_map.insert(
-                Key::String("inner".into()),
+                HashableValue::Str("inner".into()),
                 ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     string_val(&inner_text),
                     span.clone(),
                 ))),
             );
-            "Annotated"
+            "Annotation.Annotated"
         }
     };
 
@@ -605,7 +772,7 @@ fn annotation_inner_to_value(
     }
 }
 
-fn annotation_opt_to_value(
+pub fn annotation_opt_to_value(
     ann: Option<&Spanned<Annotation>>,
     ctx: &std::sync::Arc<crate::eval::EvalContext>,
 ) -> Value {
@@ -632,42 +799,42 @@ pub fn span_to_value(
     let mut map = indexmap::IndexMap::new();
 
     map.insert(
-        Key::String("start_line".into()),
+        HashableValue::Str("start_line".into()),
         ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Int(span.start.line as i64),
             span.clone(),
         ))),
     );
     map.insert(
-        Key::String("start_col".into()),
+        HashableValue::Str("start_col".into()),
         ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Int(span.start.column as i64),
             span.clone(),
         ))),
     );
     map.insert(
-        Key::String("end_line".into()),
+        HashableValue::Str("end_line".into()),
         ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Int(span.end.line as i64),
             span.clone(),
         ))),
     );
     map.insert(
-        Key::String("end_col".into()),
+        HashableValue::Str("end_col".into()),
         ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Int(span.end.column as i64),
             span.clone(),
         ))),
     );
     map.insert(
-        Key::String("start_offset".into()),
+        HashableValue::Str("start_offset".into()),
         ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Int(span.start.offset as i64),
             span.clone(),
         ))),
     );
     map.insert(
-        Key::String("end_offset".into()),
+        HashableValue::Str("end_offset".into()),
         ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
             Value::Int(span.end.offset as i64),
             span.clone(),
@@ -675,166 +842,4 @@ pub fn span_to_value(
     );
 
     Value::Dict(map)
-}
-
-#[cfg(test)]
-#[allow(clippy::approx_constant)] // test uses 3.14 as a Float literal test value, not PI
-mod tests {
-    use super::*;
-    use crate::ast::{Span, SurfaceNode};
-    use std::sync::Arc;
-
-    fn make_node(expr: SurfaceExpression) -> Arc<SurfaceNode> {
-        Arc::new(SurfaceNode {
-            expr,
-            span: Span::origin(),
-        })
-    }
-
-    #[test]
-    fn test_surface_expr_tag_literals() {
-        assert_eq!(surface_expr_tag(&SurfaceExpression::Int(42)), "IntLiteral");
-        assert_eq!(
-            surface_expr_tag(&SurfaceExpression::Float(3.14)),
-            "FloatLiteral"
-        );
-        assert_eq!(
-            surface_expr_tag(&SurfaceExpression::Bool(true)),
-            "BoolLiteral"
-        );
-        assert_eq!(
-            surface_expr_tag(&SurfaceExpression::Str("hello".into())),
-            "StrLiteral"
-        );
-    }
-
-    #[test]
-    fn test_surface_expr_tag_varref() {
-        let expr = SurfaceExpression::VarRef {
-            name: "x".into(),
-            escaped: false,
-        };
-        assert_eq!(surface_expr_tag(&expr), "Var");
-    }
-
-    #[test]
-    fn test_surface_expr_tag_call() {
-        let func = make_node(SurfaceExpression::VarRef {
-            name: "f".into(),
-            escaped: false,
-        });
-        let expr = SurfaceExpression::Call {
-            func,
-            args: vec![],
-            named_args: vec![],
-            implied: true,
-        };
-        assert_eq!(surface_expr_tag(&expr), "Call");
-    }
-
-    #[test]
-    fn test_surface_expr_tag_all_variants() {
-        let node = make_node(SurfaceExpression::Int(0));
-
-        let variants: Vec<(&str, SurfaceExpression)> = vec![
-            (
-                "Var",
-                SurfaceExpression::VarRef {
-                    name: "x".into(),
-                    escaped: false,
-                },
-            ),
-            (
-                "DotAccess",
-                SurfaceExpression::DotAccess {
-                    expr: node.clone(),
-                    field: crate::ast::DotKey::Ident("foo".into()),
-                },
-            ),
-            (
-                "Pipe",
-                SurfaceExpression::Pipe {
-                    lhs: node.clone(),
-                    rhs: node.clone(),
-                },
-            ),
-            ("Sequential", SurfaceExpression::Sequential(vec![])),
-            ("Dict", SurfaceExpression::Dict(vec![])),
-            (
-                "Call",
-                SurfaceExpression::Call {
-                    func: node.clone(),
-                    args: vec![],
-                    named_args: vec![],
-                    implied: true,
-                },
-            ),
-            (
-                "Fn",
-                SurfaceExpression::Fn {
-                    return_ann: None,
-                    params: vec![],
-                    body: node.clone(),
-                    desugared: false,
-                },
-            ),
-            (
-                "TypeAssert",
-                SurfaceExpression::TypeAssert {
-                    annotation: crate::ast::Spanned::new(
-                        crate::ast::Annotation::Simple("Int".into()),
-                        Span::origin(),
-                    ),
-                    expr: node.clone(),
-                },
-            ),
-            (
-                "Annotated",
-                SurfaceExpression::Annotated {
-                    name: "Foo".into(),
-                    annotation: crate::ast::Spanned::new(
-                        crate::ast::Annotation::Simple("Bar".into()),
-                        Span::origin(),
-                    ),
-                },
-            ),
-            ("Rest", SurfaceExpression::Rest(None)),
-            (
-                "Match",
-                SurfaceExpression::Match {
-                    scrutinee: node.clone(),
-                    arms: vec![],
-                },
-            ),
-            ("Quote", SurfaceExpression::Quote(node.clone())),
-            ("Unquote", SurfaceExpression::Unquote(node.clone())),
-            (
-                "UnquoteSplice",
-                SurfaceExpression::UnquoteSplice(node.clone()),
-            ),
-            (
-                "PatternDecl",
-                SurfaceExpression::PatternDecl { bindings: vec![] },
-            ),
-            ("LetDecl", SurfaceExpression::LetDecl { bindings: vec![] }),
-            (
-                "CaseArm",
-                SurfaceExpression::CaseArm {
-                    let_bindings: None,
-                    pattern: node.clone(),
-                    body: node.clone(),
-                },
-            ),
-            ("Placeholder", SurfaceExpression::Placeholder),
-            ("Error", SurfaceExpression::Error(Span::origin())),
-        ];
-
-        for (expected_tag, expr) in variants {
-            assert_eq!(
-                surface_expr_tag(&expr),
-                expected_tag,
-                "tag mismatch for variant"
-            );
-        }
-    }
 }

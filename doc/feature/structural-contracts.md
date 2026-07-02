@@ -18,7 +18,7 @@ The system provides:
 
 ## Supersession Notes
 
-- **`tinct check` CLI command**: The `tinct check data.llt fmt.llt` command described in §Usage is not implemented. The current CLI subcommands are `run`, `fmt`, `repl`, `check` (type-check only — no pipeline-boundary validation mode). Pipeline boundary enforcement (`%@Type`) is done at evaluation time, not via a separate CLI command.
+- **`tinct check` CLI command**: The `tinct check data.llt fmt.llt` command described in §Usage is not implemented. The current CLI subcommands are `run`, `fmt`, `check` (type-check only — no pipeline-boundary validation mode). Pipeline boundary enforcement (`%@Type`) is done at evaluation time, not via a separate CLI command.
 
 ## Design
 

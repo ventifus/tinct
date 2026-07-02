@@ -1,10 +1,10 @@
 [
   records: [
-    0: [name: "Alice"  score: 80  active: true]
-    1: [name: "Bob"    score: 72  active: false]
-    2: [name: "Carol"  score: 90  active: true]
-    3: [name: "Dave"   score: 100  active: true]
-    4: [name: "Eve"    score: 88  active: false]
+    0: [name: "Alice"  score: 80  active: True]
+    1: [name: "Bob"    score: 72  active: False]
+    2: [name: "Carol"  score: 90  active: True]
+    3: [name: "Dave"   score: 100  active: True]
+    4: [name: "Eve"    score: 88  active: False]
   ]
 ]
 ---

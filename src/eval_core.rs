@@ -5,7 +5,6 @@
 //!
 //! Key functions:
 //! - `eval_core_expr`: Main entry point — evaluates a CoreExpr node to a lazy thunk
-//! - `maybe_wrap_guard`: Applies boundary type guards from the type checker
 //! - `eval_quote_walk`: Handles quote/unquote evaluation for metaprogramming
 //!
 //! This module is called by:
@@ -18,45 +17,16 @@ use std::sync::{Arc, RwLock};
 
 use indexmap::IndexMap;
 
-use crate::arena::ThunkId;
 use crate::ast::{CoreExpr, Param, Span, Spanned};
 use crate::builtins::MAX_COLLECT_SIZE;
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{eval_call_core, eval_dict_core, materialize, EvalContext};
-use crate::value::{string_val, Environment, Key, Thunk, Value};
+use crate::value::ThunkId;
+use crate::value::{string_val, Environment, HashableValue, Thunk, Value};
 
-/// Wrap a thunk with a boundary guard if the span matches a guard in the context.
-///
-/// Boundary guards are populated by the type checker to enforce type constraints at
-/// specific expression boundaries (e.g., function parameters, type assertions).
-///
-/// If `span` matches a guard in `ctx.boundary_guards`, wraps `thunk` in a `Guarded`
-/// thunk that will check the type when forced. Otherwise returns `thunk` unchanged.
-pub(crate) fn maybe_wrap_guard(
-    thunk: Arc<Thunk>,
-    span: Span,
-    ctx: &Arc<EvalContext>,
-) -> Arc<Thunk> {
-    // Skip guard lookup for synthetic origin spans. All synthetic CoreExpr nodes produced
-    // by macro expansion or internal code synthesis share Span::origin() (offset 0, line 1,
-    // col 1). If a boundary guard is keyed by Span::origin(), it would match every synthetic
-    // node — applying the wrong type guard to unrelated expressions. Synthetic nodes are not
-    // user-written expressions and should never carry boundary guards.
-    if span.is_origin() {
-        return thunk;
-    }
-    let guards = ctx.boundary_guards.read().unwrap();
-    if let Some(expected_type) = guards.get(&span) {
-        Arc::new(Thunk::new_guarded(
-            thunk,
-            expected_type.clone(),
-            vec![], // empty field path for top-level guards
-            span,
-        ))
-    } else {
-        thunk
-    }
-}
+// maybe_wrap_guard removed: type guards are now inline on SurfaceNode.type_guard
+// (TypeAnnotation OnceLock). The lowerer wraps them in CoreExpr::TypeAssert during lowering.
+// No runtime boundary guard wrapping from a side-table is needed.
 
 /// Convert a runtime Value back to an Arc<SurfaceNode> for unquoting.
 ///
@@ -71,15 +41,11 @@ fn value_to_surface_node(
 ) -> EvalResult<Arc<crate::ast::SurfaceNode>> {
     use crate::ast::{SurfaceExpression, SurfaceNode};
     let make_node = |expr: SurfaceExpression| {
-        Arc::new(SurfaceNode {
-            expr,
-            span: span.clone(),
-        })
+        Arc::new(SurfaceNode::new(expr, span.clone()))
     };
     match value {
         Value::Int(n) => Ok(make_node(SurfaceExpression::Int(*n))),
         Value::Float(f) => Ok(make_node(SurfaceExpression::Float(*f))),
-        Value::Bool(b) => Ok(make_node(SurfaceExpression::Bool(*b))),
         Value::String { source, start, end } => Ok(make_node(SurfaceExpression::Str(
             source[*start..*end].to_string(),
         ))),
@@ -95,7 +61,7 @@ fn value_to_surface_node(
         }
         Value::Dict(dict) => {
             // Check if this is an AST dict (has a "type" field)
-            if dict.contains_key(&Key::String("type".into())) {
+            if dict.contains_key(&HashableValue::Str("type".into())) {
                 // It's an AST dict — convert via surface bridge
                 crate::surface_convert::dict_to_surface_node(value, ctx).map_err(|err| {
                     EvalError::internal(
@@ -113,85 +79,31 @@ fn value_to_surface_node(
                 .into())
             }
         }
-        Value::Expression(node) => {
-            // Value::Expression — already a SurfaceNode, use it directly (no round-trip needed)
-            Ok(Arc::clone(node))
-        }
         _ => Err(
             EvalError::internal(format!("unquote of {:?} is not supported", value), span).into(),
         ),
     }
 }
 
-/// Collect all elements from a sequence value into a Vec.
-/// Returns an error if the value is not a sequence.
+/// Collect all elements from an integer-keyed Dict into a Vec.
+/// Returns an error if the value is not an integer-keyed Dict.
+/// Seq inputs are no longer supported (T-1324: Rust must not know Seq's internal structure).
 async fn collect_seq_elements(
     value: &Value,
     span: Span,
     ctx: &Arc<EvalContext>,
 ) -> EvalResult<Vec<Value>> {
     let mut elements = Vec::new();
-    let mut current = value.clone();
+    let current = value.clone();
 
     loop {
         match current {
-            Value::Variant {
-                ref tag,
-                payload: None,
-            } if tag == "Seq.Nil" => {
-                // Empty sequence — we're done
-                break;
-            }
-            Value::Variant {
-                ref tag,
-                payload: Some(payload_id),
-            } if tag == "Seq.Cons" => {
-                // Extract head and tail from Seq.Cons payload
-                let payload_thunk = ctx.get_thunk(payload_id);
-                let payload_val = materialize(&payload_thunk, Some(&span), ctx).await?;
-                let (head, tail) = if let Value::Dict(ref d) = payload_val {
-                    let head = *d
-                        .get(&Key::String("head".into()))
-                        .expect("Seq.Cons must have head");
-                    let tail = *d
-                        .get(&Key::String("tail".into()))
-                        .expect("Seq.Cons must have tail");
-                    (head, tail)
-                } else {
-                    return Err(EvalError::internal(
-                        "Seq.Cons payload must be a Dict".to_string(),
-                        span,
-                    )
-                    .into());
-                };
-
-                // Materialize the head element
-                let head_thunk = ctx.get_thunk(head);
-                let head_value = materialize(&head_thunk, Some(&span), ctx).await?;
-                elements.push(head_value);
-
-                // Enforce size limit to prevent infinite sequences from looping forever
-                if elements.len() >= MAX_COLLECT_SIZE {
-                    return Err(EvalError::resource_limit_exceeded(
-                        format!(
-                            "unquote-splice: too many elements (limit {})",
-                            MAX_COLLECT_SIZE
-                        ),
-                        span,
-                    )
-                    .into());
-                }
-
-                // Materialize and move to the tail
-                let tail_thunk = ctx.get_thunk(tail);
-                current = materialize(&tail_thunk, Some(&span), ctx).await?;
-            }
             Value::Dict(ref dict) => {
                 // Integer-keyed Dict (from macro variadic args) — collect elements in key order
                 // Validate that all keys are integers and sequential from 0
                 let mut int_entries: Vec<(i64, ThunkId)> = Vec::new();
                 for (key, thunk_id) in dict {
-                    if let Key::Int(i) = key {
+                    if let HashableValue::Int(i) = key {
                         int_entries.push((*i, *thunk_id));
                     } else {
                         return Err(EvalError::type_mismatch(
@@ -240,7 +152,7 @@ async fn collect_seq_elements(
                     }
                 }
 
-                // Done — Dict is not recursive like Seq.Cons
+                // Done — Dict entries have been processed
                 break;
             }
             _ => {
@@ -280,20 +192,13 @@ fn eval_quote_preprocess<'a>(
     Box::pin(async move {
         let span = node.span.clone();
         let make_node = |expr: SurfaceExpression| {
-            Arc::new(SurfaceNode {
-                expr,
-                span: span.clone(),
-            })
+            Arc::new(SurfaceNode::new(expr, span.clone()))
         };
 
         match &node.expr {
             SurfaceExpression::Unquote(inner) => {
                 // Evaluate the unquoted expression and convert back to SurfaceNode
-                let core = crate::lower::lower(
-                    inner,
-                    crate::ast::empty_resolution_table(),
-                    crate::ast::empty_type_annotation_table(),
-                );
+                let core = crate::lower::lower(inner);
                 let thunk = eval_core_expr(&core, env, ctx).await?;
                 let value = materialize(&thunk, Some(&inner.span), ctx).await?;
                 value_to_surface_node(&value, inner.span.clone(), ctx)
@@ -317,11 +222,7 @@ fn eval_quote_preprocess<'a>(
                     // Handle unquote-splicing in dict entry value position
                     if let SurfaceExpression::UnquoteSplice(inner) = &entry.node.value.expr {
                         // Evaluate the unquote-splice expression
-                        let core = crate::lower::lower(
-                            inner,
-                            crate::ast::empty_resolution_table(),
-                            crate::ast::empty_type_annotation_table(),
-                        );
+                        let core = crate::lower::lower(inner);
                         let thunk = eval_core_expr(&core, env, ctx).await?;
                         let inner_span = inner.span.clone();
                         let value = materialize(&thunk, Some(&inner_span), ctx).await?;
@@ -340,11 +241,11 @@ fn eval_quote_preprocess<'a>(
 
                                     // Convert the key to a SurfaceNode
                                     let key_node = match key {
-                                        Key::Int(n) => Arc::new(SurfaceNode {
-                                            expr: SurfaceExpression::Int(*n),
-                                            span: inner_span.clone(),
-                                        }),
-                                        Key::String(s) => {
+                                        HashableValue::Int(n) => Arc::new(SurfaceNode::new(
+                                            SurfaceExpression::Int(*n),
+                                            inner_span.clone(),
+                                        )),
+                                        HashableValue::Str(s) => {
                                             // Check if it looks like an identifier (alphanumeric + hyphens)
                                             // If so, use VarRef; otherwise use Str
                                             let is_ident = s.chars().all(|c| {
@@ -355,19 +256,28 @@ fn eval_quote_preprocess<'a>(
                                             }) && !s.is_empty()
                                                 && !s.chars().next().unwrap().is_numeric();
                                             if is_ident {
-                                                Arc::new(SurfaceNode {
-                                                    expr: SurfaceExpression::VarRef {
+                                                Arc::new(SurfaceNode::new(
+                                                    SurfaceExpression::VarRef {
                                                         name: s.to_string(),
                                                         escaped: false,
+                                                        resolution: crate::ast::Resolution::new(),
+                                                        call_dispatch: crate::ast::CallDispatch::new(),
                                                     },
-                                                    span: inner_span.clone(),
-                                                })
+                                                    inner_span.clone(),
+                                                ))
                                             } else {
-                                                Arc::new(SurfaceNode {
-                                                    expr: SurfaceExpression::Str(s.to_string()),
-                                                    span: inner_span.clone(),
-                                                })
+                                                Arc::new(SurfaceNode::new(
+                                                    SurfaceExpression::Str(s.to_string()),
+                                                    inner_span.clone(),
+                                                ))
                                             }
+                                        }
+                                        _ => {
+                                            // Bool/Dict/Variant keys in quote context — use Display
+                                            Arc::new(SurfaceNode::new(
+                                                SurfaceExpression::Str(key.to_string()),
+                                                inner_span.clone(),
+                                            ))
                                         }
                                     };
 
@@ -380,32 +290,9 @@ fn eval_quote_preprocess<'a>(
                                     ));
                                 }
                             }
-                            Value::Variant { .. } => {
-                                // Could be a Seq — collect elements and auto-index
-                                let elements =
-                                    collect_seq_elements(&value, inner_span.clone(), ctx).await?;
-                                for (idx, elem_value) in elements.into_iter().enumerate() {
-                                    let elem_node = value_to_surface_node(
-                                        &elem_value,
-                                        inner_span.clone(),
-                                        ctx,
-                                    )?;
-                                    let key_node = Arc::new(SurfaceNode {
-                                        expr: SurfaceExpression::Int(idx as i64),
-                                        span: inner_span.clone(),
-                                    });
-                                    processed_entries.push(Spanned::new(
-                                        SurfaceEntry {
-                                            key: Some(key_node),
-                                            value: elem_node,
-                                        },
-                                        inner_span.clone(),
-                                    ));
-                                }
-                            }
                             _ => {
                                 return Err(EvalError::type_mismatch(
-                                    "Dict or Seq",
+                                    "Dict",
                                     value.type_name(),
                                     inner_span,
                                 )
@@ -445,11 +332,7 @@ fn eval_quote_preprocess<'a>(
                     // Handle unquote-splicing in call argument position
                     if let SurfaceExpression::UnquoteSplice(inner) = &arg.expr {
                         // Evaluate the unquote-splice expression
-                        let core = crate::lower::lower(
-                            inner,
-                            crate::ast::empty_resolution_table(),
-                            crate::ast::empty_type_annotation_table(),
-                        );
+                        let core = crate::lower::lower(inner);
                         let thunk = eval_core_expr(&core, env, ctx).await?;
                         let inner_span = inner.span.clone();
                         let value = materialize(&thunk, Some(&inner_span), ctx).await?;
@@ -506,13 +389,26 @@ fn eval_quote_preprocess<'a>(
             }
 
             SurfaceExpression::DotAccess {
-                expr: target,
+                expr: Some(target),
                 field,
+                ..
             } => {
                 let processed_target = eval_quote_preprocess(Arc::clone(target), env, ctx).await?;
                 Ok(make_node(SurfaceExpression::DotAccess {
-                    expr: processed_target,
+                    expr: Some(processed_target),
                     field: field.clone(),
+                    resolution: crate::ast::Resolution::new(),
+                    field_slot: crate::ast::SlotAnnotation::new(),
+                }))
+            }
+
+            // Leading-dot is a terminal in quote context — no sub-expression to preprocess.
+            SurfaceExpression::DotAccess { expr: None, field, .. } => {
+                Ok(make_node(SurfaceExpression::DotAccess {
+                    expr: None,
+                    field: field.clone(),
+                    resolution: crate::ast::Resolution::new(),
+                    field_slot: crate::ast::SlotAnnotation::new(),
                 }))
             }
 
@@ -536,11 +432,13 @@ fn eval_quote_preprocess<'a>(
             SurfaceExpression::TypeAssert {
                 annotation,
                 expr: inner,
+                ..
             } => {
                 let processed_expr = eval_quote_preprocess(Arc::clone(inner), env, ctx).await?;
                 Ok(make_node(SurfaceExpression::TypeAssert {
                     annotation: annotation.clone(),
                     expr: processed_expr,
+                    resolved_type: crate::ast::TypeAnnotation::new(),
                 }))
             }
 
@@ -641,10 +539,8 @@ async fn eval_quote_walk(
     // Preprocess to handle nested unquotes (rewrites unquote subexpressions)
     let processed_node = eval_quote_preprocess(node, &env, ctx).await?;
 
-    // runtime-v2 Part G: return Value::Expression (was: ast_to_dict_expr returning Variant Dict)
-    // Macro transformer code in prelude.llt is dual-dispatch ready (tag-of handles both Expression and Variant).
     Ok(Arc::new(Thunk::new_materialized(
-        Value::Expression(processed_node),
+        crate::surface_convert::surface_node_to_expr_variant(&processed_node, ctx),
         span,
     )))
 }
@@ -697,35 +593,15 @@ pub(crate) async fn extract_fn_annotation_extra(
             crate::ast::SurfaceExpression::Str(s) => string_val(s),
             crate::ast::SurfaceExpression::Int(n) => Value::Int(*n),
             crate::ast::SurfaceExpression::Float(f) => Value::Float(*f),
-            crate::ast::SurfaceExpression::Bool(b) => Value::Bool(*b),
-
             // Expression-valued fields: lower to CoreExpr, evaluate, materialize to Value.
             // This is the T-1124 fix: annotations like `as-type: [fn [let u] u]` are now evaluable.
-            //
-            // If evaluation fails (e.g., VarRef to a type-level name like `Int`, `Str`, `String`
-            // that only exists in the type-stage env but not the runtime env), skip this entry
-            // rather than propagating the error. This preserves backward compatibility with
-            // annotations like `fn@[ok: Int  err: Str]` where `Int`/`Str` are type-level names.
             _ => {
-                // Lower SurfaceNode → CoreExpr (using empty resolution/type tables since
-                // annotation expressions are evaluated in the definition-site environment).
-                let core_expr = crate::lower::lower(
-                    &e.node.value,
-                    crate::ast::empty_resolution_table(),
-                    crate::ast::empty_type_annotation_table(),
-                );
+                // Lower SurfaceNode → CoreExpr (inline fields provide all needed type info).
+                let core_expr = crate::lower::lower(&e.node.value);
 
-                // Evaluate the CoreExpr to a thunk; skip this annotation entry on failure.
-                let thunk = match eval_core_expr(&core_expr, env, ctx).await {
-                    Ok(t) => t,
-                    Err(_) => continue,
-                };
-
-                // Materialize the thunk to a Value (annotation values are eager); skip on failure.
-                match materialize(&thunk, Some(&e.node.value.span), ctx).await {
-                    Ok(v) => v,
-                    Err(_) => continue,
-                }
+                // Evaluate the CoreExpr to a thunk, then materialize to a Value.
+                let thunk = eval_core_expr(&core_expr, env, ctx).await?;
+                materialize(&thunk, Some(&e.node.value.span), ctx).await?
             }
         };
 
@@ -739,7 +615,7 @@ pub(crate) async fn extract_fn_annotation_extra(
 ///
 /// This is the new CoreExpr evaluation entry point. It handles:
 /// - Primitive variants natively: Int, Float, Bool, Str (direct materialization)
-/// - Variables natively: Var, FreeVar (environment lookup with de Bruijn coordinates)
+/// - Variables natively: Var (environment lookup with de Bruijn coordinates)
 /// - Complex variants via bridge: Dict, Call, Fn, Match, etc. convert back to Expr
 ///   and call existing helpers (eval_dict, eval_call, etc.)
 ///
@@ -767,85 +643,57 @@ pub(crate) fn eval_core_expr<'a>(
                 Value::Float(*f),
                 span.clone(),
             ))),
-            CoreExpr::Bool(b) => Ok(Arc::new(Thunk::new_materialized(
-                Value::Bool(*b),
-                span.clone(),
-            ))),
             CoreExpr::Str(s) => Ok(Arc::new(Thunk::new_materialized(
                 string_val(s),
                 span.clone(),
             ))),
 
-            // Variable lookup with de Bruijn coordinates (fast path)
+            // Variable lookup with de Bruijn coordinates.
+            // Coordinates are assigned at resolve time; slot lookup is fatal on miss —
+            // there is no name-based fallback. A miss means the resolver failed to assign
+            // correct coordinates, which is a compiler bug.
             CoreExpr::Var { name, level, slot } => {
+                // Variable lookup with de Bruijn coordinates — O(1) slot-based lookup.
+                // The do-infer sentinel block that previously used get_by_name was removed:
+                // EvalContext.do_infer_resolutions is never populated (set_do_infer_resolutions
+                // is defined but never called from any pipeline path), making the block dead code.
+                // The sentinel evaluates via the normal get_slot path below.
                 let env_lock = env.read().unwrap();
-                // Try slot-based lookup first (O(1) when level and slot are correct)
-                // get_by_slot verifies the key at slot matches name; falls back to
-                // name-based lookup if there's a mismatch (slot-shift bug).
-                if let Some(thunk) = env_lock.get_by_slot(*level, *slot, name) {
-                    Ok(thunk)
-                } else {
-                    // Fallback to name-based lookup (for stale slot references)
-                    let name_owned = name.clone();
-                    env_lock.get(name).ok_or_else(|| {
-                        EvalError::undefined_variable(name_owned, span.clone()).into()
-                    })
+                match env_lock.get_slot(*level, *slot) {
+                    Some(thunk) => Ok(thunk),
+                    None => {
+                        drop(env_lock);
+                        Err(EvalError::undefined_variable(name.clone(), span.clone()).into())
+                    }
                 }
             }
 
-            // Free variable: name-based lookup only (no slot available)
-            CoreExpr::FreeVar(name) => {
-                // Special case: inferred [do] sentinel variable (e.g., `ℊꜱʏᴍ⧼do-infer⧽0`).
-                // Generated by gensym in prelude.llt `do-desugar-inferred`. The type checker
-                // resolves the sentinel to a concrete monad name (e.g., "result") and records
-                // the mapping in ctx.do_infer_resolutions. At eval time, substitute the sentinel
-                // with the resolved monad dict from the environment.
-                if name.starts_with("ℊꜱʏᴍ⧼do-infer⧽") {
-                    let monad_name = ctx
-                        .do_infer_resolutions
-                        .read()
-                        .unwrap()
-                        .get(name.as_str())
-                        .cloned();
-                    if let Some(monad_name) = monad_name {
-                        let env_lock = env.read().unwrap();
-                        return env_lock.get(&monad_name).ok_or_else(|| {
-                            EvalError::undefined_variable(monad_name, span.clone()).into()
-                        });
-                    }
-                }
-                {
-                    let env_lock = env.read().unwrap();
-                    if let Some(thunk) = env_lock.get(name) {
-                        // Regular binding found — use it (shadows method dispatch).
-                        return Ok(thunk);
-                    }
-                }
-                // No regular binding — check for multi-method arms.
-                let arms = crate::value::Environment::collect_method_arms(env, name);
-                if !arms.is_empty() {
-                    // Return a dispatcher sentinel; PendingCallDispatch will do the dispatch.
-                    return Ok(Arc::new(Thunk::new_materialized(
-                        crate::value::Value::MethodDispatcher(name.clone()),
+            // Variant: first-class variant constructor emitted by lower.rs for type declarations.
+            // Unit variants materialize directly; payload variants evaluate their inner expression,
+            // materialize it, and store as a ThunkId — preserving the laziness invariant that
+            // the payload dict's fields remain as thunks until accessed.
+            CoreExpr::Variant { tag, payload } => match payload {
+                None => Ok(Arc::new(Thunk::new_materialized(
+                    Value::Variant {
+                        tag: tag.clone(),
+                        payload: None,
+                    },
+                    span.clone(),
+                ))),
+                Some(inner_expr) => {
+                    let payload_thunk = eval_core_expr(inner_expr, env, ctx).await?;
+                    let payload_val = materialize(&payload_thunk, Some(&span), ctx).await?;
+                    let payload_id = ctx
+                        .alloc_thunk(Arc::new(Thunk::new_materialized(payload_val, span.clone())));
+                    Ok(Arc::new(Thunk::new_materialized(
+                        Value::Variant {
+                            tag: tag.clone(),
+                            payload: Some(payload_id),
+                        },
                         span.clone(),
-                    )));
+                    )))
                 }
-                let name_owned = name.clone();
-                Err(EvalError::undefined_variable(name_owned, span.clone()).into())
-            }
-
-            // DotAccess: wrap as a CoreExpr thunk directly.
-            //
-            // force_step handles CoreExpr::DotAccess INLINE in both take_core_expr and
-            // take_surface branches (eval_materialize.rs), so when run() forces this thunk
-            // the take_core_expr inline handler fires and pushes Memoize + DotAccessForce
-            // without re-entering eval_core_expr. No core_expr_to_expr round-trip needed.
-            CoreExpr::DotAccess { .. } => Ok(Arc::new(Thunk::new_unevaluated_core(
-                Arc::new(expr.clone()),
-                Arc::clone(env),
-                Arc::clone(ctx),
-                span.clone(),
-            ))),
+            },
 
             // Sequential: evaluate each expression in order, extending the environment
             // with dict bindings from each intermediate dict expression.
@@ -860,10 +708,8 @@ pub(crate) fn eval_core_expr<'a>(
             ))),
 
             // Dict: call eval_dict_core directly with the CoreEntry slice.
-            // Eliminates the Vec<Spanned<Entry>> allocation and per-entry core_expr_to_expr
-            // calls previously required by the round-trip through eval_dict.
-            // eval_dict_core now uses Thunk::new_unevaluated_core for non-literal dict entries
-            // (UnevaluatedState::CoreExpr), eliminating the per-entry core_expr_to_expr round-trip.
+            // eval_dict_core uses Thunk::new_unevaluated_core for non-literal dict entries
+            // (UnevaluatedState::CoreExpr), avoiding the per-entry core_expr_to_expr round-trip.
             CoreExpr::Dict(entries) => eval_dict_core(entries, env, ctx, &span).await,
 
             // Call: use eval_call_core — no CoreExpr→Expr round-trip for func or named args.
@@ -1007,17 +853,20 @@ pub(crate) fn eval_core_expr<'a>(
 
             // LetDecl in sequential fn-body context: evaluate as a Dict of (name → lazy-thunk) pairs.
             //
-            // Syntax: [let name value] → bindings = [FreeVar("name"), value_expr]
+            // Syntax: [let name value] → bindings = [Str("name"), value_expr]
+            // (lower_let_decl_binding converts declaration-position VarRef/Annotated/Rest to Str)
             // Pairs are (bindings[2i], bindings[2i+1]).
             // Returns a Dict so the SequentialStep can extract keys via its Dict-based binding logic.
             CoreExpr::LetDecl { bindings } => {
-                let mut dict: IndexMap<Key, ThunkId> = IndexMap::new();
+                let mut dict: IndexMap<HashableValue, ThunkId> = IndexMap::new();
                 let mut i = 0;
                 while i + 1 < bindings.len() {
                     let name_expr = &bindings[i];
                     let val_expr = &bindings[i + 1];
                     let name = match &name_expr.node {
-                        CoreExpr::FreeVar(n) => n.clone(),
+                        // lower_let_decl_binding converts declaration-position names to Str literals.
+                        CoreExpr::Str(n) => n.clone(),
+                        // Var node in declaration position: extract the name string directly.
                         CoreExpr::Var { name: n, .. } => n.clone(),
                         CoreExpr::Annotated { name: n, .. } => n.clone(),
                         _ => {
@@ -1038,7 +887,7 @@ pub(crate) fn eval_core_expr<'a>(
                         val_expr.span.clone(),
                     ));
                     let thunk_id = ctx.alloc_thunk(val_thunk);
-                    dict.insert(Key::String(Rc::from(name.as_str())), thunk_id);
+                    dict.insert(HashableValue::Str(Rc::from(name.as_str())), thunk_id);
                     i += 2;
                 }
                 Ok(Arc::new(Thunk::new_materialized(
@@ -1070,13 +919,8 @@ pub(crate) fn eval_core_expr<'a>(
             )
             .into()),
 
-            // RegisterMethods: side-effectful arm registration happens in the eval_dict_core
-            // pre-scan. If forced individually (shouldn't happen), return null.
-            CoreExpr::RegisterMethods { .. } => Ok(Arc::new(Thunk::new_materialized(
-                crate::value::Value::Dict(indexmap::IndexMap::new()),
-                span.clone(),
-            ))),
         }
-        .map(|thunk| maybe_wrap_guard(thunk, span, ctx))
+        // Type guards are now inline on AST nodes (TypeAnnotation OnceLock);
+        // the lowerer wraps them in CoreExpr::TypeAssert. No runtime guard wrapping needed here.
     }) // end Box::pin(async move {
 }

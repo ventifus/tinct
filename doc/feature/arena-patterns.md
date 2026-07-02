@@ -258,7 +258,7 @@ will change.
 ### Individual Thunk Deletion
 
 When individual thunk deletion is needed (e.g., garbage collection within
-long-running REPL sessions), `ThunkArena` uses `thunderdome::Arena<Thunk>`.
+long-running LSP sessions), `ThunkArena` uses `thunderdome::Arena<Thunk>`.
 thunderdome's generation counters detect stale handles, and the API is
 compatible with the `ThunkId` abstraction — `ThunkId` becomes
 `thunderdome::Index`, and the rest of the codebase does not change.

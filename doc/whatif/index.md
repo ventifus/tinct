@@ -13,6 +13,7 @@ Proposals formally accepted into the project. Implementation sprints exist in th
 
 | Proposal | Summary | Accepted |
 |----------|---------|----------|
+| [Type System Foundations — Primitives, Collections, and Dispatch](type-foundations.md) | `Value::Dict` as sole runtime collection primitive; `HashableValue` replaces `Key` enum (commutative-sum order-insensitive hash); `Boolean`/`Seq` as tinct-defined nominal types; `List` as lazy 2-3 finger tree; type system de-primitisation (unified env lookup, `Type::Bool`/`Number`/`Seq` deleted); `TypeContext` opaque handle; `loader.llt` bootstrap restructure; collection typeclasses with O(log n) complexity promises (`Prependable`, `Appendable`, `Concatenable`, `Indexable`, `Iterable`, `Hashable`, `Sortable`); `[Bytes N]` refinement type via `TypeNode.SizedBytes`; type-level lookup tables with compile-time constants on variants; `Codec`/`ByteStream`/`Datagram`/`Seekable` typeclasses; discriminated error unions per subsystem | 2026-06-25 |
 | [Equirecursive Types](equirecursive-types.md) | `TypeNode.Recursive`/`RecursiveRef`/`TypeVar` as TypeNode constructors; `CheckerType = Node(Value)` primary type representation; S-Exp + S-Assum coinductive subtyping (Chau & Parreaux 2026); general `@[...]` annotation syntax; `@Child` field annotations with derived `children`/`map-children`; `mu` combinator; contractiveness check; TyConDef/TypeAlias merge; `expand_named` always-expand normalization; `gensym-with-scope` | 2026-06-05 |
 | [User-Defined N-Arity Type Constructors](user-type-constructors.md) | `Type::TyCon(String)` + `Type::App`; unified `[type ...]` syntax with `[let ...]` params; variance annotations; nominal ADTs with qualified runtime tags; `RowTail::Uniform` column constraints; `Absent` type; scoped ClassEnv/InstanceEnv with local coherence; per-dict Substitution; `values_equal` canonical merge; `Pattern::TypeAssert`; prelude migration | 2026-06-03 |
 | [Tinct Stream Format — Stdlib-Closed Normal Form](data-streaming.md) | SCN streaming format for tinct-to-tinct pipes; `emit` via `%emit` channel; concurrent output program contract; `-i stream`/`-o stream`; `to-tinct` serializer; eliminates serde_json from profiling | 2026-05-30 |
@@ -65,6 +66,7 @@ Proposals formally accepted into the project. Implementation sprints exist in th
 
 | Proposal | Summary |
 |----------|---------|
+| [Self-Hosted Macro Expander](self-hosted-expander.md) | Replace `src/expand.rs` with a tinct program; single `Expr.*` AST representation; parser converts `SurfaceExpression` to `Expr.*` once at parse boundary; expander, and progressively resolver/type-checker, work with `Expr.*` values throughout |
 | [Macro-Rewrite](completed/macro-rewrite.md) | Superseded — let-binding done as `Expr::Sequential`, match as `Expr::Match`. `i"..."` migrated to `[defmacro tmpl]` (`tmpl-macro` sprint complete, see DONE.md) |
 | [Macro System v2](completed/macros-v2.md) | **Completed 2026-05-27.** `macro` unified form with `[let ...]` patterns; `inject: name` for anaphoric binding with dict-key override; `splice` for multi-form output; `macro-error`/`span-of`; `syntax-class`; `flatten-args`; parser enforcement moved to type checker. Supersedes `parse-stage-macros.md`. |
 | [Custom Call Aliases](call-aliases.md) | `[timed f ...]` — macro-defined call forms; gated on macros |
@@ -83,6 +85,12 @@ Proposals formally accepted into the project. Implementation sprints exist in th
 | [String Interning for Dict Keys](string-interning.md) | `Key::String(Spur)` via `string-interner` crate; O(1) comparison; profile-gated |
 | [Union-Find for Type Substitution](union-find-substitution.md) | Path-compressed union-find for `Substitution::apply()`; worthwhile only if chain depth ≥4; profile-gated |
 | [Float Dict Keys](float-dict-keys.md) | Decimal (exact base-10) keys alongside a `Decimal` type |
+
+## Type System Architecture
+
+| Proposal | Summary |
+|----------|---------|
+| [Self-Hosted Type Checker](self-hosted-typechecker.md) | Implement HM type inference entirely in tinct type-stage code, replacing the `Type` Rust enum and inference engine. Single canonical TypeNode Value representation throughout; extensible type system; self-hosting. Requires type-foundations (done), equirecursive-types (done), and a bootstrapping strategy. |
 
 ## Architecture and Refactoring
 

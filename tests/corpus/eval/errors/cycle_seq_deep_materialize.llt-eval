@@ -1,13 +1,7 @@
-# Cycle detection: forcing a cyclic Seq through deep_materialize should error
+# Forcing an iterate-based cyclic computation through collect should error
+# iterate [fn [let x] x] produces an infinite seq of the seed value
+# seed is [raise "cycle"] — forces when collected
 [data: [iterate [fn [let x] x] [raise "cycle"]]
  result: [collect [take 5 data]]]
 === error
-[E080] cycle (defined at stdlib/prelude.llt:2471:28-2471:47)
-  --> stdlib/prelude.llt:2471:28-2471:47
-   |
-  2471 | """]: [fn [let msg@String] [builtin-raise msg]]
-       |                            ^^^^^^^^^^^^^^^^^^^
-  in [builtin-raise ...] at stdlib/prelude.llt:2471:28-2471:47
-   |
-  2471 | """]: [fn [let msg@String] [builtin-raise msg]]
-       |                            ^^^^^^^^^^^^^^^^^^^
+[E080] cycle

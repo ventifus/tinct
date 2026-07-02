@@ -54,11 +54,8 @@
 # should not depend on them. Only the documented public API is stable.
 
 [
-  Boolean@[doc: """
-Two-constructor nominal type backing the boolean literals true/false.
-The builtin-if primitive dispatches on the Variant tag directly.
-"""]:
-    [type True False]
+  # Boolean is declared in loader.llt dict 2 — already in scope when prelude loads.
+  # Do NOT redeclare it here; doing so would shadow the loader definition.
 
   Seq@[doc: """
 Lazy recursive nominal ADT for streaming sequences.
@@ -89,9 +86,14 @@ Seq vs List:
         Seq.End:      acc]]
 
   seq-map-lazy@[doc: """
-Internal: cons-recursive map helper. Returns Seq.Cons immediately so the
-result is safe on infinite Seqs. Each consumer pull adds one CEK continuation
-frame then returns — O(1) heap per element consumed.
+Internal: cons-recursive map helper. Safe on infinite Seqs via laziness.
+
+The recursive call `tail: [seq-map-lazy f p.tail]` is NOT in tail position —
+it is embedded inside a Seq.Cons constructor. This is correct: in tinct's lazy
+evaluation model, `tail: expr` suspends `expr` as a thunk without evaluating
+it. Each force of `head` on the result creates one Seq.Cons cell and one thunk
+for the tail. Stack depth never exceeds one frame. This is laziness, not TCO.
+O(1) heap per element consumed by the caller.
 """]:
     [fn [let f s]
       [match s
@@ -518,7 +520,14 @@ elem-get:  a → Int → leaf — navigate into element to reach the leaf at off
 
   # ── Materialization ──────────────────────────────────────────────────────────
 
-  collect@[return: [List a]  doc: "Materialize a lazy Seq into a List. O(n). Not a typeclass method — O(n) traversals are plain prelude functions. TCO keeps heap growth O(1)."]:
+  collect@[return: [List a]  doc: """
+Materialize a lazy Seq into a List (finger tree). O(n) — not a typeclass method.
+
+Breaking change from prior API: collect now returns [List a], not an
+integer-keyed Dict {0: a, 1: b, ...}. Existing code using [get i [collect s]]
+continues to work via Indexable dispatch. Code pattern-matching on the raw
+Dict structure must migrate.
+"""]:
     [fn [let s@[Seq a]]
       [reduce [fn [let tree x] [push-right x tree]] FingerTree.FTEmpty s]]
 
@@ -847,20 +856,28 @@ avoids a soundness hole where = could be silently wrong on NaN values.
 Types supporting O(log n) or better keyed access. Indexable[c k v] means
 collection c maps keys of type k to values of type v.
 
+The functional dependency (c, k) → v is required: given the collection type
+and key type together, the element type is determined. Without FD, inferred
+element types become Unknown. Same MPTC+FD infrastructure as Addable.
+
 Seq has no Indexable instance by design — this is a feature, not an omission.
 The type error on [get i seq] tells the caller: "you must collect into a List first."
 """]:
     [class [let Indexable c k v]
+      [determines: [[[c k] v]]  resolver: IndexResult]
       get:    [Fn@v      [k c]]
+      slice:  [Fn@c      [c Int Int]]
       length: [Fn@Int    [c]]]
 
   [instance Indexable [let c@[List a] k@Int v@a]:
-    [get:    [fn [let i t] [ft-index i t]]
-     length: [fn [let t]   [ft-size t]]]]
+    [get:    [fn [let i t]            [ft-index i t]]
+     slice:  [fn [let t start len]    [collect [take len [drop start [ft-to-seq t]]]]]
+     length: [fn [let t]              [ft-size t]]]]
 
   [instance Indexable [let c@[Map k v] k v]:
-    [get:    [fn [let k d] [builtin-get k d]]
-     length: [fn [let d]   [builtin-length d]]]]
+    [get:    [fn [let k d]            [builtin-get k d]]
+     slice:  [fn [let d start len]    d]   # slice on Dict is identity — no ordered subrange
+     length: [fn [let d]              [builtin-length d]]]]
 
   ByteStream@[doc: """
 Abstract interface for ordered, reliable byte streams.

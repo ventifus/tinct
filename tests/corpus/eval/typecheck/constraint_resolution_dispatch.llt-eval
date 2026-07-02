@@ -42,7 +42,7 @@
   r2: [describe-it "hello"]
 
   # Test case 3: call with Bool → should resolve DescribableBool instance
-  r3: [describe-it true]
+  r3: [describe-it True]
 ]
 
 ---
