@@ -2809,6 +2809,31 @@ pub(crate) fn infer_surface_expr<'a>(
                 let scrutinee_ty =
                     infer_surface_expr(scrutinee, env, state, constraints, type_map).await?;
                 let scrutinee_ty = state.subst.apply(&scrutinee_ty);
+                // TyCon expansion (T-1272): expand a named type constructor to its body before
+                // pattern narrowing. This enables `collect_pattern_bindings` to extract payload
+                // types from constructor patterns when the scrutinee is typed as a TyCon.
+                //
+                // Example: `ann: TyCon("Annotation")` matched against `[Annotation.PropertyDict p]`
+                // — without expansion, `collect_pattern_bindings` falls to `_ => Unknown` since
+                // it only handles Union/NominalVariant/Record, not TyCon. With expansion,
+                // `scrutinee_ty` becomes `Union([Simple, PropertyDict, Annotated])` and the
+                // constructor pattern correctly narrows `p` to `{parts: Map Int Any, ...}`.
+                //
+                // One-level expansion only. Builtin TyCons have non-TyCon bodies (Int→Type::Int,
+                // Map→App(...), etc.), so they fall through match arm dispatch without looping.
+                // Gradual: unknown TyCons (not in tycon_env) are left as-is.
+                let scrutinee_ty = {
+                    // TyCon expansion: look up body before consuming scrutinee_ty.
+                    let expanded = if let Type::TyCon(name) = &scrutinee_ty {
+                        state
+                            .tycon_env
+                            .get(name.as_str())
+                            .map(|def| def.body.clone())
+                    } else {
+                        None
+                    };
+                    expanded.unwrap_or(scrutinee_ty)
+                };
 
                 // I-Case3 (BAS match narrowing): maintain a "remaining scrutinee" type that
                 // accumulates negations as Constructor/TypeAssert arms are processed.

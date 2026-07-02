@@ -2303,7 +2303,20 @@ pub(crate) async fn apply_cont(
             } = *data;
             let expected = *resolved;
             match result {
-                Err(e) => Action::Continue(Err(e)),
+                Err(e) => {
+                    // B-433: When inner expr materialization fails (CoreExpr::Error, undefined variable, etc.),
+                    // check for `default:` annotation and evaluate it instead of propagating the error.
+                    if let Some(default_node) = annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
+                    {
+                        Action::EvalCore {
+                            expr: Arc::new(crate::lower::lower(default_node)),
+                            env,
+                            ctx: Arc::clone(&ctx),
+                        }
+                    } else {
+                        Action::Continue(Err(e))
+                    }
+                }
                 Ok(value) => {
                     // For Record types and Intersection-of-Records, apply proxy contract wrapping.
                     // as_record_row_merged merges all required fields from all members into a Row.

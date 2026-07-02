@@ -579,8 +579,9 @@ pub(crate) async fn extract_fn_annotation_extra(
             continue;
         };
 
-        // Skip standard annotation keys processed by the type system
-        if crate::ast::STANDARD_ANN_KEYS.contains(&key_str.as_str()) {
+        // Skip annotation keys that cannot be safely evaluated as runtime values.
+        // See ast::ANNOTATION_EVAL_EXCLUDED_KEYS for the rationale.
+        if crate::ast::ANNOTATION_EVAL_EXCLUDED_KEYS.contains(&key_str.as_str()) {
             continue;
         }
 
@@ -744,23 +745,19 @@ pub(crate) fn eval_core_expr<'a>(
                     })
                     .collect();
 
-                // Extract doc string from annotation if present.
-                // Uses get_property("doc") which works directly on SurfaceEntry via SurfaceExpression::Str keys.
-                let doc: Option<String> = return_ann.as_ref().and_then(|ann_spanned| {
-                    ann_spanned.node.get_property("doc").and_then(|doc_node| {
-                        if let crate::ast::SurfaceExpression::Str(s) = &doc_node.expr {
-                            Some(s.clone())
-                        } else {
-                            None
-                        }
-                    })
-                });
+                // Populate extra from annotation fields (literals + expressions).
+                // `doc` is now included in extra: triple-quoted strings desugar to
+                // `[unindent "..."]` (a Call), which is evaluated here at definition time.
+                // T-1124: expression-valued fields are evaluated at function-definition time.
+                let extra = extract_fn_annotation_extra(return_ann.as_ref(), env, ctx).await?;
+
+                // Derive FnAnnotation.doc from extra["doc"] so triple-quoted doc strings
+                // (evaluated via `[unindent "..."]`) produce the correct runtime string.
+                let doc: Option<String> = extra
+                    .get("doc")
+                    .and_then(|v| v.as_str().map(|s| s.to_string()));
                 let return_ann_clone: Option<crate::ast::Annotation> =
                     return_ann.as_ref().map(|a| a.node.clone());
-
-                // Populate extra from non-standard annotation fields (literals + expressions).
-                // T-1124: expression-valued fields are now evaluated at function-definition time.
-                let extra = extract_fn_annotation_extra(return_ann.as_ref(), env, ctx).await?;
 
                 // Always construct FnAnnotation — source_span is always available even for
                 // unannotated functions, enabling ast-of and LSP go-to-definition.

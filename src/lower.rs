@@ -549,8 +549,13 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
                 }
                 CoreExpr::Placeholder
             }
-            crate::ast::SurfaceDeclaration::TypeAlias { body, .. } => {
-                lower_type_alias_to_constructor_dict(None, body)
+            crate::ast::SurfaceDeclaration::TypeAlias { .. } => {
+                // Type declarations in standalone expression position produce no runtime value
+                // (B-430). The dict-entry case (lower.rs Dict arm, line ~309) calls
+                // lower_type_alias_to_constructor_dict to produce constructor entries under the
+                // declared name. Here (direct Decl, no enclosing dict entry), the declaration is
+                // not bound to any name so there are no constructor entries to emit — return {}.
+                CoreExpr::Dict(vec![])
             }
             _ => CoreExpr::Placeholder,
         },
@@ -1195,7 +1200,8 @@ fn extract_constructors_from_body(body: &SurfaceExpression) -> Vec<ConstructorIn
 mod tests {
     use super::*;
     use crate::ast::{
-        CallDispatch, Provenance, Resolution, SurfaceExpression, SurfaceNode, TypeAnnotation,
+        CallDispatch, Provenance, Resolution, SurfaceDeclaration, SurfaceExpression, SurfaceNode,
+        TypeAnnotation,
     };
     use std::sync::Arc;
 
@@ -1269,5 +1275,106 @@ mod tests {
             "expected CoreExpr::Error for unresolvable VarRef, got {:?}",
             lowered.node
         );
+    }
+
+    // B-430: [type MyType Int] in standalone expression position must lower to an empty dict.
+    //
+    // Type declarations produce no runtime value when they appear as standalone expressions
+    // (not as dict-entry values). The correct runtime representation is {} (empty dict).
+    // Previously this called lower_type_alias_to_constructor_dict(None, body), which would
+    // misinterpret "Int" (an uppercase VarRef) as a unit constructor and produce a non-empty
+    // dict with a spurious "Int" entry.
+    #[test]
+    fn test_lower_type_alias_standalone_returns_empty_dict() {
+        let span = rust_span!();
+        // [type MyType Int] — TypeAlias with body = VarRef("Int"), no params.
+        let body = make_node(
+            SurfaceExpression::VarRef {
+                name: "Int".into(),
+                escaped: false,
+                resolution: Resolution::new(),
+                call_dispatch: CallDispatch::new(),
+            },
+            span.clone(),
+        );
+        let node = make_node(
+            SurfaceExpression::Decl(Box::new(SurfaceDeclaration::TypeAlias {
+                params: vec![],
+                body,
+            })),
+            span,
+        );
+
+        let lowered = lower(&node);
+
+        match lowered.node {
+            CoreExpr::Dict(entries) => assert!(
+                entries.is_empty(),
+                "B-430: standalone [type ...] must lower to empty dict, got {} entries",
+                entries.len()
+            ),
+            other => panic!(
+                "B-430: expected CoreExpr::Dict([]) for standalone TypeAlias, got {:?}",
+                other
+            ),
+        }
+    }
+
+    // B-430 variant: [type Color Red Green Blue] standalone also lowers to empty dict.
+    //
+    // Even with legitimate constructors (Red, Green, Blue), a TypeAlias in standalone
+    // expression position (no enclosing dict entry with a name) should return {}.
+    // The constructors are only accessible when the TypeAlias is bound to a name in a dict
+    // entry (e.g. `Color: [type Red Green Blue]`), which is handled by the Dict lowering arm.
+    #[test]
+    fn test_lower_type_alias_standalone_sum_type_returns_empty_dict() {
+        let span = rust_span!();
+        // Body: dict with positional entries [Red Green Blue]
+        let make_ctor = |name: &str| {
+            Spanned::new(
+                crate::ast::SurfaceEntry {
+                    key: None,
+                    value: make_node(
+                        SurfaceExpression::VarRef {
+                            name: name.into(),
+                            escaped: false,
+                            resolution: Resolution::new(),
+                            call_dispatch: CallDispatch::new(),
+                        },
+                        span.clone(),
+                    ),
+                },
+                span.clone(),
+            )
+        };
+        let body = make_node(
+            SurfaceExpression::Dict(vec![
+                make_ctor("Red"),
+                make_ctor("Green"),
+                make_ctor("Blue"),
+            ]),
+            span.clone(),
+        );
+        let node = make_node(
+            SurfaceExpression::Decl(Box::new(SurfaceDeclaration::TypeAlias {
+                params: vec![],
+                body,
+            })),
+            span,
+        );
+
+        let lowered = lower(&node);
+
+        match lowered.node {
+            CoreExpr::Dict(entries) => assert!(
+                entries.is_empty(),
+                "B-430: standalone [type Red Green Blue] must lower to empty dict, got {} entries",
+                entries.len()
+            ),
+            other => panic!(
+                "B-430: expected CoreExpr::Dict([]) for standalone sum-type TypeAlias, got {:?}",
+                other
+            ),
+        }
     }
 }

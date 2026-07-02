@@ -4636,6 +4636,141 @@ async fn test_apply_type_alias_substitution_preserves_row_tail_uniform() {
     }
 }
 
+// -- T-1272: Expression field type registration --
+
+#[tokio::test]
+async fn test_expression_type_return_ann_registered() {
+    // T-1272: Verify that the Expression open record type is registered in the builtin_core
+    // type env with `return-ann: TyCon("Annotation")`.
+    //
+    // Before this fix, `doc.expressions` was typed as `Seq(Any)`, meaning elements had type
+    // `Any`. Dot-access on `Any` produced a NotARecord error (falling to `_` in check_dot_access),
+    // preventing the T013 Indexable ambiguity from resolving in generate.llt.
+    //
+    // After the fix, `doc.expressions` is `Seq(expression_type)` where `expression_type` is
+    // an open record with `return-ann: TyCon("Annotation")`. This allows:
+    //   fn-ast.return-ann → TyCon("Annotation")
+    //   [match ann [Annotation.PropertyDict p]] → p: {parts: Map Int Any, ...}  (via TyCon expansion)
+    //   p.parts → Map Int Any → Indexable resolved → no T013
+    use crate::type_def::RowTail;
+
+    let arc_env = crate::imports::get_builtin_core_type_env()
+        .await
+        .expect("builtin core type env unavailable in test");
+    let env = (*arc_env).clone();
+
+    // Look up `builtin-load` — its return type is `program_type`.
+    let load_scheme = env
+        .get("builtin-load")
+        .expect("builtin-load must be registered in core type env");
+    let program_type = match &load_scheme.body {
+        Type::Function { ret, .. } => *ret.clone(),
+        other => panic!("builtin-load should have Function type, got: {other}"),
+    };
+
+    // program_type is an open record with `documents: Seq[document_type]`.
+    let doc_seq_type = match &program_type {
+        Type::Record(row) => row
+            .fields
+            .get("documents")
+            .cloned()
+            .expect("program_type must have 'documents' field"),
+        other => panic!("program_type should be a Record, got: {other}"),
+    };
+
+    // doc_seq_type is Seq[document_type] = App(TyCon("Seq"), document_type).
+    let document_type = match &doc_seq_type {
+        Type::App(head, elem) => {
+            assert!(
+                matches!(&**head, Type::TyCon(n) if n == "Seq"),
+                "documents field should be Seq[...], got: {doc_seq_type}"
+            );
+            *elem.clone()
+        }
+        other => panic!("documents field should be Seq[...], got: {other}"),
+    };
+
+    // document_type is an open record with `expressions: Seq[expression_type]`.
+    let expr_seq_type = match &document_type {
+        Type::Record(row) => row
+            .fields
+            .get("expressions")
+            .cloned()
+            .expect("document_type must have 'expressions' field"),
+        other => panic!("document_type should be a Record, got: {other}"),
+    };
+
+    // expr_seq_type is Seq[expression_type] = App(TyCon("Seq"), expression_type).
+    let expression_type = match &expr_seq_type {
+        Type::App(head, elem) => {
+            assert!(
+                matches!(&**head, Type::TyCon(n) if n == "Seq"),
+                "expressions field should be Seq[...], got: {expr_seq_type}"
+            );
+            *elem.clone()
+        }
+        other => panic!("expressions field should be Seq[...], got: {other}"),
+    };
+
+    // expression_type is an open record. Verify `return-ann: Any`.
+    // Type::Any is used to avoid coupling the Rust type env to the prelude-declared
+    // "Annotation" type name (RA violation). Pattern match narrowing still works via
+    // TyCon expansion in typecheck.rs when Annotation is in state.tycon_env.
+    let return_ann_type = match &expression_type {
+        Type::Record(row) => row.fields.get("return-ann").cloned().expect(
+            "expression_type must have 'return-ann' field — T-1272 fix registers \
+                 Expression as open record with return-ann: Any",
+        ),
+        other => panic!("expression_type should be a Record, got: {other}"),
+    };
+
+    assert_eq!(
+        return_ann_type,
+        Type::Any,
+        "expression_type.return-ann must be Any (avoids coupling to prelude type name). \
+         Got: {return_ann_type}"
+    );
+
+    // Also verify `params: Seq(Any)` is present.
+    let params_type = match &expression_type {
+        Type::Record(row) => row
+            .fields
+            .get("params")
+            .cloned()
+            .expect("expression_type must have 'params' field"),
+        other => panic!("expression_type should be a Record, got: {other}"),
+    };
+    assert_eq!(
+        params_type,
+        Type::seq(Type::Any),
+        "expression_type.params must be Seq(Any), got: {params_type}"
+    );
+
+    // Verify the open row tail (Uniform with Any value) allows unknown field access.
+    match &expression_type {
+        Type::Record(row) => match &row.tail {
+            RowTail::Uniform { key, value } => {
+                assert!(
+                    key.is_none(),
+                    "expression_type open tail should have no key constraint"
+                );
+                assert_eq!(
+                    **value,
+                    Type::Any,
+                    "expression_type open tail should have Any value type"
+                );
+            }
+            RowTail::Empty => {
+                panic!(
+                    "expression_type should have open (Uniform) tail, not Empty — \
+                        dot-access on unknown Expression fields should return Any, not error"
+                )
+            }
+        },
+        other => panic!("expression_type should be a Record, got: {other}"),
+    }
+}
+
 #[tokio::test]
 async fn test_check_call_forward_ref_result_type() {
     // [fn [x] $x] has Unknown unannotated param. Calling it with 42 returns Unknown
@@ -8290,5 +8425,48 @@ async fn test_class_name_in_param_annotation_user_defined_class() {
                 );
             }
         }
+    }
+}
+
+/// B-436: [type True False] should produce a union of two unit constructors, not a single-payload constructor.
+/// The 2-entry positional case in resolve_type_dict_with_guard was treating [type A B] as [A B],
+/// which meant A as constructor tag and B as its payload type. This test verifies the fix:
+/// when both entries are uppercase constructor names, fall through to the multi-entry union path.
+#[tokio::test]
+async fn test_b436_two_unit_constructors_produce_union() {
+    let env = doc_env("[Bool: [type True False]]").await;
+
+    // Both True and False should be exported as unit constructors with NominalVariant type
+    let true_scheme = env.get("True").expect("True should be in the exported env");
+    assert!(
+        matches!(&true_scheme.body, Type::NominalVariant { tag, fields } if tag == "True" && fields.fields.is_empty()),
+        "True should be a unit constructor (NominalVariant with no fields), got {:?}",
+        true_scheme.body
+    );
+
+    let false_scheme = env
+        .get("False")
+        .expect("False should be in the exported env");
+    assert!(
+        matches!(&false_scheme.body, Type::NominalVariant { tag, fields } if tag == "False" && fields.fields.is_empty()),
+        "False should be a unit constructor (NominalVariant with no fields), got {:?}",
+        false_scheme.body
+    );
+
+    // The type alias itself should resolve to a Union of the two constructors
+    let bool_scheme = env.get("Bool").expect("Bool should be in the exported env");
+    match &bool_scheme.body {
+        Type::Union(members) => {
+            assert_eq!(members.len(), 2, "Bool should be a union of 2 members");
+            let has_true = members
+                .iter()
+                .any(|m| matches!(m, Type::NominalVariant { tag, .. } if tag == "True"));
+            let has_false = members
+                .iter()
+                .any(|m| matches!(m, Type::NominalVariant { tag, .. } if tag == "False"));
+            assert!(has_true, "Bool union should contain True variant");
+            assert!(has_false, "Bool union should contain False variant");
+        }
+        other => panic!("Bool should be Union of True and False, got {:?}", other),
     }
 }

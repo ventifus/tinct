@@ -1,20 +1,25 @@
 [prelude: [include %libdir "prelude.llt"]]
 [
-  fn-names: ["map" "filter" "reduce" "sort" "group-by" "join" "split" "str" "get" "merge"]
+  # annotation-of on prelude functions must return actual annotation content (B-406).
+  # This tests that doc: and return: annotations from @[...] are accessible at runtime.
 
-  format-entry: [fn [let fname]
-    [
-      fval: [get fname prelude]
-      ann:  [annotation-of fval]
-      ret:  [get-or "?" "return" ann]
-      doc:  [get-or "(no description)" "doc" ann]
-    ]
-    [str "### [" fname "] → " [str ret] "\n" [str doc]]]
+  map-ann:  [annotation-of [get "map" prelude]]
+  str-ann:  [annotation-of [get "str" prelude]]
 
-  entries: [collect [map format-entry [each fn-names]]]
-  count:   [length entries]
-  check:   [if [= count 10] True [raise "expected 10 entries"]]
-  page:    [begin check [join "\n\n" entries]]
+  # map@[return: [Seq b]  doc: """..."""]: both return and doc must be present.
+  # The function value is unevaluated at dict-construction time, so it is NOT wrapped
+  # in Value::Annotated. annotation-of reads from FnAnnotation on the Value::Function.
+  # return: [Seq b] is exposed as the display string "[Seq b]".
+  # doc: is evaluated via [unindent "..."] at function definition time.
+  map-has-ret: [has? "return" map-ann]
+  map-has-doc: [has? "doc" map-ann]
+  map-ret-val: [= map-ann.return "[Seq b]"]
+  # doc must be a non-empty string (actual content from triple-quoted string via unindent)
+  map-doc-str: [str? map-ann.doc]
+  map-doc-ne:  [> [str-length map-ann.doc] 0]
+
+  # str: builtin-str has no annotation — empty dict
+  str-empty: [null? str-ann]
 ]
 === out
-Dict({"fn-names": Dict({0: String("map"), 1: String("filter"), 2: String("reduce"), 3: String("sort"), 4: String("group-by"), 5: String("join"), 6: String("split"), 7: String("str"), 8: String("get"), 9: String("merge")}), "format-entry": Function(fname), "entries": Dict({0: String("### [map] → return\ndoc"), 1: String("### [filter] → return\ndoc"), 2: String("### [reduce] → return\ndoc"), 3: String("### [sort] → return\ndoc"), 4: String("### [group-by] → return\ndoc"), 5: String("### [join] → return\ndoc"), 6: String("### [split] → return\ndoc"), 7: String("### [str] → return\ndoc"), 8: String("### [get] → return\ndoc"), 9: String("### [merge] → return\ndoc")}), "count": Int(10), "check": Bool(true), "page": String("### [map] → return\ndoc\n\n### [filter] → return\ndoc\n\n### [reduce] → return\ndoc\n\n### [sort] → return\ndoc\n\n### [group-by] → return\ndoc\n\n### [join] → return\ndoc\n\n### [split] → return\ndoc\n\n### [str] → return\ndoc\n\n### [get] → return\ndoc\n\n### [merge] → return\ndoc")})
+Dict({"map-ann": Dict({"doc": String("Apply function to each element of a Seq. Lazy — safe on infinite Seqs.\n\nExample: [collect [map [fn [let x] [* x 2]] [range 0 3]]] => [0 2 4]\n\nNote: O(1) per element consumed. For Dict inputs use builtin-map."), "return": String("[Seq b]")}), "str-ann": Dict({}), "map-has-ret": Bool(true), "map-has-doc": Bool(true), "map-ret-val": Bool(true), "map-doc-str": Bool(true), "map-doc-ne": Bool(true), "str-empty": Bool(true)})

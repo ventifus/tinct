@@ -40,22 +40,21 @@ pub fn desugar_surface_program(program: &mut SurfaceProgram) {
     }
 }
 
-/// Transform InstanceDecl in dict-entry position into runtime method dicts (T-1142).
+/// Transform single-arm InstanceDecl in dict-entry position into runtime method dicts (T-1142,
+/// B-409).
 ///
-/// For each dict entry whose value is a `SurfaceExpression::Decl(InstanceDecl)`, this pass
-/// extracts the instance methods from the first arm and replaces the Decl with an explicit
-/// `SurfaceExpression::Dict` containing those methods. This enables runtime method access
+/// For each dict entry whose value is a `SurfaceExpression::Decl(InstanceDecl)` with exactly
+/// one arm, this pass extracts the instance methods from that arm and replaces the Decl with an
+/// explicit `SurfaceExpression::Dict` containing those methods. This enables runtime method access
 /// (e.g., `MonadResult.bind`) without special-casing InstanceDecl in the lowering pass.
 ///
-/// **Single-arm assumption:** InstanceDecl lowering here only fires for instances that appear
-/// as dict entry VALUES (expression position), e.g.:
+/// **Single-arm only:** only fires for named single-arm instances in dict-entry position, e.g.:
 ///   `MonadResult: [instance Monad [let m@Result]: [bind: ...]]`
-/// All such instances in the prelude have exactly one `[let ...]` arm, so arms[0] is always
-/// the correct and only arm.
 ///
-/// Multi-arm instances (e.g., `Addable` with four `[let a@T b@U c]` arms) are declared at
-/// the top level as `SurfaceItem::Decl`, not as dict entry values, and therefore never reach
-/// this code path. They remain as Decl nodes and lower to `CoreExpr::Placeholder`.
+/// Multi-arm instances (e.g., `Addable` with several `[let a@T b@U c]` arms) are left as
+/// `SurfaceExpression::Decl(InstanceDecl)` so lower.rs can emit all arms as
+/// instance-binding-name-keyed dict entries (via `instance_binding_name`). Transforming only
+/// `arms[0]` would silently discard all subsequent arms.
 ///
 /// Runs BEFORE `desugar_surface_program` (`$_` desugaring and pipe lowering).
 pub fn desugar_instance_decls_surface_program(program: &mut SurfaceProgram) {
@@ -93,8 +92,10 @@ fn desugar_instance_decls_expr(expr: &SurfaceExpression, _span: Span) -> Surface
                 // Check if this entry's value is an InstanceDecl
                 let transformed_value = if let SurfaceExpression::Decl(decl) = &se.node.value.expr {
                     if let SurfaceDeclaration::InstanceDecl { arms, .. } = decl.as_ref() {
-                        if !arms.is_empty() {
-                            // Transform: extract methods from arms[0].1 and build a Dict
+                        if arms.len() == 1 {
+                            // Single-arm instance: extract methods from the one arm and build a
+                            // plain Dict. Multi-arm instances (arms.len() > 1) are left as Decl
+                            // so lower.rs processes all arms via instance_binding_name (B-409).
                             has_transformation = true;
                             let method_entries = &arms[0].1;
                             // Recurse into method entries to handle nested instances
@@ -766,5 +767,103 @@ fn apply_pipe_step(
 fn desugar_surface_annotation_option(ann: &mut Option<Spanned<Annotation>>, depth: usize) {
     if let Some(ann_spanned) = ann {
         desugar_surface_annotation(&mut ann_spanned.node, depth);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // B-409: desugar_instance_decls_expr must NOT transform multi-arm instances.
+    //
+    // Before this fix, the function used only arms[0] regardless of how many arms the instance
+    // had, silently discarding all subsequent arms. Now it only transforms single-arm instances;
+    // multi-arm instances are left as SurfaceExpression::Decl(InstanceDecl) so lower.rs can
+    // emit all arms correctly via instance_binding_name.
+    //
+    // This test parses a dict containing two named instances — one single-arm and one
+    // multi-arm — then applies desugar_instance_decls_surface_program, and verifies:
+    //   1. The single-arm instance IS transformed to SurfaceExpression::Dict.
+    //   2. The multi-arm instance is NOT transformed (still SurfaceExpression::Decl(InstanceDecl)).
+
+    fn parse_program(src: &str) -> SurfaceProgram {
+        crate::parser::parse(src)
+            .unwrap_or_else(|e| panic!("parse failed: {e:?}"))
+            .program
+    }
+
+    #[test]
+    fn test_single_arm_instance_is_transformed() {
+        // A single-arm named instance in dict-entry position should be transformed to a plain Dict.
+        let mut program =
+            parse_program("[MonadResult: [instance Monad [let m@Result]: [bind: [fn [let x] x]]]]");
+        desugar_instance_decls_surface_program(&mut program);
+
+        // Extract the first (and only) document's first expression item.
+        let doc = &program.documents[0].node;
+        let node = match doc.items.first().expect("expected one item") {
+            SurfaceItem::Expr(n) => n,
+            other => panic!("expected SurfaceItem::Expr, got {other:?}"),
+        };
+
+        // The outer dict should have one entry: MonadResult.
+        match &node.expr {
+            SurfaceExpression::Dict(entries) => {
+                assert_eq!(entries.len(), 1, "expected one entry");
+                // The value should now be a plain Dict (not a Decl).
+                match &entries[0].node.value.expr {
+                    SurfaceExpression::Dict(_) => {} // correct: single-arm was transformed
+                    SurfaceExpression::Decl(d) => {
+                        panic!("single-arm instance was NOT transformed — still Decl: {d:?}")
+                    }
+                    other => panic!("expected Dict or Decl, got {other:?}"),
+                }
+            }
+            other => panic!("expected outer Dict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_multi_arm_instance_is_not_transformed() {
+        // A multi-arm named instance must NOT be transformed — all arms must be preserved for
+        // lower.rs to emit all instance-binding-name-keyed dict entries (B-409).
+        let mut program = parse_program(
+            r#"[AddableInts: [instance Addable
+                [let a@Int b@Int c]:   [+: [fn [let x y] x]]
+                [let a@Int b@Float c]: [+: [fn [let x y] x]]]]"#,
+        );
+        desugar_instance_decls_surface_program(&mut program);
+
+        let doc = &program.documents[0].node;
+        let node = match doc.items.first().expect("expected one item") {
+            SurfaceItem::Expr(n) => n,
+            other => panic!("expected SurfaceItem::Expr, got {other:?}"),
+        };
+
+        match &node.expr {
+            SurfaceExpression::Dict(entries) => {
+                assert_eq!(entries.len(), 1, "expected one entry");
+                // The value must still be a Decl(InstanceDecl) with both arms intact.
+                match &entries[0].node.value.expr {
+                    SurfaceExpression::Decl(decl) => {
+                        if let SurfaceDeclaration::InstanceDecl { arms, .. } = decl.as_ref() {
+                            assert_eq!(
+                                arms.len(),
+                                2,
+                                "B-409: both arms must be preserved, got {} arms",
+                                arms.len()
+                            );
+                        } else {
+                            panic!("expected InstanceDecl, got {decl:?}");
+                        }
+                    }
+                    SurfaceExpression::Dict(_) => {
+                        panic!("B-409: multi-arm instance was incorrectly transformed to a plain Dict — all arms after arms[0] were lost")
+                    }
+                    other => panic!("expected Decl or Dict, got {other:?}"),
+                }
+            }
+            other => panic!("expected outer Dict, got {other:?}"),
+        }
     }
 }

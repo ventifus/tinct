@@ -1320,11 +1320,14 @@ pub(crate) fn builtin_annotation_of(
         match val {
             Value::Function { annotation, .. } => {
                 // Build the annotation dict from FnAnnotation fields.
-                // `doc` is a well-known field; `extra` holds all custom fields.
+                // `extra` holds all evaluable annotation fields including `doc`.
+                // `return_ann` is exposed as a string representation of the return type.
                 let mut entries: IndexMap<HashableValue, ThunkId> = IndexMap::new();
 
                 if let Some(ann) = annotation.as_deref() {
-                    // Include `doc` field if present
+                    // Include `doc` field from FnAnnotation.doc (derived from extra["doc"] at
+                    // function definition time). This is a fallback for any code path where
+                    // doc is not yet in extra; extra["doc"] below will overwrite if present.
                     if let Some(ref doc_str) = ann.doc {
                         entries.insert(
                             HashableValue::Str("doc".into()),
@@ -1334,7 +1337,26 @@ pub(crate) fn builtin_annotation_of(
                             ))),
                         );
                     }
-                    // Flatten all extra fields into the dict
+                    // Expose the return annotation as a string representation of the return type.
+                    // `return` is excluded from `extra` (type expressions cannot be safely
+                    // evaluated at definition time), so it is derived from `return_ann` here.
+                    let return_str: Option<String> = match &ann.return_ann {
+                        Some(crate::ast::Annotation::Simple(name)) => Some(name.clone()),
+                        Some(ann_node) => ann_node.get_property("return").map(|n| n.to_string()),
+                        None => None,
+                    };
+                    if let Some(s) = return_str {
+                        entries.insert(
+                            HashableValue::Str("return".into()),
+                            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                                string_val(&s),
+                                call_span.clone(),
+                            ))),
+                        );
+                    }
+                    // Flatten all extra fields into the dict (includes evaluated `doc`).
+                    // Extra fields overwrite doc inserted above, ensuring the evaluated
+                    // version wins for triple-quoted doc strings.
                     for (key, extra_val) in &ann.extra {
                         entries.insert(
                             HashableValue::Str(key.as_str().into()),

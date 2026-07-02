@@ -3554,11 +3554,44 @@ pub fn core_type_env(env: &mut TypeEnv) {
     // `doc.expressions`, etc. without requiring dedicated Type::Program/Type::Document
     // variants (Sprint 1, Part F). Unknown fields resolve to Top via the open row tail.
     //
+    // Expression: open record representing Value::Expression AST nodes (T-1272).
+    //
+    // The Fn constructor's `return-ann: Annotation` field is the load-bearing registration
+    // that resolves T013 ambiguity warnings in generate.llt. Without this registration,
+    // dot-access on an Expression value falls to the `_` arm of check_dot_access and
+    // fails with NotARecord, causing downstream T013 ambiguity on Indexable constraints.
+    //
+    // `return-ann` holds whatever annotation type the prelude defines. We use Type::Any
+    // to avoid coupling the Rust type env to a prelude-level type name ("Annotation").
+    // Pattern match narrowing (`[match ann [Annotation.PropertyDict p]]`) still works
+    // via TyCon expansion in typecheck.rs when Annotation is in state.tycon_env — the
+    // field type being Any is gradual: Any is consistent with any annotation type.
+    //
+    // The open row tail (Uniform { value: Any }) allows access to any other field on
+    // Expression values (e.g., `span`, `fn`, `body`) without a static error.
+    let mut expr_fields: indexmap::IndexMap<String, Type> = indexmap::IndexMap::new();
+    expr_fields.insert(
+        "return-ann".to_string(),
+        Type::Any, // Annotation type from prelude — Any avoids coupling to a prelude type name
+    );
+    expr_fields.insert(
+        "params".to_string(),
+        Type::seq(Type::Any), // Seq[Parameter] — Parameter is Top for now
+    );
+    expr_fields.insert("span".to_string(), Type::Any); // Span — open row tail covers this too
+    let expression_type = Type::Record(Row {
+        fields: expr_fields,
+        tail: crate::type_def::RowTail::Uniform {
+            key: None,
+            value: Box::new(Type::Any),
+        },
+    });
+
     // Document: open record with expressions, name, stage, uses fields
     let mut doc_fields: indexmap::IndexMap<String, Type> = indexmap::IndexMap::new();
     doc_fields.insert(
         "expressions".to_string(),
-        Type::seq(Type::Any), // Seq[Expression] — Expression is Top for now
+        Type::seq(expression_type.clone()), // Seq[Expression] — Expression open record (T-1272)
     );
     doc_fields.insert("name".to_string(), Type::Any); // Named/Unnamed variant
     doc_fields.insert("stage".to_string(), Type::Any); // DocStage.Type / DocStage.Runtime

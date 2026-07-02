@@ -1922,24 +1922,19 @@ fn eval_core_expr<'a>(
                     })
                     .collect();
 
-                // Extract doc string from annotation if present.
-                // Uses get_property("doc") which works directly on SurfaceEntry via SurfaceExpression::Str keys.
-                let doc: Option<String> = return_ann.as_ref().and_then(|ann_spanned| {
-                    ann_spanned.node.get_property("doc").and_then(|doc_node| {
-                        if let crate::ast::SurfaceExpression::Str(s) = &doc_node.expr {
-                            Some(s.clone())
-                        } else {
-                            None
-                        }
-                    })
-                });
+                // Populate extra from annotation fields (literals + expressions).
+                // `doc` is now included in extra: triple-quoted strings desugar to
+                // `[unindent "..."]` (a Call), which is evaluated here at definition time.
+                // T-1124: expression-valued fields are evaluated at function-definition time.
+                let extra = extract_fn_annotation_extra(return_ann.as_ref(), env, ctx).await?;
+
+                // Derive FnAnnotation.doc from extra["doc"] so triple-quoted doc strings
+                // (evaluated via `[unindent "..."]`) produce the correct runtime string.
+                let doc: Option<String> = extra
+                    .get("doc")
+                    .and_then(|v| v.as_str().map(|s| s.to_string()));
                 let return_ann_clone: Option<crate::ast::Annotation> =
                     return_ann.as_ref().map(|a| a.node.clone());
-
-                // Populate extra from non-standard annotation fields (literals + expressions).
-                // T-1124: expression-valued fields are now evaluated at function-definition time.
-                // Standard keys (return, constraint, doc, bind, kinds) are handled by the type system.
-                let extra = extract_fn_annotation_extra(return_ann.as_ref(), env, ctx).await?;
 
                 // Always construct FnAnnotation — source_span is always available even for
                 // unannotated functions, enabling ast-of and LSP go-to-definition.
@@ -4948,6 +4943,142 @@ mod tests {
             "got: {}",
             err
         );
+    }
+
+    #[tokio::test]
+    async fn test_type_assert_default_used_on_inner_expr_error() {
+        // B-433/B-429: [@[type: Int default: 0] <error>] -> 0 (inner expr fails, use default)
+        // When the inner expression is a CoreExpr::Error (syntax error, undefined variable),
+        // the default should be used instead of propagating the error.
+        let span = rust_span!();
+        let entries = vec![
+            surf_ann_entry(
+                "type",
+                SurfaceExpression::VarRef {
+                    name: "Int".into(),
+                    escaped: false,
+                    resolution: crate::ast::Resolution::new(),
+                    call_dispatch: crate::ast::CallDispatch::new(),
+                },
+            ),
+            surf_ann_entry("default", SurfaceExpression::Int(0)),
+        ];
+        let error_span = test_span(1, 5, 1, 15);
+        let expr = Spanned::new(
+            CoreExpr::TypeAssert {
+                annotation: sp(Annotation::PropertyDict(entries)),
+                expr: Arc::new(Spanned::new(
+                    CoreExpr::Error(error_span.clone()),
+                    error_span,
+                )),
+                resolved_type: Type::Int,
+                pipeline_blame: None,
+            },
+            span,
+        );
+        let thunk = eval_core_for_test(expr, empty_env(), &test_ctx())
+            .await
+            .unwrap();
+        let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
+        assert_eq!(val, Value::Int(0));
+    }
+
+    #[tokio::test]
+    async fn test_type_assert_record_type_rejects_non_dict() {
+        // B-434 verification: [@[name: String] 42] -> error "expected record, got Int"
+        // When a record type (keyed PropertyDict) is expected, non-Dict values should be rejected.
+        let span = rust_span!();
+        let entries = vec![surf_ann_entry(
+            "name",
+            SurfaceExpression::VarRef {
+                name: "String".into(),
+                escaped: false,
+                resolution: crate::ast::Resolution::new(),
+                call_dispatch: crate::ast::CallDispatch::new(),
+            },
+        )];
+        let expr = Spanned::new(
+            CoreExpr::TypeAssert {
+                annotation: sp(Annotation::PropertyDict(entries)),
+                expr: Arc::new(Spanned::new(CoreExpr::Int(42), span.clone())),
+                resolved_type: Type::Record(crate::type_def::Row {
+                    fields: indexmap::indexmap! { "name".to_string() => Type::Str },
+                    tail: crate::type_def::RowTail::Empty,
+                }),
+                pipeline_blame: None,
+            },
+            span,
+        );
+        let thunk = eval_core_for_test(expr, empty_env(), &test_ctx())
+            .await
+            .unwrap();
+        let err = materialize(&thunk, None, &test_ctx()).await.unwrap_err();
+        assert!(
+            err.to_string().contains("expected") && err.to_string().contains("got Int"),
+            "expected type assertion error for non-Dict, got: {}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_type_assert_record_type_with_default_on_non_dict() {
+        // B-434 extended: [@[name: String default: [name: "fallback"]] 42] -> [name: "fallback"]
+        // When a record type is expected but value is not Dict, and default is present, use default.
+        let span = rust_span!();
+        let entries = vec![
+            surf_ann_entry(
+                "name",
+                SurfaceExpression::VarRef {
+                    name: "String".into(),
+                    escaped: false,
+                    resolution: crate::ast::Resolution::new(),
+                    call_dispatch: crate::ast::CallDispatch::new(),
+                },
+            ),
+            surf_ann_entry(
+                "default",
+                SurfaceExpression::Dict(vec![Spanned::new(
+                    crate::ast::SurfaceEntry {
+                        key: Some(Arc::new(SurfaceNode::new(
+                            SurfaceExpression::Str("name".into()),
+                            span.clone(),
+                        ))),
+                        value: Arc::new(SurfaceNode::new(
+                            SurfaceExpression::Str("fallback".into()),
+                            span.clone(),
+                        )),
+                    },
+                    span.clone(),
+                )]),
+            ),
+        ];
+        let expr = Spanned::new(
+            CoreExpr::TypeAssert {
+                annotation: sp(Annotation::PropertyDict(entries)),
+                expr: Arc::new(Spanned::new(CoreExpr::Int(42), span.clone())),
+                resolved_type: Type::Record(crate::type_def::Row {
+                    fields: indexmap::indexmap! { "name".to_string() => Type::Str },
+                    tail: crate::type_def::RowTail::Empty,
+                }),
+                pipeline_blame: None,
+            },
+            span,
+        );
+        let thunk = eval_core_for_test(expr, empty_env(), &test_ctx())
+            .await
+            .unwrap();
+        let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
+        match val {
+            Value::Dict(map) => {
+                let name_val = map
+                    .get(&HashableValue::Str("name".into()))
+                    .expect("name field missing");
+                let name_thunk = test_ctx().get_thunk(*name_val);
+                let name = materialize(&name_thunk, None, &test_ctx()).await.unwrap();
+                assert_eq!(name, string_val("fallback".into()));
+            }
+            _ => panic!("expected Dict, got: {:?}", val),
+        }
     }
 
     #[tokio::test]
@@ -8511,6 +8642,134 @@ mod tests {
             blame.consumer.as_deref(),
             Some("document 1"),
             "blame.consumer must be Some('document 1')"
+        );
+    }
+
+    // B-430: [type MyType Int] in standalone expression position returns {} (empty dict).
+    //
+    // Type declarations have no runtime value when they appear as standalone expressions
+    // (i.e. not as the value of a named dict entry like `Color: [type Red Green Blue]`).
+    // The correct runtime result is {} (empty dict), not an error and not a non-empty dict.
+    #[tokio::test]
+    async fn test_type_alias_returns_empty_dict() {
+        // [type MyType Int] — standalone type alias in expression position.
+        // The body "Int" is an uppercase VarRef; previously this was misinterpreted as a
+        // unit constructor "Int" and produced a non-empty constructor dict {Int: <variant>}.
+        let thunk = eval_str("[type MyType Int]", empty_env(), &test_ctx())
+            .await
+            .unwrap();
+        let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
+        match val {
+            Value::Dict(map) => assert!(
+                map.is_empty(),
+                "B-430: standalone [type MyType Int] must produce {{}} (empty dict), got {} entries",
+                map.len()
+            ),
+            other => panic!(
+                "B-430: expected Value::Dict({{}}) for standalone [type MyType Int], got {:?}",
+                other
+            ),
+        }
+    }
+
+    // B-430 variant: [type Color Red Green Blue] standalone also returns {}.
+    //
+    // Even with genuine constructor names, a standalone type declaration in expression
+    // position should return {}, not a constructor dict. Constructors are only accessible
+    // when the alias is bound to a name in a dict entry (Color: [type Red Green Blue]).
+    #[tokio::test]
+    async fn test_type_alias_sum_type_standalone_returns_empty_dict() {
+        let thunk = eval_str("[type Color Red Green Blue]", empty_env(), &test_ctx())
+            .await
+            .unwrap();
+        let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
+        match val {
+            Value::Dict(map) => assert!(
+                map.is_empty(),
+                "B-430: standalone [type Color Red Green Blue] must produce {{}} (empty dict), got {} entries",
+                map.len()
+            ),
+            other => panic!(
+                "B-430: expected Value::Dict({{}}) for standalone sum-type alias, got {:?}",
+                other
+            ),
+        }
+    }
+
+    // ── B-427: tail-recursive and context-inheritance tests ──────────────────
+
+    /// B-427: tail-recursive LLT function evaluates correctly using builtin names.
+    ///
+    /// Tests a tail-recursive accumulator function. Uses `builtin-if`, `builtin-eq`,
+    /// `builtin-add`, `builtin-sub` directly — no prelude aliases needed.
+    /// The function sums 1..=100 using an accumulator; result must be 5050.
+    #[tokio::test]
+    async fn test_tco_tail_recursive_function() {
+        let (env, ctx) = core_env_and_ctx();
+
+        // sum-to 0 acc = acc
+        // sum-to n acc = sum-to (n-1) (acc+n)
+        // sum-to 100 0 = 1 + 2 + ... + 100 = 5050
+        let source = r#"[
+            sum-to: [fn [let n acc]
+                [builtin-if [builtin-eq n 0]
+                    acc
+                    [$sum-to [builtin-sub n 1] [builtin-add acc n]]]]
+            result: [sum-to 100 0]
+        ]"#;
+
+        let thunk = eval_str(source, Arc::clone(&env), &ctx).await.unwrap();
+        let dict_val = materialize(&thunk, None, &ctx).await.unwrap();
+
+        match dict_val {
+            Value::Dict(ref map) => {
+                let result_id = map
+                    .get(&HashableValue::Str("result".into()))
+                    .expect("dict must have 'result' key");
+                let result_val = mat_id(result_id, &ctx).await.unwrap();
+                assert_eq!(
+                    result_val,
+                    Value::Int(5050),
+                    "sum-to 100 0 must equal 5050 (sum 1..=100); got {result_val:?}"
+                );
+            }
+            other => panic!("expected Dict, got {other:?}"),
+        }
+    }
+
+    /// B-427: EvalContext.with_base_dir() inherits no_fs from the parent context.
+    ///
+    /// `with_base_dir()` creates a child context and must propagate `no_fs`.
+    /// Verifies the flag is preserved and stdlib_env is shared (same Arc pointer).
+    #[tokio::test]
+    async fn test_eval_context_with_base_dir_inherits_no_fs() {
+        let env = crate::builtins::build_core_env();
+        let base_dir1 = crate::test_util::test_caps().root.try_clone().unwrap();
+        let base_dir2 = crate::test_util::test_caps().root.try_clone().unwrap();
+
+        // Create a parent context with no_fs=true.
+        let ctx1 = EvalContext::new(
+            base_dir1,
+            Arc::clone(&env),
+            Arc::clone(&env),
+            true, // no_fs = true
+        );
+        assert!(
+            ctx1.config.no_fs,
+            "parent context must have no_fs=true as configured"
+        );
+
+        // Child context inherits no_fs from parent via with_base_dir().
+        let ctx2 = ctx1.with_base_dir(base_dir2);
+        assert!(
+            ctx2.config.no_fs,
+            "with_base_dir() must inherit no_fs=true from parent; got no_fs=false"
+        );
+
+        // Verify the child shares the parent's stdlib_env (same Arc pointer).
+        assert!(
+            Arc::ptr_eq(&ctx1.config.stdlib_env, &ctx2.config.stdlib_env),
+            "with_base_dir() must share parent's stdlib_env (same Arc)"
         );
     }
 }

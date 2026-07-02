@@ -1,0 +1,10 @@
+# annotation-of with a triple-quoted doc string evaluates [unindent "..."] correctly (B-406).
+# The doc value must be the unindented string content, not the expression "[unindent ...]".
+[f: [fn@[return: String  doc: """
+Gets the greeting.
+"""] [let name@String] [str "Hello " name]]]
+[ann: [annotation-of f]]
+[result-doc: [= ann.doc "Gets the greeting."]
+ result-ret: [= ann.return "String"]]
+=== out
+Dict({"result-doc": Bool(true), "result-ret": Bool(true)})

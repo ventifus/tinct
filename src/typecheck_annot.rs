@@ -3918,27 +3918,50 @@ pub(crate) async fn resolve_type_dict(
                                     },
                                 });
                             } else if entries.len() == 2 {
-                                // Single-payload constructor: [Ok a]
-                                let payload_ty = resolve_type_expr(
-                                    &entries[1].node.value,
-                                    env,
-                                    state,
-                                    constraints,
-                                    ann_mapping,
-                                    row_ann_mapping,
-                                    type_params_scope,
-                                )
-                                .await?;
-                                // Unnamed payload: create record with single field "0"
-                                let mut fields = indexmap::IndexMap::new();
-                                fields.insert("0".to_string(), payload_ty);
-                                return Ok(Type::NominalVariant {
-                                    tag: tag.to_string(),
-                                    fields: Row {
-                                        fields,
-                                        tail: crate::type_def::RowTail::Empty,
-                                    },
-                                });
+                                // Check if second entry is ALSO an uppercase constructor name.
+                                // If so, this is a union of two unit constructors [type True False],
+                                // not a single-payload constructor [Ok a].
+                                // Extract the second entry's tag name (if it's a VarRef or Annotated).
+                                let second_tag_opt: Option<String> = match &entries[1]
+                                    .node
+                                    .value
+                                    .expr
+                                {
+                                    SurfaceExpression::VarRef { name, .. } => Some(name.clone()),
+                                    SurfaceExpression::Annotated { name, .. } => Some(name.clone()),
+                                    _ => None,
+                                };
+                                let second_is_constructor = second_tag_opt
+                                    .as_ref()
+                                    .is_some_and(|name| crate::eval::is_constructor_name(name));
+
+                                if second_is_constructor {
+                                    // Both entries are uppercase constructor names.
+                                    // Fall through to the multi-entry union path.
+                                    // Example: [type True False] → Union(True, False)
+                                } else {
+                                    // Single-payload constructor: [Ok a]
+                                    let payload_ty = resolve_type_expr(
+                                        &entries[1].node.value,
+                                        env,
+                                        state,
+                                        constraints,
+                                        ann_mapping,
+                                        row_ann_mapping,
+                                        type_params_scope,
+                                    )
+                                    .await?;
+                                    // Unnamed payload: create record with single field "0"
+                                    let mut fields = indexmap::IndexMap::new();
+                                    fields.insert("0".to_string(), payload_ty);
+                                    return Ok(Type::NominalVariant {
+                                        tag: tag.to_string(),
+                                        fields: Row {
+                                            fields,
+                                            tail: crate::type_def::RowTail::Empty,
+                                        },
+                                    });
+                                }
                             }
                             // 3+ all-positional entries: not a constructor with positional payload.
                             // Fall through to the multi-entry union path below.

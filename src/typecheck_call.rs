@@ -105,6 +105,29 @@ pub(crate) async fn check_dot_access(
     // Apply the global accumulated substitution so that constraints from prior accesses
     // on the same target are visible (doc/07-type-extensions.md Part 5).
     let target_ty = state.subst.apply(&target_ty);
+    // TyCon expansion (T-1272): if the target has a named type constructor type, expand it
+    // to the constructor's body for field lookup. This allows dot-access on TyCon-typed values
+    // (e.g., `expr.return-ann` where `expr: Expression`, or `ann.text` where `ann: Annotation`).
+    //
+    // One-level expansion only. Builtin TyCons have non-Record bodies (Int→Type::Int,
+    // Map→App(...), Fn→Function{...}), so they fall to the `_` arm and correctly error
+    // (builtin TyCon values don't have named record fields accessible via dot-access).
+    // User-defined ADTs have body = Union of NominalVariants or Record, which is then
+    // handled by the Union/Record arms below for field lookup across members.
+    //
+    // Gradual: unknown TyCons (not in tycon_env) are kept as-is; they fall to `_` → NotARecord.
+    let target_ty = {
+        // TyCon expansion: look up body before consuming target_ty.
+        let expanded = if let Type::TyCon(name) = &target_ty {
+            state
+                .tycon_env
+                .get(name.as_str())
+                .map(|def| def.body.clone())
+        } else {
+            None
+        };
+        expanded.unwrap_or(target_ty)
+    };
     match target_ty {
         Type::Record(Row { ref fields, .. }) => match fields.get(field_str) {
             Some(ty) => Ok(ty.clone()),

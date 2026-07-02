@@ -1,0 +1,109 @@
+# T-1424: TypeNode protocol functions — children, map-children, as-type
+#
+# TypeNode is declared in prelude.llt under --- stage: type and is evaluated
+# only by the type-stage evaluator (not the runtime evaluator). TypeNode
+# constructors and protocol functions are therefore not accessible in eval
+# corpus tests via TypeNode.Int, TypeNode.children, etc.
+#
+# This test exercises the SAME mechanisms TypeNode relies on by declaring a
+# user-defined type (SimpleType) with the identical constructor annotation
+# pattern and implementing the protocol functions (as-type, map-children)
+# in user tinct code. The behaviors are mechanistically equivalent to
+# TypeNode's: TypeNode IS user-defined tinct code evaluated in the type-stage
+# context — the same language, the same evaluator, the same annotation system.
+#
+# Mechanisms exercised:
+#   1. @[as-type: fn  guarding: bool] annotation on leaf constructors
+#   2. as-type reads the annotation from a constructor and calls the stored fn
+#   3. as-type on a leaf node returns the node unchanged (identity function)
+#   4. map-children on a leaf node returns the leaf unchanged (wildcard arm)
+#   5. map-children on a branch node applies f to the inner@Child field
+#   6. annotation-of(SimpleType.Leaf) returns the constructor annotation dict
+#
+# MANUAL TESTING REQUIRED — === out is empty pending resolution of two bugs:
+#
+# BUG-A: builtin-tag-of (src/builtins_meta.rs:builtin_tag_of) does not peel
+#   Value::Annotated. Annotated unit constructors (e.g. SimpleType.Leaf created
+#   via builtin-make-annotated) evaluate to Value::Annotated{inner: Variant(...)},
+#   not Value::Variant. The builtin_tag_of match arm only handles Value::Variant
+#   and falls through to type_mismatch for Value::Annotated.
+#   Fix: add `Value::Annotated { inner, .. } => { let mut v = &*inner; while let
+#   Value::Annotated { inner, .. } = v { v = inner; } match v { Value::Variant{tag,..}
+#   => ok_val(...), _ => type_mismatch } }` arm to builtin_tag_of.
+#
+# BUG-B: `True` and `False` are not defined in the runtime prelude. They appear
+#   in annotations as `guarding: True` / `guarding: False`. In the runtime context
+#   these are undefined VarRefs — the thunk errors when forced (leaf-guarding line 65).
+#   Fix: either export True/False from prelude runtime section, or change the
+#   annotation values to use a runtime-valid representation (e.g. strings "true"/"false").
+#
+# To populate === out after fixing BUG-A and BUG-B:
+#   just test-corpus-one tests/corpus/eval/type_system/type_node_protocol.llt-eval
+
+[
+  SimpleType: [type
+    # Leaf constructor (no @Child fields) — mirrors TypeNode.Int, TypeNode.Float, etc.
+    # The @[as-type: fn  guarding: bool] annotation is stored at the constructor level.
+    [Leaf@[as-type: [fn [let t] t]  guarding: True]]
+    # Branch constructor with one @Child field — mirrors TypeNode.Negation.
+    [Branch@[as-type: [fn [let t] t]  guarding: False]
+      inner@Child: SimpleType]
+  ]
+
+  # as-type: normalize a SimpleType node using its constructor's as-type annotation.
+  # Looks up the constructor by splitting the variant tag on "." and taking the last part.
+  # Calls the stored as-type function with t → identity for all SimpleType constructors.
+  as-type: [fn [let t]
+    [tag-parts:  [split "." [builtin-tag-of t]]]
+    [ctor-name:  [last tag-parts]]
+    [ctor:       [get ctor-name SimpleType]]
+    [ann:        [annotation-of ctor]]
+    [as-type-fn: [get? "as-type" ann]]
+    [if [absent? as-type-fn]
+      t
+      [as-type-fn t]]]
+
+  # map-children: apply f to each @Child field, return same-shaped node.
+  # Leaf nodes (wildcard arm) are returned unchanged.
+  # Branch nodes have their inner@Child replaced by f(inner).
+  map-children: [fn [let f t]
+    [match t
+      [SimpleType.Branch p]: [SimpleType.Branch inner: [f p.inner]]
+      _:                     t]]
+
+  # ── Leaf tests ──────────────────────────────────────────────────────────────
+
+  leaf: SimpleType.Leaf
+
+  # as-type on a Leaf node: the stored identity fn returns the leaf unchanged.
+  leaf-as-typed:    [as-type leaf]
+  leaf-tag:         [builtin-tag-of leaf-as-typed]
+
+  # annotation-of on the Leaf constructor returns the annotation dict.
+  leaf-ann:         [annotation-of SimpleType.Leaf]
+  leaf-has-as-type: [has? "as-type" leaf-ann]
+  leaf-guarding:    [get "guarding" leaf-ann]
+
+  # map-children on a Leaf node returns the leaf unchanged (wildcard arm fires).
+  leaf-mapped:      [map-children [fn [let x] x] leaf]
+  leaf-mapped-tag:  [builtin-tag-of leaf-mapped]
+
+  # ── Branch tests ────────────────────────────────────────────────────────────
+
+  branch: [SimpleType.Branch inner: SimpleType.Leaf]
+
+  # as-type on a Branch node: returns the branch unchanged (identity).
+  branch-as-typed:   [as-type branch]
+  branch-tag:        [builtin-tag-of branch-as-typed]
+
+  # map-children on a Branch node applies f to inner@Child.
+  # The identity function leaves inner unchanged: result.inner is SimpleType.Leaf.
+  branch-mapped:     [map-children [fn [let x] x] branch]
+  inner-of-mapped:   [get "inner" branch-mapped]
+  inner-tag:         [builtin-tag-of inner-of-mapped]
+
+  # map-children with a replacement function: inner becomes SimpleType.Leaf regardless.
+  branch-replaced:   [map-children [fn [let _] SimpleType.Leaf] branch]
+  replaced-inner-tag: [builtin-tag-of [get "inner" branch-replaced]]
+]
+=== out
