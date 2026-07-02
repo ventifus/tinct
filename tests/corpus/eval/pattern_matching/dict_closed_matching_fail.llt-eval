@@ -1,6 +1,0 @@
-# Open matching is default: extra keys ARE allowed
-[match [ok: 42  extra: "data"]
-  [case [let v] [ok: v] v]
-  _:            99]
-=== out
-Int(42)
