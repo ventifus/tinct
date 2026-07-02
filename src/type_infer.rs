@@ -193,6 +193,18 @@ pub struct InferState {
     /// the stack is borrowed mutably through the entire expansion call tree — any attempt
     /// to re-enter a stack entry produces the TypeVar sentinel rather than infinite recursion.
     pub expansion_stack: crate::typecheck::typecheck_annot::ExpansionStack,
+    /// BAS TypeVar bounds: lower and upper bounds accumulated by C-Var1/2 constraint
+    /// rewriting during unification. Each TypeVar name maps to its TypeVarBounds.
+    ///
+    /// - C-Var1 (`τ₁ ≤ τ₂ ∨ α` → `τ₁ & ~τ₂ ≤ α`): adds `τ₁ & ~τ₂` as lower bound of α
+    /// - C-Var2 (`α ∧ τ₁ ≤ τ₂` → `α ≤ ~τ₁ ∨ τ₂`): adds `~τ₁ ∨ τ₂` as upper bound of α
+    ///
+    /// At generalization time, bounds are compacted: if they determine a unique type for α,
+    /// α is substituted; otherwise α remains free in the TypeScheme.
+    ///
+    /// Coexists with Substitution — Substitution handles equational bindings (α = T),
+    /// bounds handle inequality constraints (L ≤ α ≤ U).
+    pub bounds: std::collections::HashMap<String, crate::bas::TypeVarBounds>,
 }
 
 impl InferState {
@@ -346,6 +358,7 @@ impl InferState {
             type_stage_env: None,
             pending_scheme_injections: Vec::new(),
             expansion_stack: Vec::new(),
+            bounds: HashMap::new(),
         }
     }
 

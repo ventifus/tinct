@@ -49,6 +49,11 @@ pub const W042_DUPLICATE_NOMINAL_TAG: &str = "W042";
 /// W043: Structural instance overlap — instance declarations overlap (Warn)
 pub const W043_INSTANCE_OVERLAP: &str = "W043";
 
+/// T022: Inconsistent TypeVar bounds — lower bound is not a subtype of upper bound (Err)
+/// Fired when compact() returns None with non-empty lower AND upper bounds that are
+/// incompatible: join(lower) ≰ meet(upper) means no type can satisfy both constraints.
+pub const T022_INCONSISTENT_BOUNDS: &str = "T022";
+
 // ============================================================================
 
 use super::TypeMap;

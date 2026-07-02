@@ -471,6 +471,7 @@ impl InstanceEnv {
                 let saved_levels = state.levels.clone();
                 let saved_kind_env = state.kind_env.clone();
                 let saved_deferred = state.deferred_equalities.clone();
+                let saved_bounds = state.bounds.clone();
                 let saved_subst = state.subst.clone();
 
                 // Freshen both instance types independently so that a type variable named
@@ -497,6 +498,7 @@ impl InstanceEnv {
                 state.levels = saved_levels;
                 state.kind_env = saved_kind_env;
                 state.deferred_equalities = saved_deferred;
+                state.bounds = saved_bounds;
                 state.subst = saved_subst;
 
                 if overlaps {
@@ -549,6 +551,7 @@ impl InstanceEnv {
             let saved_levels = state.levels.clone();
             let saved_kind_env = state.kind_env.clone();
             let saved_deferred = state.deferred_equalities.clone();
+            let saved_bounds = state.bounds.clone();
             let saved_subst = state.subst.clone();
 
             // Freshen the ENTIRE instance_type at once so that shared type variables
@@ -576,6 +579,7 @@ impl InstanceEnv {
                         state.levels = saved_levels;
                         state.kind_env = saved_kind_env;
                         state.deferred_equalities = saved_deferred;
+                        state.bounds = saved_bounds;
                         state.subst = saved_subst;
                         continue;
                     }
@@ -588,6 +592,7 @@ impl InstanceEnv {
                 state.levels = saved_levels;
                 state.kind_env = saved_kind_env;
                 state.deferred_equalities = saved_deferred;
+                state.bounds = saved_bounds;
                 state.subst = saved_subst;
                 continue;
             }
@@ -623,6 +628,7 @@ impl InstanceEnv {
                 state.levels = saved_levels;
                 state.kind_env = saved_kind_env;
                 state.deferred_equalities = saved_deferred;
+                state.bounds = saved_bounds;
                 state.subst = saved_subst;
 
                 // Return the freshened instance_type with temp_subst applied so that
@@ -640,6 +646,7 @@ impl InstanceEnv {
                 state.levels = saved_levels;
                 state.kind_env = saved_kind_env;
                 state.deferred_equalities = saved_deferred;
+                state.bounds = saved_bounds;
                 state.subst = saved_subst;
             }
         }
@@ -684,6 +691,7 @@ impl InstanceEnv {
             let saved_levels = state.levels.clone();
             let saved_kind_env = state.kind_env.clone();
             let saved_deferred = state.deferred_equalities.clone();
+            let saved_bounds = state.bounds.clone();
             let saved_subst = state.subst.clone();
 
             // Freshen the entire instance type at once so shared type variables
@@ -703,6 +711,7 @@ impl InstanceEnv {
                     state.levels = saved_levels;
                     state.kind_env = saved_kind_env;
                     state.deferred_equalities = saved_deferred;
+                    state.bounds = saved_bounds;
                     state.subst = saved_subst;
                     continue;
                 }
@@ -713,6 +722,7 @@ impl InstanceEnv {
                 state.levels = saved_levels;
                 state.kind_env = saved_kind_env;
                 state.deferred_equalities = saved_deferred;
+                state.bounds = saved_bounds;
                 state.subst = saved_subst;
                 continue;
             }
@@ -758,6 +768,7 @@ impl InstanceEnv {
                         state.levels = saved_levels;
                         state.kind_env = saved_kind_env;
                         state.deferred_equalities = saved_deferred;
+                        state.bounds = saved_bounds;
                         state.subst = saved_subst;
                         continue;
                     }
@@ -767,6 +778,7 @@ impl InstanceEnv {
                 state.levels = saved_levels;
                 state.kind_env = saved_kind_env;
                 state.deferred_equalities = saved_deferred;
+                state.bounds = saved_bounds;
                 state.subst = saved_subst;
 
                 return Some((determining_types, det_position_indices));
@@ -775,6 +787,7 @@ impl InstanceEnv {
                 state.levels = saved_levels;
                 state.kind_env = saved_kind_env;
                 state.deferred_equalities = saved_deferred;
+                state.bounds = saved_bounds;
                 state.subst = saved_subst;
             }
         }
@@ -902,6 +915,7 @@ impl InstanceEnv {
             let saved_levels = state.levels.clone();
             let saved_kind_env = state.kind_env.clone();
             let saved_deferred = state.deferred_equalities.clone();
+            let saved_bounds = state.bounds.clone();
             let saved_subst = state.subst.clone();
             let saved_counter = state.subst.name_counter.get();
 
@@ -928,6 +942,7 @@ impl InstanceEnv {
             state.levels = saved_levels;
             state.kind_env = saved_kind_env;
             state.deferred_equalities = saved_deferred;
+            state.bounds = saved_bounds;
             state.subst = saved_subst;
             state
                 .subst
@@ -981,6 +996,7 @@ impl InstanceEnv {
         let saved_levels = state.levels.clone();
         let saved_kind_env = state.kind_env.clone();
         let saved_deferred = state.deferred_equalities.clone();
+        let saved_bounds = state.bounds.clone();
         let saved_subst = state.subst.clone();
         let saved_counter = state.subst.name_counter.get();
 
@@ -1014,6 +1030,7 @@ impl InstanceEnv {
         state.levels = saved_levels;
         state.kind_env = saved_kind_env;
         state.deferred_equalities = saved_deferred;
+        state.bounds = saved_bounds;
         state.subst = saved_subst;
         state
             .subst

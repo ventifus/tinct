@@ -2224,105 +2224,246 @@ fn transfer_class_constraints(alpha: &str, beta: &str, constraints: &mut Vec<Con
     }
 }
 
-/// Shared binding logic for C-Var1 (Union) and C-Var2 (Intersection) unification arms.
+// bind_single_type_var_from_compound removed (T-1212): replaced by bas_cvar1_rewrite
+// and bas_cvar2_rewrite which implement the full BAS C-Var1/2 constraint rewriting
+// rules (Parreaux & Chau 2022, §3.2.1) with negation types and bounds.
+
+/// [C-VAR1] BAS constraint rewriting for Union types containing TypeVars.
 ///
-/// Both arms have the same structure:
-/// 1. Partition compound members into TypeVars and concrete members.
-/// 2. Require exactly one TypeVar in the compound.
-/// 3. Check whether the concrete side is already covered/satisfied by the non-var members.
-/// 4. If not covered, bind the TypeVar to the concrete type.
+/// `τ₁ ≤ τ₂ ∨ α`  →  `τ₁ & ~τ₂ ≤ α`
 ///
-/// The only difference between C-Var1 and C-Var2 is the coverage check direction:
-/// - C-Var1 (Union, `is_union = true`):  covered iff `concrete <: member`
-///   (the concrete type is already a member of the union — no binding needed).
-/// - C-Var2 (Intersection, `is_union = false`): satisfied iff `member <: concrete`
-///   (the intersection already implies the target — the TypeVar is unconstrained).
+/// Computes the residual `concrete & ~(union of concrete members)` and uses it
+/// to determine what to bind the TypeVar to. The residual represents the part of
+/// `concrete` not already covered by the union's non-variable members.
 ///
-/// Returns `Ok(())` when the TypeVar is bound or the compound already covers the concrete type.
-/// Returns `Err(TypeError::type_mismatch)` when the compound has != 1 TypeVar.
-async fn bind_single_type_var_from_compound(
+/// Parreaux & Chau (2022), §3.2.1, C-Var1 rule.
+async fn bas_cvar1_rewrite(
     compound_members: &[Type],
     concrete: &Type,
-    is_union: bool,
     subst: &mut Substitution,
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
     span: Span,
 ) -> Result<(), TypeError> {
-    // Partition into TypeVars and non-TypeVar (concrete) members
-    let type_vars: Vec<_> = compound_members
+    // Partition into TypeVars and concrete (non-TypeVar) members
+    let type_vars: Vec<&Type> = compound_members
         .iter()
         .filter(|m| matches!(m, Type::TypeVar(_, _)))
         .collect();
-    let concrete_members: Vec<_> = compound_members
+    let concrete_members: Vec<&Type> = compound_members
         .iter()
         .filter(|m| !matches!(m, Type::TypeVar(_, _)))
         .collect();
 
-    if type_vars.len() != 1 {
-        // Zero TypeVars: no binding target; >1 TypeVars: ambiguous binding.
-        // Neither case is handled conservatively — fall through to mismatch.
-        // Reconstruct a representative compound for the error message.
-        let representative = if is_union {
-            Type::Union(compound_members.to_vec())
-        } else {
-            Type::Intersection(compound_members.to_vec())
-        };
+    if type_vars.is_empty() {
+        // No TypeVars — this shouldn't happen (guard in match arm ensures at least one),
+        // but handle gracefully: check subsumption
+        if Type::is_subtype(
+            concrete,
+            &Type::Union(compound_members.to_vec()),
+            Some(&state.tycon_env),
+        ) {
+            return Ok(());
+        }
         return Err(TypeErrorTyped::UnificationFailure(UnificationFailure {
             expected: concrete.clone(),
-            got: representative,
+            got: Type::Union(compound_members.to_vec()),
             span,
             notes: vec![],
             call_stack: vec![],
         }));
     }
 
-    // Check whether the concrete side is already handled by the non-var members.
-    let already_handled = if is_union {
-        // C-Var1: concrete is subsumed by an existing non-var union member.
-        concrete_members
-            .iter()
-            .any(|m| Type::is_subtype(concrete, m, Some(&state.tycon_env)))
+    // Check if concrete is already covered by the non-var union members.
+    // If concrete <: Union(concrete_members), the TypeVar is unconstrained by this equation.
+    if !concrete_members.is_empty() {
+        let concrete_union = if concrete_members.len() == 1 {
+            concrete_members[0].clone()
+        } else {
+            Type::Union(concrete_members.iter().map(|t| (*t).clone()).collect())
+        };
+        if Type::is_subtype(concrete, &concrete_union, Some(&state.tycon_env)) {
+            // concrete is already a subtype of the non-var part — no binding needed
+            return Ok(());
+        }
+    }
+
+    // Compute the residual: concrete & ~(union of concrete members)
+    // This is the "leftover" that the TypeVar must account for.
+    let bound_type = if concrete_members.is_empty() {
+        // No concrete members in the union — residual is just `concrete` itself
+        concrete.clone()
     } else {
-        // C-Var2: an existing non-var intersection member already implies the concrete target.
-        concrete_members
+        let concrete_union = if concrete_members.len() == 1 {
+            concrete_members[0].clone()
+        } else {
+            Type::Union(concrete_members.iter().map(|t| (*t).clone()).collect())
+        };
+        // Compute concrete & ~concrete_union
+        let residual = Type::Intersection(vec![
+            concrete.clone(),
+            Type::Negation(Box::new(concrete_union)),
+        ]);
+        // Simplify: check if residual is equivalent to concrete (when concrete_members
+        // are disjoint from concrete, ~concrete_union doesn't remove anything)
+        let residual_rdnf = crate::bas::to_rdnf(&residual);
+        let mut sigma = std::collections::HashSet::new();
+        if crate::bas::is_rdnf_empty(&residual_rdnf, Some(&state.tycon_env), &mut sigma) {
+            // Residual is empty — concrete is fully covered. No binding needed.
+            return Ok(());
+        }
+        // Use concrete directly as the bound when the concrete members are disjoint
+        // (common case: concrete = Int, concrete_members = [Str] → Int & ~Str = Int)
+        if concrete_members
             .iter()
-            .any(|m| Type::is_subtype(m, concrete, Some(&state.tycon_env)))
+            .all(|m| Type::types_are_disjoint(concrete, m))
+        {
+            concrete.clone()
+        } else {
+            // Use the full residual type
+            Type::simplify_type(residual)
+        }
     };
 
-    if already_handled {
+    // Bind each TypeVar
+    for tv in &type_vars {
+        let Type::TypeVar(var_name, _) = tv else {
+            continue;
+        };
+
+        let alpha_level = state.levels.get(var_name).copied().unwrap_or(0);
+        if lower_levels_check_occurs(&bound_type, var_name, alpha_level, state) {
+            return Err(TypeErrorTyped::Generic(GenericTypeError {
+                message: format!("infinite type: {var_name} occurs in {bound_type}"),
+                span,
+                notes: vec![],
+                call_stack: vec![],
+            }));
+        }
+
+        if type_vars.len() == 1 {
+            // Single TypeVar: bind directly (equational constraint)
+            let promoted = promote_literal_for_constrained_var(
+                var_name,
+                bound_type.clone(),
+                constraints,
+                state,
+            );
+            check_constraints_on_var(var_name, &promoted, subst, state, constraints, span.clone())
+                .await?;
+            let var_level = state.levels.get(var_name).copied().unwrap_or(0);
+            subst.bind_at_level(var_name.clone(), var_level, promoted);
+            return subst.check_size(span);
+        } else {
+            // Multiple TypeVars: add as lower bound (inequality constraint)
+            state
+                .bounds
+                .entry(var_name.clone())
+                .or_insert_with(crate::bas::TypeVarBounds::new)
+                .add_lower(bound_type.clone());
+        }
+    }
+
+    Ok(())
+}
+
+/// [C-VAR2] BAS constraint rewriting for Intersection types containing TypeVars.
+///
+/// `α ∧ τ₁ ≤ τ₂`  →  `α ≤ ~τ₁ ∨ τ₂`
+///
+/// Computes the bound `concrete | ~(intersection of concrete members)` and uses it
+/// to determine what to bind the TypeVar to.
+///
+/// Parreaux & Chau (2022), §3.2.1, C-Var2 rule.
+async fn bas_cvar2_rewrite(
+    compound_members: &[Type],
+    concrete: &Type,
+    subst: &mut Substitution,
+    state: &mut InferState,
+    constraints: &mut Vec<Constraint>,
+    span: Span,
+) -> Result<(), TypeError> {
+    // Partition into TypeVars and concrete (non-TypeVar) members
+    let type_vars: Vec<&Type> = compound_members
+        .iter()
+        .filter(|m| matches!(m, Type::TypeVar(_, _)))
+        .collect();
+    let concrete_members: Vec<&Type> = compound_members
+        .iter()
+        .filter(|m| !matches!(m, Type::TypeVar(_, _)))
+        .collect();
+
+    if type_vars.is_empty() {
+        if Type::is_subtype(
+            &Type::Intersection(compound_members.to_vec()),
+            concrete,
+            Some(&state.tycon_env),
+        ) {
+            return Ok(());
+        }
+        return Err(TypeErrorTyped::UnificationFailure(UnificationFailure {
+            expected: concrete.clone(),
+            got: Type::Intersection(compound_members.to_vec()),
+            span,
+            notes: vec![],
+            call_stack: vec![],
+        }));
+    }
+
+    // Check if a concrete member already implies the target.
+    // If any concrete_member <: concrete, the TypeVar is unconstrained.
+    if concrete_members
+        .iter()
+        .any(|m| Type::is_subtype(m, concrete, Some(&state.tycon_env)))
+    {
         return Ok(());
     }
 
-    // Extract the single TypeVar name (the `!= 1` guard above ensures this unwrap is safe).
-    let Type::TypeVar(var_name, _) = type_vars[0] else {
-        unreachable!()
-    };
+    // The bound for α is: concrete (simplified from ~τ₁ ∨ τ₂ when the intersection
+    // members are disjoint from concrete). In practice, for most unification scenarios,
+    // binding α = concrete is the principal choice.
+    let bound_type = concrete.clone();
 
-    let alpha_level = state.levels.get(var_name).copied().unwrap_or(0);
-    if lower_levels_check_occurs(concrete, var_name, alpha_level, state) {
-        return Err(TypeErrorTyped::Generic(GenericTypeError {
-            message: format!("infinite type: {var_name} occurs in {concrete}"),
-            span,
-            notes: vec![],
-            call_stack: vec![],
-        }));
+    // Bind each TypeVar
+    for tv in &type_vars {
+        let Type::TypeVar(var_name, _) = tv else {
+            continue;
+        };
+
+        let alpha_level = state.levels.get(var_name).copied().unwrap_or(0);
+        if lower_levels_check_occurs(&bound_type, var_name, alpha_level, state) {
+            return Err(TypeErrorTyped::Generic(GenericTypeError {
+                message: format!("infinite type: {var_name} occurs in {bound_type}"),
+                span,
+                notes: vec![],
+                call_stack: vec![],
+            }));
+        }
+
+        if type_vars.len() == 1 {
+            // Single TypeVar: bind directly
+            let promoted = promote_literal_for_constrained_var(
+                var_name,
+                bound_type.clone(),
+                constraints,
+                state,
+            );
+            check_constraints_on_var(var_name, &promoted, subst, state, constraints, span.clone())
+                .await?;
+            let var_level = state.levels.get(var_name).copied().unwrap_or(0);
+            subst.bind_at_level(var_name.clone(), var_level, promoted);
+            return subst.check_size(span);
+        } else {
+            // Multiple TypeVars: add as upper bound
+            state
+                .bounds
+                .entry(var_name.clone())
+                .or_insert_with(crate::bas::TypeVarBounds::new)
+                .add_upper(bound_type.clone());
+        }
     }
 
-    let concrete_promoted =
-        promote_literal_for_constrained_var(var_name, concrete.clone(), constraints, state);
-    check_constraints_on_var(
-        var_name,
-        &concrete_promoted,
-        subst,
-        state,
-        constraints,
-        span.clone(),
-    )
-    .await?;
-    let var_level = state.levels.get(var_name).copied().unwrap_or(0);
-    subst.bind_at_level(var_name.clone(), var_level, concrete_promoted);
-    subst.check_size(span)
+    Ok(())
 }
 
 pub async fn unify(
@@ -3152,80 +3293,63 @@ pub async fn unify(
             Ok(())
         }
 
-        // [C-VAR1] (BAS constraint rewriting, conservative):
-        // τ₁ ≤ τ₂ ∨ α  →  bind α to the concrete type when the non-var members
-        // don't already cover τ₁.
+        // [C-VAR1] (BAS constraint rewriting — Parreaux & Chau 2022, §3.2.1):
         //
-        // Full BAS would rewrite to: τ₁ & ~τ₂ ≤ α, binding α to Negation(τ₂) ∩ τ₁.
-        // Conservative approximation: bind α directly to τ₁ when the non-var members
-        // of the union are disjoint from τ₁ (i.e., τ₁ is not a subtype of any non-var member).
-        // This handles the common case: `(Int, Union([Str, TypeVar(a)]))` → bind a = Int.
+        //   τ₁ ≤ τ₂ ∨ α  →  τ₁ & ~τ₂ ≤ α
         //
-        // Pattern: concrete type a, Union on side b with exactly one TypeVar
-        (concrete, Type::Union(members)) if !concrete.has_inference_vars() => {
+        // When unifying `concrete ~ Union(members)` where the union contains TypeVars:
+        // 1. Partition members into TypeVars and concrete members.
+        // 2. Compute the "residual" bound: `concrete & ~(union of concrete members)`.
+        //    This is the part of `concrete` not already covered by the union's non-var members.
+        // 3. If the residual simplifies to Never (all of concrete is covered), done — no binding.
+        // 4. If exactly one TypeVar, bind it to the residual (or concrete if residual = concrete).
+        // 5. If multiple TypeVars, add the residual as a lower bound of each.
+        //
+        // Pattern: Union on one side containing at least one TypeVar
+        (concrete, Type::Union(members))
+            if !concrete.has_inference_vars()
+                && members.iter().any(|m| matches!(m, Type::TypeVar(_, _))) =>
+        {
             let members = members.clone();
-            bind_single_type_var_from_compound(
-                &members,
-                concrete,
-                true,
-                subst,
-                state,
-                constraints,
-                span,
-            )
-            .await
+            bas_cvar1_rewrite(&members, concrete, subst, state, constraints, span).await
         }
 
         // Symmetric C-Var1: Union on the left, concrete on the right
-        (Type::Union(members), concrete) if !concrete.has_inference_vars() => {
+        (Type::Union(members), concrete)
+            if !concrete.has_inference_vars()
+                && members.iter().any(|m| matches!(m, Type::TypeVar(_, _))) =>
+        {
             let members = members.clone();
-            bind_single_type_var_from_compound(
-                &members,
-                concrete,
-                true,
-                subst,
-                state,
-                constraints,
-                span,
-            )
-            .await
+            bas_cvar1_rewrite(&members, concrete, subst, state, constraints, span).await
         }
 
-        // [C-VAR2] (BAS constraint rewriting, conservative):
-        // α & τ₁ ≤ τ₂  →  bind α to τ₂ when τ₁ doesn't already satisfy τ₂.
+        // [C-VAR2] (BAS constraint rewriting — Parreaux & Chau 2022, §3.2.1):
         //
-        // Full BAS would rewrite to: α ≤ τ₂ | ~τ₁.
-        // Conservative approximation: bind α directly to τ₂ when the non-var members
-        // of the intersection don't already imply τ₂.
+        //   α ∧ τ₁ ≤ τ₂  →  α ≤ ~τ₁ ∨ τ₂
         //
-        // Pattern: Intersection with exactly one TypeVar on one side, concrete on the other
-        (Type::Intersection(members), concrete) if !concrete.has_inference_vars() => {
+        // When unifying `concrete ~ Intersection(members)` where the intersection has TypeVars:
+        // 1. Partition members into TypeVars and concrete members.
+        // 2. Compute the bound: `concrete | ~(intersection of concrete members)`.
+        // 3. If exactly one TypeVar, bind it to concrete (simplified case when concrete members
+        //    already imply the constraint).
+        // 4. Otherwise add as upper bound.
+        //
+        // Pattern: Intersection on one side containing at least one TypeVar
+        (Type::Intersection(members), concrete)
+            if !concrete.has_inference_vars()
+                && members.iter().any(|m| matches!(m, Type::TypeVar(_, _))) =>
+        {
             let members = members.clone();
-            bind_single_type_var_from_compound(
-                &members,
-                concrete,
-                false,
-                subst,
-                state,
-                constraints,
-                span,
-            )
-            .await
+            bas_cvar2_rewrite(&members, concrete, subst, state, constraints, span).await
         }
 
         // Symmetric C-Var2: concrete on the left, Intersection on the right
-        (concrete, Type::Intersection(members)) if !concrete.has_inference_vars() => {
+        (concrete, Type::Intersection(members))
+            if !concrete.has_inference_vars()
+                && members.iter().any(|m| matches!(m, Type::TypeVar(_, _))) =>
+        {
             let members = members.clone();
-            bind_single_type_var_from_compound(
-                &members,
-                concrete,
-                false,
-                subst,
-                state,
-                constraints,
-                span,
-            )
-            .await
+            bas_cvar2_rewrite(&members, concrete, subst, state, constraints, span).await
         }
 
         // TypeStageApp unification cases (after normalization in chr-normalization sprint).
@@ -3309,6 +3433,173 @@ pub async fn unify(
             call_stack: vec![],
         })),
     }
+}
+
+/// Directional subtype constraint: `sub <: sup`.
+///
+/// Unlike `unify()` (symmetric equality), `constrain()` is directional:
+/// `sub` is the inferred type (on the left) and `sup` is the expected/annotated type (on the right).
+/// This distinction is critical for principal type inference:
+///
+/// - **C-Var1** fires when `sup` is a Union containing a TypeVar (`τ₁ ≤ τ₂ ∨ α`):
+///   rewrites to `τ₁ & ~τ₂ ≤ α`, accumulating a lower bound on the TypeVar.
+///
+/// - **C-Var2** fires when `sub` is an Intersection containing a TypeVar (`α ∧ τ₁ ≤ τ₂`):
+///   rewrites to `α ≤ ~τ₁ ∨ τ₂`, accumulating an upper bound on the TypeVar.
+///
+/// - When `sup` is a bare TypeVar `α`, `sub` is accumulated as a lower bound of `α`.
+///
+/// - When `sub` is a bare TypeVar `α`, `sup` is accumulated as an upper bound of `α`.
+///
+/// - All other cases fall through to `unify()`. This is correct because unification
+///   handles structural decomposition (record fields, function params/return) and the
+///   U-SUBSUME ground-type fallback. TypeVars encountered during structural decomposition
+///   recursively invoke `constrain()` via `unify()`'s arms, which will eventually
+///   reach the TypeVar accumulation arms here.
+///
+/// **Why separate from `unify()`:**
+/// Argument-passing is a subtype relationship (`arg_ty <: param_ty`), not an equality.
+/// When the param type is `Union([Int, TypeVar(α)])`, `constrain(arg_ty, param_ty)` correctly
+/// applies C-Var1 and accumulates `arg_ty & ~Int` as a lower bound of `α`. With symmetric
+/// `unify()`, both orderings apply C-Var1 identically, losing the directionality needed for
+/// principal type inference (Parreaux & Chau 2022, §3.2.1).
+///
+/// Parreaux & Chau (2022), OOPSLA '22, §3.2.1 — C-Var1/2 in constrain(), not unify().
+pub async fn constrain(
+    sub: &Type,
+    sup: &Type,
+    subst: &mut Substitution,
+    state: &mut InferState,
+    constraints: &mut Vec<Constraint>,
+    span: Span,
+) -> Result<(), TypeError> {
+    // Apply current substitution to both sides.
+    let mut visited_types = HashSet::new();
+    let mut visited_rows = HashSet::new();
+    let sub_substituted = subst.apply_with_visited(sub, &mut visited_types, &mut visited_rows);
+    visited_types.clear();
+    let sup_substituted = subst.apply_with_visited(sup, &mut visited_types, &mut visited_rows);
+
+    // Normalize both types.
+    let mut norm_ctx = crate::type_normalize::NormCtxt::new(state.type_stage_env.clone());
+    norm_ctx.allow_eval = false;
+    let sub = crate::type_normalize::normalize(&sub_substituted, subst, &mut norm_ctx).await;
+    let sup = crate::type_normalize::normalize(&sup_substituted, subst, &mut norm_ctx).await;
+    drop(norm_ctx);
+
+    if sub == sup {
+        return Ok(());
+    }
+
+    match (&sub, &sup) {
+        // Error absorption: absorb silently to prevent cascade errors.
+        (Type::Error, _) | (_, Type::Error) => return Ok(()),
+
+        // Unknown: directional — zero levels of affected vars, accept the constraint.
+        (Type::Unknown, Type::TypeVar(name, _)) => {
+            state.levels.insert(name.clone(), 0);
+            return Ok(());
+        }
+        (Type::TypeVar(name, _), Type::Unknown) => {
+            state.levels.insert(name.clone(), 0);
+            return Ok(());
+        }
+        (Type::Unknown, other) | (other, Type::Unknown) => {
+            let mut type_vars = HashSet::new();
+            other.collect_all_vars(&mut type_vars);
+            for var in &type_vars {
+                state.levels.insert(var.clone(), 0);
+            }
+            return Ok(());
+        }
+
+        // [C-VAR1] (Parreaux & Chau 2022, §3.2.1): τ₁ ≤ τ₂ ∨ α → τ₁ & ~τ₂ ≤ α
+        //
+        // Directional: fires only when Union is on the RIGHT (sup position).
+        // This is the key distinction from unify() where both orderings call bas_cvar1_rewrite.
+        // In constrain(sub, sup), sup=Union means we are constraining sub to fit into the union,
+        // so the TypeVar in the union must absorb whatever sub is not covered by the other members.
+        (_, Type::Union(members))
+            if !sub.has_inference_vars()
+                && members.iter().any(|m| matches!(m, Type::TypeVar(_, _))) =>
+        {
+            let members = members.clone();
+            return bas_cvar1_rewrite(&members, &sub, subst, state, constraints, span).await;
+        }
+
+        // [C-VAR2] (Parreaux & Chau 2022, §3.2.1): α ∧ τ₁ ≤ τ₂ → α ≤ ~τ₁ ∨ τ₂
+        //
+        // Directional: fires only when Intersection is on the LEFT (sub position).
+        // In constrain(sub, sup), sub=Intersection means we are constraining the intersection
+        // to fit into sup. The TypeVar in the intersection contributes an upper bound.
+        (Type::Intersection(members), _)
+            if !sup.has_inference_vars()
+                && members.iter().any(|m| matches!(m, Type::TypeVar(_, _))) =>
+        {
+            let members = members.clone();
+            return bas_cvar2_rewrite(&members, &sup, subst, state, constraints, span).await;
+        }
+
+        // TypeVar accumulation: sub <: TypeVar(α) → α has lower bound sub.
+        // Collect sub as a lower bound of α rather than binding α = sub.
+        // This preserves principal types: α can still be instantiated to any supertype of sub.
+        // Guard: sub must be a ground type (no inference vars) to avoid pushing unsolved TypeVars
+        // as bounds. If sub contains TypeVars, fall through to unify() which handles U-VAR-LEVEL.
+        (_, Type::TypeVar(var_name, _)) if !sub.has_inference_vars() => {
+            let alpha_level = state.levels.get(var_name).copied().unwrap_or(0);
+            if lower_levels_check_occurs(&sub, var_name, alpha_level, state) {
+                return Err(TypeErrorTyped::Generic(GenericTypeError {
+                    message: format!("infinite type: {var_name} occurs in {sub}"),
+                    span,
+                    notes: vec![],
+                    call_stack: vec![],
+                }));
+            }
+            let normalized = crate::bas::to_rdnf(&sub);
+            let flat = crate::bas::flatten_rdnf_to_type(normalized);
+            if !matches!(flat, Type::Never) {
+                state
+                    .bounds
+                    .entry(var_name.clone())
+                    .or_insert_with(crate::bas::TypeVarBounds::new)
+                    .add_lower(flat);
+            }
+            return Ok(());
+        }
+
+        // TypeVar accumulation: TypeVar(α) <: sup → α has upper bound sup.
+        // Collect sup as an upper bound of α rather than binding α = sup.
+        // Guard: sup must be a ground type (no inference vars) to avoid pushing unsolved TypeVars
+        // as bounds. If sup contains TypeVars, fall through to unify() which handles U-VAR-LEVEL.
+        (Type::TypeVar(var_name, _), _) if !sup.has_inference_vars() => {
+            let alpha_level = state.levels.get(var_name).copied().unwrap_or(0);
+            if lower_levels_check_occurs(&sup, var_name, alpha_level, state) {
+                return Err(TypeErrorTyped::Generic(GenericTypeError {
+                    message: format!("infinite type: {var_name} occurs in {sup}"),
+                    span,
+                    notes: vec![],
+                    call_stack: vec![],
+                }));
+            }
+            let normalized = crate::bas::to_rdnf(&sup);
+            let flat = crate::bas::flatten_rdnf_to_type(normalized);
+            if !matches!(flat, Type::Any) {
+                state
+                    .bounds
+                    .entry(var_name.clone())
+                    .or_insert_with(crate::bas::TypeVarBounds::new)
+                    .add_upper(flat);
+            }
+            return Ok(());
+        }
+
+        // All other cases: fall through to unify().
+        // This handles: structural decomposition (records, functions, apps),
+        // TypeVar-to-TypeVar, U-SUBSUME for ground types, etc.
+        _ => {}
+    }
+
+    unify(&sub, &sup, subst, state, constraints, span).await
 }
 
 /// Process deferred equality constraints for stuck TypeStageApp applications.

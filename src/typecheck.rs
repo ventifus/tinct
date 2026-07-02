@@ -19,8 +19,8 @@ use crate::type_errors::{
     UnificationFailure,
 };
 use crate::types::{
-    generalize, instantiate_scheme, unify, Constraint, InferState, Row, TyConDef, Type, TypeEnv,
-    TypeError, TypeScheme, Variance,
+    constrain, generalize, instantiate_scheme, unify, Constraint, InferState, Row, TyConDef, Type,
+    TypeEnv, TypeError, TypeScheme, Variance,
 };
 
 // Split modules — annotation resolution and dict inference
@@ -2395,7 +2395,17 @@ pub(crate) fn infer_surface_expr<'a>(
                                         infer_surface_expr(arg, env, state, constraints, type_map)
                                             .await?;
                                     let mut subst = std::mem::take(&mut state.subst);
-                                    let unify_result = Box::pin(unify(
+                                    // Argument-passing is a subtype relationship: arg_ty <: param_ty.
+                                    // Use constrain() (directional) rather than unify() (symmetric) so
+                                    // that C-Var1/2 fire with the correct polarity. When param_ty is
+                                    // Union([τ, α]), C-Var1 rewrites to arg_ty & ~τ ≤ α — the TypeVar
+                                    // in the param absorbs what the argument provides beyond τ.
+                                    //
+                                    // Save bounds before constrain(): if constrain() fails internally
+                                    // after C-Var1/2 has already pushed a bound, the partial bound
+                                    // must not leak into the error recovery state (SOUND-2).
+                                    let saved_bounds = state.bounds.clone();
+                                    let constrain_result = Box::pin(constrain(
                                         &arg_ty,
                                         param_ty,
                                         &mut subst,
@@ -2405,7 +2415,8 @@ pub(crate) fn infer_surface_expr<'a>(
                                     ))
                                     .await;
                                     state.subst = subst;
-                                    if let Err(uerr) = unify_result {
+                                    if let Err(uerr) = constrain_result {
+                                        state.bounds = saved_bounds;
                                         return Err(vec![uerr]);
                                     }
                                 }

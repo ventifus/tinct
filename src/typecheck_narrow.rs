@@ -800,6 +800,7 @@ pub(crate) async fn patterns_overlap(
     let saved_levels = state.levels.clone();
     let saved_kind_env = state.kind_env.clone();
     let saved_deferred = state.deferred_equalities.clone();
+    let saved_bounds = state.bounds.clone();
     // Also save subst: improve_functional_dependency writes directly to state.subst
     // (via std::mem::take/replace) rather than through temp_subst, and resolve_instance
     // may advance name_counter (which now lives in state.subst). Restoring state.subst
@@ -839,6 +840,7 @@ pub(crate) async fn patterns_overlap(
     state.levels = saved_levels;
     state.kind_env = saved_kind_env;
     state.deferred_equalities = saved_deferred;
+    state.bounds = saved_bounds;
     state.subst = saved_subst;
 
     Ok(overlaps)
@@ -874,6 +876,7 @@ pub(crate) async fn types_can_unify(
     let saved_levels = state.levels.clone();
     let saved_kind_env = state.kind_env.clone();
     let saved_deferred = state.deferred_equalities.clone();
+    let saved_bounds = state.bounds.clone();
     let saved_subst = state.subst.clone();
 
     // Use a temporary substitution for the probe.
@@ -906,6 +909,7 @@ pub(crate) async fn types_can_unify(
     state.levels = saved_levels;
     state.kind_env = saved_kind_env;
     state.deferred_equalities = saved_deferred;
+    state.bounds = saved_bounds;
     state.subst = saved_subst;
 
     Ok(can_unify)

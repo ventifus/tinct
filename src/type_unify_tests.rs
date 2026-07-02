@@ -1,7 +1,8 @@
 //! Unit tests for type_precision_fixes sprint tasks
 
 use super::{
-    promote_literal_for_constrained_var, resolve_has_field, unify, MAX_RESOLVE_HAS_FIELD_DEPTH,
+    constrain, promote_literal_for_constrained_var, resolve_has_field, unify,
+    MAX_RESOLVE_HAS_FIELD_DEPTH,
 };
 
 /// Async wrapper for `unify` — for use in tests only.
@@ -2233,5 +2234,215 @@ async fn test_unify_tycon_expand_symmetric() {
         r2.is_ok(),
         "NominalVariant ~ TyCon should succeed: {:?}",
         r2.unwrap_err()
+    );
+}
+
+// ============================================================================
+// S-883: constrain() and compact() unit tests (TEST-1)
+// ============================================================================
+
+/// constrain() Error absorption: constrain(Error, Int) must return Ok(()) and not propagate
+/// a cascade error. This covers the `(Type::Error, _) | (_, Type::Error) => Ok(())` arm.
+#[tokio::test]
+async fn test_constrain_error_absorption() {
+    let mut state = InferState::new();
+    let mut subst = Substitution::new();
+    let span = rust_span!();
+
+    let result = constrain(
+        &Type::Error,
+        &Type::Int,
+        &mut subst,
+        &mut state,
+        &mut Vec::new(),
+        span.clone(),
+    )
+    .await;
+    assert!(
+        result.is_ok(),
+        "constrain(Error, Int) should absorb silently (Error absorption arm), got: {:?}",
+        result.unwrap_err()
+    );
+
+    let result2 = constrain(
+        &Type::Int,
+        &Type::Error,
+        &mut subst,
+        &mut state,
+        &mut Vec::new(),
+        span,
+    )
+    .await;
+    assert!(
+        result2.is_ok(),
+        "constrain(Int, Error) should absorb silently (Error absorption arm), got: {:?}",
+        result2.unwrap_err()
+    );
+}
+
+/// C-Var1: constrain(Int, Union([Str, TypeVar(α), TypeVar(β)])) should add a lower bound
+/// on α and β (multiple TypeVars → bound accumulation path).
+/// With a single TypeVar, C-Var1 binds directly via subst; with multiple TypeVars it uses bounds.
+/// This test uses two TypeVars to exercise the multi-TypeVar bounds accumulation path.
+/// Covers the C-VAR1 arm: `(_, Union(members)) if TypeVar in members`.
+#[tokio::test]
+async fn test_constrain_cvar1_multi_typevar_in_union_adds_bounds() {
+    let mut state = InferState::new();
+    let mut subst = Substitution::new();
+    let span = rust_span!();
+
+    // Register α and β at level 0.
+    state.levels.insert("α".to_string(), 0);
+    state.levels.insert("β".to_string(), 0);
+
+    let alpha = Type::TypeVar("α".to_string(), 0);
+    let beta = Type::TypeVar("β".to_string(), 0);
+    // Two TypeVars in the union: C-Var1 multi-TypeVar path → adds to bounds, not subst.
+    let sup = Type::Union(vec![Type::Str, alpha.clone(), beta.clone()]);
+
+    let result = constrain(
+        &Type::Int,
+        &sup,
+        &mut subst,
+        &mut state,
+        &mut Vec::new(),
+        span,
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "C-Var1 multi-TypeVar rewrite should succeed, got: {:?}",
+        result.unwrap_err()
+    );
+
+    // Both α and β must have lower bound entries (multi-TypeVar path adds bounds to all TypeVars).
+    let alpha_has_bounds = state
+        .bounds
+        .get("α")
+        .map(|b| !b.lower.is_empty())
+        .unwrap_or(false);
+    let beta_has_bounds = state
+        .bounds
+        .get("β")
+        .map(|b| !b.lower.is_empty())
+        .unwrap_or(false);
+    assert!(
+        alpha_has_bounds && beta_has_bounds,
+        "C-Var1 multi-TypeVar path must add lower bounds for ALL TypeVars in state.bounds"
+    );
+    // The bound should be Type::Int (the sub type being constrained).
+    assert!(
+        state
+            .bounds
+            .get("α")
+            .map(|b| b.lower.contains(&Type::Int))
+            .unwrap_or(false),
+        "C-Var1 multi-TypeVar: α's lower bound must contain Int"
+    );
+    assert!(
+        state
+            .bounds
+            .get("β")
+            .map(|b| b.lower.contains(&Type::Int))
+            .unwrap_or(false),
+        "C-Var1 multi-TypeVar: β's lower bound must contain Int"
+    );
+}
+
+/// C-Var1 single TypeVar: constrain(Int, Union([Str, TypeVar(α)])) binds α directly via subst.
+/// Int is not a subtype of Str, so the residual `Int & ~Str = Int` is bound to α.
+#[tokio::test]
+async fn test_constrain_cvar1_single_typevar_binds_subst() {
+    let mut state = InferState::new();
+    let mut subst = Substitution::new();
+    let span = rust_span!();
+
+    // Register α at level 0.
+    state.levels.insert("α".to_string(), 0);
+
+    let alpha = Type::TypeVar("α".to_string(), 0);
+    let sup = Type::Union(vec![Type::Str, alpha.clone()]);
+
+    let result = constrain(
+        &Type::Int,
+        &sup,
+        &mut subst,
+        &mut state,
+        &mut Vec::new(),
+        span,
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "C-Var1 single-TypeVar rewrite should succeed, got: {:?}",
+        result.unwrap_err()
+    );
+
+    // With a single TypeVar, C-Var1 binds α in the substitution (equational constraint).
+    // Int & ~Str ≈ Int (since Int and Str are disjoint). α must be bound to Int (or equivalent).
+    let alpha_applied = subst.apply(&alpha);
+    assert!(
+        !matches!(alpha_applied, Type::TypeVar(ref n, _) if n == "α"),
+        "C-Var1 single-TypeVar must bind α in subst (not leave it free); got: {:?}",
+        alpha_applied
+    );
+    assert_eq!(
+        alpha_applied,
+        Type::Int,
+        "C-Var1 single TypeVar must bind α to the residual type Int; got: {:?}",
+        alpha_applied
+    );
+}
+
+/// TypeVar lower bound accumulation: constrain(Int, TypeVar(α)) must add Int as a lower bound
+/// on α rather than binding α = Int in the substitution.
+/// Covers the `(_, TypeVar(α)) if !sub.has_inference_vars()` arm.
+#[tokio::test]
+async fn test_constrain_typevar_lower_bound_added() {
+    let mut state = InferState::new();
+    let mut subst = Substitution::new();
+    let span = rust_span!();
+
+    // Register β at level 0.
+    state.levels.insert("β".to_string(), 0);
+
+    let beta = Type::TypeVar("β".to_string(), 0);
+
+    let result = constrain(
+        &Type::Int,
+        &beta,
+        &mut subst,
+        &mut state,
+        &mut Vec::new(),
+        span,
+    )
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "constrain(Int, TypeVar(β)) should succeed, got: {:?}",
+        result.unwrap_err()
+    );
+
+    // β must NOT be bound in the substitution (directional bound accumulation, not equality).
+    let beta_applied = subst.apply(&beta);
+    assert!(
+        matches!(beta_applied, Type::TypeVar(ref n, _) if n == "β"),
+        "constrain(Int, TypeVar) must not bind β in subst (use bounds instead); got: {:?}",
+        beta_applied
+    );
+
+    // β must have Int as a lower bound in state.bounds.
+    let bounds = state.bounds.get("β").expect("β should have a bounds entry");
+    assert!(
+        !bounds.lower.is_empty(),
+        "β must have at least one lower bound after constrain(Int, TypeVar(β))"
+    );
+    assert!(
+        bounds.lower.contains(&Type::Int),
+        "β's lower bound must include Int; got: {:?}",
+        bounds.lower
     );
 }

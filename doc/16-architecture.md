@@ -60,9 +60,9 @@
 
 ### Type Checker
 
-The type checker (advisory only — type errors are warnings, evaluation proceeds regardless) operates directly on `TypeNode` tinct values. There is no separate `Type` Rust enum in the checker; all types are represented as `CheckerType = Node(Value)`.
+The type checker (advisory only — type errors are warnings, evaluation proceeds regardless) operates on the `Type` Rust enum defined in `src/type_def.rs`. All types are represented as `Type` values — there is no `CheckerType` newtype wrapper in the current implementation.
 
-**TypeNode as the primary type representation.** Every type — primitives, record, union, arrow, recursive, and inference variables — is a `TypeNode` tinct value. `CheckerType` is a thin wrapper `struct CheckerType(Value)`. Inference variables (`TypeNode.TypeVar { name: String  level: Int }`) are TypeNode values, so `walk_type` finds them automatically via `TypeNode.children`. Substitution maps TypeVar name → `CheckerType`. Only four walkers require explicit Rust arms for `TypeVar`: `is_subtype_inner`, `unify`, `Substitution::apply`, and `PartialEq`. All pure-traversal walkers (`collect_type_vars`, `has_inference_vars`, `check_kind_wellformed`, `unfold_once`, etc.) use `walk_type` + `TypeNode.children` with no exhaustive variant enumeration.
+**`Type` as the primary type representation.** Every type — primitives, record, union, arrow, recursive, and inference variables — is a `Type` enum value. Inference variables are `Type::TypeVar(name: String, level: u32)`. Substitution maps TypeVar name → `Type`. The type checker pattern-matches on `Type` variants using Rust `match`. Key walkers requiring explicit `TypeVar` arms: `is_subtype_bas` / `is_atom_subtype`, `unify`, `Substitution::apply`, and `PartialEq`. See [Type Inference](06-type-inference.md) §Type Representation for full details.
 
 **Unified type store: `HashMap<String, Arc<TyConDef>>`.** The previous split between `type_aliases: HashMap<String, TypeAlias>` and `tycon_defs: HashMap<String, TyConDef>` (both registered for every `[type ...]` declaration) is eliminated. All named types — primitive builtins, structural aliases, and nominal ADTs — are stored as a single `HashMap<String, Arc<TyConDef>>`. `Arc` is used (not value storage) for two reasons:
 
@@ -72,7 +72,7 @@ The type checker (advisory only — type errors are warnings, evaluation proceed
 **`expand_named` always-expand normalization.** All named types are fully expanded at annotation resolution time. No `TypeApplication(TypeConstructor)` reaches the type checker. The expansion algorithm:
 
 1. Unified lookup via `Arc<TyConDef>`. Zero-param types with no transient TypeConstructor references return early (no gensym, no stack push).
-2. Builtin-opaque types (`Seq`, `Map`, `Handle`) remain as `TypeApplication` leaves — no structural expansion. `is_subtype_inner`'s App arm handles these via UNIFY-TYCON.
+2. Builtin-opaque types (`Seq`, `Map`, `Handle`) remain as `TypeApplication` leaves — no structural expansion. `is_atom_subtype`'s App arm in `src/bas.rs` handles these via UNIFY-TYCON.
 3. Expansion-stack cycle detection via `Arc::ptr_eq`. When a self-reference is found, `TypeNode.RecursiveRef` is emitted with the pre-assigned fresh binder name.
 4. Fresh binder names (`𝜇ꜱʏᴍ⧼Name⧽N`) are pre-assigned before expansion and embedded in the gensym tag for diagnostics.
 5. Recursive aliases are wrapped in `TypeNode.Recursive` only at the cycle-origin stack level — intermediate entries that are not the cycle origin pass their bodies through unchanged (enabling correct mutual recursion encoding).
@@ -83,11 +83,11 @@ For nominal ADTs, the expanded body is a `TypeNode.Union` of qualified `TypeNode
 
 1. `eval_type_stage_expr(expr, type_stage_env)` — evaluates the annotation expression as ordinary tinct code via `materialize_sync`. There are no hardcoded special cases: `or`, `record`, `mu`, and user-defined type-stage functions are all handled identically.
 2. `TypeNode.as-type` normalization — dispatches on the constructor's `@[as-type: fn]` annotation. Built-in constructors return themselves; user-defined constructors reduce to existing TypeNode forms.
-3. `expand_all_tycon_apps(normalized, expansion_stack)` — eliminates any remaining transient `TypeNode.TypeApplication` or bare `TypeNode.TypeConstructor` references, producing a fully normalized `CheckerType`.
+3. `expand_all_tycon_apps(normalized, expansion_stack)` — eliminates any remaining transient `TypeNode.TypeApplication` or bare `TypeNode.TypeConstructor` references, producing a fully normalized `Type` value.
 
 The type checker receives only normalized TypeNode values from both annotation paths (named and expression). The `TypeNode.children` and `TypeNode.map-children` protocol functions — derived generically from `@Child` field annotations on the `TypeNode` ADT declaration — allow `expand_all_tycon_apps` to recurse into new TypeNode constructors without any Rust changes.
 
-**Coinductive subtype checking (S-Exp + S-Assum).** `is_subtype_inner` threads `sigma: &mut HashSet<(String, String)>` through all BAS arms. The entry point `is_subtype` allocates sigma once; the inner worker takes it as a required parameter (enforced by the Rust compiler — any recursive call missing sigma fails to compile). At each call when both sides are `TypeNode.Recursive`, the pair `(a.var, b.var)` is inserted into sigma (S-Assum) before proceeding; S-Exp unfolds the Recursive and re-enters with sigma already containing the pair. This prevents divergence for structurally equivalent recursive types from distinct aliases and is proven sound for BAS union/intersection/negation (Chau & Parreaux 2026).
+**Coinductive subtype checking (S-Exp + S-Assum).** `is_subtype_bas` (in `src/type_def.rs`) is the entry point, delegating to RDNF-based BAS subtyping via `is_atom_subtype` (in `src/bas.rs`). Sigma (`&mut HashSet<(String, String)>`) is threaded through all BAS arms; allocated once at the entry point and passed as a required parameter (enforced by the Rust compiler — any recursive call missing sigma fails to compile). At each call when both sides are `TypeNode.Recursive`, the pair `(a.var, b.var)` is inserted into sigma (S-Assum) before proceeding; S-Exp unfolds the Recursive and re-enters with sigma already containing the pair. This prevents divergence for structurally equivalent recursive types from distinct aliases and is proven sound for BAS union/intersection/negation (Chau & Parreaux 2026).
 
 ### Iterative Evaluator — Defunctionalized CPS (CEK Machine)
 

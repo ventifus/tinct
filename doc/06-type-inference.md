@@ -4,35 +4,30 @@ This chapter formally specifies tinct's type inference algorithm. The notation u
 
 For the user-facing annotation syntax (`@`, type assertions, type expressions), see [Type Annotations](05-type-annotations.md). For TypeAssert runtime validation, row-variable unification, and the type system extension roadmap, see [Type System Extensions](07-type-extensions.md).
 
-## CheckerType
+## Type Representation
 
-`CheckerType` is the type checker's primary type representation. It is a thin wrapper around any TypeNode tinct value:
+The type checker uses the `Type` Rust enum (defined in `src/type_def.rs`) as its primary type representation. `Type` is a conventional algebraic data type — not a newtype wrapper around tinct `Value`. The type checker pattern-matches on `Type` variants directly using Rust's `match`.
 
-```rust
-struct CheckerType(Value);   // every type is a TypeNode Value, including TypeVar
-```
+Note: A `CheckerType` newtype wrapping tinct `Value` (making all types first-class tinct values) is a planned future refactor. It is not yet implemented. Until then, `Type` is the authoritative representation.
 
-There is no separate `Type` Rust enum. All type forms — including inference variables — are `TypeNode` values. The type checker pattern-matches on the TypeNode variant tag using `typenode_tag(&value)` rather than on Rust enum variants.
+**TypeVar is a `Type` variant.** `Type::TypeVar(name: String, level: u32)` is a regular Rust enum variant. `name` is the fresh variable name (e.g. `"_t42"`); `level` is the Kiselyov creation-time level. `state.levels` maps TypeVar name → current (possibly lowered) level; `state.levels` is authoritative. The `level` field inside the `TypeVar` variant is the creation-time level (fixed at `fresh_type_var()` call time) and is used only as the initial value when registering in `state.levels`.
 
-**TypeVar is a TypeNode constructor.** `TypeNode.TypeVar { name: String  level: Int }` is a first-class TypeNode constructor, not a special Rust variant. `name` is the fresh variable name (e.g. `"_t42"`); `level` is the Kiselyov creation-time level. This means `TypeVar` nodes are found by `walk_type` automatically and handled uniformly with all other TypeNode forms. `state.levels` maps TypeVar name → current (possibly lowered) level; `state.levels` is authoritative. The `level` field embedded in the TypeNode payload is the creation-time level (fixed at `fresh_type_var()` call time) and is used only as the initial value when registering in `state.levels`.
+**`Type` variants available to the type checker** (representative set; see `src/type_def.rs` for the complete list):
 
-**TypeNode constructors available to the type checker** (complete set after normalization, see [Type System Extensions](07-type-extensions.md) §Equirecursive Types):
+| Variant | Notes |
+|---------|-------|
+| `Type::Int`, `Float`, `Str`, `Bool`, `Bytes`, `Unknown`, `Never`, `Any` | leaf primitives |
+| `Type::Record(Row)` | record type with optional tail |
+| `Type::Union(Vec<Type>)` | union A \| B |
+| `Type::Intersection(Vec<Type>)` | intersection A & B |
+| `Type::Negation(Box<Type>)` | complement ~A (BAS) |
+| `Type::Function { params, ret, variadic, required_count }` | function type |
+| `Type::TyCon(String)` | type constructor name |
+| `Type::App(Box<Type>, Box<Type>)` | type constructor application |
+| `Type::Recursive { var, body }` | equirecursive type |
+| `Type::TypeVar(String, u32)` | inference variable |
 
-| Constructor | Fields | Notes |
-|-------------|--------|-------|
-| `TypeNode.Int`, `Float`, `Str`, `Bool`, `Absent`, `Unknown`, `Never` | — | leaf primitives |
-| `TypeNode.Record` | `fields: Map String TypeNode  open: Bool` | record type |
-| `TypeNode.Union` | `types: Seq TypeNode` | union A \| B |
-| `TypeNode.Intersect` | `types: Seq TypeNode` | intersection A & B |
-| `TypeNode.Arrow` | `params: Seq TypeNode  result: TypeNode` | function type |
-| `TypeNode.TypeConstructor` | `name: String` | qualified leaf (contains `.`) |
-| `TypeNode.Recursive` | `var: String  body: TypeNode` | equirecursive type |
-| `TypeNode.RecursiveRef` | `name: String` | back-reference inside Recursive body |
-| `TypeNode.TypeVar` | `name: String  level: Int` | inference variable |
-
-`TypeNode.TypeApplication` and bare `TypeNode.TypeConstructor` (without `.`) are transient — they exist during type-stage computation but are always eliminated by normalization before the type checker receives the result.
-
-`Substitution` maps TypeVar name `String → CheckerType`. All type checker operations take `CheckerType` arguments. `fresh_type_var()` creates `Value::Variant { tag: "TypeNode.TypeVar", payload: { name: "_tN", level: current_level } }`. Substitution lookup: `subst.type_map.get(typevar_name)`.
+`Substitution` maps TypeVar name `String → Type`. `fresh_type_var()` creates `Type::TypeVar("_tN", current_level)`. Substitution lookup: `subst.type_map.get(typevar_name)`.
 
 ## Type Grammar
 
@@ -49,7 +44,7 @@ There is no separate `Type` Rust enum. All type forms — including inference va
     | App(τ, τ)                  curried type constructor application — left-to-right
     | Record(f₁:τ₁...fₙ:τₙ, tail)  closed record with optional uniform tail
     | Proxy                      opaque proxy (field access dispatches to handler)
-    | α                          type variable  (TypeNode.TypeVar { name, level } in the CheckerType representation)
+    | α                          type variable  (Type::TypeVar(name, level) in the current implementation)
     | Unknown                    gradual typing escape hatch (don't know the type)
     | Top                        universal supertype ⊤ (supertype of everything)
     | Union(τ₁...τₙ)             union type A | B (user-expressible via `@[A B]`)
@@ -696,9 +691,9 @@ The contractiveness check runs at construction time in two places:
 1. **In `mu`**: after `[let body [f TypeNode.RecursiveRef name: var]]`, before constructing `TypeNode.Recursive`. If `not(is_contractive(body, var))`, emit `TypeError(NonContractive)` pointing at the `mu` call site.
 2. **In `expand_named`**: after expanding the alias body, before wrapping in `TypeNode.Recursive`. If `not(is_contractive(expanded, fresh_var))`, emit `TypeError(NonContractive)`.
 
-Non-contractive types are rejected at construction rather than at use sites. This gives a clear diagnostic at the point of definition and eliminates the need for `▷` ("later") modality tracking inside `is_subtype_inner`. The tradeoff is explicit: non-contractive types like `μa.a` (the fixed point of the identity function) are ill-formed and rejected, not valid types that subtype nothing.
+Non-contractive types are rejected at construction rather than at use sites. This gives a clear diagnostic at the point of definition and eliminates the need for `▷` ("later") modality tracking inside `is_subtype_bas` / `is_atom_subtype`. The tradeoff is explicit: non-contractive types like `μa.a` (the fixed point of the identity function) are ill-formed and rejected, not valid types that subtype nothing.
 
-**Why construction-time, not checker-time `▷` modality.** The checker-time alternative — `▷` tracking through every BAS arm — would allow non-contractive types to be constructed but would require additional state per arm and would produce confusing errors at use sites rather than definition sites. Given that non-contractive types have no practical use in tinct (they are semantically ⊥), construction-time rejection is strictly better for users. The flat `HashSet` for sigma (without `▷`) is sound precisely because all `TypeNode.Recursive` values reaching `is_subtype_inner` are contractive by construction — contractiveness guarantees that S-Exp unfolding always reaches a guarding constructor before sigma keys match again (Chau & Parreaux 2026).
+**Why construction-time, not checker-time `▷` modality.** The checker-time alternative — `▷` tracking through every BAS arm — would allow non-contractive types to be constructed but would require additional state per arm and would produce confusing errors at use sites rather than definition sites. Given that non-contractive types have no practical use in tinct (they are semantically ⊥), construction-time rejection is strictly better for users. The flat `HashSet` for sigma (without `▷`) is sound precisely because all `TypeNode.Recursive` values reaching `is_subtype_bas` / `is_atom_subtype` are contractive by construction — contractiveness guarantees that S-Exp unfolding always reaches a guarding constructor before sigma keys match again (Chau & Parreaux 2026).
 
 **Examples:**
 
@@ -748,26 +743,35 @@ Subtyping for equirecursive types uses the **S-Exp + S-Assum** framework (Chau &
 
 ### Two-Level Design
 
-Sigma (`Σ`) is a `HashSet<(String, String)>` of visited binder-name pairs. It is allocated once per top-level subtype check and threaded through every recursive call. The Rust type system enforces sigma threading structurally — `sigma: &mut HashSet<(String, String)>` is a required parameter of `is_subtype_inner`, so any recursive call that omits it fails to compile.
+Sigma (`Σ`) is a `HashSet<(String, String)>` of visited binder-name pairs. It is allocated once per top-level subtype check and threaded through every recursive call. The Rust type system enforces sigma threading structurally — `sigma: &mut HashSet<(String, String)>` is a required parameter of `is_atom_subtype` (in `src/bas.rs`), so any recursive call that omits it fails to compile.
 
 ```rust
-/// Public entry point — allocates sigma once for the entire check.
-pub fn is_subtype(a: CheckerType, b: CheckerType) -> bool {
-    let mut sigma = HashSet::new();
-    is_subtype_inner(a, b, &mut sigma)
-}
+/// Public entry point (src/type_def.rs) — delegates to RDNF-based BAS subtyping.
+/// A <: B  iff  is_empty(to_rdnf(A & ~B))
+/// `is_subtype_bas` is the primary entry called by the type checker; it allocates sigma.
+/// `is_subtype` (also in type_def.rs) is the caller-facing wrapper that handles TypeVar
+/// and other pre-RDNF guards, then delegates to `is_subtype_bas`.
+pub fn is_subtype_bas(
+    sub: &Type,
+    sup: &Type,
+    tycon_env: Option<&TyConEnv>,
+    sigma: &mut HashSet<(String, String)>,
+) -> bool { ... }
 
-/// Recursive worker — sigma is passed to EVERY recursive call.
-/// No arm allocates a new sigma.
-fn is_subtype_inner(a: CheckerType, b: CheckerType,
-                    sigma: &mut HashSet<(String, String)>) -> bool {
-    ...
-}
+/// Per-atom comparison (src/bas.rs) — sigma and depth are passed to EVERY recursive call.
+/// No arm allocates a new sigma. `depth` caps coinductive unfolding (MAX_ATOM_SUBTYPE_DEPTH=256).
+pub fn is_atom_subtype(
+    sub: &Atom,
+    sup: &Atom,
+    tycon_env: Option<&TyConEnv>,
+    depth: usize,
+    sigma: &mut HashSet<(String, String)>,
+) -> bool { ... }
 ```
 
 ### S-Assum and S-Exp Rules
 
-Two rules govern recursive types. They fire in order at the top of every `is_subtype_inner` call:
+Two rules govern recursive types. They fire in order at the top of every `is_atom_subtype` call for `Recursive` atoms:
 
 **S-Assum** — coinductive hypothesis. When both sides are `TypeNode.Recursive`, check and insert the pair before proceeding:
 
@@ -779,7 +783,7 @@ Recursive(a.var, _) <: Recursive(b.var, _)  (return true immediately)
 
 If the pair is not yet in Σ, insert `(a.var, b.var)` into Σ and continue.
 
-**S-Exp** — structural unfolding. When one side is `TypeNode.Recursive`, unfold it once and re-enter `is_subtype_inner`. Sigma already contains the pair when S-Exp fires (inserted by S-Assum), so when the unfolded body's recursive positions are reached, S-Assum terminates the check immediately:
+**S-Exp** — structural unfolding. When one side is `TypeNode.Recursive`, unfold it once and re-enter `is_atom_subtype`. Sigma already contains the pair when S-Exp fires (inserted by S-Assum), so when the unfolded body's recursive positions are reached, S-Assum terminates the check immediately:
 
 ```text
 unfold_once(Recursive(var, body)) = body[RecursiveRef(var) ↦ Recursive(var, body)]
@@ -802,17 +806,14 @@ The sigma key is `(a.var, b.var)` — a `(String, String)` pair of globally uniq
 Sigma is passed to every recursive call in every BAS arm. This is the load-bearing invariant: without it, a coinductive hypothesis established for `(μa.T[a], A ∨ B)` would be unavailable inside the distribution sub-checks for `(μa.T[a], A)` and `(μa.T[a], B)`. Representative arms:
 
 ```rust
-// Union / intersection: sigma passed to every sub-check
-(_, TypeNode.Union { types }) =>
-    types.iter().any(|t| is_subtype_inner(a.clone(), t.clone(), sigma)),
-(TypeNode.Union { types }, _) =>
-    types.iter().all(|t| is_subtype_inner(t.clone(), b.clone(), sigma)),
-
-// Record field checks, Arrow param/return, App variance — same pattern:
+// Emptiness check in is_rdnf_empty (src/bas.rs): sigma passed through is_atom_subtype
+// for every Recursive atom comparison.
+// Union / intersection distribution is handled in to_rdnf before atom comparison.
+// Record field checks, Arrow param/return, App variance — is_atom_subtype arms:
 // every recursive call passes sigma
 ```
 
-The invariant — sigma is always passed, never recreated — is what Chau & Parreaux (2026) prove sound for BAS with equirecursive types.
+The invariant — sigma is always passed, never recreated — is what Chau & Parreaux (2026) prove sound for BAS with equirecursive types. A hard depth limit (`MAX_ATOM_SUBTYPE_DEPTH = 256` in `src/bas.rs:36`) provides a safety backstop against non-termination from deeply nested recursive types: when `depth >= MAX_ATOM_SUBTYPE_DEPTH`, `is_atom_subtype` returns `false` conservatively. Sigma alone guarantees termination for well-formed recursive types; the depth limit guards against degenerate inputs or implementation bugs that produce pathologically deep recursion.
 
 ### Why S-Exp + S-Assum for BAS
 

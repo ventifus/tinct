@@ -539,7 +539,7 @@ TypeNode.Recursive {
 
 **`TypeNode.RecursiveRef { name: String }`** — a back-reference inside a Recursive body. `name` matches the `.var` of the enclosing `Recursive`. `RecursiveRef` is a leaf: it has no `@Child` fields, so `typenode_map_children` passes it through unchanged and `Substitution::apply` leaves it untouched. It never appears outside a Recursive body in a well-formed type.
 
-**`TypeNode.TypeVar { name: String  level: Int }`** — the leaf TypeNode constructor for inference variables. TypeVar is a TypeNode constructor, not a separate Rust variant; `walk_type` finds TypeVar nodes automatically via `TypeNode.children`. `name` is the fresh variable name (e.g. `"_t42"`); `level` is the Kiselyov creation-time level. See [Type Inference](06-type-inference.md) §CheckerType for the full specification.
+**`TypeNode.TypeVar { name: String  level: Int }`** — the leaf TypeNode constructor for inference variables. In the current implementation, `TypeVar` is the Rust variant `Type::TypeVar(String, u32)` in `src/type_def.rs`. `name` is the fresh variable name (e.g. `"_t42"`); `level` is the Kiselyov creation-time level. See [Type Inference](06-type-inference.md) §Type Representation for the full specification.
 
 ### The `mu` Combinator
 
@@ -583,7 +583,7 @@ expand_named(name, args, stack, env):
 
   # Early exit for zero-param types with no transient TypeConstructor references
   if decl.params.is_empty() and not body_contains_tycon_ref(decl.body):
-    return CheckerType(Arc::clone(&decl.body))
+    return Arc::clone(&decl.body)   # returns the Type (current repr) or CheckerType when migrated
 
   # Builtin-opaque types (Seq, Map, Handle) stay as App leaves
   if decl.is_builtin_opaque:
@@ -627,7 +627,7 @@ The walkers that require explicit Rust arms (semantically special cases only):
 
 | Walker | Arms needed | Reason |
 |--------|-------------|--------|
-| `is_subtype_inner` | TypeVar, Recursive | TypeVar: gradual typing (TypeVar relates to everything, treated as Unknown); Recursive: S-Assum + S-Exp |
+| `is_subtype_bas` (in `src/type_def.rs`, delegating to `is_atom_subtype` in `src/bas.rs`) | TypeVar, Recursive | TypeVar: gradual typing (TypeVar relates to everything, treated as Unknown); Recursive: S-Assum + S-Exp |
 | `unify` | TypeVar, Recursive | TypeVar: bind via occurs check + subst; Recursive: 5-arm opening (see §Unification for Recursive Types in doc/06) |
 | `Substitution::apply` | TypeVar only | One explicit arm: subst lookup by name; if unbound, return unchanged. All other TypeNode constructors — including Recursive, RecursiveRef, Union, Record, Arrow — are handled by `typenode_map_children` with a recursive apply call |
 | `PartialEq` | Recursive only | Structural equality: same `.var` name AND same `body` TypeNode. This is sufficient given globally unique gensym `.var` names — two `Recursive` nodes with the same `.var` must be the same binder. TypeVar uses structural equality on `name` (level ignored per Kiselyov — levels are stored in `state.levels`, not in the equality relation) |

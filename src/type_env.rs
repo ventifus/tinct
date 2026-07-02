@@ -678,6 +678,77 @@ pub fn generalize_with_doc(
     // Without this, a bound TypeVar would be generalized incorrectly.
     let ty = &state.subst.apply(ty);
 
+    // BAS bounds compaction (T-1213): compact TypeVar bounds into substitutions.
+    //
+    // For each TypeVar with accumulated bounds (from C-Var1/2 rewriting during unification),
+    // attempt to compact the bounds into a concrete type binding. If successful, add the
+    // binding to the substitution and re-apply. Bounds that cannot be compacted (multiple
+    // inconsistent bounds) leave the TypeVar free — it will be generalized normally.
+    //
+    // This step MUST happen after substitution application (bounds reference pre-subst TypeVars)
+    // and BEFORE the monomorphic check (compaction may make the type monomorphic).
+    if !state.bounds.is_empty() {
+        let bounds_snapshot: Vec<(String, crate::bas::TypeVarBounds)> =
+            state.bounds.drain().collect();
+        for (var_name, var_bounds) in bounds_snapshot {
+            // Skip TypeVars already bound in the substitution
+            if state.subst.type_map.borrow().contains_key(&var_name) {
+                continue;
+            }
+            if let Some(compacted) = var_bounds.compact(Some(&state.tycon_env)) {
+                let var_level = state.levels.get(&var_name).copied().unwrap_or(0);
+                state.subst.bind_at_level(var_name, var_level, compacted);
+            } else if !var_bounds.lower.is_empty() && !var_bounds.upper.is_empty() {
+                // compact() returns None when both lower and upper bounds are non-empty
+                // and cannot be reconciled to a single type. We must verify that the
+                // bounds are at least consistent: join(lower) <: meet(upper).
+                // If they are not, no type can satisfy both constraints — emit an error.
+                //
+                // join(lower) = Union(lower_bounds)
+                // meet(upper) = Intersection(upper_bounds)
+                //
+                // T-1213 spec: "check_bounds_satisfiable(lower, upper) // error if lower ≰ upper"
+                let join_lower = if var_bounds.lower.len() == 1 {
+                    var_bounds.lower[0].clone()
+                } else {
+                    Type::normalize_union(var_bounds.lower.clone())
+                };
+                let meet_upper = if var_bounds.upper.len() == 1 {
+                    var_bounds.upper[0].clone()
+                } else {
+                    Type::normalize_intersection(var_bounds.upper.clone())
+                };
+                let mut sigma = HashSet::new();
+                if !Type::is_subtype_bas(
+                    &join_lower,
+                    &meet_upper,
+                    Some(&state.tycon_env),
+                    &mut sigma,
+                ) {
+                    // Bounds are inconsistent: no type T satisfies join(lower) <: T <: meet(upper).
+                    state.diagnostics.push(crate::error::TypeDiagnostic {
+                        level: crate::error::DiagnosticLevel::Err,
+                        code: crate::typecheck::typecheck_diag::T022_INCONSISTENT_BOUNDS,
+                        message: format!(
+                            "type variable {var_name} has inconsistent bounds: \
+                             lower bound {} is not a subtype of upper bound {} — \
+                             no type can satisfy both constraints",
+                            join_lower, meet_upper,
+                        ),
+                        span: span.clone(),
+                    });
+                }
+                // Leave the TypeVar free (it will be generalized in step 3) — whether or not
+                // bounds are consistent, leaving free is the correct posture. If bounds are
+                // inconsistent the error above surfaces it; if consistent the TypeVar is
+                // polymorphic in the scheme body.
+            }
+        }
+    }
+
+    // Re-apply substitution after bounds compaction (new bindings may have been added)
+    let ty = &state.subst.apply(ty);
+
     // Early exit for monomorphic types (common case: all-concrete config dicts)
     if !ty.has_inference_vars() {
         // No type variables to generalize, but we may still have constraints.

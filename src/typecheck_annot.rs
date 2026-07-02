@@ -5311,7 +5311,7 @@ pub(crate) fn expand_named(
     // entry whose fresh name appears in the expanded body."
     //
     // The S-Exp + S-Assum coinductive subtype algorithm that CONSUMES `Type::Recursive`
-    // was implemented in S-861 (`is_subtype_inner` in type_def.rs). `Type::Recursive` is
+    // was implemented in S-861 (`is_atom_subtype` in src/bas.rs). `Type::Recursive` is
     // produced here and will be consumed by `is_subtype` once `expand_named` is wired into
     // the annotation resolver in S-862.
     if contains_recvar(&expanded, &binder_name) {

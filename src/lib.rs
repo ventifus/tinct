@@ -46,6 +46,8 @@ pub mod surface_convert;
 #[cfg(test)]
 pub(crate) mod test_util;
 pub mod typecheck;
+// Boolean-Algebraic Subtyping (BAS) — RDNF normalization and emptiness checking.
+pub(crate) mod bas;
 // Type system modules (top-level for circular dependency avoidance)
 pub(crate) mod type_class;
 pub(crate) mod type_def;

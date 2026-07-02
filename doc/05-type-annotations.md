@@ -663,18 +663,23 @@ All named types — primitive builtins, structural aliases, and nominal ADTs —
 
 ### 14. Annotation Resolution
 
-Annotation brackets `@[...]` are resolved by evaluating their contents in the type-stage Env via `eval_type_stage_expr`, then normalizing the result through `TypeNode.as-type` and `expand_all_tycon_apps`. The resolver produces fully normalized `CheckerType` values — no `TypeNode.TypeApplication` or bare `TypeNode.TypeConstructor` references remain after resolution. The type checker receives only concrete forms: primitives, Record, Union, Intersect, Arrow, Recursive, RecursiveRef, TypeVar, and qualified TypeConstructor leaves.
+Annotation brackets `@[...]` are resolved by evaluating their contents in the type-stage Env via `eval_type_stage_expr`, then normalizing the result through `TypeNode.as-type` and `expand_all_tycon_apps`. The resolver produces fully normalized `Type` values — no `TypeNode.TypeApplication` or bare `TypeNode.TypeConstructor` references remain after resolution. The type checker receives only concrete forms: primitives, Record, Union, Intersect, Arrow, Recursive, RecursiveRef, TypeVar, and qualified TypeConstructor leaves.
+
+Note: A `CheckerType` newtype wrapping `TypeNode` values is a planned future refactor (see `doc/whatif/equirecursive-types.md`) but is not yet implemented. The current type checker uses the `Type` enum from `src/type_def.rs` directly. Annotation resolution produces `Type` values via `typenode_value_to_type` — the bridge between tinct-level `TypeNode` values and the `Type` enum.
 
 ```text
 # Named annotation path (@Int, @ListA, @Color, @Maybe Int):
 expand_named(name, args, expansion_stack)
   → TypeNode value (normalized, may be TypeNode.Recursive for self-referential aliases)
+  → typenode_value_to_type(...)
+  → Type (concrete form used by the type checker)
 
 # Expression annotation path (@[or Int Null], @[mu [fn [let self] ...]], @[user-fn args]):
 eval_type_stage_expr(expr, type_stage_env)          # evaluate as ordinary tinct code
   → typenode_normalize(result, env.as_type_fn)       # TypeNode.as-type dispatch
   → expand_all_tycon_apps(normalized, expansion_stack) # eliminate TypeApplication/bare TypeConstructor
-  → CheckerType (fully normalized TypeNode value)
+  → typenode_value_to_type(...)                       # bridge to Type enum
+  → Type (fully normalized, concrete form)
 ```
 
 Type-stage expressions **actually execute**: users define type-stage functions in `--- stage: type` sections and the resolver calls them. There are no hardcoded special cases for `or`, `record`, `arrow`, or `mu` in the resolver — all are ordinary type-stage functions returning `TypeNode` values.
@@ -833,11 +838,13 @@ absent?: [fn@Bool [let x@Unknown] [match x Absent.Absent: true  _: false]]
 
 Builtins that return a missing value (`get?`, `env`) return `Absent.Absent` rather than `[]`. Testing with `absent?` or pattern matching on `Absent.Absent` is correct; `null?` checks only for `[]` (empty collection) and is not interchangeable. Note: `head` raises on `Seq.End` rather than returning `Absent.Absent`. `get-in?` returns `Absent.Absent` if any key in the path is missing; signature: `Dict -> [Seq String] -> Any`. Example: `[get-in? dict ["a" "b" "c"]]` (implemented in the prelude, T-1047, S-855).
 
-### 16. TypeNode: The Primary Type Representation
+### 16. TypeNode: The Type-Stage Value Representation
 
-`TypeNode` is the type system's primary representation. The type checker works directly on `TypeNode` values. `CheckerType` is `Node(Value)` — a thin wrapper; every type, including inference variables, is a TypeNode tinct value. There is no separate `Type` Rust enum reaching the type checker.
+`TypeNode` is the tinct-level value representation of types — produced by the type-stage evaluator and used by type-stage expressions. The type checker's internal representation is the `Type` Rust enum (defined in `src/type_def.rs`). The bridge between the two is `typenode_value_to_type`, which converts a `TypeNode` tinct value to a `Type` enum value for use by the type checker.
 
-**TypeVar is a TypeNode constructor.** `TypeNode.TypeVar { name: String  level: Int }` is a first-class TypeNode form. `walk_type` finds TypeVars automatically via `TypeNode.children`; only four walkers (`is_subtype_inner`, `unify`, `Substitution::apply`, `PartialEq`) require explicit Rust arms for TypeVar.
+Note: A `CheckerType` newtype wrapping `TypeNode` values as the type checker's primary representation is a planned future refactor (see `doc/whatif/equirecursive-types.md`) but is not yet implemented. Until then, `Type` is the authoritative representation inside the type checker. See [Type Inference](06-type-inference.md) for the canonical description of the `Type` enum and its role.
+
+**TypeVar in type-stage.** `TypeNode.TypeVar { name: String  level: Int }` is the tinct-level representation of an inference variable. After conversion via `typenode_value_to_type`, it becomes `Type::TypeVar(name, level)` inside the type checker. `walk_type` finds TypeVars automatically via `TypeNode.children`; only four walkers (`is_subtype_bas` / `is_atom_subtype`, `unify`, `Substitution::apply`, `PartialEq`) require explicit Rust arms for TypeVar.
 
 **TypeNode constructors** (all declared in the prelude `--- stage: type` section):
 
@@ -899,7 +906,7 @@ TypeNode.as-type: [fn [let t]
 
 Helper functions (`child-fields`, `child-role`, `child-field?`) read the unified annotation dict produced from `@Child` processing. **Note:** retrieval of `field-annotations` via `annotation-of` on a constructor function requires T-1124 (support for expression-valued annotation fields in `extract_fn_annotation_extra`). Until T-1124 lands, `@Child` field roles are stored in `ChildFieldAnnotation` structs in the `AliasConstructor` at desugar time but are not materialized into `FnAnnotation.extra` because the `field-annotations:` entry value is a dict (an expression, not a scalar literal), which `extract_fn_annotation_extra` currently silently drops.
 
-**Adding a new TypeNode constructor** requires: (1) declare it with `@[as-type: fn  guarding: Bool]` on the constructor name and `@Child` on TypeNode-typed fields; (2) add explicit arms only to `is_subtype_inner`, `unify`, `Substitution::apply`, and `PartialEq` for the new constructor's semantics. All traversal walkers (`walk_type`, `collect_type_vars`, `has_inference_vars`, etc.) pick up the new constructor automatically via `TypeNode.children` — no Rust changes needed.
+**Adding a new TypeNode constructor** requires: (1) declare it with `@[as-type: fn  guarding: Bool]` on the constructor name and `@Child` on TypeNode-typed fields; (2) add explicit arms only to `is_atom_subtype` (in `src/bas.rs`, called via `is_subtype_bas`), `unify`, `Substitution::apply`, and `PartialEq` for the new constructor's semantics. All traversal walkers (`walk_type`, `collect_type_vars`, `has_inference_vars`, etc.) pick up the new constructor automatically via `TypeNode.children` — no Rust changes needed.
 
 **Inline recursive types via `mu`.** The `mu` prelude combinator creates `TypeNode.Recursive` values inline without a named alias:
 
@@ -914,7 +921,7 @@ depth: [fn@Int [tree@[mu [fn [let self] [or Absent [record value: Int  left: sel
 
 `mu` generates the binder var via `gensym-with-scope`, calls the body function eagerly, and stores the concrete TypeNode result — no deferred function is stored in `Recursive.body`. Contractiveness is checked at construction time: `μa.a` and `μa.(a | Int)` are rejected with `TypeError(NonContractive)`.
 
-**Coalgebraic subtype checking (S-Exp + S-Assum).** `is_subtype_inner` threads a `sigma: &mut HashSet<(String, String)>` through all arms. When both sides are `TypeNode.Recursive`, the pair `(a.var, b.var)` is inserted into sigma (S-Assum) before proceeding. S-Exp unfolds a `Recursive` via `unfold_once` — substituting all `RecursiveRef(var)` occurrences with the full `Recursive` node — and re-enters. Sigma prevents divergence: when the same pair appears again, the hypothesis fires immediately and returns `true`. This approach is proven sound for BAS (Chau & Parreaux 2026).
+**Coinductive subtype checking (S-Exp + S-Assum).** `is_subtype_bas` (in `src/type_def.rs`) delegates to RDNF-based `is_atom_subtype` (in `src/bas.rs`). Sigma (`&mut HashSet<(String, String)>`) is threaded through all arms. When both sides are `TypeNode.Recursive`, the pair `(a.var, b.var)` is inserted into sigma (S-Assum) before proceeding. S-Exp unfolds a `Recursive` via `unfold_once` — substituting all `RecursiveRef(var)` occurrences with the full `Recursive` node — and re-enters. Sigma prevents divergence: when the same pair appears again, the hypothesis fires immediately and returns `true`. This approach is proven sound for BAS (Chau & Parreaux 2026).
 
 ---
 
@@ -1188,8 +1195,8 @@ Mixed-stage routing for annotation brackets in general:
 
 | Annotation form | Stage | Destination |
 |-----------------|-------|-------------|
-| `x@Int` | Type | `CheckerType::Node(TypeNode.Int)` via `expand_named` |
-| `x@[or Int Null]` | Type-stage eval | `CheckerType::Node(TypeNode.Union [...])` via `eval_type_stage_expr` |
+| `x@Int` | Type | `Type::Int` (via `expand_named` → `typenode_value_to_type`) |
+| `x@[or Int Null]` | Type-stage eval | `Type::Union(...)` (via `eval_type_stage_expr` → `typenode_value_to_type`) |
 | `x@[type: Int  default: 0]` | Split | `type:` → type-stage, `default:` → runtime |
 | `fn@[bind: [a]  return: a  constraint: ...]` | Split | Per step table above |
 | `[@Int expr]` | Type + runtime | Type assertion at materialization |
@@ -1200,7 +1207,7 @@ Mixed-stage routing for annotation brackets in general:
 
 Tinct uses Hindley-Milner inference with row polymorphism and levels-based let-generalization (Kiselyov 2013).
 
-**TypeVar levels.** Each TypeVar carries an integer level (the `level` field of `TypeNode.TypeVar { name: String  level: Int }`) representing the nesting depth of its binding scope. `state.levels` maps TypeVar name to its authoritative current level (updated by level lowering); the payload `level` field holds the creation-time level. Let-generalization uses `state.levels[name] > enclosing_level` — always use `state.levels`, never the payload field. TypeVars whose level exceeds the current enclosing level are generalized into the polymorphic scheme — preventing TypeVars from escaping their scope.
+**TypeVar levels.** Each TypeVar carries an integer level representing the nesting depth of its binding scope. In the `Type` enum, this is `Type::TypeVar(name: String, level: u32)`; in the tinct-stage value representation it is `TypeNode.TypeVar { name: String  level: Int }`. `state.levels` maps TypeVar name to its authoritative current level (updated by level lowering); the level carried in the variant is the creation-time level only. Let-generalization uses `state.levels[name] > enclosing_level` — always use `state.levels`, never the creation-time level. TypeVars whose level exceeds the current enclosing level are generalized into the polymorphic scheme — preventing TypeVars from escaping their scope.
 
 **Dict letrec inference.** Dict entries form a letrec scope. The type checker runs five passes:
 
@@ -1220,7 +1227,7 @@ See [Type Inference](06-type-inference.md) for the full let-generalization algor
 
 ### 27. Reflection and `ast-of`
 
-`ast-of` on an annotated expression returns the resolved type as a `TypeNode` value alongside the expression's AST structure. The TypeNode value is the normalized `CheckerType` produced by the annotation resolver — the same value the type checker uses directly.
+`ast-of` on an annotated expression returns the resolved type as a `TypeNode` value alongside the expression's AST structure. The `TypeNode` value is produced by converting the annotation resolver's `Type` result back through `typenode_value_to_type` in reverse — the tinct-facing representation of the type the checker resolved.
 
 ```tinct
 ast-of: [fn@a  min: [fn@[bind: [a]  return: a  constraint: [a: Comparable]] [xs@[Seq a]] ...]]
