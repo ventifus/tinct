@@ -2,4 +2,4 @@
 # If $and were eager, the $raise would fire. Since it's lazy, False is returned.
 [and False [raise "should not evaluate"]]
 === out
-Bool(false)
+Variant(Boolean.False, Null)

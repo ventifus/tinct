@@ -22,4 +22,4 @@
   str-empty: [null? str-ann]
 ]
 === out
-Dict({"map-ann": Dict({"doc": String("Apply function to each element of a Seq. Lazy — safe on infinite Seqs.\n\nExample: [collect [map [fn [let x] [* x 2]] [range 0 3]]] => [0 2 4]\n\nNote: O(1) per element consumed. For Dict inputs use builtin-map."), "return": String("[Seq b]")}), "str-ann": Dict({}), "map-has-ret": Bool(true), "map-has-doc": Bool(true), "map-ret-val": Bool(true), "map-doc-str": Bool(true), "map-doc-ne": Bool(true), "str-empty": Bool(true)})
+Dict({"map-ann": Dict({"doc": String("Apply function to each element of a Seq. Lazy — safe on infinite Seqs.\n\nExample: [collect [map [fn [let x] [* x 2]] [range 0 3]]] => [0 2 4]\n\nNote: O(1) per element consumed. For Dict inputs use builtin-map."), "return": String("[Seq b]")}), "str-ann": Dict({}), "map-has-ret": Variant(Boolean.True, Null), "map-has-doc": Variant(Boolean.True, Null), "map-ret-val": Variant(Boolean.True, Null), "map-doc-str": Variant(Boolean.True, Null), "map-doc-ne": Variant(Boolean.True, Null), "str-empty": Variant(Boolean.True, Null)})

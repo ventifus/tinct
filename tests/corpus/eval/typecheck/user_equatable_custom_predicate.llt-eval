@@ -14,4 +14,4 @@
 
 %.same
 === out
-Bool(true)
+Variant(Boolean.True, Null)

@@ -1287,26 +1287,7 @@ Primary output serialization is owned by the output formatter program (see §Out
 
 **`visit_value` visitor** (`src/lib.rs`) remains available for debug display, LSP hover, and `llt-repr` formatting. It uses a `ValueVisitor` trait to recursively walk materialized value trees, materializing thunks via the CEK machine's `materialize()` as it descends:
 
-**Visitor pattern:** The `ValueVisitor` trait (defined in `src/lib.rs`) provides callback methods for each value variant:
-
-```rust
-pub trait ValueVisitor {
-    type Output;
-    
-    fn visit_int(&self, v: i64) -> Self::Output;
-    fn visit_float(&self, v: f64, span: Span) -> Result<Self::Output, Box<EvalError>>;
-    fn visit_bool(&self, v: bool) -> Self::Output;
-    fn visit_str(&self, v: &str) -> Self::Output;
-    fn visit_bytes(&self, v: &[u8]) -> Self::Output;
-    fn visit_null(&self) -> Self::Output;
-    fn visit_dict(&self, entries: Vec<(Key, Self::Output)>) -> Self::Output;
-    fn visit_seq_head(&self, head: Self::Output, span: Span) -> Result<Self::Output, Box<EvalError>>;
-    fn visit_function(&self, params: &[Param], span: Span) -> Result<Self::Output, Box<EvalError>>;
-    fn visit_builtin(&self, name: &str, module: &str, span: Span) -> Result<Self::Output, Box<EvalError>>;
-    
-    fn depth_limit_output(&self, depth: usize, span: Span) -> Option<Result<Self::Output, Box<EvalError>>>;
-}
-```
+**Visitor pattern:** The `ValueVisitor` trait (defined in `src/lib.rs`) provides callback methods for each value variant. See `src/lib.rs` for the authoritative method signatures — the trait has one method per `Value` variant (`visit_int`, `visit_float`, `visit_str`, `visit_bytes`, `visit_null`, `visit_dict`, `visit_seq_head`, `visit_function`, `visit_builtin`, `visit_proxy`, `visit_variant`, `visit_absent`, `visit_decimal`, `visit_bigint`, `visit_timestamp`, `visit_duration`, `visit_clock_cap`, `visit_timezone`) plus `depth_limit_output` for recursion depth control.
 
 **Traversal:** The `visit_value` function recursively walks the value tree, materializing thunks as needed (via the CEK machine's `materialize()`) and dispatching to the visitor callbacks. For dict values, it materializes each entry thunk and recursively visits the result. For sequence values, it materializes the head thunk and visits it (tail is shown as `...` without forcing for display purposes, or expanded iteratively for serialization).
 
@@ -1322,7 +1303,7 @@ pub trait ValueVisitor {
 
 The `ValueVisitor` trait (in `src/lib.rs`) provides a visitor pattern for structural traversal of materialized `Value` trees. It's used to produce JSON and display-string output from evaluated values.
 
-**Design:** The `visit_value` function walks a materialized `Value`, calling visitor methods for each primitive type (`visit_int`, `visit_float`, `visit_str`, `visit_bool`, etc.) and recursively traversing structured types (`visit_dict`, `visit_seq_head`). The visitor returns a type-safe `Output` associated type — `String (compact JSON)` for `JsonVisitor`, `String` for `DisplayVisitor`.
+**Design:** The `visit_value` function walks a materialized `Value`, calling visitor methods for each primitive type (`visit_int`, `visit_float`, `visit_str`, etc.) and recursively traversing structured types (`visit_dict`, `visit_seq_head`). The visitor returns a type-safe `Output` associated type — `String (compact JSON)` for `JsonVisitor`, `String` for `DisplayVisitor`.
 
 **Span threading:** Every `visit_*` method receives the source `Span` of the value being visited. For structured types (Dict, Seq), the span is propagated from the thunk that contained the value. This ensures that serialization errors (e.g., "cannot serialize Function to JSON") include accurate source locations pointing to where the problematic value was defined.
 

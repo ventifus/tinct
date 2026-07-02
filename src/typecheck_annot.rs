@@ -242,18 +242,36 @@ pub(crate) async fn expand_type_alias(
     // is for validation side-effects (error propagation) only. Standalone type alias expressions
     // have no runtime type; returning Any is correct. The actual type alias definition is
     // registered in the TypeEnv during dict inference (see infer_dict Pass 2).
-    let mut _alias_expand_constraints: Vec<Constraint> = Vec::new();
+    //
+    // B-452: Must return Type::Any (the top-of-lattice sentinel), NOT Type::Unknown (the gradual
+    // dynamic type). Unknown poisons inference via non-transitive consistency — any binding that
+    // receives Unknown propagates it to every call site. A type alias declaration has no runtime
+    // value; Any is the correct "no meaningful type" for an expression whose only purpose is
+    // registering a name in the TypeEnv.
+    //
+    // Safety of dropping constraints: resolve_type_expr may push Constraint::Class entries
+    // when a class name appears in the type alias body (e.g. `@Comparable` in a bound).
+    // Those constraints reference fresh TypeVars allocated via state.subst.name_counter.
+    // Constraint::Class entries are only ever acted upon by check_constraints_on_var, which
+    // fires when a TypeVar is unified with a concrete type. Since expand_type_alias discards
+    // the resolved Type entirely (the `let _ =` above), those fresh TypeVars are never placed
+    // into the infer graph and therefore never unified. Constraints on unreachable TypeVars
+    // can never fire — dropping them is safe. The name counter and level increments in state
+    // persist but are harmless: they produce orphaned TypeVar IDs that will never be referenced.
+    // All other side effects of resolve_type_expr (error propagation, alias registration) flow
+    // through the return value or through state.subst directly, not through the constraints Vec.
+    let mut _unused_type_alias_constraints: Vec<Constraint> = Vec::new();
     let _ = resolve_type_expr(
         inner,
         env,
         state,
-        &mut _alias_expand_constraints,
+        &mut _unused_type_alias_constraints,
         &mut Some(&mut alias_ann_map),
         &mut None,
         None,
     )
     .await?;
-    Ok(Type::Unknown)
+    Ok(Type::Any)
 }
 
 pub(crate) async fn resolve_type_assert(

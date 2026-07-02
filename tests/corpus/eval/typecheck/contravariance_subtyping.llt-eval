@@ -8,4 +8,4 @@
   result: True
 ]
 === out
-Dict({"Callback": Dict({}), "result": Bool(true)})
+Dict({"Callback": Dict({}), "result": Variant(Boolean.True, Null)})

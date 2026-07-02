@@ -12,4 +12,4 @@
 [ann: [annotation-of MyType.Red]]
 [result: [= [get "category" ann] "primary"]]
 === out
-Dict({"result": Bool(true)})
+Dict({"result": Variant(Boolean.True, Null)})

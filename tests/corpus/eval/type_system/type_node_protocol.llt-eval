@@ -20,24 +20,21 @@
 #   5. map-children on a branch node applies f to the inner@Child field
 #   6. annotation-of(SimpleType.Leaf) returns the constructor annotation dict
 #
-# MANUAL TESTING REQUIRED — === out is empty pending resolution of two bugs:
+# MANUAL TESTING REQUIRED — === out is empty pending resolution of one bug:
 #
-# BUG-A: builtin-tag-of (src/builtins_meta.rs:builtin_tag_of) does not peel
-#   Value::Annotated. Annotated unit constructors (e.g. SimpleType.Leaf created
-#   via builtin-make-annotated) evaluate to Value::Annotated{inner: Variant(...)},
-#   not Value::Variant. The builtin_tag_of match arm only handles Value::Variant
-#   and falls through to type_mismatch for Value::Annotated.
-#   Fix: add `Value::Annotated { inner, .. } => { let mut v = &*inner; while let
-#   Value::Annotated { inner, .. } = v { v = inner; } match v { Value::Variant{tag,..}
-#   => ok_val(...), _ => type_mismatch } }` arm to builtin_tag_of.
+# BUG-A (FIXED B-441): builtin-tag-of now peels Value::Annotated wrappers before
+#   matching. The fix adds a while-let peeling loop in builtin_tag_of
+#   (src/builtins_meta.rs) consistent with Pattern::Constructor (eval.rs:3411-3421),
+#   values_equal (eval.rs:3623-3627), and visit_value (lib.rs:588-591).
 #
-# BUG-B: `True` and `False` are not defined in the runtime prelude. They appear
+# BUG-B (B-457): `True` and `False` are not defined in the runtime prelude. They appear
 #   in annotations as `guarding: True` / `guarding: False`. In the runtime context
 #   these are undefined VarRefs — the thunk errors when forced (leaf-guarding line 65).
-#   Fix: either export True/False from prelude runtime section, or change the
-#   annotation values to use a runtime-valid representation (e.g. strings "true"/"false").
+#   Root cause: why True/False fail to resolve in annotation dict thunks despite Boolean
+#   being injected by loader.llt must be diagnosed (environment capture ordering or
+#   bootstrap phase gap). B-457 tracks this investigation.
 #
-# To populate === out after fixing BUG-A and BUG-B:
+# === out cannot be populated until B-457 is fixed. After B-457 lands, run:
 #   just test-corpus-one tests/corpus/eval/type_system/type_node_protocol.llt-eval
 
 [

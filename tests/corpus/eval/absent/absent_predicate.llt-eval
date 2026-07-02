@@ -8,4 +8,4 @@
   c: [absent? [env "THIS_ENV_VAR_SHOULD_NOT_EXIST_xyz123"]]
 ]
 === out
-Dict({"a": Bool(true), "b": Bool(false), "c": Bool(true)})
+Dict({"a": Variant(Boolean.True, Null), "b": Variant(Boolean.False, Null), "c": Variant(Boolean.True, Null)})

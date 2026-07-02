@@ -5,4 +5,4 @@
 [Result: [type [let a] [Ok value: a] [Error msg: Str]]]
 [eq: [= [Ok value: 1] [Ok value: 1]]]
 === out
-Dict({"eq": Bool(true)})
+Dict({"eq": Variant(Boolean.True, Null)})

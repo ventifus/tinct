@@ -1,4 +1,4 @@
 # ast-of on fn expression returns a Dict (T-923) — dict? returns true
 [dict? [ast-of [fn [] [raise "should not run"]]]]
 === out
-Bool(true)
+Variant(Boolean.True, Null)

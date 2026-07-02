@@ -372,7 +372,6 @@ pub trait ValueVisitor {
 
     fn visit_int(&self, v: i64) -> Self::Output;
     fn visit_float(&self, v: f64, span: ast::Span) -> Result<Self::Output, Box<error::EvalError>>;
-    fn visit_bool(&self, v: bool) -> Self::Output;
     fn visit_str(&self, v: &str) -> Self::Output;
     fn visit_bytes(&self, v: &[u8]) -> Self::Output;
     fn visit_null(&self) -> Self::Output;
@@ -507,11 +506,6 @@ pub fn visit_value<'a, V: ValueVisitor + 'a>(
             value::Value::RevocableDirCap { .. } => Err(Box::new(
                 error::EvalError::value_not_serializable("RevocableDirCap".to_string(), span),
             )),
-            value::Value::Variant { tag, payload: None }
-                if tag == "Boolean.True" || tag == "Boolean.False" =>
-            {
-                Ok(visitor.visit_bool(tag == "Boolean.True"))
-            }
             value::Value::Variant { tag, payload } => {
                 let payload_output = match payload {
                     Some(thunk_id) => {
@@ -691,7 +685,7 @@ pub fn json_pretty_print(s: &str) -> String {
 
 /// Maximum display recursion depth (5 levels).
 /// Prevents deep traversal of nested structures in error messages.
-/// Increased from 3 to 5 to accommodate Result-wrapped values (Variant(Result.Ok, ...)).
+/// Depth 5 handles typical variant-wrapped values and nested payload dicts.
 const MAX_DISPLAY_DEPTH: usize = 5;
 
 struct DisplayVisitor;
@@ -704,9 +698,6 @@ impl ValueVisitor for DisplayVisitor {
     }
     fn visit_float(&self, v: f64, _span: ast::Span) -> Result<String, Box<error::EvalError>> {
         Ok(format!("Float({v})"))
-    }
-    fn visit_bool(&self, v: bool) -> String {
-        format!("Bool({v})")
     }
     fn visit_str(&self, v: &str) -> String {
         format!("String({v:?})")
@@ -824,8 +815,44 @@ pub async fn value_to_display_string(
     visit_value(val, ctx, depth, &DisplayVisitor, span).await
 }
 
-#[allow(clippy::items_after_test_module)]
-// find_libdir_path and other public helpers come after tests module; moving them before would bury utility functions at the bottom of the prelude
+/// Resolve the stdlib directory path from the binary location.
+///
+/// Tries multiple layouts in order:
+/// 1. Development release binary: `target/debug/tinct` → `<project-root>/stdlib/`
+///    (2 parent levels: debug/ → target/ → project root → stdlib/)
+/// 2. Test binary: `target/debug/deps/tinct-HASH` → `<project-root>/stdlib/`
+///    (3 parent levels: deps/ → debug/ → target/ → project root → stdlib/)
+/// 3. Installed: `bin/tinct` → `<prefix>/share/tinct/stdlib/`
+///    (2 parent levels: bin/ → prefix/ → share/tinct/stdlib/)
+///
+/// Returns `None` if no stdlib directory exists at any candidate path.
+///
+/// This is used by the type checker and runtime to resolve `%libdir` cap-qualified includes.
+pub fn find_libdir_path() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    // Collect candidate stdlib dirs by walking up the directory hierarchy.
+    // Each ancestor that contains a "stdlib" subdirectory is a valid candidate.
+    // We try up to 4 levels up to handle both release binaries (2 levels) and
+    // test binaries (3 levels: target/debug/deps/tinct-HASH → target/ → root).
+    let mut dir = exe.parent()?.to_path_buf();
+    for _ in 0..4 {
+        let candidate = dir.join("stdlib");
+        if candidate.is_dir() {
+            return Some(candidate);
+        }
+        // Also check the installed layout: <prefix>/share/tinct/stdlib/
+        let installed = dir.join("share").join("tinct").join("stdlib");
+        if installed.is_dir() {
+            return Some(installed);
+        }
+        match dir.parent() {
+            Some(parent) => dir = parent.to_path_buf(),
+            None => break,
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -858,6 +885,60 @@ mod tests {
             payload: None,
         };
         assert_eq!(format!("{v}"), "Color.Red");
+    }
+
+    /// B-448: Boolean.True and Boolean.False variants must serialise as variant dicts,
+    /// not as JSON/display booleans.  The serialiser must be agnostic to ADT tag names
+    /// — `Boolean.True` carries no special privilege over any other unit variant.
+    ///
+    /// Before B-448, `visit_value` short-circuited on `Boolean.True`/`Boolean.False`
+    /// and dispatched to a now-deleted `visit_bool` method, producing `Bool(true)` in
+    /// the display format.  After the fix these values fall through to the generic
+    /// `Variant` arm, which produces `Variant(Boolean.True, Null)`.
+    /// `visit_bool` has since been removed from the `ValueVisitor` trait entirely.
+    #[tokio::test]
+    async fn test_display_boolean_variant_not_privileged() {
+        let ctx = test_ctx().await;
+
+        let true_val = Value::Variant {
+            tag: "Boolean.True".to_string(),
+            payload: None,
+        };
+        let false_val = Value::Variant {
+            tag: "Boolean.False".to_string(),
+            payload: None,
+        };
+
+        let true_display = value_to_display_string(&true_val, &ctx, rust_span!())
+            .await
+            .expect("display should succeed for Boolean.True");
+        let false_display = value_to_display_string(&false_val, &ctx, rust_span!())
+            .await
+            .expect("display should succeed for Boolean.False");
+
+        // Must serialize as a generic variant, not as Bool(...).
+        assert_eq!(
+            true_display, "Variant(Boolean.True, Null)",
+            "Boolean.True must serialise as Variant(Boolean.True, Null), not Bool(true)"
+        );
+        assert_eq!(
+            false_display, "Variant(Boolean.False, Null)",
+            "Boolean.False must serialise as Variant(Boolean.False, Null), not Bool(false)"
+        );
+
+        // A user-defined unit variant with a different type name must produce the
+        // same structure — confirming uniform treatment.
+        let user_val = Value::Variant {
+            tag: "MyBool.Yes".to_string(),
+            payload: None,
+        };
+        let user_display = value_to_display_string(&user_val, &ctx, rust_span!())
+            .await
+            .expect("display should succeed for MyBool.Yes");
+        assert_eq!(
+            user_display, "Variant(MyBool.Yes, Null)",
+            "User-defined unit variant must serialise identically to Boolean variants"
+        );
     }
 
     #[tokio::test]
@@ -1074,42 +1155,4 @@ mod tests {
         let result = json_pretty_print(r#"{"k":"a{b}"}"#);
         assert_eq!(result, "{\n  \"k\": \"a{b}\"\n}");
     }
-}
-
-/// Resolve the stdlib directory path from the binary location.
-///
-/// Tries multiple layouts in order:
-/// 1. Development release binary: `target/debug/tinct` → `<project-root>/stdlib/`
-///    (2 parent levels: debug/ → target/ → project root → stdlib/)
-/// 2. Test binary: `target/debug/deps/tinct-HASH` → `<project-root>/stdlib/`
-///    (3 parent levels: deps/ → debug/ → target/ → project root → stdlib/)
-/// 3. Installed: `bin/tinct` → `<prefix>/share/tinct/stdlib/`
-///    (2 parent levels: bin/ → prefix/ → share/tinct/stdlib/)
-///
-/// Returns `None` if no stdlib directory exists at any candidate path.
-///
-/// This is used by the type checker and runtime to resolve `%libdir` cap-qualified includes.
-pub fn find_libdir_path() -> Option<std::path::PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    // Collect candidate stdlib dirs by walking up the directory hierarchy.
-    // Each ancestor that contains a "stdlib" subdirectory is a valid candidate.
-    // We try up to 4 levels up to handle both release binaries (2 levels) and
-    // test binaries (3 levels: target/debug/deps/tinct-HASH → target/ → root).
-    let mut dir = exe.parent()?.to_path_buf();
-    for _ in 0..4 {
-        let candidate = dir.join("stdlib");
-        if candidate.is_dir() {
-            return Some(candidate);
-        }
-        // Also check the installed layout: <prefix>/share/tinct/stdlib/
-        let installed = dir.join("share").join("tinct").join("stdlib");
-        if installed.is_dir() {
-            return Some(installed);
-        }
-        match dir.parent() {
-            Some(parent) => dir = parent.to_path_buf(),
-            None => break,
-        }
-    }
-    None
 }

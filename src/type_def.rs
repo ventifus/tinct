@@ -1284,7 +1284,13 @@ impl Type {
                     // Concrete-arity function ~<: any-function: always consistent
                     return true;
                 }
+                // B-454: variadic flag must match. A variadic function (collects rest args
+                // into a Seq) has fundamentally different call semantics from a non-variadic
+                // function with the same declared param count. Consistent subtyping cannot
+                // paper over that difference: a caller that passes extra arguments to a
+                // non-variadic function will fail at runtime, regardless of Unknown positions.
                 sub_p.len() == sup_p.len()
+                    && sub_v == sup_v
                     && sub_p.iter().zip(sup_p.iter()).all(
                         |((_sub_name, sub_ty), (_sup_name, sup_ty))| {
                             Self::is_consistent_subtype(sup_ty, sub_ty) // contravariant
@@ -3171,6 +3177,114 @@ mod tests {
         assert!(
             Type::is_subtype(&rec_b, &rec_a, None),
             "µb.(Int | {{x: b}}) <: µa.(Int | {{x: a}}) must hold — symmetric alpha-equivalence"
+        );
+    }
+
+    // ============================================================================
+    // B-454: is_consistent_subtype variadic-flag mismatch tests
+    // ============================================================================
+
+    #[test]
+    fn test_is_consistent_subtype_variadic_not_csubtype_of_nonvariadic_same_arity() {
+        // B-454: fn(Int)... ~<: fn(Int) must be false.
+        // A variadic function accepts extra arguments; a non-variadic does not. With the same
+        // declared param count (1 here), the flag difference must reject consistent subtyping.
+        // Without the sub_v == sup_v guard this would spuriously return true.
+        let variadic = Type::Function {
+            params: vec![(Some("x".to_string()), Type::Int)],
+            ret: Box::new(Type::Int),
+            variadic: true,
+            required_count: 1,
+        };
+        let non_variadic = Type::Function {
+            params: vec![(Some("x".to_string()), Type::Int)],
+            ret: Box::new(Type::Int),
+            variadic: false,
+            required_count: 1,
+        };
+        assert!(
+            !Type::is_consistent_subtype(&variadic, &non_variadic),
+            "variadic fn(Int)... must NOT be a consistent subtype of non-variadic fn(Int)"
+        );
+    }
+
+    #[test]
+    fn test_is_consistent_subtype_nonvariadic_not_csubtype_of_variadic_same_arity() {
+        // Symmetric: fn(Int) ~<: fn(Int)... must also be false.
+        // A non-variadic function (fixed arity) is not a consistent subtype of a variadic
+        // function of the same declared arity, because callers of the variadic may pass extra
+        // args that the non-variadic does not accept.
+        // NOTE: the special "any-function" (zero-param variadic) case is handled earlier in the
+        // arm and returns true — this tests the concrete-arity non-any-function path.
+        let non_variadic = Type::Function {
+            params: vec![(Some("x".to_string()), Type::Int)],
+            ret: Box::new(Type::Int),
+            variadic: false,
+            required_count: 1,
+        };
+        let variadic = Type::Function {
+            params: vec![(Some("x".to_string()), Type::Int)],
+            ret: Box::new(Type::Int),
+            variadic: true,
+            required_count: 1,
+        };
+        assert!(
+            !Type::is_consistent_subtype(&non_variadic, &variadic),
+            "non-variadic fn(Int) must NOT be a consistent subtype of variadic fn(Int)..."
+        );
+    }
+
+    #[test]
+    fn test_is_consistent_subtype_variadic_reflexive() {
+        // fn(Int)... ~<: fn(Int)... must hold (same flags, same arity, reflexive).
+        let variadic = Type::Function {
+            params: vec![(Some("x".to_string()), Type::Int)],
+            ret: Box::new(Type::Int),
+            variadic: true,
+            required_count: 1,
+        };
+        assert!(
+            Type::is_consistent_subtype(&variadic, &variadic),
+            "variadic fn(Int)... must be a consistent subtype of itself (reflexive)"
+        );
+    }
+
+    #[test]
+    fn test_is_consistent_subtype_nonvariadic_reflexive() {
+        // fn(Int) ~<: fn(Int) must hold (same flags, same arity, reflexive).
+        let non_variadic = Type::Function {
+            params: vec![(Some("x".to_string()), Type::Int)],
+            ret: Box::new(Type::Int),
+            variadic: false,
+            required_count: 1,
+        };
+        assert!(
+            Type::is_consistent_subtype(&non_variadic, &non_variadic),
+            "non-variadic fn(Int) must be a consistent subtype of itself (reflexive)"
+        );
+    }
+
+    #[test]
+    fn test_is_consistent_subtype_variadic_flag_mismatch_with_unknown_params() {
+        // B-454: Unknown params must not rescue a variadic-flag mismatch.
+        // fn(?)... ~<: fn(?) should still be false: Unknown in the param makes the param
+        // positions consistent, but the call-convention difference (variadic vs fixed) is
+        // structural and must not be erased by gradual types.
+        let variadic_unknown = Type::Function {
+            params: vec![(Some("x".to_string()), Type::Unknown)],
+            ret: Box::new(Type::Unknown),
+            variadic: true,
+            required_count: 1,
+        };
+        let non_variadic_unknown = Type::Function {
+            params: vec![(Some("x".to_string()), Type::Unknown)],
+            ret: Box::new(Type::Unknown),
+            variadic: false,
+            required_count: 1,
+        };
+        assert!(
+            !Type::is_consistent_subtype(&variadic_unknown, &non_variadic_unknown),
+            "fn(?)... must NOT be a consistent subtype of fn(?): variadic flag mismatch is not erased by Unknown"
         );
     }
 

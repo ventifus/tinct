@@ -5,4 +5,4 @@
  odd?: [fn [let n] [if [= n 0] False [even? [- n 1]]]]]
 [r: [even? 4]]
 === out
-Dict({"r": Bool(true)})
+Dict({"r": Variant(Boolean.True, Null)})

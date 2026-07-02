@@ -8,4 +8,4 @@
 [result-doc: [= ann.doc "adds one"]
  result-ver: [= ann.version "1.0"]]
 === out
-Dict({"result-doc": Bool(true), "result-ver": Bool(true)})
+Dict({"result-doc": Variant(Boolean.True, Null), "result-ver": Variant(Boolean.True, Null)})

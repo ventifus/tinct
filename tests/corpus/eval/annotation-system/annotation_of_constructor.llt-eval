@@ -11,4 +11,4 @@
 [MyType: [type [Ctor@[role: "primary"] val: Int]]]
 [result: [= [get "role" [annotation-of MyType.Ctor]] "primary"]]
 === out
-Dict({"result": Bool(true)})
+Dict({"result": Variant(Boolean.True, Null)})

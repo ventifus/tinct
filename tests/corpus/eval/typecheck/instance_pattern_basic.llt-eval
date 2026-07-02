@@ -17,4 +17,4 @@
 
 %.result
 === out
-Bool(true)
+Variant(Boolean.True, Null)

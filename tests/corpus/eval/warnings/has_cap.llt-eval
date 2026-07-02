@@ -4,4 +4,4 @@
 [include %libdir "io.llt"]
 [has-cap? [open %cwd "Cargo.toml" Readable] "read-chunk"]
 === out
-Bool(true)
+Variant(Boolean.True, Null)

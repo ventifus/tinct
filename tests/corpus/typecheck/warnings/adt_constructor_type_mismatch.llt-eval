@@ -10,7 +10,7 @@
   mismatch: [= ok-val err-val]
 ]
 === out
-Dict({"Result": Dict({"Ok": Variant(Result.Ok, Null), "Error": Variant(Result.Error, Null)}), "ok-val": Variant(Result.Ok, Null), "err-val": Variant(Result.Error, Null), "mismatch": Bool(false)})
+Dict({"Result": Dict({"Ok": Variant(Result.Ok, Null), "Error": Variant(Result.Error, Null)}), "ok-val": Variant(Result.Ok, Null), "err-val": Variant(Result.Error, Null), "mismatch": Variant(Boolean.False, Null)})
 
 === warn
 [UnificationFailure] cannot unify Error with String

@@ -6,4 +6,4 @@
 # String, etc.) are all guarding, so any path through them to a RecursiveRef is safe.
 [result: [builtin-is-contractive 42]]
 === out
-Dict({"result": Bool(true)})
+Dict({"result": Variant(Boolean.True, Null)})

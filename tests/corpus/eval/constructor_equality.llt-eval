@@ -8,4 +8,4 @@
   eq-diff: [= Color.Red Color.Green]
 ]
 === out
-Dict({"Color": Dict({"Red": Variant(Color.Red, Null), "Green": Variant(Color.Green, Null), "Blue": Variant(Color.Blue, Null)}), "eq-same": Bool(true), "eq-diff": Bool(false)})
+Dict({"Color": Dict({"Red": Variant(Color.Red, Null), "Green": Variant(Color.Green, Null), "Blue": Variant(Color.Blue, Null)}), "eq-same": Variant(Boolean.True, Null), "eq-diff": Variant(Boolean.False, Null)})

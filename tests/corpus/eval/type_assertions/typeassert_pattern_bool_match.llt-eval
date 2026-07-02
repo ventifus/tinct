@@ -5,4 +5,4 @@
   [case [let x] x x]
   _: False]
 === out
-Bool(true)
+Variant(Boolean.True, Null)

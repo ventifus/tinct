@@ -7,4 +7,4 @@ Gets the greeting.
 [result-doc: [= ann.doc "Gets the greeting."]
  result-ret: [= ann.return "String"]]
 === out
-Dict({"result-doc": Bool(true), "result-ret": Bool(true)})
+Dict({"result-doc": Variant(Boolean.True, Null), "result-ret": Variant(Boolean.True, Null)})

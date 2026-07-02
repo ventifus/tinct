@@ -21,4 +21,4 @@
   result: True
 ]
 === out
-Dict({"EvenList": Dict({}), "OddList": Dict({}), "result": Bool(true)})
+Dict({"EvenList": Dict({}), "OddList": Dict({}), "result": Variant(Boolean.True, Null)})

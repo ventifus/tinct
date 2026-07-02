@@ -9,4 +9,4 @@
   g: [< 1.0 2.0]
 ]
 === out
-Dict({"a": Bool(true), "b": Bool(false), "c": Bool(true), "d": Bool(true), "e": Bool(true), "f": Bool(true), "g": Bool(true)})
+Dict({"a": Variant(Boolean.True, Null), "b": Variant(Boolean.False, Null), "c": Variant(Boolean.True, Null), "d": Variant(Boolean.True, Null), "e": Variant(Boolean.True, Null), "f": Variant(Boolean.True, Null), "g": Variant(Boolean.True, Null)})

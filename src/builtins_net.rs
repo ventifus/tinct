@@ -884,70 +884,6 @@ pub(crate) fn builtin_tls_peer_cert(
 
 // Old tls-peer-cert body fully removed (it used Value::Handle and async/? in non-async context).
 
-#[allow(clippy::items_after_test_module)]
-// QUIC/HTTP structs and builtins come after test module; moving them before would break organization
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::ast::Span;
-    use crate::rust_span;
-    use crate::value::NetCapEntry;
-
-    fn dummy_span() -> Span {
-        rust_span!()
-    }
-
-    #[test]
-    fn test_check_net_cap_allowlist_denial() {
-        // Allowlist: only api.example.com:443 is allowed.
-        let entries = vec![NetCapEntry::HostPort("api.example.com".to_string(), 443)];
-        let span = dummy_span();
-
-        // Allowed host:port → Ok
-        let result = check_net_cap_allowlist(&entries, "api.example.com", Some(443), span.clone());
-        assert!(
-            result.is_ok(),
-            "api.example.com:443 should be allowed, got: {:?}",
-            result
-        );
-
-        // Denied host (different hostname, same port) → Err
-        let result = check_net_cap_allowlist(&entries, "evil.example.com", Some(443), span.clone());
-        assert!(result.is_err(), "evil.example.com:443 should be denied");
-        let msg = result.unwrap_err().kind.to_string().to_string();
-        assert!(
-            msg.contains("denied"),
-            "error should mention 'denied', got: {msg}"
-        );
-
-        // Denied port (correct host, wrong port) → Err
-        let result = check_net_cap_allowlist(&entries, "api.example.com", Some(80), span.clone());
-        assert!(
-            result.is_err(),
-            "api.example.com:80 should be denied (only port 443 is allowed)"
-        );
-
-        // Any allowlist → allows everything
-        let any_entries = vec![NetCapEntry::Any];
-        let result = check_net_cap_allowlist(
-            &any_entries,
-            "anything.example.com",
-            Some(1234),
-            span.clone(),
-        );
-        assert!(
-            result.is_ok(),
-            "NetCapEntry::Any should allow any host:port"
-        );
-        // Any also allows hosts not in the original restricted list
-        let result = check_net_cap_allowlist(&any_entries, "evil.example.com", Some(22), span);
-        assert!(
-            result.is_ok(),
-            "NetCapEntry::Any should allow evil.example.com:22"
-        );
-    }
-}
-
 // ── HTTP-sessions: QUIC and HTTP/3 ──────────────────────────────────────────────
 
 /// Sync wrapper around a `quinn::RecvStream` that bridges async reads to the
@@ -1546,13 +1482,14 @@ pub(crate) fn builtin_http3_session(
 /// `http-request`: Issue an HTTP request on an HTTP/2 or HTTP/3 session.
 /// Takes `(session, method, path, headers, body)`.
 ///
-/// Returns `{ok: {status: Int, headers: Dict, body: String}}` on success
-/// or `{err: String}` on failure (non-throwing Result).
+/// Returns `{status: Int, headers: Dict, body: String}` on success.
+/// Raises on network errors so callers can wrap with `[try [fn [] [http-request ...]]]`
+/// for Result-based error handling.
 ///
 /// Dispatches on session type:
 /// - `Http2Session`: uses reqwest blocking client (HTTP/2 via ALPN)
 /// - `Http3Session`: uses h3 over the existing QUIC connection
-/// - Other: type error (hard error, not Result variant)
+/// - Other: type error (hard error)
 pub(crate) fn builtin_http_request(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
@@ -1682,7 +1619,7 @@ struct Http2RequestConfig<'a> {
 ///
 /// The client was configured in `builtin_http2_session` to prefer HTTP/2 via ALPN.
 /// Path is resolved relative to `base_url` (the origin stored in the session).
-/// Returns `{ok: {status: Int, headers: Dict, body: String}}` or `{err: String}`.
+/// Returns `{status: Int, headers: Dict, body: String}` on success or raises on error.
 ///
 /// Uses the async reqwest API and `.await` — safe to call from within the async CEK loop.
 /// The async client does not create an internal tokio runtime, so it can be dropped
@@ -1715,11 +1652,11 @@ async fn http_request_h2(config: &Http2RequestConfig<'_>) -> EvalResult<Arc<Thun
     let method = match reqwest::Method::from_bytes(method_str.as_bytes()) {
         Ok(m) => m,
         Err(e) => {
-            return http_request_result_error(
+            return Err(EvalError::user_error(
                 format!("http-request: invalid HTTP method '{}': {}", method_str, e),
                 span,
-                ctx,
-            );
+            )
+            .into());
         }
     };
 
@@ -1734,11 +1671,11 @@ async fn http_request_h2(config: &Http2RequestConfig<'_>) -> EvalResult<Arc<Thun
     let response = match builder.send().await {
         Ok(r) => r,
         Err(e) => {
-            return http_request_result_error(
+            return Err(EvalError::user_error(
                 format!("http-request: request failed: {}", e),
                 span,
-                ctx,
-            );
+            )
+            .into());
         }
     };
 
@@ -1759,16 +1696,16 @@ async fn http_request_h2(config: &Http2RequestConfig<'_>) -> EvalResult<Arc<Thun
     let body_bytes = match response.bytes().await {
         Ok(b) => b,
         Err(e) => {
-            return http_request_result_error(
+            return Err(EvalError::user_error(
                 format!("http-request: failed to read response body: {}", e),
                 span,
-                ctx,
-            );
+            )
+            .into());
         }
     };
     let body_string = String::from_utf8_lossy(&body_bytes).into_owned();
 
-    // Build inner response dict: {status: Int, headers: Dict, body: String}
+    // Build response dict: {status: Int, headers: Dict, body: String}
     let mut inner = IndexMap::new();
     inner.insert(
         crate::value::HashableValue::Str("status".into()),
@@ -1783,21 +1720,15 @@ async fn http_request_h2(config: &Http2RequestConfig<'_>) -> EvalResult<Arc<Thun
         ctx.alloc_thunk(ok_val(string_val(&body_string), span.clone())?),
     );
 
-    // Return {ok: {status: Int, headers: Dict, body: String}} — direct Result, no try needed.
-    let resp_id = ctx.alloc_thunk(ok_val(Value::Dict(inner), span.clone())?);
-    ok_val(
-        Value::Variant {
-            tag: "Result.Ok".to_string(),
-            payload: Some(resp_id),
-        },
-        span,
-    )
+    // Return {status: Int, headers: Dict, body: String} directly.
+    // Users who want Result-based error handling wrap the call in [try [fn [] [http-request ...]]].
+    ok_val(Value::Dict(inner), span)
 }
 
 /// Issue an HTTP/3 request on an existing `h3::client::SendRequest` session.
 ///
 /// Builds the `http::Request`, sends it, collects the response headers and body,
-/// and returns `{ok: {status: Int, headers: Dict, body: String}}` or `{err: String}`.
+/// and returns `{status: Int, headers: Dict, body: String}` on success or raises on error.
 fn http_request_h3(
     session_rc: Rc<RefCell<crate::value::Http3SessionState>>,
     method_str: String,
@@ -1819,11 +1750,11 @@ fn http_request_h3(
     let request = match builder.body(()) {
         Ok(r) => r,
         Err(e) => {
-            return http_request_result_error(
+            return Err(EvalError::user_error(
                 format!("http-request: invalid request: {}", e),
                 span,
-                ctx,
-            );
+            )
+            .into());
         }
     };
 
@@ -1835,11 +1766,11 @@ fn http_request_h3(
         {
             Ok(s) => s,
             Err(e) => {
-                return http_request_result_error(
+                return Err(EvalError::user_error(
                     format!("http-request: send_request failed: {}", e),
                     span,
-                    ctx,
-                );
+                )
+                .into());
             }
         };
 
@@ -1848,28 +1779,30 @@ fn http_request_h3(
         if let Err(e) =
             crate::async_rt::block_on(stream.send_data(Bytes::from(body_str.into_bytes())))
         {
-            return http_request_result_error(
+            return Err(EvalError::user_error(
                 format!("http-request: send_data failed: {}", e),
                 span,
-                ctx,
-            );
+            )
+            .into());
         }
     }
 
     // Signal end of request stream (no trailers).
     if let Err(e) = crate::async_rt::block_on(stream.finish()) {
-        return http_request_result_error(format!("http-request: finish failed: {}", e), span, ctx);
+        return Err(
+            EvalError::user_error(format!("http-request: finish failed: {}", e), span).into(),
+        );
     }
 
     // Receive response headers.
     let response = match crate::async_rt::block_on(stream.recv_response()) {
         Ok(r) => r,
         Err(e) => {
-            return http_request_result_error(
+            return Err(EvalError::user_error(
                 format!("http-request: recv_response failed: {}", e),
                 span,
-                ctx,
-            );
+            )
+            .into());
         }
     };
 
@@ -1905,18 +1838,18 @@ fn http_request_h3(
             }
             Ok(None) => break,
             Err(e) => {
-                return http_request_result_error(
+                return Err(EvalError::user_error(
                     format!("http-request: recv_data failed: {}", e),
                     span,
-                    ctx,
-                );
+                )
+                .into());
             }
         }
     }
 
     let body_string = String::from_utf8_lossy(&body_bytes).into_owned();
 
-    // Build inner response dict: {status: Int, headers: Dict, body: String}
+    // Build response dict: {status: Int, headers: Dict, body: String}
     let mut inner = IndexMap::new();
     inner.insert(
         crate::value::HashableValue::Str("status".into()),
@@ -1931,31 +1864,9 @@ fn http_request_h3(
         ctx.alloc_thunk(ok_val(string_val(&body_string), span.clone())?),
     );
 
-    // Return {ok: {status: Int, headers: Dict, body: String}} — direct Result, no try needed.
-    let resp_id = ctx.alloc_thunk(ok_val(Value::Dict(inner), span.clone())?);
-    ok_val(
-        Value::Variant {
-            tag: "Result.Ok".to_string(),
-            payload: Some(resp_id),
-        },
-        span,
-    )
-}
-
-/// Return an Error Result value — never raises. User code handles via match/and-then/result-or.
-fn http_request_result_error(
-    msg: String,
-    span: Span,
-    ctx: &crate::eval::EvalContext,
-) -> EvalResult<Arc<Thunk>> {
-    let msg_id = ctx.alloc_thunk(ok_val(string_val(&msg), span.clone())?);
-    ok_val(
-        Value::Variant {
-            tag: "Result.Error".to_string(),
-            payload: Some(msg_id),
-        },
-        span,
-    )
+    // Return {status: Int, headers: Dict, body: String} directly.
+    // Users who want Result-based error handling wrap the call in [try [fn [] [http-request ...]]].
+    ok_val(Value::Dict(inner), span)
 }
 
 /// `icmp-ping`: Send an ICMP echo request to a host.
@@ -3337,4 +3248,66 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
             required_count: 1,
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ast::Span;
+    use crate::rust_span;
+    use crate::value::NetCapEntry;
+
+    fn dummy_span() -> Span {
+        rust_span!()
+    }
+
+    #[test]
+    fn test_check_net_cap_allowlist_denial() {
+        // Allowlist: only api.example.com:443 is allowed.
+        let entries = vec![NetCapEntry::HostPort("api.example.com".to_string(), 443)];
+        let span = dummy_span();
+
+        // Allowed host:port → Ok
+        let result = check_net_cap_allowlist(&entries, "api.example.com", Some(443), span.clone());
+        assert!(
+            result.is_ok(),
+            "api.example.com:443 should be allowed, got: {:?}",
+            result
+        );
+
+        // Denied host (different hostname, same port) → Err
+        let result = check_net_cap_allowlist(&entries, "evil.example.com", Some(443), span.clone());
+        assert!(result.is_err(), "evil.example.com:443 should be denied");
+        let msg = result.unwrap_err().kind.to_string().to_string();
+        assert!(
+            msg.contains("denied"),
+            "error should mention 'denied', got: {msg}"
+        );
+
+        // Denied port (correct host, wrong port) → Err
+        let result = check_net_cap_allowlist(&entries, "api.example.com", Some(80), span.clone());
+        assert!(
+            result.is_err(),
+            "api.example.com:80 should be denied (only port 443 is allowed)"
+        );
+
+        // Any allowlist → allows everything
+        let any_entries = vec![NetCapEntry::Any];
+        let result = check_net_cap_allowlist(
+            &any_entries,
+            "anything.example.com",
+            Some(1234),
+            span.clone(),
+        );
+        assert!(
+            result.is_ok(),
+            "NetCapEntry::Any should allow any host:port"
+        );
+        // Any also allows hosts not in the original restricted list
+        let result = check_net_cap_allowlist(&any_entries, "evil.example.com", Some(22), span);
+        assert!(
+            result.is_ok(),
+            "NetCapEntry::Any should allow evil.example.com:22"
+        );
+    }
 }

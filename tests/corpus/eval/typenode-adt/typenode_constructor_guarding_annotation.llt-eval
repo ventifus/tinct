@@ -16,4 +16,4 @@
 [guarding-val: [get "guarding" ann]]
 [result: [and has-as-type guarding-val]]
 === out
-Dict({"result": Bool(true)})
+Dict({"result": Variant(Boolean.True, Null)})

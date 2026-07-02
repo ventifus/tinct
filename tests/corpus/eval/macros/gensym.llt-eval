@@ -2,4 +2,4 @@
 [a: [gensym]  b: [gensym]]
 [and [starts-with? "ℊꜱʏᴍ⧼gensym⧽" a] [not [= a b]]]
 === out
-Bool(true)
+Variant(Boolean.True, Null)

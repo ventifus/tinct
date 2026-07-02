@@ -296,7 +296,8 @@ fn eval_format_llt_bool() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert_eq!(stdout.trim(), "Bool(true)");
+    // B-448: Boolean.True is no longer privileged — it serialises as a generic variant.
+    assert_eq!(stdout.trim(), "Variant(Boolean.True, Null)");
 }
 
 #[test]

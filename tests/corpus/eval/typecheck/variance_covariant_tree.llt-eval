@@ -8,4 +8,4 @@
   result: True
 ]
 === out
-Dict({"Tree": Dict({}), "result": Bool(true)})
+Dict({"Tree": Dict({}), "result": Variant(Boolean.True, Null)})

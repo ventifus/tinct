@@ -1,0 +1,4 @@
+# any? on a seq that satisfies pred returns true
+[any? [fn [let x] True] [range 0 3]]
+=== out
+Variant(Boolean.True, Null)

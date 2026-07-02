@@ -6,4 +6,4 @@
 [result-doc: [= ann.doc "Adds one to the input"]
  result-ret: [= ann.return "Number"]]
 === out
-Dict({"result-doc": Bool(true), "result-ret": Bool(true)})
+Dict({"result-doc": Variant(Boolean.True, Null), "result-ret": Variant(Boolean.True, Null)})

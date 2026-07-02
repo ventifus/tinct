@@ -1,3 +1,4 @@
+# T-1481: field_annotations unimplemented — test pins current Boolean.False behavior
 # Named-field constructor with @Child annotated field and bare TypeNode reference produces role "One".
 # This is the pattern used by TypeNode.Recursive in prelude.llt:
 #   [Recursive@[as-type: [fn [let r] r]  guarding: True]
@@ -17,4 +18,4 @@
 [no-label: [not [has? "label" field-anns]]]
 [result: [and has-field-anns [and [= role "One"] no-label]]]
 === out
-Dict({"result": Bool(false)})
+Dict({"result": Variant(Boolean.False, Null)})

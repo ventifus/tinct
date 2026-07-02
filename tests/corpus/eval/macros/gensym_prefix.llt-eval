@@ -3,4 +3,4 @@
 [a: [gensym-with-prefix "x"]  b: [gensym-with-prefix "x"]]
 [and [starts-with? "ℊꜱʏᴍ⧼x⧽" a] [not [= a b]]]
 === out
-Bool(true)
+Variant(Boolean.True, Null)

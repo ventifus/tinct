@@ -1234,12 +1234,25 @@ pub(crate) fn builtin_tag_of(
             &ctx,
             call_span.clone(),
         )?;
-        match val {
+        // Peel Value::Annotated wrappers before matching.
+        // Unit constructors declared with @[...] annotations evaluate to
+        // Value::Annotated { inner: Variant(...), annotation: {...} }.
+        // Annotations are metadata-only — tag-of sees only the inner value.
+        // Consistent with Pattern::Constructor (eval.rs:3411-3421),
+        // values_equal (eval.rs:3623-3627), and visit_value (lib.rs:588-591).
+        let peeled: &Value = {
+            let mut v = &val;
+            while let Value::Annotated { inner, .. } = v {
+                v = inner.as_ref();
+            }
+            v
+        };
+        match peeled {
             // Expr.* variants return their full qualified tag (e.g. "Expr.Call", "Expr.VarRef").
-            Value::Variant { tag, .. } => ok_val(string_val(&tag), call_span),
+            Value::Variant { tag, .. } => ok_val(string_val(tag), call_span),
             _ => Err(Box::new(EvalError::type_mismatch(
                 "Variant",
-                val.type_name(),
+                peeled.type_name(),
                 call_span,
             ))),
         }
@@ -4131,4 +4144,149 @@ pub fn meta_builtin_types(env: &mut crate::types::TypeEnv) {
         ("builtin-make-annotated", "make-annotated"),
         ("builtin-proxy", "proxy"),
     ]);
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, RwLock};
+
+    use indexmap::IndexMap;
+
+    use super::builtin_tag_of;
+    use crate::error::EvalResult;
+    use crate::test_util::test_span;
+    use crate::value::{string_val, BuiltinArgs, Environment, Thunk, Value};
+
+    fn thunk(val: Value) -> Arc<Thunk> {
+        Arc::new(Thunk::new_materialized(val, test_span(1, 1, 1, 5)))
+    }
+
+    fn call_span() -> crate::ast::Span {
+        test_span(1, 1, 1, 5)
+    }
+
+    fn test_ctx() -> Arc<crate::eval::EvalContext> {
+        let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();
+        let env = Arc::new(RwLock::new(Environment::new()));
+        crate::eval::EvalContext::new_empty(base_dir, env, false)
+    }
+
+    fn no_named() -> Option<IndexMap<String, Arc<Thunk>>> {
+        None
+    }
+
+    async fn run(
+        f: impl std::future::Future<Output = EvalResult<Arc<Thunk>>>,
+    ) -> EvalResult<Arc<Thunk>> {
+        f.await
+    }
+
+    async fn materialize_sync(t: &Thunk, ctx: &Arc<crate::eval::EvalContext>) -> Value {
+        crate::eval::materialize(t, None, ctx)
+            .await
+            .unwrap_or_else(|e| panic!("materialize failed: {e}"))
+    }
+
+    /// `builtin_tag_of` returns the tag of a bare `Value::Variant`.
+    #[tokio::test]
+    async fn tag_of_bare_variant() {
+        let variant = Value::Variant {
+            tag: "Color.Red".to_string(),
+            payload: None,
+        };
+        let result = run(builtin_tag_of(BuiltinArgs {
+            args: vec![thunk(variant)],
+            named: no_named(),
+            call_span: call_span(),
+            ctx: test_ctx(),
+        }))
+        .await
+        .unwrap();
+        let val = materialize_sync(&result, &test_ctx()).await;
+        assert_eq!(val, string_val("Color.Red"));
+    }
+
+    /// `builtin_tag_of` peels a single `Value::Annotated` wrapper and returns the
+    /// inner variant's tag. This is the primary regression case for B-441.
+    #[tokio::test]
+    async fn tag_of_annotated_variant_single_wrap() {
+        let variant = Value::Variant {
+            tag: "SimpleType.Leaf".to_string(),
+            payload: None,
+        };
+        let annotation = Value::Dict(IndexMap::new());
+        let annotated = Value::Annotated {
+            inner: Box::new(variant),
+            annotation: Box::new(annotation),
+        };
+        let result = run(builtin_tag_of(BuiltinArgs {
+            args: vec![thunk(annotated)],
+            named: no_named(),
+            call_span: call_span(),
+            ctx: test_ctx(),
+        }))
+        .await
+        .unwrap();
+        let val = materialize_sync(&result, &test_ctx()).await;
+        assert_eq!(val, string_val("SimpleType.Leaf"));
+    }
+
+    /// `builtin_tag_of` peels multiple nested `Value::Annotated` wrappers (the `while let`
+    /// loop handles more than one layer of annotation).
+    #[tokio::test]
+    async fn tag_of_annotated_variant_double_wrap() {
+        let variant = Value::Variant {
+            tag: "Shape.Circle".to_string(),
+            payload: None,
+        };
+        let inner_annotated = Value::Annotated {
+            inner: Box::new(variant),
+            annotation: Box::new(Value::Dict(IndexMap::new())),
+        };
+        let outer_annotated = Value::Annotated {
+            inner: Box::new(inner_annotated),
+            annotation: Box::new(Value::Dict(IndexMap::new())),
+        };
+        let result = run(builtin_tag_of(BuiltinArgs {
+            args: vec![thunk(outer_annotated)],
+            named: no_named(),
+            call_span: call_span(),
+            ctx: test_ctx(),
+        }))
+        .await
+        .unwrap();
+        let val = materialize_sync(&result, &test_ctx()).await;
+        assert_eq!(val, string_val("Shape.Circle"));
+    }
+
+    /// `builtin_tag_of` returns a type-mismatch error when the peeled value is not a
+    /// `Value::Variant` — even if it was wrapped in `Value::Annotated`.
+    #[tokio::test]
+    async fn tag_of_annotated_non_variant_errors() {
+        let annotated = Value::Annotated {
+            inner: Box::new(Value::Int(42)),
+            annotation: Box::new(Value::Dict(IndexMap::new())),
+        };
+        let result = run(builtin_tag_of(BuiltinArgs {
+            args: vec![thunk(annotated)],
+            named: no_named(),
+            call_span: call_span(),
+            ctx: test_ctx(),
+        }))
+        .await;
+        assert!(
+            result.is_err(),
+            "expected type-mismatch error for annotated non-variant, got ok"
+        );
+        let err = result.unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("Variant"),
+            "error should mention expected type 'Variant', got: {msg}"
+        );
+        assert!(
+            msg.contains("Int"),
+            "error should mention actual type 'Int', got: {msg}"
+        );
+    }
 }

@@ -2,4 +2,4 @@
 # If $or were eager, the $raise would fire. Since it's lazy, True is returned.
 [or True [raise "should not evaluate"]]
 === out
-Bool(true)
+Variant(Boolean.True, Null)

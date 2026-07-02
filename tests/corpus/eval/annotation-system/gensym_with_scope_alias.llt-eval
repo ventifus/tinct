@@ -8,4 +8,4 @@
 [b: [gensym-with-scope "ℊ" "test"]]
 [not [= a b]]
 === out
-Bool(true)
+Variant(Boolean.True, Null)

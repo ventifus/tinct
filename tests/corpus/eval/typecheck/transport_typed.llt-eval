@@ -23,4 +23,4 @@
 ]
 
 === out
-Dict({"tcp-type": String("Variant"), "udp-type": String("Variant"), "tcp-tag": String("Transport.Tcp"), "icmp-tag": String("Transport.Icmp"), "extract-tag": Function(t), "tcp-via-fn": String("Transport.Tcp"), "tcp-eq-tcp": Bool(true), "all-six": Dict({0: Variant(Transport.Tcp, Null), 1: Variant(Transport.Udp, Null), 2: Variant(Transport.UnixStream, Null), 3: Variant(Transport.UnixDatagram, Null), 4: Variant(Transport.NamedPipe, Null), 5: Variant(Transport.Icmp, Null)})})
+Dict({"tcp-type": String("Variant"), "udp-type": String("Variant"), "tcp-tag": String("Transport.Tcp"), "icmp-tag": String("Transport.Icmp"), "extract-tag": Function(t), "tcp-via-fn": String("Transport.Tcp"), "tcp-eq-tcp": Variant(Boolean.True, Null), "all-six": Dict({0: Variant(Transport.Tcp, Null), 1: Variant(Transport.Udp, Null), 2: Variant(Transport.UnixStream, Null), 3: Variant(Transport.UnixDatagram, Null), 4: Variant(Transport.NamedPipe, Null), 5: Variant(Transport.Icmp, Null)})})

@@ -17,7 +17,7 @@
 
 %.result
 === out
-Bool(true)
+Variant(Boolean.True, Null)
 
 === warn
 overlapping instances for class 'Equatable': new instance 'Int' overlaps with existing instance 'Int'

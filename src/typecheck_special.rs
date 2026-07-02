@@ -747,27 +747,14 @@ pub(crate) fn resolve_monad_from_surface(
             // Try to extract the qualified tag from the function expression.
             let qualified_tag: Option<String> = match &func.expr {
                 SurfaceExpression::VarRef { name, .. } => {
-                    // VarRef-headed call: [Ok ...], [Error ...], etc.
-                    // Look up the name in type_env to get the qualified tag.
-                    type_env.resolve_constructor_tag(name).or_else(|| {
-                        // Hardcoded fallback for known Result constructors when type_env has not
-                        // yet registered the corresponding TyCon (e.g., in the corpus eval path
-                        // before the prelude type env is fully populated).  This matches the
-                        // original do-hkt-inference behavior documented in the mempalace —
-                        // bare [Ok ...] / [Error ...] always resolve to the "result" monad dict.
-                        // Only Result constructors are hardcoded here because the "result" monad
-                        // dict IS defined in prelude.llt. Other monads (maybe, seq) are NOT added
-                        // here because the corresponding monad dicts are not yet available at
-                        // runtime in the inferred path — adding them would convert T_DO_INFER into
-                        // a runtime E002 for "undefined variable: maybe", which is harder to
-                        // diagnose and breaks existing corpus tests.
-                        // TODO(T-1144): eliminate this once the prelude type env is always
-                        // available to check_do_infer in every eval pipeline path.
-                        match name.as_str() {
-                            "Ok" | "Error" => Some("Result.Ok".to_string()),
-                            _ => None,
-                        }
-                    })
+                    // VarRef-headed call: [SomeCtor ...].
+                    // Look up the unqualified constructor name via the type env to get its
+                    // fully qualified tag (e.g. "Ok" → "Result.Ok" when Result is in scope).
+                    // Returns None when the name is not registered as a constructor in any
+                    // visible TyCon — the do-monad inference then falls through to Rule 3
+                    // (TypeError).  No hardcoded fallback: the type env is the sole authority
+                    // on which names are constructors and which TyCon they belong to.
+                    type_env.resolve_constructor_tag(name)
                 }
                 SurfaceExpression::Field { .. } => {
                     // DotAccess-headed call: [Result.Ok ...], [Net.Transport.Tcp ...], etc.
@@ -777,7 +764,7 @@ pub(crate) fn resolve_monad_from_surface(
             };
 
             // Extract the TyCon name from the qualified tag by splitting at the last '.'.
-            // "Result.Ok" → "result" (lowercase), "Ok" (unqualified) → not a qualified tag → None.
+            // "Result.Ok" → "result" (lowercase); unresolved name → None (no dot → rfind fails).
             // Only qualified tags (containing a dot) give us a TyCon name.
             // Lowercase so that the extracted name matches the monad dict variable name in the
             // eval env — the prelude uses lowercase variable names (e.g., "result") for monad

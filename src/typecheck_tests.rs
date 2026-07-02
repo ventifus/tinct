@@ -5830,6 +5830,186 @@ async fn test_adt_dict_entry_and_sibling_fn() {
     }
 }
 
+// ========== ADT Multi-Entry Union Tests (B-423) ==========
+
+#[tokio::test]
+async fn test_adt_multi_entry_union_declaration() {
+    // [type [let a] [Ok a] [Error String]] should register a Union type alias
+    // with two NominalVariant members. Verifies the multi-entry union code path
+    // in resolve_type_dict (all-positional ≥2 entries, each resolving as Call).
+    let env = doc_env_with_builtins("[Result: [type [let a] [Ok a] [Error String]]]").await;
+
+    let alias = env
+        .lookup_tycon_def("Result")
+        .expect("Result type alias not registered in TyConDef env");
+
+    match &alias.body {
+        Type::Union(members) => {
+            assert_eq!(
+                members.len(),
+                2,
+                "expected Union with 2 members, got {}: {:?}",
+                members.len(),
+                members
+            );
+            // Each member must be a NominalVariant
+            for m in members {
+                assert!(
+                    matches!(m, Type::NominalVariant { .. }),
+                    "expected NominalVariant member, got {m}"
+                );
+            }
+        }
+        other => panic!("expected Union body for multi-entry Result type, got {other}"),
+    }
+}
+
+#[tokio::test]
+async fn test_adt_tag_only_variants() {
+    // [type "ok" "err" "pending"] should produce a Union of 3 StringLiteral members.
+    // String literal variants (tag-only enum) use Str expressions in type position,
+    // which resolve to Type::StringLiteral in resolve_type_expr.
+    let env = doc_env_with_builtins("[Status: [type \"ok\" \"err\" \"pending\"]]").await;
+
+    let alias = env
+        .lookup_tycon_def("Status")
+        .expect("Status type alias not registered");
+
+    match &alias.body {
+        Type::Union(members) => {
+            assert_eq!(
+                members.len(),
+                3,
+                "expected Union with 3 string-literal members, got {}: {:?}",
+                members.len(),
+                members
+            );
+            for m in members {
+                assert!(
+                    matches!(m, Type::StringLiteral(_)),
+                    "expected StringLiteral member, got {m}"
+                );
+            }
+        }
+        other => panic!("expected Union of StringLiterals for Status, got {other}"),
+    }
+}
+
+#[tokio::test]
+async fn test_adt_mixed_variants() {
+    // Multi-entry [type ...] mixing NominalVariant constructors and StringLiteral tags.
+    // [type [let a] [Ok a] "error" "pending"] → Union(NominalVariant("Ok"), StringLiteral("error"), StringLiteral("pending"))
+    let env = doc_env_with_builtins("[Mixed: [type [let a] [Ok a] \"error\" \"pending\"]]").await;
+
+    let alias = env
+        .lookup_tycon_def("Mixed")
+        .expect("Mixed type alias not registered");
+
+    match &alias.body {
+        Type::Union(members) => {
+            assert_eq!(
+                members.len(),
+                3,
+                "expected Union with 3 members, got {}: {:?}",
+                members.len(),
+                members
+            );
+            // First member: NominalVariant("Ok", ...)
+            assert!(
+                matches!(&members[0], Type::NominalVariant { tag, .. } if tag == "Ok"),
+                "expected first member to be NominalVariant(Ok), got {}",
+                members[0]
+            );
+            // Second and third: StringLiteral
+            assert!(
+                matches!(&members[1], Type::StringLiteral(s) if s == "error"),
+                "expected second member StringLiteral(\"error\"), got {}",
+                members[1]
+            );
+            assert!(
+                matches!(&members[2], Type::StringLiteral(s) if s == "pending"),
+                "expected third member StringLiteral(\"pending\"), got {}",
+                members[2]
+            );
+        }
+        other => panic!("expected Union body for Mixed type, got {other}"),
+    }
+}
+
+#[tokio::test]
+async fn test_adt_type_assert_union_enforcement() {
+    // Declaring a multi-entry union type alias injects its constructors as typed functions.
+    // Calling a constructor with the correct argument type must not produce a type error.
+    // Calling a constructor with the wrong argument type must produce a type error.
+    //
+    // This validates that the Union body is used for constructor type injection
+    // (inject_adt_constructor_schemes), and that the injected constructor schemes are
+    // correctly typed and participate in call checking.
+    //
+    // [Ok 42]     → Ok: Fn(a) -> NominalVariant("Ok", {"0": a}), argument Int: ok
+    // [Error 42]  → Error: Fn(String) -> NominalVariant("Error", {"0": String}), 42 is Int: error
+    let ok_result = check("[Result: [type [let a] [Ok a] [Error String]]  val: [Ok 42]]").await;
+    assert!(
+        ok_result.is_ok(),
+        "[Ok 42] should typecheck cleanly with Ok constructor: {:?}",
+        ok_result
+    );
+
+    let err_result = check("[Result: [type [let a] [Ok a] [Error String]]  val: [Error 42]]").await;
+    let errs = err_result
+        .expect_err("[Error 42] should produce a type error: Error expects String, got Int");
+    assert!(
+        errs.iter()
+            .any(|e| e.message().contains("String") || e.message().contains("Int")),
+        "[Error 42] type error should mention 'String' or 'Int' (type mismatch), got: {:?}",
+        errs
+    );
+}
+
+#[tokio::test]
+async fn test_adt_parameterized_alias_registered() {
+    // A parameterized [type [let a] ...] alias must register with non-empty params
+    // in the TyConDef env, enabling correct instantiation at each use site.
+    let env = doc_env_with_builtins("[Result: [type [let a] [Ok a] [Error String]]]").await;
+
+    let alias = env
+        .lookup_tycon_def("Result")
+        .expect("Result type alias not registered");
+
+    assert_eq!(
+        alias.params.len(),
+        1,
+        "parameterized Result alias must have 1 type parameter, got {:?}",
+        alias.params
+    );
+
+    // The body must be a Union (parameterized aliases expand at use sites, not at registration)
+    assert!(
+        matches!(&alias.body, Type::Union(_)),
+        "Result alias body must be Union, got {}",
+        alias.body
+    );
+
+    // The constructors list must contain qualified tags for both variants
+    assert_eq!(
+        alias.constructors.len(),
+        2,
+        "Result must have 2 constructors (Ok, Error), got {:?}",
+        alias.constructors
+    );
+    let ctor_tags: Vec<&str> = alias.constructors.iter().map(|(t, _)| t.as_str()).collect();
+    assert!(
+        ctor_tags.contains(&"Result.Ok"),
+        "Result.Ok must be a registered constructor, got {:?}",
+        ctor_tags
+    );
+    assert!(
+        ctor_tags.contains(&"Result.Error"),
+        "Result.Error must be a registered constructor, got {:?}",
+        ctor_tags
+    );
+}
+
 // ========== Exhaustiveness Checking Tests (C5 sprint) ==========
 
 #[tokio::test]
@@ -7447,18 +7627,50 @@ async fn test_do_infer_resolve_monad_from_expr_qualified_error_constructor() {
 }
 
 #[tokio::test]
-async fn test_do_infer_resolve_monad_from_expr_unqualified_empty_env_returns_result() {
-    // Unqualified constructor [Ok x] with empty TypeEnv uses the hardcoded fallback.
-    // The hardcoded "Ok" | "Error" → "Result.Ok" → rfind('.') → "result" path (T-1030)
-    // means bare [Ok 1] always resolves to "result" regardless of TypeEnv state.
-    // This is intentional: the inferred [do] path for Result works without prelude seeding.
+async fn test_do_infer_resolve_monad_from_expr_unqualified_empty_env_returns_none() {
+    // B-449: Unqualified constructor [Ok x] with empty TypeEnv must return None.
+    // The hardcoded "Ok" | "Error" fallback has been removed; resolve_monad_from_surface
+    // is purely driven by type_env.resolve_constructor_tag.  With an empty env, "Ok" is
+    // not registered as a constructor in any TyCon, so None is returned.
     let node = crate::parser::parse_surface_expression("[Ok 1]").expect("parse failed");
     let env = crate::types::TypeEnv::new();
     let resolved = resolve_monad_from_surface(&node, &env);
     assert_eq!(
+        resolved, None,
+        "[Ok ...] with empty TypeEnv must return None — no hardcoded fallback (B-449)"
+    );
+}
+
+#[tokio::test]
+async fn test_do_infer_resolve_monad_from_expr_unqualified_registered_result() {
+    // B-449: Unqualified [Ok x] resolves correctly when Result IS registered in TypeEnv.
+    // After the hardcoded fallback is removed, resolution goes through
+    // type_env.resolve_constructor_tag("Ok"), which finds "Result.Ok" when Result is visible.
+    let node = crate::parser::parse_surface_expression("[Ok 1]").expect("parse failed");
+
+    // Seed a TypeEnv with a minimal Result TyCon that has an "Ok" constructor.
+    let mut env = TypeEnv::new();
+    let result_tycon = Arc::new(TyConDef {
+        params: vec!["a".to_string()],
+        body: Type::Unknown,
+        constraints: vec![],
+        variance: vec![],
+        constructors: vec![
+            ("Result.Ok".to_string(), 1),
+            ("Result.Error".to_string(), 1),
+        ],
+        builtin_type: None,
+        annotation: None,
+        field_annotations: indexmap::IndexMap::new(),
+        constructor_constants: indexmap::IndexMap::new(),
+    });
+    env.insert_tycon_def("Result".to_string(), result_tycon);
+
+    let resolved = resolve_monad_from_surface(&node, &env);
+    assert_eq!(
         resolved,
         Some("result".to_string()),
-        "[Ok ...] should resolve to 'result' via hardcoded fallback (T-1030)"
+        "[Ok ...] must resolve to 'result' when Result is registered in TypeEnv (B-449)"
     );
 }
 
@@ -8426,6 +8638,48 @@ async fn test_class_name_in_param_annotation_user_defined_class() {
             }
         }
     }
+}
+
+// ============================================================================
+// B-452: expand_type_alias must return Type::Any, not Type::Unknown
+// ============================================================================
+
+/// B-452: A standalone type alias declaration (`Color: [type Red Green Blue]`) must not poison
+/// inference with `Type::Unknown`. Prior to the fix, `expand_type_alias` returned `Type::Unknown`
+/// for the expression result of a type alias entry. This caused the entry's inferred type to be
+/// Unknown, which then propagates via consistency to every downstream use.
+///
+/// The fix: `expand_type_alias` returns `Type::Any` — the lattice top, not the gradual dynamic
+/// type. Any type alias entry in an otherwise well-typed dict must not produce type errors, and
+/// the exported dict must not expose Unknown for the alias entry.
+#[tokio::test]
+async fn test_b452_type_alias_decl_does_not_produce_unknown() {
+    // A dict with a type alias declaration followed by a use of one of the constructors.
+    // If expand_type_alias returned Unknown, the alias entry would have type Unknown and
+    // would trigger quality warnings or poison downstream inference.
+    let result = check("[Color: [type Red Green Blue]  c: Color.Red]").await;
+    assert!(
+        result.is_ok(),
+        "type alias declaration in a dict should typecheck without errors; got: {:?}",
+        result.err()
+    );
+}
+
+#[tokio::test]
+async fn test_b452_type_alias_entry_type_is_not_unknown() {
+    // Verify that the inferred type for a type alias dict entry is NOT Type::Unknown.
+    // The exported env for `[Color: [type Red Green Blue]]` should bind Color to a
+    // non-Unknown type (the union of nominal variants, or Type::Any from expand_type_alias).
+    // The key invariant: a type alias entry must never introduce Unknown into the env.
+    let env = doc_env("[Color: [type Red Green Blue]]").await;
+    let color_scheme = env
+        .get("Color")
+        .expect("Color should be bound in exported env");
+    assert!(
+        !matches!(color_scheme.body, Type::Unknown),
+        "Type alias declaration must not produce Type::Unknown in the exported env; \
+         got Unknown for Color — expand_type_alias must return Type::Any (B-452)"
+    );
 }
 
 /// B-436: [type True False] should produce a union of two unit constructors, not a single-payload constructor.
