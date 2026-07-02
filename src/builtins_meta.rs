@@ -1798,11 +1798,15 @@ pub(crate) fn builtin_expand(
 
                 // Typecheck: writes type annotations inline on AST nodes.
                 // Annotation errors are collected and included in the returned errors list.
-                let (annotation_errors, new_expects_resolved) =
+                // Wire the tycon_env into ctx so that any subsequent evaluation of the
+                // expanded program (via builtin-eval) can resolve user-defined TyCons at
+                // runtime TypeAssert sites (e.g. @Boolean on a builtin-if condition arg).
+                let (annotation_errors, new_expects_resolved, expand_tycon_env) =
                     crate::typecheck::typecheck_surface_program_annotation_table(
                         &new_surface_program,
                     )
                     .await;
+                ctx.set_tycon_env(expand_tycon_env);
 
                 // Convert annotation errors to unified error dicts.
                 for te in &annotation_errors {

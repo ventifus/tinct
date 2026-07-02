@@ -405,7 +405,7 @@ fn try_wrap_surface(node: &mut Arc<SurfaceNode>) -> bool {
 
         // WRAP-DOT: target is DIRECT (single $_ or access chain on $_).
         // Leading-dot (expr: None) is never a $_ chain — it references a parent-scope name.
-        SurfaceExpression::DotAccess {
+        SurfaceExpression::Field {
             expr: Some(target), ..
         } => {
             if is_direct_underscore_surface(&target.expr) {
@@ -414,7 +414,7 @@ fn try_wrap_surface(node: &mut Arc<SurfaceNode>) -> bool {
             }
             false
         }
-        SurfaceExpression::DotAccess { expr: None, .. } => false,
+        SurfaceExpression::Field { expr: None, .. } => false,
 
         // WRAP-PIPE: LHS is DIRECT (e.g., `$_ | f` becomes `[fn [_] $_ | f]`)
         SurfaceExpression::Pipe { lhs, .. } => {
@@ -436,10 +436,10 @@ fn is_direct_underscore_surface(expr: &SurfaceExpression) -> bool {
         SurfaceExpression::VarRef { name, .. } => name == "_",
         // Access chains on $_ count as DIRECT (e.g., $_.name).
         // Leading-dot (expr: None) is a parent-scope ref, not a $_ chain.
-        SurfaceExpression::DotAccess {
+        SurfaceExpression::Field {
             expr: Some(inner), ..
         } => is_direct_underscore_surface(&inner.expr),
-        SurfaceExpression::DotAccess { expr: None, .. } => false,
+        SurfaceExpression::Field { expr: None, .. } => false,
         // Pipe chains: check LHS (e.g., $_ | f becomes [fn [_] $_ | f])
         SurfaceExpression::Pipe { lhs, .. } => is_direct_underscore_surface(&lhs.expr),
         // All other expressions: not DIRECT
@@ -495,10 +495,10 @@ fn recurse_children_surface(node: &mut Arc<SurfaceNode>, depth: usize) {
 
         // Access expressions: recurse into target.
         // Leading-dot (expr: None) has no child to recurse into.
-        SurfaceExpression::DotAccess { expr: Some(target), .. } => {
+        SurfaceExpression::Field { expr: Some(target), .. } => {
             desugar_surface(target, depth);
         }
-        SurfaceExpression::DotAccess { expr: None, .. } => {}
+        SurfaceExpression::Field { expr: None, .. } => {}
 
         // Pipe: collect the right-associative chain into a flat list of stages, desugar each
         // stage independently, then left-fold into nested calls.

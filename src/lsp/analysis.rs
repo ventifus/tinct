@@ -300,7 +300,7 @@ fn hover_at_surface_node(
             )
         )),
 
-        SurfaceExpression::DotAccess {
+        SurfaceExpression::Field {
             expr: target_opt,
             field,
             ..
@@ -898,10 +898,10 @@ fn name_at_offset(node: &Arc<SurfaceNode>, offset: usize) -> Option<String> {
 
         SurfaceExpression::Fn { body, .. } => name_at_offset(body, offset),
 
-        SurfaceExpression::DotAccess {
+        SurfaceExpression::Field {
             expr: Some(target), ..
         } => name_at_offset(target, offset),
-        SurfaceExpression::DotAccess { expr: None, .. } => None,
+        SurfaceExpression::Field { expr: None, .. } => None,
 
         SurfaceExpression::Sequential(exprs) => exprs
             .iter()
@@ -987,10 +987,10 @@ fn find_key_definition(node: &Arc<SurfaceNode>, name: &str) -> Option<Span> {
 
         SurfaceExpression::Fn { body, .. } => find_key_definition(body, name),
 
-        SurfaceExpression::DotAccess {
+        SurfaceExpression::Field {
             expr: Some(target), ..
         } => find_key_definition(target, name),
-        SurfaceExpression::DotAccess { expr: None, .. } => None,
+        SurfaceExpression::Field { expr: None, .. } => None,
 
         SurfaceExpression::Sequential(exprs) => exprs
             .iter()
@@ -1296,12 +1296,12 @@ fn collect_var_refs_spanned(
             collect_var_refs_spanned(body, name, source, uri, out);
         }
 
-        SurfaceExpression::DotAccess {
+        SurfaceExpression::Field {
             expr: Some(target), ..
         } => {
             collect_var_refs_spanned(target, name, source, uri, out);
         }
-        SurfaceExpression::DotAccess { expr: None, .. } => {}
+        SurfaceExpression::Field { expr: None, .. } => {}
 
         SurfaceExpression::Sequential(exprs) => {
             for seq_expr in exprs {
@@ -3241,12 +3241,12 @@ fn collect_rename_edits_spanned(
             collect_rename_edits_spanned(body, name, source, out);
         }
 
-        SurfaceExpression::DotAccess {
+        SurfaceExpression::Field {
             expr: Some(target), ..
         } => {
             collect_rename_edits_spanned(target, name, source, out);
         }
-        SurfaceExpression::DotAccess { expr: None, .. } => {}
+        SurfaceExpression::Field { expr: None, .. } => {}
 
         SurfaceExpression::Sequential(exprs) => {
             for seq_expr in exprs {
@@ -3627,12 +3627,12 @@ fn collect_dict_keys_in_scope(
         SurfaceExpression::Fn { body, .. } => {
             collect_dict_keys_in_scope(body, offset, items, seen);
         }
-        SurfaceExpression::DotAccess {
+        SurfaceExpression::Field {
             expr: Some(target), ..
         } => {
             collect_dict_keys_in_scope(target, offset, items, seen);
         }
-        SurfaceExpression::DotAccess { expr: None, .. } => {}
+        SurfaceExpression::Field { expr: None, .. } => {}
         SurfaceExpression::Sequential(exprs) => {
             for seq_expr in exprs {
                 collect_dict_keys_in_scope(seq_expr, offset, items, seen);
@@ -3823,10 +3823,10 @@ fn find_enclosing_call(node: &Arc<SurfaceNode>, offset: usize) -> Option<((usize
 
         SurfaceExpression::Fn { body, .. } => find_enclosing_call(body, offset),
 
-        SurfaceExpression::DotAccess {
+        SurfaceExpression::Field {
             expr: Some(target), ..
         } => find_enclosing_call(target, offset),
-        SurfaceExpression::DotAccess { expr: None, .. } => None,
+        SurfaceExpression::Field { expr: None, .. } => None,
 
         SurfaceExpression::Sequential(exprs) => {
             exprs.iter().find_map(|e| find_enclosing_call(e, offset))

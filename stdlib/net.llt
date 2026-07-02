@@ -1,10 +1,8 @@
 # Network utilities — depends on io-phase2 builtins
 # Requires: net-cap, connect, http2-session, http-request (io-phase2)
 # Requires: write-handle, str-bytes, bytes-str, bytes-concat, chunks (io-phase1 + prelude)
-# Requires prelude: make-entry, set (prelude functions, not raw builtins)
+# Requires prelude: make-entry, set, null? (prelude functions, not raw builtins)
 # Uses prelude wrapper names for all Rust primitives (per builtin-privacy design).
-# Uses [match x []: true _: false] for null checks — builtin-null? was removed in
-# the type-predicates-to-tinct sprint; prelude null? is not reachable in this dict.
 #
 # Provides:
 #   build-http-request    — method + path + host -> raw HTTP/1.0 request String
@@ -71,7 +69,7 @@
       [and-then
         [fn [let session]
           [http-request session "GET"
-            [str url.path [if [match url.query []: true _: false] "" [str "?" url.query]]]
+            [str url.path [if [null? url.query] "" [str "?" url.query]]]
             [make-entry "user-agent" "tinct/0.1"]
             ""]]
         [try [fn [let] [http2-session cap [uri-origin url] []]]]]
@@ -94,7 +92,7 @@
   # Parse query string into a Dict of key-value pairs.
   # Returns empty dict if query is null.
   uri-params: [fn@Dict [let u@Url]
-    [if [match u.query []: true _: false]
+    [if [null? u.query]
       []
       [pairs: [split u.query "&"]
       [reduce [fn [let acc pair]
@@ -111,18 +109,18 @@
   # Return "scheme://host:port" (origin).
   # Port is omitted if null.
   uri-origin: [fn@String [let u@Url]
-    [if [match u.port []: true _: false]
+    [if [null? u.port]
       [str u.scheme "://" u.host]
       [str u.scheme "://" u.host ":" u.port]]]
 
   # Reconstruct full URI string from components.
   uri->string: [fn@String [let u@Url]
     [str u.scheme "://"
-      [if [match u.host []: true _: false] "" u.host]
-      [if [match u.port []: true _: false] "" [str ":" u.port]]
+      [if [null? u.host] "" u.host]
+      [if [null? u.port] "" [str ":" u.port]]
       u.path
-      [if [match u.query []: true _: false] "" [str "?" u.query]]
-      [if [match u.fragment []: true _: false] "" [str "#" u.fragment]]]]
+      [if [null? u.query] "" [str "?" u.query]]
+      [if [null? u.fragment] "" [str "#" u.fragment]]]]
 
   # ============================================================================
   # SocketAddress and UdpDatagram types (T-1377)

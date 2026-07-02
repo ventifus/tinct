@@ -98,7 +98,7 @@ fn peek_next_horizontal(
 /// Extract a comparable string from a key expression for duplicate detection.
 /// Returns None for complex expressions where comparison isn't meaningful.
 ///
-/// Parse-time duplicate detection is literal-keys-only; computed keys (DotAccess,
+/// Parse-time duplicate detection is literal-keys-only; computed keys (Field,
 /// Call) return None here and are checked at eval-time.
 fn key_to_string(expr: &SurfaceExpression) -> Option<String> {
     match expr {
@@ -4048,7 +4048,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
             }
 
             Token::Dot => {
-                // Dot access: pop the preceding expression and create DotAccess.
+                // Dot access: pop the preceding expression and create Field.
                 //
                 // When there is no preceding expression (stack is empty at document level, or
                 // the current frame has nothing to pop), this is a leading-dot reference:
@@ -4126,7 +4126,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                         };
 
                         let spanned_access = Arc::new(SurfaceNode::new(
-                            SurfaceExpression::DotAccess {
+                            SurfaceExpression::Field {
                                 expr: target,
                                 field: field_key,
                                 resolution: crate::ast::Resolution::new(),
@@ -4182,7 +4182,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                         };
 
                         let spanned_access = Arc::new(SurfaceNode::new(
-                            SurfaceExpression::DotAccess {
+                            SurfaceExpression::Field {
                                 expr: target,
                                 field: field_key,
                                 resolution: crate::ast::Resolution::new(),
@@ -4783,12 +4783,12 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
 
 /// Extract a fully-qualified dot-path name from a surface expression node.
 ///
-/// Returns `Some("A.B.C")` for a chain of DotAccess nodes rooted at a VarRef,
+/// Returns `Some("A.B.C")` for a chain of Field nodes rooted at a VarRef,
 /// where every field is an `Ident`. Returns `None` for any other shape.
 ///
 /// Used to recognise qualified constructor names like `Result.Ok` in structural
 /// test annotations (`[let v: Result.Ok]`), where the RHS arrives as a
-/// `DotAccess` node after the parser resolves the `.` postfix.
+/// `Field` node after the parser resolves the `.` postfix.
 fn dot_path_name(node: &SurfaceNode) -> Option<String> {
     match &node.expr {
         SurfaceExpression::VarRef {
@@ -4796,7 +4796,7 @@ fn dot_path_name(node: &SurfaceNode) -> Option<String> {
             escaped: false,
             ..
         } => Some(name.clone()),
-        SurfaceExpression::DotAccess {
+        SurfaceExpression::Field {
             expr: Some(inner),
             field,
             ..
@@ -4807,7 +4807,7 @@ fn dot_path_name(node: &SurfaceNode) -> Option<String> {
                 crate::ast::DotKey::Int(_) => None, // e.g. `A.0` is not a constructor name
             }
         }
-        SurfaceExpression::DotAccess { expr: None, .. } => None, // leading-dot is not a constructor name
+        SurfaceExpression::Field { expr: None, .. } => None, // leading-dot is not a constructor name
         _ => None,
     }
 }
@@ -5267,7 +5267,7 @@ fn surface_node_to_pattern_with_guard(
             // Bare uppercase identifier in pattern position: type assertion pattern.
             // `Int:`, `Str:`, `Color:` — asks "does this value have this type?"
             // Produces TypeAssertPending resolved by lower_pattern via annotation_name_to_type.
-            // Qualified constructor patterns ([Result.Ok v], Color.Red:) use the DotAccess arm.
+            // Qualified constructor patterns ([Result.Ok v], Color.Red:) use the Field arm.
             (
                 Pattern::TypeAssertPending {
                     annotation: Spanned::new(
@@ -5301,17 +5301,17 @@ fn surface_node_to_pattern_with_guard(
 
             // Regular dict pattern
             let mut fields = Vec::new();
-            // Dict patterns are CLOSED by default (rest: false): [a: x  b: y] matches
-            // only dicts with exactly fields a and b, nothing more. A trailing `...` entry
-            // makes the pattern open: [a: x  b: y ...] matches any dict with at least a, b.
-            // [] (closed empty) matches only null. [...] (open empty) matches any dict.
-            // This correctly fixes null? — Variant payloads have extra fields so they fail
-            // the closed-empty check, making null? return false for any Variant.
-            let mut has_rest = false; // Default to closed (exact) matching
+            // Dict patterns are OPEN by default (rest: true): [a: x  b: y] matches
+            // any dict with at least fields a and b (extra keys allowed). This is
+            // consistent with row polymorphism and more useful for configuration data.
+            // A trailing `!` entry (future syntax) would make the pattern closed:
+            // [a: x  b: y !] matches ONLY dicts with exactly a and b.
+            // [] (open empty) matches any dict. [!] (closed empty, future) matches only null.
+            let mut has_rest = true; // Default to open matching
 
             for entry in entries {
                 if let SurfaceExpression::Rest(..) = &entry.node.value.expr {
-                    // This is a `...` rest marker (explicit open matching)
+                    // This is a `...` rest marker (explicit open matching — redundant but allowed)
                     has_rest = true;
                     continue;
                 }
@@ -5399,7 +5399,7 @@ fn surface_node_to_pattern_with_guard(
                     }
                 }
             } else if let Some(tag) = crate::ast::flatten_dot_access_to_tag(&func.expr) {
-                // T-964: DotAccess in Call-func position — qualified constructor pattern.
+                // T-964: Field in Call-func position — qualified constructor pattern.
                 // [Result.Ok v] → Constructor { tag: "Result.Ok", binding: Some(payload_pat) }
                 // [Result.Ok]   → Constructor { tag: "Result.Ok", binding: None }
                 match args.len() {
@@ -5424,7 +5424,7 @@ fn surface_node_to_pattern_with_guard(
                     }
                 }
             } else {
-                // T-1140: Non-VarRef, non-DotAccess call head — treat as predicate pattern.
+                // T-1140: Non-VarRef, non-Field call head — treat as predicate pattern.
                 // Covers lambda-headed patterns: [[fn [let x] [> x 3]] ...] (unusual but valid).
                 (Pattern::Predicate(Arc::clone(&node)), None)
             }
@@ -5443,9 +5443,9 @@ fn surface_node_to_pattern_with_guard(
                 None,
             )
         }
-        // T-964: Bare DotAccess (Color.Red, Net.Transport.Tcp) in pattern position →
+        // T-964: Bare Field (Color.Red, Net.Transport.Tcp) in pattern position →
         // qualified Constructor with no binding (unit constructor pattern)
-        SurfaceExpression::DotAccess { .. } => {
+        SurfaceExpression::Field { .. } => {
             match crate::ast::flatten_dot_access_to_tag(&node.expr) {
                 Some(tag) => (Pattern::Constructor { tag, binding: None }, None),
                 None => {
@@ -6080,7 +6080,7 @@ fn push_expr_to_parent(
                 //
                 // `pending_rhs` defers commitment of `pending_key: rhs` pairs until the RHS is
                 // fully assembled. This allows `Result.Ok` (which arrives as VarRef "Result"
-                // followed by a dot-access step building `DotAccess(Result, Ok)`) to be
+                // followed by a dot-access step building `Field(Result, Ok)`) to be
                 // committed as a single qualified name rather than prematurely as just "Result".
                 if let Some(key_node) = pending_key.take() {
                     // A pending_key exists: this incoming node is the RHS (or would be the start
@@ -6634,7 +6634,7 @@ fn stamp_expr(expr: &mut SurfaceExpression, file: &Arc<SourceFile>) {
             span.file = Some(Arc::clone(file));
         }
 
-        SurfaceExpression::DotAccess { expr, .. } => {
+        SurfaceExpression::Field { expr, .. } => {
             if let Some(inner) = expr {
                 stamp_node(inner, file);
             }
@@ -8056,7 +8056,7 @@ mod tests {
         let output = parse("$a.b").expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
-            SurfaceExpression::DotAccess { expr, field, .. } => {
+            SurfaceExpression::Field { expr, field, .. } => {
                 let inner = expr.as_ref().expect("expected Some(target)");
                 match &inner.expr {
                     SurfaceExpression::VarRef { name, .. } => assert_eq!(name, "a"),
@@ -8064,7 +8064,7 @@ mod tests {
                 }
                 assert_eq!(*field, DotKey::Ident("b".to_string()));
             }
-            other => panic!("expected DotAccess, got {other:?}"),
+            other => panic!("expected Field, got {other:?}"),
         }
     }
 
@@ -8073,7 +8073,7 @@ mod tests {
         let output = parse("$a.b.c").expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
-            SurfaceExpression::DotAccess {
+            SurfaceExpression::Field {
                 expr: outer_expr,
                 field: outer_field,
                 ..
@@ -8083,7 +8083,7 @@ mod tests {
                     .as_ref()
                     .expect("expected Some(target) for outer");
                 match &outer_inner.expr {
-                    SurfaceExpression::DotAccess {
+                    SurfaceExpression::Field {
                         expr: inner_expr,
                         field: inner_field,
                         ..
@@ -8097,10 +8097,10 @@ mod tests {
                             other => panic!("expected VarRef at base, got {other:?}"),
                         }
                     }
-                    other => panic!("expected inner DotAccess, got {other:?}"),
+                    other => panic!("expected inner Field, got {other:?}"),
                 }
             }
-            other => panic!("expected outer DotAccess, got {other:?}"),
+            other => panic!("expected outer Field, got {other:?}"),
         }
     }
 
@@ -8122,7 +8122,7 @@ mod tests {
                 }
                 assert_eq!(args.len(), 1);
                 match &args[0].expr {
-                    SurfaceExpression::DotAccess { expr, field, .. } => {
+                    SurfaceExpression::Field { expr, field, .. } => {
                         assert_eq!(*field, DotKey::Ident("b".to_string()));
                         let inner = expr.as_ref().expect("expected Some(target)");
                         match &inner.expr {
@@ -8130,7 +8130,7 @@ mod tests {
                             other => panic!("expected VarRef, got {other:?}"),
                         }
                     }
-                    other => panic!("expected DotAccess, got {other:?}"),
+                    other => panic!("expected Field, got {other:?}"),
                 }
                 assert_eq!(named_args.len(), 0);
             }
@@ -8152,7 +8152,7 @@ mod tests {
                     other => panic!("expected key 'x', got {other:?}"),
                 }
                 match &entries[0].node.value.expr {
-                    SurfaceExpression::DotAccess { expr, field, .. } => {
+                    SurfaceExpression::Field { expr, field, .. } => {
                         assert_eq!(*field, DotKey::Ident("z".to_string()));
                         let inner = expr.as_ref().expect("expected Some(target)");
                         match &inner.expr {
@@ -8160,7 +8160,7 @@ mod tests {
                             other => panic!("expected VarRef, got {other:?}"),
                         }
                     }
-                    other => panic!("expected DotAccess, got {other:?}"),
+                    other => panic!("expected Field, got {other:?}"),
                 }
             }
             other => panic!("expected Dict, got {other:?}"),
@@ -8173,11 +8173,11 @@ mod tests {
         let output = parse(".x").expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
         match &items[0].expr {
-            SurfaceExpression::DotAccess { expr, field, .. } => {
+            SurfaceExpression::Field { expr, field, .. } => {
                 assert!(expr.is_none(), "expected None target for leading-dot");
                 assert_eq!(*field, DotKey::Ident("x".to_string()));
             }
-            other => panic!("expected DotAccess, got {other:?}"),
+            other => panic!("expected Field, got {other:?}"),
         }
     }
 
@@ -8190,14 +8190,14 @@ mod tests {
             SurfaceExpression::Dict(entries) => {
                 assert_eq!(entries.len(), 1);
                 match &entries[0].node.value.expr {
-                    SurfaceExpression::DotAccess { expr, field, .. } => {
+                    SurfaceExpression::Field { expr, field, .. } => {
                         assert!(
                             expr.is_none(),
                             "expected None target for leading-dot in dict value"
                         );
                         assert_eq!(*field, DotKey::Ident("x".to_string()));
                     }
-                    other => panic!("expected DotAccess, got {other:?}"),
+                    other => panic!("expected Field, got {other:?}"),
                 }
             }
             other => panic!("expected Dict, got {other:?}"),
@@ -8312,11 +8312,11 @@ mod tests {
         assert_eq!(
             items.len(),
             1,
-            "expected 1 expression (DotAccess), got {}",
+            "expected 1 expression (Field), got {}",
             items.len()
         );
         match &items[0].expr {
-            SurfaceExpression::DotAccess {
+            SurfaceExpression::Field {
                 expr: inner_opt,
                 field,
                 ..
@@ -8325,10 +8325,10 @@ mod tests {
                 let inner = inner_opt.as_ref().expect("expected Some(target)");
                 match &inner.expr {
                     SurfaceExpression::VarRef { name, .. } => assert_eq!(name, "a"),
-                    other => panic!("expected VarRef('a') inside DotAccess, got {other:?}"),
+                    other => panic!("expected VarRef('a') inside Field, got {other:?}"),
                 }
             }
-            other => panic!("expected DotAccess, got {other:?}"),
+            other => panic!("expected Field, got {other:?}"),
         }
     }
 
@@ -8434,9 +8434,9 @@ mod tests {
         // The lexer emits Dot (access operator) after ']' since CloseBracket is in access context.
         let output = parse("[x: 1].x").expect("parse failed");
         let items = surf_items(&output.program.documents[0].node);
-        assert_eq!(items.len(), 1, "expected 1 expression (DotAccess)");
+        assert_eq!(items.len(), 1, "expected 1 expression (Field)");
         match &items[0].expr {
-            SurfaceExpression::DotAccess { expr, field, .. } => {
+            SurfaceExpression::Field { expr, field, .. } => {
                 assert_eq!(*field, DotKey::Ident("x".to_string()));
                 let inner = expr.as_ref().expect("expected Some(target)");
                 match &inner.expr {
@@ -8447,10 +8447,10 @@ mod tests {
                             other => panic!("expected key 'x', got {other:?}"),
                         }
                     }
-                    other => panic!("expected Dict as DotAccess target, got {other:?}"),
+                    other => panic!("expected Dict as Field target, got {other:?}"),
                 }
             }
-            other => panic!("expected DotAccess, got {other:?}"),
+            other => panic!("expected Field, got {other:?}"),
         }
     }
 
@@ -9202,7 +9202,7 @@ mod tests {
 
     /// `$x | [f $y]` — pipe where RHS is an explicit Call bracket expression.
     /// Note: dot access (`.`) has higher precedence than pipe (`|`). So `a.b | c.d`
-    /// parses as `DotAccess(Pipe(DotAccess(a,b), c), d)` — the trailing `.d` extends
+    /// parses as `Field(Pipe(Field(a,b), c), d)` — the trailing `.d` extends
     /// beyond the pipe. To test pipe with a bracket RHS, use an explicit `[...]` form.
     #[test]
     fn test_pipe_inside_brackets() {
@@ -9232,8 +9232,8 @@ mod tests {
         match &expr.expr {
             SurfaceExpression::Pipe { lhs, rhs } => {
                 assert!(
-                    matches!(&lhs.expr, SurfaceExpression::DotAccess { .. }),
-                    "expected lhs = DotAccess, got {:?}",
+                    matches!(&lhs.expr, SurfaceExpression::Field { .. }),
+                    "expected lhs = Field, got {:?}",
                     lhs.expr
                 );
                 assert!(
@@ -9248,28 +9248,28 @@ mod tests {
 
     // --- DotKey::Int parsing tests ---
 
-    /// `$a.0` parses as DotAccess with DotKey::Int(0).
+    /// `$a.0` parses as Field with DotKey::Int(0).
     #[test]
     fn test_dot_access_int_key() {
         let expr = parse_surf_node("$a.0");
         match &expr.expr {
-            SurfaceExpression::DotAccess { field, .. } => {
+            SurfaceExpression::Field { field, .. } => {
                 assert!(
                     matches!(field, DotKey::Int(0)),
                     "expected DotKey::Int(0), got {:?}",
                     field
                 );
             }
-            other => panic!("expected DotAccess, got {other:?}"),
+            other => panic!("expected Field, got {other:?}"),
         }
     }
 
-    /// `$a.0.name` parses as chained DotAccess: outer is Ident("name"), inner is Int(0).
+    /// `$a.0.name` parses as chained Field: outer is Ident("name"), inner is Int(0).
     #[test]
     fn test_dot_access_int_then_ident() {
         let expr = parse_surf_node("$a.0.name");
         match &expr.expr {
-            SurfaceExpression::DotAccess {
+            SurfaceExpression::Field {
                 expr: target,
                 field,
                 ..
@@ -9280,13 +9280,13 @@ mod tests {
                     "expected outer DotKey::Ident(name), got {:?}",
                     field
                 );
-                // inner: DotAccess on $a with Int(0)
+                // inner: Field on $a with Int(0)
                 match &target
                     .as_ref()
-                    .expect("inner DotAccess should have Some(target)")
+                    .expect("inner Field should have Some(target)")
                     .expr
                 {
-                    SurfaceExpression::DotAccess {
+                    SurfaceExpression::Field {
                         field: inner_field, ..
                     } => {
                         assert!(
@@ -9295,10 +9295,10 @@ mod tests {
                             inner_field
                         );
                     }
-                    other => panic!("expected inner DotAccess, got {other:?}"),
+                    other => panic!("expected inner Field, got {other:?}"),
                 }
             }
-            other => panic!("expected DotAccess, got {other:?}"),
+            other => panic!("expected Field, got {other:?}"),
         }
     }
 
@@ -9333,13 +9333,13 @@ mod tests {
         }
     }
 
-    /// `%cwd.field` parses as `DotAccess { expr: VarRef("%cwd"), field: DotKey::Ident("field") }`.
+    /// `%cwd.field` parses as `Field { expr: VarRef("%cwd"), field: DotKey::Ident("field") }`.
     /// The `%cwd` identifier is consumed as one token; `.` emits Dot; `field` is the access field.
     #[test]
     fn test_percent_cwd_dot_access() {
         let expr = parse_surf_node("%cwd.field");
         match &expr.expr {
-            SurfaceExpression::DotAccess {
+            SurfaceExpression::Field {
                 expr: inner_opt,
                 field,
                 ..
@@ -9348,10 +9348,10 @@ mod tests {
                 let inner = inner_opt.as_ref().expect("expected Some(target)");
                 match &inner.expr {
                     SurfaceExpression::VarRef { name, .. } => assert_eq!(name, "%cwd"),
-                    other => panic!("expected VarRef(\"%cwd\") inside DotAccess, got {other:?}"),
+                    other => panic!("expected VarRef(\"%cwd\") inside Field, got {other:?}"),
                 }
             }
-            other => panic!("expected DotAccess, got {other:?}"),
+            other => panic!("expected Field, got {other:?}"),
         }
     }
 
@@ -9376,14 +9376,14 @@ mod tests {
         }
     }
 
-    /// `$a.0.1` parses as chained DotAccess with two Int keys (not Float 0.1).
+    /// `$a.0.1` parses as chained Field with two Int keys (not Float 0.1).
     /// Regression test: the lexer must suppress float detection after access-dot,
     /// otherwise `0.1` would be lexed as a single Float token.
     #[test]
     fn test_dot_access_int_chain() {
         let expr = parse_surf_node("$a.0.1");
         match &expr.expr {
-            SurfaceExpression::DotAccess {
+            SurfaceExpression::Field {
                 expr: target,
                 field,
                 ..
@@ -9394,13 +9394,13 @@ mod tests {
                     "expected outer DotKey::Int(1), got {:?}",
                     field
                 );
-                // inner: DotAccess on $a with Int(0)
+                // inner: Field on $a with Int(0)
                 match &target
                     .as_ref()
-                    .expect("inner DotAccess should have Some(target)")
+                    .expect("inner Field should have Some(target)")
                     .expr
                 {
-                    SurfaceExpression::DotAccess {
+                    SurfaceExpression::Field {
                         field: inner_field, ..
                     } => {
                         assert!(
@@ -9409,10 +9409,10 @@ mod tests {
                             inner_field
                         );
                     }
-                    other => panic!("expected inner DotAccess, got {other:?}"),
+                    other => panic!("expected inner Field, got {other:?}"),
                 }
             }
-            other => panic!("expected DotAccess, got {other:?}"),
+            other => panic!("expected Field, got {other:?}"),
         }
     }
 

@@ -1,0 +1,4 @@
+# Leading-dot .a accesses parent scope, avoiding letrec self-reference
+[a: 1  inner: [a: .a]]
+=== out
+Dict({"a": Int(1), "inner": Dict({"a": Int(1)})})

@@ -390,7 +390,7 @@ impl fmt::Display for SurfaceExpression {
                 }
                 write!(f, "] {}]", body)
             }
-            SurfaceExpression::DotAccess { expr, field, .. } => match (expr, field) {
+            SurfaceExpression::Field { expr, field, .. } => match (expr, field) {
                 (Some(e), DotKey::Ident(s)) => write!(f, "{}.{s}", e),
                 (Some(e), DotKey::Int(n)) => write!(f, "{}.{n}", e),
                 (None, DotKey::Ident(s)) => write!(f, ".{s}"),
@@ -731,8 +731,9 @@ pub enum SurfaceExpression {
     // Semantics: skip the current letrec scope frame and resolve `field` in the parent scope.
     // After lowering, produces `CoreExpr::Var` or `CoreExpr::Error` — no runtime changes needed.
     // Resolution is stored inline in `resolution` (only used for the leading-dot `expr: None` case).
+    // Note: the tag remains "DotAccess" for serialization/macro roundtripping
     #[expr(tag = "DotAccess")]
-    DotAccess {
+    Field {
         #[expr(key = "target", child_opt)]
         expr: Option<Arc<SurfaceNode>>,
         #[expr(key = "field", dot_key)]
@@ -910,22 +911,22 @@ pub struct SurfaceParam {
 ///
 /// Examples:
 /// - `VarRef("Result")` → `"Result"`
-/// - `DotAccess(VarRef("Result"), "Ok")` → `"Result.Ok"`
-/// - `DotAccess(DotAccess(VarRef("Net"), "Transport"), "Tcp")` → `"Net.Transport.Tcp"`
-/// - `DotAccess(_, Int(0))` → `None` (numeric index)
+/// - `Field(VarRef("Result"), "Ok")` → `"Result.Ok"`
+/// - `Field(Field(VarRef("Net"), "Transport"), "Tcp")` → `"Net.Transport.Tcp"`
+/// - `Field(_, Int(0))` → `None` (numeric index)
 ///
 /// Used by the parser (constructor patterns) and `typecheck_special.rs` (monad resolution).
 /// Defined in `src/ast.rs` as `pub(crate)` since both callers import from here.
 pub(crate) fn flatten_dot_access_to_tag(expr: &SurfaceExpression) -> Option<String> {
     match expr {
         SurfaceExpression::VarRef { name, .. } => Some(name.clone()),
-        SurfaceExpression::DotAccess {
+        SurfaceExpression::Field {
             expr: Some(inner),
             field: DotKey::Ident(s),
             ..
         } => Some(format!("{}.{}", flatten_dot_access_to_tag(&inner.expr)?, s)),
-        SurfaceExpression::DotAccess { expr: None, .. } => None, // leading-dot form is not a constructor name (no prefix available)
-        SurfaceExpression::DotAccess {
+        SurfaceExpression::Field { expr: None, .. } => None, // leading-dot form is not a constructor name (no prefix available)
+        SurfaceExpression::Field {
             field: DotKey::Int(_),
             ..
         } => None, // numeric index in a dot chain is not a constructor name
@@ -1058,7 +1059,7 @@ impl std::fmt::Debug for TypeAnnotation {
     }
 }
 
-/// Inline field slot — written once by the type checker for typed DotAccess nodes.
+/// Inline field slot — written once by the type checker for typed Field nodes.
 pub struct SlotAnnotation(std::sync::OnceLock<Option<u32>>);
 impl SlotAnnotation {
     pub fn new() -> Self {
@@ -1176,7 +1177,7 @@ impl std::fmt::Debug for Provenance {
     }
 }
 
-/// Inline de Bruijn coordinates for a VarRef or leading-dot DotAccess node.
+/// Inline de Bruijn coordinates for a VarRef or leading-dot Field node.
 /// Written once by the resolver; read by the lowerer.
 /// Clone resets to empty — cloned nodes are in new scopes and must be re-resolved.
 pub struct Resolution(std::sync::OnceLock<Option<(u32, u32)>>);

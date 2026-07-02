@@ -473,13 +473,13 @@ async fn expand_surface_expr_inner(
             }
         }
 
-        SurfaceExpression::DotAccess { expr, field, .. } => {
+        SurfaceExpression::Field { expr, field, .. } => {
             let expanded = match expr {
                 Some(inner) => Some(expand_surface_expr(inner, env, ctx, stdlib_env).await?),
                 None => None,
             };
             Ok(Arc::new(SurfaceNode::new(
-                SurfaceExpression::DotAccess {
+                SurfaceExpression::Field {
                     expr: expanded,
                     field: field.clone(),
                     resolution: crate::ast::Resolution::new(),
@@ -1545,7 +1545,7 @@ fn pre_scan_surface_expr<'a>(
             }
 
             // Compound expressions — recurse into children
-            SurfaceExpression::DotAccess {
+            SurfaceExpression::Field {
                 expr: Some(inner), ..
             } => pre_scan_surface_expr(inner, env, &ctx, &stdlib_env).await,
 
@@ -1616,7 +1616,7 @@ fn pre_scan_surface_expr<'a>(
 
             // Leaf nodes — no children to scan
             // Leading-dot (DotAccess { expr: None }) has no child expression to walk.
-            SurfaceExpression::DotAccess { expr: None, .. }
+            SurfaceExpression::Field { expr: None, .. }
             | SurfaceExpression::Int(_)
             | SurfaceExpression::U64(_)
             | SurfaceExpression::Float(_)

@@ -769,7 +769,7 @@ pub(crate) fn resolve_monad_from_surface(
                         }
                     })
                 }
-                SurfaceExpression::DotAccess { .. } => {
+                SurfaceExpression::Field { .. } => {
                     // DotAccess-headed call: [Result.Ok ...], [Net.Transport.Tcp ...], etc.
                     crate::ast::flatten_dot_access_to_tag(&func.expr)
                 }

@@ -101,16 +101,16 @@ pub fn surface_node_get_field(
 
         // --- DotAccess ---
         (
-            SurfaceExpression::DotAccess {
+            SurfaceExpression::Field {
                 expr: Some(inner), ..
             },
             "target",
         ) => expr_variant(inner),
-        (SurfaceExpression::DotAccess { expr: None, .. }, "target") => {
+        (SurfaceExpression::Field { expr: None, .. }, "target") => {
             // Leading-dot has no target expression — return null (empty dict)
             null()
         }
-        (SurfaceExpression::DotAccess { field: dot_key, .. }, "field") => {
+        (SurfaceExpression::Field { field: dot_key, .. }, "field") => {
             dot_key_to_value(dot_key, ctx)
         }
 

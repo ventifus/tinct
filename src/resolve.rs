@@ -5,7 +5,7 @@
 //!
 //! **Invariants:**
 //! - Writes de Bruijn coordinates inline to the `resolution` field of `VarRef` and
-//!   leading-dot `DotAccess` nodes. The OnceLock ensures write-once semantics.
+//!   leading-dot `Field` nodes. The OnceLock ensures write-once semantics.
 //! - Must run after desugaring (sees $_ as Fn nodes, not VarRef("_")).
 //! - Must run before typechecking and evaluation (both consumers of resolved coords).
 //!
@@ -23,7 +23,7 @@ use std::sync::{Arc, RwLock};
 ///
 /// Walks a `SurfaceProgram` and writes de Bruijn `(level, slot)` coordinates
 /// directly into the `resolution` field of each `VarRef` and leading-dot
-/// `DotAccess` node. The OnceLock enforces write-once semantics.
+/// `Field` node. The OnceLock enforces write-once semantics.
 struct SurfaceResolver {
     scopes: Vec<indexmap::IndexMap<String, u32>>,
     /// Unresolved VarRef / leading-dot references: (name, span).
@@ -32,7 +32,7 @@ struct SurfaceResolver {
     /// Module slot tables — maps a binding name to its exported names in slot order.
     ///
     /// Populated when the resolver detects `[name: [include %libdir "mod.llt"]]` patterns.
-    /// Used to resolve `name.field` DotAccess nodes to positional slot indices, enabling
+    /// Used to resolve `name.field` Field nodes to positional slot indices, enabling
     /// the lowerer to emit `slot-get` (O(1)) instead of `field-get` (string-keyed).
     ///
     /// Key: binding name (e.g. `"math"`). Value: ordered list of exported names matching
@@ -191,7 +191,7 @@ impl SurfaceResolver {
 
                 // Module slot detection: scan for `[name: [include %libdir "path.llt"]]` entries.
                 // When found, load the module's exported names (synchronously) and record them
-                // in module_slots so that subsequent `name.field` DotAccess nodes can be resolved
+                // in module_slots so that subsequent `name.field` Field nodes can be resolved
                 // to positional slot indices.
                 for entry in entries.iter() {
                     if let Some(key_node) = &entry.node.key {
@@ -268,7 +268,7 @@ impl SurfaceResolver {
                 }
             }
 
-            SurfaceExpression::DotAccess { expr: Some(inner), field, field_slot, resolution } => {
+            SurfaceExpression::Field { expr: Some(inner), field, field_slot, resolution } => {
                 self.walk_surface_node(inner);
                 // Resolve "field-get" to get the root scope level for the lowerer.
                 // The lowerer reads this to emit CoreExpr::Call with the correct root_level.
@@ -299,7 +299,7 @@ impl SurfaceResolver {
             // Semantics: skip the innermost scope frame and resolve `name` in the parent scope.
             // This allows `[x: "shadowed"  outer-x: .x]` inside a dict to reference the `x`
             // from the enclosing scope rather than the self-referential sibling key.
-            SurfaceExpression::DotAccess {
+            SurfaceExpression::Field {
                 expr: None,
                 field: crate::ast::DotKey::Ident(name),
                 resolution,
@@ -320,7 +320,7 @@ impl SurfaceResolver {
             // Treated as Error. The parser already rejects this form at parse time,
             // so this arm is a safety fallback. Mark as unresolvable so the lowerer
             // consistently sees `Some(None)` for any leading-dot node we processed.
-            SurfaceExpression::DotAccess {
+            SurfaceExpression::Field {
                 expr: None,
                 field: crate::ast::DotKey::Int(_),
                 resolution,
@@ -532,7 +532,7 @@ impl SurfaceResolver {
 ///
 /// This is the runtime-v2 entry point for variable resolution. Walks the program and
 /// writes `(level, slot)` coordinates directly into the `resolution` field of each
-/// `VarRef` and leading-dot `DotAccess` node. Returns only unresolved name errors.
+/// `VarRef` and leading-dot `Field` node. Returns only unresolved name errors.
 ///
 /// The resolver models the same scope-chain semantics as the evaluator: each
 /// intermediate dict expression's static keys become scope bindings for subsequent
@@ -1072,10 +1072,10 @@ mod tests {
                     collect_varrefs_in_node(&na.node.value, name, out);
                 }
             }
-            SurfaceExpression::DotAccess {
+            SurfaceExpression::Field {
                 expr: Some(inner), ..
             } => collect_varrefs_in_node(inner, name, out),
-            SurfaceExpression::DotAccess { expr: None, .. } => {}
+            SurfaceExpression::Field { expr: None, .. } => {}
             SurfaceExpression::Pipe { lhs, rhs } => {
                 collect_varrefs_in_node(lhs, name, out);
                 collect_varrefs_in_node(rhs, name, out);
@@ -1350,7 +1350,7 @@ mod tests {
         }
     }
 
-    /// Collect all Arc<SurfaceNode> whose expr is DotAccess { expr: None, field: Ident(name) }.
+    /// Collect all Arc<SurfaceNode> whose expr is Field { expr: None, field: Ident(name) }.
     fn find_leading_dot_nodes(
         program: &crate::ast::SurfaceProgram,
         name: &str,
@@ -1380,7 +1380,7 @@ mod tests {
         out: &mut Vec<Arc<SurfaceNode>>,
     ) {
         match &arc.expr {
-            SurfaceExpression::DotAccess {
+            SurfaceExpression::Field {
                 expr: None,
                 field: crate::ast::DotKey::Ident(n),
                 ..
@@ -1395,7 +1395,7 @@ mod tests {
                     collect_leading_dots_in_node(&entry.node.value, name, out);
                 }
             }
-            SurfaceExpression::DotAccess {
+            SurfaceExpression::Field {
                 expr: Some(inner), ..
             } => {
                 collect_leading_dots_in_node(inner, name, out);
@@ -1421,10 +1421,10 @@ mod tests {
         }
     }
 
-    /// Read the inline resolution from a leading-dot DotAccess node.
+    /// Read the inline resolution from a leading-dot Field node.
     fn dot_resolution(node: &Arc<SurfaceNode>) -> Option<Option<(u32, u32)>> {
         match &node.expr {
-            SurfaceExpression::DotAccess {
+            SurfaceExpression::Field {
                 expr: None,
                 resolution,
                 ..

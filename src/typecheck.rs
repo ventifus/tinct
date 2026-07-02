@@ -337,12 +337,23 @@ pub(crate) fn extract_constructor_constants_from_body(
 ///
 /// # Returns
 ///
-/// Returns `(errors, expects_resolved)` where:
+/// Returns `(errors, expects_resolved, tycon_env)` where:
 /// - `errors`: Type errors encountered during inference (advisory — evaluation proceeds)
 /// - `expects_resolved`: Span → Type map for `--- expects: @Type` pipeline contracts
+/// - `tycon_env`: Type constructor environment populated by `[type ...]` declarations.
+///   Callers that run a subsequent evaluation pass and need runtime TypeAssert checking
+///   (e.g. `@Boolean`, `@Color` guards) should call `ctx.set_tycon_env(tycon_env)` so that
+///   `value_matches_type` can resolve user-defined nominal types. Without this, TypeAssert
+///   on user-defined ADTs falls through to `None => false` at runtime. Callers that only
+///   format or inspect the type-checked program (e.g. the formatter, test helpers) may
+///   intentionally discard the returned `TyConEnv`.
 pub async fn typecheck_surface_program_annotation_table(
     program: &SurfaceProgram,
-) -> (Vec<TypeError>, HashMap<crate::ast::Span, Type>) {
+) -> (
+    Vec<TypeError>,
+    HashMap<crate::ast::Span, Type>,
+    crate::type_def::TyConEnv,
+) {
     let mut errors = Vec::new();
     // get_builtin_core_type_env returns Arc<TypeEnv>; convert to Rc<TypeEnv> for the internal
     // type-checking chain (TypeEnv::with_parent uses Rc).
@@ -400,7 +411,7 @@ pub async fn typecheck_surface_program_annotation_table(
         pipeline_type = doc_output_type;
     }
 
-    (errors, state.expects_resolved)
+    (errors, state.expects_resolved, state.tycon_env)
 }
 
 /// Type-check a `SurfaceProgram` with a given initial type environment.
@@ -1216,12 +1227,12 @@ fn extract_doc_from_surface_node(
         SurfaceExpression::TypeAssert { expr, .. } => {
             extract_doc_from_surface_node(expr, doc_map, None);
         }
-        SurfaceExpression::DotAccess {
+        SurfaceExpression::Field {
             expr: Some(inner), ..
         } => {
             extract_doc_from_surface_node(inner, doc_map, None);
         }
-        SurfaceExpression::DotAccess { expr: None, .. } => {}
+        SurfaceExpression::Field { expr: None, .. } => {}
         SurfaceExpression::Pipe { lhs, rhs } => {
             extract_doc_from_surface_node(lhs, doc_map, None);
             extract_doc_from_surface_node(rhs, doc_map, None);
@@ -2027,7 +2038,7 @@ pub(crate) fn infer_surface_expr<'a>(
                 }
             }
 
-            SurfaceExpression::DotAccess {
+            SurfaceExpression::Field {
                 expr: Some(target),
                 field,
                 ..
@@ -2052,7 +2063,7 @@ pub(crate) fn infer_surface_expr<'a>(
             // name at whatever scope level it exists. For type checking purposes, this is
             // correct — it will produce the right type for the outer binding regardless of
             // any shadowing by a same-dict key.
-            SurfaceExpression::DotAccess {
+            SurfaceExpression::Field {
                 expr: None,
                 field: crate::ast::DotKey::Ident(name),
                 ..
@@ -2072,7 +2083,7 @@ pub(crate) fn infer_surface_expr<'a>(
                 }
             }
 
-            SurfaceExpression::DotAccess {
+            SurfaceExpression::Field {
                 expr: None,
                 field: crate::ast::DotKey::Int(_),
                 ..
@@ -2306,7 +2317,7 @@ pub(crate) fn infer_surface_expr<'a>(
 
                 // Special case: do-infer sentinel — inferred [do] form monad resolution.
                 // Only applies when DotAccess has a target (not a leading-dot).
-                if let SurfaceExpression::DotAccess {
+                if let SurfaceExpression::Field {
                     expr: Some(da_target),
                     field: da_field,
                     ..

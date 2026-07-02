@@ -75,7 +75,12 @@ enum SurfaceExpression {
     Dict(Vec<SurfaceEntry>),
     Call { func: Arc<SurfaceNode>, args: Vec<Arc<SurfaceNode>>, named_args: Vec<SurfaceNamedArg>, implied: bool },
     Fn { return_ann: Option<Spanned<Annotation>>, params: Vec<Spanned<SurfaceParam>>, body: Arc<SurfaceNode>, desugared: bool },
-    DotAccess { expr: Arc<SurfaceNode>, field: DotKey },
+    // Field access: expr.field or leading-dot .field (no preceding expression).
+    // Rust struct name: Field. Serialized/macro tag: "DotAccess" (via #[expr(tag = "DotAccess")]).
+    // resolution: OnceCell for (level, slot) de Bruijn coords written by resolve.rs.
+    // field_slot: OnceCell<u32> for O(1) slot-get when the target is a known module binding.
+    // The lowering pass (lower.rs) desugars Field to Call(field-get/slot-get) before evaluation.
+    Field { expr: Option<Arc<SurfaceNode>>, field: DotKey, resolution: Resolution, field_slot: SlotAnnotation },
     Pipe { lhs: Arc<SurfaceNode>, rhs: Arc<SurfaceNode> },
     // ... other variants (Sequential, Match, TypeAssert, Quote, Unquote, etc.)
 }
@@ -164,11 +169,8 @@ pub enum CoreExpr {
         slot: u32,
     },
 
-    DotAccess {
-        expr: Arc<Spanned<CoreExpr>>,
-        field: DotKey,
-    },
-
+    // No DotAccess variant — SurfaceExpression::Field is desugared to Call(field-get/slot-get)
+    // by the lowering pass (lower.rs) before evaluation. The evaluator never sees a DotAccess node.
     // No Pipe variant — the lowering pass rewrites Pipe to Call before evaluation.
     Sequential(Vec<Arc<Spanned<CoreExpr>>>),
     Dict(Vec<Spanned<CoreEntry>>),
@@ -265,8 +267,8 @@ enum Annotation {
 | `Bool(true)` | `true` | Boolean literal |
 | `Str("hello")` | `"hello"` | String literal (quoted) |
 | `VarRef { name: "x", .. }` | `x` or `$x` | Variable reference (bare identifier or escaped); resolution results live in `ResolutionTable` keyed by `NodeId` |
-| `DotAccess { field: DotKey::Ident("b"), .. }` | `a.b` | String key access: looks up `Key::String("b")` on `a` |
-| `DotAccess { field: DotKey::Int(0), .. }` | `a.0` | Integer key access: looks up `Key::Int(0)` on `a` (auto-indexed dicts) |
+| `SurfaceExpression::Field { field: DotKey::Ident("b"), .. }` (Surface only) | `a.b` | String key access in the Surface AST. The lowering pass desugars this to `Call(field-get, [key, target])` or `Call(slot-get, [slot, target])` — no `DotAccess` in `CoreExpr`. |
+| `SurfaceExpression::Field { field: DotKey::Int(0), .. }` (Surface only) | `a.0` | Integer key access in the Surface AST. Desugared to `Call(field-get, [0, target])` by the lowering pass. |
 | `Pipe { lhs, rhs }` | `a \| f` | **Pipe is present in the Surface AST and eliminated by the lowering pass (`src/lower.rs`) AFTER type checking. The evaluator never sees `SurfaceExpression::Pipe`.** Pipe survives the desugar pass, the resolve pass, and the typecheck pass. It is eliminated during the lowering pass (which runs after type checking but before evaluation), which rewrites `Pipe { lhs, rhs }` to `CoreExpr::Call { func: rhs, args: [lhs], ... }` (equivalent to `f(a)` for `a \| f`). |
 | `Sequential(exprs)` | Multi-expression fn body | Sequential expressions with let\* semantics; each expression's result dict extends environment for subsequent expressions |
 | `Dict(entries)` | `["a" "b" "c"]` or `[k: v]` | Dict/list literal |
@@ -458,12 +460,12 @@ When no `type:` key is present, the bracket is interpreted as a type expression 
 
 Dot notation and bracket notation desugar to nested access nodes:
 
-| Surface syntax | AST |
+| Surface syntax | Surface AST |
 |---------------|-----|
-| `data.name` | `DotAccess { field: DotKey::Ident("name"), .. }` |
-| `data.0` | `DotAccess { field: DotKey::Int(0), .. }` — integer key; looks up `Key::Int(0)` at eval time |
+| `data.name` | `Field { expr: Some(data), field: DotKey::Ident("name"), .. }` |
+| `data.0` | `Field { expr: Some(data), field: DotKey::Int(0), .. }` — integer key; looks up `Key::Int(0)` at eval time |
 | `[get 5 data]` | `Call(VarRef("get"), [Int(5), VarRef("data")])` — use `get` builtin for dynamic key access |
-| `a.b.0.c` | `DotAccess(DotAccess(DotAccess(VarRef("a"), Ident("b")), Int(0)), Ident("c"))` |
+| `a.b.0.c` | `Field(Field(Field(VarRef("a"), Ident("b")), Int(0)), Ident("c"))` |
 
 ### Pipe Lowering
 
@@ -477,11 +479,20 @@ Three lowering rules, applied in priority order:
 |---------------|--------------|-----------|
 | `$_ \| f` | WRAP-PIPE: `lhs` is `$_` (implicit arg) | `[fn [_] [f _]]` — wraps the pipeline in a lambda |
 | `a \| [f ...]` | CALL-EXTEND: `rhs` is an explicit `Call` | `[f ... a]` — prepends `lhs` as first arg |
-| `a \| f` | CALL-WRAP: `rhs` is anything else (VarRef, DotAccess, …) | `[f a]` — wraps `lhs` as the single arg |
+| `a \| f` | CALL-WRAP: `rhs` is anything else (VarRef, Field, …) | `[f a]` — wraps `lhs` as the single arg |
 
 Left-associativity: `a | f | g` parses as `(a | f) | g`, which lowers to `[g [f a]]`.
 
 **Note:** Pipe is eliminated in the lowering pass AFTER type checking. The type checker must handle `SurfaceExpression::Pipe` explicitly.
+
+### Field Lowering
+
+`SurfaceExpression::Field` (Rust name; serialized tag `"DotAccess"`) is desugared to `CoreExpr::Call` by the lowering pass (`src/lower.rs`) before evaluation. Two paths:
+
+- **slot-get path (O(1))**: when `field_slot` is set (the resolver identified the target as a known module binding and wrote the slot index), the lowerer emits `Call(slot-get, [slot_index, target])`. `FIELD_GET_ROOT_SLOT = 0` and `SLOT_GET_ROOT_SLOT = 1` are the invariant root-scope slot indices for these two builtins.
+- **field-get path (string lookup)**: when `field_slot` is not set, the lowerer emits `Call(field-get, [key_string, target])`. This performs a string-keyed dict lookup at runtime.
+
+The evaluator never sees a `DotAccess` node — only `Call` nodes from the lowered output. The `"DotAccess"` tag is preserved exclusively for AST serialization/macro roundtripping (`surface_convert.rs`).
 
 ---
 

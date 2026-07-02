@@ -2,15 +2,15 @@
 //!
 //! `lower()` is called per-thunk when a `Surface` thunk is first forced.
 //! It is a pure function of `SurfaceNode` — all cross-phase data lives inline on nodes.
-//! De Bruijn coordinates are read from the inline `resolution` field on VarRef/DotAccess nodes.
+//! De Bruijn coordinates are read from the inline `resolution` field on VarRef/Field nodes.
 //!
 //! Key transformations:
 //! - `VarRef` → `Var` (resolved de Bruijn coordinates) or `Error` (unresolvable — genuine compile error)
 //! - `Pipe { lhs, rhs }` → `Call { func: rhs, args: [lhs], implied: true }` (syntactic sugar)
 //! - `TypeAssert` → `TypeAssert` (with resolved_type from the inline TypeAnnotation field or Type::Unknown)
 //! - `TypeAssertPending` in patterns → `TypeAssert` (using the inline `resolved` TypeAnnotation field)
-//! - `DotAccess` with `field_slot` set → `Call(slot-get, [Int(slot), target])` (O(1) positional access)
-//! - `DotAccess` without `field_slot` → `Call(field-get, [Str/Int(key), target])` (key-based lookup)
+//! - `Field` with `field_slot` set → `Call(slot-get, [Int(slot), target])` (O(1) positional access)
+//! - `Field` without `field_slot` → `Call(field-get, [Str/Int(key), target])` (key-based lookup)
 //! - `SurfaceNode.type_guard` set → wraps the lowered CoreExpr in `CoreExpr::TypeAssert`
 //! - All other variants: structural lowering, recursing into child nodes
 
@@ -196,7 +196,7 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
             }
         }
 
-        SurfaceExpression::DotAccess {
+        SurfaceExpression::Field {
             expr: Some(inner),
             field,
             field_slot,
@@ -257,7 +257,7 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
         // Leading-dot form: `.name` with no preceding expression.
         // The resolver has written parent-scope coordinates into the node's `resolution` field.
         // Read them directly — the lowered result is indistinguishable from a normal variable reference.
-        SurfaceExpression::DotAccess {
+        SurfaceExpression::Field {
             expr: None,
             field: crate::ast::DotKey::Ident(name),
             resolution,
@@ -273,7 +273,7 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
 
         // Leading-dot with integer key: `.0` — no parent-scope numeric lookup. The parser
         // rejects this at parse time, so this is a safety fallback only.
-        SurfaceExpression::DotAccess {
+        SurfaceExpression::Field {
             expr: None,
             field: crate::ast::DotKey::Int(_),
             ..

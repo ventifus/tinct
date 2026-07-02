@@ -1371,7 +1371,7 @@ The `ValueVisitor` trait (in `src/lib.rs`) provides a visitor pattern for struct
 
 - **Per-section arena**: Give each `---`-delimited section its own arena. Thunks not reachable from `%` are reclaimed when the section ends. Requires selective migration of reachable thunks across the boundary.
 - **Flat environments with slot indices**: Replace `IndexMap<String, Arc<Thunk>>` chain with flat `Vec` arrays indexed by compile-time (level, slot) pairs (de Bruijn levels). Variable lookup becomes O(1). Environment reuse in function calls becomes trivially safe.
-- **Variable resolution pass**: Pre-eval pass assigns (level, slot) indices to every `VarRef`. This pass also enables TCO detection. (Partially implemented: `src/resolve.rs` produces `ResolutionTable`; full flat-env usage is deferred.)
+- **Variable resolution pass**: Pre-eval pass assigns (level, slot) indices to every `VarRef`. This pass also enables TCO detection. Two parts: field-level slot resolution for module bindings (via `SlotAnnotation` in `resolve.rs` — implemented) and full flat-env `VarRef` resolution replacing `IndexMap<String, Arc<Thunk>>` environment chains (still deferred).
 
 **Arena lifetime and persistent values (deferred design).** If per-section arenas are adopted, the arena lifetime would be **one document section**. At each `---` boundary, values reachable from `%` would be **selectively migrated** from the section arena to `Arc`-backed persistent storage. The `---` boundary is **not** a strictness point — unevaluated thunks stay unevaluated through migration.
 
@@ -1474,7 +1474,8 @@ enum Cont {
     BuiltinForceArg(Box<BuiltinForceArgData>),        // force args[0..force_count] then W1 Seq/Spine positions
 
     // eval() continuations
-    DotAccessForce(Box<DotAccessForceData>),           // access field from materialized dict
+    // (DotAccessForce was removed — dot access is eliminated by the lowering pass before the
+    // evaluator runs; field-get and slot-get are normal Call nodes, no continuation needed)
     TypeAssertCheck(Box<TypeAssertCheckData>),          // validate against TypeAssert annotation
     SequentialStep(Box<SequentialStepData>),            // process next step in Sequential expression
     ForceAndBind(Box<ForceAndBindData>),                // force dict entry and bind to environment
@@ -1541,7 +1542,7 @@ This is **structurally determined** by the `Cont` variant on the stack, not infe
 
 **Error stack traces:** Walk `Vec<Cont>` to reconstruct the call stack, using each variant's stored span and label to produce precise "materialized at" context for every frame. This replaces the current `EvalError::stack` vector with a continuation-derived trace.
 
-**Cont variant count:** 12 variants — `Memoize`, `PendingCallDispatch`, `GuardedValidate`, `BuiltinForceArg`, `DotAccessForce`, `TypeAssertCheck`, `SequentialStep`, `ForceAndBind`, `MatchDispatch`, `CaseArmExactValueCheck`, `MatchGuardCheck`, `PredicateCheck`. Each variant stores only its specific continuation data (Arc pointers + Span + small fields). Frame size: ≤96 bytes per Cont (enforced by the compile-time assertion at `src/eval_materialize.rs:501`).
+**Cont variant count:** 11 variants — `Memoize`, `PendingCallDispatch`, `GuardedValidate`, `BuiltinForceArg`, `TypeAssertCheck`, `SequentialStep`, `ForceAndBind`, `MatchDispatch`, `CaseArmExactValueCheck`, `MatchGuardCheck`, `PredicateCheck`. (`DotAccessForce` was removed — dot access desugars to `Call(field-get/slot-get, ...)` before evaluation.) Each variant stores only its specific continuation data (Arc pointers + Span + small fields). Frame size: ≤96 bytes per Cont (enforced by the compile-time assertion at `src/eval_materialize.rs:501`).
 
 **Relationship to allocation strategy:** Arena allocation and flat environments integrate naturally with the CEK machine: `Cont` variants hold `ThunkId` handles into the arena, and the `Vec<Cont>` stack's lifetime defines the arena's lifetime scope.
 
@@ -1650,7 +1651,7 @@ Thunks are allocated in a `ThunkArena` (global bulk deallocation boundary) but s
 | Operation | CEK encoding |
 |----------------------|---------|
 | TypeAssert validation | `Action::EvalCore` (inner expr) + `Cont::TypeAssertCheck` |
-| Dot access (field extraction) | `Action::Materialize` (target dict) + `Cont::DotAccessForce` |
+| Dot access (field extraction) | Lowered to `Call(field-get/slot-get, ...)` before eval — no continuation needed |
 | Function/builtin call dispatch | `Action::Materialize` (callee) + `Cont::PendingCallDispatch` |
 | Sequential expression chain | `Action::EvalCore` (current expr) + `Cont::SequentialStep` (for next) |
 | Match expression dispatch | `Action::Materialize` (scrutinee) + `Cont::MatchDispatch` |

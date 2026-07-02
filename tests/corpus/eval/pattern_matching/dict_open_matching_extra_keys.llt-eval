@@ -1,0 +1,8 @@
+# Dict patterns use open matching by default: extra keys in the scrutinee are ignored.
+# A pattern [ok: v] matches any dict that has an "ok" key, regardless of other keys present.
+# This test verifies that extra keys ("extra") do NOT prevent a match.
+[match [ok: 42  extra: "data"]
+  [case [let v] [ok: v] v]
+  _:            99]
+=== out
+Int(42)

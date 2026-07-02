@@ -25,7 +25,7 @@ fn surf_ann_entry_tc(
 async fn check(input: &str) -> Result<(), Vec<TypeError>> {
     let mut program = crate::parse(input).unwrap().program;
     crate::desugar::desugar_surface_program(&mut program);
-    let (errors, _table) = typecheck_surface_program_annotation_table(&program).await;
+    let (errors, _table, _tycon_env) = typecheck_surface_program_annotation_table(&program).await;
     if errors.is_empty() {
         Ok(())
     } else {
@@ -62,6 +62,10 @@ async fn doc_env(input: &str) -> Rc<TypeEnv> {
     doc_env_with_prelude(input).await
 }
 
+// doc_env_with_builtins delegates to doc_env_with_prelude — both use the full prelude env
+// (including Indexable and other type class instances). Tests using doc_env_with_builtins
+// do not require a minimal env: builtin-get's FD resolution works via the resolver table
+// regardless of which bindings are in scope, so using the prelude env is correct.
 async fn doc_env_with_builtins(input: &str) -> Rc<TypeEnv> {
     doc_env_with_prelude(input).await
 }
@@ -5153,7 +5157,7 @@ async fn test_typecheck_returns_diagnostics() {
     let mut program = crate::parse(input).unwrap().program;
     crate::desugar::desugar_surface_program(&mut program);
 
-    let (errors, _table) = typecheck_surface_program_annotation_table(&program).await;
+    let (errors, _table, _tycon_env) = typecheck_surface_program_annotation_table(&program).await;
     assert!(
         errors.is_empty(),
         "simple dict should typecheck without errors"
@@ -6654,6 +6658,40 @@ async fn test_check_get_optional_record_known_field_returns_field_type_or_null()
             );
         }
         Some(other) => panic!("expected Union(Int|Null) from get? on record, got {other}"),
+        None => panic!("field 'result' not found"),
+    }
+}
+
+#[tokio::test]
+async fn test_builtin_get_string_key_returns_field_type() {
+    // [builtin-get "host" cfg] where cfg: [host: String] should infer return type as String.
+    // This test verifies that builtin-get with a string literal key accesses a typed record
+    // and returns the precise field type (not Unknown).
+    let env = doc_env_with_builtins(
+        "[cfg: [host: \"localhost\"  port: 8080]]\n\
+             [result: [builtin-get \"host\" cfg]]",
+    )
+    .await;
+    match env.get("result").map(|s| &s.body) {
+        Some(Type::Str) | Some(Type::StringLiteral(_)) => {}
+        Some(other) => panic!("expected Str from builtin-get on record [host: Str], got {other}"),
+        None => panic!("field 'result' not found"),
+    }
+}
+
+#[tokio::test]
+async fn test_get_record_string_literal_key() {
+    // [get "host" cfg] where cfg: [host: String] should work via Indexable dispatch.
+    // This test verifies that the prelude `get` function correctly resolves field types
+    // through the Indexable MPTC functional dependency when given a string literal key.
+    let env = doc_env_with_prelude(
+        "[cfg: [host: \"localhost\"  port: 8080]]\n\
+             [result: [get \"host\" cfg]]",
+    )
+    .await;
+    match env.get("result").map(|s| &s.body) {
+        Some(Type::Str) | Some(Type::StringLiteral(_)) => {}
+        Some(other) => panic!("expected Str from get on record [host: Str], got {other}"),
         None => panic!("field 'result' not found"),
     }
 }

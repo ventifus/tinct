@@ -1593,13 +1593,13 @@ fn eval_quote_preprocess<'a>(
                 }))
             }
 
-            SurfaceExpression::DotAccess {
+            SurfaceExpression::Field {
                 expr: Some(target),
                 field,
                 ..
             } => {
                 let processed_target = eval_quote_preprocess(Arc::clone(target), env, ctx).await?;
-                Ok(make_node(SurfaceExpression::DotAccess {
+                Ok(make_node(SurfaceExpression::Field {
                     expr: Some(processed_target),
                     field: field.clone(),
                     resolution: crate::ast::Resolution::new(),
@@ -1608,9 +1608,9 @@ fn eval_quote_preprocess<'a>(
             }
 
             // Leading-dot is a terminal in quote context — no sub-expression to preprocess.
-            SurfaceExpression::DotAccess {
+            SurfaceExpression::Field {
                 expr: None, field, ..
-            } => Ok(make_node(SurfaceExpression::DotAccess {
+            } => Ok(make_node(SurfaceExpression::Field {
                 expr: None,
                 field: field.clone(),
                 resolution: crate::ast::Resolution::new(),
@@ -3338,8 +3338,9 @@ pub(crate) fn match_pattern<'a>(
 
                         // If rest is false (closed matching), check for extra keys.
                         // Pattern::Dict { rest: false } is unreachable from parsed programs —
-                        // no parser syntax sets rest=false. If closed-dict syntax is added
-                        // (e.g. trailing !), remove this comment.
+                        // the parser defaults to rest=true (open matching) — but reachable
+                        // from macro-constructed ASTs. When closed-dict syntax is added
+                        // (e.g. trailing !), this branch will also become reachable from parsed programs.
                         if !rest {
                             let pattern_keys: std::collections::HashSet<&str> =
                                 fields.iter().map(|(k, _)| k.as_str()).collect();
@@ -7391,6 +7392,82 @@ mod tests {
         assert!(!value_matches_type(&Value::Int(1), &app_type, &ctx));
     }
 
+    #[tokio::test]
+    async fn test_value_matches_type_tycon_from_typecheck_pass() {
+        // Regression test for the production gap where tycon_env was never wired from the
+        // typecheck pass into the EvalContext.  Without the fix, value_matches_type returns
+        // false for every user-defined TyCon (including Boolean) because tycon_env is None.
+        //
+        // This test simulates the full production path:
+        //   1. Typecheck a program that declares a nominal type.
+        //   2. Extract the tycon_env returned by typecheck_surface_program_annotation_table.
+        //   3. Wire it into an EvalContext via set_tycon_env.
+        //   4. Verify value_matches_type correctly resolves the TyCon.
+        use crate::desugar;
+        use crate::parse;
+
+        // A minimal program declaring `Boolean: [type True False]` — identical to what
+        // loader.llt does.  The type checker populates tycon_env["Boolean"] when it processes
+        // the [type ...] declaration.
+        let source = "[Boolean: [type True False]]";
+        let parsed = parse(source).expect("parse must succeed");
+        let mut program = parsed.program;
+        desugar::desugar_surface_program(&mut program);
+
+        // Production path: typecheck returns the tycon_env.
+        let (_errors, _expects, tycon_env) =
+            crate::typecheck::typecheck_surface_program_annotation_table(&program).await;
+
+        // Verify the typecheck pass actually populated the env for "Boolean".
+        assert!(
+            tycon_env.contains_key("Boolean"),
+            "typecheck pass must register 'Boolean' in tycon_env; got keys: {:?}",
+            tycon_env.keys().collect::<Vec<_>>()
+        );
+
+        // Wire into a fresh EvalContext — this is what run_loader_pipeline now does.
+        let ctx = test_ctx();
+        ctx.set_tycon_env(tycon_env);
+
+        let tycon = Type::TyCon("Boolean".to_string());
+
+        // Boolean.True variant must pass @Boolean check.
+        let bool_true = Value::Variant {
+            tag: "Boolean.True".to_string(),
+            payload: None,
+        };
+        assert!(
+            value_matches_type(&bool_true, &tycon, &ctx),
+            "Boolean.True must match @Boolean when tycon_env is wired from typecheck pass"
+        );
+
+        // Boolean.False variant must also pass.
+        let bool_false = Value::Variant {
+            tag: "Boolean.False".to_string(),
+            payload: None,
+        };
+        assert!(
+            value_matches_type(&bool_false, &tycon, &ctx),
+            "Boolean.False must match @Boolean when tycon_env is wired from typecheck pass"
+        );
+
+        // A value from a different TyCon must not pass — no cross-TyCon confusion.
+        let color_red = Value::Variant {
+            tag: "Color.Red".to_string(),
+            payload: None,
+        };
+        assert!(
+            !value_matches_type(&color_red, &tycon, &ctx),
+            "Color.Red must not match @Boolean"
+        );
+
+        // A non-variant value must not pass.
+        assert!(
+            !value_matches_type(&Value::Int(1), &tycon, &ctx),
+            "Int must not match @Boolean"
+        );
+    }
+
     // ── validate_and_wrap_record unit tests ──────────────────────────────────
     // Tests for validate_and_wrap_record helper function, particularly the
     // field_path error message generation for nested record validation.
@@ -8379,7 +8456,7 @@ mod tests {
         // Typecheck: writes type annotations inline on AST nodes and populates `expects_resolved`
         // with the span of the `expects: @String` annotation mapped to `Type::Str`.
         // Without this map the TypeAssert falls back to `Type::Unknown` (accepts everything).
-        let (_type_errors, expects_resolved) =
+        let (_type_errors, expects_resolved, _tycon_env) =
             crate::typecheck::typecheck_surface_program_annotation_table(&program).await;
         assert!(
             !expects_resolved.is_empty(),

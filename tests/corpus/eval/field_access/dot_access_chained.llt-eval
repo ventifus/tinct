@@ -1,0 +1,4 @@
+# Chained dot access a.b.c
+[outer: [inner: [val: 99]]  result: outer.inner.val]
+=== out
+Dict({"outer": Dict({"inner": Dict({"val": Int(99)})}), "result": Int(99)})

@@ -385,13 +385,13 @@ fn eval_quote_preprocess<'a>(
                 }))
             }
 
-            SurfaceExpression::DotAccess {
+            SurfaceExpression::Field {
                 expr: Some(target),
                 field,
                 ..
             } => {
                 let processed_target = eval_quote_preprocess(Arc::clone(target), env, ctx).await?;
-                Ok(make_node(SurfaceExpression::DotAccess {
+                Ok(make_node(SurfaceExpression::Field {
                     expr: Some(processed_target),
                     field: field.clone(),
                     resolution: crate::ast::Resolution::new(),
@@ -400,9 +400,9 @@ fn eval_quote_preprocess<'a>(
             }
 
             // Leading-dot is a terminal in quote context — no sub-expression to preprocess.
-            SurfaceExpression::DotAccess {
+            SurfaceExpression::Field {
                 expr: None, field, ..
-            } => Ok(make_node(SurfaceExpression::DotAccess {
+            } => Ok(make_node(SurfaceExpression::Field {
                 expr: None,
                 field: field.clone(),
                 resolution: crate::ast::Resolution::new(),

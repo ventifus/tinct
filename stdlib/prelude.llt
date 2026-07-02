@@ -1718,13 +1718,15 @@ Note: Threads initial value x through each function in sequence. Each function r
 # Type predicates — implemented in LLT via match pattern dispatch.
 # Each materializes its argument and dispatches on the Value variant.
 # fn? returns True for both Function and Builtin values.
-# null? uses an empty closed Dict pattern [] since all dicts return "Dict" from type_name().
+# null? uses builtin-eq (not =) — = dispatches through the Equatable typeclass which has
+# no Dict instance, so [= x []] always returns False for any dict including []. builtin-eq
+# performs structural identity comparison directly and correctly identifies the empty dict.
 # @Str resolves to Type::Str (alias for String); all others resolve by annotation name.
 int?@[doc: "Check if value is Int"]:   [fn [let x] [match x [@Int _]:      True  _: False]]
 float?@[doc: "Check if value is Float"]: [fn [let x] [match x [@Float _]:    True  _: False]]
 str?@[doc: "Check if value is String"]: [fn [let x] [match x [@Str _]:      True  _: False]]
 bool?@[doc: "Check if value is Bool"]:  [fn [let x] [match x [@Bool _]:     True  _: False]]
-null?@[doc: "Check if value is null (empty dict [])"]: [fn [let x] [match x []:         True  _: False]]
+null?@[doc: "Check if value is null (empty dict [])"]: [fn [let x] [builtin-eq x []]]
 dict?@[doc: "Check if value is Dict"]:  [fn [let x] [match x [@Dict _]:     True  _: False]]
 fn?@[doc: "Check if value is a function (Function or Builtin)"]: [fn [let x] [match x [@Fn _]: True  _: False]]
 proxy?@[doc: "Check if value is a Proxy"]: [fn [let x] [match x [@Proxy _]:   True  _: False]]

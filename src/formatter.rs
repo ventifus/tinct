@@ -104,7 +104,7 @@ pub async fn format_source_tinct_with_dir(
         return Err(msgs.join("\n"));
     }
     // Typecheck the expanded and desugared formatter (writes inline type annotations).
-    let _ = typecheck::typecheck_surface_program_annotation_table(&formatter_program).await;
+    let _ = typecheck::typecheck_surface_program_annotation_table(&formatter_program).await; // tycon_env discarded: formatter ctx has no runtime TypeAsserts on user-defined ADTs
 
     // Build a fresh core env for evaluation context.
     let env = crate::builtins::build_core_env();
@@ -469,7 +469,7 @@ impl<'a> Formatter<'a> {
                 }
                 self.output.push_str(name);
             }
-            SurfaceExpression::DotAccess { expr, field, .. } => {
+            SurfaceExpression::Field { expr, field, .. } => {
                 if let Some(target) = expr {
                     self.format_expr(target, false);
                 }
@@ -743,7 +743,7 @@ impl<'a> Formatter<'a> {
                 // `%`-prefixed refs already include `%` in the stored name.
                 name.len() + if *escaped { 1 } else { 0 }
             }
-            SurfaceExpression::DotAccess { expr, field, .. } => {
+            SurfaceExpression::Field { expr, field, .. } => {
                 let field_len = match field {
                     crate::ast::DotKey::Ident(s) => s.len(),
                     crate::ast::DotKey::Int(n) => n.to_string().len(),
@@ -926,7 +926,7 @@ impl<'a> Formatter<'a> {
                 }
                 LiteralPattern::Str(s) => 2 + s.len(), // "string" (approximate, doesn't account for escapes)
             },
-            Pattern::Dict { fields, rest } => {
+            Pattern::Dict { fields, .. } => {
                 let mut width = 2; // []
                 for (i, (key, pat)) in fields.iter().enumerate() {
                     if i > 0 {
@@ -934,12 +934,6 @@ impl<'a> Formatter<'a> {
                     }
                     width += key.len() + 2; // "key: "
                     width += self.measure_pattern_width(&pat.node);
-                }
-                if *rest {
-                    if !fields.is_empty() {
-                        width += 2; // "  "
-                    }
-                    width += 3; // "..."
                 }
                 width
             }
@@ -1307,7 +1301,7 @@ impl<'a> Formatter<'a> {
                     self.output.push('"');
                 }
             },
-            Pattern::Dict { fields, rest } => {
+            Pattern::Dict { fields, .. } => {
                 self.output.push('[');
                 for (i, (key, pat)) in fields.iter().enumerate() {
                     if i > 0 {
@@ -1316,12 +1310,6 @@ impl<'a> Formatter<'a> {
                     self.output.push_str(key);
                     self.output.push_str(": ");
                     self.format_pattern(pat);
-                }
-                if *rest {
-                    if !fields.is_empty() {
-                        self.output.push_str("  ");
-                    }
-                    self.output.push_str("...");
                 }
                 self.output.push(']');
             }
@@ -1448,9 +1436,9 @@ impl<'a> Formatter<'a> {
                     Some('a') // placeholder
                 }
             }
-            SurfaceExpression::DotAccess { .. } => Some('a'), // starts with whatever the base expr is
-            SurfaceExpression::Pipe { .. } => Some('a'),      // starts with lhs
-            SurfaceExpression::Sequential(_) => Some('('),    // starts with (seq
+            SurfaceExpression::Field { .. } => Some('a'), // starts with whatever the base expr is
+            SurfaceExpression::Pipe { .. } => Some('a'),  // starts with lhs
+            SurfaceExpression::Sequential(_) => Some('('), // starts with (seq
             SurfaceExpression::Dict(_)
             | SurfaceExpression::Call { .. }
             | SurfaceExpression::Fn { .. } => Some('['),
@@ -2160,6 +2148,30 @@ mod tests {
         assert_eq!(
             formatted, reformatted,
             "multi-module uses: header must be idempotent under repeated formatting"
+        );
+    }
+
+    #[test]
+    fn test_format_match_dict_pattern_with_rest() {
+        // Dict patterns are open by default (rest: true), so the formatter must NOT emit `...`
+        // for the default open case — `...` is omitted since open matching is canonical.
+        // parse→format→parse must be idempotent: `[a: v]` stays `[a: v]` (no trailing `...`).
+        let input = "[match $x [ok: v]: $v _: 0]";
+        let formatted = format_source(input).unwrap();
+        // The formatted output must NOT include `...` in the dict pattern (open is default/canonical)
+        assert!(
+            !formatted.contains("..."),
+            "dict pattern must NOT include trailing ... for default open matching, got: {formatted:?}"
+        );
+        assert!(
+            formatted.contains("[ok: v]"),
+            "dict pattern should format as [ok: v] without rest marker, got: {formatted:?}"
+        );
+        // Verify idempotency
+        let reformatted = format_source(&formatted).unwrap();
+        assert_eq!(
+            formatted, reformatted,
+            "dict pattern formatting must be idempotent"
         );
     }
 }

@@ -338,12 +338,12 @@ fn collect_dependencies(
                     }
                 }
             }
-            SurfaceExpression::DotAccess {
+            SurfaceExpression::Field {
                 expr: Some(inner), ..
             } => {
                 worklist.push(inner);
             }
-            SurfaceExpression::DotAccess { expr: None, .. } => {}
+            SurfaceExpression::Field { expr: None, .. } => {}
             SurfaceExpression::Pipe { lhs, rhs } => {
                 worklist.push(lhs);
                 worklist.push(rhs);

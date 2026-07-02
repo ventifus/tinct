@@ -142,10 +142,10 @@ pub(crate) fn stq_walk_node_unknown(node: &SurfaceNode, spans: &mut HashSet<(usi
                 stq_walk_node_unknown(e, spans);
             }
         }
-        SurfaceExpression::DotAccess {
+        SurfaceExpression::Field {
             expr: Some(inner), ..
         } => stq_walk_node_unknown(inner, spans),
-        SurfaceExpression::DotAccess { expr: None, .. } => {}
+        SurfaceExpression::Field { expr: None, .. } => {}
         SurfaceExpression::Pipe { lhs, rhs } => {
             stq_walk_node_unknown(lhs, spans);
             stq_walk_node_unknown(rhs, spans);
@@ -284,10 +284,10 @@ pub(crate) fn stq_walk_node_overbroad(
                 stq_walk_node_overbroad(e, type_map, diagnostics);
             }
         }
-        SurfaceExpression::DotAccess {
+        SurfaceExpression::Field {
             expr: Some(inner), ..
         } => stq_walk_node_overbroad(inner, type_map, diagnostics),
-        SurfaceExpression::DotAccess { expr: None, .. } => {}
+        SurfaceExpression::Field { expr: None, .. } => {}
         SurfaceExpression::Pipe { lhs, rhs } => {
             stq_walk_node_overbroad(lhs, type_map, diagnostics);
             stq_walk_node_overbroad(rhs, type_map, diagnostics);
@@ -429,10 +429,10 @@ pub(crate) fn stq_collect_node_spans(node: &SurfaceNode, map: &mut HashMap<(usiz
                 stq_collect_node_spans(e, map);
             }
         }
-        SurfaceExpression::DotAccess {
+        SurfaceExpression::Field {
             expr: Some(inner), ..
         } => stq_collect_node_spans(inner, map),
-        SurfaceExpression::DotAccess { expr: None, .. } => {}
+        SurfaceExpression::Field { expr: None, .. } => {}
         SurfaceExpression::Pipe { lhs, rhs } => {
             stq_collect_node_spans(lhs, map);
             stq_collect_node_spans(rhs, map);
@@ -581,10 +581,10 @@ pub(crate) fn scan_explicit_unknown_t011(
                     emit_t011_for_node(e, diagnostics);
                 }
             }
-            SurfaceExpression::DotAccess {
+            SurfaceExpression::Field {
                 expr: Some(inner), ..
             } => emit_t011_for_node(inner, diagnostics),
-            SurfaceExpression::DotAccess { expr: None, .. } => {}
+            SurfaceExpression::Field { expr: None, .. } => {}
             SurfaceExpression::Pipe { lhs, rhs } => {
                 emit_t011_for_node(lhs, diagnostics);
                 emit_t011_for_node(rhs, diagnostics);

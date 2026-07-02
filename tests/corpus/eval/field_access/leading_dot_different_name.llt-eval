@@ -1,0 +1,4 @@
+# Leading-dot accesses parent scope by field name
+[x: 42  inner: [y: .x]]
+=== out
+Dict({"x": Int(42), "inner": Dict({"y": Int(42)})})

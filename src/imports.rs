@@ -600,10 +600,10 @@ fn collect_include_paths_from_node(
                 collect_include_paths_from_node(child, paths);
             }
         }
-        SurfaceExpression::DotAccess { expr: Some(target), .. } => {
+        SurfaceExpression::Field { expr: Some(target), .. } => {
             collect_include_paths_from_node(target, paths);
         }
-        SurfaceExpression::DotAccess { expr: None, .. } => {}
+        SurfaceExpression::Field { expr: None, .. } => {}
         SurfaceExpression::Quote(inner)
         | SurfaceExpression::Unquote(inner)
         | SurfaceExpression::UnquoteSplice(inner) => {
@@ -1008,10 +1008,10 @@ fn apply_include_type_to_node(
                 apply_include_type_to_node(child, include_bindings, type_map);
             }
         }
-        SurfaceExpression::DotAccess { expr: Some(target), .. } => {
+        SurfaceExpression::Field { expr: Some(target), .. } => {
             apply_include_type_to_node(target, include_bindings, type_map);
         }
-        SurfaceExpression::DotAccess { expr: None, .. } => {}
+        SurfaceExpression::Field { expr: None, .. } => {}
         SurfaceExpression::Quote(inner)
         | SurfaceExpression::Unquote(inner)
         | SurfaceExpression::UnquoteSplice(inner) => {
