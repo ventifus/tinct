@@ -9,4 +9,4 @@
   result: [+ "a" "b"]
 ]
 === error
-no match for types
+[E013] no instance for Addable (String, String)
