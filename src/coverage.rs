@@ -459,7 +459,9 @@ pub fn ast_pattern_to_coverage(
 ) -> CoveragePattern {
     match pat {
         ast::Pattern::Wildcard | ast::Pattern::Pin(..) => CoveragePattern::Wildcard,
-        ast::Pattern::TypeAssertPending { annotation, inner, .. } => {
+        ast::Pattern::TypeAssertPending {
+            annotation, inner, ..
+        } => {
             // Resolve the pending annotation the same way lower_pattern does,
             // so coverage sees the actual type rather than treating it as wildcard.
             let resolved_type = if let ast::Annotation::Simple(name) = &annotation.node {

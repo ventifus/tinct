@@ -7,8 +7,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::ast::{
-    Pattern, Span, Spanned, SurfaceDeclaration, SurfaceDocument, SurfaceExpression,
-    SurfaceItem, SurfaceNode, SurfaceProgram,
+    Pattern, Span, Spanned, SurfaceDeclaration, SurfaceDocument, SurfaceExpression, SurfaceItem,
+    SurfaceNode, SurfaceProgram,
 };
 // All production inference helpers now walk SurfaceExpression natively.
 // No Expr bridge needed — tests use parse_surface_expression directly.
@@ -342,10 +342,7 @@ pub(crate) fn extract_constructor_constants_from_body(
 /// - `expects_resolved`: Span → Type map for `--- expects: @Type` pipeline contracts
 pub async fn typecheck_surface_program_annotation_table(
     program: &SurfaceProgram,
-) -> (
-    Vec<TypeError>,
-    HashMap<crate::ast::Span, Type>,
-) {
+) -> (Vec<TypeError>, HashMap<crate::ast::Span, Type>) {
     let mut errors = Vec::new();
     // get_builtin_core_type_env returns Arc<TypeEnv>; convert to Rc<TypeEnv> for the internal
     // type-checking chain (TypeEnv::with_parent uses Rc).
@@ -602,6 +599,8 @@ pub async fn typecheck_surface_program_with_env(
             result_env.insert_instance(decl.clone());
         }
     }
+
+    diagnostics.sort_by(|a, b| a.message.cmp(&b.message));
 
     (
         errors,
@@ -1696,9 +1695,21 @@ async fn register_type_aliases(
                             doc: None,
                             inner_schemes: None,
                         };
-                        // Only the qualified form (e.g., "Result.Ok") is registered here.
-                        // Unqualified aliases (e.g., Ok: Result.Ok) are defined in prelude.llt.
-                        target_env.insert_scheme(qualified_tag, scheme);
+                        // Register the qualified form (e.g., "Result.Ok") for pattern matching
+                        // and dot-access from the type dict (Color.Red, Option.Some, etc.).
+                        target_env.insert_scheme(qualified_tag.clone(), scheme.clone());
+                        // Also register the unqualified form (e.g., "Ok") so that bare constructor
+                        // references in function bodies and expression position typecheck without
+                        // "undefined variable" errors. The desugar pass injects bare constructor
+                        // names as runtime bindings; the type checker must see the same unqualified
+                        // name to avoid false positives (B-296, T-1048).
+                        let bare = qualified_tag
+                            .split_once('.')
+                            .map(|(_, bare)| bare)
+                            .unwrap_or(&qualified_tag);
+                        if bare != qualified_tag {
+                            target_env.insert_scheme(bare.to_string(), scheme);
+                        }
                     }
                 }
                 Err(e) => errors.push(e),
@@ -1759,10 +1770,7 @@ async fn infer_if(
 /// Recursion mirrors the structure of `elaborate_pattern` exactly so the parallel walk
 /// stays in sync. Sub-patterns (inner, Or branches, Constructor binding, Dict fields,
 /// Seq head/tail) are walked in the same order as `elaborate_pattern`.
-fn record_pattern_elaborations(
-    elaborated: &Pattern,
-    original: &Pattern,
-) {
+fn record_pattern_elaborations(elaborated: &Pattern, original: &Pattern) {
     match (elaborated, original) {
         // The key case: TypeAssertPending was resolved to TypeAssert.
         // Write the resolved type inline on the original pattern's `resolved` field.
@@ -1957,7 +1965,9 @@ pub(crate) fn infer_surface_expr<'a>(
             SurfaceExpression::Float(_) => Ok(Type::Float),
             SurfaceExpression::Str(s) => Ok(Type::StringLiteral(s.clone())),
 
-            SurfaceExpression::VarRef { name, resolution, .. } => {
+            SurfaceExpression::VarRef {
+                name, resolution, ..
+            } => {
                 // Fast path: if the resolver wrote de Bruijn coordinates into the VarRef,
                 // use slot-indexed lookup (O(1)) rather than the HashMap-based `get()`.
                 // Falls back to name-based `get()` when coords are absent (bootstrap, LSP,
@@ -2521,7 +2531,10 @@ pub(crate) fn infer_surface_expr<'a>(
                                                     &type_arg_refs,
                                                 );
                                             // Write the instance binding name inline on the VarRef node.
-                                            if let SurfaceExpression::VarRef { call_dispatch, .. } = &func.expr {
+                                            if let SurfaceExpression::VarRef {
+                                                call_dispatch, ..
+                                            } = &func.expr
+                                            {
                                                 call_dispatch.set(binding_name);
                                             }
                                         }
@@ -2836,10 +2849,7 @@ pub(crate) fn infer_surface_expr<'a>(
                     // Persist elaboration: record annotation-span → resolved type in the
                     // Write resolved types inline on TypeAssertPending nodes so lower.rs
                     // can convert TypeAssertPending → TypeAssert in CoreMatchArm patterns (B-338).
-                    record_pattern_elaborations(
-                        &elaborated_pat,
-                        &arm.pattern.node,
-                    );
+                    record_pattern_elaborations(&elaborated_pat, &arm.pattern.node);
 
                     let mut pat_bindings: Vec<(String, Type)> = Vec::new();
                     collect_pattern_bindings(&elaborated_pat, &arm_scrutinee_ty, &mut pat_bindings);

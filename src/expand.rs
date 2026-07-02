@@ -38,9 +38,9 @@ use std::sync::{Arc, RwLock};
 
 use crate::ast::{Param, Span, Spanned, SurfaceEntry, SurfaceNamedArg, SurfaceNode};
 use crate::error::{EvalError, EvalResult};
-use crate::rust_span;
 use crate::eval::{self, EvalContext};
 use crate::eval_materialize::force_dict_tree;
+use crate::rust_span;
 use crate::surface_convert::dict_to_surface_node;
 use crate::value::{Environment, Thunk, Value};
 
@@ -646,7 +646,10 @@ async fn expand_surface_expr_inner(
                     entry.span.clone(),
                 ));
             }
-            Ok(Arc::new(SurfaceNode::new(SurfaceExpression::Dict(expanded_entries), span)))
+            Ok(Arc::new(SurfaceNode::new(
+                SurfaceExpression::Dict(expanded_entries),
+                span,
+            )))
         }
 
         SurfaceExpression::Fn {
@@ -667,7 +670,9 @@ async fn expand_surface_expr_inner(
             )))
         }
 
-        SurfaceExpression::TypeAssert { annotation, expr, .. } => {
+        SurfaceExpression::TypeAssert {
+            annotation, expr, ..
+        } => {
             let expanded = expand_surface_expr(expr, env, ctx, stdlib_env).await?;
             Ok(Arc::new(SurfaceNode::new(
                 SurfaceExpression::TypeAssert {
@@ -706,17 +711,26 @@ async fn expand_surface_expr_inner(
 
         SurfaceExpression::Quote(inner) => {
             let expanded = expand_surface_expr(inner, env, ctx, stdlib_env).await?;
-            Ok(Arc::new(SurfaceNode::new(SurfaceExpression::Quote(expanded), span)))
+            Ok(Arc::new(SurfaceNode::new(
+                SurfaceExpression::Quote(expanded),
+                span,
+            )))
         }
 
         SurfaceExpression::Unquote(inner) => {
             let expanded = expand_surface_expr(inner, env, ctx, stdlib_env).await?;
-            Ok(Arc::new(SurfaceNode::new(SurfaceExpression::Unquote(expanded), span)))
+            Ok(Arc::new(SurfaceNode::new(
+                SurfaceExpression::Unquote(expanded),
+                span,
+            )))
         }
 
         SurfaceExpression::UnquoteSplice(inner) => {
             let expanded = expand_surface_expr(inner, env, ctx, stdlib_env).await?;
-            Ok(Arc::new(SurfaceNode::new(SurfaceExpression::UnquoteSplice(expanded), span)))
+            Ok(Arc::new(SurfaceNode::new(
+                SurfaceExpression::UnquoteSplice(expanded),
+                span,
+            )))
         }
 
         SurfaceExpression::PatternDecl { bindings } => {
@@ -724,7 +738,10 @@ async fn expand_surface_expr_inner(
             for b in bindings {
                 expanded.push(expand_surface_expr(b, env, ctx, stdlib_env).await?);
             }
-            Ok(Arc::new(SurfaceNode::new(SurfaceExpression::PatternDecl { bindings: expanded }, span)))
+            Ok(Arc::new(SurfaceNode::new(
+                SurfaceExpression::PatternDecl { bindings: expanded },
+                span,
+            )))
         }
 
         SurfaceExpression::LetDecl { bindings } => {
@@ -732,7 +749,10 @@ async fn expand_surface_expr_inner(
             for b in bindings {
                 expanded.push(expand_surface_expr(b, env, ctx, stdlib_env).await?);
             }
-            Ok(Arc::new(SurfaceNode::new(SurfaceExpression::LetDecl { bindings: expanded }, span)))
+            Ok(Arc::new(SurfaceNode::new(
+                SurfaceExpression::LetDecl { bindings: expanded },
+                span,
+            )))
         }
 
         SurfaceExpression::CaseArm {
@@ -1164,7 +1184,11 @@ async fn expand_macro_call_surface(
 
     // If the expanded node has no real user source (no file or Rust-generated file),
     // inherit the macro call site span so errors point to the user's call.
-    let has_user_source = expanded_node.span.file.as_ref().map_or(false, |f| !f.content.is_empty());
+    let has_user_source = expanded_node
+        .span
+        .file
+        .as_ref()
+        .map_or(false, |f| !f.content.is_empty());
     if !has_user_source {
         expanded_node = Arc::new(SurfaceNode::new(
             expanded_node.expr.clone(),
@@ -1203,7 +1227,10 @@ fn extract_inject_names_surface(params: &Arc<SurfaceNode>) -> Vec<String> {
     use crate::ast::{Annotation, SurfaceExpression};
 
     // TypeAssert wrapping LetDecl — `[@[inject: ...] [let ...]]`
-    if let SurfaceExpression::TypeAssert { annotation, expr, .. } = &params.expr {
+    if let SurfaceExpression::TypeAssert {
+        annotation, expr, ..
+    } = &params.expr
+    {
         if matches!(expr.expr, SurfaceExpression::LetDecl { .. }) {
             if let Annotation::PropertyDict(entries) = &annotation.node {
                 for entry in entries {

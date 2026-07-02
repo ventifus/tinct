@@ -246,7 +246,7 @@
     [final-env: [builtin-reduce
       [fn [let env doc]
         [resolved: [builtin-resolve doc env: env]]
-        [builtin-eval resolved.doc env: env table: resolved.table]]
+        [builtin-eval resolved.doc env: env]]
       seed-env
       expanded.documents]]
     # Typecheck updates inference_env in the TypeContext so user files see this file's types.
@@ -311,13 +311,13 @@
       [builtin-reduce
         [fn [let env sub-doc]
           [sub-resolved: [builtin-resolve sub-doc env: env]]
-          [builtin-eval sub-resolved.doc env: env table: sub-resolved.table]]
+          [builtin-eval sub-resolved.doc env: env]]
         prelude
         expanded.documents]]]
     [full-env: [builtin-extend-env full-env [include: ctx-include]]]
     # Per-document resolve against the fully-constructed env for correct de Bruijn coords.
     [doc-resolved: [builtin-resolve doc env: full-env]]
-    [result-env: [builtin-eval doc-resolved.doc env: full-env table: doc-resolved.table]]
+    [result-env: [builtin-eval doc-resolved.doc env: full-env]]
     [builtin-merge state
       [percent: result-env.%
        named:   [update-named state result-env.% doc]]]]

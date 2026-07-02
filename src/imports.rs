@@ -13,9 +13,9 @@ use std::sync::Arc;
 
 use crate::ast::{Span, SurfaceExpression, SurfaceNode, SurfaceProgram};
 use crate::desugar;
-use crate::rust_span;
 use crate::expand;
 use crate::parser;
+use crate::rust_span;
 use crate::typecheck::{typecheck_surface_program_with_env, TypeMap};
 use crate::types::{Row, Type, TypeEnv};
 
@@ -45,7 +45,6 @@ thread_local! {
         const { RefCell::new(None) };
     static BUILDING_PRELUDE_TYPE_STAGE_ENV: RefCell<bool> = const { RefCell::new(false) };
 }
-
 
 /// Build and cache the prelude type-stage evaluation environment.
 ///
@@ -84,10 +83,7 @@ async fn build_prelude_type_stage_env_inner(
         let mut env_write = bootstrap_env.write().unwrap();
         for def in crate::builtins_core::core_builtins() {
             let name = def.name.to_string();
-            let thunk = Arc::new(Thunk::new_materialized(
-                Value::Builtin(def),
-                rust_span!(),
-            ));
+            let thunk = Arc::new(Thunk::new_materialized(Value::Builtin(def), rust_span!()));
             env_write.insert(name, thunk);
         }
     }
@@ -127,21 +123,16 @@ async fn build_prelude_type_stage_env_inner(
         let doc_env = Arc::new(std::sync::RwLock::new(Environment::with_parent(
             Arc::clone(&current_env),
         )));
-        let result_thunk = match crate::eval::eval_document_exprs(
-            &expr_nodes,
-            Arc::clone(&doc_env),
-            &ctx,
-        )
-        .await
-        {
-            Ok(t) => t,
-            Err(e) => {
-                // Type-stage doc evaluation must not silently swallow errors.
-                // A failure here means prelude's type-stage section is broken.
-                eprintln!("prelude type-stage eval error: {e}");
-                return None;
-            }
-        };
+        let result_thunk =
+            match crate::eval::eval_document_exprs(&expr_nodes, Arc::clone(&doc_env), &ctx).await {
+                Ok(t) => t,
+                Err(e) => {
+                    // Type-stage doc evaluation must not silently swallow errors.
+                    // A failure here means prelude's type-stage section is broken.
+                    eprintln!("prelude type-stage eval error: {e}");
+                    return None;
+                }
+            };
         let val = match crate::eval::materialize(&result_thunk, None, &ctx).await {
             Ok(v) => v,
             Err(e) => {
@@ -845,13 +836,7 @@ async fn resolve_includes(
         // typecheck_surface_program_with_env takes Arc<TypeEnv> — convert from Rc.
         let typecheck_env_arc = Arc::new((*typecheck_env).clone());
         let (type_errors, type_map, _doc_map, _scheme_map, _diagnostics, _state, _final_env) =
-            typecheck_surface_program_with_env(
-                &program,
-                typecheck_env_arc,
-                false,
-                None,
-            )
-            .await;
+            typecheck_surface_program_with_env(&program, typecheck_env_arc, false, None).await;
 
         // Stdlib includes are user code — their type errors are surfaced like any other.
         if !type_errors.is_empty() {

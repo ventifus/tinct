@@ -894,7 +894,9 @@ impl<'a> Formatter<'a> {
         match pattern {
             Pattern::Wildcard => 1,
             Pattern::Pin(name, _) => name.len(), // bare name (T-1154)
-            Pattern::TypeAssertPending { annotation, inner, .. } => {
+            Pattern::TypeAssertPending {
+                annotation, inner, ..
+            } => {
                 // [@Ann inner] or [@Ann] — 3 for "[@" + "]", annotation width, optional inner
                 let ann_width = format!("{}", annotation.node).len();
                 let inner_width = match inner {
@@ -1334,7 +1336,9 @@ impl<'a> Formatter<'a> {
                     self.output.push_str(tag);
                 }
             }
-            Pattern::TypeAssertPending { annotation, inner, .. } => {
+            Pattern::TypeAssertPending {
+                annotation, inner, ..
+            } => {
                 self.output.push_str("[@");
                 self.format_annotation(annotation);
                 if let Some(inner_pat) = inner {

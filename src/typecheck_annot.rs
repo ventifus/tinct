@@ -8,9 +8,10 @@ use super::{check_surface_expr, contains_unknown_or_top, infer_surface_expr, Typ
 use crate::ast::{Annotation, Span, Spanned, SurfaceEntry, SurfaceExpression, SurfaceNode};
 use crate::rust_span;
 use crate::type_class::ConstraintArg;
+use crate::type_def::TyConDef;
 use crate::type_def::Variance;
 use crate::type_errors::{GenericTypeError, TypeErrorTyped, UndefinedType};
-use crate::types::{Constraint, InferState, Kind, Row, Type, TypeAlias, TypeEnv, TypeError};
+use crate::types::{Constraint, InferState, Kind, Row, Type, TypeEnv, TypeError};
 use crate::value::{HashableValue, Thunk, Value};
 
 /// Convert a variance annotation name to a `Variance` value (T-953).
@@ -1889,8 +1890,8 @@ fn entries_look_like_type_dict(entries: &[Spanned<SurfaceEntry>]) -> bool {
 ///
 /// Given `Pair: [type [a] [first: a second: a]]` and args `[Int]`,
 /// builds substitution `{a -> Int}` and applies to body to get `[first: Int second: Int]`.
-async fn instantiate_type_alias(
-    alias: &TypeAlias,
+async fn instantiate_tycon_def(
+    alias: &TyConDef,
     type_args: &[Type],
     state: &mut InferState,
 ) -> Result<Type, TypeError> {
@@ -2132,7 +2133,7 @@ pub(crate) fn resolve_type_name_with_guard(
     }
 
     // Uppercase type name — check for type alias
-    if let Some(alias) = env.get_type_alias(name) {
+    if let Some(alias) = env.lookup_tycon_def(name) {
         // Check if we're in a recursive expansion
         if recursion_guard.contains(name) {
             // Recursive reference detected — return a fresh type variable as the mu-variable
@@ -2320,7 +2321,7 @@ pub(crate) fn resolve_type_name(
                     let in_params = ann_mapping.as_ref().is_some_and(|m| m.contains_key(name));
                     if strict && !in_params && !params.contains_key(name) {
                         // Name not declared as a type parameter — check if it's a scope reference.
-                        if env.get_type_alias(name).is_none() && env.lookup_tycon_def(name).is_none() {
+                        if env.lookup_tycon_def(name).is_none() {
                             return Err(TypeErrorTyped::Generic(GenericTypeError {
                                 message: format!(
                                     "undefined name '{name}' in type alias body — \
@@ -2396,15 +2397,13 @@ pub(crate) fn resolve_type_name(
                 }
             } else {
                 // Uppercase type name — check for type alias
-                if let Some(alias) = env.get_type_alias(name) {
+                if let Some(alias) = env.lookup_tycon_def(name) {
                     // Nominal ADT check must happen before the arity check so that parameterized
                     // nominal ADTs (e.g. Result, Seq, Maybe) can be referenced bare as type
                     // constructors in HKT-style instance arm annotations ([let f@Result]).
                     // Returns TyCon(name) which UNIFY-TYCON-EXPAND can match against variants.
-                    if let Some(def) = env.lookup_tycon_def(name) {
-                        if !def.constructors.is_empty() || def.builtin_type.is_some() {
-                            return Ok(Type::TyCon(name.to_string()));
-                        }
+                    if !alias.constructors.is_empty() || alias.builtin_type.is_some() {
+                        return Ok(Type::TyCon(name.to_string()));
                     }
 
                     // Check arity — bare alias name must have zero parameters for non-ADT aliases.
@@ -3289,7 +3288,7 @@ pub(crate) async fn resolve_type_expr(
 
             // Check if this is a parameterized type alias application: [AliasName Arg1 Arg2]
             if let SurfaceExpression::VarRef { name, .. } = &func.expr {
-                if let Some(alias) = env.get_type_alias(name) {
+                if let Some(alias) = env.lookup_tycon_def(name) {
                     // Resolve all type arguments
                     let mut type_args = Vec::new();
                     for arg in args {
@@ -3323,7 +3322,7 @@ pub(crate) async fn resolve_type_expr(
                     }
 
                     // Build substitution and apply to body
-                    return Box::pin(instantiate_type_alias(&alias, &type_args, state)).await;
+                    return Box::pin(instantiate_tycon_def(alias, &type_args, state)).await;
                 }
             }
 
@@ -3713,7 +3712,7 @@ pub(crate) async fn resolve_type_dict(
         if let Some(first) = entries.first() {
             if first.node.key.is_none() {
                 if let SurfaceExpression::VarRef { name, .. } = &first.node.value.expr {
-                    if let Some(alias) = env.get_type_alias(name) {
+                    if let Some(alias) = env.lookup_tycon_def(name) {
                         if !alias.params.is_empty() {
                             let mut type_args = Vec::new();
                             for entry in &entries[1..] {
@@ -3754,8 +3753,7 @@ pub(crate) async fn resolve_type_dict(
                                     call_stack: vec![],
                                 }));
                             }
-                            return Box::pin(instantiate_type_alias(&alias, &type_args, state))
-                                .await;
+                            return Box::pin(instantiate_tycon_def(alias, &type_args, state)).await;
                         }
                     }
                 }
@@ -4004,6 +4002,46 @@ pub(crate) async fn resolve_type_dict(
                 }
             }
         }
+    }
+
+    // Multi-entry all-positional union type: @[Int Null], @[String Int Bool], @[a Null], etc.
+    //
+    // When a PropertyDict annotation has 2+ positional entries and the entries did not match
+    // any of the special-case handlers above (BAS keywords, nominal variants, type constructor
+    // application), treat each positional entry as a union member.
+    //
+    // This handles annotations like `fn@[Int Null]` (Union(Int, Null)) and
+    // `x@[String Int]` (Union(String, Int)) in parameter/return type position.
+    //
+    // Note: single-entry positional cases are handled below; 3+ entries for nominal variants
+    // with positional payloads fall through to here. We must be careful not to catch genuine
+    // constructor patterns here — but those are caught by the nominal variant block above.
+    if all_positional && entries.len() >= 2 {
+        let mut members = Vec::new();
+        let mut all_resolved = true;
+        for entry in entries {
+            match resolve_type_expr(
+                &entry.node.value,
+                env,
+                state,
+                constraints,
+                ann_mapping,
+                row_ann_mapping,
+                type_params_scope,
+            )
+            .await
+            {
+                Ok(ty) => members.push(ty),
+                Err(_) => {
+                    all_resolved = false;
+                    break;
+                }
+            }
+        }
+        if all_resolved && !members.is_empty() {
+            return Ok(Type::normalize_union(members));
+        }
+        // If resolution fails, fall through to the general path (which will error).
     }
 
     // Single positional entry that is NOT a VarRef: delegate to resolve_type_expr.
@@ -4430,7 +4468,8 @@ fn typenode_value_to_type<'a>(
                         // `fields` is a Dict (Map String TypeNode) — string-keyed, values are TypeNodes.
                         let record_fields = match fields_val {
                             Value::Dict(ref dict) => {
-                                let mut out: indexmap::IndexMap<String, Type> = indexmap::IndexMap::new();
+                                let mut out: indexmap::IndexMap<String, Type> =
+                                    indexmap::IndexMap::new();
                                 for (key, thunk_id) in dict {
                                     if let HashableValue::Str(k) = key {
                                         let thunk = ctx.get_thunk(*thunk_id);

@@ -1,0 +1,6 @@
+# T-1425: mu combinator — non-contractive bare recursive reference
+# A bare RecursiveRef μa.a is non-contractive: the self-reference is not
+# shielded by any guarding constructor. This must produce a type error
+# (rejected at construction time by the contractiveness check).
+[@[mu a a] 42]
+=== warn

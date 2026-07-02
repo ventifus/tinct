@@ -1,0 +1,10 @@
+# T-1425: expand_named — self-referential alias using mu
+# A parameterized type Tree declares constructors that reference [Tree a]
+# recursively. expand_named detects the self-reference (Arc::ptr_eq cycle)
+# and wraps the expanded body in Type::Recursive. At runtime, constructors
+# are injected normally and the value can be constructed and accessed.
+[Tree: [type [let a] [Node value: a left: [Tree a] right: [Tree a]] Leaf]]
+[t: [Tree.Node value: 1 left: Tree.Leaf right: Tree.Leaf]]
+t.value
+=== out
+Int(1)

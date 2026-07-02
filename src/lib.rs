@@ -103,8 +103,8 @@ use std::sync::Arc;
 pub use ast::{Annotation, Param, Position, SourceFile, Span, Spanned};
 /// Surface AST types for the runtime-v2 pipeline.
 pub use ast::{
-    Resolution, SurfaceEntry, SurfaceExpression, SurfaceNode, SurfaceProgram,
-    TypeAnnotation, SlotAnnotation, CallDispatch, Provenance, MacroProvenance,
+    CallDispatch, MacroProvenance, Provenance, Resolution, SlotAnnotation, SurfaceEntry,
+    SurfaceExpression, SurfaceNode, SurfaceProgram, TypeAnnotation,
 };
 /// Parser entry points and error type.
 pub use parser::{
@@ -157,8 +157,6 @@ pub use value::{
     string_val, ChannelInner, ClockCapInner, DirPerms, Environment, HashableValue, NetCapEntry,
     Thunk, ThunkId, Value,
 };
-
-
 
 /// Run the loader.llt bootstrap pipeline with a pre-configured environment.
 ///
@@ -241,13 +239,9 @@ pub async fn run_loader_pipeline(
     // Evaluate loader.llt. env already contains all stdlib builtins, %programs, %args,
     // %cwd, %libdir, and any other caps injected by the caller.
     // %stdout and %stderr are defined in loader.llt Dict 2 as protocol dicts.
-    let loader_thunk = eval::eval_surface_file(
-        &loader_program,
-        Arc::clone(&env),
-        eval_ctx,
-    )
-    .await
-    .map_err(|e| format!("{e}"))?;
+    let loader_thunk = eval::eval_surface_file(&loader_program, Arc::clone(&env), eval_ctx)
+        .await
+        .map_err(|e| format!("{e}"))?;
 
     // Materialize the loader result. The init program's final expression IS the
     // pipeline execution (a top-level [>> ...] Sequential node, not a dict entry),
@@ -305,6 +299,7 @@ pub async fn typecheck_source(input: &str) -> Result<(), String> {
         for d in &diagnostics {
             msgs.push(d.message.clone());
         }
+        msgs.sort();
         Err(msgs.join("\n"))
     }
 }
@@ -597,7 +592,6 @@ pub fn visit_value<'a, V: ValueVisitor + 'a>(
         }
     })
 }
-
 
 /// Reformat compact JSON into a pretty-printed string with 2-space indentation.
 ///
@@ -904,12 +898,7 @@ mod tests {
         let ctx = test_ctx().await;
 
         // Evaluate: this should fail because $undefined_var is not defined.
-        let eval_result = eval::eval_surface_file(
-            &program,
-            Arc::clone(&env),
-            &ctx,
-        )
-        .await;
+        let eval_result = eval::eval_surface_file(&program, Arc::clone(&env), &ctx).await;
         assert!(
             eval_result.is_err(),
             "expected eval to fail for undefined variable"

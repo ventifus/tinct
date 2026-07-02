@@ -24,13 +24,13 @@ use indexmap::IndexMap;
 
 use crate::arena::{EnvArena, ThunkArena, ThunkId};
 use crate::ast::{
-    Annotation, CoreExpr, LiteralPattern, Param, Pattern, Span, Spanned,
-    SurfaceNode, SurfaceProgram,
+    Annotation, CoreExpr, LiteralPattern, Param, Pattern, Span, Spanned, SurfaceNode,
+    SurfaceProgram,
 };
-use crate::rust_span;
 use crate::builtins::MAX_COLLECT_SIZE;
 use crate::error::{EvalError, EvalResult};
 use crate::eval_core::extract_fn_annotation_extra;
+use crate::rust_span;
 use crate::types::{Row, Type};
 // Circular module dependency: this module calls builtins via function pointers stored in `Value::Builtin`.
 // builtins.rs imports `invoke_function` and `materialize` from this module.
@@ -314,14 +314,7 @@ pub async fn eval_surface_file(
     env: Arc<RwLock<Environment>>,
     ctx: &Arc<EvalContext>,
 ) -> EvalResult<Arc<Thunk>> {
-    eval_surface_file_with_input(
-        program,
-        env,
-        ctx,
-        &std::collections::HashMap::new(),
-        None,
-    )
-    .await
+    eval_surface_file_with_input(program, env, ctx, &std::collections::HashMap::new(), None).await
 }
 
 /// Evaluate a SurfaceProgram with an optional initial `%` value.
@@ -910,7 +903,6 @@ impl EvalContext {
         self.blame_map.lock().unwrap().get(&thunk_id).cloned()
     }
 
-
     /// Set the type constructor environment from type inference.
     /// Called after type checking to wire user-defined TyCon variance and structural rules
     /// to the evaluator's subtype checker. The OnceLock silently no-ops if already set —
@@ -1400,9 +1392,7 @@ fn value_to_surface_node(
     ctx: &Arc<EvalContext>,
 ) -> EvalResult<Arc<crate::ast::SurfaceNode>> {
     use crate::ast::{SurfaceExpression, SurfaceNode};
-    let make_node = |expr: SurfaceExpression| {
-        Arc::new(SurfaceNode::new(expr, span.clone()))
-    };
+    let make_node = |expr: SurfaceExpression| Arc::new(SurfaceNode::new(expr, span.clone()));
     match value {
         Value::Int(n) => Ok(make_node(SurfaceExpression::Int(*n))),
         Value::U64(n) => Ok(make_node(SurfaceExpression::U64(*n))),
@@ -1491,9 +1481,7 @@ fn eval_quote_preprocess<'a>(
     };
     Box::pin(async move {
         let span = node.span.clone();
-        let make_node = |expr: SurfaceExpression| {
-            Arc::new(SurfaceNode::new(expr, span.clone()))
-        };
+        let make_node = |expr: SurfaceExpression| Arc::new(SurfaceNode::new(expr, span.clone()));
 
         match &node.expr {
             SurfaceExpression::Unquote(inner) => {
@@ -1620,14 +1608,14 @@ fn eval_quote_preprocess<'a>(
             }
 
             // Leading-dot is a terminal in quote context — no sub-expression to preprocess.
-            SurfaceExpression::DotAccess { expr: None, field, .. } => {
-                Ok(make_node(SurfaceExpression::DotAccess {
-                    expr: None,
-                    field: field.clone(),
-                    resolution: crate::ast::Resolution::new(),
-                    field_slot: crate::ast::SlotAnnotation::new(),
-                }))
-            }
+            SurfaceExpression::DotAccess {
+                expr: None, field, ..
+            } => Ok(make_node(SurfaceExpression::DotAccess {
+                expr: None,
+                field: field.clone(),
+                resolution: crate::ast::Resolution::new(),
+                field_slot: crate::ast::SlotAnnotation::new(),
+            })),
 
             SurfaceExpression::Pipe { lhs, rhs } => {
                 let processed_lhs = eval_quote_preprocess(Arc::clone(lhs), env, ctx).await?;
@@ -1795,12 +1783,12 @@ pub(crate) async fn eval_surface_fn(
         return Err(EvalError::user_error(
             format!("macro transformer resolve errors: {}", msgs.join(", ")),
             span.clone(),
-        ).into());
+        )
+        .into());
     }
     let core_fn = crate::lower::lower(&fn_node);
     eval_core_expr(&core_fn, &env, ctx).await
 }
-
 
 /// Evaluate a CoreExpr to a thunk (transitional path for runtime-v2).
 ///
@@ -2106,7 +2094,6 @@ fn eval_core_expr<'a>(
                 span.clone(),
             )
             .into()),
-
         }
         // Note: type guards are now inline on AST nodes (TypeAnnotation OnceLock).
         // The lowerer wraps them in CoreExpr::TypeAssert. No runtime guard wrapping needed here.
@@ -3158,7 +3145,9 @@ pub(crate) fn match_pattern<'a>(
                 // Wildcard always matches, no bindings
                 Ok(Some(Arc::clone(env)))
             }
-            Pattern::TypeAssertPending { annotation, inner, .. } => {
+            Pattern::TypeAssertPending {
+                annotation, inner, ..
+            } => {
                 // FALLBACK RUNTIME ELABORATION (B-338):
                 //
                 // In the normal pipeline, `lower_pattern` in `lower.rs` converts
@@ -3652,7 +3641,6 @@ pub(crate) fn values_equal(
 mod tests {
     use super::*;
     use crate::ast::*;
-    use crate::error::ErrorKind;
     use crate::test_util::{sp, test_span};
     use crate::value::*;
 
@@ -3664,6 +3652,16 @@ mod tests {
         let env = empty_env();
         let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();
         EvalContext::new(base_dir, Arc::clone(&env), Arc::clone(&env), false)
+    }
+
+    /// Test helper for tests that need dot-access to work.
+    /// field-get (slot 0) and slot-get (slot 1) must be in scope for the resolver
+    /// and at the root env level for the evaluator's De Bruijn slot lookup.
+    fn core_env_and_ctx() -> (Arc<RwLock<Environment>>, Arc<EvalContext>) {
+        let env = crate::builtins::build_core_env();
+        let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();
+        let ctx = EvalContext::new(base_dir, Arc::clone(&env), Arc::clone(&env), false);
+        (env, ctx)
     }
 
     /// Test-only: evaluate a SurfaceNode via the lower→CoreExpr path.
@@ -3769,9 +3767,7 @@ mod tests {
     /// rv2-migrate-annotation migration (Phase 1 stub support).
     fn surf_ann_entry(key: &str, value_expr: SurfaceExpression) -> Spanned<SurfaceEntry> {
         let z = test_span(0, 0, 0, 0);
-        let mk = |expr| {
-            Arc::new(SurfaceNode::new(expr, z.clone()))
-        };
+        let mk = |expr| Arc::new(SurfaceNode::new(expr, z.clone()));
         Spanned::new(
             SurfaceEntry {
                 key: Some(mk(SurfaceExpression::Str(key.into()))),
@@ -4071,9 +4067,7 @@ mod tests {
         // Build via SurfaceNode to bypass parser duplicate-key detection.
         // The evaluator (eval_dict_core) must detect the duplicate key and return E030.
         let z = rust_span!();
-        let mk = |expr: SurfaceExpression| {
-            Arc::new(SurfaceNode::new(expr, z.clone()))
-        };
+        let mk = |expr: SurfaceExpression| Arc::new(SurfaceNode::new(expr, z.clone()));
         let node = mk(SurfaceExpression::Dict(vec![
             Spanned::new(
                 SurfaceEntry {
@@ -4642,9 +4636,7 @@ mod tests {
     /// All values must be parseable as surface expressions.
     fn surf_dict(entries: Vec<(&str, &str)>) -> Arc<SurfaceNode> {
         let z = rust_span!();
-        let mk = |expr: SurfaceExpression| {
-            Arc::new(SurfaceNode::new(expr, z.clone()))
-        };
+        let mk = |expr: SurfaceExpression| Arc::new(SurfaceNode::new(expr, z.clone()));
         let surf_entries = entries
             .into_iter()
             .map(|(k, v)| {
@@ -4666,8 +4658,7 @@ mod tests {
     async fn test_dot_access() {
         // [name: hello].name -> "hello"
         // Use a single ctx — ThunkIds from one ctx are invalid in another.
-        let ctx = test_ctx();
-        let env = empty_env();
+        let (env, ctx) = core_env_and_ctx();
         let dict_thunk = eval_for_test(
             surf_dict(vec![("name", "\"hello\"")]),
             Arc::clone(&env),
@@ -4690,18 +4681,20 @@ mod tests {
 
     #[tokio::test]
     async fn test_dot_access_missing_key() {
-        let env = empty_env();
-        let dict_thunk = eval_for_test(surf_dict(vec![("x", "1")]), Arc::clone(&env), &test_ctx())
+        let (env, ctx) = core_env_and_ctx();
+        let dict_thunk = eval_for_test(surf_dict(vec![("x", "1")]), Arc::clone(&env), &ctx)
             .await
             .unwrap();
-        let dict_val = materialize(&dict_thunk, None, &test_ctx()).await.unwrap();
+        let dict_val = materialize(&dict_thunk, None, &ctx).await.unwrap();
         env.write().unwrap().insert(
             "d".into(),
             Arc::new(Thunk::new_materialized(dict_val, test_span(1, 1, 1, 10))),
         );
 
-        let thunk = eval_str("$d.missing", env, &test_ctx()).await.unwrap();
-        let err = materialize(&thunk, None, &test_ctx()).await.unwrap_err();
+        let thunk = eval_str("$d.missing", Arc::clone(&env), &ctx)
+            .await
+            .unwrap();
+        let err = materialize(&thunk, None, &ctx).await.unwrap_err();
         assert!(
             err.to_string().contains("key not found: missing"),
             "got: {}",
@@ -4711,7 +4704,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_dot_access_on_non_dict() {
-        let env = empty_env();
+        let (env, ctx) = core_env_and_ctx();
         env.write().unwrap().insert(
             "x".into(),
             Arc::new(Thunk::new_materialized(
@@ -4720,8 +4713,8 @@ mod tests {
             )),
         );
 
-        let thunk = eval_str("$x.foo", env, &test_ctx()).await.unwrap();
-        let err = materialize(&thunk, None, &test_ctx()).await.unwrap_err();
+        let thunk = eval_str("$x.foo", Arc::clone(&env), &ctx).await.unwrap();
+        let err = materialize(&thunk, None, &ctx).await.unwrap_err();
         assert!(err.to_string().contains("expected"), "got: {}", err);
         assert!(err.to_string().contains("expected Dict"), "got: {}", err);
     }
@@ -4844,6 +4837,7 @@ mod tests {
                 name: "Int".into(),
                 escaped: false,
                 resolution: crate::ast::Resolution::new(),
+                call_dispatch: crate::ast::CallDispatch::new(),
             },
         )];
         let expr = Spanned::new(
@@ -4899,6 +4893,7 @@ mod tests {
                     name: "Int".into(),
                     escaped: false,
                     resolution: crate::ast::Resolution::new(),
+                    call_dispatch: crate::ast::CallDispatch::new(),
                 },
             ),
             surf_ann_entry("default", SurfaceExpression::Int(0)),
@@ -4930,6 +4925,7 @@ mod tests {
                 name: "Int".into(),
                 escaped: false,
                 resolution: crate::ast::Resolution::new(),
+                call_dispatch: crate::ast::CallDispatch::new(),
             },
         )];
         let expr = Spanned::new(
@@ -4967,8 +4963,7 @@ mod tests {
     async fn test_chained_dot_access() {
         // [outer: [inner: 99]].outer.inner -> 99
         // Use a single ctx throughout — ThunkIds from one ctx are invalid in another.
-        let ctx = test_ctx();
-        let env = empty_env();
+        let (env, ctx) = core_env_and_ctx();
         let dict_thunk = eval_str("[outer: [inner: 99]]", Arc::clone(&env), &ctx)
             .await
             .unwrap();
@@ -5024,11 +5019,7 @@ mod tests {
         let err = materialize(&x_thunk, Some(&mat_span), &ctx)
             .await
             .unwrap_err();
-        assert!(
-            err.to_string().contains("syntax error"),
-            "got: {}",
-            err
-        );
+        assert!(err.to_string().contains("syntax error"), "got: {}", err);
         assert_eq!(
             err.materialization_span,
             Some(mat_span),
@@ -5064,9 +5055,7 @@ mod tests {
         // Build via SurfaceNode: use a Float as an invalid dict key (Float is not a valid key type).
         let z = rust_span!();
         let zz = z.clone();
-        let mk = move |expr: SurfaceExpression| {
-            Arc::new(SurfaceNode::new(expr, zz.clone()))
-        };
+        let mk = move |expr: SurfaceExpression| Arc::new(SurfaceNode::new(expr, zz.clone()));
         let node = mk(SurfaceExpression::Dict(vec![Spanned::new(
             SurfaceEntry {
                 key: Some(mk(SurfaceExpression::Float(1.5))),
@@ -5091,9 +5080,7 @@ mod tests {
         // Build via SurfaceNode since surface text [3.14: 1] would parse differently.
         let z = rust_span!();
         let zz = z.clone();
-        let mk = move |expr: SurfaceExpression| {
-            Arc::new(SurfaceNode::new(expr, zz.clone()))
-        };
+        let mk = move |expr: SurfaceExpression| Arc::new(SurfaceNode::new(expr, zz.clone()));
         let node = mk(SurfaceExpression::Dict(vec![Spanned::new(
             SurfaceEntry {
                 key: Some(mk(SurfaceExpression::Float(3.14))),
@@ -5252,10 +5239,7 @@ mod tests {
         //
         // [a: $missing]
         // $a.x  -- accessing .x should add a frame
-        let env = empty_env();
-
-        // Put a dict with a broken value in the env
-        let ctx = test_ctx();
+        let (env, ctx) = core_env_and_ctx();
         let dict_span = test_span(1, 1, 1, 20);
         let mut dict_map: IndexMap<HashableValue, ThunkId> = IndexMap::new();
         let bad_thunk = Arc::new(Thunk::new_unevaluated_core(
@@ -5294,38 +5278,17 @@ mod tests {
     async fn test_dot_access_on_erroring_target_has_frame() {
         // Dot access on a variable that doesn't exist — should produce an error.
         // After the field-get refactor, dot access goes through the normal PendingCall path.
-        let ctx = test_ctx();
-        let env = empty_env();
-        // Set up field-get at slot 0 and slot-get at slot 1 (root scope)
-        let core_defs = crate::builtins_core::core_builtins();
-        {
-            let mut e = env.write().unwrap();
-            for def in core_defs.into_iter().take(2) {
-                let name = def.name.to_string();
-                let thunk = Arc::new(Thunk::new_materialized(
-                    crate::value::Value::Builtin(def),
-                    test_span(0, 0, 0, 0),
-                ));
-                e.insert(name, thunk);
-            }
-        }
+        // CoreExpr::Error evaluates immediately to Err (not a lazy thunk).
+        let (env, ctx) = core_env_and_ctx();
         let error_span = test_span(1, 1, 1, 12);
-        let thunk = eval_core_for_test(
-            Spanned::new(
-                CoreExpr::Error(error_span.clone()),
-                error_span,
-            ),
+        let err = eval_core_for_test(
+            Spanned::new(CoreExpr::Error(error_span.clone()), error_span),
             Arc::clone(&env),
             &ctx,
         )
         .await
-        .unwrap();
-        let err = materialize(&thunk, None, &ctx).await.unwrap_err();
-        assert!(
-            err.to_string().contains("syntax error"),
-            "got: {}",
-            err
-        );
+        .unwrap_err();
+        assert!(err.to_string().contains("syntax error"), "got: {}", err);
     }
 
     #[tokio::test]
@@ -5379,7 +5342,11 @@ mod tests {
         // Materialize — should error because dict.x = $missing which is undefined
         let b_span = test_span(3, 1, 3, 5);
         let err = materialize(&thunk, Some(&b_span), &ctx).await.unwrap_err();
-        assert!(err.to_string().contains("undefined variable: missing") || err.to_string().contains("undefined"), "got: {err}");
+        assert!(
+            err.to_string().contains("undefined variable: missing")
+                || err.to_string().contains("undefined"),
+            "got: {err}"
+        );
     }
 
     #[tokio::test]
@@ -6428,21 +6395,23 @@ mod tests {
     #[tokio::test]
     async fn test_failed_state_same_span_no_duplicate() {
         // Accessing a Failed thunk twice with the same mat_span should not duplicate frames.
-        // Build a CoreExpr::Error thunk directly.
-        // eval() wraps it as Unevaluated, so the failure happens on materialize.
+        // Use an unevaluated thunk that references a missing slot — it fails lazily on materialize.
         let ctx = test_ctx();
         let env = empty_env();
         let error_span = test_span(1, 1, 1, 14);
-        let thunk = eval_core_for_test(
-            Spanned::new(
-                CoreExpr::Error(error_span.clone()),
-                error_span,
-            ),
-            env,
-            &ctx,
-        )
-        .await
-        .unwrap();
+        let thunk = Arc::new(Thunk::new_unevaluated_core(
+            Arc::new(Spanned::new(
+                CoreExpr::Var {
+                    name: "undefined_var".to_string(),
+                    level: 0,
+                    slot: u32::MAX,
+                },
+                error_span.clone(),
+            )),
+            Arc::clone(&env),
+            Arc::clone(&ctx),
+            error_span,
+        ));
 
         // First materialization: error with a specific mat_span
         let mat_span = test_span(10, 5, 10, 15);
@@ -6450,7 +6419,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            err1.kind.to_string().contains("syntax error"),
+            err1.kind.to_string().contains("undefined variable"),
             "got: {}",
             err1.kind
         );
@@ -6909,7 +6878,6 @@ mod tests {
         assert_eq!(val, Value::Int(7));
     }
 
-
     // ── annotation_has_structural_fields unit tests ────────────────────
     // Tests for the helper that distinguishes structural record annotations
     // (e.g. [@[name: String] $x]) from metadata-only annotations (e.g.
@@ -6949,6 +6917,7 @@ mod tests {
                 name: "Int".into(),
                 escaped: false,
                 resolution: crate::ast::Resolution::new(),
+                call_dispatch: crate::ast::CallDispatch::new(),
             },
         )];
         assert!(!annotation_has_structural_fields(
@@ -6966,6 +6935,7 @@ mod tests {
                     name: "String".into(),
                     escaped: false,
                     resolution: crate::ast::Resolution::new(),
+                    call_dispatch: crate::ast::CallDispatch::new(),
                 },
             ),
             surf_ann_entry(
@@ -6974,6 +6944,7 @@ mod tests {
                     name: "Int".into(),
                     escaped: false,
                     resolution: crate::ast::Resolution::new(),
+                    call_dispatch: crate::ast::CallDispatch::new(),
                 },
             ),
         ];
@@ -6992,6 +6963,7 @@ mod tests {
                     name: "String".into(),
                     escaped: false,
                     resolution: crate::ast::Resolution::new(),
+                    call_dispatch: crate::ast::CallDispatch::new(),
                 },
             ),
             surf_ann_entry("default", SurfaceExpression::Dict(vec![])),
@@ -7019,7 +6991,6 @@ mod tests {
         );
     }
 
-
     #[tokio::test]
     async fn test_elaboration_gap_structural_annotation_non_dict_with_default() {
         // [@[name: String  default: []] 42] — structural record annotation with default.
@@ -7042,6 +7013,7 @@ mod tests {
                     name: "String".into(),
                     escaped: false,
                     resolution: crate::ast::Resolution::new(),
+                    call_dispatch: crate::ast::CallDispatch::new(),
                 },
             ),
             surf_ann_entry("default", SurfaceExpression::Dict(vec![])),
@@ -7890,7 +7862,6 @@ mod tests {
         // by the fact that errors now have the correct decoration context.
     }
 
-
     #[tokio::test]
     async fn test_circular_dependency_cycle_path() {
         // Test that circular dependency errors include the cycle path
@@ -7913,11 +7884,14 @@ mod tests {
         let mut surface_program = parsed.program;
         crate::desugar::desugar_surface_program(&mut surface_program);
         let resolve_errors = crate::resolve::resolve_surface_program(&surface_program);
-        assert!(resolve_errors.is_empty(), "unexpected resolve errors: {:?}", resolve_errors);
-        let thunk =
-            super::eval_surface_file(&surface_program, Arc::clone(&env), &ctx)
-                .await
-                .expect("eval_surface_file should succeed (lazy dict construction)");
+        assert!(
+            resolve_errors.is_empty(),
+            "unexpected resolve errors: {:?}",
+            resolve_errors
+        );
+        let thunk = super::eval_surface_file(&surface_program, Arc::clone(&env), &ctx)
+            .await
+            .expect("eval_surface_file should succeed (lazy dict construction)");
         // Dict construction is lazy — the cycle is only detected when forcing an entry.
         // Materialize the dict to get the Value::Dict, then force an entry to trigger
         // cycle detection.
@@ -8212,7 +8186,10 @@ mod tests {
 
     /// Helper: build a variable pattern Spanned<Pattern> at the default test span.
     fn var_pattern(name: &str) -> Spanned<Pattern> {
-        sp(Pattern::Pin(name.to_string(), crate::ast::Resolution::new()))
+        sp(Pattern::Pin(
+            name.to_string(),
+            crate::ast::Resolution::new(),
+        ))
     }
 
     /// Helper: build a wildcard pattern Spanned<Pattern> at the default test span.
@@ -8306,8 +8283,7 @@ mod tests {
     async fn test_pm3_match_expr_pin_pattern_does_not_bind() {
         // Integration test: T-1154 — `[a: x  b: x  ...]: x` uses Pin patterns.
         // Both `x` positions are unresolved pins → wildcard. The arm fires, but
-        // `x` is NOT bound in the body. Materializing the body produces an
-        // UndefinedVariable error.
+        // `x` is NOT bound in the body. Materializing the body produces an error.
         //
         // match [a: 1  b: 2]
         //   [a: x  b: x  ...]: x   ← arm fires (wildcards), body `x` is unbound
@@ -8319,11 +8295,13 @@ mod tests {
         .await
         .unwrap();
         let ctx = test_ctx();
-        // eval() returns Ok (arm matched), but materialize() fails with UndefinedVariable
+        // eval() returns Ok (arm matched, body is lazy), materialize() fails because x is unresolved
         let err = materialize(&result, None, &ctx).await.unwrap_err();
+        // In the stash design, unresolved VarRef → CoreExpr::Error → "syntax error" on force.
         assert!(
-            matches!(err.kind, ErrorKind::UndefinedVariable { ref name } if name == "x"),
-            "expected UndefinedVariable(x), got: {:?}",
+            err.to_string().contains("syntax error")
+                || err.to_string().contains("undefined variable"),
+            "expected error for unresolved body var x, got: {:?}",
             err.kind
         );
     }
@@ -8392,7 +8370,11 @@ mod tests {
 
         // Resolve variable references (writes coordinates inline to AST nodes).
         let resolve_errors = crate::resolve::resolve_surface_program(&program);
-        assert!(resolve_errors.is_empty(), "unexpected resolve errors: {:?}", resolve_errors);
+        assert!(
+            resolve_errors.is_empty(),
+            "unexpected resolve errors: {:?}",
+            resolve_errors
+        );
 
         // Typecheck: writes type annotations inline on AST nodes and populates `expects_resolved`
         // with the span of the `expects: @String` annotation mapped to `Type::Str`.

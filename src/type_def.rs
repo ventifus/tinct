@@ -60,7 +60,10 @@ impl PartialEq for Row {
     fn eq(&self, other: &Self) -> bool {
         self.tail == other.tail
             && self.fields.len() == other.fields.len()
-            && self.fields.iter().all(|(k, v)| other.fields.get(k) == Some(v))
+            && self
+                .fields
+                .iter()
+                .all(|(k, v)| other.fields.get(k) == Some(v))
     }
 }
 
@@ -160,15 +163,14 @@ pub enum Variance {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TyConDef {
     /// Type parameter names (e.g., ["a", "k", "v"]). Empty for zero-parameter types.
-    /// Migrated from TypeAlias.params (T-1064).
     pub params: Vec<String>,
 
     /// Type body. For structural aliases, this is the expanded type; for nominal ADTs,
-    /// this is typically a Union of NominalVariants. Migrated from TypeAlias.body (T-1064).
+    /// this is typically a Union of NominalVariants.
     pub body: Type,
 
     /// Class constraints on type parameters, populated when params carry `@ClassName` annotations.
-    /// Empty for unconstrained aliases. Migrated from TypeAlias.constraints (T-1064).
+    /// Empty for unconstrained aliases.
     pub constraints: Vec<crate::type_class::Constraint>,
 
     /// Variance for each type parameter
@@ -3128,5 +3130,64 @@ mod tests {
             &Type::Int,
             "NonExistentClass"
         ));
+    }
+
+    // ============================================================================
+    // B-435: is_subtype cross-variable mu tests
+    // ============================================================================
+
+    #[test]
+    fn test_is_subtype_cross_var_mu_alpha_equivalent() {
+        // µa.(Int | {x: a}) <: µb.(Int | {x: b}) should be true.
+        // Cross-variable mu types with structurally equivalent bodies are subtypes.
+        // S-Assum inserts (a, b) into sigma; after S-Exp unfolds both sides, the
+        // union members are checked. The Record member's x-field contains the full
+        // Recursive type again — S-Assum fires on the re-encounter and returns true.
+        let rec_a = Type::Recursive {
+            var: "a".to_string(),
+            body: Box::new(Type::Union(vec![
+                Type::Int,
+                Type::Record(Row {
+                    fields: [("x".to_string(), Type::TypeVar("a".to_string(), 0))].into(),
+                    tail: RowTail::Empty,
+                }),
+            ])),
+        };
+        let rec_b = Type::Recursive {
+            var: "b".to_string(),
+            body: Box::new(Type::Union(vec![
+                Type::Int,
+                Type::Record(Row {
+                    fields: [("x".to_string(), Type::TypeVar("b".to_string(), 0))].into(),
+                    tail: RowTail::Empty,
+                }),
+            ])),
+        };
+        assert!(
+            Type::is_subtype(&rec_a, &rec_b, None),
+            "µa.(Int | {{x: a}}) <: µb.(Int | {{x: b}}) must hold — alpha-equivalent cross-variable mu types"
+        );
+        // Symmetric: b <: a must also hold
+        assert!(
+            Type::is_subtype(&rec_b, &rec_a, None),
+            "µb.(Int | {{x: b}}) <: µa.(Int | {{x: a}}) must hold — symmetric alpha-equivalence"
+        );
+    }
+
+    #[test]
+    fn test_is_subtype_mu_reflexive() {
+        // µa.{x: a} <: µa.{x: a} should be true (reflexive case).
+        // When both sides are the same Recursive type, PartialEq fires at (a, b) if a == b.
+        let rec = Type::Recursive {
+            var: "a".to_string(),
+            body: Box::new(Type::Record(Row {
+                fields: [("x".to_string(), Type::TypeVar("a".to_string(), 0))].into(),
+                tail: RowTail::Empty,
+            })),
+        };
+        assert!(
+            Type::is_subtype(&rec, &rec, None),
+            "µa.{{x: a}} <: µa.{{x: a}} must hold — reflexive recursive type"
+        );
     }
 }

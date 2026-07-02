@@ -56,14 +56,14 @@ use crate::stream::builtin_to_tinct;
 // Meta/eval implementations.
 use crate::builtins_meta::{
     builtin_annotation_of, builtin_apply, builtin_ast_of, builtin_big_int, builtin_blake3,
-    builtin_builtin_module, builtin_cap_identity, builtin_decimal, builtin_eval,
+    builtin_builtin_module, builtin_cap_identity, builtin_decimal, builtin_eval, builtin_eval_repr,
     builtin_eval_types, builtin_expand, builtin_extend_env, builtin_force, builtin_fork_type_ctx,
     builtin_gensym, builtin_get_type_context, builtin_include_cache_get, builtin_include_cache_put,
     builtin_is_contractive, builtin_llt_repr, builtin_load, builtin_macro_error,
     builtin_macro_injects, builtin_make_annotated, builtin_make_type_ctx, builtin_parse,
     builtin_program, builtin_raise, builtin_resolve, builtin_sequential, builtin_span_of,
     builtin_tag_of, builtin_try, builtin_type_of, builtin_typecheck, builtin_until,
-    builtin_validate,
+    builtin_validate, builtin_variant_payload,
 };
 // I/O implementations.
 use crate::builtins_dict::{
@@ -74,15 +74,39 @@ use crate::builtins_io::{
     // builtin_cap_data, builtin_close, builtin_flush, builtin_open, builtin_raw_create,
     // builtin_read_all, builtin_read_chunk, builtin_read_line, builtin_seek, builtin_seek_end,
     // builtin_position, builtin_string_handle, builtin_write_handle REMOVED: used Value::Handle.
-    builtin_copy_file, builtin_emit, builtin_env, builtin_exists,
-    builtin_file_close, builtin_file_flush, builtin_file_open, builtin_file_read,
-    builtin_file_seek, builtin_file_write, builtin_get_xattr, builtin_link,
-    builtin_list_dir, builtin_list_xattrs, builtin_make_dir, builtin_narrow,
-    builtin_path_dir, builtin_read_link, builtin_read_stdin, builtin_remove,
-    builtin_remove_xattr, builtin_rename, builtin_revocable, builtin_revoke_cap,
-    builtin_set_permissions, builtin_set_xattr, builtin_stat,
-    builtin_stat_symlink, builtin_symlink, builtin_write,
-    builtin_write_atomic, builtin_write_stderr, builtin_write_stdout,
+    builtin_copy_file,
+    builtin_emit,
+    builtin_env,
+    builtin_exists,
+    builtin_file_close,
+    builtin_file_flush,
+    builtin_file_open,
+    builtin_file_read,
+    builtin_file_seek,
+    builtin_file_write,
+    builtin_get_xattr,
+    builtin_link,
+    builtin_list_dir,
+    builtin_list_xattrs,
+    builtin_make_dir,
+    builtin_narrow,
+    builtin_path_dir,
+    builtin_read_link,
+    builtin_read_stdin,
+    builtin_remove,
+    builtin_remove_xattr,
+    builtin_rename,
+    builtin_revocable,
+    builtin_revoke_cap,
+    builtin_set_permissions,
+    builtin_set_xattr,
+    builtin_stat,
+    builtin_stat_symlink,
+    builtin_symlink,
+    builtin_write,
+    builtin_write_atomic,
+    builtin_write_stderr,
+    builtin_write_stdout,
 };
 // List operation implementations — live in builtins.rs.
 use crate::builtins::{
@@ -103,7 +127,8 @@ use crate::value::{BuiltinDef, Strictness};
 
 // Imports for core_type_env() — T-714.
 use crate::type_class::ConstraintArg;
-use crate::types::{ClassDecl, Constraint, Kind, Row, Type, TypeAlias, TypeEnv, TypeScheme};
+use crate::type_def::TyConDef;
+use crate::types::{ClassDecl, Constraint, Kind, Row, Type, TypeEnv, TypeScheme};
 
 use std::sync::Arc;
 
@@ -728,11 +753,7 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             builtin_write_stderr,
             [Strictness::Seq]
         ),
-        builtin!(
-            "builtin-read-stdin",
-            builtin_read_stdin,
-            [Strictness::Seq]
-        ),
+        builtin!("builtin-read-stdin", builtin_read_stdin, [Strictness::Seq]),
         // ── Decomposed include primitives ─────────────────────────────────────────────
         builtin!("builtin-blake3", builtin_blake3, [Strictness::Seq]),
         builtin!(
@@ -772,6 +793,13 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             1
         ),
         builtin!("builtin-eval", builtin_eval, [Strictness::Seq], 1),
+        builtin!("builtin-eval-repr", builtin_eval_repr, [Strictness::Seq], 1),
+        builtin!(
+            "builtin-variant-payload",
+            builtin_variant_payload,
+            [Strictness::Seq],
+            1
+        ),
         builtin!(
             "builtin-extend-env",
             builtin_extend_env,
@@ -2762,24 +2790,70 @@ pub fn core_type_env(env: &mut TypeEnv) {
     // Map with Unknown K/V is the unparameterized Map type.
     env.insert("Map".to_string(), Type::map(Type::Unknown, Type::Unknown));
     // Map[K V] as a parameterized type alias.
-    env.insert_type_alias(
+    env.insert_tycon_def(
         "Map".to_string(),
-        TypeAlias::new(
-            vec!["k".to_string(), "v".to_string()],
-            Type::map(
+        Arc::new(TyConDef {
+            params: vec!["k".to_string(), "v".to_string()],
+            body: Type::map(
                 Type::TypeVar("k".to_string(), 0),
                 Type::TypeVar("v".to_string(), 0),
             ),
-        ),
+            constraints: vec![],
+            variance: vec![],
+            constructors: vec![],
+            builtin_type: None,
+            annotation: None,
+            field_annotations: indexmap::IndexMap::new(),
+            constructor_constants: indexmap::IndexMap::new(),
+        }),
     );
 
     // ── Capability and handle type aliases ────────────────────────────────────
     // Register as type aliases so @DirCap, @NetCap, @File are valid in user annotations.
     // @Handle removed: Value::Handle no longer exists.
-    env.insert_type_alias("DirCap".to_string(), TypeAlias::new(vec![], Type::DirCap));
-    env.insert_type_alias("NetCap".to_string(), TypeAlias::new(vec![], Type::NetCap));
+    env.insert_tycon_def(
+        "DirCap".to_string(),
+        Arc::new(TyConDef {
+            params: vec![],
+            body: Type::DirCap,
+            constraints: vec![],
+            variance: vec![],
+            constructors: vec![],
+            builtin_type: None,
+            annotation: None,
+            field_annotations: indexmap::IndexMap::new(),
+            constructor_constants: indexmap::IndexMap::new(),
+        }),
+    );
+    env.insert_tycon_def(
+        "NetCap".to_string(),
+        Arc::new(TyConDef {
+            params: vec![],
+            body: Type::NetCap,
+            constraints: vec![],
+            variance: vec![],
+            constructors: vec![],
+            builtin_type: None,
+            annotation: None,
+            field_annotations: indexmap::IndexMap::new(),
+            constructor_constants: indexmap::IndexMap::new(),
+        }),
+    );
     // File: raw OS file primitive (Value::File). No type parameters — opaque handle.
-    env.insert_type_alias("File".to_string(), TypeAlias::new(vec![], Type::Unknown));
+    env.insert_tycon_def(
+        "File".to_string(),
+        Arc::new(TyConDef {
+            params: vec![],
+            body: Type::Unknown,
+            constraints: vec![],
+            variance: vec![],
+            constructors: vec![],
+            builtin_type: None,
+            annotation: None,
+            field_annotations: indexmap::IndexMap::new(),
+            constructor_constants: indexmap::IndexMap::new(),
+        }),
+    );
 
     // ── DirCap capability flags ───────────────────────────────────────────────
     // Singleton unit types for DirCap permission markers.
@@ -2801,15 +2875,22 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 tail: crate::type_def::RowTail::Empty,
             }),
         );
-        env.insert_type_alias(
+        env.insert_tycon_def(
             flag_name.to_string(),
-            TypeAlias::new(
-                vec![],
-                Type::Record(Row {
+            Arc::new(TyConDef {
+                params: vec![],
+                body: Type::Record(Row {
                     fields,
                     tail: crate::type_def::RowTail::Empty,
                 }),
-            ),
+                constraints: vec![],
+                variance: vec![],
+                constructors: vec![],
+                builtin_type: None,
+                annotation: None,
+                field_annotations: indexmap::IndexMap::new(),
+                constructor_constants: indexmap::IndexMap::new(),
+            }),
         );
     }
 
@@ -2833,26 +2914,33 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 tail: crate::type_def::RowTail::Empty,
             }),
         );
-        env.insert_type_alias(
+        env.insert_tycon_def(
             flag_name.to_string(),
-            TypeAlias::new(
-                vec![],
-                Type::Record(Row {
+            Arc::new(TyConDef {
+                params: vec![],
+                body: Type::Record(Row {
                     fields,
                     tail: crate::type_def::RowTail::Empty,
                 }),
-            ),
+                constraints: vec![],
+                variance: vec![],
+                constructors: vec![],
+                builtin_type: None,
+                annotation: None,
+                field_annotations: indexmap::IndexMap::new(),
+                constructor_constants: indexmap::IndexMap::new(),
+            }),
         );
     }
 
     // ── HashAlgorithm type alias ──────────────────────────────────────────────
     // Union of string literal types for hash algorithm identifiers.
     // Used as the algorithm argument to hash and SPKI pin functions.
-    env.insert_type_alias(
+    env.insert_tycon_def(
         "HashAlgorithm".to_string(),
-        TypeAlias::new(
-            vec![],
-            Type::normalize_union(vec![
+        Arc::new(TyConDef {
+            params: vec![],
+            body: Type::normalize_union(vec![
                 Type::StringLiteral("Sha256".to_string()),
                 Type::StringLiteral("Sha384".to_string()),
                 Type::StringLiteral("Sha512".to_string()),
@@ -2861,7 +2949,14 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 Type::StringLiteral("Sha3-512".to_string()),
                 Type::StringLiteral("Blake3".to_string()),
             ]),
-        ),
+            constraints: vec![],
+            variance: vec![],
+            constructors: vec![],
+            builtin_type: None,
+            annotation: None,
+            field_annotations: indexmap::IndexMap::new(),
+            constructor_constants: indexmap::IndexMap::new(),
+        }),
     );
 
     // ── builtin-* aliases for core operators ─────────────────────────────────

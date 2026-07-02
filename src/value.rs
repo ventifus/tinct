@@ -1588,11 +1588,7 @@ impl Thunk {
         let (create_parent, create_time_us) = Self::profiling_data(&ctx);
         Self {
             inner: ThunkInner {
-                unevaluated: Mutex::new(Some(UnevaluatedState::Surface {
-                    node,
-                    env,
-                    ctx,
-                })),
+                unevaluated: Mutex::new(Some(UnevaluatedState::Surface { node, env, ctx })),
                 result: tokio::sync::OnceCell::new(),
             },
             span,
@@ -1790,11 +1786,7 @@ impl Thunk {
                 env,
                 ctx: new_ctx,
             },
-            UnevaluatedState::Surface {
-                node,
-                env,
-                ctx: _,
-            } => UnevaluatedState::Surface {
+            UnevaluatedState::Surface { node, env, ctx: _ } => UnevaluatedState::Surface {
                 node,
                 env,
                 ctx: new_ctx,
@@ -2000,11 +1992,7 @@ impl Thunk {
     pub fn take_surface(&self) -> Option<SurfaceParts> {
         let mut guard = self.inner.unevaluated.lock().unwrap();
         match guard.take() {
-            Some(UnevaluatedState::Surface {
-                node,
-                env,
-                ctx,
-            }) => {
+            Some(UnevaluatedState::Surface { node, env, ctx }) => {
                 // State is now InProgress
                 Some((node, env, ctx))
             }
@@ -2295,7 +2283,6 @@ impl Environment {
         self.slot_names.push(name);
         self.slots.push(thunk);
     }
-
 
     /// O(1) slot-based lookup with De Bruijn level-based parent chain walking.
     ///

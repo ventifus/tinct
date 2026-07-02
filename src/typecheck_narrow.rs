@@ -7,7 +7,6 @@
 //! - Instance pattern type extraction and functional-dependency parameter index resolution
 //! - Pattern overlap / type unification probes (side-effect-free)
 
-
 use std::rc::Rc;
 use std::sync::Arc;
 

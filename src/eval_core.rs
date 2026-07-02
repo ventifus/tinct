@@ -40,9 +40,7 @@ fn value_to_surface_node(
     ctx: &Arc<EvalContext>,
 ) -> EvalResult<Arc<crate::ast::SurfaceNode>> {
     use crate::ast::{SurfaceExpression, SurfaceNode};
-    let make_node = |expr: SurfaceExpression| {
-        Arc::new(SurfaceNode::new(expr, span.clone()))
-    };
+    let make_node = |expr: SurfaceExpression| Arc::new(SurfaceNode::new(expr, span.clone()));
     match value {
         Value::Int(n) => Ok(make_node(SurfaceExpression::Int(*n))),
         Value::Float(f) => Ok(make_node(SurfaceExpression::Float(*f))),
@@ -191,9 +189,7 @@ fn eval_quote_preprocess<'a>(
     };
     Box::pin(async move {
         let span = node.span.clone();
-        let make_node = |expr: SurfaceExpression| {
-            Arc::new(SurfaceNode::new(expr, span.clone()))
-        };
+        let make_node = |expr: SurfaceExpression| Arc::new(SurfaceNode::new(expr, span.clone()));
 
         match &node.expr {
             SurfaceExpression::Unquote(inner) => {
@@ -261,7 +257,8 @@ fn eval_quote_preprocess<'a>(
                                                         name: s.to_string(),
                                                         escaped: false,
                                                         resolution: crate::ast::Resolution::new(),
-                                                        call_dispatch: crate::ast::CallDispatch::new(),
+                                                        call_dispatch:
+                                                            crate::ast::CallDispatch::new(),
                                                     },
                                                     inner_span.clone(),
                                                 ))
@@ -403,14 +400,14 @@ fn eval_quote_preprocess<'a>(
             }
 
             // Leading-dot is a terminal in quote context — no sub-expression to preprocess.
-            SurfaceExpression::DotAccess { expr: None, field, .. } => {
-                Ok(make_node(SurfaceExpression::DotAccess {
-                    expr: None,
-                    field: field.clone(),
-                    resolution: crate::ast::Resolution::new(),
-                    field_slot: crate::ast::SlotAnnotation::new(),
-                }))
-            }
+            SurfaceExpression::DotAccess {
+                expr: None, field, ..
+            } => Ok(make_node(SurfaceExpression::DotAccess {
+                expr: None,
+                field: field.clone(),
+                resolution: crate::ast::Resolution::new(),
+                field_slot: crate::ast::SlotAnnotation::new(),
+            })),
 
             SurfaceExpression::Pipe { lhs, rhs } => {
                 let processed_lhs = eval_quote_preprocess(Arc::clone(lhs), env, ctx).await?;
@@ -918,7 +915,6 @@ pub(crate) fn eval_core_expr<'a>(
                 span.clone(),
             )
             .into()),
-
         }
         // Type guards are now inline on AST nodes (TypeAnnotation OnceLock);
         // the lowerer wraps them in CoreExpr::TypeAssert. No runtime guard wrapping needed here.

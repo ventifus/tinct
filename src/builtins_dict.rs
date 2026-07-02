@@ -276,7 +276,11 @@ pub(crate) fn builtin_field_get(
             .expect("pre-materialized by Strictness::Seq");
         let key = match key_val {
             Value::Int(n) => HashableValue::Int(n),
-            Value::String { ref source, start, end } => {
+            Value::String {
+                ref source,
+                start,
+                end,
+            } => {
                 let s = &source[start..end];
                 HashableValue::Str(s.into())
             }
@@ -320,17 +324,16 @@ async fn field_get_on_value(
 
     // Flatten Overlay to Dict before key lookup.
     let target_val = match target_val {
-        Value::Overlay(l, r) => {
-            Value::Dict(
-                crate::builtins::flatten_overlay(
-                    &l, &r,
-                    &format!(".{key_str}"),
-                    ctx,
-                    call_span.clone(),
-                )
-                .await?,
+        Value::Overlay(l, r) => Value::Dict(
+            crate::builtins::flatten_overlay(
+                &l,
+                &r,
+                &format!(".{key_str}"),
+                ctx,
+                call_span.clone(),
             )
-        }
+            .await?,
+        ),
         other => other,
     };
 
@@ -345,12 +348,18 @@ async fn field_get_on_value(
                 None => {
                     // Key not found: check TyConDef constructor constants first
                     // when this access came through a variant payload (T-1358).
-                    if let (HashableValue::Str(ref field_name), Some(ref tag)) = (&key, &variant_tag) {
+                    if let (HashableValue::Str(ref field_name), Some(ref tag)) =
+                        (&key, &variant_tag)
+                    {
                         if let Some(type_name) = tag.split('.').next() {
                             if let Some(tycon_env) = ctx.tycon_env.get() {
                                 if let Some(def) = tycon_env.get(type_name) {
-                                    if let Some(constants) = def.constructor_constants.get(tag.as_str()) {
-                                        if let Some(const_val) = constants.get(field_name.as_ref() as &str) {
+                                    if let Some(constants) =
+                                        def.constructor_constants.get(tag.as_str())
+                                    {
+                                        if let Some(const_val) =
+                                            constants.get(field_name.as_ref() as &str)
+                                        {
                                             let thunk = Arc::new(Thunk::new_materialized(
                                                 const_val.clone(),
                                                 call_span.clone(),
@@ -363,8 +372,7 @@ async fn field_get_on_value(
                         }
                     }
                     // No constant found — report key-not-found error.
-                    let available_keys: Vec<String> =
-                        map.keys().map(|k| k.to_string()).collect();
+                    let available_keys: Vec<String> = map.keys().map(|k| k.to_string()).collect();
                     Err(EvalError::key_not_found(&key_str, available_keys, target_span).into())
                 }
             }
@@ -404,8 +412,12 @@ async fn field_get_on_value(
                         if let Some(type_name) = tag.split('.').next() {
                             if let Some(tycon_env) = ctx.tycon_env.get() {
                                 if let Some(def) = tycon_env.get(type_name) {
-                                    if let Some(constants) = def.constructor_constants.get(tag.as_str()) {
-                                        if let Some(const_val) = constants.get(field_name.as_ref() as &str) {
+                                    if let Some(constants) =
+                                        def.constructor_constants.get(tag.as_str())
+                                    {
+                                        if let Some(const_val) =
+                                            constants.get(field_name.as_ref() as &str)
+                                        {
                                             let thunk = Arc::new(Thunk::new_materialized(
                                                 const_val.clone(),
                                                 call_span.clone(),
@@ -425,7 +437,11 @@ async fn field_get_on_value(
                 }
             }
         }
-        Value::Program { program: prog, warnings, .. } => {
+        Value::Program {
+            program: prog,
+            warnings,
+            ..
+        } => {
             let val = match key_str.as_str() {
                 "documents" => {
                     let mut dict = indexmap::IndexMap::new();
@@ -446,9 +462,16 @@ async fn field_get_on_value(
                             ctx.alloc_thunk(Arc::new(Thunk::new_materialized(v, call_span.clone())))
                         };
                         let mut w = indexmap::IndexMap::new();
-                        w.insert(HashableValue::Str("kind".into()), alloc(string_val(err.kind_name())));
-                        w.insert(HashableValue::Str("message".into()), alloc(string_val(&err.message())));
-                        let span_id = crate::eval_materialize::make_span_dict(span, ctx, &call_span);
+                        w.insert(
+                            HashableValue::Str("kind".into()),
+                            alloc(string_val(err.kind_name())),
+                        );
+                        w.insert(
+                            HashableValue::Str("message".into()),
+                            alloc(string_val(&err.message())),
+                        );
+                        let span_id =
+                            crate::eval_materialize::make_span_dict(span, ctx, &call_span);
                         w.insert(HashableValue::Str("span".into()), span_id);
                         let notes_val = {
                             let notes = err.notes();
@@ -457,7 +480,10 @@ async fn field_get_on_value(
                             } else {
                                 let mut nd = indexmap::IndexMap::new();
                                 for (ni, note) in notes.iter().enumerate() {
-                                    nd.insert(HashableValue::Int(ni as i64), alloc(string_val(note)));
+                                    nd.insert(
+                                        HashableValue::Int(ni as i64),
+                                        alloc(string_val(note)),
+                                    );
                                 }
                                 Value::Dict(nd)
                             }
@@ -470,9 +496,16 @@ async fn field_get_on_value(
                             } else {
                                 let mut cd = indexmap::IndexMap::new();
                                 for (fi, frame) in frames.iter().enumerate() {
-                                    let frame_span_id = crate::eval_materialize::make_span_dict(&frame.span, ctx, &call_span);
+                                    let frame_span_id = crate::eval_materialize::make_span_dict(
+                                        &frame.span,
+                                        ctx,
+                                        &call_span,
+                                    );
                                     let mut fd = indexmap::IndexMap::new();
-                                    fd.insert(HashableValue::Str("label".into()), alloc(string_val(&frame.label)));
+                                    fd.insert(
+                                        HashableValue::Str("label".into()),
+                                        alloc(string_val(&frame.label)),
+                                    );
                                     fd.insert(HashableValue::Str("span".into()), frame_span_id);
                                     let frame_id = alloc(Value::Dict(fd));
                                     cd.insert(HashableValue::Int(fi as i64), frame_id);
@@ -480,9 +513,18 @@ async fn field_get_on_value(
                                 Value::Dict(cd)
                             }
                         };
-                        w.insert(HashableValue::Str("call-stack".into()), alloc(call_stack_val));
-                        w.insert(HashableValue::Str("macro-expand".into()), alloc(Value::Dict(indexmap::IndexMap::new())));
-                        w.insert(HashableValue::Str("blame".into()), alloc(Value::Dict(indexmap::IndexMap::new())));
+                        w.insert(
+                            HashableValue::Str("call-stack".into()),
+                            alloc(call_stack_val),
+                        );
+                        w.insert(
+                            HashableValue::Str("macro-expand".into()),
+                            alloc(Value::Dict(indexmap::IndexMap::new())),
+                        );
+                        w.insert(
+                            HashableValue::Str("blame".into()),
+                            alloc(Value::Dict(indexmap::IndexMap::new())),
+                        );
                         let entry = alloc(Value::Dict(w));
                         list.insert(HashableValue::Int(i as i64), entry);
                     }
@@ -499,8 +541,12 @@ async fn field_get_on_value(
                     let mut i = 0usize;
                     for item in &doc.items {
                         if let crate::ast::SurfaceItem::Expr(node) = item {
-                            let expr_val = crate::surface_convert::surface_node_to_expr_variant(node, ctx);
-                            let id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(expr_val, call_span.clone())));
+                            let expr_val =
+                                crate::surface_convert::surface_node_to_expr_variant(node, ctx);
+                            let id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                                expr_val,
+                                call_span.clone(),
+                            )));
                             dict.insert(HashableValue::Int(i as i64), id);
                             i += 1;
                         }
@@ -515,14 +561,20 @@ async fn field_get_on_value(
                             call_span.clone(),
                         )))),
                     },
-                    None => Value::Variant { tag: "Unnamed".into(), payload: None },
+                    None => Value::Variant {
+                        tag: "Unnamed".into(),
+                        payload: None,
+                    },
                 },
                 "stage" => {
                     let stage_tag = match &doc.stage {
                         Some(crate::ast::Stage::Type) => "DocStage.Type",
                         Some(crate::ast::Stage::Runtime) | None => "DocStage.Runtime",
                     };
-                    Value::Variant { tag: stage_tag.to_string(), payload: None }
+                    Value::Variant {
+                        tag: stage_tag.to_string(),
+                        payload: None,
+                    }
                 }
                 "uses" => match &doc.uses {
                     None => Value::Dict(indexmap::IndexMap::new()),
@@ -644,25 +696,29 @@ pub(crate) fn builtin_slot_get(
         let target_span = args[1].span.clone();
 
         match target_val {
-            Value::Dict(map) => {
-                match map.get_index(slot) {
-                    Some((_, &thunk_id)) => {
-                        let thunk = ctx.get_thunk(thunk_id);
-                        Ok(thunk)
-                    }
-                    None => Err(EvalError::internal(
-                        format!("slot-get: slot {slot} out of bounds (dict has {} entries)", map.len()),
-                        target_span,
-                    )
-                    .into()),
+            Value::Dict(map) => match map.get_index(slot) {
+                Some((_, &thunk_id)) => {
+                    let thunk = ctx.get_thunk(thunk_id);
+                    Ok(thunk)
                 }
-            }
+                None => Err(EvalError::internal(
+                    format!(
+                        "slot-get: slot {slot} out of bounds (dict has {} entries)",
+                        map.len()
+                    ),
+                    target_span,
+                )
+                .into()),
+            },
             Value::Environment(env_arc) => {
                 let env = env_arc.read().unwrap();
                 match env.slots.get(slot) {
                     Some(thunk) => Ok(Arc::clone(thunk)),
                     None => Err(EvalError::internal(
-                        format!("slot-get: slot {slot} out of bounds (env has {} slots)", env.slots.len()),
+                        format!(
+                            "slot-get: slot {slot} out of bounds (env has {} slots)",
+                            env.slots.len()
+                        ),
                         target_span,
                     )
                     .into()),

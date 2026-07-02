@@ -486,14 +486,7 @@ pub fn generalize(
     state: &mut InferState,
     constraints: &[Constraint],
 ) -> TypeScheme {
-    generalize_with_doc(
-        level,
-        ty,
-        state,
-        constraints,
-        None,
-        rust_span!(),
-    )
+    generalize_with_doc(level, ty, state, constraints, None, rust_span!())
 }
 
 /// Emit T013 diagnostics for constraints whose type variables are ambiguous (appear in
@@ -1321,46 +1314,6 @@ fn tvar_display_name(idx: usize) -> String {
 
 // Display impl for Type moved to type_normalize.rs
 
-/// Parameterized type alias declaration.
-///
-/// `[type [a b] [first: a second: b]]` stores `params: ["a", "b"]` and
-/// `body: Record({first: TypeVar(a), second: TypeVar(b)})`.
-///
-/// When instantiated (e.g., `[Pair Int String]`), build substitution
-/// `{a -> Int, b -> String}` and apply to body.
-///
-/// `constraints` stores type class constraints on type parameters declared with `@ClassName`
-/// annotations (e.g., `[type [a@Equatable] ...]` → `constraints: [Equatable a]`).
-/// These are checked at instantiation time when a type alias is applied to concrete arguments,
-/// ensuring that type arguments satisfy the required type classes (T-1084).
-///
-/// For most type aliases (no class-constrained params), `constraints` is empty — construction
-/// sites that do not yet populate constraints should pass `vec![]` explicitly or use
-/// `TypeAlias::new(params, body)` which defaults to no constraints.
-#[derive(Debug, Clone)]
-pub struct TypeAlias {
-    pub params: Vec<String>,
-    pub body: Type,
-    /// Class constraints on type parameters, populated when params carry `@ClassName` annotations.
-    /// Empty for unconstrained aliases. Used during alias instantiation to verify type arguments
-    /// satisfy declared class requirements (T-1084).
-    pub constraints: Vec<Constraint>,
-}
-
-impl TypeAlias {
-    /// Construct a TypeAlias with no class constraints.
-    ///
-    /// Use this for all existing construction sites where params have no `@ClassName` annotations.
-    /// For constrained aliases (params with `@ClassName`), populate `constraints` directly.
-    pub fn new(params: Vec<String>, body: Type) -> Self {
-        Self {
-            params,
-            body,
-            constraints: vec![],
-        }
-    }
-}
-
 // ClassDecl, InstanceDecl, ClassEnv, InstanceEnv moved to type_class.rs (chr-module-split)
 // Imported via façade: use super::* resolves through types.rs → type_class.rs
 
@@ -1510,9 +1463,7 @@ impl TypeEnv {
                 return Some(decl.clone());
             }
         }
-        self.parent
-            .as_ref()
-            .and_then(|p| p.get_class(name))
+        self.parent.as_ref().and_then(|p| p.get_class(name))
     }
 
     /// Collect all class declarations visible at this scope (parent chain included).
@@ -1541,24 +1492,6 @@ impl TypeEnv {
     /// without accidentally matching builtins in a parent env.
     pub fn get_own(&self, name: &str) -> Option<&TypeScheme> {
         self.bindings.get(name)
-    }
-
-    /// Get a type alias by name (T-1064: now reads from TyConDef).
-    ///
-    /// This is a compatibility wrapper that constructs a TypeAlias view from TyConDef data.
-    /// Returns None if the type constructor doesn't exist.
-    ///
-    /// NOTE: annotation and field_annotations fields are not exposed via TypeAlias; callers
-    /// needing these must use TyConDef directly via `lookup_tycon_def`.
-    ///
-    /// Temporary compatibility shim — tracked for deletion in T-1133.
-    pub fn get_type_alias(&self, name: &str) -> Option<TypeAlias> {
-        let def = self.lookup_tycon_def(name)?;
-        Some(TypeAlias {
-            params: def.params.clone(),
-            body: def.body.clone(),
-            constraints: def.constraints.clone(),
-        })
     }
 
     pub(crate) fn lookup(&self, name: &str) -> Option<(&TypeScheme, &HashMap<String, TypeScheme>)> {
@@ -1602,27 +1535,6 @@ impl TypeEnv {
         }
         // Always update HashMap (may replace existing)
         self.bindings.insert(name, scheme);
-    }
-
-    /// Insert a type alias (T-1064: now creates and inserts a TyConDef).
-    ///
-    /// This is a compatibility wrapper that creates a TyConDef from TypeAlias data.
-    /// Variance is left empty and will be inferred at usage sites.
-    ///
-    /// Temporary compatibility shim — tracked for deletion in T-1133.
-    pub fn insert_type_alias(&mut self, name: String, alias: TypeAlias) {
-        let def = Arc::new(TyConDef {
-            params: alias.params,
-            body: alias.body,
-            constraints: alias.constraints,
-            variance: vec![],     // Will be inferred or populated by caller
-            constructors: vec![], // Will be populated by extract_constructors_from_type
-            builtin_type: None,
-            annotation: None,
-            field_annotations: indexmap::IndexMap::new(),
-            constructor_constants: indexmap::IndexMap::new(),
-        });
-        self.tycon_defs.insert(name, def);
     }
 
     /// Insert a type constructor definition.
@@ -1731,22 +1643,9 @@ impl TypeEnv {
         }
     }
 
-    /// Collect only the type alias names defined in THIS frame (no parent walk).
-    ///
-    /// Used by `imports::collect_names_above_baseline` to identify names introduced
-    /// by the prelude (rather than inherited from the builtin baseline).
-    /// T-1064: now reads from tycon_defs and constructs TypeAlias views on the fly.
-    pub fn own_type_aliases(&self) -> impl Iterator<Item = (String, TypeAlias)> + '_ {
-        self.tycon_defs.iter().map(|(k, def)| {
-            (
-                k.clone(),
-                TypeAlias {
-                    params: def.params.clone(),
-                    body: def.body.clone(),
-                    constraints: def.constraints.clone(),
-                },
-            )
-        })
+    /// Iterate over the TyConDef entries defined in THIS frame (no parent walk).
+    pub fn own_tycon_defs(&self) -> impl Iterator<Item = (&String, &Arc<TyConDef>)> + '_ {
+        self.tycon_defs.iter()
     }
 
     pub fn collect_own_names(&self, names: &mut std::collections::HashSet<String>) {

@@ -12,7 +12,6 @@ use std::sync::{Arc, Mutex, RwLock};
 use indexmap::IndexMap;
 
 use crate::ast::{Annotation, CoreExpr, Span, Spanned};
-use crate::rust_span;
 use crate::builtins::flatten_overlay;
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{
@@ -22,6 +21,7 @@ use crate::eval::{
 };
 use crate::eval_call::{invoke_function, invoke_function_tco, CallContext};
 use crate::eval_core::eval_core_expr;
+use crate::rust_span;
 use crate::types::Type;
 use crate::value::{string_val, Environment, HashableValue, Thunk, ThunkId, Value};
 
@@ -226,15 +226,9 @@ impl RestoreState {
                 blame_label,
                 default,
             },
-            RestoreState::Surface {
-                node,
-                env,
-                ctx,
-            } => UnevaluatedState::Surface {
-                node,
-                env,
-                ctx,
-            },
+            RestoreState::Surface { node, env, ctx } => {
+                UnevaluatedState::Surface { node, env, ctx }
+            }
             RestoreState::CoreExpr { expr, env, ctx } => {
                 UnevaluatedState::CoreExpr { expr, env, ctx }
             }
@@ -602,9 +596,7 @@ pub(crate) fn make_span_dict(
     ctx: &Arc<EvalContext>,
     call_span: &crate::ast::Span,
 ) -> ThunkId {
-    let alloc = |v: Value| {
-        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(v, call_span.clone())))
-    };
+    let alloc = |v: Value| ctx.alloc_thunk(Arc::new(Thunk::new_materialized(v, call_span.clone())));
     let mut w = indexmap::IndexMap::new();
     w.insert(
         HashableValue::Str("file".into()),
@@ -2339,10 +2331,7 @@ pub(crate) async fn apply_cont(
                                 .node
                                 .get_property(DEFAULT_ANNOTATION_KEY)
                                 .map(|node| {
-                                    (
-                                        Arc::new(crate::lower::lower(node)),
-                                        Arc::clone(&env),
-                                    )
+                                    (Arc::new(crate::lower::lower(node)), Arc::clone(&env))
                                 });
                             // Construct BlameLabel for TypeAssert boundary
                             let blame_label = Some(crate::error::BlameLabel {
@@ -3864,7 +3853,7 @@ mod tests {
     use super::*;
     use crate::ast::CoreExpr;
     use crate::test_util::{sp, test_span};
-    use crate::value::{Environment, HashableValue, Thunk, ThunkId};
+    use crate::value::{Environment, Thunk};
     fn empty_env() -> Arc<RwLock<Environment>> {
         Arc::new(RwLock::new(Environment::new()))
     }
@@ -4838,14 +4827,8 @@ fn force_dict_tree_impl<'a>(
             // Nominal variants (including Seq) handled by the Variant arm above.
             Value::Overlay(left, right) => {
                 // Flatten the overlay to a dict, then recurse on the result
-                let flattened_map = flatten_overlay(
-                    left,
-                    right,
-                    "force_dict_tree",
-                    ctx,
-                    rust_span!(),
-                )
-                .await?;
+                let flattened_map =
+                    flatten_overlay(left, right, "force_dict_tree", ctx, rust_span!()).await?;
                 let dict_val = Value::Dict(flattened_map);
                 force_dict_tree_impl(&dict_val, ctx, visited).await
             }

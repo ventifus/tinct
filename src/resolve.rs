@@ -12,8 +12,8 @@
 //! See doc/whatif/arena-patterns.md §Variable Resolution Pass Design for the full specification.
 
 use crate::ast::{
-    Pattern, Spanned, SurfaceDeclaration, SurfaceDocument, SurfaceEntry,
-    SurfaceExpression, SurfaceItem, SurfaceNode, SurfaceProgram,
+    Pattern, Spanned, SurfaceDeclaration, SurfaceDocument, SurfaceEntry, SurfaceExpression,
+    SurfaceItem, SurfaceNode, SurfaceProgram,
 };
 use std::sync::{Arc, RwLock};
 
@@ -738,12 +738,16 @@ fn surface_dict_static_keys(entries: &[Spanned<SurfaceEntry>]) -> Vec<String> {
             true
         })
         .filter_map(|entry| {
-            entry.node.key.as_ref().and_then(|key_node| match &key_node.expr {
-                SurfaceExpression::Str(s) => Some(s.clone()),
-                SurfaceExpression::VarRef { name, .. } => Some(name.clone()),
-                SurfaceExpression::Annotated { name, .. } => Some(name.clone()),
-                _ => None,
-            })
+            entry
+                .node
+                .key
+                .as_ref()
+                .and_then(|key_node| match &key_node.expr {
+                    SurfaceExpression::Str(s) => Some(s.clone()),
+                    SurfaceExpression::VarRef { name, .. } => Some(name.clone()),
+                    SurfaceExpression::Annotated { name, .. } => Some(name.clone()),
+                    _ => None,
+                })
         })
         .collect()
 }
@@ -930,7 +934,9 @@ fn extract_include_path(expr: &SurfaceExpression) -> Option<String> {
         SurfaceExpression::Call { func, args, .. } => {
             // Check that the function is `include` or `builtin-include`
             let is_include = match &func.expr {
-                SurfaceExpression::VarRef { name, .. } => name == "include" || name == "builtin-include",
+                SurfaceExpression::VarRef { name, .. } => {
+                    name == "include" || name == "builtin-include"
+                }
                 _ => false,
             };
             if !is_include {
@@ -959,23 +965,32 @@ fn extract_include_path(expr: &SurfaceExpression) -> Option<String> {
 /// the public API dict. Returns its static keys in source order (slot order).
 fn extract_module_exported_names(program: &crate::ast::SurfaceProgram) -> Option<Vec<String>> {
     // Find the last non-type-stage document
-    let last_doc = program.documents.iter().rev().find(|d| {
-        d.node.stage != Some(crate::ast::Stage::Type)
-    })?;
+    let last_doc = program
+        .documents
+        .iter()
+        .rev()
+        .find(|d| d.node.stage != Some(crate::ast::Stage::Type))?;
 
     // Find the last top-level Expr item in that document
-    let last_expr = last_doc.node.items.iter().rev().find_map(|item| {
-        match item {
+    let last_expr = last_doc
+        .node
+        .items
+        .iter()
+        .rev()
+        .find_map(|item| match item {
             crate::ast::SurfaceItem::Expr(node) => Some(node),
             _ => None,
-        }
-    })?;
+        })?;
 
     // It must be a Dict with static keys
     match &last_expr.expr {
         SurfaceExpression::Dict(entries) => {
             let keys = surface_dict_static_keys(entries);
-            if keys.is_empty() { None } else { Some(keys) }
+            if keys.is_empty() {
+                None
+            } else {
+                Some(keys)
+            }
         }
         _ => None,
     }
@@ -1169,12 +1184,21 @@ mod tests {
         //   so $outer is at level=1, slot=0
         let program = parse_and_resolve("[outer: 42  inner: [fn [let] $outer]]");
         let refs = find_varref_nodes(&program, "outer");
-        assert!(!refs.is_empty(), "expected VarRef for $outer inside fn body");
+        assert!(
+            !refs.is_empty(),
+            "expected VarRef for $outer inside fn body"
+        );
         let coords = varref_resolution(&refs[0])
             .expect("resolver should have run")
             .expect("$outer should be resolved (captured from dict scope)");
-        assert_eq!(coords.0, 1, "outer dict key is one level up from fn param scope");
-        assert_eq!(coords.1, 0, "outer is the first key in the dict scope, slot 0");
+        assert_eq!(
+            coords.0, 1,
+            "outer dict key is one level up from fn param scope"
+        );
+        assert_eq!(
+            coords.1, 0,
+            "outer is the first key in the dict scope, slot 0"
+        );
     }
 
     /// Outer let binding resolved inside a match arm body.
@@ -1182,7 +1206,11 @@ mod tests {
     fn match_arm_pattern_binding() {
         let program = parse_and_resolve("[x: 1  result: [match $x 1: $x _: $x]]");
         let refs = find_varref_nodes(&program, "x");
-        assert!(refs.len() >= 3, "expected at least 3 VarRefs for $x, got {}", refs.len());
+        assert!(
+            refs.len() >= 3,
+            "expected at least 3 VarRefs for $x, got {}",
+            refs.len()
+        );
         for node in &refs {
             let coords = varref_resolution(node)
                 .expect("resolver should have run")
@@ -1197,7 +1225,11 @@ mod tests {
         let src = "[fn [let x] [match $x 1: $x _: $x]]";
         let program = parse_and_resolve(src);
         let refs = find_varref_nodes(&program, "x");
-        assert!(refs.len() >= 3, "expected at least 3 VarRefs for $x in fn body, got {}", refs.len());
+        assert!(
+            refs.len() >= 3,
+            "expected at least 3 VarRefs for $x in fn body, got {}",
+            refs.len()
+        );
         for node in &refs {
             let coords = varref_resolution(node)
                 .expect("resolver should have run")
@@ -1213,7 +1245,11 @@ mod tests {
         let src = "[x: 1  result: [match $x Int: [+ $x 1] _: 0]]";
         let program = parse_and_resolve(src);
         let x_refs = find_varref_nodes(&program, "x");
-        assert!(x_refs.len() >= 2, "expected at least 2 VarRefs for $x, got {}", x_refs.len());
+        assert!(
+            x_refs.len() >= 2,
+            "expected at least 2 VarRefs for $x, got {}",
+            x_refs.len()
+        );
         for node in &x_refs {
             let coords = varref_resolution(node)
                 .expect("resolver should have run")
@@ -1227,7 +1263,10 @@ mod tests {
     fn match_wildcard_pattern_no_bindings() {
         let program = parse_and_resolve("[match val _: $x]");
         let refs = find_varref_nodes(&program, "x");
-        assert!(!refs.is_empty(), "expected at least one VarRef for $x in wildcard arm body");
+        assert!(
+            !refs.is_empty(),
+            "expected at least one VarRef for $x in wildcard arm body"
+        );
         for node in &refs {
             // Resolver ran but found no binding → Some(None)
             assert_eq!(
@@ -1258,13 +1297,23 @@ mod tests {
             _: 0]]";
         let program = parse_and_resolve(src);
         let refs = find_varref_nodes(&program, "v");
-        assert!(!refs.is_empty(), "expected at least one VarRef for $v in case arm body");
-        let resolved: Vec<(u32, u32)> = refs.iter()
+        assert!(
+            !refs.is_empty(),
+            "expected at least one VarRef for $v in case arm body"
+        );
+        let resolved: Vec<(u32, u32)> = refs
+            .iter()
             .filter_map(|n| varref_resolution(n).and_then(|r| r))
             .collect();
-        assert!(!resolved.is_empty(), "$v in case arm body must be slot-resolved after B-375 fix");
+        assert!(
+            !resolved.is_empty(),
+            "$v in case arm body must be slot-resolved after B-375 fix"
+        );
         for coords in &resolved {
-            assert_eq!(coords.1, 0, "v is the only declared name in [let v], must be slot 0");
+            assert_eq!(
+                coords.1, 0,
+                "v is the only declared name in [let v], must be slot 0"
+            );
         }
     }
 
@@ -1277,17 +1326,25 @@ mod tests {
         let program = parse_and_resolve(src);
         let a_refs = find_varref_nodes(&program, "a");
         let b_refs = find_varref_nodes(&program, "b");
-        let a_resolved: Vec<(u32, u32)> = a_refs.iter()
+        let a_resolved: Vec<(u32, u32)> = a_refs
+            .iter()
             .filter_map(|n| varref_resolution(n).and_then(|r| r))
             .collect();
-        assert!(!a_resolved.is_empty(), "$a in case arm body must be slot-resolved");
+        assert!(
+            !a_resolved.is_empty(),
+            "$a in case arm body must be slot-resolved"
+        );
         for coords in &a_resolved {
             assert_eq!(coords.1, 0, "a is first name in [let a b], must be slot 0");
         }
-        let b_resolved: Vec<(u32, u32)> = b_refs.iter()
+        let b_resolved: Vec<(u32, u32)> = b_refs
+            .iter()
             .filter_map(|n| varref_resolution(n).and_then(|r| r))
             .collect();
-        assert!(!b_resolved.is_empty(), "$b in case arm body must be slot-resolved");
+        assert!(
+            !b_resolved.is_empty(),
+            "$b in case arm body must be slot-resolved"
+        );
         for coords in &b_resolved {
             assert_eq!(coords.1, 1, "b is second name in [let a b], must be slot 1");
         }
@@ -1367,7 +1424,11 @@ mod tests {
     /// Read the inline resolution from a leading-dot DotAccess node.
     fn dot_resolution(node: &Arc<SurfaceNode>) -> Option<Option<(u32, u32)>> {
         match &node.expr {
-            SurfaceExpression::DotAccess { expr: None, resolution, .. } => resolution.get(),
+            SurfaceExpression::DotAccess {
+                expr: None,
+                resolution,
+                ..
+            } => resolution.get(),
             _ => None,
         }
     }
@@ -1378,13 +1439,22 @@ mod tests {
         let src = "[x: 42  inner: [x: \"shadowed\"  outer-x: .x]]";
         let program = parse_and_resolve(src);
         let leading_dot_refs = find_leading_dot_nodes(&program, "x");
-        assert!(!leading_dot_refs.is_empty(), "expected at least one leading-dot .x node");
+        assert!(
+            !leading_dot_refs.is_empty(),
+            "expected at least one leading-dot .x node"
+        );
         for node in &leading_dot_refs {
             let coords = dot_resolution(node)
                 .expect("resolver should have run")
                 .expect("leading-dot .x should be resolved (parent scope)");
-            assert_eq!(coords.1, 0, "x is the first key in the outer dict scope, must be slot 0");
-            assert_eq!(coords.0, 1, "outer dict is one level up from the inner dict (level 1, not 0)");
+            assert_eq!(
+                coords.1, 0,
+                "x is the first key in the outer dict scope, must be slot 0"
+            );
+            assert_eq!(
+                coords.0, 1,
+                "outer dict is one level up from the inner dict (level 1, not 0)"
+            );
         }
     }
 
@@ -1396,7 +1466,8 @@ mod tests {
             _: 0]]";
         let program = parse_and_resolve(src);
         let refs = find_varref_nodes(&program, "v");
-        let resolved: Vec<(u32, u32)> = refs.iter()
+        let resolved: Vec<(u32, u32)> = refs
+            .iter()
             .filter_map(|n| varref_resolution(n).and_then(|r| r))
             .collect();
         assert!(

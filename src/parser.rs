@@ -166,7 +166,9 @@ fn emit_tmpl_call(
                             .first()
                             .and_then(|d| d.node.items.first())
                         {
-                            Some(SurfaceItem::Expr(node)) => Arc::new(SurfaceNode::new(node.expr.clone(), span.clone())),
+                            Some(SurfaceItem::Expr(node)) => {
+                                Arc::new(SurfaceNode::new(node.expr.clone(), span.clone()))
+                            }
                             Some(SurfaceItem::Decl(_)) => {
                                 return Err(ParseError {
                                     message: format!(
@@ -213,7 +215,10 @@ fn emit_tmpl_call(
     ));
 
     let mut args = Vec::with_capacity(1 + expr_args.len());
-    args.push(Arc::new(SurfaceNode::new(SurfaceExpression::Str(raw), span.clone())));
+    args.push(Arc::new(SurfaceNode::new(
+        SurfaceExpression::Str(raw),
+        span.clone(),
+    )));
     args.extend(expr_args);
 
     Ok(Arc::new(SurfaceNode::new(
@@ -333,7 +338,10 @@ fn adjust_surface_entries(
                 key: se.node.key.map(|k| {
                     // Bare identifier keys are already normalized to Str by push_value at parse
                     // time, so no VarRef→Str conversion is needed here — only span adjustment.
-                    std::sync::Arc::new(SurfaceNode::new(k.expr.clone(), adjust_span(k.span.clone(), base)))
+                    std::sync::Arc::new(SurfaceNode::new(
+                        k.expr.clone(),
+                        adjust_span(k.span.clone(), base),
+                    ))
                 }),
                 value: std::sync::Arc::new(SurfaceNode::new(
                     se.node.value.expr.clone(),
@@ -565,7 +573,10 @@ fn parse_annotation(
                         let mut entries: Vec<Spanned<SurfaceEntry>> = Vec::new();
                         // func as first auto-indexed entry
                         let adjusted_func_span = adjust_span(func.span.clone(), base);
-                        let func_node = Arc::new(SurfaceNode::new(func.expr.clone(), adjusted_func_span.clone()));
+                        let func_node = Arc::new(SurfaceNode::new(
+                            func.expr.clone(),
+                            adjusted_func_span.clone(),
+                        ));
                         entries.push(Spanned::new(
                             SurfaceEntry {
                                 key: None,
@@ -576,7 +587,10 @@ fn parse_annotation(
                         // args as subsequent auto-indexed entries
                         for arg in args {
                             let adjusted_arg_span = adjust_span(arg.span.clone(), base);
-                            let arg_node = Arc::new(SurfaceNode::new(arg.expr.clone(), adjusted_arg_span.clone()));
+                            let arg_node = Arc::new(SurfaceNode::new(
+                                arg.expr.clone(),
+                                adjusted_arg_span.clone(),
+                            ));
                             entries.push(Spanned::new(
                                 SurfaceEntry {
                                     key: None,
@@ -974,7 +988,10 @@ fn recover_from_bracket_error(
                     partial_entries.push(Spanned::new(
                         SurfaceEntry {
                             key: None,
-                            value: mk(SurfaceExpression::Error(error_span.clone()), error_span.clone()),
+                            value: mk(
+                                SurfaceExpression::Error(error_span.clone()),
+                                error_span.clone(),
+                            ),
                         },
                         error_span.clone(),
                     ));
@@ -1044,19 +1061,25 @@ fn recover_from_bracket_error(
                         mk(SurfaceExpression::Error(error_span.clone()), error_span)
                     } else {
                         // Add the error as a positional argument
-                        positional_args.push(mk(SurfaceExpression::Error(error_span.clone()), error_span.clone()));
+                        positional_args.push(mk(
+                            SurfaceExpression::Error(error_span.clone()),
+                            error_span.clone(),
+                        ));
 
                         let call_span = Span {
                             start: span_start,
                             end: error_span.end,
                             file: None,
                         };
-                        mk(SurfaceExpression::Call {
-                            func,
-                            args: positional_args,
-                            named_args,
-                            implied,
-                        }, call_span)
+                        mk(
+                            SurfaceExpression::Call {
+                                func,
+                                args: positional_args,
+                                named_args,
+                                implied,
+                            },
+                            call_span,
+                        )
                     }
                 } else {
                     // No function — can't build a call, use plain error
@@ -1862,7 +1885,8 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                         let err: ParseError = $err;
                         let error_span = err.span.clone().unwrap_or_else(|| span.clone());
                         recovered_errors.push(err);
-                        let error_expr = mk(SurfaceExpression::Error(error_span.clone()), error_span);
+                        let error_expr =
+                            mk(SurfaceExpression::Error(error_span.clone()), error_span);
                         // Push to parent context (stack has already had the frame popped).
                         if stack.is_empty() {
                             current_document_items.push(SurfaceItem::Expr(error_expr.clone()));
@@ -2186,7 +2210,8 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                 });
                             }
                             Some(expr) => {
-                                let spanned_quote = mk(SurfaceExpression::Quote(expr), dict_span(span_start));
+                                let spanned_quote =
+                                    mk(SurfaceExpression::Quote(expr), dict_span(span_start));
                                 if let Err(push_err) = push_value(
                                     &mut stack,
                                     &mut current_document_items,
@@ -2208,7 +2233,8 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                 });
                             }
                             Some(expr) => {
-                                let spanned_unquote = mk(SurfaceExpression::Unquote(expr), dict_span(span_start));
+                                let spanned_unquote =
+                                    mk(SurfaceExpression::Unquote(expr), dict_span(span_start));
                                 if let Err(push_err) = push_value(
                                     &mut stack,
                                     &mut current_document_items,
@@ -2231,7 +2257,10 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                 });
                             }
                             Some(expr) => {
-                                let spanned_unquote_splice = mk(SurfaceExpression::UnquoteSplice(expr), dict_span(span_start));
+                                let spanned_unquote_splice = mk(
+                                    SurfaceExpression::UnquoteSplice(expr),
+                                    dict_span(span_start),
+                                );
                                 if let Err(push_err) = push_value(
                                     &mut stack,
                                     &mut current_document_items,
@@ -2681,7 +2710,10 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                         }
                         // Any `pending_key` without a `pending_rhs` (e.g. `z: ]`) is dropped
                         // as a best-effort recovery — the incomplete pair is silently discarded.
-                        let spanned_let = mk(SurfaceExpression::LetDecl { bindings }, dict_span(span_start));
+                        let spanned_let = mk(
+                            SurfaceExpression::LetDecl { bindings },
+                            dict_span(span_start),
+                        );
                         if let Err(push_err) =
                             push_value(&mut stack, &mut current_document_items, spanned_let)
                         {
@@ -3093,7 +3125,10 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
 
             Token::TripleQuotedString(s) => {
                 // Desugar to [unindent "..."]
-                let str_expr = Arc::new(SurfaceNode::new(SurfaceExpression::Str(s.clone()), span.clone()));
+                let str_expr = Arc::new(SurfaceNode::new(
+                    SurfaceExpression::Str(s.clone()),
+                    span.clone(),
+                ));
                 let unindent_ref = Arc::new(SurfaceNode::new(
                     SurfaceExpression::VarRef {
                         name: "unindent".to_string(),
@@ -3199,7 +3234,10 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                 end: annotation.span.end,
                                 file: None,
                             };
-                            let expr = mk(SurfaceExpression::Annotated { name, annotation }, full_span.clone());
+                            let expr = mk(
+                                SurfaceExpression::Annotated { name, annotation },
+                                full_span.clone(),
+                            );
                             // If the annotated expression is immediately followed by ':', treat
                             // it as a dict key candidate (e.g. [x@Number: 42]) or match pattern
                             // candidate (e.g. [n@Int: body]), or a named arg with field annotation
@@ -4377,7 +4415,10 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                     } else {
                         (None, 0)
                     };
-                    let rest_expr = mk(SurfaceExpression::Rest(rest_name, rest_annotation), rest_end.clone());
+                    let rest_expr = mk(
+                        SurfaceExpression::Rest(rest_name, rest_annotation),
+                        rest_end.clone(),
+                    );
                     if let Err(push_err) =
                         push_value(&mut stack, &mut current_document_items, rest_expr)
                     {
@@ -4417,7 +4458,8 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                     return Err(err);
                 } else {
                     // Outside Dict, no identifier: Expr::Placeholder
-                    let placeholder_expr = mk(SurfaceExpression::Placeholder, ellipsis_span.clone());
+                    let placeholder_expr =
+                        mk(SurfaceExpression::Placeholder, ellipsis_span.clone());
                     if let Err(push_err) =
                         push_value(&mut stack, &mut current_document_items, placeholder_expr)
                     {
@@ -4455,7 +4497,10 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             ..
                         }) => {
                             // Dict key: SurfaceExpression::Str
-                            let key_expr = mk(SurfaceExpression::Str(keyword_str.to_string()), span.clone());
+                            let key_expr = mk(
+                                SurfaceExpression::Str(keyword_str.to_string()),
+                                span.clone(),
+                            );
                             *pending_key = Some(key_expr);
                             last_significant_span = Some(span);
                             i += 1;
@@ -4476,7 +4521,10 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             ..
                         }) => {
                             // Method name in class: SurfaceExpression::Str
-                            let key_expr = mk(SurfaceExpression::Str(keyword_str.to_string()), span.clone());
+                            let key_expr = mk(
+                                SurfaceExpression::Str(keyword_str.to_string()),
+                                span.clone(),
+                            );
                             *pending_key = Some(key_expr);
                             last_significant_span = Some(span);
                             i += 1;
@@ -4487,7 +4535,10 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             ..
                         }) => {
                             // Method name in instance: SurfaceExpression::Str
-                            let key_expr = mk(SurfaceExpression::Str(keyword_str.to_string()), span.clone());
+                            let key_expr = mk(
+                                SurfaceExpression::Str(keyword_str.to_string()),
+                                span.clone(),
+                            );
                             *pending_key = Some(key_expr);
                             last_significant_span = Some(span);
                             i += 1;
@@ -4498,7 +4549,10 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             ..
                         }) => {
                             // Field name in syntax-class: SurfaceExpression::Str
-                            let key_expr = mk(SurfaceExpression::Str(keyword_str.to_string()), span.clone());
+                            let key_expr = mk(
+                                SurfaceExpression::Str(keyword_str.to_string()),
+                                span.clone(),
+                            );
                             *pending_key = Some(key_expr);
                             last_significant_span = Some(span);
                             i += 1;
@@ -5194,12 +5248,18 @@ fn surface_node_to_pattern_with_guard(
         SurfaceExpression::VarRef { name, .. } if name == "_" => (Pattern::Wildcard, None),
         SurfaceExpression::VarRef { name, escaped, .. } if *escaped => {
             // Escaped ref: $name in pattern context → pin pattern
-            (Pattern::Pin(name.clone(), crate::ast::Resolution::new()), None)
+            (
+                Pattern::Pin(name.clone(), crate::ast::Resolution::new()),
+                None,
+            )
         }
         SurfaceExpression::VarRef { name, .. }
             if name.chars().next().is_some_and(|c| c.is_lowercase()) =>
         {
-            (Pattern::Pin(name.clone(), crate::ast::Resolution::new()), None)
+            (
+                Pattern::Pin(name.clone(), crate::ast::Resolution::new()),
+                None,
+            )
         }
         SurfaceExpression::VarRef { name, .. }
             if name.chars().next().is_some_and(|c| c.is_uppercase()) =>
@@ -5370,7 +5430,9 @@ fn surface_node_to_pattern_with_guard(
             }
         }
         // T-963: TypeAssert ([@Type expr]) in pattern position → TypeAssertPending
-        SurfaceExpression::TypeAssert { annotation, expr, .. } => {
+        SurfaceExpression::TypeAssert {
+            annotation, expr, ..
+        } => {
             let inner_pat = surface_node_to_pattern(Arc::clone(expr))?;
             (
                 Pattern::TypeAssertPending {
@@ -6089,7 +6151,10 @@ fn push_expr_to_parent(
                 stack.pop(); // Remove the Pipe frame
 
                 let spanned_pipe = mk(
-                    SurfaceExpression::Pipe { lhs: lhs_expr, rhs: node },
+                    SurfaceExpression::Pipe {
+                        lhs: lhs_expr,
+                        rhs: node,
+                    },
                     pipe_span,
                 );
 
@@ -6229,7 +6294,10 @@ fn inject_class_name_from_key(node: &Arc<SurfaceNode>, key: &Arc<SurfaceNode>) -
                             resolver,
                             resolver_injective,
                         };
-                        return mk(SurfaceExpression::Decl(Box::new(new_decl)), node.span.clone());
+                        return mk(
+                            SurfaceExpression::Decl(Box::new(new_decl)),
+                            node.span.clone(),
+                        );
                     }
                 }
             }
@@ -6627,7 +6695,9 @@ fn stamp_expr(expr: &mut SurfaceExpression, file: &Arc<SourceFile>) {
             stamp_node(body, file);
         }
 
-        SurfaceExpression::TypeAssert { annotation, expr, .. } => {
+        SurfaceExpression::TypeAssert {
+            annotation, expr, ..
+        } => {
             stamp_annotation_spanned(annotation, file);
             stamp_node(expr, file);
         }
@@ -6761,7 +6831,9 @@ fn stamp_pattern(pat: &mut Pattern, file: &Arc<SourceFile>) {
     match pat {
         Pattern::Wildcard | Pattern::Literal(_) | Pattern::Pin(..) => {}
 
-        Pattern::TypeAssertPending { annotation, inner, .. } => {
+        Pattern::TypeAssertPending {
+            annotation, inner, ..
+        } => {
             annotation.span.file = Some(Arc::clone(file));
             if let Some(inner_pat) = inner {
                 stamp_pattern_spanned(inner_pat, file);
@@ -8004,6 +8076,7 @@ mod tests {
             SurfaceExpression::DotAccess {
                 expr: outer_expr,
                 field: outer_field,
+                ..
             } => {
                 assert_eq!(*outer_field, DotKey::Ident("c".to_string()));
                 let outer_inner = outer_expr
@@ -8013,6 +8086,7 @@ mod tests {
                     SurfaceExpression::DotAccess {
                         expr: inner_expr,
                         field: inner_field,
+                        ..
                     } => {
                         assert_eq!(*inner_field, DotKey::Ident("b".to_string()));
                         let inner_inner = inner_expr
@@ -8245,6 +8319,7 @@ mod tests {
             SurfaceExpression::DotAccess {
                 expr: inner_opt,
                 field,
+                ..
             } => {
                 assert_eq!(*field, DotKey::Ident("b".to_string()));
                 let inner = inner_opt.as_ref().expect("expected Some(target)");
@@ -9267,6 +9342,7 @@ mod tests {
             SurfaceExpression::DotAccess {
                 expr: inner_opt,
                 field,
+                ..
             } => {
                 assert_eq!(*field, DotKey::Ident("field".to_string()));
                 let inner = inner_opt.as_ref().expect("expected Some(target)");

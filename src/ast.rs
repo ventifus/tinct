@@ -104,7 +104,6 @@ impl Span {
         }
     }
 
-
     /// Create a span carrying Rust source location for synthetic nodes.
     ///
     /// Use the `rust_span!()` macro instead of calling this directly — it automatically
@@ -405,7 +404,9 @@ impl fmt::Display for SurfaceExpression {
                 }
                 write!(f, ")")
             }
-            SurfaceExpression::TypeAssert { annotation, expr, .. } => {
+            SurfaceExpression::TypeAssert {
+                annotation, expr, ..
+            } => {
                 write!(f, "[@{} {}]", annotation.node, expr)
             }
             SurfaceExpression::Quote(inner) => write!(f, "[quote {}]", inner),
@@ -527,7 +528,9 @@ impl fmt::Display for Pattern {
             Pattern::Literal(lit) => write!(f, "{lit}"),
 
             Pattern::Pin(name, _) => write!(f, "{name}"),
-            Pattern::TypeAssertPending { annotation, inner, .. } => {
+            Pattern::TypeAssertPending {
+                annotation, inner, ..
+            } => {
                 if let Some(inner) = inner {
                     write!(f, "[@{} {}]", annotation.node, inner.node)
                 } else {
@@ -648,8 +651,16 @@ impl SurfaceNode {
         Self {
             expr: SurfaceExpression::Placeholder,
             span: Span {
-                start: crate::ast::Position { offset: 0, line: 0, column: 0 },
-                end: crate::ast::Position { offset: 0, line: 0, column: 0 },
+                start: crate::ast::Position {
+                    offset: 0,
+                    line: 0,
+                    column: 0,
+                },
+                end: crate::ast::Position {
+                    offset: 0,
+                    line: 0,
+                    column: 0,
+                },
                 file: None,
             },
             type_guard: TypeAnnotation::new(),
@@ -1016,13 +1027,31 @@ pub struct SurfaceProgram {
 /// Clone resets to empty (cloned nodes in new scopes must be re-annotated).
 pub struct TypeAnnotation(std::sync::OnceLock<Option<crate::type_def::Type>>);
 impl TypeAnnotation {
-    pub fn new() -> Self { Self(std::sync::OnceLock::new()) }
-    pub fn get(&self) -> Option<&crate::type_def::Type> { self.0.get().and_then(|o| o.as_ref()) }
-    pub fn set(&self, val: Option<crate::type_def::Type>) { let _ = self.0.set(val); }
+    pub fn new() -> Self {
+        Self(std::sync::OnceLock::new())
+    }
+    pub fn get(&self) -> Option<&crate::type_def::Type> {
+        self.0.get().and_then(|o| o.as_ref())
+    }
+    pub fn set(&self, val: Option<crate::type_def::Type>) {
+        let _ = self.0.set(val);
+    }
 }
-impl Clone for TypeAnnotation { fn clone(&self) -> Self { Self::new() } }
-impl PartialEq for TypeAnnotation { fn eq(&self, _: &Self) -> bool { true } }
-impl Default for TypeAnnotation { fn default() -> Self { Self::new() } }
+impl Clone for TypeAnnotation {
+    fn clone(&self) -> Self {
+        Self::new()
+    }
+}
+impl PartialEq for TypeAnnotation {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+impl Default for TypeAnnotation {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 impl std::fmt::Debug for TypeAnnotation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "TypeAnnotation({:?})", self.0.get().map(|o| o.is_some()))
@@ -1032,13 +1061,31 @@ impl std::fmt::Debug for TypeAnnotation {
 /// Inline field slot — written once by the type checker for typed DotAccess nodes.
 pub struct SlotAnnotation(std::sync::OnceLock<Option<u32>>);
 impl SlotAnnotation {
-    pub fn new() -> Self { Self(std::sync::OnceLock::new()) }
-    pub fn get(&self) -> Option<u32> { self.0.get().copied().flatten() }
-    pub fn set(&self, slot: u32) { let _ = self.0.set(Some(slot)); }
+    pub fn new() -> Self {
+        Self(std::sync::OnceLock::new())
+    }
+    pub fn get(&self) -> Option<u32> {
+        self.0.get().copied().flatten()
+    }
+    pub fn set(&self, slot: u32) {
+        let _ = self.0.set(Some(slot));
+    }
 }
-impl Clone for SlotAnnotation { fn clone(&self) -> Self { Self::new() } }
-impl PartialEq for SlotAnnotation { fn eq(&self, _: &Self) -> bool { true } }
-impl Default for SlotAnnotation { fn default() -> Self { Self::new() } }
+impl Clone for SlotAnnotation {
+    fn clone(&self) -> Self {
+        Self::new()
+    }
+}
+impl PartialEq for SlotAnnotation {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+impl Default for SlotAnnotation {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 impl std::fmt::Debug for SlotAnnotation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "SlotAnnotation({:?})", self.0.get())
@@ -1056,32 +1103,76 @@ pub struct MacroProvenance {
 /// Stores the pre-computed instance binding name that the lowerer uses to rewrite the call.
 pub struct CallDispatch(std::sync::OnceLock<Option<String>>);
 impl CallDispatch {
-    pub fn new() -> Self { Self(std::sync::OnceLock::new()) }
-    pub fn get(&self) -> Option<&str> { self.0.get().and_then(|o| o.as_deref()) }
-    pub fn set(&self, name: String) { let _ = self.0.set(Some(name)); }
+    pub fn new() -> Self {
+        Self(std::sync::OnceLock::new())
+    }
+    pub fn get(&self) -> Option<&str> {
+        self.0.get().and_then(|o| o.as_deref())
+    }
+    pub fn set(&self, name: String) {
+        let _ = self.0.set(Some(name));
+    }
 }
-impl Clone for CallDispatch { fn clone(&self) -> Self { Self::new() } }
-impl PartialEq for CallDispatch { fn eq(&self, _: &Self) -> bool { true } }
-impl Default for CallDispatch { fn default() -> Self { Self::new() } }
+impl Clone for CallDispatch {
+    fn clone(&self) -> Self {
+        Self::new()
+    }
+}
+impl PartialEq for CallDispatch {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+impl Default for CallDispatch {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 impl std::fmt::Debug for CallDispatch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "CallDispatch({:?})", self.0.get().and_then(|o| o.as_deref()))
+        write!(
+            f,
+            "CallDispatch({:?})",
+            self.0.get().and_then(|o| o.as_deref())
+        )
     }
 }
 
 /// Inline provenance — written once by macro expander, read by error reporter.
 pub struct Provenance(std::sync::OnceLock<Option<MacroProvenance>>);
 impl Provenance {
-    pub fn new() -> Self { Self(std::sync::OnceLock::new()) }
-    pub fn get(&self) -> Option<&MacroProvenance> { self.0.get().and_then(|o| o.as_ref()) }
-    pub fn set(&self, p: MacroProvenance) { let _ = self.0.set(Some(p)); }
+    pub fn new() -> Self {
+        Self(std::sync::OnceLock::new())
+    }
+    pub fn get(&self) -> Option<&MacroProvenance> {
+        self.0.get().and_then(|o| o.as_ref())
+    }
+    pub fn set(&self, p: MacroProvenance) {
+        let _ = self.0.set(Some(p));
+    }
 }
-impl Clone for Provenance { fn clone(&self) -> Self { Self::new() } }
-impl PartialEq for Provenance { fn eq(&self, _: &Self) -> bool { true } }
-impl Default for Provenance { fn default() -> Self { Self::new() } }
+impl Clone for Provenance {
+    fn clone(&self) -> Self {
+        Self::new()
+    }
+}
+impl PartialEq for Provenance {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+impl Default for Provenance {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 impl std::fmt::Debug for Provenance {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Provenance({:?})", self.0.get().and_then(|p| p.as_ref()).map(|p| &p.macro_name))
+        write!(
+            f,
+            "Provenance({:?})",
+            self.0.get().and_then(|p| p.as_ref()).map(|p| &p.macro_name)
+        )
     }
 }
 
@@ -1123,7 +1214,6 @@ impl std::fmt::Debug for Resolution {
         write!(f, "Resolution({:?})", self.0.get())
     }
 }
-
 
 /// Evaluator-internal expression — produced by lowering a SurfaceExpression.
 /// De Bruijn coordinates are plain fields (no RefCell, no Option).

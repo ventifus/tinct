@@ -16,8 +16,8 @@ use crate::ast::{
     SurfaceEntry, SurfaceExpression, SurfaceItem, SurfaceNamedArg, SurfaceNode, SurfaceParam,
     SurfaceProgram,
 };
-use crate::rust_span;
 use crate::error::EvalResult;
+use crate::rust_span;
 use crate::value::ThunkId;
 use crate::value::{string_val, HashableValue, Thunk, Value};
 
@@ -78,40 +78,57 @@ fn inject_span_into_expr_variant(
 
     let make_pos = |pos: &Position| -> crate::value::ThunkId {
         let mut d: IndexMap<HashableValue, crate::value::ThunkId> = IndexMap::new();
-        let mk = |n: i64| ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Int(n), synth.clone())));
-        d.insert(HashableValue::Str("line".into()),   mk(pos.line as i64));
-        d.insert(HashableValue::Str("col".into()),    mk(pos.column as i64));
+        let mk = |n: i64| {
+            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                Value::Int(n),
+                synth.clone(),
+            )))
+        };
+        d.insert(HashableValue::Str("line".into()), mk(pos.line as i64));
+        d.insert(HashableValue::Str("col".into()), mk(pos.column as i64));
         d.insert(HashableValue::Str("offset".into()), mk(pos.offset as i64));
-        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(Value::Dict(d), synth.clone())))
+        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+            Value::Dict(d),
+            synth.clone(),
+        )))
     };
 
     let span_val = {
         let mut d: IndexMap<HashableValue, crate::value::ThunkId> = IndexMap::new();
         d.insert(HashableValue::Str("start".into()), make_pos(&span.start));
-        d.insert(HashableValue::Str("end".into()),   make_pos(&span.end));
+        d.insert(HashableValue::Str("end".into()), make_pos(&span.end));
         Value::Dict(d)
     };
 
     match val {
-        Value::Variant { tag, payload: Some(payload_id) } => {
+        Value::Variant {
+            tag,
+            payload: Some(payload_id),
+        } => {
             let payload_thunk = ctx.get_thunk(payload_id);
             if let Some(Value::Dict(mut payload_dict)) = payload_thunk.try_get_materialized() {
-                let span_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(span_val, synth.clone())));
+                let span_id =
+                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(span_val, synth.clone())));
                 payload_dict.insert(HashableValue::Str("span".into()), span_id);
                 let new_payload_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                     Value::Dict(payload_dict),
                     span.clone(),
                 )));
-                Value::Variant { tag, payload: Some(new_payload_id) }
+                Value::Variant {
+                    tag,
+                    payload: Some(new_payload_id),
+                }
             } else {
-                Value::Variant { tag, payload: Some(payload_id) }
+                Value::Variant {
+                    tag,
+                    payload: Some(payload_id),
+                }
             }
         }
         // Unit variants (no payload) or non-variant values: pass through unchanged.
         other => other,
     }
 }
-
 
 /// Convert a dict representation back to a SurfaceNode.
 ///
@@ -153,7 +170,11 @@ fn dict_to_surface_node_inner(
 
     // Extract the span from the Expr.* payload (injected by surface_node_to_expr_variant).
     // If present, use it — it encodes the original user source position for round-trips.
-    if let Value::Variant { payload: Some(payload_id), .. } = val {
+    if let Value::Variant {
+        payload: Some(payload_id),
+        ..
+    } = val
+    {
         let payload_thunk = ctx.get_thunk(*payload_id);
         if let Some(Value::Dict(dict)) = payload_thunk.try_get_materialized() {
             if let Some(span) = extract_span(&dict, ctx) {
@@ -2178,14 +2199,192 @@ fn surface_decl_to_thunk_id(
     ))))
 }
 
-/// Convert a SurfaceNode to a ThunkId containing its `Expr.*` variant representation.
-/// Uses `surface_node_to_expr_variant` — produces `Expr.*` variants consumable by `builtin-eval`.
-fn surface_node_to_thunk_id(
-    node: &Arc<SurfaceNode>,
-    _opts: &AstToDictOpts,
+/// Override the `bare` field in an `Expr.Literal` (kind: "str") variant's payload.
+///
+/// The `inject(bare = true)` attribute on `SurfaceExpression::Str` always generates
+/// `bare: true`. This function corrects the value based on the actual source context:
+/// - `bare: true` when the string was a bare word (no quotes) in source
+/// - `bare: false` when quoted or when source is unavailable
+///
+/// Returns the modified value, or the original value unchanged if it is not an
+/// `Expr.Literal` with a dict payload.
+fn override_bare_in_literal_variant(
+    val: Value,
+    bare: bool,
+    span: &Span,
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> Value {
+    if let Value::Variant {
+        ref tag,
+        payload: Some(payload_id),
+    } = val
+    {
+        if tag == "Expr.Literal" {
+            let payload_thunk = ctx.get_thunk(payload_id);
+            if let Some(Value::Dict(mut dict)) = payload_thunk.try_get_materialized() {
+                let new_bare_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    Value::boolean(bare),
+                    span.clone(),
+                )));
+                dict.insert(HashableValue::Str("bare".into()), new_bare_id);
+                let new_payload_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    Value::Dict(dict),
+                    span.clone(),
+                )));
+                return Value::Variant {
+                    tag: tag.clone(),
+                    payload: Some(new_payload_id),
+                };
+            }
+        }
+    }
+    val
+}
+
+/// Like `alloc_entry_list`, but uses opts to:
+/// - Correct the `bare` flag on string-key literals (bare word vs quoted)
+/// - Add `leading-comments` and `blank-before` fields to entry payloads
+///
+/// Called from `surface_node_to_thunk_id` for Dict nodes when opts is available,
+/// replacing the derived `alloc_entry_list` which has no access to opts.
+fn alloc_entry_list_with_opts(
+    entries: &[Spanned<SurfaceEntry>],
+    opts: &AstToDictOpts,
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> EvalResult<ThunkId> {
-    let val = surface_node_to_expr_variant(node, ctx);
+    let mut dict: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+    for (i, entry) in entries.iter().enumerate() {
+        // key: Some(node) → Expr.* variant with corrected bare flag, None → null
+        let key_val = match &entry.node.key {
+            Some(key_node) => {
+                let mut val = SurfaceExpression::to_expr_variant(key_node, ctx);
+                // Override bare for string literal keys: check source text at span offset.
+                if let SurfaceExpression::Str(_) = &key_node.expr {
+                    let is_bare = match opts.source {
+                        Some(source) => {
+                            // Span starts at the opening quote for quoted strings,
+                            // or at the first identifier char for bare words.
+                            // Check the character AT the span start.
+                            let offset = key_node.span.start.offset;
+                            source.as_bytes().get(offset) != Some(&b'"')
+                        }
+                        None => false,
+                    };
+                    val = override_bare_in_literal_variant(val, is_bare, &key_node.span, ctx);
+                }
+                val
+            }
+            None => Value::Dict(IndexMap::new()),
+        };
+        let key_thunk = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+            key_val,
+            entry.span.clone(),
+        )));
+
+        // value: Expr.* variant
+        let val_val = SurfaceExpression::to_expr_variant(&entry.node.value, ctx);
+        let val_thunk = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+            val_val,
+            entry.span.clone(),
+        )));
+
+        // Build payload dict for Expr.Entry
+        let mut payload: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+        payload.insert(HashableValue::Str("key".into()), key_thunk);
+        payload.insert(HashableValue::Str("value".into()), val_thunk);
+
+        // Add comment fields when comment maps are provided
+        if let Some(ref comment_maps) = opts.comments {
+            let offset = entry.span.start.offset;
+
+            // leading-comments: list of comment strings before this entry
+            if let Some(comments) = comment_maps.leading_comments.get(&offset) {
+                if !comments.is_empty() {
+                    let comment_ids: Vec<ThunkId> = comments
+                        .iter()
+                        .map(|c| {
+                            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                                string_val(c),
+                                entry.span.clone(),
+                            )))
+                        })
+                        .collect();
+                    let comments_tid =
+                        list_to_thunk_id(comment_ids.into_iter(), entry.span.clone(), ctx)?;
+                    payload.insert(HashableValue::Str("leading-comments".into()), comments_tid);
+                }
+            }
+
+            // blank-before: true when there is a blank line before this entry
+            let is_blank = comment_maps.blank_before.get(&offset) == Some(&true);
+            let blank_tid = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                Value::boolean(is_blank),
+                entry.span.clone(),
+            )));
+            payload.insert(HashableValue::Str("blank-before".into()), blank_tid);
+        }
+
+        // When no comment maps, always include blank-before: false as default
+        if opts.comments.is_none() {
+            let blank_tid = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                Value::boolean(false),
+                entry.span.clone(),
+            )));
+            payload.insert(HashableValue::Str("blank-before".into()), blank_tid);
+        }
+
+        let payload_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+            Value::Dict(payload),
+            entry.span.clone(),
+        )));
+        // Expr.Entry variant
+        let entry_variant = Value::Variant {
+            tag: "Expr.Entry".to_string(),
+            payload: Some(payload_id),
+        };
+        let entry_thunk = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+            entry_variant,
+            entry.span.clone(),
+        )));
+        dict.insert(HashableValue::Int(i as i64), entry_thunk);
+    }
+    Ok(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+        Value::Dict(dict),
+        rust_span!(),
+    ))))
+}
+
+/// Convert a SurfaceNode to a ThunkId containing its `Expr.*` variant representation.
+/// Uses `surface_node_to_expr_variant` — produces `Expr.*` variants consumable by `builtin-eval`.
+///
+/// For Dict expressions, uses `alloc_entry_list_with_opts` when opts is provided to
+/// correctly handle the `bare` flag on string keys and add comment metadata to entries.
+fn surface_node_to_thunk_id(
+    node: &Arc<SurfaceNode>,
+    opts: &AstToDictOpts,
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> EvalResult<ThunkId> {
+    // For Dict nodes, build the Expr.Dict variant with opts-aware entry conversion
+    // so that bare flags and comment fields are correctly populated.
+    let val = if let SurfaceExpression::Dict(entries) = &node.expr {
+        let entries_tid = alloc_entry_list_with_opts(entries, opts, ctx)?;
+        let mut payload: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+        payload.insert(HashableValue::Str("entries".into()), entries_tid);
+        let payload_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+            Value::Dict(payload),
+            node.span.clone(),
+        )));
+        inject_span_into_expr_variant(
+            Value::Variant {
+                tag: "Expr.Dict".to_string(),
+                payload: Some(payload_id),
+            },
+            &node.span,
+            ctx,
+        )
+    } else {
+        surface_node_to_expr_variant(node, ctx)
+    };
     Ok(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(val, node.span.clone()))))
 }
 
@@ -2309,9 +2508,7 @@ mod tests {
                                                     {
                                                         // Get the key expression
                                                         let key_id = entry_dict
-                                                            .get(&HashableValue::Str(
-                                                                "key".into(),
-                                                            ))
+                                                            .get(&HashableValue::Str("key".into()))
                                                             .unwrap();
                                                         let key_thunk = ctx.get_thunk(*key_id);
                                                         let key_val = key_thunk
@@ -2321,12 +2518,9 @@ mod tests {
                                                             peel_variant(key_val, &ctx);
                                                         // Check bare: true
                                                         let bare_id = key_dict
-                                                            .get(&HashableValue::Str(
-                                                                "bare".into(),
-                                                            ))
+                                                            .get(&HashableValue::Str("bare".into()))
                                                             .expect("bare field missing");
-                                                        let bare_thunk =
-                                                            ctx.get_thunk(*bare_id);
+                                                        let bare_thunk = ctx.get_thunk(*bare_id);
                                                         assert_eq!(
                                                             bare_thunk
                                                                 .try_get_materialized(),
@@ -2411,9 +2605,7 @@ mod tests {
                                                         peel_variant(entry_val, &ctx);
                                                     {
                                                         let key_id = entry_dict
-                                                            .get(&HashableValue::Str(
-                                                                "key".into(),
-                                                            ))
+                                                            .get(&HashableValue::Str("key".into()))
                                                             .unwrap();
                                                         let key_thunk = ctx.get_thunk(*key_id);
                                                         let key_val = key_thunk
@@ -2422,12 +2614,9 @@ mod tests {
                                                         let (_key_tag, key_dict) =
                                                             peel_variant(key_val, &ctx);
                                                         let bare_id = key_dict
-                                                            .get(&HashableValue::Str(
-                                                                "bare".into(),
-                                                            ))
+                                                            .get(&HashableValue::Str("bare".into()))
                                                             .expect("bare field missing");
-                                                        let bare_thunk =
-                                                            ctx.get_thunk(*bare_id);
+                                                        let bare_thunk = ctx.get_thunk(*bare_id);
                                                         assert_eq!(
                                                             bare_thunk
                                                                 .try_get_materialized(),
@@ -2521,19 +2710,17 @@ mod tests {
                                                             .get(&HashableValue::Str(
                                                                 "leading-comments".into(),
                                                             ))
-                                                            .expect("leading-comments field missing");
+                                                            .expect(
+                                                                "leading-comments field missing",
+                                                            );
                                                         let comments_thunk =
                                                             ctx.get_thunk(*comments_id);
-                                                        match comments_thunk
-                                                            .try_get_materialized()
+                                                        match comments_thunk.try_get_materialized()
                                                         {
-                                                            Some(Value::Dict(
-                                                                comments_list,
-                                                            )) => {
-                                                                let comment_id =
-                                                                    comments_list
-                                                                        .get(&HashableValue::Int(0))
-                                                                        .expect("comment 0 missing");
+                                                            Some(Value::Dict(comments_list)) => {
+                                                                let comment_id = comments_list
+                                                                    .get(&HashableValue::Int(0))
+                                                                    .expect("comment 0 missing");
                                                                 let comment_thunk =
                                                                     ctx.get_thunk(*comment_id);
                                                                 assert_eq!(
@@ -2643,11 +2830,8 @@ mod tests {
                                                             .get(&HashableValue::Str(
                                                                 "blank-before".into(),
                                                             ))
-                                                            .expect(
-                                                                "blank-before field missing",
-                                                            );
-                                                        let blank_thunk =
-                                                            ctx.get_thunk(*blank_id);
+                                                            .expect("blank-before field missing");
+                                                        let blank_thunk = ctx.get_thunk(*blank_id);
                                                         assert_eq!(
                                                             blank_thunk
                                                                 .try_get_materialized(),
@@ -2732,9 +2916,7 @@ mod tests {
                                                         peel_variant(entry_val, &ctx);
                                                     {
                                                         let key_id = entry_dict
-                                                            .get(&HashableValue::Str(
-                                                                "key".into(),
-                                                            ))
+                                                            .get(&HashableValue::Str("key".into()))
                                                             .unwrap();
                                                         let key_thunk = ctx.get_thunk(*key_id);
                                                         let key_val = key_thunk
@@ -2743,12 +2925,9 @@ mod tests {
                                                         let (_key_tag, key_dict) =
                                                             peel_variant(key_val, &ctx);
                                                         let bare_id = key_dict
-                                                            .get(&HashableValue::Str(
-                                                                "bare".into(),
-                                                            ))
+                                                            .get(&HashableValue::Str("bare".into()))
                                                             .expect("bare field missing");
-                                                        let bare_thunk =
-                                                            ctx.get_thunk(*bare_id);
+                                                        let bare_thunk = ctx.get_thunk(*bare_id);
                                                         assert_eq!(
                                                             bare_thunk
                                                                 .try_get_materialized(),
@@ -2761,11 +2940,8 @@ mod tests {
                                                             .get(&HashableValue::Str(
                                                                 "blank-before".into(),
                                                             ))
-                                                            .expect(
-                                                                "blank-before field missing",
-                                                            );
-                                                        let blank_thunk =
-                                                            ctx.get_thunk(*blank_id);
+                                                            .expect("blank-before field missing");
+                                                        let blank_thunk = ctx.get_thunk(*blank_id);
                                                         assert_eq!(
                                                             blank_thunk
                                                                 .try_get_materialized(),

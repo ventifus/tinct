@@ -3,6 +3,7 @@ use crate::ast::{SurfaceEntry, SurfaceExpression, SurfaceNode};
 use crate::rust_span;
 use crate::types::Substitution;
 use crate::Annotation;
+use indexmap::IndexMap;
 
 /// Build a `Spanned<SurfaceEntry>` for use in `Annotation::PropertyDict` test constructions.
 /// Migrated from old `sp(Entry { ... })` form during rv2-migrate-annotation Phase 1.
@@ -11,9 +12,7 @@ fn surf_ann_entry_tc(
     value: SurfaceExpression,
 ) -> Spanned<SurfaceEntry> {
     let span = crate::test_util::test_span(0, 0, 0, 0);
-    let mk = |expr| {
-        Arc::new(SurfaceNode::new(expr, span.clone()))
-    };
+    let mk = |expr| Arc::new(SurfaceNode::new(expr, span.clone()));
     Spanned::new(
         SurfaceEntry {
             key: key.map(mk),
@@ -26,7 +25,7 @@ fn surf_ann_entry_tc(
 async fn check(input: &str) -> Result<(), Vec<TypeError>> {
     let mut program = crate::parse(input).unwrap().program;
     crate::desugar::desugar_surface_program(&mut program);
-    let (errors, _table, _inferred) = typecheck_surface_program_annotation_table(&program).await;
+    let (errors, _table) = typecheck_surface_program_annotation_table(&program).await;
     if errors.is_empty() {
         Ok(())
     } else {
@@ -91,7 +90,7 @@ async fn doc_env_with_prelude(input: &str) -> Rc<TypeEnv> {
     }
     // TypeAnnotationTable removed — inline writes on AST nodes.
     let empty_pipeline = Type::Record(Row {
-        fields: BTreeMap::new(),
+        fields: IndexMap::new(),
         tail: crate::type_def::RowTail::Empty,
     });
     let named_types = HashMap::new();
@@ -167,7 +166,7 @@ async fn file_env_impl(input: &str) -> Rc<TypeEnv> {
     // TypeAnnotationTable removed — inline writes on AST nodes.
     let mut named_types: HashMap<String, Type> = HashMap::new();
     let mut pipeline_type = Type::Record(Row {
-        fields: BTreeMap::new(),
+        fields: IndexMap::new(),
         tail: crate::type_def::RowTail::Empty,
     });
     for doc_spanned in &program.documents {
@@ -176,7 +175,7 @@ async fn file_env_impl(input: &str) -> Rc<TypeEnv> {
             doc,
             &env,
             &mut state,
-                &mut None,
+            &mut None,
             &pipeline_type,
             &named_types,
         )
@@ -593,7 +592,7 @@ async fn test_dot_access_typevar_generates_constraint_verified() {
     let mut state = InferState::new();
     // TypeAnnotationTable removed — inline writes on AST nodes.
     let empty_pipeline = Type::Record(Row {
-        fields: BTreeMap::new(),
+        fields: IndexMap::new(),
         tail: crate::type_def::RowTail::Empty,
     });
     let named_types = HashMap::new();
@@ -1570,6 +1569,7 @@ async fn test_property_dict_no_key_resolves_as_union() {
             name: "Int".into(),
             escaped: false,
             resolution: crate::ast::Resolution::new(),
+            call_dispatch: crate::ast::CallDispatch::new(),
         },
     )]);
     let mut c = Vec::new();
@@ -1619,6 +1619,7 @@ async fn test_property_dict_unresolvable_type_propagates_error() {
             name: "noSuchType".into(),
             escaped: false,
             resolution: crate::ast::Resolution::new(),
+            call_dispatch: crate::ast::CallDispatch::new(),
         },
     )]);
     let mut c = Vec::new();
@@ -4243,7 +4244,7 @@ async fn test_level_restored_after_non_dict_record_error() {
     // TypeAnnotationTable removed — inline writes on AST nodes.
     let named_types: HashMap<String, Type> = HashMap::new();
     let mut pipeline_type = Type::Record(Row {
-        fields: BTreeMap::new(),
+        fields: IndexMap::new(),
         tail: crate::type_def::RowTail::Empty,
     });
 
@@ -4564,7 +4565,7 @@ async fn test_apply_type_alias_substitution_nominal_variant() {
     )
     .await;
     let opt_alias = env
-        .get_type_alias("Option")
+        .lookup_tycon_def("Option")
         .expect("Option alias should exist");
     // Alias body should be Union([NominalVariant { tag: "Option.Some", fields: {value: TypeVar("t")} }, ...])
     // When instantiated with [@[Option Int] ...], the TypeVar("t") should be replaced with Int
@@ -4603,7 +4604,7 @@ async fn test_apply_type_alias_substitution_preserves_row_tail_uniform() {
 
     let env = doc_env("[MapLike: [type [let k v] [open: true  _@k: v]]]").await;
     let alias = env
-        .get_type_alias("MapLike")
+        .lookup_tycon_def("MapLike")
         .expect("MapLike alias should exist");
 
     // Alias body should be a Record with RowTail::Uniform.
@@ -4783,7 +4784,7 @@ async fn test_check_call_with_scheme_records_func_span_in_type_map() {
     // TypeAnnotationTable removed — inline writes on AST nodes.
     let named_types: HashMap<String, Type> = HashMap::new();
     let mut pipeline_type = Type::Record(Row {
-        fields: BTreeMap::new(),
+        fields: IndexMap::new(),
         tail: crate::type_def::RowTail::Empty,
     });
 
@@ -5152,7 +5153,7 @@ async fn test_typecheck_returns_diagnostics() {
     let mut program = crate::parse(input).unwrap().program;
     crate::desugar::desugar_surface_program(&mut program);
 
-    let (errors, _table, _inferred) = typecheck_surface_program_annotation_table(&program).await;
+    let (errors, _table) = typecheck_surface_program_annotation_table(&program).await;
     assert!(
         errors.is_empty(),
         "simple dict should typecheck without errors"
@@ -5254,6 +5255,7 @@ async fn test_or_annotation_two_types() {
                 name: "or".into(),
                 escaped: false,
                 resolution: crate::ast::Resolution::new(),
+                call_dispatch: crate::ast::CallDispatch::new(),
             },
         ),
         surf_ann_entry_tc(
@@ -5262,6 +5264,7 @@ async fn test_or_annotation_two_types() {
                 name: "Int".into(),
                 escaped: false,
                 resolution: crate::ast::Resolution::new(),
+                call_dispatch: crate::ast::CallDispatch::new(),
             },
         ),
         surf_ann_entry_tc(
@@ -5270,6 +5273,7 @@ async fn test_or_annotation_two_types() {
                 name: "Null".into(),
                 escaped: false,
                 resolution: crate::ast::Resolution::new(),
+                call_dispatch: crate::ast::CallDispatch::new(),
             },
         ),
     ]);
@@ -5313,6 +5317,7 @@ async fn test_or_annotation_three_types() {
                         name: (*name).into(),
                         escaped: false,
                         resolution: crate::ast::Resolution::new(),
+                        call_dispatch: crate::ast::CallDispatch::new(),
                     },
                 )
             })
@@ -5350,7 +5355,7 @@ async fn test_or_in_type_alias_body() {
     // [MyUnion: [type [or Int Null]]] registers a type alias whose body is Union(Int, Null).
     // Type aliases are dict entries whose value is a [type ...] form.
     let env = doc_env("[MyUnion: [type [or Int Null]]  x: 42]").await;
-    let alias = env.get_type_alias("MyUnion");
+    let alias = env.lookup_tycon_def("MyUnion");
     assert!(
         alias.is_some(),
         "expected MyUnion type alias to be registered"
@@ -5427,6 +5432,7 @@ async fn test_union_in_function_signature() {
                 name: "Int".into(),
                 escaped: false,
                 resolution: crate::ast::Resolution::new(),
+                call_dispatch: crate::ast::CallDispatch::new(),
             },
         ),
         surf_ann_entry_tc(
@@ -5435,6 +5441,7 @@ async fn test_union_in_function_signature() {
                 name: "String".into(),
                 escaped: false,
                 resolution: crate::ast::Resolution::new(),
+                call_dispatch: crate::ast::CallDispatch::new(),
             },
         ),
     ]);
@@ -5465,7 +5472,7 @@ async fn test_union_in_function_signature() {
 async fn test_union_nullable_pattern() {
     // Union(Int, Record(Empty)) — nullable integer pattern
     let null_type = Type::Record(Row {
-        fields: BTreeMap::new(),
+        fields: IndexMap::new(),
         tail: crate::type_def::RowTail::Empty,
     });
     let union = Type::normalize_union(vec![Type::Int, null_type.clone()]);
@@ -5504,7 +5511,7 @@ async fn test_narrowing_type_map_hover() {
     let mut type_map = TypeMap::new();
     // TypeAnnotationTable removed — inline writes on AST nodes.
     let empty_pipeline = Type::Record(Row {
-        fields: BTreeMap::new(),
+        fields: IndexMap::new(),
         tail: crate::type_def::RowTail::Empty,
     });
     let named_types = HashMap::new();
@@ -5644,7 +5651,7 @@ async fn test_adt_single_entry_unwrapped() {
     // Single-entry [type T] should remain a simple alias (not wrapped in Union)
     let env = doc_env_with_builtins("[Name: [type String]]").await;
     let alias = env
-        .get_type_alias("Name")
+        .lookup_tycon_def("Name")
         .expect("Name type alias not found");
     match &alias.body {
         Type::Str => {}
@@ -5664,7 +5671,7 @@ async fn test_adt_dict_entry_and_sibling_fn() {
     .await;
 
     // Alias must be registered
-    env.get_type_alias("Result")
+    env.lookup_tycon_def("Result")
         .expect("Result type alias not found");
 
     // Sibling functions should both be typed as Function
@@ -5852,7 +5859,7 @@ async fn test_recursive_type_alias_simple() {
     // Multi-field alias bodies now produce Intersection of open single-field records.
     let env = doc_env("[List: [type [head: Int  tail: List]]]").await;
     let alias = env
-        .get_type_alias("List")
+        .lookup_tycon_def("List")
         .expect("List type alias not found");
     // `[head: Int  tail: List]` → Intersection([{head: Int}, {tail: _t0}])
     // where `_t0` is a fresh TypeVar (the mu-variable for the recursive position).
@@ -5921,7 +5928,7 @@ async fn test_non_recursive_alias_unchanged() {
     // Multi-field alias bodies now produce Intersection of open single-field records.
     let env = doc_env("[Point: [type [x: Int  y: Int]]]").await;
     let alias = env
-        .get_type_alias("Point")
+        .lookup_tycon_def("Point")
         .expect("Point type alias not found");
     // `[x: Int  y: Int]` → Intersection([{x: Int, ...ρ1}, {y: Int, ...ρ2}])
     assert_has_field(&alias.body, "x", &Type::Int);
@@ -6217,7 +6224,11 @@ async fn test_collect_pattern_bindings_pin() {
     // Unit test for collect_pattern_bindings: Pin pattern does not introduce bindings
     // (Pin compares against an existing variable in scope, does not bind a new name)
     let mut out = Vec::new();
-    collect_pattern_bindings(&Pattern::Pin("x".into(), crate::ast::Resolution::new()), &Type::Int, &mut out);
+    collect_pattern_bindings(
+        &Pattern::Pin("x".into(), crate::ast::Resolution::new()),
+        &Type::Int,
+        &mut out,
+    );
     assert_eq!(out.len(), 0, "Pin pattern should not introduce bindings");
 }
 
@@ -6227,7 +6238,7 @@ async fn test_collect_pattern_bindings_dict_field_narrowed() {
     // (Pin compares against an existing variable in scope; it does not introduce a new binding.)
     let scrutinee = Type::Record(Row {
         fields: {
-            let mut m = BTreeMap::new();
+            let mut m = IndexMap::new();
             m.insert("ok".into(), Type::Int);
             m
         },
@@ -6238,7 +6249,10 @@ async fn test_collect_pattern_bindings_dict_field_narrowed() {
         &Pattern::Dict {
             fields: vec![(
                 "ok".into(),
-                Spanned::new(Pattern::Pin("v".into(), crate::ast::Resolution::new()), rust_span!()),
+                Spanned::new(
+                    Pattern::Pin("v".into(), crate::ast::Resolution::new()),
+                    rust_span!(),
+                ),
             )],
             rest: false,
         },
@@ -6253,7 +6267,7 @@ async fn test_collect_pattern_bindings_dict_missing_field_falls_back_to_unknown(
     // Dict pattern with key not present in Record — Pin sub-pattern produces no binding.
     // (Verifies the Dict arm recurses without panic even when key is absent from Record.)
     let scrutinee = Type::Record(Row {
-        fields: BTreeMap::new(),
+        fields: IndexMap::new(),
         tail: crate::type_def::RowTail::Empty,
     });
     let mut out = Vec::new();
@@ -6261,7 +6275,10 @@ async fn test_collect_pattern_bindings_dict_missing_field_falls_back_to_unknown(
         &Pattern::Dict {
             fields: vec![(
                 "missing".into(),
-                Spanned::new(Pattern::Pin("v".into(), crate::ast::Resolution::new()), rust_span!()),
+                Spanned::new(
+                    Pattern::Pin("v".into(), crate::ast::Resolution::new()),
+                    rust_span!(),
+                ),
             )],
             rest: false,
         },
@@ -6285,8 +6302,14 @@ async fn test_collect_pattern_bindings_or() {
     let mut out = Vec::new();
     collect_pattern_bindings(
         &Pattern::Or(vec![
-            Spanned::new(Pattern::Pin("x".into(), crate::ast::Resolution::new()), rust_span!()),
-            Spanned::new(Pattern::Pin("y".into(), crate::ast::Resolution::new()), rust_span!()),
+            Spanned::new(
+                Pattern::Pin("x".into(), crate::ast::Resolution::new()),
+                rust_span!(),
+            ),
+            Spanned::new(
+                Pattern::Pin("y".into(), crate::ast::Resolution::new()),
+                rust_span!(),
+            ),
         ]),
         &Type::Int,
         &mut out,
@@ -6482,7 +6505,7 @@ async fn test_annotation_without_produces_negation() {
 async fn test_annotation_never_type_name() {
     // @Never should resolve to Type::Never
     let env = doc_env_with_builtins("[T: [type Never]]").await;
-    let alias = env.get_type_alias("T").expect("T alias should exist");
+    let alias = env.lookup_tycon_def("T").expect("T alias should exist");
     assert_eq!(
         alias.body,
         Type::Never,
@@ -6611,7 +6634,7 @@ async fn test_check_get_optional_record_known_field_returns_field_type_or_null()
     )
     .await;
     let null_ty = Type::Record(Row {
-        fields: BTreeMap::new(),
+        fields: IndexMap::new(),
         tail: crate::type_def::RowTail::Empty,
     });
     match env.get("result").map(|s| &s.body) {
@@ -7149,7 +7172,7 @@ async fn test_normalize_intersection_unknown_is_identity() {
 #[tokio::test]
 async fn test_do_infer_resolve_monad_from_record_with_ok_field() {
     // Unit test for resolve_monad_from_type: a Record with 'ok' field → "result".
-    let mut fields = BTreeMap::new();
+    let mut fields = IndexMap::new();
     fields.insert("ok".to_string(), Type::Int);
     let ty = Type::Record(Row {
         fields,
@@ -7167,7 +7190,7 @@ async fn test_do_infer_resolve_monad_from_record_with_ok_field() {
 #[tokio::test]
 async fn test_do_infer_resolve_monad_from_record_with_err_field() {
     // Unit test for resolve_monad_from_type: a Record with 'err' field → "result".
-    let mut fields = BTreeMap::new();
+    let mut fields = IndexMap::new();
     fields.insert("err".to_string(), Type::Str);
     let ty = Type::Record(Row {
         fields,
@@ -7193,7 +7216,7 @@ async fn test_do_infer_resolve_monad_from_int_returns_none() {
 #[tokio::test]
 async fn test_do_infer_resolve_monad_from_union_with_ok_member() {
     // resolve_monad_from_type on Union([Record{ok: Int}, Str]) → "result" (first match).
-    let mut ok_fields = BTreeMap::new();
+    let mut ok_fields = IndexMap::new();
     ok_fields.insert("ok".to_string(), Type::Int);
     let ty = Type::Union(vec![
         Type::Record(Row {

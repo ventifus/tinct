@@ -965,7 +965,6 @@ fn core_expr_to_tinct(
                 Ok(tag.clone())
             }
         }
-
     }
 }
 
@@ -1310,7 +1309,6 @@ fn core_expr_to_tinct_raw(
                 Ok(tag.clone())
             }
         }
-
     }
 }
 
@@ -1319,7 +1317,9 @@ fn serialize_pattern(pattern: &Pattern) -> Result<String, String> {
     match pattern {
         Pattern::Wildcard => Ok("_".to_string()),
 
-        Pattern::TypeAssertPending { annotation, inner, .. } => {
+        Pattern::TypeAssertPending {
+            annotation, inner, ..
+        } => {
             if let Some(inner_pat) = inner {
                 let inner_str = serialize_pattern(&inner_pat.node)?;
                 Ok(format!("[@{} {}]", annotation.node, inner_str))
@@ -1495,9 +1495,7 @@ impl Value {
             Value::RevocableDirCap { .. } => {
                 Err(format!("no tinct representation for {}", self.type_name()))
             }
-            Value::File(_) => {
-                Err(format!("no tinct representation for {}", self.type_name()))
-            }
+            Value::File(_) => Err(format!("no tinct representation for {}", self.type_name())),
             Value::QuicSession { .. } => {
                 Err(format!("no tinct representation for {}", self.type_name()))
             }

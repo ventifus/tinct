@@ -9,7 +9,6 @@
 //! - Helper functions: `ok_val`, `string_val`, `reject_named`, `require_string`, etc.
 //! - Re-exports of split-file functions for test access via `use super::*`
 
-
 use std::future::Future;
 use std::pin::Pin;
 use std::rc::Rc;
@@ -1342,7 +1341,6 @@ mod tests {
     use crate::test_util::test_span;
     use crate::value::{string_val, Environment, Strictness};
 
-
     /// Helper: wrap a Value in a materialized Thunk inside an Rc.
     fn thunk(val: Value) -> Arc<Thunk> {
         Arc::new(Thunk::new_materialized(val, test_span(1, 1, 1, 5)))
@@ -1416,7 +1414,10 @@ mod tests {
         crate::desugar::desugar_surface_program(&mut program);
         let resolve_errors = crate::resolve::resolve_surface_program(&program);
         if !resolve_errors.is_empty() {
-            panic!("parse_eval: resolve errors in {:?}: {:?}", llt_src, resolve_errors);
+            panic!(
+                "parse_eval: resolve errors in {:?}: {:?}",
+                llt_src, resolve_errors
+            );
         }
         let env = Arc::clone(&ctx.config.stdlib_env);
         let thunk = crate::eval::eval_surface_file(&program, env, ctx)
@@ -6577,12 +6578,12 @@ mod tests {
         let env_ref = env.read().unwrap();
         // Should have core builtins
         assert!(
-            env_ref.get("builtin-if").is_some(),
+            env_ref.get_by_name("builtin-if").is_some(),
             "missing builtin builtin-if"
         );
         // Prelude functions are NOT in core_env — they are loaded via run_loader_pipeline.
         assert!(
-            env_ref.get("map").is_none(),
+            env_ref.get_by_name("map").is_none(),
             "map should not be in core env (requires run_loader_pipeline)"
         );
     }
@@ -7080,15 +7081,18 @@ mod tests {
 
         for name in required_names {
             assert!(
-                env.get(*name).is_some(),
+                env.get_by_name(*name).is_some(),
                 "core env is missing expected builtin: {name}"
             );
         }
 
         // Prelude functions must NOT be in core env (they come from run_loader_pipeline).
-        assert!(env.get("map").is_none(), "map should not be in core env");
         assert!(
-            env.get("filter").is_none(),
+            env.get_by_name("map").is_none(),
+            "map should not be in core env"
+        );
+        assert!(
+            env.get_by_name("filter").is_none(),
             "filter should not be in core env"
         );
     }

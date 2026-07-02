@@ -14,7 +14,6 @@
 //!
 //! Callers live in `infer_surface_expr`'s name-match dispatch block in `typecheck.rs`.
 
-
 use std::rc::Rc;
 use std::sync::Arc;
 

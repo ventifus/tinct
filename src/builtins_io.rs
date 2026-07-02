@@ -2556,9 +2556,9 @@ pub(crate) fn builtin_write_stdout(
         let s = require_string("builtin-write-stdout", val, args[0].span.clone())?;
 
         use std::io::Write;
-        std::io::stdout()
-            .write_all(s.as_bytes())
-            .map_err(|e| EvalError::user_error(format!("builtin-write-stdout: {e}"), call_span.clone()))?;
+        std::io::stdout().write_all(s.as_bytes()).map_err(|e| {
+            EvalError::user_error(format!("builtin-write-stdout: {e}"), call_span.clone())
+        })?;
 
         ok_val(Value::Dict(IndexMap::new()), call_span)
     })
@@ -2589,9 +2589,12 @@ pub(crate) fn builtin_write_stderr(
         let s = require_string("builtin-write-stderr", val, args[0].span.clone())?;
 
         use std::io::Write;
-        std::io::stderr()
-            .write_all(s.as_bytes())
-            .map_err(|e| EvalError::user_error(format!("builtin-write-stderr: write failed: {e}"), call_span.clone()))?;
+        std::io::stderr().write_all(s.as_bytes()).map_err(|e| {
+            EvalError::user_error(
+                format!("builtin-write-stderr: write failed: {e}"),
+                call_span.clone(),
+            )
+        })?;
 
         ok_val(Value::Dict(IndexMap::new()), call_span)
     })
@@ -2661,7 +2664,6 @@ pub(crate) fn builtin_read_stdin(
         )
     })
 }
-
 
 /// Register `builtin-*` type aliases for I/O builtins (T-1102).
 ///

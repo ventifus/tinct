@@ -54,7 +54,9 @@ pub(crate) fn elaborate_pattern<'a>(
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Pattern, Vec<TypeError>>> + 'a>> {
     Box::pin(async move {
         match pat {
-            Pattern::TypeAssertPending { annotation, inner, .. } => {
+            Pattern::TypeAssertPending {
+                annotation, inner, ..
+            } => {
                 // Resolve the annotation to a concrete Type.
                 let mut pat_constraints: Vec<Constraint> = Vec::new();
                 let resolved_type = resolve_annotation(

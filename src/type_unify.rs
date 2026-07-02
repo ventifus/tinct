@@ -1,9 +1,9 @@
 //! Substitution, unification, and constraint solving for Hindley-Milner polymorphism
 //! with Boolean-Algebraic Subtyping (BAS) and structural record types.
 
+use indexmap::IndexMap;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
-use indexmap::IndexMap;
 use std::sync::Arc;
 
 use crate::ast::Span;

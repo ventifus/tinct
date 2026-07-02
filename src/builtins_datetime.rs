@@ -6,7 +6,6 @@
 //!
 //! See doc/whatif/lib-datetime.md for the full specification.
 
-
 use std::future::Future;
 use std::pin::Pin;
 use std::rc::Rc;

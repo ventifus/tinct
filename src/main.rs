@@ -2690,9 +2690,9 @@ const SCHEMA_KEYS: &[&str] = &[
 struct ContractSection {
     section_idx: usize,
     type_name: Option<String>,
-    fields: Vec<(String, String)>,  // (field_name, constraint_description)
-    schema: Vec<(String, String)>,  // (field_name, constraint_description)
-    docs: Vec<(String, String)>,    // (binding_name, doc_string)
+    fields: Vec<(String, String)>, // (field_name, constraint_description)
+    schema: Vec<(String, String)>, // (field_name, constraint_description)
+    docs: Vec<(String, String)>,   // (binding_name, doc_string)
 }
 
 /// Describe the input contract of an LLT file.
@@ -2778,9 +2778,16 @@ async fn run_describe(file_path: &str) -> Result<(), String> {
             has_any_contract = true;
         }
 
-        let has_content = type_name.is_some() || !fields.is_empty() || !schema.is_empty() || !docs.is_empty();
+        let has_content =
+            type_name.is_some() || !fields.is_empty() || !schema.is_empty() || !docs.is_empty();
         if has_content {
-            contracts.push(ContractSection { section_idx: doc_idx, type_name, fields, schema, docs });
+            contracts.push(ContractSection {
+                section_idx: doc_idx,
+                type_name,
+                fields,
+                schema,
+                docs,
+            });
         }
     }
 

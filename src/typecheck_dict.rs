@@ -8,8 +8,8 @@ use super::{infer_surface_expr, resolve_annotation, resolve_type_expr, TypeMap};
 use crate::ast::{Span, Spanned, SurfaceDeclaration, SurfaceEntry, SurfaceExpression, SurfaceNode};
 use crate::type_def::{TyConDef, Variance};
 use crate::types::{
-    generalize_with_doc, unify, Constraint, InferState, Row, Substitution,
-    Type, TypeEnv, TypeError, TypeScheme,
+    generalize_with_doc, unify, Constraint, InferState, Row, Substitution, Type, TypeEnv,
+    TypeError, TypeScheme,
 };
 
 /// Inject NominalVariant constructor function types into `dict_env` for ADT constructor scoping.
@@ -1333,6 +1333,7 @@ mod tests {
                 name: ref_name.to_string(),
                 escaped: false,
                 resolution: crate::ast::Resolution::new(),
+                call_dispatch: crate::ast::CallDispatch::new(),
             }),
         })
     }
@@ -1389,6 +1390,7 @@ mod tests {
                 name: "b".to_string(),
                 escaped: false,
                 resolution: crate::ast::Resolution::new(),
+                call_dispatch: crate::ast::CallDispatch::new(),
             }),
         });
         let entries = vec![a_entry, b_entry];
@@ -1419,6 +1421,7 @@ mod tests {
                 name: "b".to_string(),
                 escaped: false,
                 resolution: crate::ast::Resolution::new(),
+                call_dispatch: crate::ast::CallDispatch::new(),
             }),
         });
         let b_entry = sp(SurfaceEntry {
@@ -1427,6 +1430,7 @@ mod tests {
                 name: "a".to_string(),
                 escaped: false,
                 resolution: crate::ast::Resolution::new(),
+                call_dispatch: crate::ast::CallDispatch::new(),
             }),
         });
         let entries = vec![a_entry, b_entry];
@@ -1453,6 +1457,7 @@ mod tests {
                         name: "b".to_string(),
                         escaped: false,
                         resolution: crate::ast::Resolution::new(),
+                        call_dispatch: crate::ast::CallDispatch::new(),
                     }),
                 }),
                 sp(SurfaceEntry {
@@ -1461,6 +1466,7 @@ mod tests {
                         name: "c".to_string(),
                         escaped: false,
                         resolution: crate::ast::Resolution::new(),
+                        call_dispatch: crate::ast::CallDispatch::new(),
                     }),
                 }),
             ])),

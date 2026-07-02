@@ -1,0 +1,6 @@
+# T-1425: mu combinator — contractive record body
+# A recursive type with a Record body is contractive: the Record wrapper
+# shields the RecursiveRef, so every path from root to self-reference passes
+# through a guarding constructor. This must typecheck without errors.
+[@[mu a [Cons head: Int tail: a]] [Cons head: 1 tail: [Cons head: 2 tail: []]]]
+=== out

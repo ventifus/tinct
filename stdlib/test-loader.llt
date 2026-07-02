@@ -1,0 +1,547 @@
+# stdlib/test-loader.llt
+#
+# Self-contained corpus test runner — an alternative init program for use with:
+#   tinct run --init stdlib/test-loader.llt tests/corpus/eval/*.llt-eval
+#
+# Receives the same initial environment as loader.llt:
+#   %programs  — integer-keyed Dict of ProgramItem variants (one per test file)
+#   %args      — CLI flags dict
+#   %cwd       — DirCap for working directory
+#   %libdir    — DirCap for stdlib
+#   %stdout    — protocol dict for output (write, flush, close methods)
+#
+# Test file format (*.llt-eval):
+#   <tinct source>
+#   === out
+#   <expected repr string>
+#   === warn          (optional)
+#   <expected warning substring>
+#
+# If === warn is absent, the test asserts zero typecheck warnings.
+# If === warn is present, it asserts the substring appears in the joined warnings.
+#
+# Path-based section enforcement:
+#   === warn sections are only permitted in tests under a warnings/ path component.
+#   ERROR: output  is only permitted in tests under an errors/ path component.
+#   Normal tests (all other paths) must produce clean output with zero warnings.
+#
+# The source is evaluated; its result is rendered via the llt.llt output formatter
+# (same as CLI) and compared against the === out section (trailing newline stripped).
+#
+# Structure — THREE DICTS:
+#   Dict 1: private helpers (loader-level builtins only)
+#   Dict 2: test pipeline functions (sees Dict 1 + initial env)
+#   Dict 3: load prelude, run all tests, write summary to %stdout
+
+--- uses: ["core"]
+
+# ── Loader-level macros ──────────────────────────────────────────────────────
+# >> — sequential: force effect for its side effect, then return result.
+# Uses builtin-sequential (core builtin) — no Expr type needed at boot level.
+[macro >> [let effect result]
+  [builtin-sequential [$effect result]]]
+
+# ============================================================================
+# Dict 1 — Private helpers (loader-level builtins only)
+# ============================================================================
+
+[
+  # String-handle captures for %stdout and %stderr.
+  # All test runner output and diagnostics accumulate here; the final expression
+  # reads them and writes to real stdout/stderr. This lets us capture the full
+  # corpus test output for comparison and structured reporting.
+  _stdout-sh: [make-string-handle]
+  _stderr-sh: [make-string-handle]
+  %stdout: _stdout-sh
+  %stderr: _stderr-sh
+
+  bytes-empty?: [fn [let b] [builtin-eq [builtin-length b] 0]]
+
+  read-file: [fn [let handle acc]
+    [chunk: [builtin-file-read handle 65536]]
+    [builtin-if [bytes-empty? chunk]
+      acc
+      [read-file handle [builtin-bytes-concat acc chunk]]]]
+
+  # Bootstrap expand: calls builtin-expand and returns {expanded, errors} for callers to handle.
+  # Does NOT emit to stderr — callers decide whether to emit (include does; eval-test-source captures).
+  expand: [fn [let ast] [builtin-expand ast]]
+
+  # make-string-handle: a write handle backed by a builder that accumulates to a string.
+  # Uses ONLY core builtins — no prelude functions. Safe in Dict 1 bootstrap context.
+  # The read method joins all builder entries using builtin-reduce + builtin-str.
+  make-string-handle: [fn []
+    [buf: [builtin-make-builder]]
+    [write:  [fn [let s]
+               [builtin-builder-set [builtin-length [builtin-builder-snapshot buf]] s buf]]
+     flush:  [fn [] []]
+     close:  [fn [] []]
+     read:   [fn []
+               [snap: [builtin-builder-snapshot buf]]
+               [builtin-reduce
+                 [fn [let acc k] [builtin-str acc [builtin-get k snap]]]
+                 ""
+                 [builtin-keys snap]]]]]
+
+  # strip-trailing-newline: remove one trailing \n from a string.
+  # Used to normalize formatter output. Core builtins only.
+  strip-trailing-newline: [fn [let s]
+    [n: [builtin-str-length s]]
+    [builtin-if [builtin-gt n 0]
+      [builtin-str-slice s 0 [builtin-sub n 1]]
+      s]]
+
+  # Format a single diagnostic dict as a human-readable error line.
+  # Diagnostics use the unified error structure: {kind, message, span, call-stack, ...}.
+  # Uses only core builtins — safe before prelude is loaded.
+  #
+  # Label logic:
+  #   resolve-error / undefined-variable with empty call-stack → "resolve:" (static analysis)
+  #   undefined-variable with non-empty call-stack             → "runtime:" (eval-time, with frames)
+  #   user-error                                                → "error:"
+  #   typecheck / warn                                          → kind as-is
+  format-diagnostic: [fn [let d]
+    [s: d.span]
+    [file-part: [builtin-if [builtin-eq s.file []] "" [builtin-str s.file ":"]]]
+    [loc: [builtin-str file-part s.start-line ":" s.start-col]]
+    [stack-empty: [builtin-eq [builtin-length d.call-stack] 0]]
+    [label: [builtin-if [builtin-eq d.kind "resolve-error"]
+              "resolve"
+              [builtin-if [builtin-eq d.kind "undefined-variable"]
+                [builtin-if stack-empty "resolve" "runtime"]
+                [builtin-if [builtin-eq d.kind "user-error"]
+                  "error"
+                  d.kind]]]]
+    [base-line: [builtin-str loc ": " label ": " d.message "\n"]]
+    [builtin-if stack-empty
+      base-line
+      # Append call-stack frames for runtime errors
+      [builtin-reduce
+        [fn [let acc frame]
+          [frame-file: [builtin-if [builtin-eq frame.span.file []] "" [builtin-str frame.span.file ":"]]]
+          [builtin-str acc "  in " frame.label " at " frame-file frame.span.start-line ":" frame.span.start-col "\n"]]
+        base-line
+        d.call-stack]]]
+
+  emit-diagnostics: [fn [let diagnostics]
+    [builtin-reduce
+      [fn [let _ d] [%stderr.write [format-diagnostic d]]]
+      []
+      diagnostics]]
+
+  # uses-scope: for each module name, parse+typecheck its declaration file and
+  # accumulate a Value::Environment of runtime builtin implementations.
+  # Mirrors loader.llt uses-scope but uses bootstrap helpers from Dict 1.
+  uses-scope: [fn [let module-names]
+    [builtin-reduce
+      [fn [let env name]
+        [decl-path:     [builtin-str "builtin_" name ".llt"]]
+        [decl-handle:   [builtin-file-open %libdir decl-path "read"]]
+        [decl-bytes:    [read-file decl-handle [builtin-bytes]]]
+        [parse-result:  [builtin-parse decl-bytes decl-path]]
+        [>> [emit-diagnostics parse-result.errors] []]
+        [decl-raw:      parse-result.program]
+        [expand-result: [expand decl-raw]]
+        [>> [emit-diagnostics expand-result.errors] []]
+        [decl-expanded: expand-result.expanded]
+        [resolve-result: [builtin-resolve decl-expanded env: env]]
+        [>> [emit-diagnostics resolve-result.errors] []]
+        [decl-resolved: resolve-result.resolved]
+        [>> [builtin-typecheck decl-resolved [builtin-get-type-context]]
+            [builtin-extend-env env [builtin-module name]]]]
+      [builtin-extend-env [] []]
+      module-names]]
+
+  # include: load and evaluate a tinct file, returning Value::Environment.
+  # Iterates over all documents, threading env through them via builtin-eval.
+  # Seed is built from the --- uses: header of the included file (no prelude yet).
+  include: [fn [let cap path]
+    [handle:        [builtin-file-open cap path "read"]]
+    [bytes:         [read-file handle [builtin-bytes]]]
+    [parse-result:  [builtin-parse bytes path]]
+    [>> [emit-diagnostics parse-result.errors] []]
+    [raw:           parse-result.program]
+    # include is bootstrap — emit all errors to stderr so broken stdlib is immediately visible.
+    [expand-result:  [expand raw]]
+    [>> [emit-diagnostics expand-result.errors] []]
+    [expanded:       expand-result.expanded]
+    [seed-env:       [uses-scope expanded.uses]]
+    [resolve-result: [builtin-resolve expanded env: seed-env]]
+    [>> [emit-diagnostics resolve-result.errors] []]
+    [resolved-prog:  resolve-result.resolved]
+    [final-env: [builtin-reduce
+      [fn [let env doc]
+        [resolved: [builtin-resolve doc env: env]]
+        [builtin-eval resolved.doc env: env]]
+      seed-env
+      expanded.documents]]
+    [typed: [builtin-typecheck resolved-prog [builtin-get-type-context]]]
+    [>> [emit-diagnostics typed.warnings]
+        final-env]]
+]
+
+# ============================================================================
+# Dict 2 — Test runner functions
+# ============================================================================
+# Closures here capture Dict 1 + initial env. These functions are called from
+# Dict 3 where prelude is loaded, but their bodies only have access to the
+# builtins available in the "core" + "math" + "io" + "meta" modules plus
+# Dict 1 helpers. Prelude-specific names are passed as parameters.
+
+[
+  Boolean: [type True False]
+
+  ProgramItem: [type
+    [File path: String  handle: File]
+    [Expr src:  String]
+  ]
+
+  # Result type mirrors prelude.llt — needed for matching builtin-try output.
+  Result: [type [let a] [Ok a] [Error String]]
+
+  # write-str: write a UTF-8 string to %stderr (now a protocol dict).
+  write-str: [fn [let h s]
+    [h.write s]]
+
+  # extract-source: given file content, return everything before "\n=== ".
+  # If no "=== " section exists, returns the entire content.
+  extract-source: [fn [let content]
+    [sep-pos: [builtin-str-index-of "\n=== " content]]
+    [builtin-if [builtin-eq sep-pos -1]
+      content
+      [builtin-str-slice content 0 sep-pos]]]
+
+  # extract-section: extract the body of a named === section from content.
+  # label: e.g. "out", "warn", "error"
+  # Returns the body text with trailing newline stripped, or "" if not present.
+  #
+  # Searches for "\n=== <label>\n" and returns text up to the next "\n=== "
+  # or end of string.
+  # section-strip-nl: strip one trailing newline from s (given s and its length).
+  section-strip-nl: [fn [let sv sl]
+    [builtin-if [builtin-eq sl 0] sv
+      [builtin-if [builtin-eq [builtin-str-slice sv [builtin-add sl -1] sl] "\n"]
+        [builtin-str-slice sv 0 [builtin-add sl -1]]
+        sv]]]
+
+  # section-cut-at: trim sv at next "\n=== " (given sv and the sep index si).
+  section-cut-at: [fn [let sv si]
+    [builtin-if [builtin-eq si -1] sv [builtin-str-slice sv 0 si]]]
+
+  # section-trim: given the body text bt, cut + strip trailing newline.
+  section-trim: [fn [let bt]
+    [section-strip-nl
+      [section-cut-at bt [builtin-str-index-of "\n=== " bt]]
+      [builtin-str-length [section-cut-at bt [builtin-str-index-of "\n=== " bt]]]]]
+
+  # extract-section: extract the body of label "=== out" etc. from content.
+  extract-section: [fn [let content label]
+    [builtin-if [builtin-eq [builtin-str-index-of [builtin-str "\n=== " label "\n"] content] -1]
+      ""
+      [section-trim
+        [builtin-str-slice
+          content
+          [builtin-add
+            [builtin-str-index-of [builtin-str "\n=== " label "\n"] content]
+            [builtin-str-length [builtin-str "\n=== " label "\n"]]]
+          [builtin-str-length content]]]]]
+
+  # eval-document-runtime: evaluate a single document and return the new env.
+  # Per-document resolution is done via builtin-resolve doc env: env.
+  eval-document-runtime: [fn [let env doc]
+    [doc-resolved: [builtin-resolve doc env: env]]
+    [builtin-eval doc-resolved.doc env: env]]
+
+  # eval-docs-with-repr: reduce step that evaluates an already-resolved document.
+  # Documents from resolved-prog.documents already have inline resolution written.
+  # No need to re-resolve — just evaluate with current env.
+  eval-docs-with-repr: [fn [let state doc]
+    [repr-str: [builtin-eval-repr doc env: state.env]]
+    [new-env: [builtin-eval doc env: state.env]]
+    [env: new-env  repr: repr-str]]
+
+  # eval-test-source: evaluate a tinct source string.
+  # Takes an extra warn-box (builder) where all-warnings is stored as a side effect.
+  # Returns JUST the repr string (not a dict) — builtin-try forces this, catching errors.
+  # prelude: the loaded prelude as Value::Environment.
+  eval-test-source: [fn [let source path prelude llt-formatter-expanded warn-box]
+    [prog:     [builtin-load source name: path]]
+    # Use the expand wrapper (from Dict 1 closure) which handles {expanded, errors} → Program.
+    # eval-test-source captures ALL errors — no stderr emission. check-warn compares them.
+    [expand-result: [expand prog]]
+    [expanded:      expand-result.expanded]
+    [base-env: [builtin-extend-env prelude
+                 [%cwd:    %cwd
+                  %libdir: %libdir
+                  %stdout: %stdout
+                  %args:   %args]]]
+    # Resolve and typecheck: capture all diagnostics for comparison.
+    [resolve-result: [builtin-resolve expanded env: base-env]]
+    [resolved-prog:  resolve-result.resolved]
+    [typed:          [builtin-typecheck resolved-prog [builtin-get-type-context prelude]]]
+    # Combine expand + resolve errors + typecheck warnings into one diagnostics list.
+    # Order: expand first, then resolve, then typecheck warnings.
+    [expand-count:   [builtin-length expand-result.errors]]
+    [resolve-count:  [builtin-length resolve-result.errors]]
+    [with-resolve:   [builtin-reduce
+      [fn [let acc i]
+        [builtin-merge acc [[builtin-add expand-count i]: [builtin-get i resolve-result.errors]]]]
+      expand-result.errors
+      [builtin-keys resolve-result.errors]]]
+    [all-warnings:   [builtin-reduce
+      [fn [let acc i]
+        [builtin-merge acc [[builtin-add [builtin-add expand-count resolve-count] i]: [builtin-get i typed.warnings]]]]
+      with-resolve
+      [builtin-keys typed.warnings]]]
+    # Per-document eval using top-level eval-docs-with-repr (avoids letrec closure cycle).
+    # Use resolved-prog.documents — these have inline resolution written by builtin-resolve.
+    [final-state: [builtin-reduce eval-docs-with-repr [env: base-env  repr: ""] resolved-prog.documents]]
+    # Store warnings in warn-box (lazy thunk — not forced here).
+    # Return JUST the repr string as the function result — builtin-try forces it, catching errors.
+    [>> [builtin-builder-set 0 all-warnings warn-box]
+        final-state.repr]]
+
+  # path-has-component: true if path contains "/component/" as a path segment.
+  path-has-component: [fn [let path component]
+    [builtin-if [builtin-eq [builtin-str-index-of [builtin-str "/" component "/"] path] -1]
+      Boolean.False
+      Boolean.True]]
+
+  # check-path-sections: enforce that warn/error sections only appear in
+  # appropriately named directories.
+  #   - === warn sections:   only allowed if path contains /warnings/
+  #   - === error sections:  only allowed if path contains /errors/
+  #   - Unexpected ERROR: output (no === error section) also requires /errors/
+  # Returns "" on pass, or a failure message.
+  check-path-sections: [fn [let path expected-warn expected-error actual-out]
+    [in-warnings: [path-has-component path "warnings"]]
+    [in-errors:   [path-has-component path "errors"]]
+    [warn-ok: [builtin-if [builtin-eq expected-warn ""]
+                Boolean.True
+                in-warnings]]
+    # === error section requires errors/ dir; unexpected ERROR: output also requires it
+    [error-ok: [builtin-if [builtin-eq expected-error ""]
+                  # No === error: check for unexpected ERROR: output
+                  [builtin-if [builtin-eq [builtin-str-index-of "ERROR:" actual-out] 0]
+                    in-errors
+                    Boolean.True]
+                  # Has === error: must be in errors/ dir
+                  in-errors]]
+    [builtin-if warn-ok
+      [builtin-if error-ok
+        ""
+        [builtin-if [builtin-eq expected-error ""]
+          [builtin-str "ERROR: output not allowed outside errors/ directory: " path]
+          [builtin-str "=== error section not allowed outside errors/ directory: " path]]]
+      [builtin-str "=== warn section not allowed outside warnings/ directory: " path]]]
+
+  # check-warn: validate typecheck warnings against the expected-warn section.
+  # warnings: the warnings list from eval-test-source result.
+  # expected-warn: the body of the === warn section, or "" if absent.
+  # Returns "" on pass, or a descriptive failure message.
+  #
+  # Semantics:
+  #   - No === warn section (expected-warn = ""): assert zero warnings.
+  #   - === warn present: assert expected-warn is a substring of the joined warnings.
+  check-warn: [fn [let warnings expected-warn]
+    [warn-count: [builtin-length warnings]]
+    # Join warning messages for substring matching. Each warning is a dict with .message field.
+    [warn-text: [builtin-reduce
+      [fn [let acc w] [builtin-str acc [builtin-if [builtin-eq acc ""] "" "\n"] w.message]]
+      ""
+      warnings]]
+    [builtin-if [builtin-eq expected-warn ""]
+      # No === warn: assert zero warnings
+      [builtin-if [builtin-eq warn-count 0]
+        ""
+        [builtin-str "expected no warnings, got:\n" warn-text]]
+      # Has === warn: assert substring present in joined messages
+      [builtin-if [builtin-eq [builtin-str-index-of expected-warn warn-text] -1]
+        [builtin-str "expected warning not found:\n  " expected-warn "\nactual:\n  " warn-text]
+        ""]]]
+
+  # run-test-file: execute a single file ProgramItem.
+  # Receives the payload dict p with p.path and p.handle.
+  run-test-file: [fn [let p prelude stdout llt-formatter-expanded]
+    [bytes:          [read-file p.handle [builtin-bytes]]]
+    [content:        [builtin-bytes-str bytes]]
+    [source:         [extract-source content]]
+    [expected-out:   [extract-section content "out"]]
+    [expected-warn:  [extract-section content "warn"]]
+    [expected-error: [extract-section content "error"]]
+    # Create a warn-box to capture warnings as a side effect.
+    [warn-box: [builtin-make-builder]]
+    # eval-test-source returns just the repr string (forced by builtin-try).
+    # Warnings are stored in warn-box as a side effect.
+    [try-result: [builtin-try [fn [] [eval-test-source source p.path prelude llt-formatter-expanded warn-box]]]]
+    # Non-case arm match on Result.Ok/_Error — case arm patterns don't work with qualified
+    # constructor names in multi-dict bootstrap context.
+    [try-ok: [match try-result
+        [Result.Ok _]:    Boolean.True
+        [Result.Error _]: Boolean.False]]
+    # Extract payload directly — field-get fails when payload is String (not Dict/Variant).
+    [eval-repr:     [builtin-if try-ok
+        [builtin-variant-payload try-result]
+        [builtin-str "ERROR: " [builtin-variant-payload try-result]]]]
+    # Warnings were stored in warn-box by eval-test-source. Read them if try succeeded.
+    [eval-warnings: [builtin-if try-ok [builtin-get 0 [builtin-builder-snapshot warn-box]] []]]
+    [actual: eval-repr]
+    # === error: substring match (spans/positions vary); === out: exact match
+    [out-passed: [builtin-if [builtin-eq expected-error ""]
+                   [builtin-eq actual expected-out]
+                   [builtin-if [builtin-eq [builtin-str-index-of expected-error actual] -1]
+                     Boolean.False
+                     Boolean.True]]]
+    # Check path-based section rules: warn in warnings/, error in errors/
+    [path-fail: [check-path-sections p.path expected-warn expected-error actual]]
+    [path-passed: [builtin-eq path-fail ""]]
+    # Check warnings using the warnings list from eval-result
+    [warn-fail: [builtin-if try-ok
+      [check-warn eval-warnings expected-warn]
+      ""]]
+    [warn-passed: [builtin-eq warn-fail ""]]
+    [r-path:    p.path]
+    [r-passed:  [builtin-if out-passed [builtin-if warn-passed path-passed Boolean.False] Boolean.False]]
+    [r-actual:  [builtin-if path-passed
+                  [builtin-str
+                    [builtin-if out-passed  "" [builtin-str "out: "  actual    "\n"]]
+                    [builtin-if warn-passed "" [builtin-str "warn: " warn-fail "\n"]]]
+                  [builtin-str "out: " actual "\npath: " path-fail]]]
+    [r-expected: [builtin-if path-passed
+                   [builtin-str
+                     [builtin-if out-passed  "" [builtin-str "out: "
+                       [builtin-if [builtin-eq expected-error ""] expected-out expected-error] "\n"]]
+                     [builtin-if warn-passed "" [builtin-str "warn: " expected-warn "\n"]]]
+                   [builtin-str "out: "
+                     [builtin-if [builtin-eq expected-error ""] expected-out expected-error]]]]
+    [path: r-path  passed: r-passed  actual: r-actual  expected: r-expected]]
+
+  # run-test: run one ProgramItem as a corpus test.
+  # Returns { path: String, passed: Boolean, actual: String, expected: String }.
+  # Use wildcard _ for the payload — dot access on Variants auto-unpacks the payload,
+  # so run-test-file can access item.path and item.handle directly.
+  run-test: [fn [let item prelude stdout llt-formatter-expanded]
+    [match item
+      [ProgramItem.File _]: [run-test-file item prelude stdout llt-formatter-expanded]
+      [ProgramItem.Expr _]: [path: "<expr>"  passed: Boolean.True  actual: ""  expected: ""]]]
+
+  # format-result: render the full test outcome line: "path ... pass\n" or "path ... FAIL\n...".
+  format-result: [fn [let r]
+    [builtin-str r.path " ... "
+      [builtin-if r.passed
+        "pass\n"
+        [builtin-str "FAIL\n"
+                     "  expected: " r.expected "\n"
+                     "  actual:   " r.actual "\n"]]]]
+
+  # check-llt-eval: true if a filename ends with ".llt-eval" (9 chars).
+  check-llt-eval: [fn [let name]
+    [len: [builtin-str-length name]]
+    [builtin-if [builtin-lt len 9]
+      Boolean.False
+      [builtin-eq [builtin-str-slice name [builtin-sub len 9] len] ".llt-eval"]]]
+
+  # find-corpus-files: recursively walk cap/dir-path, accumulate .llt-eval files.
+  # state: IntKeyedDict of ProgramItem.File entries.
+  # Returns updated state with discovered ProgramItem.File entries appended.
+  find-corpus-files: [fn [let cap dir-path state]
+    [entries: [builtin-list-dir cap dir-path]]
+    [builtin-reduce
+      [fn [let st entry]
+        [full: [builtin-str dir-path "/" entry.name]]
+        [builtin-if [builtin-eq entry.type "dir"]
+          [find-corpus-files cap full st]
+          [builtin-if [check-llt-eval entry.name]
+            [builtin-append
+              [ProgramItem.File path: full  handle: [builtin-file-open cap full "read"]]
+              st]
+            st]]]
+      state
+      entries]]
+]
+
+# ============================================================================
+# Dict 3 — Intermediate bindings: load modules, prelude, discover test files
+# ============================================================================
+# Dict 3 sees Dict 1 + Dict 2 + initial env.
+# Prelude is loaded as a value and passed to functions as a parameter.
+# All builtins used here are core builtins — init programs cannot use the
+# uses-scope mechanism, so only builtin_core operations are available.
+
+[
+  _prelude: [include %libdir "prelude.llt"]
+
+  # Pre-expand out/llt.llt once (parse + expand only — NOT resolved).
+  # Resolution happens per-test inside eval-test-source with the full pipeline env
+  # (prelude + % = test result). This matches the normal CLI pipeline structure:
+  # each test runs as [test.llt → out/llt.llt] with prelude as the base scope.
+  _llt-formatter-expanded: [call [fn []
+    [parse-result:  [builtin-parse
+                      [read-file [builtin-file-open %libdir "cli/out/llt.llt" "read"] [builtin-bytes]]
+                      "cli/out/llt.llt"]]
+    [>> [emit-diagnostics parse-result.errors] []]
+    [expand-result: [expand parse-result.program]]
+    [>> [emit-diagnostics expand-result.errors] []]
+    expand-result.expanded]]
+
+  # Bootstrap check: verify the expanded formatter is usable (has documents).
+  # Use non-case arm pattern syntax (Pattern::Constructor via match_pattern) since
+  # case arm structural pattern matching has a known issue with Result.Ok matching.
+  _formatter-ok: [match [builtin-try [fn [] _llt-formatter-expanded.documents]]
+    [Result.Ok _]:    Boolean.True
+    [Result.Error _]: [>> [write-str %stderr "\nbootstrap error: llt.llt formatter failed to load\nCannot run corpus tests.\n"]
+                          Boolean.False]]
+
+  # If specific test files were given on the command line, run only those.
+  # If none were given (%programs is empty), auto-discover all .llt-eval files
+  # under tests/corpus/eval/ relative to %cwd.
+  # Bootstrap gate: if formatter failed, run no tests.
+  test-programs: [builtin-if _formatter-ok
+    [builtin-if [builtin-eq [builtin-length %programs] 0]
+      [find-corpus-files
+        [builtin-narrow %cwd "tests/corpus"]
+        "."
+        []]
+      %programs]
+    []]
+
+  final-state: [builtin-reduce
+    [fn [let state item]
+      [result: [run-test item _prelude %stdout _llt-formatter-expanded]]
+      [>> [write-str %stdout [format-result result]]
+          [idx:    [builtin-add state.idx 1]
+           total:  [builtin-add state.total 1]
+           passed: [builtin-if result.passed
+                      [builtin-add state.passed 1]
+                      state.passed]
+           first-fail: [builtin-if [builtin-eq state.first-fail ""]
+                          [builtin-if result.passed
+                            ""
+                            [builtin-str result.path "\n  expected: " result.expected "\n  actual:   " result.actual]]
+                          state.first-fail]]]]
+    [idx: 0  total: 0  passed: 0  first-fail: ""]
+    test-programs]
+
+  total:  final-state.total
+  passed: final-state.passed
+  failed: [builtin-sub total passed]
+  first-fail: final-state.first-fail
+]
+
+# ============================================================================
+# Final expression — the document result IS the test suite execution.
+# ============================================================================
+# Being a top-level expression (not a dict entry), materialize() forces this
+# directly, driving all stdout writes and returning the summary.
+
+[>> [write-str %stdout
+           [builtin-if [builtin-eq failed 0]
+             [builtin-str "\n" [builtin-str passed] "/" [builtin-str total] " tests passed\n"]
+             [builtin-str "\n" [builtin-str passed] "/" [builtin-str total] " tests passed, "
+                               [builtin-str failed] " failed\n"]]]
+    # Flush captured output to real stdout/stderr before raising.
+    [>> [builtin-write-stdout [_stdout-sh.read]]
+        [>> [builtin-write-stderr [_stderr-sh.read]]
+            [builtin-if [builtin-eq failed 0]
+              []
+              [builtin-raise [builtin-str [builtin-str failed] " test(s) failed\n" first-fail]]]]]]

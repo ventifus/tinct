@@ -44,7 +44,8 @@ use crate::ast::Span;
 use crate::builtins::{builtin, expect_one_arg, ok_val, reject_named, require_string};
 
 use crate::error::{EvalError, EvalResult};
-use crate::types::{Row, Type, TypeAlias, TypeEnv};
+use crate::type_def::TyConDef;
+use crate::types::{Row, Type, TypeEnv};
 use crate::value::{string_val, BuiltinArgs, BuiltinDef, HashableValue, Strictness, Thunk, Value};
 
 /// `connect`: Open a TCP or UDP connection within a NetCap.
@@ -67,7 +68,6 @@ pub(crate) fn builtin_connect(
 }
 
 // builtin_connect old body removed. Network redesign sprint will rewrite with a new stream type.
-
 
 /// Check if a connection to host:port is allowed by the NetCap allowlist.
 /// Returns Ok(None) for hostname-only match, Ok(Some(ip)) for IP-based match requiring DNS resolution.
@@ -864,7 +864,7 @@ pub(crate) fn builtin_tls_layer(
 
 // UNIQUE_SENTINEL_TLS_LAYER_END
 
-        // DEAD CODE: TLS stream setup removed (used Value::Handle)
+// DEAD CODE: TLS stream setup removed (used Value::Handle)
 
 // tls-layer dead body fully removed.
 
@@ -3039,28 +3039,29 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
     // ── Type aliases ──────────────────────────────────────────────────────────
     // Register so @QuicSession, @Http2Session, etc. are valid in user annotations.
 
-    env.insert_type_alias(
-        "QuicSession".to_string(),
-        TypeAlias::new(vec![], Type::QuicSession),
-    );
-    env.insert_type_alias(
-        "Http2Session".to_string(),
-        TypeAlias::new(vec![], Type::Http2Session),
-    );
-    env.insert_type_alias(
-        "Http3Session".to_string(),
-        TypeAlias::new(vec![], Type::Http3Session),
-    );
-    env.insert_type_alias(
-        "QuicDatagramHandle".to_string(),
-        TypeAlias::new(vec![], Type::QuicDatagramHandle),
-    );
-    env.insert_type_alias(
-        "DatagramHandle".to_string(),
-        TypeAlias::new(vec![], Type::DatagramHandle),
-    );
-    // Url — type alias for Uri (url/urn builtins also return Uri)
-    env.insert_type_alias("Url".to_string(), TypeAlias::new(vec![], Type::Uri));
+    for (name, body) in [
+        ("QuicSession", Type::QuicSession),
+        ("Http2Session", Type::Http2Session),
+        ("Http3Session", Type::Http3Session),
+        ("QuicDatagramHandle", Type::QuicDatagramHandle),
+        ("DatagramHandle", Type::DatagramHandle),
+        ("Url", Type::Uri),
+    ] {
+        env.insert_tycon_def(
+            name.to_string(),
+            Arc::new(TyConDef {
+                params: vec![],
+                body,
+                constraints: vec![],
+                variance: vec![],
+                constructors: vec![],
+                builtin_type: None,
+                annotation: None,
+                field_annotations: indexmap::IndexMap::new(),
+                constructor_constants: indexmap::IndexMap::new(),
+            }),
+        );
+    }
 
     // ── connect: NetCap → String → Int → String → Handle[Readable Writable Binary Stream] ──
     // Takes (cap, host, port, transport-tag). Returns a bidirectional stream handle.
@@ -3284,7 +3285,10 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
                     fields: indexmap::IndexMap::from_iter([(
                         "ok".to_string(),
                         Type::Record(Row {
-                            fields: indexmap::IndexMap::from_iter([("latency-ms".to_string(), Type::Int)]),
+                            fields: indexmap::IndexMap::from_iter([(
+                                "latency-ms".to_string(),
+                                Type::Int,
+                            )]),
                             tail: crate::type_def::RowTail::Empty,
                         }),
                     )]),

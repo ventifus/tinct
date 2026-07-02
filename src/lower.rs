@@ -17,8 +17,8 @@
 use std::sync::Arc;
 
 use crate::ast::{
-    CoreEntry, CoreExpr, CoreMatchArm, CoreNamedArg, CoreParam, Pattern,
-    Spanned, SurfaceEntry, SurfaceExpression, SurfaceNode,
+    CoreEntry, CoreExpr, CoreMatchArm, CoreNamedArg, CoreParam, Pattern, Spanned, SurfaceEntry,
+    SurfaceExpression, SurfaceNode,
 };
 use crate::rust_span;
 
@@ -99,7 +99,11 @@ pub(crate) fn annotation_name_to_type(name: &str) -> crate::type_def::Type {
 /// also converted (e.g., inside Or, Dict, Seq, Constructor bindings).
 fn lower_pattern(pat: &Pattern) -> Pattern {
     match pat {
-        Pattern::TypeAssertPending { annotation, inner, resolved } => {
+        Pattern::TypeAssertPending {
+            annotation,
+            inner,
+            resolved,
+        } => {
             // Read the inline resolved type — set by the type checker, or fall back to name→Type.
             let resolved_type = resolved.get().cloned().unwrap_or_else(|| {
                 if let crate::ast::Annotation::Simple(name) = &annotation.node {
@@ -109,10 +113,7 @@ fn lower_pattern(pat: &Pattern) -> Pattern {
                 }
             });
             let lowered_inner = inner.as_ref().map(|boxed| {
-                Box::new(Spanned::new(
-                    lower_pattern(&boxed.node),
-                    boxed.span.clone(),
-                ))
+                Box::new(Spanned::new(lower_pattern(&boxed.node), boxed.span.clone()))
             });
             Pattern::TypeAssert {
                 resolved_type,
@@ -126,10 +127,7 @@ fn lower_pattern(pat: &Pattern) -> Pattern {
         } => {
             // Already elaborated — recurse into inner.
             let elaborated_inner = inner.as_ref().map(|boxed| {
-                Box::new(Spanned::new(
-                    lower_pattern(&boxed.node),
-                    boxed.span.clone(),
-                ))
+                Box::new(Spanned::new(lower_pattern(&boxed.node), boxed.span.clone()))
             });
             Pattern::TypeAssert {
                 resolved_type: resolved_type.clone(),
@@ -180,7 +178,9 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
         SurfaceExpression::Float(n) => CoreExpr::Float(*n),
         SurfaceExpression::Str(s) => CoreExpr::Str(s.clone()),
 
-        SurfaceExpression::VarRef { name, resolution, .. } => {
+        SurfaceExpression::VarRef {
+            name, resolution, ..
+        } => {
             match resolution.get() {
                 Some(Some((level, slot))) => CoreExpr::Var {
                     name: name.clone(),
@@ -262,16 +262,14 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
             field: crate::ast::DotKey::Ident(name),
             resolution,
             ..
-        } => {
-            match resolution.get() {
-                Some(Some((level, slot))) => CoreExpr::Var {
-                    name: name.clone(),
-                    level,
-                    slot,
-                },
-                _ => CoreExpr::Error(arc.span.clone()),
-            }
-        }
+        } => match resolution.get() {
+            Some(Some((level, slot))) => CoreExpr::Var {
+                name: name.clone(),
+                level,
+                slot,
+            },
+            _ => CoreExpr::Error(arc.span.clone()),
+        },
 
         // Leading-dot with integer key: `.0` — no parent-scope numeric lookup. The parser
         // rejects this at parse time, so this is a safety fallback only.
@@ -290,12 +288,9 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
             implied: true,
         },
 
-        SurfaceExpression::Sequential(exprs) => CoreExpr::Sequential(
-            exprs
-                .iter()
-                .map(|e| Arc::new(lower(e)))
-                .collect(),
-        ),
+        SurfaceExpression::Sequential(exprs) => {
+            CoreExpr::Sequential(exprs.iter().map(|e| Arc::new(lower(e))).collect())
+        }
 
         SurfaceExpression::Dict(entries) => {
             let mut core_entries: Vec<Spanned<CoreEntry>> = Vec::with_capacity(entries.len());
@@ -304,10 +299,8 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
                     match decl.as_ref() {
                         crate::ast::SurfaceDeclaration::InstanceDecl { .. } => {
                             if se.node.key.is_some() {
-                                let lowered =
-                                    lower_expr(&se.node.value, &se.node.value.expr);
-                                let key =
-                                    se.node.key.as_ref().map(|k| Arc::new(lower(k)));
+                                let lowered = lower_expr(&se.node.value, &se.node.value.expr);
+                                let key = se.node.key.as_ref().map(|k| Arc::new(lower(k)));
                                 let value = Arc::new(Spanned::new(lowered, se.span.clone()));
                                 core_entries
                                     .push(Spanned::new(CoreEntry { key, value }, se.span.clone()));
@@ -315,14 +308,16 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
                         }
                         crate::ast::SurfaceDeclaration::TypeAlias { body, .. } => {
                             let type_name_opt = extract_type_name_from_key(&se.node.key);
-                            let ctor_dict = lower_type_alias_to_constructor_dict(
-                                type_name_opt,
-                                body,
-                            );
+                            let ctor_dict =
+                                lower_type_alias_to_constructor_dict(type_name_opt, body);
                             let key = se.node.key.as_ref().map(|k| {
                                 let lowered = match &k.expr {
-                                    SurfaceExpression::VarRef { name, .. } => CoreExpr::Str(name.clone()),
-                                    SurfaceExpression::Annotated { name, .. } => CoreExpr::Str(name.clone()),
+                                    SurfaceExpression::VarRef { name, .. } => {
+                                        CoreExpr::Str(name.clone())
+                                    }
+                                    SurfaceExpression::Annotated { name, .. } => {
+                                        CoreExpr::Str(name.clone())
+                                    }
                                     _ => lower_expr(k, &k.expr),
                                 };
                                 Arc::new(Spanned::new(lowered, k.span.clone()))
@@ -339,7 +334,9 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
                     let key = se.node.key.as_ref().map(|k| {
                         let lowered = match &k.expr {
                             SurfaceExpression::VarRef { name, .. } => CoreExpr::Str(name.clone()),
-                            SurfaceExpression::Annotated { name, .. } => CoreExpr::Str(name.clone()),
+                            SurfaceExpression::Annotated { name, .. } => {
+                                CoreExpr::Str(name.clone())
+                            }
                             _ => lower_expr(k, &k.expr),
                         };
                         Arc::new(Spanned::new(lowered, k.span.clone()))
@@ -360,7 +357,13 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
             // Compile-time instance dispatch rewriting: if the VarRef node for the function
             // has a call_dispatch annotation set by the type checker, rewrite the function
             // reference to the instance binding name.
-            let lowered_func = if let SurfaceExpression::VarRef { name: _, resolution, call_dispatch, .. } = &func.expr {
+            let lowered_func = if let SurfaceExpression::VarRef {
+                name: _,
+                resolution,
+                call_dispatch,
+                ..
+            } = &func.expr
+            {
                 if let Some(binding_name) = call_dispatch.get() {
                     // Read inline resolution from the func VarRef node.
                     match resolution.get() {
@@ -386,10 +389,7 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
 
             CoreExpr::Call {
                 func: lowered_func,
-                args: args
-                    .iter()
-                    .map(|a| Arc::new(lower(a)))
-                    .collect(),
+                args: args.iter().map(|a| Arc::new(lower(a))).collect(),
                 named_args: named_args
                     .iter()
                     .map(|na| {
@@ -476,9 +476,7 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
 
         SurfaceExpression::Unquote(inner) => CoreExpr::Unquote(Arc::new(lower(inner))),
 
-        SurfaceExpression::UnquoteSplice(inner) => {
-            CoreExpr::UnquoteSplice(Arc::new(lower(inner)))
-        }
+        SurfaceExpression::UnquoteSplice(inner) => CoreExpr::UnquoteSplice(Arc::new(lower(inner))),
 
         SurfaceExpression::PatternDecl { bindings } => CoreExpr::PatternDecl {
             bindings: bindings.iter().map(|b| lower(b)).collect(),
@@ -510,55 +508,52 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
 
         SurfaceExpression::Placeholder => CoreExpr::Placeholder,
 
-        SurfaceExpression::Decl(decl) => {
-            match decl.as_ref() {
-                crate::ast::SurfaceDeclaration::InstanceDecl { class_name, arms } => {
-                    let mut core_entries: Vec<Spanned<CoreEntry>> = Vec::new();
-                    let syn_span = rust_span!();
+        SurfaceExpression::Decl(decl) => match decl.as_ref() {
+            crate::ast::SurfaceDeclaration::InstanceDecl { class_name, arms } => {
+                let mut core_entries: Vec<Spanned<CoreEntry>> = Vec::new();
+                let syn_span = rust_span!();
 
-                    for (pattern, method_entries) in arms {
-                        let dispatch_tags = extract_dispatch_tags(&pattern.expr);
-                        let type_args: Vec<&str> =
-                            dispatch_tags.iter().filter_map(|t| t.as_deref()).collect();
+                for (pattern, method_entries) in arms {
+                    let dispatch_tags = extract_dispatch_tags(&pattern.expr);
+                    let type_args: Vec<&str> =
+                        dispatch_tags.iter().filter_map(|t| t.as_deref()).collect();
 
-                        for me in method_entries {
-                            let method_name = match me.node.key.as_ref() {
-                                Some(key_node) => match &key_node.expr {
-                                    SurfaceExpression::Str(s) => s.clone(),
-                                    SurfaceExpression::VarRef { name, .. } => name.clone(),
-                                    SurfaceExpression::Annotated { name, .. } => name.clone(),
-                                    _ => continue,
-                                },
-                                None => continue,
-                            };
+                    for me in method_entries {
+                        let method_name = match me.node.key.as_ref() {
+                            Some(key_node) => match &key_node.expr {
+                                SurfaceExpression::Str(s) => s.clone(),
+                                SurfaceExpression::VarRef { name, .. } => name.clone(),
+                                SurfaceExpression::Annotated { name, .. } => name.clone(),
+                                _ => continue,
+                            },
+                            None => continue,
+                        };
 
-                            let binding_name = crate::type_def::instance_binding_name(
-                                class_name,
-                                &method_name,
-                                &type_args,
-                            );
+                        let binding_name = crate::type_def::instance_binding_name(
+                            class_name,
+                            &method_name,
+                            &type_args,
+                        );
 
-                            let key = Some(Arc::new(Spanned::new(
-                                CoreExpr::Str(binding_name),
-                                syn_span.clone(),
-                            )));
-                            let value = Arc::new(lower(&me.node.value));
-                            core_entries
-                                .push(Spanned::new(CoreEntry { key, value }, syn_span.clone()));
-                        }
+                        let key = Some(Arc::new(Spanned::new(
+                            CoreExpr::Str(binding_name),
+                            syn_span.clone(),
+                        )));
+                        let value = Arc::new(lower(&me.node.value));
+                        core_entries.push(Spanned::new(CoreEntry { key, value }, syn_span.clone()));
                     }
+                }
 
-                    if !core_entries.is_empty() {
-                        return CoreExpr::Dict(core_entries);
-                    }
-                    CoreExpr::Placeholder
+                if !core_entries.is_empty() {
+                    return CoreExpr::Dict(core_entries);
                 }
-                crate::ast::SurfaceDeclaration::TypeAlias { body, .. } => {
-                    lower_type_alias_to_constructor_dict(None, body)
-                }
-                _ => CoreExpr::Placeholder,
+                CoreExpr::Placeholder
             }
-        }
+            crate::ast::SurfaceDeclaration::TypeAlias { body, .. } => {
+                lower_type_alias_to_constructor_dict(None, body)
+            }
+            _ => CoreExpr::Placeholder,
+        },
 
         SurfaceExpression::Error(span) => CoreExpr::Error(span.clone()),
     }
@@ -1199,7 +1194,9 @@ fn extract_constructors_from_body(body: &SurfaceExpression) -> Vec<ConstructorIn
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::{Provenance, Resolution, SurfaceExpression, SurfaceNode, TypeAnnotation, CallDispatch};
+    use crate::ast::{
+        CallDispatch, Provenance, Resolution, SurfaceExpression, SurfaceNode, TypeAnnotation,
+    };
     use std::sync::Arc;
 
     fn make_node(expr: SurfaceExpression, span: crate::ast::Span) -> Arc<SurfaceNode> {
