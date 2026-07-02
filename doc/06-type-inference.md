@@ -2,7 +2,7 @@
 
 This chapter formally specifies tinct's type inference algorithm. The notation uses standard PL conventions: Γ for type environments, ⊢ for typing judgments, S for substitutions, and τ, σ for types.
 
-For the user-facing annotation syntax (`@`, type assertions, type expressions), see [Type Annotations](05-type-annotations.md). For TypeAssert runtime validation, row-variable unification, and the type system extension roadmap, see [Type System Extensions](07-type-extensions.md).
+For the user-facing annotation syntax (`@`, type assertions, type expressions), see [Type Annotations](05-type-annotations.md). For BAS (Boolean-Algebraic Subtyping), TypeAssert runtime validation, column constraints, and equirecursive types, see [Type System Extensions](07-type-extensions.md).
 
 ## Type Representation
 
@@ -67,7 +67,7 @@ Tree a      → App(TyCon("Tree"), TypeVar("a"))
 
 The `Row` tail field carries `RowTail::Empty` (closed record, current default) or `RowTail::Uniform { key: Option<Box<Type>>, value: Box<Type> }` (column constraint — see §Column Constraints in [Type System Extensions](07-type-extensions.md)).
 
-*Note:* Under BAS (Boolean-Algebraic Subtyping), all records are closed. Records carry no row-rest parameter. Width subtyping handles record openness via intersection and negation. The Rémy-style row polymorphism notation is documented in [Type System Extensions](07-type-extensions.md) Appendix.
+*Note:* Under BAS (Boolean-Algebraic Subtyping), all records are closed. Records carry no row-rest parameter. Width subtyping handles record openness via intersection and negation. The historical Rémy-style row polymorphism design is documented in the archived section of [Type System Extensions](07-type-extensions.md).
 
 **Additional types** (not expressible in annotations, used internally by inference):
 
@@ -915,7 +915,7 @@ unify(τ, α, S) = S[α ↦ τ]
         for all β ∈ FTV(τ)                         [U-VAR-LEVEL-SYM]
 ```
 
-Both rules lower levels symmetrically: when binding α to τ, every type variable β and every row variable ρ inside τ has its level lowered to `min(ℓ(β or ρ), ℓ(α))`. This prevents variables from escaping their scope through either side of a unification. Row variables must be lowered because τ may contain row variables through Record nesting (e.g., τ = Record({x: Int, ...ρ})).
+Both rules lower levels symmetrically: when binding α to τ, every type variable β inside τ has its level lowered to `min(ℓ(β), ℓ(α))`. This prevents variables from escaping their scope through either side of a unification.
 
 **Unknown-unification and generalization.** When a type variable α is unified with `Unknown`, the current [U-UNKNOWN] rules succeed without binding α. To prevent incorrect generalization of the unbound α, `unify(α, Unknown)` sets `ℓ(α) = 0` (below all binding levels):
 

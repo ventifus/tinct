@@ -647,14 +647,19 @@ retry-impl: [fn [let n@Int thunk@Fn]
 # Stops when select-once returns Closed.Closed (channel closed).
 # Checks ctx cancellation before each iteration so callers can bound the loop.
 # Tail-recursive with TCO support (O(1) stack depth in the CEK machine).
+#
+# B-468: If a handler returns Closed.Closed, this will incorrectly terminate the
+# select loop — the Closed.Closed: arm fires as if all channels closed, but it was
+# the handler's return value. Tracked: B-468. Fix: discriminated return type
+# (e.g. SelectResult.Value / SelectResult.Closed) from builtin-select-once.
 select-impl: [fn [let ctx sources@Seq handler@Fn]
     [builtin-if [builtin-cancelled-q ctx]
         []
         [match [builtin-select-once ctx sources]
-            [case [let v] [Result.Ok v]
-                [[fn [let item] [handler item] [select-impl ctx sources handler]] v]]
-            [case [let _] [Closed.Closed]
-                Closed.Closed]]]]
+            Closed.Closed:
+                Closed.Closed
+            [case [let v] _
+                [[fn [let item] [handler item] [select-impl ctx sources handler]] v]]]]]
 
 ]
 

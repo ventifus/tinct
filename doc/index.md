@@ -8,7 +8,7 @@
 4. [Functions](04-functions.md) — `call`, `fn`, arguments, variadic, `_` desugaring, call convention
 5. [Type Annotations](05-type-annotations.md) — `@` annotations, type assertions, type expressions, literal types
 6. [Type Inference](06-type-inference.md) — Bidirectional typing, unification, subtyping, let-generalization
-7. [Type System Extensions](07-type-extensions.md) — TypeAssert validation, row-variable unification, roadmap
+7. [Type System Extensions](07-type-extensions.md) — BAS (Boolean-Algebraic Subtyping), TypeAssert validation, column constraints, equirecursive types
 8. [Evaluation](08-evaluation.md) — Lazy semantics, thunks, materialization, letrec, sequences
 9. [Documents & Pipelines](09-documents.md) — `---` separators, `%` pipeline, scope chains, `$include`
 10. [Error Handling](10-errors.md) — Exception model, `$try`, ErrorKind, error semantics

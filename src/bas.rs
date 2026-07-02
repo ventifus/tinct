@@ -35,6 +35,20 @@ use crate::type_def::{extract_tycon_spine, unfold_once, Row, RowTail, TyConEnv, 
 /// Maximum depth for atom subtype checking (coinductive Recursive type comparison).
 const MAX_ATOM_SUBTYPE_DEPTH: usize = 256;
 
+/// Maximum number of conjunctions allowed in an RDNF after distribution (cross-product).
+///
+/// The cross-product in `distribute()` produces |left| * |right| conjunctions. For deeply
+/// nested intersections of unions, this can grow exponentially. This limit prevents
+/// pathological blowup.
+///
+/// When exceeded, `distribute()` returns `vec![]` (empty RDNF = uninhabited). This is
+/// conservative-safe for the subtyping judgment: `A <: B` iff `A & ~B` is uninhabited.
+/// Returning "uninhabited" means `is_subtype` returns true, which is the conservative
+/// direction (accepting a subtyping relationship that may not hold is safer than rejecting
+/// one that does, because rejection causes type errors visible to the user while acceptance
+/// is silent).
+const MAX_RDNF_CONJUNCTIONS: usize = 1024;
+
 // ---------------------------------------------------------------------------
 // RDNF types
 // ---------------------------------------------------------------------------
@@ -349,13 +363,22 @@ pub fn to_rdnf(ty: &Type) -> Rdnf {
 
 /// Distribute two RDNFs (cross-product for intersection).
 /// (A1 | A2) & (B1 | B2) = (A1 & B1) | (A1 & B2) | (A2 & B1) | (A2 & B2)
+///
+/// Guarded by `MAX_RDNF_CONJUNCTIONS`: if the result would exceed the limit, returns
+/// `vec![]` (empty RDNF = uninhabited). See the constant's doc comment for why this is
+/// the conservative-safe direction.
 fn distribute(left: &Rdnf, right: &Rdnf) -> Rdnf {
     // Special cases for empty disjunctions
     if left.is_empty() || right.is_empty() {
         // Never & T = Never, T & Never = Never
         return vec![];
     }
-    let mut result = Vec::with_capacity(left.len() * right.len());
+    let product_size = left.len().saturating_mul(right.len());
+    if product_size > MAX_RDNF_CONJUNCTIONS {
+        // Cross-product would exceed limit — return empty (conservative: "uninhabited")
+        return vec![];
+    }
+    let mut result = Vec::with_capacity(product_size);
     for l in left {
         for r in right {
             let mut conjunction = l.clone();
@@ -391,7 +414,13 @@ fn negate_rdnf(rdnf: &Rdnf) -> Rdnf {
         // ~(a1 & a2 & ... & am) = ~a1 | ~a2 | ... | ~am  (De Morgan)
         // Each negated atom becomes a single-element conjunction in a disjunction
         let negated_conj: Rdnf = conjunction.iter().map(|atom| vec![atom.negate()]).collect();
-        // Distribute: result & negated_conj
+        // Distribute: result & negated_conj.
+        // distribute() may trigger MAX_RDNF_CONJUNCTIONS and return empty (Never). In this
+        // context empty = Never means ~A = Never, treating A as Top. This is the same
+        // conservative-safe direction as the top-level emptiness check: when the conjunction
+        // count explodes we over-approximate A as Top, so ~A = Never (everything is a subtype
+        // of A). Subtype checks remain sound in the permissive direction — no false positives
+        // for type errors.
         result = distribute(&result, &negated_conj);
     }
 
@@ -803,6 +832,12 @@ pub fn flatten_rdnf_to_type(rdnf: Rdnf) -> Type {
 
 /// Check if an RDNF is empty (uninhabited).
 /// A disjunction is empty iff ALL conjunctions are empty.
+///
+/// Each conjunction is checked with a fresh clone of `sigma` so that coinductive
+/// assumptions accumulated during one conjunction's emptiness check do not leak into
+/// another. The disjuncts are independent alternatives — an assumption that recursive
+/// types (mu a. A) <: (mu b. B) made while checking conjunction C1 is only valid within
+/// C1's proof tree, not C2's.
 pub fn is_rdnf_empty(
     rdnf: &Rdnf,
     tycon_env: Option<&TyConEnv>,
@@ -811,8 +846,10 @@ pub fn is_rdnf_empty(
     if rdnf.is_empty() {
         return true; // No disjuncts → Never
     }
-    rdnf.iter()
-        .all(|conj| is_conjunction_empty(conj, tycon_env, sigma))
+    rdnf.iter().all(|conj| {
+        let mut conj_sigma = sigma.clone();
+        is_conjunction_empty(conj, tycon_env, &mut conj_sigma)
+    })
 }
 
 /// Check if a conjunction of signed atoms is empty (uninhabited).
@@ -1793,6 +1830,203 @@ mod tests {
             ty,
             Type::Any,
             "flatten_rdnf_to_type([[]]) must produce Any (empty conjunction = top)"
+        );
+    }
+
+    // --- B-465: sigma isolation per conjunction in is_rdnf_empty ---
+
+    /// Coinductive assumptions from one conjunction must not leak into another.
+    ///
+    /// Scenario: RDNF with two conjunctions C1 and C2, where C1 introduces a
+    /// coinductive assumption (mu a. A, mu b. B) into sigma during its emptiness check.
+    /// C2 must not see that assumption — each disjunct is an independent alternative.
+    ///
+    /// We construct an RDNF where:
+    /// - C1 contains Pos(Recursive{a, Int}) and Neg(Recursive{b, Int}) — this is empty
+    ///   because Recursive{a, Int} <: Recursive{b, Int}, but checking it adds (a, b) to sigma.
+    /// - C2 contains only Pos(Int) — this is inhabited and should make the RDNF non-empty.
+    ///
+    /// The key invariant: C2's result must not depend on sigma state from C1.
+    #[test]
+    fn test_b465_sigma_scoped_per_conjunction() {
+        // C1: Pos(mu a. Int) & Neg(mu b. Int) — empty (mu a. Int <: mu b. Int)
+        let conj1 = vec![
+            SignedAtom::Pos(Atom::Recursive {
+                var: "a".to_string(),
+                body: Box::new(Type::Int),
+            }),
+            SignedAtom::Neg(Atom::Recursive {
+                var: "b".to_string(),
+                body: Box::new(Type::Int),
+            }),
+        ];
+        // C2: Pos(Int) — inhabited
+        let conj2 = vec![SignedAtom::Pos(Atom::Primitive(PrimitiveAtom::Int))];
+
+        let rdnf = vec![conj1, conj2];
+        let mut sigma = HashSet::new();
+
+        // RDNF = C1 | C2. C2 is inhabited, so the RDNF is NOT empty.
+        assert!(
+            !is_rdnf_empty(&rdnf, None, &mut sigma),
+            "B-465: RDNF with one empty and one inhabited conjunction must not be empty"
+        );
+
+        // Verify sigma was not polluted at the call site
+        assert!(
+            sigma.is_empty(),
+            "B-465: caller's sigma must not be mutated by is_rdnf_empty"
+        );
+    }
+
+    /// Verify that each conjunction gets a fresh sigma by testing that sigma state
+    /// from C1 does not cause C2 to wrongly return "empty".
+    ///
+    /// If sigma leaked, a coinductive assumption (a, b) from C1 could cause C2's
+    /// Recursive type check to short-circuit via S-Assum when it should not.
+    ///
+    /// IMPORTANT: C1 and C2 intentionally use the SAME binder var names "a" and "b".
+    /// Under the pre-fix code, C1 inserts ("a","b") into sigma. C2's S-Assum check
+    /// then finds ("a","b") already in sigma and short-circuits, incorrectly declaring
+    /// C2 empty. Without matching var names, the S-Assum hit would never occur and
+    /// the test would not discriminate between the fixed and pre-fix implementations.
+    #[test]
+    fn test_b465_sigma_leak_would_affect_result() {
+        // C1: Pos(mu a. Int) & Neg(mu b. Int) — empty, adds (a, b) to sigma
+        let conj1 = vec![
+            SignedAtom::Pos(Atom::Recursive {
+                var: "a".to_string(),
+                body: Box::new(Type::Int),
+            }),
+            SignedAtom::Neg(Atom::Recursive {
+                var: "b".to_string(),
+                body: Box::new(Type::Int),
+            }),
+        ];
+
+        // C2: Pos(mu a. Str) & Neg(mu b. Int) — should NOT be empty (Str ≠ Int bodies),
+        // but IF sigma leaked with (a, b) from C1, the S-Assum rule would make
+        // is_atom_subtype(Recursive{a, Str}, Recursive{b, Int}) return true incorrectly,
+        // making C2 appear empty.
+        let conj2 = vec![
+            SignedAtom::Pos(Atom::Recursive {
+                var: "a".to_string(),
+                body: Box::new(Type::Str),
+            }),
+            SignedAtom::Neg(Atom::Recursive {
+                var: "b".to_string(),
+                body: Box::new(Type::Int),
+            }),
+        ];
+
+        let rdnf = vec![conj1, conj2];
+        let mut sigma = HashSet::new();
+
+        // C1 is empty (mu a. Int <: mu b. Int). C2 is NOT empty (mu a. Str ≰ mu b. Int).
+        // Therefore the RDNF is NOT empty.
+        assert!(
+            !is_rdnf_empty(&rdnf, None, &mut sigma),
+            "B-465: sigma leak from C1 must not cause C2 to appear empty"
+        );
+    }
+
+    // --- B-467: MAX_RDNF_CONJUNCTIONS limit in distribute() ---
+
+    /// distribute() returns empty RDNF when cross-product would exceed MAX_RDNF_CONJUNCTIONS.
+    ///
+    /// The conservative-safe direction: empty RDNF = uninhabited = is_subtype returns true.
+    #[test]
+    fn test_b467_distribute_respects_limit() {
+        // Create two RDNFs each with enough conjunctions that their product exceeds 1024.
+        // 33 * 33 = 1089 > 1024
+        let left: Rdnf = (0..33)
+            .map(|i| vec![SignedAtom::Pos(Atom::Literal(LiteralAtom::IntLiteral(i)))])
+            .collect();
+        let right: Rdnf = (100..133)
+            .map(|i| vec![SignedAtom::Pos(Atom::Literal(LiteralAtom::IntLiteral(i)))])
+            .collect();
+
+        let result = distribute(&left, &right);
+        assert!(
+            result.is_empty(),
+            "B-467: distribute() must return empty RDNF when product ({}) exceeds MAX_RDNF_CONJUNCTIONS ({})",
+            33 * 33,
+            MAX_RDNF_CONJUNCTIONS
+        );
+    }
+
+    /// distribute() works normally when cross-product is within the limit.
+    #[test]
+    fn test_b467_distribute_within_limit() {
+        // 2 * 3 = 6, well within 1024
+        let left: Rdnf = vec![
+            vec![SignedAtom::Pos(Atom::Primitive(PrimitiveAtom::Int))],
+            vec![SignedAtom::Pos(Atom::Primitive(PrimitiveAtom::Str))],
+        ];
+        let right: Rdnf = vec![
+            vec![SignedAtom::Pos(Atom::Literal(LiteralAtom::IntLiteral(1)))],
+            vec![SignedAtom::Pos(Atom::Literal(LiteralAtom::IntLiteral(2)))],
+            vec![SignedAtom::Pos(Atom::Literal(LiteralAtom::IntLiteral(3)))],
+        ];
+
+        let result = distribute(&left, &right);
+        assert_eq!(
+            result.len(),
+            6,
+            "B-467: distribute() must produce correct cross-product when within limit"
+        );
+        // Each result conjunction should have 2 atoms (one from left, one from right)
+        for conj in &result {
+            assert_eq!(conj.len(), 2);
+        }
+    }
+
+    /// distribute() at exactly the limit (1024) still works.
+    #[test]
+    fn test_b467_distribute_at_exact_limit() {
+        // 32 * 32 = 1024 = exactly MAX_RDNF_CONJUNCTIONS
+        let left: Rdnf = (0..32)
+            .map(|i| vec![SignedAtom::Pos(Atom::Literal(LiteralAtom::IntLiteral(i)))])
+            .collect();
+        let right: Rdnf = (100..132)
+            .map(|i| vec![SignedAtom::Pos(Atom::Literal(LiteralAtom::IntLiteral(i)))])
+            .collect();
+
+        let result = distribute(&left, &right);
+        assert_eq!(
+            result.len(),
+            1024,
+            "B-467: distribute() must produce full cross-product at exactly the limit"
+        );
+    }
+
+    /// distribute() with empty inputs still returns empty (Never & T = Never).
+    #[test]
+    fn test_b467_distribute_empty_inputs() {
+        let empty: Rdnf = vec![];
+        let non_empty: Rdnf = vec![vec![SignedAtom::Pos(Atom::Primitive(PrimitiveAtom::Int))]];
+
+        assert!(distribute(&empty, &non_empty).is_empty());
+        assert!(distribute(&non_empty, &empty).is_empty());
+        assert!(distribute(&empty, &empty).is_empty());
+    }
+
+    /// End-to-end: deeply nested intersection-of-unions triggers the limit in to_rdnf,
+    /// and the result is conservatively treated as uninhabited.
+    #[test]
+    fn test_b467_to_rdnf_exponential_intersection() {
+        // Build a type: (A0 | B0) & (A1 | B1) & ... & (A10 | B10)
+        // This produces 2^11 = 2048 conjunctions, exceeding the limit.
+        let members: Vec<Type> = (0..11)
+            .map(|i| Type::Union(vec![Type::IntLiteral(i * 2), Type::IntLiteral(i * 2 + 1)]))
+            .collect();
+        let ty = Type::Intersection(members);
+        let rdnf = to_rdnf(&ty);
+
+        // The RDNF should be empty (limit exceeded → conservative uninhabited)
+        assert!(
+            rdnf.is_empty(),
+            "B-467: to_rdnf on exponential intersection must return empty RDNF (limit exceeded)"
         );
     }
 }

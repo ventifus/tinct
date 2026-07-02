@@ -1273,9 +1273,9 @@ Three channel constructors for advanced streaming and messaging patterns, backed
 |---------|---------|-------------|
 | `broadcast-channel N` | `BroadcastChannel` | Bounded broadcast channel (capacity `N`). Multiple subscribers each receive every sent value. Backed by `tokio::sync::broadcast`. When a slow subscriber misses values due to a full ring buffer, it receives `[Lagged n]` (indicating `n` missed messages) instead of the dropped values. When all senders drop, subscribers receive `[Closed]`. |
 | `oneshot-channel` | `[Seq Channel Channel]` — `[receiver sender]` | One-shot channel: exactly one value is sent on `sender-channel`; the single `recv` on `receiver-channel` returns it. Subsequent sends or receives return `[Closed]`. Backed by `tokio::sync::oneshot`. Used for request/response patterns. |
-| `try-send channel value` | `[Ok] \| [Full]` | Non-blocking send. Returns `[Ok]` if the value was placed on the channel immediately; returns `[Full]` if the channel buffer is full (value is dropped). Never suspends. Used for lossy telemetry channels where producers must not stall. |
+| `try-send channel value` | `[]` \| `Full.Full` \| `Closed.Closed` | Non-blocking send. Returns `[]` (empty dict) if the value was placed on the channel immediately; returns `Full.Full` if the channel buffer is full (value is dropped); returns `Closed.Closed` if the receiver has been dropped. Never suspends. Used for lossy telemetry channels where producers must not stall. |
 
-`[Closed]` and `[Lagged count]` are nominal variant types declared in prelude. `loop-select` and `select-once` use `[Ok v]` / `[Closed]` as their return protocol — see §Output Program Contract in [Documents & Pipelines](09-documents.md) for the full drain/force/await pattern built on these primitives.
+`[Closed]` and `[Lagged count]` are nominal variant types declared in prelude. `select-once` returns the handler result directly on success, or `Closed.Closed` when all channels are closed — see §Output Program Contract in [Documents & Pipelines](09-documents.md) for the full drain/force/await pattern built on these primitives.
 
 ---
 

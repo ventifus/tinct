@@ -478,9 +478,9 @@ pub(crate) fn builtin_send(
 
 /// `recv`: Receive a value from a channel.
 ///
-/// Signature: `Channel@T → [Result.Ok T] | [Closed]`
+/// Signature: `Channel@T → T | [Closed]`
 ///
-/// Suspends until a value is available. Returns `[Result.Ok v]` on success, `[Closed]` if the
+/// Suspends until a value is available. Returns the value directly on success, `[Closed]` if the
 /// channel is closed (sender dropped). Context cancellation still raises an exception.
 pub(crate) fn builtin_recv(
     ctx_arg: BuiltinArgs,
@@ -511,20 +511,9 @@ pub(crate) fn builtin_recv(
                     }
                 };
 
-                // Return [Result.Ok v] or [Closed]
+                // Return value directly on success, [Closed] if channel closed
                 match result {
-                    Some(value) => {
-                        let value_thunk =
-                            Arc::new(Thunk::new_materialized(value, call_span.clone()));
-                        let value_thunk_id = ctx.alloc_thunk(value_thunk);
-                        ok_val(
-                            Value::Variant {
-                                tag: "Result.Ok".to_string(),
-                                payload: Some(value_thunk_id),
-                            },
-                            call_span,
-                        )
-                    }
+                    Some(value) => ok_val(value, call_span),
                     None => {
                         // Channel closed
                         ok_val(
@@ -552,20 +541,9 @@ pub(crate) fn builtin_recv(
                     }
                 };
 
-                // Return [Result.Ok v], [Closed], or [Lagged n]
+                // Return value directly on success, [Closed] or [Lagged n] on recv error
                 match result {
-                    Ok(value) => {
-                        let value_thunk =
-                            Arc::new(Thunk::new_materialized(value, call_span.clone()));
-                        let value_thunk_id = ctx.alloc_thunk(value_thunk);
-                        ok_val(
-                            Value::Variant {
-                                tag: "Result.Ok".to_string(),
-                                payload: Some(value_thunk_id),
-                            },
-                            call_span,
-                        )
-                    }
+                    Ok(value) => ok_val(value, call_span),
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                         // Subscriber too slow, missed n messages
                         let count_thunk = Arc::new(Thunk::new_materialized(
@@ -614,20 +592,9 @@ pub(crate) fn builtin_recv(
                     }
                 };
 
-                // Return [Result.Ok v] or [Closed]
+                // Return value directly on success, [Closed] if sender dropped
                 match result {
-                    Ok(value) => {
-                        let value_thunk =
-                            Arc::new(Thunk::new_materialized(value, call_span.clone()));
-                        let value_thunk_id = ctx.alloc_thunk(value_thunk);
-                        ok_val(
-                            Value::Variant {
-                                tag: "Result.Ok".to_string(),
-                                payload: Some(value_thunk_id),
-                            },
-                            call_span,
-                        )
-                    }
+                    Ok(value) => ok_val(value, call_span),
                     Err(_) => {
                         // Sender dropped before sending
                         ok_val(
@@ -765,12 +732,12 @@ pub(crate) fn builtin_oneshot_channel(
     })
 }
 
-/// `try-send`: Non-blocking send. Returns [Ok] on success, [Full] if channel is at capacity.
+/// `try-send`: Non-blocking send. Returns empty dict on success, [Full] if channel is at capacity.
 ///
-/// Signature: `Channel@T → T → [or [Ok] [Full]]`
+/// Signature: `Channel@T → T → {} | [Full] | [Closed]`
 ///
 /// Uses mpsc::try_send. Never suspends. If the channel buffer is full, returns [Full]
-/// and the value is dropped.
+/// and the value is dropped. Returns [Closed] if the receiver has been dropped.
 pub(crate) fn builtin_try_send(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
@@ -793,14 +760,8 @@ pub(crate) fn builtin_try_send(
                 // Try to send the value
                 match channel_inner.sender.try_send(value) {
                     Ok(_) => {
-                        // Success: return [Result.Ok]
-                        ok_val(
-                            Value::Variant {
-                                tag: "Result.Ok".to_string(),
-                                payload: None,
-                            },
-                            call_span,
-                        )
+                        // Success: return empty dict (unit value)
+                        ok_val(Value::Dict(IndexMap::new()), call_span)
                     }
                     Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
                         // Channel full: return [Full]
@@ -831,15 +792,13 @@ pub(crate) fn builtin_try_send(
 
 /// `select-once`: Wait for the first of multiple sources to complete.
 ///
-/// Signature: `Context → [Seq {ch: Channel|BroadcastChannel|OneshotReceiver  handler: Fn}] → [Result.Ok T] | [Closed]`
+/// Signature: `Context → [Seq {ch: Channel|BroadcastChannel|OneshotReceiver  handler: Fn}] → T | [Closed]`
 ///
 /// Takes a context (for cancellation checking) and a sequence of source dicts, where each
 /// source has a `ch:` field (Channel, BroadcastChannel, or OneshotReceiver) and a `handler:` field (Fn).
 /// Waits for the FIRST channel to have a value available, then calls that channel's handler
-/// with the received value. Returns `[Result.Ok result]` where result is the handler's return value.
-///
-/// If all channels are closed, returns `[Closed]` (not an error). Context cancellation still
-/// raises an exception.
+/// with the received value. Returns the handler result directly on success; `Closed.Closed` if
+/// all channels are closed (not an error). Context cancellation still raises an exception.
 ///
 /// Channel type semantics:
 /// - Channel (mpsc): Standard FIFO channel, each value consumed once
@@ -848,7 +807,7 @@ pub(crate) fn builtin_try_send(
 ///
 /// Implementation note: uses a manual polling loop over all channels. When a channel
 /// produces a value, we call its handler and return. Closed channels are removed from
-/// consideration. If all channels are closed, returns `[Closed]`.
+/// consideration. If all channels are closed, returns `Closed.Closed`.
 ///
 /// Fairness: channels are checked in order, but since this is a cooperative runtime,
 /// fairness emerges naturally from the event loop.
@@ -1188,15 +1147,8 @@ pub(crate) fn builtin_select_once(
                         }
                     };
 
-                    // Wrap the handler result in [Result.Ok v] — result_thunk stays lazy.
-                    let result_thunk_id = ctx.alloc_thunk(result_thunk);
-                    return ok_val(
-                        Value::Variant {
-                            tag: "Result.Ok".to_string(),
-                            payload: Some(result_thunk_id),
-                        },
-                        call_span,
-                    );
+                    // Return the handler result directly — result_thunk stays lazy.
+                    return Ok(result_thunk);
                 }
             }
 

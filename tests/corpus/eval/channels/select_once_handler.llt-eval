@@ -1,0 +1,18 @@
+--- uses: ["core"]
+# Test that select-once correctly invokes the handler with a pre-seeded channel value
+# and returns the handler result directly (not wrapped in Result.Ok after B-466).
+#
+# Strategy: send a value via an awaited task (forces the send before select-once polls),
+# then call select-once and verify the handler result is returned directly.
+# Only .result is accessed — the Channel value in ch is never serialized.
+[
+  ch:          [channel 1]
+  send-done:   [await [task [fn [] [send ch 42]]]]
+  ctx:         [context]
+  source:      [ch: ch  handler: [fn [let x] [+ x 1]]]
+  sources:     [seq source Seq.End]
+  result:      [begin send-done [select-once ctx sources]]
+]
+.result
+=== out
+Int(43)
