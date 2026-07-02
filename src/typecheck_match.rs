@@ -679,9 +679,10 @@ pub(crate) async fn infer_fn(
 
             // When declared return type contains type variables, switch to unification mode
             // (doc/06 §[CHECK-FN], Damas & Milner 1982, Pierce & Turner 2000 §3.2).
-            // TypeVars in is_subtype only match via reflexive equality, so
-            // is_subtype(IntLiteral(42), TypeVar("_t5")) = false would reject valid code.
-            // Unification mode binds the TypeVars via constraint solving.
+            // is_subtype returns true for ANY TypeVar unconditionally (conservative approximation),
+            // so it would silently accept without binding the TypeVar. We must use unification
+            // mode to actually BIND the TypeVars via constraint solving. See is_subtype_bas
+            // docstring and B-446 for the full explanation.
             let result = if actual_ann.has_inference_vars() {
                 let body_ty =
                     infer_surface_expr(body, &fn_env, state, constraints, type_map).await?;

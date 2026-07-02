@@ -3003,9 +3003,9 @@ async fn test_function_return_annotation_with_type_var() {
     // Function with polymorphic return annotation should use unification mode
     // [fn@a [x@a] 42] — return annotation contains TypeVar, so body type
     // should be unified with the declared type, binding the TypeVar.
-    // Without the fix, check_expr uses is_subtype which requires exact match
-    // for TypeVars (reflexive equality only), so is_subtype(IntLiteral(42), TypeVar("a"))
-    // returns false and the function is rejected.
+    // Without the fix, check_expr uses is_subtype which returns true for any TypeVar
+    // (conservative approximation) but does NOT bind the TypeVar. The function would
+    // appear to succeed while leaving the TypeVar unresolved, causing downstream failures.
     //
     // The key is that this should successfully type check (not error).
     let result = check("[f: [fn@a [let x@a] 42]]").await;
@@ -3085,13 +3085,14 @@ async fn test_lambda_checking_mode_annotated_param_incompatible() {
 #[tokio::test]
 async fn test_lambda_checking_mode_param_annotation_with_type_var() {
     // Task 1 fix: Lambda with @a-style param annotation checked against concrete function type.
-    // When the annotation is a TypeVar, is_subtype fails (TypeVars only match reflexively).
-    // The fix switches to unification mode when resolved.has_inference_vars().
+    // is_subtype returns true for any TypeVar unconditionally (conservative approximation),
+    // but does NOT bind the TypeVar. The fix switches to unification mode when
+    // resolved.has_inference_vars() so that the TypeVar gets bound via constraint solving.
     //
     // Pattern: [call $identity [fn@b [y@b] $y]] where identity is polymorphic.
     // check_expr sees expected_ty=concrete from identity's instantiation, resolved=TypeVar("b").
-    // Without fix: is_subtype(concrete, TypeVar("b")) = false → error.
-    // With fix: unify(concrete, TypeVar("b")) binds b → success.
+    // Without unification mode: TypeVar("b") is accepted but unbound → downstream failure.
+    // With unification mode: unify(concrete, TypeVar("b")) binds b → success.
     let result =
         check("[identity: [fn [let x@a] $x]]\n[result: [call $identity [fn@b [let y@b] $y]]]")
             .await;
@@ -3117,12 +3118,13 @@ async fn test_lambda_checking_mode_param_annotation_with_type_var() {
 #[tokio::test]
 async fn test_lambda_checking_mode_return_annotation_with_type_var() {
     // Task 1 fix: Lambda with @a-style return annotation checked against concrete function type.
-    // When the return annotation is a TypeVar, is_subtype fails (TypeVars only match reflexively).
-    // The fix switches to unification mode when declared.has_inference_vars().
+    // is_subtype returns true for any TypeVar unconditionally (conservative approximation),
+    // but does NOT bind the TypeVar. The fix switches to unification mode when
+    // declared.has_inference_vars() so that the TypeVar gets bound via constraint solving.
     //
     // Pattern: [@[Fn@Int [Int]] [fn@c [x] 42]] — expected return Int, declared TypeVar("c").
-    // Without fix: is_subtype(TypeVar("c"), Int) = false → error.
-    // With fix: unify(TypeVar("c"), Int) binds c → success.
+    // Without unification mode: TypeVar("c") is accepted but unbound → downstream failure.
+    // With unification mode: unify(TypeVar("c"), Int) binds c → success.
     let result = check("[f: [@[Fn@Int [Int]] [fn@c [let x] 42]]]").await;
     assert!(
         result.is_ok(),

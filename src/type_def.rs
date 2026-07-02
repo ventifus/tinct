@@ -760,7 +760,7 @@ impl Type {
         Self::is_subtype_bas(sub, sup, tycon_env, &mut sigma)
     }
 
-    /// BAS subtyping judgment: `A <: B` iff `A & ~B` is uninhabited.
+    /// BAS subtyping judgment: `A <: B` iff `A & ~B` is uninhabited, with a TypeVar exception.
     ///
     /// This is the core BAS algorithm (Chau & Parreaux, POPL 2026; Parreaux & Chau,
     /// OOPSLA 2022). The judgment is:
@@ -781,7 +781,38 @@ impl Type {
     /// - Top (Any): τ <: Top for all τ
     /// - Never: Never <: τ for all τ
     /// - Unknown: not in the subtype lattice (uses consistency instead)
-    /// - TypeVar: returns true (AGT gradual typing — defers to constraint solver)
+    /// - TypeVar: **returns `true` unconditionally (see below)**
+    ///
+    /// ## TypeVar: approximate consistent-subtyping, not proper subtyping
+    ///
+    /// When either `sub` or `sup` is an unresolved `TypeVar`, this function returns `true`.
+    /// This is NOT a proper BAS subtype judgment — it is a conservative approximation that
+    /// defers the constraint to the unification/constraint solver (`constrain()`, `unify()`).
+    ///
+    /// **Rationale:** An unresolved TypeVar is an inference variable. At the point
+    /// `is_subtype` is called, the substitution may not yet have been applied. Returning
+    /// `true` avoids false rejections; the constraint solver handles the actual binding.
+    ///
+    /// **Consequence:** This makes `is_subtype` an APPROXIMATION of the true subtype relation
+    /// when TypeVars are present — it is sound (no false negatives for ground types) but not
+    /// complete (TypeVar cases are always accepted). Callers that need the precise relation
+    /// for already-resolved types must apply the substitution before calling `is_subtype`.
+    ///
+    /// **Transitivity note (B-446):** Because TypeVar returns `true` on EITHER side,
+    /// the function does NOT preserve proper subtype transitivity when TypeVars are present:
+    ///   `is_subtype(TypeVar("a"), Int)` = `true`  AND
+    ///   `is_subtype(Int, TypeVar("b"))` = `true`  AND
+    ///   `is_subtype(TypeVar("a"), TypeVar("b"))` = `true`
+    /// but this reflects the consistent-subtyping approximation, not a proof that any
+    /// concrete instantiation of `a` is a subtype of any concrete instantiation of `b`.
+    /// All TypeVar cases fire the guard and return `true` regardless of what the
+    /// TypeVars will eventually be bound to. The solver enforces actual bounds.
+    ///
+    /// **Contrast with `Unknown`:** `Unknown` (the gradual `?`) returns `false` from
+    /// `is_subtype` — it lives outside the subtype lattice and uses `is_consistent` instead.
+    /// TypeVar is different: it is an inference variable expected to be solved to a concrete
+    /// type. Returning `true` is safe here because inference variables are eliminated before
+    /// type errors are reported to users.
     pub fn is_subtype_bas(
         sub: &Type,
         sup: &Type,
@@ -810,11 +841,18 @@ impl Type {
             return false;
         }
 
-        // TypeVar on either side → true (AGT gradual typing).
-        // An unresolved TypeVar represents an inference variable that will be constrained
-        // elsewhere (unlike `Unknown`, which is the gradual `?` type and returns `false`
-        // from `is_subtype`). Returning `true` defers rejection to runtime or to the
-        // unification constraint solver — consistent with tinct's gradual typing guarantee.
+        // TypeVar on either side → true (conservative approximation; see docstring).
+        //
+        // This is NOT a proper BAS subtype proof. An unresolved TypeVar is an inference
+        // variable whose concrete type is determined by the constraint solver (constrain(),
+        // unify()). We return `true` to avoid false rejections before substitution is applied.
+        //
+        // Callers that need the precise relation must apply the substitution FIRST and then
+        // call is_subtype on the resolved types. See B-446 for the transitivity discussion.
+        //
+        // Note: this returns `true` even for two DIFFERENT TypeVars (TypeVar("a") <: TypeVar("b"))
+        // which does NOT hold in general. The constraint solver enforces actual bounds; this
+        // guard is a deferral, not a proof.
         if matches!(sub, Type::TypeVar(_, _)) || matches!(sup, Type::TypeVar(_, _)) {
             return true;
         }
@@ -2989,7 +3027,9 @@ mod tests {
 
     #[test]
     fn test_bas_typevar_subtype() {
-        // TypeVar returns true (gradual typing — defers to constraint solver)
+        // TypeVar returns true (conservative approximation — defers to constraint solver).
+        // The TypeVar guard in is_subtype_bas fires before RDNF, so any TypeVar in
+        // either position returns true without inspecting the other side.
         assert!(Type::is_subtype(
             &Type::TypeVar("a".into(), 0),
             &Type::Int,
@@ -3000,6 +3040,85 @@ mod tests {
             &Type::TypeVar("a".into(), 0),
             None
         ));
+    }
+
+    /// B-446: TypeVar guard in is_subtype_bas returns true unconditionally for ANY TypeVar.
+    ///
+    /// This test documents the exact approximation semantics:
+    ///
+    /// 1. `TypeVar("a") <: TypeVar("b")` is true — even for DIFFERENT variables.
+    ///    This does NOT mean any concrete instantiation of `a` is a subtype of any
+    ///    concrete instantiation of `b`. The guard is a deferral, not a proof.
+    ///
+    /// 2. Transitivity is NOT preserved across the TypeVar guard:
+    ///    `TypeVar("a") <: Int` = true  AND  `TypeVar("b") <: Str` = true
+    ///    does NOT imply any relationship between `a` and `b`.
+    ///    The constraint solver (constrain(), unify()) enforces actual bounds.
+    ///
+    /// 3. Callers that need a precise judgment must apply the substitution first
+    ///    and call is_subtype on the resolved (ground) types.
+    ///
+    /// 4. Contrast with Unknown: Unknown returns FALSE from is_subtype (it uses
+    ///    is_consistent instead). TypeVar differs because it is an inference variable
+    ///    expected to be solved; Unknown is the deliberate gradual "?" type.
+    #[test]
+    fn test_bas_typevar_subtype_b446_approximation_semantics() {
+        // Two DIFFERENT TypeVars: returns true (deferral, not a proof of subtyping).
+        assert!(
+            Type::is_subtype(
+                &Type::TypeVar("a".into(), 0),
+                &Type::TypeVar("b".into(), 0),
+                None
+            ),
+            "TypeVar(a) <: TypeVar(b) must be true (conservative approximation)"
+        );
+
+        // Same TypeVar on both sides: also true (subsumes the reflexivity short-circuit).
+        assert!(
+            Type::is_subtype(
+                &Type::TypeVar("a".into(), 0),
+                &Type::TypeVar("a".into(), 0),
+                None
+            ),
+            "TypeVar(a) <: TypeVar(a) must be true (reflexive)"
+        );
+
+        // TypeVar vs Never (guard order: Error, S-TOP, S-NEVER, Unknown, TypeVar):
+        // - TypeVar sub, Never sup: Error=no, S-TOP=no, S-NEVER(sub=TypeVar)=no,
+        //   Unknown=no, TypeVar(sub is TypeVar) → true.
+        //   NOTE: this is a known artifact of the approximation. In proper type theory
+        //   only Never <: Never holds (Nothing is a subtype of Bottom except Bottom).
+        //   The TypeVar guard defers this to the constraint solver.
+        assert!(
+            Type::is_subtype(&Type::TypeVar("a".into(), 0), &Type::Never, None),
+            "TypeVar(a) <: Never is true per the approximation guard (see B-446)"
+        );
+        // Never sub, TypeVar sup: S-NEVER fires first (sub=Never) → true.
+        assert!(
+            Type::is_subtype(&Type::Never, &Type::TypeVar("a".into(), 0), None),
+            "Never <: TypeVar(a) must be true (S-NEVER fires first, correct)"
+        );
+
+        // TypeVar vs Error: Error guard fires first → false on BOTH sides.
+        assert!(
+            !Type::is_subtype(&Type::TypeVar("a".into(), 0), &Type::Error, None),
+            "TypeVar(a) <: Error must be false (Error guard fires first)"
+        );
+        assert!(
+            !Type::is_subtype(&Type::Error, &Type::TypeVar("a".into(), 0), None),
+            "Error <: TypeVar(a) must be false (Error guard fires first)"
+        );
+
+        // TypeVar vs Unknown: Unknown guard fires first → false on BOTH sides.
+        // Unknown is not in the subtype lattice; only is_consistent handles it.
+        assert!(
+            !Type::is_subtype(&Type::TypeVar("a".into(), 0), &Type::Unknown, None),
+            "TypeVar(a) <: Unknown must be false (Unknown guard fires first)"
+        );
+        assert!(
+            !Type::is_subtype(&Type::Unknown, &Type::TypeVar("a".into(), 0), None),
+            "Unknown <: TypeVar(a) must be false (Unknown guard fires first)"
+        );
     }
 
     #[test]

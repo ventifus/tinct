@@ -3916,8 +3916,10 @@ pub(super) async fn check_surface_expr(
                                 .await
                                 .map_err(|e| vec![e])?;
                                 // Contravariant check: expected param type must be subtype of annotation.
-                                // When annotation contains type variables, use unification mode instead of
-                                // is_subtype (C65 fix pattern: TypeVars only match reflexively in is_subtype).
+                                // When annotation contains type variables, use unification mode (not is_subtype)
+                                // to actually BIND the TypeVars via constraint solving. is_subtype returns true
+                                // for any TypeVar (conservative approximation — see is_subtype_bas docstring),
+                                // so it would silently accept without binding, leaving TypeVars unresolved.
                                 if resolved.has_inference_vars() {
                                     let mut subst = std::mem::take(&mut state.subst);
                                     let mut check_fn_constraints: Vec<Constraint> = Vec::new();
@@ -4006,8 +4008,10 @@ pub(super) async fn check_surface_expr(
                             .await
                             .map_err(|e| vec![e])?;
                             // Check that declared return type is compatible with expected.
-                            // When declared contains type variables, use unification mode instead of
-                            // is_subtype (C65 fix pattern: TypeVars only match reflexively in is_subtype).
+                            // When declared contains type variables, use unification mode (not is_subtype)
+                            // to actually BIND the TypeVars via constraint solving. is_subtype returns true
+                            // for any TypeVar (conservative approximation — see is_subtype_bas docstring),
+                            // so it would silently accept without binding, leaving TypeVars unresolved.
                             if declared.has_inference_vars() {
                                 let mut subst = std::mem::take(&mut state.subst);
                                 let mut ret_constraints: Vec<Constraint> = Vec::new();
