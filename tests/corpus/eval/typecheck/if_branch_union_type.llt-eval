@@ -1,0 +1,23 @@
+# C-Var1/C-Var2: [if cond A B] infers a union of the branch types without error.
+#
+# The type of an if expression is the union of its two branch types. This test
+# verifies that the type checker accepts a function whose return type is
+# inferred as Int | Str (from the two branches) without emitting any warning.
+# No explicit union annotation is needed — the inferred union type is principal.
+#
+# C-Var1: the true branch contributes its type to the result union.
+# C-Var2: the false branch contributes its type to the result union.
+#
+# Expected output (populate after CI run):
+#   Dict({"choose": Function(flag), "r-true": Int(42), "r-false": String("hello")})
+# No === warn section: asserts zero type warnings (union type is accepted silently).
+[
+  # choose returns Int when flag is true, Str when false.
+  # Inferred return type: Int | Str — no annotation required, no warning expected.
+  choose: [fn [let flag] [if flag 42 "hello"]]
+
+  r-true:  [choose true]
+  r-false: [choose false]
+]
+=== out
+Dict({"choose": Function(flag), "r-true": Int(42), "r-false": String("hello")})

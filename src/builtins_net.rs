@@ -1876,8 +1876,9 @@ fn http_request_h3(
 
 /// `icmp-ping`: Send an ICMP echo request to a host.
 /// Takes `(cap, host, timeout_ms)`.
-/// Returns `{ok: {latency-ms: Int}}` on success or `{err: String}` on failure.
+/// Returns `{latency-ms: Int}` on success or raises on failure.
 /// Uses unprivileged ICMP ping sockets (`SOCK_DGRAM + IPPROTO_ICMP`, Linux 3.11+).
+/// Users who want Result-based error handling wrap the call in `[try [fn [] [icmp-ping ...]]]`.
 pub(crate) fn builtin_icmp_ping(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
@@ -1958,39 +1959,6 @@ pub(crate) fn builtin_icmp_ping(
     })
 }
 
-/// Build a `{err: String}` result dict value.
-fn icmp_err_val(msg: String, span: Span, ctx: &crate::eval::EvalContext) -> EvalResult<Arc<Thunk>> {
-    use crate::value::HashableValue;
-    let mut result = IndexMap::new();
-    result.insert(
-        HashableValue::Str("err".into()),
-        ctx.alloc_thunk(ok_val(string_val(&msg), span.clone())?),
-    );
-    ok_val(Value::Dict(result), span)
-}
-
-/// Build a `{ok: {latency-ms: Int}}` result dict value.
-fn icmp_ok_val(
-    latency_ms: i64,
-    span: Span,
-    ctx: &crate::eval::EvalContext,
-) -> EvalResult<Arc<Thunk>> {
-    use crate::value::HashableValue;
-    // Inner dict: {latency-ms: Int}
-    let mut inner = IndexMap::new();
-    inner.insert(
-        HashableValue::Str("latency-ms".into()),
-        ctx.alloc_thunk(ok_val(Value::Int(latency_ms), span.clone())?),
-    );
-    // Outer dict: {ok: {latency-ms: Int}}
-    let mut result = IndexMap::new();
-    result.insert(
-        HashableValue::Str("ok".into()),
-        ctx.alloc_thunk(ok_val(Value::Dict(inner), span.clone())?),
-    );
-    ok_val(Value::Dict(result), span)
-}
-
 #[cfg(unix)]
 fn icmp_ping_impl(
     host: &str,
@@ -2007,20 +1975,20 @@ fn icmp_ping_impl(
             match iter.find(|a| a.is_ipv4()) {
                 Some(a) => a,
                 None => {
-                    return icmp_err_val(
+                    return Err(EvalError::user_error(
                         format!("icmp-ping: no IPv4 address found for '{}'", host),
                         span,
-                        ctx,
-                    );
+                    )
+                    .into());
                 }
             }
         }
         Err(e) => {
-            return icmp_err_val(
+            return Err(EvalError::user_error(
                 format!("icmp-ping: failed to resolve '{}': {}", host, e),
                 span,
-                ctx,
-            );
+            )
+            .into());
         }
     };
 
@@ -2028,15 +1996,15 @@ fn icmp_ping_impl(
     let sock_fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, libc::IPPROTO_ICMP) };
     if sock_fd < 0 {
         let os_err = std::io::Error::last_os_error();
-        return icmp_err_val(
+        return Err(EvalError::user_error(
             format!(
                 "icmp-ping: failed to create ICMP socket ({}): \
                  kernel may require net.ipv4.ping_group_range to include your GID",
                 os_err
             ),
             span,
-            ctx,
-        );
+        )
+        .into());
     }
 
     // RAII guard to close the socket on any exit path
@@ -2056,14 +2024,14 @@ fn icmp_ping_impl(
 
     // Bounds check for platforms where time_t is 32-bit (prevents silent truncation)
     if !(libc::time_t::MIN..=libc::time_t::MAX).contains(&timeout_secs) {
-        return icmp_err_val(
+        return Err(EvalError::user_error(
             format!(
                 "icmp-ping: timeout-ms too large for platform (max {} seconds)",
                 libc::time_t::MAX
             ),
             span,
-            ctx,
-        );
+        )
+        .into());
     }
 
     let tv = libc::timeval {
@@ -2081,11 +2049,11 @@ fn icmp_ping_impl(
     };
     if ret < 0 {
         let os_err = std::io::Error::last_os_error();
-        return icmp_err_val(
+        return Err(EvalError::user_error(
             format!("icmp-ping: setsockopt SO_RCVTIMEO failed ({})", os_err),
             span,
-            ctx,
-        );
+        )
+        .into());
     }
 
     // Build ICMP Echo Request packet
@@ -2113,11 +2081,11 @@ fn icmp_ping_impl(
     let ip_octets = match addr.ip() {
         std::net::IpAddr::V4(v4) => v4.octets(),
         std::net::IpAddr::V6(_) => {
-            return icmp_err_val(
+            return Err(EvalError::user_error(
                 "icmp-ping: IPv6 is not yet supported".to_string(),
                 span,
-                ctx,
-            );
+            )
+            .into());
         }
     };
     let dest = libc::sockaddr_in {
@@ -2156,7 +2124,9 @@ fn icmp_ping_impl(
     };
     if sent < 0 {
         let os_err = std::io::Error::last_os_error();
-        return icmp_err_val(format!("icmp-ping: sendto failed ({})", os_err), span, ctx);
+        return Err(
+            EvalError::user_error(format!("icmp-ping: sendto failed ({})", os_err), span).into(),
+        );
     }
 
     // Receive ICMP Echo Reply
@@ -2179,34 +2149,44 @@ fn icmp_ping_impl(
         // EAGAIN / EWOULDBLOCK = timeout
         let raw_errno = os_err.raw_os_error().unwrap_or(0);
         if raw_errno == libc::EAGAIN || raw_errno == libc::EWOULDBLOCK {
-            return icmp_err_val(
+            return Err(EvalError::user_error(
                 format!("icmp-ping: timeout after {}ms", timeout_ms),
                 span,
-                ctx,
-            );
+            )
+            .into());
         }
-        return icmp_err_val(format!("icmp-ping: recv failed ({})", os_err), span, ctx);
+        return Err(
+            EvalError::user_error(format!("icmp-ping: recv failed ({})", os_err), span).into(),
+        );
     }
 
     // Validate reply: must be at least 8 bytes, type=0 (Echo Reply)
     let recvd = recvd as usize;
     if recvd < 8 {
-        return icmp_err_val(
+        return Err(EvalError::user_error(
             "icmp-ping: received truncated ICMP reply".to_string(),
             span,
-            ctx,
-        );
+        )
+        .into());
     }
     if recv_buf[0] != 0 {
         // Not an Echo Reply (type 0); could be a Destination Unreachable etc.
-        return icmp_err_val(
+        return Err(EvalError::user_error(
             format!("icmp-ping: unexpected ICMP reply type {}", recv_buf[0]),
             span,
-            ctx,
-        );
+        )
+        .into());
     }
 
-    icmp_ok_val(latency_ms, span, ctx)
+    // Return {latency-ms: Int} directly.
+    // Users who want Result-based error handling wrap the call in [try [fn [] [icmp-ping ...]]].
+    use crate::value::HashableValue;
+    let mut result = IndexMap::new();
+    result.insert(
+        HashableValue::Str("latency-ms".into()),
+        ctx.alloc_thunk(ok_val(Value::Int(latency_ms), span.clone())?),
+    );
+    ok_val(Value::Dict(result), span)
 }
 
 /// Compute ICMP checksum per RFC 792: one's complement sum of 16-bit words.
@@ -2235,13 +2215,13 @@ fn icmp_ping_impl(
     _host: &str,
     _timeout_ms: i64,
     span: Span,
-    ctx: &crate::eval::EvalContext,
+    _ctx: &crate::eval::EvalContext,
 ) -> EvalResult<Arc<Thunk>> {
-    icmp_err_val(
+    Err(EvalError::user_error(
         "icmp-ping: ICMP ping is not supported on this platform".to_string(),
         span,
-        ctx,
     )
+    .into())
 }
 
 /// `send-datagram`: Send a message over a DatagramHandle.

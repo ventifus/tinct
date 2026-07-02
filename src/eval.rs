@@ -1005,10 +1005,11 @@ pub fn ground_type_of(v: &Value) -> Type {
         // against any function annotation with matching arity.
         Value::Function { params, .. } => {
             let n = params.len();
+            let is_variadic = params.last().map_or(false, |p| p.variadic);
             Type::Function {
                 params: params.iter().map(|_| (None, Type::Unknown)).collect(),
                 ret: Box::new(Type::Unknown),
-                variadic: false,
+                variadic: is_variadic,
                 required_count: n,
             }
         }
@@ -8780,5 +8781,107 @@ mod tests {
             Arc::ptr_eq(&ctx1.config.stdlib_env, &ctx2.config.stdlib_env),
             "with_base_dir() must share parent's stdlib_env (same Arc)"
         );
+    }
+
+    // ── B-462/B-464: ground_type_of variadic flag ────────────────────────────
+
+    /// B-462/B-464: ground_type_of must set variadic: true for Value::Function when the
+    /// last parameter has variadic: true.  Previously the field was hardwired to false,
+    /// causing consistent_subtype checks against @[fn ...variadic...] to fail at runtime.
+    #[tokio::test]
+    async fn test_ground_type_of_variadic_function() {
+        // Non-variadic function: ground_type_of must report variadic: false.
+        let non_variadic = Value::Function {
+            params: Rc::new(vec![
+                Param {
+                    name: "x".into(),
+                    annotation: None,
+                    variadic: false,
+                },
+                Param {
+                    name: "y".into(),
+                    annotation: None,
+                    variadic: false,
+                },
+            ]),
+            body: Arc::new(sp(CoreExpr::Dict(vec![]))),
+            env: empty_env(),
+            annotation: None,
+        };
+        match ground_type_of(&non_variadic) {
+            Type::Function { variadic, .. } => {
+                assert!(
+                    !variadic,
+                    "non-variadic function must have variadic: false in ground_type_of"
+                );
+            }
+            other => panic!(
+                "expected Type::Function for Value::Function, got {:?}",
+                other
+            ),
+        }
+
+        // Variadic function: last param has variadic: true — ground_type_of must reflect it.
+        let variadic_fn = Value::Function {
+            params: Rc::new(vec![
+                Param {
+                    name: "x".into(),
+                    annotation: None,
+                    variadic: false,
+                },
+                Param {
+                    name: "rest".into(),
+                    annotation: None,
+                    variadic: true,
+                },
+            ]),
+            body: Arc::new(sp(CoreExpr::Dict(vec![]))),
+            env: empty_env(),
+            annotation: None,
+        };
+        match ground_type_of(&variadic_fn) {
+            Type::Function {
+                variadic,
+                required_count,
+                ..
+            } => {
+                assert!(
+                    variadic,
+                    "variadic function must have variadic: true in ground_type_of"
+                );
+                assert_eq!(
+                    required_count, 2,
+                    "required_count must include variadic param in param count"
+                );
+            }
+            other => panic!(
+                "expected Type::Function for variadic Value::Function, got {:?}",
+                other
+            ),
+        }
+
+        // Single variadic param (zero-arg form, e.g. [fn [let ...xs] body]).
+        let only_variadic = Value::Function {
+            params: Rc::new(vec![Param {
+                name: "xs".into(),
+                annotation: None,
+                variadic: true,
+            }]),
+            body: Arc::new(sp(CoreExpr::Dict(vec![]))),
+            env: empty_env(),
+            annotation: None,
+        };
+        match ground_type_of(&only_variadic) {
+            Type::Function { variadic, .. } => {
+                assert!(
+                    variadic,
+                    "single variadic param must have variadic: true in ground_type_of"
+                );
+            }
+            other => panic!(
+                "expected Type::Function for single-variadic Value::Function, got {:?}",
+                other
+            ),
+        }
     }
 }

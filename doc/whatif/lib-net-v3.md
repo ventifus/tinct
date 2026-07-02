@@ -343,7 +343,7 @@ The method names are `send` and `recv` — the same names used everywhere for ch
 ```tinct
 [instance [MessageStream [Channel t] t]
   send: builtin-send
-  recv: builtin-recv]   # returns [Result.Ok v] | Closed.Closed (B-192)
+  recv: builtin-recv]   # returns T | Closed.Closed (direct handler result | channel close)
 ```
 
 Protocol connections that carry typed messages implement `MessageStream` for their message type:

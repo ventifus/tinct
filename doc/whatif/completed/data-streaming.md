@@ -775,7 +775,7 @@ Pub/sub topic routing, filtering, and subscription management are implemented in
 [recv reply-recv]  # blocks until the reply arrives
 ```
 
-**`try-send channel value → [Ok] | [Full]`** — non-blocking send backed by `mpsc::try_send`. Returns `[Ok]` if the value was sent, `[Full]` if the channel was full (value dropped). Never suspends. Used for drop-newest lossy channels where producers must not stall:
+**`try-send channel value → {} | Full.Full | Closed.Closed`** — non-blocking send backed by `mpsc::try_send`. Returns `{}` if the value was sent, `Full.Full` if the channel was full (value dropped), `Closed.Closed` if the channel is closed. Never suspends. Used for drop-newest lossy channels where producers must not stall:
 
 ```tinct
 # Telemetry that drops metrics when the consumer is slow

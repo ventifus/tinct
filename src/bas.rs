@@ -2011,6 +2011,232 @@ mod tests {
         assert!(distribute(&empty, &empty).is_empty());
     }
 
+    // --- T-1482: atoms_are_disjoint coverage ---
+
+    /// SingleFieldRecord vs Primitive: always disjoint.
+    ///
+    /// A record value (e.g., {x: 1}) is never a primitive (e.g., Int). The existing code
+    /// at line 987 covers this pair — this test exercises the forward direction.
+    #[test]
+    fn test_atoms_disjoint_single_field_record_vs_primitive() {
+        // {x: Int} and Int are disjoint: no value can be both a record and a primitive.
+        assert!(
+            atoms_are_disjoint(
+                &Atom::SingleFieldRecord {
+                    key: "x".to_string(),
+                    value: Box::new(Type::Int),
+                },
+                &Atom::Primitive(PrimitiveAtom::Int)
+            ),
+            "SingleFieldRecord and Primitive must be disjoint"
+        );
+        // Commutative: also disjoint in reverse
+        assert!(
+            atoms_are_disjoint(
+                &Atom::Primitive(PrimitiveAtom::Str),
+                &Atom::SingleFieldRecord {
+                    key: "name".to_string(),
+                    value: Box::new(Type::Str),
+                }
+            ),
+            "Primitive and SingleFieldRecord must be disjoint (commutative)"
+        );
+    }
+
+    /// NominalVariant atoms with different tags are disjoint.
+    ///
+    /// A value tagged "Color.Red" cannot also be "Color.Blue". The disjointness rule
+    /// at line 1033 checks `t1 != t2`. This test verifies that path fires correctly.
+    #[test]
+    fn test_atoms_disjoint_nominal_variant_different_tags() {
+        let red = Atom::NominalVariant {
+            tag: "Color.Red".to_string(),
+            fields: Row {
+                fields: IndexMap::new(),
+                tail: RowTail::Empty,
+            },
+        };
+        let blue = Atom::NominalVariant {
+            tag: "Color.Blue".to_string(),
+            fields: Row {
+                fields: IndexMap::new(),
+                tail: RowTail::Empty,
+            },
+        };
+        assert!(
+            atoms_are_disjoint(&red, &blue),
+            "NominalVariant atoms with different tags must be disjoint"
+        );
+        assert!(
+            atoms_are_disjoint(&blue, &red),
+            "NominalVariant disjointness must be commutative"
+        );
+    }
+
+    /// NominalVariant atoms with the same tag are NOT disjoint.
+    ///
+    /// Two atoms with the same tag (e.g., both "Ok") may share values.
+    #[test]
+    fn test_atoms_not_disjoint_nominal_variant_same_tag() {
+        let ok1 = Atom::NominalVariant {
+            tag: "Result.Ok".to_string(),
+            fields: Row {
+                fields: IndexMap::new(),
+                tail: RowTail::Empty,
+            },
+        };
+        let ok2 = Atom::NominalVariant {
+            tag: "Result.Ok".to_string(),
+            fields: Row {
+                fields: {
+                    let mut m = IndexMap::new();
+                    m.insert("value".to_string(), Type::Int);
+                    m
+                },
+                tail: RowTail::Empty,
+            },
+        };
+        // Same tag: NOT disjoint (both are Ok variants — a value could satisfy both)
+        assert!(
+            !atoms_are_disjoint(&ok1, &ok2),
+            "NominalVariant atoms with the same tag must NOT be disjoint"
+        );
+    }
+
+    // --- T-1482: is_atom_subtype contravariant function params ---
+
+    /// Function subtyping is contravariant in parameter types.
+    ///
+    /// Given: sub = Fn(Int) -> Any, sup = Fn(IntLiteral(42)) -> Any
+    /// sub <: sup iff sup_param <: sub_param, i.e., IntLiteral(42) <: Int → true.
+    ///
+    /// Intuition: if a function accepts any Int, it certainly accepts the specific
+    /// literal 42. A caller expecting a function that handles 42 can safely use a
+    /// function that handles all Ints.
+    #[test]
+    fn test_atom_subtype_function_contravariant_param() {
+        // sub: Fn(param: Int) -> Any
+        let sub = Atom::Function {
+            params: vec![(None, Type::Int)],
+            ret: Box::new(Type::Any),
+            variadic: false,
+            required_count: 1,
+        };
+        // sup: Fn(param: IntLiteral(42)) -> Any
+        let sup = Atom::Function {
+            params: vec![(None, Type::IntLiteral(42))],
+            ret: Box::new(Type::Any),
+            variadic: false,
+            required_count: 1,
+        };
+        let mut sigma = HashSet::new();
+        // sub <: sup: a function that accepts Int accepts the specific literal 42.
+        // Contravariance check: sup_param (IntLiteral(42)) <: sub_param (Int) → true.
+        assert!(
+            is_atom_subtype(&sub, &sup, None, 0, &mut sigma),
+            "Fn(Int)->Any must be a subtype of Fn(IntLiteral(42))->Any (contravariance)"
+        );
+    }
+
+    /// Contravariance: the reverse direction does NOT hold.
+    ///
+    /// Fn(IntLiteral(42)) -> Any is NOT a subtype of Fn(Int) -> Any.
+    /// A function that only handles 42 cannot stand in for a function expected to handle
+    /// all Ints: contravariance check fails because Int ≰ IntLiteral(42).
+    #[test]
+    fn test_atom_subtype_function_contravariant_param_reverse_false() {
+        // sub: Fn(param: IntLiteral(42)) -> Any
+        let sub = Atom::Function {
+            params: vec![(None, Type::IntLiteral(42))],
+            ret: Box::new(Type::Any),
+            variadic: false,
+            required_count: 1,
+        };
+        // sup: Fn(param: Int) -> Any
+        let sup = Atom::Function {
+            params: vec![(None, Type::Int)],
+            ret: Box::new(Type::Any),
+            variadic: false,
+            required_count: 1,
+        };
+        let mut sigma = HashSet::new();
+        // sub ≰ sup: a function that only handles 42 cannot substitute for one handling all Ints.
+        // Contravariance check: sup_param (Int) <: sub_param (IntLiteral(42)) → false.
+        assert!(
+            !is_atom_subtype(&sub, &sup, None, 0, &mut sigma),
+            "Fn(IntLiteral(42))->Any must NOT be a subtype of Fn(Int)->Any (contravariance)"
+        );
+    }
+
+    // --- T-1482: to_rdnf for RowTail::Uniform-tailed record ---
+
+    /// A record with a RowTail::Uniform tail converts to a single Atom::Record conjunction.
+    ///
+    /// Uniform-tailed records (e.g., {_ : Int}) cannot be expressed as a finite intersection
+    /// of single-field records — they constrain an infinite set of fields. The to_rdnf rule at
+    /// lines 221-222 short-circuits and wraps the entire record as a single Atom::Record atom,
+    /// producing [[Pos(Atom::Record(...))]] — a single conjunction with one atom.
+    #[test]
+    fn test_rdnf_uniform_tailed_record_is_single_atom() {
+        let uniform_record = Type::Record(Row {
+            fields: {
+                let mut m = IndexMap::new();
+                m.insert("x".to_string(), Type::Int);
+                m
+            },
+            tail: RowTail::Uniform {
+                key: None,
+                value: Box::new(Type::Str),
+            },
+        });
+        let rdnf = to_rdnf(&uniform_record);
+        // Must produce exactly one conjunction with one atom
+        assert_eq!(
+            rdnf.len(),
+            1,
+            "Uniform-tailed record must produce a single-conjunction RDNF"
+        );
+        assert_eq!(
+            rdnf[0].len(),
+            1,
+            "Uniform-tailed record conjunction must contain exactly one atom"
+        );
+        // The atom must be Pos(Atom::Record(...)) — not SingleFieldRecord
+        assert!(
+            matches!(&rdnf[0][0], SignedAtom::Pos(Atom::Record(_))),
+            "Uniform-tailed record must become Atom::Record, not Atom::SingleFieldRecord"
+        );
+    }
+
+    /// An empty record with a Uniform tail also becomes a single Atom::Record.
+    ///
+    /// Even with no explicit fields, the Uniform tail prevents decomposition.
+    #[test]
+    fn test_rdnf_empty_fields_uniform_tailed_record_is_single_atom() {
+        let empty_uniform = Type::Record(Row {
+            fields: IndexMap::new(),
+            tail: RowTail::Uniform {
+                key: None,
+                value: Box::new(Type::Int),
+            },
+        });
+        let rdnf = to_rdnf(&empty_uniform);
+        assert_eq!(
+            rdnf.len(),
+            1,
+            "Empty-fields Uniform-tailed record must produce a single-conjunction RDNF"
+        );
+        assert_eq!(
+            rdnf[0].len(),
+            1,
+            "Empty-fields Uniform-tailed record conjunction must contain exactly one atom"
+        );
+        assert!(
+            matches!(&rdnf[0][0], SignedAtom::Pos(Atom::Record(_))),
+            "Empty-fields Uniform-tailed record must become Atom::Record"
+        );
+    }
+
     /// End-to-end: deeply nested intersection-of-unions triggers the limit in to_rdnf,
     /// and the result is conservatively treated as uninhabited.
     #[test]
