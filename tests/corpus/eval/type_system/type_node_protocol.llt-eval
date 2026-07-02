@@ -27,23 +27,20 @@
 #   (src/builtins_meta.rs) consistent with Pattern::Constructor (eval.rs:3411-3421),
 #   values_equal (eval.rs:3623-3627), and visit_value (lib.rs:588-591).
 #
-# BUG-B (B-457): `True` and `False` are not defined in the runtime prelude. They appear
-#   in annotations as `guarding: True` / `guarding: False`. In the runtime context
-#   these are undefined VarRefs — the thunk errors when forced (leaf-guarding line 65).
-#   Root cause: why True/False fail to resolve in annotation dict thunks despite Boolean
-#   being injected by loader.llt must be diagnosed (environment capture ordering or
-#   bootstrap phase gap). B-457 tracks this investigation.
+# BUG-B (FIXED B-444): Replaced `True`/`False` with `Boolean.True`/`Boolean.False`
+#   throughout this test. Boolean is injected by loader.llt. The guarding annotation
+#   values now use fully qualified constructor names which are always resolvable.
 #
-# === out cannot be populated until B-457 is fixed. After B-457 lands, run:
+# To populate === out:
 #   just test-corpus-one tests/corpus/eval/type_system/type_node_protocol.llt-eval
 
 [
   SimpleType: [type
     # Leaf constructor (no @Child fields) — mirrors TypeNode.Int, TypeNode.Float, etc.
     # The @[as-type: fn  guarding: bool] annotation is stored at the constructor level.
-    [Leaf@[as-type: [fn [let t] t]  guarding: True]]
+    [Leaf@[as-type: [fn [let t] t]  guarding: Boolean.True]]
     # Branch constructor with one @Child field — mirrors TypeNode.Negation.
-    [Branch@[as-type: [fn [let t] t]  guarding: False]
+    [Branch@[as-type: [fn [let t] t]  guarding: Boolean.False]
       inner@Child: SimpleType]
   ]
 
