@@ -5218,16 +5218,10 @@ do-desugar-inferred: [fn [let steps]
         [do-empty-dict-node]]
       [do-fold first [collect rest]]]]]
 
-# begin macro transformer: sequential expression grouping.
-# After S-896, variadic ...items is a Seq (not a Dict). builtin-sequential needs a Dict,
-# so we collect the Seq to a Dict using builtin-reduce + builtin-append (both core builtins).
-[macro begin [let ...items]
-  [builtin-sequential [builtin-reduce [fn [let acc x] [builtin-append x acc]] [] items]]]
-
-# >> is an alias for begin — Haskell's monadic sequence operator semantics:
-# "evaluate left for side effect, discard, return right"
-[macro >> [let ...items]
-  [builtin-sequential [builtin-reduce [fn [let acc x] [builtin-append x acc]] [] items]]]
+# NOTE: begin and >> are removed from the language (T-1438 / S-906).
+# I/O sequencing now uses handle threading: write returns the handle as a data
+# dependency, enabling pipeline chaining without forced sequencing.
+# builtin-sequential is deleted with these macros.
 
 # block macro transformer: lazy multi-body in expression position.
 # [block e1 e2 e3] desugars to [[fn [let] e1 e2 e3]] — an immediately-invoked

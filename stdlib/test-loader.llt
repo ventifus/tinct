@@ -137,6 +137,18 @@
       [builtin-extend-env [] []]
       module-names]]
 
+  # eval-docs-seq: walk a Seq of documents, evaluating each against the accumulated env.
+  # expanded.documents is a Seq (Seq.Cons chain) after S-896 — cannot use builtin-reduce.
+  # Uses match/Seq.Cons/Seq.End pattern matching (core keywords, no prelude needed).
+  eval-docs-seq: [fn [let docs env]
+    [match docs
+      [case [let p] [Seq.Cons p]
+        [resolved: [builtin-resolve p.head env: env]]
+        [new-env: [builtin-eval resolved.doc env: env]]
+        [eval-docs-seq p.tail new-env]]
+      Seq.End: env
+      _: env]]
+
   # include: load and evaluate a tinct file, returning Value::Environment.
   include: [fn [let cap path]
     [handle:        [builtin-file-open cap path "read"]]
@@ -151,12 +163,8 @@
     [resolve-result: [builtin-resolve expanded env: seed-env]]
     [>> [emit-diagnostics resolve-result.errors] []]
     [resolved-prog:  resolve-result.resolved]
-    [final-env: [builtin-reduce
-      [fn [let env doc]
-        [resolved: [builtin-resolve doc env: env]]
-        [builtin-eval resolved.doc env: env]]
-      seed-env
-      expanded.documents]]
+    # Use Seq pattern matching instead of builtin-reduce (which is Dict-only after S-896).
+    [final-env: [eval-docs-seq expanded.documents seed-env]]
     [typed: [builtin-typecheck resolved-prog [builtin-get-type-context]]]
     [>> [emit-diagnostics typed.warnings]
         final-env]]
