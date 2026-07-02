@@ -307,8 +307,7 @@ pub fn expand_surface_program<'a>(
             // pre-scan above). Macros whose transformer bodies reference functions not yet in
             // stdlib_env (e.g. prelude functions when stdlib_env=core_env) simply won't register.
             // When stdlib_env IS the full prelude, registration succeeds and there is no error.
-            let _ =
-                pre_scan_surface_document(&doc_spanned.node, &mut env_macro, &ctx, &env).await;
+            let _ = pre_scan_surface_document(&doc_spanned.node, &mut env_macro, &ctx, &env).await;
         }
 
         // Pass 2 — expand all documents using the complete macro registry from pass 1.
