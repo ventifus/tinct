@@ -1,0 +1,8 @@
+# builtin-current-env returns an Environment value (type check)
+[
+  env:      [builtin-current-env]
+  env-type: [builtin-type-of env]
+]
+.env-type
+=== out
+String("Environment")

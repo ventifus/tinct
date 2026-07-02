@@ -303,7 +303,12 @@ pub fn expand_surface_program<'a>(
         // immediately expand doc N before doc N+1 is even pre-scanned — so macros declared
         // in doc N+1 are invisible to call sites in doc N.
         for doc_spanned in &program.documents {
-            pre_scan_surface_document(&doc_spanned.node, &mut env_macro, &ctx, &env).await?;
+            // Silently ignore macro registration errors (same policy as the embedded prelude
+            // pre-scan above). Macros whose transformer bodies reference functions not yet in
+            // stdlib_env (e.g. prelude functions when stdlib_env=core_env) simply won't register.
+            // When stdlib_env IS the full prelude, registration succeeds and there is no error.
+            let _ =
+                pre_scan_surface_document(&doc_spanned.node, &mut env_macro, &ctx, &env).await;
         }
 
         // Pass 2 — expand all documents using the complete macro registry from pass 1.

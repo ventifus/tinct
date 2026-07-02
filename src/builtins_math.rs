@@ -55,6 +55,7 @@ pub(crate) fn builtin_add(
         named,
         call_span,
         ctx: _,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         reject_named("+", named.as_ref(), call_span.clone())?;
@@ -100,6 +101,7 @@ pub(crate) fn builtin_sub(
         named,
         call_span,
         ctx: _,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         reject_named("-", named.as_ref(), call_span.clone())?;
@@ -145,6 +147,7 @@ pub(crate) fn builtin_mul(
         named,
         call_span,
         ctx: _,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         reject_named("*", named.as_ref(), call_span.clone())?;
@@ -191,6 +194,7 @@ pub(crate) fn builtin_div_float(
         named,
         call_span,
         ctx: _,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         reject_named("/", named.as_ref(), call_span.clone())?;
@@ -248,6 +252,7 @@ pub(crate) fn builtin_eq(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         reject_named("=", named.as_ref(), call_span.clone())?;
@@ -287,6 +292,7 @@ pub(crate) fn builtin_lt(
         named,
         call_span,
         ctx: _,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         reject_named("<", named.as_ref(), call_span.clone())?;
@@ -358,7 +364,9 @@ pub(crate) fn builtin_gt(
         args,
         named,
         call_span,
+        caller_env,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         reject_named(">", named.as_ref(), call_span.clone())?;
@@ -372,6 +380,7 @@ pub(crate) fn builtin_gt(
             args: swapped_args,
             named,
             call_span,
+            caller_env,
             ctx,
         })
         .await
@@ -388,7 +397,9 @@ pub(crate) fn builtin_lte(
         args,
         named,
         call_span,
+        caller_env,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         reject_named("<=", named.as_ref(), call_span.clone())?;
@@ -402,6 +413,7 @@ pub(crate) fn builtin_lte(
             args: swapped_args,
             named,
             call_span: call_span.clone(),
+            caller_env,
             ctx,
         })
         .await?;
@@ -427,7 +439,9 @@ pub(crate) fn builtin_gte(
         args,
         named,
         call_span,
+        caller_env,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         reject_named(">=", named.as_ref(), call_span.clone())?;
@@ -440,6 +454,7 @@ pub(crate) fn builtin_gte(
             args,
             named,
             call_span: call_span.clone(),
+            caller_env,
             ctx,
         })
         .await?;
@@ -469,6 +484,7 @@ pub(crate) fn builtin_if(
         named,
         call_span,
         ctx: _,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         reject_named("if", named.as_ref(), call_span.clone())?;
@@ -593,6 +609,7 @@ pub(crate) fn builtin_pow(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         let (base, exp) =
@@ -612,6 +629,7 @@ pub(crate) fn builtin_sqrt(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         let val = extract_single_float("sqrt", &args, named.as_ref(), &ctx, call_span.clone())?;
@@ -630,6 +648,7 @@ pub(crate) fn builtin_log(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         let val = extract_single_float("log", &args, named.as_ref(), &ctx, call_span.clone())?;
@@ -647,6 +666,7 @@ pub(crate) fn builtin_log2(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         let val = extract_single_float("log2", &args, named.as_ref(), &ctx, call_span.clone())?;
@@ -664,6 +684,7 @@ pub(crate) fn builtin_log10(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         let val = extract_single_float("log10", &args, named.as_ref(), &ctx, call_span.clone())?;
@@ -681,6 +702,7 @@ pub(crate) fn builtin_exp(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         let val = extract_single_float("exp", &args, named.as_ref(), &ctx, call_span.clone())?;
@@ -698,6 +720,7 @@ pub(crate) fn builtin_sin(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         let val = extract_single_float("sin", &args, named.as_ref(), &ctx, call_span.clone())?;
@@ -715,6 +738,7 @@ pub(crate) fn builtin_cos(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         let val = extract_single_float("cos", &args, named.as_ref(), &ctx, call_span.clone())?;
@@ -732,6 +756,7 @@ pub(crate) fn builtin_tan(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         let val = extract_single_float("tan", &args, named.as_ref(), &ctx, call_span.clone())?;
@@ -749,6 +774,7 @@ pub(crate) fn builtin_asin(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         let val = extract_single_float("asin", &args, named.as_ref(), &ctx, call_span.clone())?;
@@ -766,6 +792,7 @@ pub(crate) fn builtin_acos(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         let val = extract_single_float("acos", &args, named.as_ref(), &ctx, call_span.clone())?;
@@ -783,6 +810,7 @@ pub(crate) fn builtin_atan(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         let val = extract_single_float("atan", &args, named.as_ref(), &ctx, call_span.clone())?;
@@ -800,6 +828,7 @@ pub(crate) fn builtin_atan2(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         let (y, x) = extract_two_floats("atan2", &args, named.as_ref(), &ctx, call_span.clone())?;
@@ -817,6 +846,7 @@ pub(crate) fn builtin_nan_check(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         let val = extract_single_float("nan?", &args, named.as_ref(), &ctx, call_span.clone())?;
@@ -834,6 +864,7 @@ pub(crate) fn builtin_inf_check(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         let val = extract_single_float("inf?", &args, named.as_ref(), &ctx, call_span.clone())?;
@@ -851,6 +882,7 @@ pub(crate) fn builtin_finite_check(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         let val = extract_single_float("finite?", &args, named.as_ref(), &ctx, call_span.clone())?;
@@ -916,6 +948,7 @@ pub(crate) fn builtin_band(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         let (a, b) = extract_int_pair("band", &args, named.as_ref(), &ctx, call_span.clone())?;
@@ -933,6 +966,7 @@ pub(crate) fn builtin_bor(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         let (a, b) = extract_int_pair("bor", &args, named.as_ref(), &ctx, call_span.clone())?;
@@ -950,6 +984,7 @@ pub(crate) fn builtin_bxor(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         let (a, b) = extract_int_pair("bxor", &args, named.as_ref(), &ctx, call_span.clone())?;
@@ -967,6 +1002,7 @@ pub(crate) fn builtin_shl(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         let (value, bits) =
@@ -999,6 +1035,7 @@ pub(crate) fn builtin_shr(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         let (value, bits) =
@@ -1037,6 +1074,7 @@ pub(crate) fn builtin_float(
         named,
         call_span,
         ctx: _,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         reject_named("float", named.as_ref(), call_span.clone())?;

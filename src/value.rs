@@ -54,6 +54,11 @@ pub struct BuiltinArgs {
     pub named: Option<IndexMap<String, Arc<Thunk>>>,
     pub call_span: Span,
     pub ctx: Arc<crate::eval::EvalContext>,
+    /// The lexical environment at the call site. For user-code calls via PendingCall
+    /// dispatch, this is the caller's environment — enabling `builtin-current-env` to
+    /// capture it. For internal builtin-to-builtin calls (not via PendingCall), this is
+    /// an empty environment and should not be used as a meaningful scope.
+    pub caller_env: Arc<RwLock<Environment>>,
 }
 
 /// Signature for built-in functions: receives a `BuiltinArgs` struct containing
@@ -1377,6 +1382,7 @@ pub enum UnevaluatedState {
         args: Vec<Arc<Thunk>>,
         named: Option<IndexMap<String, Arc<Thunk>>>,
         call_span: Span,
+        caller_env: Arc<RwLock<Environment>>,
         ctx: Arc<crate::eval::EvalContext>,
     },
     /// Deferred function call (was PendingCall).
@@ -1467,6 +1473,7 @@ pub type PendingBuiltinParts = (
     Vec<Arc<Thunk>>,
     Option<IndexMap<String, Arc<Thunk>>>,
     Span,
+    Arc<RwLock<Environment>>,
     Arc<crate::eval::EvalContext>,
 );
 
@@ -1623,12 +1630,18 @@ impl Thunk {
 
     /// `named`: pass `None` when there are no named args (the common case for internal
     /// thunks); pass `Some(map)` only when named args are actually present.
+    ///
+    /// `caller_env`: the lexical environment at the call site. Pass the actual caller
+    /// environment when creating a PendingBuiltin from a user-code call (PendingCall
+    /// dispatch). For internal builtin-to-builtin calls with no meaningful call site,
+    /// pass `Arc::new(RwLock::new(Environment::new()))`.
     pub fn new_pending_builtin(
         def: BuiltinDef,
         args: Vec<Arc<Thunk>>,
         named: Option<IndexMap<String, Arc<Thunk>>>,
         span: Span,
         origin: Option<Arc<str>>,
+        caller_env: Arc<RwLock<Environment>>,
         ctx: Arc<crate::eval::EvalContext>,
     ) -> Self {
         let (create_parent, create_time_us) = Self::profiling_data(&ctx);
@@ -1639,6 +1652,7 @@ impl Thunk {
                     args,
                     named,
                     call_span: span.clone(),
+                    caller_env,
                     ctx,
                 })),
                 result: tokio::sync::OnceCell::new(),
@@ -1805,12 +1819,14 @@ impl Thunk {
                 args,
                 named,
                 call_span,
+                caller_env,
                 ctx: _,
             } => UnevaluatedState::Builtin {
                 def,
                 args,
                 named,
                 call_span,
+                caller_env,
                 ctx: new_ctx,
             },
             UnevaluatedState::Call {
@@ -1910,10 +1926,11 @@ impl Thunk {
                 args,
                 named,
                 call_span,
+                caller_env,
                 ctx,
             }) => {
                 // State is now InProgress
-                Some((def, args, named, call_span, ctx))
+                Some((def, args, named, call_span, caller_env, ctx))
             }
             other => {
                 // Restore the state
@@ -3037,6 +3054,7 @@ mod tests {
             None,
             span,
             Some(Arc::from("test builtin call")),
+            Arc::clone(&env1),
             Arc::clone(&ctx1),
         );
 
@@ -3050,7 +3068,7 @@ mod tests {
         let taken = thunk.take_pending_builtin();
         assert!(taken.is_some(), "take_pending_builtin should succeed");
 
-        let (_def, _args, _named, _call_span, taken_ctx) = taken.unwrap();
+        let (_def, _args, _named, _call_span, _caller_env, taken_ctx) = taken.unwrap();
         assert!(
             Arc::ptr_eq(&taken_ctx, &ctx1),
             "PendingBuiltin should evaluate using captured ctx1"
@@ -3328,6 +3346,7 @@ mod tests {
             None,
             span,
             Some(Arc::from("test")),
+            Arc::clone(&env),
             Arc::clone(&ctx),
         );
 
@@ -3383,6 +3402,7 @@ mod tests {
             None,
             span.clone(),
             Some(Arc::from("test")),
+            Arc::clone(&env),
             Arc::clone(&ctx),
         );
 

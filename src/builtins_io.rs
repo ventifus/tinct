@@ -109,6 +109,7 @@ pub(crate) fn builtin_emit(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         let val = crate::builtins::expect_one_arg(
@@ -142,6 +143,7 @@ pub(crate) fn builtin_env(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         let val =
@@ -197,6 +199,7 @@ pub(crate) fn builtin_narrow(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         // Expect at least 2 args: DirCap, and either a subpath string or flag(s)
@@ -420,6 +423,7 @@ pub(crate) fn builtin_revocable(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         let val = crate::builtins::expect_one_arg(
@@ -478,6 +482,7 @@ pub(crate) fn builtin_revoke_cap(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         let val = crate::builtins::expect_one_arg(
@@ -522,6 +527,7 @@ pub(crate) fn builtin_write(
             named,
             call_span,
             ctx: _,
+            ..
         } = ctx_arg;
 
         // Expect 3 args: DirCap, String path, String content
@@ -588,6 +594,7 @@ pub(crate) fn builtin_write_atomic(
             named,
             call_span,
             ctx: _,
+            ..
         } = ctx_arg;
 
         // Expect 3 args: DirCap, String path, String content
@@ -701,6 +708,7 @@ pub(crate) fn builtin_list_dir(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
 
         // Expect 2 args: DirCap, String path
@@ -823,6 +831,7 @@ pub(crate) fn builtin_stat(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
 
         // Expect 2 args: DirCap, String path
@@ -946,6 +955,7 @@ pub(crate) fn builtin_exists(
             named,
             call_span,
             ctx: _,
+            ..
         } = ctx_arg;
 
         // Expect 2 args: DirCap, String path
@@ -996,6 +1006,7 @@ pub(crate) fn builtin_stat_symlink(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
 
         // Expect 2 args: DirCap, String path
@@ -1125,6 +1136,7 @@ pub(crate) fn builtin_copy_file(
             named,
             call_span,
             ctx: _,
+            ..
         } = ctx_arg;
 
         // Expect 4 args: src DirCap, src path, dst DirCap, dst path
@@ -1198,6 +1210,7 @@ pub(crate) fn builtin_symlink(
             named,
             call_span,
             ctx: _,
+            ..
         } = ctx_arg;
 
         // Expect 3 args: DirCap, target, link path
@@ -1297,6 +1310,7 @@ pub(crate) fn builtin_set_permissions(
             named,
             call_span,
             ctx: _,
+            ..
         } = ctx_arg;
 
         // Expect 3 args: DirCap, path, mode
@@ -1393,6 +1407,7 @@ pub(crate) fn builtin_get_xattr(
             named,
             call_span,
             ctx: _,
+            ..
         } = ctx_arg;
 
         // Expect 3 args: DirCap, path, attribute name
@@ -1494,6 +1509,7 @@ pub(crate) fn builtin_set_xattr(
             named,
             call_span,
             ctx: _,
+            ..
         } = ctx_arg;
 
         // Expect 4 args: DirCap, path, attribute name, value
@@ -1605,6 +1621,7 @@ pub(crate) fn builtin_remove_xattr(
             named,
             call_span,
             ctx: _,
+            ..
         } = ctx_arg;
 
         // Expect 3 args: DirCap, path, attribute name
@@ -1703,6 +1720,7 @@ pub(crate) fn builtin_list_xattrs(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
 
         // Expect 2 args: DirCap, path
@@ -1792,6 +1810,7 @@ pub(crate) fn builtin_make_dir(
             named,
             call_span,
             ctx: _,
+            ..
         } = ctx_arg;
 
         // Expect 2 args: DirCap, String path
@@ -1843,6 +1862,7 @@ pub(crate) fn builtin_remove(
             named,
             call_span,
             ctx: _,
+            ..
         } = ctx_arg;
 
         // Expect 2 args: DirCap, String path
@@ -1898,6 +1918,7 @@ pub(crate) fn builtin_rename(
             named,
             call_span,
             ctx: _,
+            ..
         } = ctx_arg;
 
         // Expect 3 args: DirCap, String old_path, String new_path
@@ -1957,6 +1978,7 @@ pub(crate) fn builtin_link(
             named,
             call_span,
             ctx: _,
+            ..
         } = ctx_arg;
 
         // Expect 3 args: DirCap, String existing_path, String link_path
@@ -2009,6 +2031,7 @@ pub(crate) fn builtin_read_link(
             named,
             call_span,
             ctx: _,
+            ..
         } = ctx_arg;
 
         // Expect 2 args: DirCap, String path
@@ -2072,6 +2095,7 @@ pub(crate) fn builtin_path_dir(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
 
         let val = crate::builtins::expect_one_arg(
@@ -2137,6 +2161,7 @@ pub(crate) fn builtin_file_open(
             named,
             call_span,
             ctx: _,
+            ..
         } = ctx_arg;
 
         if args.len() != 3 {
@@ -2243,6 +2268,7 @@ pub(crate) fn builtin_file_read(
             named,
             call_span,
             ctx: _,
+            ..
         } = ctx_arg;
 
         if args.len() != 2 {
@@ -2324,6 +2350,7 @@ pub(crate) fn builtin_file_write(
             named,
             call_span,
             ctx: _,
+            ..
         } = ctx_arg;
 
         if args.len() != 2 {
@@ -2377,6 +2404,7 @@ pub(crate) fn builtin_file_flush(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
 
         let val = crate::builtins::expect_one_arg(
@@ -2425,6 +2453,7 @@ pub(crate) fn builtin_file_close(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
 
         let val = crate::builtins::expect_one_arg(
@@ -2465,6 +2494,7 @@ pub(crate) fn builtin_file_seek(
             named,
             call_span,
             ctx: _,
+            ..
         } = ctx_arg;
 
         if args.len() != 2 {
@@ -2543,6 +2573,7 @@ pub(crate) fn builtin_write_stdout(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
 
         let val = crate::builtins::expect_one_arg(
@@ -2576,6 +2607,7 @@ pub(crate) fn builtin_write_stderr(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
 
         let val = crate::builtins::expect_one_arg(
@@ -2613,6 +2645,7 @@ pub(crate) fn builtin_read_stdin(
             named,
             call_span,
             ctx: _,
+            ..
         } = ctx_arg;
 
         if args.len() != 1 {

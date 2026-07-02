@@ -227,6 +227,7 @@ pub(crate) fn builtin_force(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
         let forced = crate::builtins::expect_one_arg(
             "materialize",
@@ -250,6 +251,7 @@ pub(crate) fn builtin_raise(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
         let val = crate::builtins::expect_one_arg(
             "raise",
@@ -277,6 +279,7 @@ pub(crate) fn builtin_macro_error(
             named,
             call_span,
             ctx: _,
+            ..
         } = ctx_arg;
 
         // Reject named arguments
@@ -326,6 +329,7 @@ pub(crate) fn builtin_try(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
         reject_named("try", named.as_ref(), call_span.clone())?;
         if args.len() != 1 {
@@ -376,6 +380,7 @@ pub(crate) fn builtin_try(
                     args: vec![],
                     named: None,
                     call_span: call_span.clone(),
+                    caller_env: Arc::new(std::sync::RwLock::new(Environment::new())),
                     ctx: Arc::clone(&ctx),
                 };
                 match (def.func)(builtin_args).await {
@@ -443,6 +448,7 @@ pub(crate) fn builtin_until(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
         reject_named("until", named.as_ref(), call_span.clone())?;
         if args.len() != 3 {
@@ -519,6 +525,7 @@ pub(crate) fn builtin_apply_impl(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
         reject_named("apply", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
@@ -613,6 +620,7 @@ pub(crate) fn builtin_apply_impl(
                         Some(named_args)
                     },
                     call_span,
+                    caller_env: Arc::new(std::sync::RwLock::new(Environment::new())),
                     ctx: Arc::clone(&ctx),
                 };
                 (def.func)(builtin_args).await
@@ -638,6 +646,7 @@ pub(crate) fn builtin_apply(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
         // Return a PendingBuiltin thunk that wraps builtin_apply_impl.
         // When materialized, the PendingBuiltin handler will use BuiltinForceArg
@@ -659,6 +668,7 @@ pub(crate) fn builtin_apply(
             named_opt,
             call_span,
             Some(Arc::from("apply")),
+            Arc::new(std::sync::RwLock::new(crate::value::Environment::new())),
             ctx,
         )))
     })
@@ -690,6 +700,7 @@ pub(crate) fn builtin_gensym(
             named,
             call_span,
             ctx: _,
+            ..
         } = ctx_arg;
 
         reject_named("builtin-gensym", named.as_ref(), call_span.clone())?;
@@ -751,6 +762,7 @@ pub(crate) fn builtin_macro_injects(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
 
         let macro_name_val = crate::builtins::expect_one_arg(
@@ -792,6 +804,7 @@ pub(crate) fn builtin_decimal(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
         let val = crate::builtins::expect_one_arg(
             "decimal",
@@ -833,6 +846,7 @@ pub(crate) fn builtin_big_int(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
         let val = crate::builtins::expect_one_arg(
             "big-int",
@@ -877,6 +891,7 @@ pub(crate) fn builtin_type_of(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
         let val = crate::builtins::expect_one_arg(
             "type-of",
@@ -911,6 +926,7 @@ pub(crate) fn builtin_ast_of(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
 
         // Reject named args and ensure exactly 1 arg
@@ -1195,6 +1211,7 @@ pub(crate) fn builtin_llt_repr(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
         let val = crate::builtins::expect_one_arg(
             "llt-repr",
@@ -1226,6 +1243,7 @@ pub(crate) fn builtin_tag_of(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
         let val = crate::builtins::expect_one_arg(
             "tag-of",
@@ -1285,6 +1303,7 @@ pub(crate) fn builtin_span_of(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
         let val = crate::builtins::expect_one_arg(
             "span-of",
@@ -1321,6 +1340,7 @@ pub(crate) fn builtin_annotation_of(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
         let val = crate::builtins::expect_one_arg(
             "annotation-of",
@@ -1518,6 +1538,7 @@ pub(crate) fn builtin_blake3(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
         let val = crate::builtins::expect_one_arg(
             "blake3",
@@ -1549,6 +1570,7 @@ pub(crate) fn builtin_cap_identity(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
         let val = crate::builtins::expect_one_arg(
             "cap-identity",
@@ -1627,6 +1649,7 @@ pub(crate) fn builtin_load(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
 
         if args.len() != 1 {
@@ -1731,6 +1754,7 @@ pub(crate) fn builtin_expand(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
         crate::builtins::reject_named("expand", named.as_ref(), call_span.clone())?;
         if args.len() != 1 {
@@ -1972,6 +1996,7 @@ pub(crate) fn builtin_parse(
             named,
             call_span,
             ctx: _ctx,
+            ..
         } = ctx_arg;
         crate::builtins::reject_named("builtin-parse", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
@@ -2100,6 +2125,7 @@ pub(crate) fn builtin_resolve(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
         // Extract optional env: named argument (Value::Environment).
         // Reject any other named arguments.
@@ -2353,6 +2379,7 @@ pub(crate) fn builtin_typecheck(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
         crate::builtins::reject_named("builtin-typecheck", named.as_ref(), call_span.clone())?;
         // Accept 1 or 2 args: program, [type-ctx]
@@ -2467,6 +2494,7 @@ pub(crate) fn builtin_get_type_context(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
         crate::builtins::reject_named(
             "builtin-get-type-context",
@@ -2526,6 +2554,7 @@ pub(crate) fn builtin_make_type_ctx(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
         crate::builtins::reject_named("builtin-make-type-ctx", named.as_ref(), call_span.clone())?;
         if !args.is_empty() {
@@ -2561,6 +2590,7 @@ pub(crate) fn builtin_fork_type_ctx(
             named,
             call_span,
             ctx: _ctx,
+            ..
         } = ctx_arg;
         crate::builtins::reject_named("builtin-fork-type-ctx", named.as_ref(), call_span.clone())?;
         if args.len() != 1 {
@@ -2613,6 +2643,7 @@ pub(crate) fn builtin_program(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
         crate::builtins::reject_named("builtin-program", named.as_ref(), call_span.clone())?;
         if args.len() != 1 {
@@ -2707,6 +2738,7 @@ pub(crate) fn builtin_builtin_module(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
 
         let name_val = crate::builtins::expect_one_arg(
@@ -2771,6 +2803,7 @@ pub(crate) fn builtin_eval(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
 
         if args.len() != 1 {
@@ -2948,6 +2981,7 @@ pub(crate) fn builtin_variant_payload(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
         crate::builtins::reject_named("variant-payload", named.as_ref(), call_span.clone())?;
         if args.len() != 1 {
@@ -2994,6 +3028,7 @@ pub(crate) fn builtin_eval_repr(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
 
         if args.len() != 1 {
@@ -3116,6 +3151,7 @@ pub(crate) fn builtin_extend_env(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
 
         crate::builtins::reject_named("extend-env", named.as_ref(), call_span.clone())?;
@@ -3186,6 +3222,39 @@ pub(crate) fn builtin_extend_env(
     })
 }
 
+/// `builtin-current-env`: capture and return the calling environment.
+///
+/// Takes zero arguments. Returns the `Value::Environment` that was the caller's
+/// lexical environment at the point of the call. This is the environment in scope
+/// at the `[builtin-current-env]` call site — not the environment of `builtin-current-env`
+/// itself (which has no body).
+///
+/// This builtin works because the evaluator threads `caller_env` through `BuiltinArgs`,
+/// capturing it when a `PendingCall` resolves to a `Value::Builtin`. Internal
+/// builtin-to-builtin calls (not via user-code PendingCall dispatch) will produce an
+/// empty environment — `builtin-current-env` is only meaningful when called from user code.
+pub(crate) fn builtin_current_env(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            caller_env,
+            ..
+        } = ctx_arg;
+        crate::builtins::reject_named("current-env", named.as_ref(), call_span.clone())?;
+        if !args.is_empty() {
+            return Err(EvalError::arity_mismatch(0, args.len(), call_span).into());
+        }
+        Ok(Arc::new(Thunk::new_materialized(
+            Value::Environment(caller_env),
+            call_span,
+        )))
+    })
+}
+
 /// `eval-types`: same as `eval` but evaluates in the type-stage environment.
 ///
 /// This is used for evaluating type-level expressions (type aliases, class declarations).
@@ -3199,6 +3268,7 @@ pub(crate) fn builtin_eval_types(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
 
         if args.len() != 1 {
@@ -3348,6 +3418,7 @@ pub(crate) fn builtin_include_cache_get(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
         let val = crate::builtins::expect_one_arg(
             "include-cache-get",
@@ -3416,6 +3487,7 @@ pub(crate) fn builtin_include_cache_put(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
 
         reject_named("include-cache-put", named.as_ref(), call_span.clone())?;
@@ -3519,6 +3591,7 @@ pub(crate) fn builtin_validate(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
 
         // Expect exactly 2 args: schema, data
@@ -3926,6 +3999,7 @@ pub(crate) fn builtin_is_contractive(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
 
         reject_named("builtin-is-contractive", named.as_ref(), call_span.clone())?;
@@ -4057,6 +4131,7 @@ pub(crate) fn builtin_sequential(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
         crate::builtins::reject_named("sequential", named.as_ref(), call_span.clone())?;
         if args.len() != 1 {
@@ -4152,7 +4227,7 @@ mod tests {
 
     use indexmap::IndexMap;
 
-    use super::builtin_tag_of;
+    use super::{builtin_current_env, builtin_tag_of};
     use crate::error::EvalResult;
     use crate::test_util::test_span;
     use crate::value::{string_val, BuiltinArgs, Environment, Thunk, Value};
@@ -4199,6 +4274,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap();
@@ -4224,6 +4300,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap();
@@ -4252,11 +4329,83 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap();
         let val = materialize_sync(&result, &test_ctx()).await;
         assert_eq!(val, string_val("Shape.Circle"));
+    }
+
+    /// `builtin_current_env` captures the `caller_env` from `BuiltinArgs` and returns it
+    /// as a `Value::Environment`. The returned environment must be the exact same
+    /// `Arc<RwLock<Environment>>` that was passed in, so bindings inserted before the
+    /// call are accessible via `get_by_name` on the captured env.
+    #[tokio::test]
+    async fn current_env_captures_caller_env() {
+        // Build a caller environment with a known binding: "x" → Int(42).
+        let caller_env = Arc::new(RwLock::new(Environment::new()));
+        {
+            let mut env = caller_env.write().unwrap();
+            env.insert(
+                "x".to_string(),
+                Arc::new(Thunk::new_materialized(Value::Int(42), call_span())),
+            );
+        }
+
+        let result = run(builtin_current_env(BuiltinArgs {
+            args: vec![],
+            named: no_named(),
+            call_span: call_span(),
+            ctx: test_ctx(),
+            caller_env: Arc::clone(&caller_env),
+        }))
+        .await
+        .unwrap();
+
+        // The thunk must materialize to Value::Environment.
+        let val = materialize_sync(&result, &test_ctx()).await;
+        let captured_env = match val {
+            Value::Environment(env) => env,
+            other => panic!("expected Value::Environment, got {other:?}"),
+        };
+
+        // The captured environment must contain the binding we inserted.
+        let x_thunk = captured_env
+            .read()
+            .unwrap()
+            .get_by_name("x")
+            .expect("binding 'x' must be present in captured env");
+
+        let x_val = materialize_sync(&x_thunk, &test_ctx()).await;
+        assert_eq!(
+            x_val,
+            Value::Int(42),
+            "captured env binding 'x' must be Int(42)"
+        );
+    }
+
+    /// `builtin_current_env` rejects positional arguments — it takes zero args.
+    #[tokio::test]
+    async fn current_env_rejects_positional_args() {
+        let caller_env = Arc::new(RwLock::new(Environment::new()));
+        let result = run(builtin_current_env(BuiltinArgs {
+            args: vec![thunk(Value::Int(1))],
+            named: no_named(),
+            call_span: call_span(),
+            ctx: test_ctx(),
+            caller_env,
+        }))
+        .await;
+        assert!(
+            result.is_err(),
+            "expected arity error when passing args to current-env, got ok"
+        );
+        let msg = format!("{}", result.unwrap_err());
+        assert!(
+            msg.contains("E020") || msg.contains("arity"),
+            "error should be an arity mismatch, got: {msg}"
+        );
     }
 
     /// `builtin_tag_of` returns a type-mismatch error when the peeled value is not a
@@ -4272,6 +4421,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert!(

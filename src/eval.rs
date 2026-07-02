@@ -2207,7 +2207,9 @@ pub fn materialize<'a>(
         let decorate =
             move |e| attach_materialization_context(e, mat_span, origin_opt, thunk_span.clone());
 
-        if let Some((def, args, named, call_span, thunk_ctx)) = thunk.take_pending_builtin() {
+        if let Some((def, args, named, call_span, builtin_caller_env, thunk_ctx)) =
+            thunk.take_pending_builtin()
+        {
             // Pre-materialize strict args before calling the builtin.
             //
             // The CEK machine (eval_materialize.rs::force_step) handles force_count and
@@ -2262,6 +2264,7 @@ pub fn materialize<'a>(
                             args,
                             named,
                             call_span,
+                            caller_env: builtin_caller_env,
                             ctx: thunk_ctx,
                         });
                     }
@@ -2271,10 +2274,12 @@ pub fn materialize<'a>(
             // `named` is None for internally-created thunks (common case); only $apply
             // passes named args through. Use an empty map ref for the None case.
             let call_span_for_restore = call_span.clone();
+            let caller_env_for_restore = Arc::clone(&builtin_caller_env);
             let builtin_args = crate::value::BuiltinArgs {
                 args,
                 named,
                 call_span,
+                caller_env: builtin_caller_env,
                 ctx: Arc::clone(&thunk_ctx),
             };
             // Clone args/named from BuiltinArgs for potential restoration after builtin call.
@@ -2316,6 +2321,7 @@ pub fn materialize<'a>(
                                             args: args_for_restore,
                                             named: named_for_restore,
                                             call_span: call_span_for_restore,
+                                            caller_env: caller_env_for_restore,
                                             ctx: thunk_ctx,
                                         },
                                     );
@@ -2335,6 +2341,7 @@ pub fn materialize<'a>(
                             args: args_for_restore,
                             named: named_for_restore,
                             call_span: call_span_for_restore,
+                            caller_env: caller_env_for_restore,
                             ctx: thunk_ctx,
                         });
                     }
@@ -2532,6 +2539,7 @@ pub fn materialize<'a>(
                         args,
                         named,
                         call_span,
+                        caller_env: Arc::clone(&caller_env),
                         ctx: Arc::clone(&thunk_ctx),
                     };
                     // Clone args/named from BuiltinArgs for error-path restoration.
@@ -8291,6 +8299,7 @@ mod tests {
             None,
             span,
             None,
+            empty_env(),
             Arc::clone(&ctx),
         ));
 

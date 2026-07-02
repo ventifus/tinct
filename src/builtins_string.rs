@@ -50,6 +50,7 @@ pub(crate) fn builtin_str(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
         reject_named("str", named.as_ref(), call_span.clone())?;
 
@@ -87,6 +88,7 @@ pub(crate) fn builtin_split(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
         reject_named("split", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
@@ -280,6 +282,7 @@ pub(crate) fn builtin_replace(
             named,
             call_span,
             ctx: _,
+            ..
         } = ctx_arg;
         reject_named("replace", named.as_ref(), call_span.clone())?;
         if args.len() != 3 {
@@ -353,6 +356,7 @@ pub(crate) fn builtin_trim(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
         let val = expect_one_arg("trim", &args, named.as_ref(), &ctx, call_span.clone())?;
         let s = require_string("trim", val, args[0].span.clone())?;
@@ -373,6 +377,7 @@ pub(crate) fn builtin_str_length(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
         let val = expect_one_arg("str-length", &args, named.as_ref(), &ctx, call_span.clone())?;
         let s = require_string("str-length", val, args[0].span.clone())?;
@@ -401,6 +406,7 @@ pub(crate) fn builtin_str_slice(
             named,
             call_span,
             ctx: _,
+            ..
         } = ctx_arg;
         reject_named("str-slice", named.as_ref(), call_span.clone())?;
         if args.len() != 3 {
@@ -535,6 +541,7 @@ pub(crate) fn builtin_str_nth_char(
             named,
             call_span,
             ctx: _ctx,
+            ..
         } = ctx_arg;
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
@@ -610,6 +617,7 @@ pub(crate) fn builtin_char_code(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
         let val = expect_one_arg("char-code", &args, named.as_ref(), &ctx, call_span.clone())?;
 
@@ -817,6 +825,7 @@ pub(crate) fn builtin_chr(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
         let val = expect_one_arg("chr", &args, named.as_ref(), &ctx, call_span.clone())?;
 
@@ -864,6 +873,7 @@ pub(crate) fn builtin_str_bytes(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
 
         let val = crate::builtins::expect_one_arg(
@@ -904,6 +914,7 @@ pub(crate) fn builtin_str_index_of(
             named,
             call_span,
             ctx: _,
+            ..
         } = ctx_arg;
         reject_named("str-index-of", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
@@ -947,6 +958,7 @@ pub(crate) fn builtin_trim_start(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
         let val = expect_one_arg("trim-start", &args, named.as_ref(), &ctx, call_span.clone())?;
         let s = require_string("trim-start", val, args[0].span.clone())?;
@@ -967,6 +979,7 @@ pub(crate) fn builtin_trim_end(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
         let val = expect_one_arg("trim-end", &args, named.as_ref(), &ctx, call_span.clone())?;
         let s = require_string("trim-end", val, args[0].span.clone())?;
@@ -995,6 +1008,7 @@ pub(crate) fn builtin_bytes_str(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
 
         let val = crate::builtins::expect_one_arg(
@@ -1041,6 +1055,7 @@ pub(crate) fn builtin_str_to_upper_char(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
         let val = expect_one_arg(
             "str-to-upper-char",
@@ -1070,6 +1085,7 @@ pub(crate) fn builtin_str_to_lower_char(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
         let val = expect_one_arg(
             "str-to-lower-char",
@@ -1099,6 +1115,7 @@ pub(crate) fn builtin_str_map_chars(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
         reject_named("str-map-chars", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
@@ -1158,6 +1175,9 @@ pub(crate) fn builtin_str_map_chars(
                         args: vec![Arc::clone(&char_thunk)],
                         named: None,
                         call_span: call_span.clone(),
+                        caller_env: Arc::new(std::sync::RwLock::new(
+                            crate::value::Environment::new(),
+                        )),
                         ctx: Arc::clone(&ctx),
                     };
                     (def.func)(builtin_args).await?
@@ -1211,6 +1231,7 @@ pub(crate) fn builtin_int_to_string(
             named,
             call_span,
             ctx: _,
+            ..
         } = ctx_arg;
         reject_named("int->string", named.as_ref(), call_span.clone())?;
         let val = args
@@ -1248,6 +1269,7 @@ pub(crate) fn builtin_float_to_string(
             named,
             call_span,
             ctx: _,
+            ..
         } = ctx_arg;
         reject_named("float->string", named.as_ref(), call_span.clone())?;
         let val = args
@@ -1286,6 +1308,7 @@ pub(crate) fn builtin_regex_match(
             named,
             call_span,
             ctx: _,
+            ..
         } = ctx_arg;
         reject_named("regex-match?", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
@@ -1329,6 +1352,7 @@ pub(crate) fn builtin_string_concat(
             named,
             call_span,
             ctx: _,
+            ..
         } = ctx_arg;
         reject_named("builtin-string-concat", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {

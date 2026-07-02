@@ -138,6 +138,7 @@ pub(crate) enum RestoreState {
         args: Vec<Arc<Thunk>>,
         named: Option<IndexMap<String, Arc<Thunk>>>,
         call_span: Span,
+        caller_env: Arc<RwLock<Environment>>,
         ctx: Arc<EvalContext>,
     },
     /// Restore a Call (PendingCall) thunk for non-cacheable errors.
@@ -186,12 +187,14 @@ impl RestoreState {
                 args,
                 named,
                 call_span,
+                caller_env,
                 ctx,
             } => UnevaluatedState::Builtin {
                 def,
                 args,
                 named,
                 call_span,
+                caller_env,
                 ctx,
             },
             RestoreState::Call {
@@ -315,6 +318,7 @@ pub(crate) struct BuiltinForceArgData {
     pub(crate) args: Vec<Arc<Thunk>>,
     pub(crate) named: Option<IndexMap<String, Arc<Thunk>>>,
     pub(crate) call_span: Span,
+    pub(crate) caller_env: Arc<RwLock<Environment>>,
     pub(crate) ctx: Arc<EvalContext>,
     pub(crate) origin: Option<Arc<str>>,
     pub(crate) thunk_span: Span,
@@ -745,7 +749,9 @@ pub(crate) async fn force_step(
     // Defer origin clone to here — it's only needed for error reporting and Memoize continuations.
     let origin = thunk.origin.clone();
 
-    if let Some((def, args, named, call_span, thunk_ctx)) = thunk.take_pending_builtin() {
+    if let Some((def, args, named, call_span, builtin_caller_env, thunk_ctx)) =
+        thunk.take_pending_builtin()
+    {
         // Push to eval_stack after transitioning to InProgress (for cycle path reconstruction).
         // EvalStackGuard ensures pop on all exit paths; disarmed when delegating to a
         // continuation (BuiltinForceArg, Memoize) that inherits pop responsibility.
@@ -784,6 +790,7 @@ pub(crate) async fn force_step(
                     args: args.take().expect("args set above"),
                     named: named.take().expect("named set above"),
                     call_span: call_span.clone(),
+                    caller_env: builtin_caller_env,
                     ctx: thunk_ctx,
                     origin,
                     thunk_span: thunk_span.clone(),
@@ -824,6 +831,7 @@ pub(crate) async fn force_step(
                 args: args.take().expect("args set above"),
                 named: named.take().expect("named set above"),
                 call_span: call_span.clone(),
+                caller_env: builtin_caller_env,
                 ctx: thunk_ctx,
                 origin,
                 thunk_span: thunk_span.clone(),
@@ -847,6 +855,7 @@ pub(crate) async fn force_step(
             args: args.as_ref().expect("args set above").clone(),
             named: named.as_ref().expect("named set above").clone(),
             call_span: call_span.clone(),
+            caller_env: Arc::clone(&builtin_caller_env),
             ctx: Arc::clone(&thunk_ctx),
         };
 
@@ -872,6 +881,7 @@ pub(crate) async fn force_step(
                             args: args.take().expect("args set above"),
                             named: named.take().expect("named set above"),
                             call_span: call_span.clone(),
+                            caller_env: Arc::clone(&builtin_caller_env),
                             ctx: Arc::clone(&thunk_ctx),
                         }),
                         ctx: Arc::clone(&thunk_ctx),
@@ -902,6 +912,7 @@ pub(crate) async fn force_step(
                         args: args.take().expect("args set above"),
                         named: named.take().expect("named set above"),
                         call_span,
+                        caller_env: builtin_caller_env,
                         ctx: thunk_ctx,
                     });
                 }
@@ -1599,6 +1610,7 @@ pub(crate) async fn apply_cont(
                                         args: args.take().expect("args set above"),
                                         named: named.take().expect("named set above").map(|b| *b),
                                         call_span: call_span.clone(),
+                                        caller_env: Arc::clone(&caller_env),
                                         ctx: thunk_ctx,
                                     },
                                 );
@@ -1617,6 +1629,7 @@ pub(crate) async fn apply_cont(
                                         .as_deref()
                                         .cloned(),
                                     call_span: call_span.clone(),
+                                    caller_env: Arc::clone(&caller_env),
                                     ctx: Arc::clone(&thunk_ctx),
                                 };
                                 (def.func)(builtin_args).await
@@ -2102,6 +2115,7 @@ pub(crate) async fn apply_cont(
                 args,
                 named,
                 call_span,
+                caller_env: builtin_caller_env,
                 ctx: thunk_ctx,
                 origin,
                 thunk_span,
@@ -2154,6 +2168,7 @@ pub(crate) async fn apply_cont(
                                 args: args.take().expect("args set above"),
                                 named: named.take().expect("named set above"),
                                 call_span: call_span.clone(),
+                                caller_env: builtin_caller_env,
                                 ctx: thunk_ctx,
                                 origin,
                                 thunk_span: thunk_span.clone(),
@@ -2197,6 +2212,7 @@ pub(crate) async fn apply_cont(
                             args: args.take().expect("args set above"),
                             named: named.take().expect("named set above"),
                             call_span: call_span.clone(),
+                            caller_env: builtin_caller_env,
                             ctx: thunk_ctx,
                             origin,
                             thunk_span: thunk_span.clone(),
@@ -2219,6 +2235,7 @@ pub(crate) async fn apply_cont(
                         args: args.as_ref().expect("args set above").clone(),
                         named: named.as_ref().expect("named set above").clone(),
                         call_span: call_span.clone(),
+                        caller_env: Arc::clone(&builtin_caller_env),
                         ctx: Arc::clone(&thunk_ctx),
                     };
                     match (def.func)(builtin_args).await.map_err(&decorate) {
@@ -2240,6 +2257,7 @@ pub(crate) async fn apply_cont(
                                         args: args.take().expect("args set above"),
                                         named: named.take().expect("named set above"),
                                         call_span: call_span.clone(),
+                                        caller_env: Arc::clone(&builtin_caller_env),
                                         ctx: Arc::clone(&thunk_ctx),
                                     }),
                                     ctx: Arc::clone(&thunk_ctx),
@@ -2264,6 +2282,7 @@ pub(crate) async fn apply_cont(
                                         args: args.take().expect("args set above"),
                                         named: named.take().expect("named set above"),
                                         call_span: call_span.clone(),
+                                        caller_env: builtin_caller_env,
                                         ctx: thunk_ctx,
                                     },
                                 );
@@ -2284,6 +2303,7 @@ pub(crate) async fn apply_cont(
                             args: args.take().expect("args set above"),
                             named: named.take().expect("named set above"),
                             call_span,
+                            caller_env: builtin_caller_env,
                             ctx: thunk_ctx,
                         });
                     }
@@ -3917,12 +3937,14 @@ mod tests {
         let args = vec![Arc::clone(&thunk)];
         let ctx = test_ctx();
 
+        let caller_env = empty_env();
         let pending_thunk = Thunk::new_pending_builtin(
             dummy_def,
             args.clone(),
             None,
             span.clone(),
             Some(Arc::from("test_origin")),
+            Arc::clone(&caller_env),
             ctx.clone(),
         );
 
@@ -3936,6 +3958,7 @@ mod tests {
             args,
             named: None,
             call_span: span,
+            caller_env,
             ctx: ctx.clone(),
         };
         restore.restore(&pending_thunk);
@@ -4564,6 +4587,7 @@ mod tests {
             None,
             span,
             None,
+            empty_env(),
             Arc::clone(&ctx),
         ));
 
@@ -4678,6 +4702,7 @@ mod tests {
             None,
             span,
             None,
+            empty_env(),
             Arc::clone(&ctx),
         ));
 

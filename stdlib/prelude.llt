@@ -3261,17 +3261,12 @@ Note: Errors on Seq.End. Returns a Seq (lazy; does not force tail elements).
       [Seq.Cons p]: p.tail
       Seq.End:      [raise "tail: empty sequence"]]]
 
-collect@[return: [List a]  doc: """
-Materialize a lazy Seq into a List (finger tree). O(n) — not a typeclass method.
-
-Breaking change from prior API (S-897): collect now returns [List a], not an
-integer-keyed Dict {0: a, 1: b, ...}. Use ft-size for length, ft-index for
-indexed access, or ft-to-seq to iterate.
+collect@[return: Any  doc: """
+Materialize a lazy Seq into an integer-keyed Dict {0: a, 1: b, ...}. O(n).
 
 Note: Forces evaluation of the entire Seq. Use with caution on infinite sequences.
 """]:
-  [fn [let xs@[Seq a]]
-    [reduce [fn [let tree x] [push-right x tree]] FingerTree.FTEmpty xs]]
+  [fn [let xs] [builtin-reduce [fn [let acc x] [builtin-append x acc]] [] xs]]
 
 range@[return: [Seq Int]  doc: """
 Lazy half-open integer range [start, end). Pure tinct — no Rust dispatch.
@@ -5193,11 +5188,12 @@ do-desugar-inferred: [fn [let steps]
 
 # tmpl macro transformer: string interpolation i"...$var..." syntax.
 # i"..." strings desugar at the lexer/parser level to [tmpl template parts...].
-# The tmpl macro expands to a [str ...] call joining literal segments with interpolated values.
+# The parser splits the template at variable boundaries, so [tmpl] receives:
+#   template = first literal segment AST node
+#   parts    = alternating (var-ref, literal, ...) AST nodes as a Seq
+# This expands to [str template parts...] using only core special forms.
 [macro tmpl [let template ...parts]
-  [tmpl-expand
-    template.value
-    [tmpl-build-args template [collect parts]]]]
+  [quote [str [unquote template] [unquote-splice parts]]]]
 
 # do macro transformer: monadic do-notation desugaring.
 #
@@ -5223,16 +5219,15 @@ do-desugar-inferred: [fn [let steps]
       [do-fold first [collect rest]]]]]
 
 # begin macro transformer: sequential expression grouping.
-# Variadic ...items is already an integer-keyed Dict — pass directly to builtin-sequential.
-# Uses builtin-sequential (not Expr.Sequential) so the macro works in any expansion
-# context, including boot-level init programs where Expr is not yet in scope.
+# After S-896, variadic ...items is a Seq (not a Dict). builtin-sequential needs a Dict,
+# so we collect the Seq to a Dict using builtin-reduce + builtin-append (both core builtins).
 [macro begin [let ...items]
-  [builtin-sequential items]]
+  [builtin-sequential [builtin-reduce [fn [let acc x] [builtin-append x acc]] [] items]]]
 
 # >> is an alias for begin — Haskell's monadic sequence operator semantics:
 # "evaluate left for side effect, discard, return right"
 [macro >> [let ...items]
-  [builtin-sequential items]]
+  [builtin-sequential [builtin-reduce [fn [let acc x] [builtin-append x acc]] [] items]]]
 
 # block macro transformer: lazy multi-body in expression position.
 # [block e1 e2 e3] desugars to [[fn [let] e1 e2 e3]] — an immediately-invoked
@@ -5245,7 +5240,7 @@ do-desugar-inferred: [fn [let steps]
 # [task e1 e2 e3] desugars to [builtin-task [block e1 e2 e3]].
 # Single-arg [task e] passes through to builtin-task directly.
 [macro task [let first ...rest]
-  [if [null? rest]
+  [builtin-if [builtin-eq [builtin-tag-of rest] "Seq.End"]
     [quote [builtin-task [unquote first]]]
     [quote [builtin-task [block [unquote first] [unquote-splice rest]]]]]]
 

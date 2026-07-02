@@ -9,7 +9,7 @@ use crate::ast::Span;
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{materialize, EvalContext};
 use crate::eval_call::{invoke_function, CallContext};
-use crate::value::{Thunk, Value};
+use crate::value::{Environment, Thunk, Value};
 
 /// Invoke a proxy handler with a key value, returning the result thunk.
 pub(crate) async fn invoke_proxy_handler(
@@ -49,6 +49,7 @@ pub(crate) async fn invoke_proxy_handler(
             None,
             access_span.clone(),
             Some(Arc::from("proxy field access")),
+            Arc::new(std::sync::RwLock::new(Environment::new())),
             Arc::clone(ctx),
         ))),
         _ => Err(EvalError::type_mismatch(

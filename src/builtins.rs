@@ -478,6 +478,7 @@ pub(crate) fn builtin_floor(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         float_to_int_builtin("floor", f64::floor, &args, named.as_ref(), &ctx, call_span)
@@ -500,6 +501,7 @@ pub(crate) fn builtin_round(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         float_to_int_builtin("round", f64::round, &args, named.as_ref(), &ctx, call_span)
@@ -519,6 +521,7 @@ pub(crate) fn builtin_to_int(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     if args.is_empty() {
         return Box::pin(async move { Err(EvalError::arity_mismatch(1, 0, call_span).into()) });
@@ -552,6 +555,7 @@ pub(crate) fn builtin_to_float(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     if args.is_empty() {
         return Box::pin(async move { Err(EvalError::arity_mismatch(1, 0, call_span).into()) });
@@ -612,6 +616,7 @@ pub(crate) fn builtin_first(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         reject_named("first", named.as_ref(), call_span.clone())?;
@@ -693,6 +698,7 @@ pub(crate) fn builtin_last(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         reject_named("last", named.as_ref(), call_span.clone())?;
@@ -767,6 +773,7 @@ pub(crate) fn builtin_rest(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         reject_named("rest", named.as_ref(), call_span.clone())?;
@@ -806,6 +813,7 @@ pub(crate) fn builtin_reverse(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         reject_named("reverse", named.as_ref(), call_span.clone())?;
@@ -905,6 +913,7 @@ pub(crate) fn builtin_sort(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         reject_named("sort", named.as_ref(), call_span.clone())?;
@@ -990,6 +999,9 @@ pub(crate) fn builtin_sort(
                                 args: pos_args,
                                 named: None,
                                 call_span: call_span.clone(),
+                                caller_env: Arc::new(std::sync::RwLock::new(
+                                    crate::value::Environment::new(),
+                                )),
                                 ctx: Arc::clone(&ctx),
                             };
                             (def.func)(builtin_args).await?
@@ -1068,6 +1080,7 @@ pub(crate) fn builtin_proxy(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         reject_named("proxy", named.as_ref(), call_span.clone())?;

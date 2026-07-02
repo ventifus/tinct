@@ -56,14 +56,14 @@ use crate::stream::builtin_to_tinct;
 // Meta/eval implementations.
 use crate::builtins_meta::{
     builtin_annotation_of, builtin_apply, builtin_ast_of, builtin_big_int, builtin_blake3,
-    builtin_builtin_module, builtin_cap_identity, builtin_decimal, builtin_eval, builtin_eval_repr,
-    builtin_eval_types, builtin_expand, builtin_extend_env, builtin_force, builtin_fork_type_ctx,
-    builtin_gensym, builtin_get_type_context, builtin_include_cache_get, builtin_include_cache_put,
-    builtin_is_contractive, builtin_llt_repr, builtin_load, builtin_macro_error,
-    builtin_macro_injects, builtin_make_annotated, builtin_make_type_ctx, builtin_parse,
-    builtin_program, builtin_raise, builtin_resolve, builtin_sequential, builtin_span_of,
-    builtin_tag_of, builtin_try, builtin_type_of, builtin_typecheck, builtin_until,
-    builtin_validate, builtin_variant_payload,
+    builtin_builtin_module, builtin_cap_identity, builtin_current_env, builtin_decimal,
+    builtin_eval, builtin_eval_repr, builtin_eval_types, builtin_expand, builtin_extend_env,
+    builtin_force, builtin_fork_type_ctx, builtin_gensym, builtin_get_type_context,
+    builtin_include_cache_get, builtin_include_cache_put, builtin_is_contractive, builtin_llt_repr,
+    builtin_load, builtin_macro_error, builtin_macro_injects, builtin_make_annotated,
+    builtin_make_type_ctx, builtin_parse, builtin_program, builtin_raise, builtin_resolve,
+    builtin_sequential, builtin_span_of, builtin_tag_of, builtin_try, builtin_type_of,
+    builtin_typecheck, builtin_until, builtin_validate, builtin_variant_payload,
 };
 // I/O implementations.
 use crate::builtins_dict::{
@@ -806,6 +806,9 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             [Strictness::Seq, Strictness::Seq],
             2
         ),
+        // builtin-current-env: zero-arg; returns the calling lexical environment.
+        // No force_count or pos_strictness — it inspects no arguments.
+        builtin!("builtin-current-env", builtin_current_env, [], 0),
         builtin!(
             "builtin-eval-types",
             builtin_eval_types,

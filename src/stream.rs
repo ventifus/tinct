@@ -36,6 +36,7 @@ pub(crate) fn builtin_to_tinct(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
         let val = expect_one_arg(
             "builtin-to-tinct",

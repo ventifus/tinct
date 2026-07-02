@@ -41,7 +41,7 @@ use indexmap::IndexMap;
 use crate::builtins::{builtin, ok_val, reject_named, synthetic_call_expr};
 use crate::error::{EvalError, EvalResult};
 use crate::eval::materialize;
-use crate::value::{string_val, BuiltinArgs, HashableValue, Thunk, ThunkId, Value};
+use crate::value::{string_val, BuiltinArgs, Environment, HashableValue, Thunk, ThunkId, Value};
 
 /// `keys`: Takes 1 arg (a Dict). Returns a Dict with integer keys `0..n`
 /// mapping to the key values (Int keys become Int values, String keys become
@@ -55,6 +55,7 @@ pub(crate) fn builtin_keys(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         reject_named("keys", named.as_ref(), call_span.clone())?;
@@ -106,6 +107,7 @@ pub(crate) fn builtin_length(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         reject_named("length", named.as_ref(), call_span.clone())?;
@@ -169,6 +171,7 @@ pub(crate) fn builtin_merge(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         reject_named("merge", named.as_ref(), call_span.clone())?;
@@ -200,6 +203,7 @@ pub(crate) fn builtin_append(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         reject_named("append", named.as_ref(), call_span.clone())?;
@@ -263,6 +267,7 @@ pub(crate) fn builtin_field_get(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         reject_named("field-get", named.as_ref(), call_span.clone())?;
@@ -658,6 +663,7 @@ pub(crate) fn builtin_slot_get(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         reject_named("slot-get", named.as_ref(), call_span.clone())?;
@@ -750,6 +756,7 @@ pub(crate) fn builtin_get(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         reject_named("builtin-get", named.as_ref(), call_span.clone())?;
@@ -842,6 +849,7 @@ pub(crate) fn builtin_get_optional(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         reject_named("get?", named.as_ref(), call_span.clone())?;
@@ -920,6 +928,7 @@ pub(crate) fn builtin_dict_nth(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         reject_named("dict-nth", named.as_ref(), call_span.clone())?;
@@ -972,6 +981,7 @@ pub(crate) fn builtin_dict_key_nth(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         reject_named("dict-key-nth", named.as_ref(), call_span.clone())?;
@@ -1031,6 +1041,7 @@ pub(crate) fn builtin_dict_kv_nth(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         reject_named("dict-kv-nth", named.as_ref(), call_span.clone())?;
@@ -1101,6 +1112,7 @@ pub(crate) fn builtin_builder_get_or(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         reject_named("builder-get-or", named.as_ref(), call_span.clone())?;
@@ -1185,6 +1197,7 @@ pub(crate) fn builtin_build_dict(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         reject_named("build-dict", named.as_ref(), call_span.clone())?;
@@ -1285,6 +1298,7 @@ pub(crate) fn builtin_make_builder(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         if !args.is_empty() {
@@ -1352,6 +1366,7 @@ pub(crate) fn builtin_builder_set(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         reject_named("builder-set", named.as_ref(), call_span.clone())?;
@@ -1654,6 +1669,7 @@ pub(crate) fn builtin_builder_get(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         reject_named("builder-get", named.as_ref(), call_span.clone())?;
@@ -1750,6 +1766,7 @@ pub(crate) fn builtin_get_by_field(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         reject_named("builtin-get-by-field", named.as_ref(), call_span.clone())?;
@@ -1931,6 +1948,7 @@ pub(crate) fn builtin_map(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
         reject_named("map", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
@@ -1997,6 +2015,7 @@ pub(crate) fn builtin_filter(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
         reject_named("filter", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
@@ -2077,6 +2096,7 @@ pub(crate) fn builtin_reduce(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
         reject_named("reduce", named.as_ref(), call_span.clone())?;
         if args.len() != 3 {
@@ -2118,6 +2138,7 @@ pub(crate) fn builtin_reduce(
                     None,
                     call_span,
                     Some(Arc::from("reduce")),
+                    Arc::new(std::sync::RwLock::new(Environment::new())),
                     Arc::clone(&ctx),
                 ));
                 Ok(step_thunk)
@@ -2217,6 +2238,7 @@ pub(crate) fn builtin_take(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
         reject_named("take", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
@@ -2290,6 +2312,7 @@ pub(crate) fn builtin_drop(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
         reject_named("drop", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
@@ -2363,6 +2386,7 @@ pub(crate) fn builtin_join(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
         reject_named("join", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
@@ -2447,6 +2471,7 @@ pub(crate) fn builtin_concat(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
         reject_named("concat", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {

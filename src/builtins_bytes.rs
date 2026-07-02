@@ -29,6 +29,7 @@ pub(crate) fn builtin_bytes(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
 
         if let Some(named_map) = named {
@@ -90,6 +91,7 @@ pub(crate) fn builtin_bytes_find(
             named,
             call_span,
             ctx: _,
+            ..
         } = ctx_arg;
 
         if let Some(named_map) = named {
@@ -184,6 +186,7 @@ pub(crate) fn builtin_bytes_of(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
 
         let val = expect_one_arg("bytes-of", &args, named.as_ref(), &ctx, call_span.clone())?;
@@ -254,6 +257,7 @@ pub(crate) fn builtin_bytes_concat(
             named,
             call_span,
             ctx: _,
+            ..
         } = ctx_arg;
 
         if let Some(named_map) = named {
@@ -337,6 +341,7 @@ pub(crate) fn builtin_bytes_equal(
             named,
             call_span,
             ctx: _,
+            ..
         } = ctx_arg;
 
         if let Some(named_map) = named {
@@ -419,6 +424,7 @@ pub(crate) fn builtin_ct_equal(
             named,
             call_span,
             ctx: _,
+            ..
         } = ctx_arg;
 
         if let Some(named_map) = named {
@@ -512,6 +518,7 @@ pub(crate) fn builtin_encode(
             named,
             call_span,
             ctx: _,
+            ..
         } = ctx_arg;
 
         if let Some(named_map) = named {
@@ -804,6 +811,7 @@ pub(crate) fn builtin_bytes_get(
             named,
             call_span,
             ctx: _,
+            ..
         } = ctx_arg;
 
         if let Some(ref named_map) = named {
@@ -896,6 +904,7 @@ pub(crate) fn builtin_bytes_slice(
             named,
             call_span,
             ctx: _,
+            ..
         } = ctx_arg;
 
         if let Some(ref named_map) = named {

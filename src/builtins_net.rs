@@ -1009,6 +1009,7 @@ pub(crate) fn builtin_quic_session(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
 
         reject_named("quic-session", named.as_ref(), call_span.clone())?;
@@ -1190,6 +1191,7 @@ pub(crate) fn builtin_quic_open_datagram(
             named,
             call_span,
             ctx: _,
+            ..
         } = ctx_arg;
 
         reject_named("quic-open-datagram", named.as_ref(), call_span.clone())?;
@@ -1248,6 +1250,7 @@ pub(crate) fn builtin_http2_session(
             named,
             call_span,
             ctx: _,
+            ..
         } = ctx_arg;
 
         reject_named("http2-session", named.as_ref(), call_span.clone())?;
@@ -1400,6 +1403,7 @@ pub(crate) fn builtin_http3_session(
             named,
             call_span,
             ctx: _,
+            ..
         } = ctx_arg;
 
         reject_named("http3-session", named.as_ref(), call_span.clone())?;
@@ -1499,6 +1503,7 @@ pub(crate) fn builtin_http_request(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
 
         reject_named("http-request", named.as_ref(), call_span.clone())?;
@@ -1882,6 +1887,7 @@ pub(crate) fn builtin_icmp_ping(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
 
         reject_named("icmp-ping", named.as_ref(), call_span.clone())?;
@@ -2250,6 +2256,7 @@ pub(crate) fn builtin_send_datagram(
             named,
             call_span,
             ctx: _,
+            ..
         } = ctx_arg;
 
         if args.len() != 2 {
@@ -2338,6 +2345,7 @@ pub(crate) fn builtin_recv_datagram(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
 
         let val = crate::builtins::expect_one_arg(
@@ -2428,6 +2436,7 @@ pub(crate) fn builtin_uri(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
 
         let val = expect_one_arg("uri", &args, named.as_ref(), &ctx, call_span.clone())?;
@@ -2585,6 +2594,7 @@ pub(crate) fn builtin_url(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
 
         let val = expect_one_arg("url", &args, named.as_ref(), &ctx, call_span.clone())?;
@@ -2709,6 +2719,7 @@ pub(crate) fn builtin_urn(
             named,
             call_span,
             ctx,
+            ..
         } = ctx_arg;
 
         let val = expect_one_arg("urn", &args, named.as_ref(), &ctx, call_span.clone())?;

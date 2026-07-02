@@ -186,6 +186,7 @@ pub(crate) fn builtin_task(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         let func_thunk = take_one_thunk("task", &args, named.as_ref(), call_span.clone())?;
@@ -235,6 +236,9 @@ pub(crate) fn builtin_task(
                         args: vec![],
                         named: None,
                         call_span: call_span_clone,
+                        caller_env: Arc::new(std::sync::RwLock::new(
+                            crate::value::Environment::new(),
+                        )),
                         ctx: Arc::clone(&ctx_clone),
                     })
                     .await?;
@@ -272,6 +276,7 @@ pub(crate) fn builtin_await(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         let task_thunk = take_one_thunk("await", &args, named.as_ref(), call_span.clone())?;
@@ -356,6 +361,7 @@ pub(crate) fn builtin_channel(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         let capacity_thunk = take_one_thunk("channel", &args, named.as_ref(), call_span.clone())?;
@@ -395,6 +401,7 @@ pub(crate) fn builtin_send(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         let (chan_thunk, val_thunk) =
@@ -490,6 +497,7 @@ pub(crate) fn builtin_recv(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         let chan_thunk = take_one_thunk("recv", &args, named.as_ref(), call_span.clone())?;
@@ -645,6 +653,7 @@ pub(crate) fn builtin_broadcast_channel(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         let capacity_thunk = take_one_thunk(
@@ -690,6 +699,7 @@ pub(crate) fn builtin_oneshot_channel(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         if !named.as_ref().is_none_or(|n| n.is_empty()) {
@@ -746,6 +756,7 @@ pub(crate) fn builtin_try_send(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         let (chan_thunk, val_thunk) =
@@ -819,6 +830,7 @@ pub(crate) fn builtin_select_once(
         named: _,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         // First arg: context (for cancellation checking)
@@ -1133,6 +1145,9 @@ pub(crate) fn builtin_select_once(
                                 args: vec![arg_thunk],
                                 named: None,
                                 call_span: call_span.clone(),
+                                caller_env: Arc::new(std::sync::RwLock::new(
+                                    crate::value::Environment::new(),
+                                )),
                                 ctx: Arc::clone(&ctx),
                             })
                             .await?
@@ -1196,6 +1211,7 @@ pub(crate) fn builtin_par_map(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         let (func_thunk, seq_thunk) =
@@ -1264,6 +1280,9 @@ pub(crate) fn builtin_par_map(
                             args: vec![item_thunk_arg],
                             named: None,
                             call_span: call_span_clone,
+                            caller_env: Arc::new(std::sync::RwLock::new(
+                                crate::value::Environment::new(),
+                            )),
                             ctx: ctx_clone.clone(),
                         })
                         .await?;
@@ -1329,6 +1348,7 @@ pub(crate) fn builtin_par_filter(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         let (pred_thunk, seq_thunk) =
@@ -1401,6 +1421,9 @@ pub(crate) fn builtin_par_filter(
                             args: vec![arg_thunk],
                             named: None,
                             call_span: call_span_clone.clone(),
+                            caller_env: Arc::new(std::sync::RwLock::new(
+                                crate::value::Environment::new(),
+                            )),
                             ctx: ctx_clone.clone(),
                         })
                         .await?;
@@ -1488,6 +1511,7 @@ pub(crate) fn builtin_signal_channel(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         let signals_thunk =
@@ -1624,6 +1648,7 @@ pub(crate) fn builtin_timer_channel(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         let (clock_thunk, interval_thunk) =
@@ -1750,6 +1775,7 @@ pub(crate) fn builtin_watch_channel(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         let (dir_cap_thunk, path_thunk) =
@@ -1865,6 +1891,7 @@ pub(crate) fn builtin_context(
         named,
         call_span,
         ctx: _ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         if !args.is_empty() {
@@ -1907,6 +1934,7 @@ pub(crate) fn builtin_with_cancel(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         let parent_thunk = take_one_thunk("with-cancel", &args, named.as_ref(), call_span.clone())?;
@@ -1978,6 +2006,7 @@ pub(crate) fn builtin_with_timeout(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         let (clock_thunk, parent_thunk, ms_thunk) =
@@ -2077,6 +2106,7 @@ pub(crate) fn builtin_with_deadline(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         let (clock_thunk, parent_thunk, ts_thunk) =
@@ -2167,6 +2197,7 @@ pub(crate) fn builtin_cancelled_q(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         let ctx_thunk = take_one_thunk("cancelled?", &args, named.as_ref(), call_span.clone())?;
@@ -2195,6 +2226,7 @@ pub(crate) fn builtin_cancel_task(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         let ctx_thunk = take_one_thunk("cancel-task", &args, named.as_ref(), call_span.clone())?;
@@ -2230,6 +2262,7 @@ pub(crate) fn builtin_cancel_root(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         if !args.is_empty() {
@@ -2286,6 +2319,7 @@ pub(crate) fn builtin_drain(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         if !args.is_empty() {
@@ -2341,6 +2375,7 @@ pub(crate) fn builtin_exit_now(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         if args.len() != 1 {
@@ -2392,6 +2427,7 @@ pub(crate) fn builtin_non_cancellable(
         named,
         call_span,
         ctx: _ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         if !args.is_empty() {
@@ -2435,6 +2471,7 @@ pub(crate) fn builtin_with_context(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         let (context_thunk, expr_thunk) =
@@ -2499,6 +2536,7 @@ pub(crate) fn builtin_reactive_cell(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         let initial_thunk =
@@ -2529,6 +2567,7 @@ pub(crate) fn builtin_cell_get(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         let cell_thunk = take_one_thunk("cell-get", &args, named.as_ref(), call_span.clone())?;
@@ -2565,6 +2604,7 @@ pub(crate) fn builtin_cell_set(
         named,
         call_span,
         ctx,
+        ..
     } = ctx_arg;
     Box::pin(async move {
         let (val_thunk, cell_thunk) =
