@@ -4,6 +4,6 @@
   result: [f 1 c: 5]
 ]
 === error
-[E024] missing argument for required parameter 'd' (defined at 3:11-3:21)
+missing argument for required parameter 'd' (defined at 3:11-3:21)
   in [f ...] at 3:11-3:21
   in [f ...] at 3:11-3:21

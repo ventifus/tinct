@@ -3,4 +3,4 @@
 # On infinite sequences, collect/reduce hits MAX_EVAL_DEPTH and errors.
 [collect [iterate [fn [let x] [+ x 1]] 0]]
 === error
-[E040] maximum evaluation depth exceeded
+maximum evaluation depth exceeded

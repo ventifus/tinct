@@ -2,7 +2,7 @@
 # @Any inner wrapper lets the type checker pass; guard fires lazily on field access
 [@[person: [name: String]] [@Any [person: 42]]].person
 === error
-[E011] type assertion failed: expected field `person`: [name: String], got Int (defined at 2:43-2:45) (materialized at 2:1-2:48)
+type assertion failed: expected field `person`: [name: String], got Int (defined at 2:43-2:45) (materialized at 2:1-2:48)
   note: value produced here at 2:43-2:45
   in materialized at 2:1-2:55
   in type guard at 2:1-2:48

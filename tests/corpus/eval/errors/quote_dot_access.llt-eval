@@ -1,3 +1,3 @@
 [quote config.host]
 === error
-[E035] cannot serialize Expression to JSON (defined at 1:8-1:19)
+cannot serialize Expression to JSON (defined at 1:8-1:19)

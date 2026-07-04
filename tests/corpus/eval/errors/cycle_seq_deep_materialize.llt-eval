@@ -4,4 +4,4 @@
 [data: [iterate [fn [let x] x] [raise "cycle"]]
  result: [collect [take 5 data]]]
 === error
-[E080] cycle
+cycle

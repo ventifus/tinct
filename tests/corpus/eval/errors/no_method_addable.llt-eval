@@ -1,4 +1,4 @@
 # No Addable instance for String+String — should error
 [+ "hello" "world"]
 === error
-[E013] no instance for Addable (String, String)
+no instance for Addable (String, String)

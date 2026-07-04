@@ -5,4 +5,4 @@
   True: "bool"]
 
 === error
-[E071] non-exhaustive match: no pattern matched the Int value (defined at 2:1-4:16)
+non-exhaustive match: no pattern matched the Int value (defined at 2:1-4:16)

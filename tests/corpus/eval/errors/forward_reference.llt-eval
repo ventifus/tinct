@@ -3,5 +3,5 @@
 # last (only) document forces materialisation → E002.
 %undefined_section.x
 === error
-[E002] undefined variable: %undefined_section (defined at 3:1-3:19)
+undefined variable: %undefined_section (defined at 3:1-3:19)
   in accessing .x at 3:1-3:21

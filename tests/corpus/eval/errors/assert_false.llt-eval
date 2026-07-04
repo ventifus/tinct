@@ -1,6 +1,6 @@
 [assert False "test failure"]
 === error
-[E080] test failure (defined at stdlib/prelude.llt:2471:28-2471:47)
+test failure (defined at stdlib/prelude.llt:2471:28-2471:47)
   --> stdlib/prelude.llt:2471:28-2471:47
    |
   2471 | """]: [fn [let msg@String] [builtin-raise msg]]

@@ -10,4 +10,4 @@
     _:                      0]
 ]
 === error
-[E002] undefined variable: payload (did you mean the string "payload"? Use quotes.) (defined at 8:22-8:29) (accessed at 8:22-8:29)
+undefined variable: payload (did you mean the string "payload"? Use quotes.) (defined at 8:22-8:29) (accessed at 8:22-8:29)

@@ -4,4 +4,4 @@
 # so this raises E002 undefined variable: x.
 [$x: 1]
 === error
-[E002] undefined variable: x (did you mean the string "x"? Use quotes.) (defined at 4:2-4:4)
+undefined variable: x (did you mean the string "x"? Use quotes.) (defined at 4:2-4:4)

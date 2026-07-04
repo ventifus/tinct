@@ -9,4 +9,4 @@
 
 [+ [two-ints] 1]
 === error
-[E080] macro 'two-ints' returned invalid AST: dict_to_surface_node: unknown node type: splice (defined at 9:4-9:14)
+macro 'two-ints' returned invalid AST: dict_to_surface_node: unknown node type: splice (defined at 9:4-9:14)

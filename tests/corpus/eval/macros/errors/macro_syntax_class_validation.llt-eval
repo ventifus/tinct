@@ -6,4 +6,4 @@
 
 [pragma "optimize" True]
 === error
-[E012] macro expansion error: macro 'pragma': argument 'name' expected VarRef, got Literal (defined at 6:1-6:25)
+macro expansion error: macro 'pragma': argument 'name' expected VarRef, got Literal (defined at 6:1-6:25)

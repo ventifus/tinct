@@ -2,5 +2,5 @@
 --- uses: ["core"]
 [builtin-get "z" [a: 10  b: 20]]
 === error
-[E001] key not found: z (available keys: a, b) (defined at 2:1-2:33)
+key not found: z (available keys: a, b) (defined at 2:1-2:33)
   in [builtin-get ...] at 2:1-2:33

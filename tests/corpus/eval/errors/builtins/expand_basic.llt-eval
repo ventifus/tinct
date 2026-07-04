@@ -8,4 +8,4 @@
 ]
 
 === error
-[E035] cannot serialize Program to JSON (defined at 3:13-3:35)
+cannot serialize Program to JSON (defined at 3:13-3:35)

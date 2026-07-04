@@ -2,7 +2,7 @@
 --- uses: ["core"]
 [join "," [bytes-of "AB"]]
 === error
-[E010] bytes-of: expected Seq or Dict, got String (defined at 2:11-2:26)
+bytes-of: expected Seq or Dict, got String (defined at 2:11-2:26)
   in [bytes-of ...] at 2:11-2:26
   in [builtin-join ...] at stdlib/prelude.llt:2999:26-2999:47
    |

@@ -2,4 +2,4 @@
 # The placeholder is a stub marker; forcing it signals an unfinished implementation.
 ...
 === error
-[E081] placeholder `...` was evaluated — replace with an implementation (defined at 2:1-2:4)
+placeholder `...` was evaluated — replace with an implementation (defined at 2:1-2:4)

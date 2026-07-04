@@ -1,4 +1,4 @@
 # Key $x evaluates in parent scope where x is not defined
 [x: 1  $x: 2]
 === error
-[E002] undefined variable: x (did you mean the string "x"? Use quotes.) (defined at 1:8-1:10)
+undefined variable: x (did you mean the string "x"? Use quotes.) (defined at 1:8-1:10)

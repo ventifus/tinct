@@ -1,5 +1,5 @@
 # each: type error when called on Int (expects Dict)
 [each 42]
 === error
-[E010] each: expected Dict, got Int (defined at 1:7-1:9)
+each: expected Dict, got Int (defined at 1:7-1:9)
   in [each ...] at 1:1-1:10

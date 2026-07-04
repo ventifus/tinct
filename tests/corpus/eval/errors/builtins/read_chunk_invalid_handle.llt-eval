@@ -2,5 +2,5 @@
 --- uses: ["core"]
 [builtin-read-chunk "not-a-handle" 4]
 === error
-[E010] builtin-read-chunk: expected Handle, got String (defined at 2:1-2:38)
+builtin-read-chunk: expected Handle, got String (defined at 2:1-2:38)
   in [builtin-read-chunk ...] at 2:1-2:38

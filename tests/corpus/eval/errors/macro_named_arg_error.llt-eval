@@ -5,4 +5,4 @@
 
 [my-macro foo: 1]
 === error
-[E080] macros do not accept named arguments (defined at 5:1-5:18)
+macros do not accept named arguments (defined at 5:1-5:18)

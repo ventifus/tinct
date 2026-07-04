@@ -552,6 +552,6 @@
   [builtin-if [builtin-eq final-state.passed final-state.total]
     []
     [builtin-raise [join "" [
-      "[E080] " [builtin-int->string [builtin-sub final-state.total final-state.passed]] " test(s) failed\n"
+      [builtin-int->string [builtin-sub final-state.total final-state.passed]] " test(s) failed\n"
       final-state.first-fail]]]]
   []]

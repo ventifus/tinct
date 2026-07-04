@@ -3,7 +3,7 @@
 # errors, that error propagates (not masked by type assertion failure)
 [@[type: Int  default: [raise "deliberate error"]] "hello"]
 === error
-[E080] deliberate error (defined at stdlib/prelude.llt:2471:28-2471:47)
+deliberate error (defined at stdlib/prelude.llt:2471:28-2471:47)
   --> stdlib/prelude.llt:2471:28-2471:47
    |
   2471 | """]: [fn [let msg@String] [builtin-raise msg]]

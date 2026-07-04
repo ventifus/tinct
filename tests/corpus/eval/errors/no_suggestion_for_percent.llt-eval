@@ -1,4 +1,4 @@
 # % prefix should suppress string suggestion
 [result: %undefined]
 === error
-[E002] undefined variable: %undefined (defined at 1:10-1:20)
+undefined variable: %undefined (defined at 1:10-1:20)

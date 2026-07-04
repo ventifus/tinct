@@ -5,5 +5,5 @@
 # in src/builtins.rs (floor_positive_infinity_errors, div_float_nan_result_is_error, etc.).
 [to-float "not-a-float"]
 === error
-[E060] to-float: cannot parse "not-a-float" as Float (defined at 5:1-5:25)
+to-float: cannot parse "not-a-float" as Float (defined at 5:1-5:25)
   in [to-float ...] at 5:1-5:25

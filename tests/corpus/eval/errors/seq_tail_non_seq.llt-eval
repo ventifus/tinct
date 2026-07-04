@@ -2,4 +2,4 @@
 # tail uses match on Seq.Cons/Seq.End; Int causes a match failure
 [tail 42]
 === error
-[E010]
+type mismatch:

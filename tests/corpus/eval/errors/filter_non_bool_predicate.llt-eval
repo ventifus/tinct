@@ -1,7 +1,7 @@
 # filter: predicate returning Int instead of Bool produces a type mismatch error (E010)
 [filter [fn [let x] 42] [1: a 2: b]]
 === error
-[E010] filter: expected Bool, got Int (defined at stdlib/prelude.llt:2478:72-2478:96)
+filter: expected Bool, got Int (defined at stdlib/prelude.llt:2478:72-2478:96)
   --> stdlib/prelude.llt:2478:72-2478:96
    |
   2478 | filter@[doc: "Keep elements matching predicate"]: [fn [let pred@Fn xs] [builtin-filter pred xs]]

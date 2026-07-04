@@ -4,7 +4,7 @@
 # paths are updated to pass available_keys to key_not_found().
 [get-in ["a" "c"] [a: [b: 42]]]
 === error
-[E080] key not found: c (defined at stdlib/prelude.llt:2471:28-2471:47)
+key not found: c (defined at stdlib/prelude.llt:2471:28-2471:47)
   --> stdlib/prelude.llt:2471:28-2471:47
    |
   2471 | """]: [fn [let msg@String] [builtin-raise msg]]

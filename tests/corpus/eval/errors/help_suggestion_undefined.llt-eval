@@ -3,4 +3,4 @@
 # Eval still proceeds but produces error at runtime
 [result: $x]
 === error
-[E002] undefined variable: x (did you mean the string "x"? Use quotes.) (defined at 3:10-3:12)
+undefined variable: x (did you mean the string "x"? Use quotes.) (defined at 3:10-3:12)

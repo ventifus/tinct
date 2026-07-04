@@ -5,4 +5,4 @@
 
 [bad-macro "hello"]
 === error
-[E080] macro 'bad-macro' must return Expression or Dict, got Int (defined at 5:1-5:20)
+macro 'bad-macro' must return Expression or Dict, got Int (defined at 5:1-5:20)

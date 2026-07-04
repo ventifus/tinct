@@ -1,7 +1,7 @@
 # concat: error when first argument is not a sequence
 [concat 42 [1 2 3]]
 === error
-[E010] concat: expected Dict or Seq, got Int (defined at stdlib/prelude.llt:2480:98-2480:102) (called at stdlib/prelude.llt:2480:80-2480:106)
+concat: expected Dict or Seq, got Int (defined at stdlib/prelude.llt:2480:98-2480:102) (called at stdlib/prelude.llt:2480:80-2480:106)
   --> stdlib/prelude.llt:2480:98-2480:102
    |
   2480 | reduce@[doc: "Reduce collection with binary function"]: [fn [let f@Fn init xs] [builtin-reduce f init xs]]

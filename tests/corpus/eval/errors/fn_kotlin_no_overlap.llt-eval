@@ -4,6 +4,6 @@
   result: [f 1 2 3 b: 99]
 ]
 === error
-[E021] parameter 'b' received both positional and named argument (defined at 3:11-3:26)
+parameter 'b' received both positional and named argument (defined at 3:11-3:26)
   in [f ...] at 3:11-3:26
   in [f ...] at 3:11-3:26

@@ -2,7 +2,7 @@
 --- uses: ["core"]
 [validate [type: "Int"] "not an int"]
 === error
-[E090] schema validation failed with 1 error(s):
+schema validation failed with 1 error(s):
   : expected type Int, got String
  (defined at 2:1-2:38)
   in [validate ...] at 2:1-2:38

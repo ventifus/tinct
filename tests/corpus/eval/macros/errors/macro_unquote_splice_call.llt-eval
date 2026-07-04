@@ -6,5 +6,5 @@
 
 [sum-spliced 10 20]
 === error
-[E002] undefined variable: unquote-splicing (did you mean the string "unquote-splicing"? Use quotes.) (defined at 4:14-4:30)
+undefined variable: unquote-splicing (did you mean the string "unquote-splicing"? Use quotes.) (defined at 4:14-4:30)
   in [+ ...] at 4:10-4:37

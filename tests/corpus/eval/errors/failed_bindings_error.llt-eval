@@ -9,5 +9,5 @@
 [y: x]
 y
 === error
-[E013] no instance for Addable (Int, String) (defined at 7:5-7:19)
+no instance for Addable (Int, String) (defined at 7:5-7:19)
   in [+ ...] at 7:5-7:19

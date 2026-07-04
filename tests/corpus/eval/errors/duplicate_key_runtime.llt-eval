@@ -4,4 +4,4 @@
 # so $k1 and $k2 both resolve to "x", triggering a runtime duplicate-key error.
 [k1: "x"  k2: "x"  result: [$k1: 1  $k2: 2]]
 === error
-[E030] duplicate key: <computed key> (defined at 4:37-4:43)
+duplicate key: <computed key> (defined at 4:37-4:43)

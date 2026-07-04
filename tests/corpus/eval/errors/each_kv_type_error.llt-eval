@@ -1,5 +1,5 @@
 # each-kv: type error when called on Bool (expects Dict)
 [each-kv True]
 === error
-[E010] each-kv: expected Dict, got Bool (defined at 1:10-1:14)
+each-kv: expected Dict, got Bool (defined at 1:10-1:14)
   in [each-kv ...] at 1:1-1:15

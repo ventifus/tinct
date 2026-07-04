@@ -1,7 +1,7 @@
 # map: error when xs is not a Dict or Seq
 [map [fn [let x] x] "hello"]
 === error
-[E010] map: expected Dict or Seq, got String (defined at stdlib/prelude.llt:2479:64-2479:82)
+map: expected Dict or Seq, got String (defined at stdlib/prelude.llt:2479:64-2479:82)
   --> stdlib/prelude.llt:2479:64-2479:82
    |
   2479 | map@[doc: "Apply function to each element"]: [fn [let f@Fn xs] [builtin-map f xs]]

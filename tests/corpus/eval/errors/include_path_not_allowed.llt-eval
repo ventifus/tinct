@@ -3,5 +3,5 @@
 # instead of the default "<load>". Verifies E055 includes the named path.
 [load "host: \"localhost\"" name: "config.llt" hash: "0000000000000000000000000000000000000000000000000000000000000000"]
 === error
-[E055] include: integrity check failed for "config.llt": expected 0000000000000000000000000000000000000000000000000000000000000000, got d2a944c7458c8c98ceb79d02d159673711ed97790031b36b06343c70ac914a29 (defined at 3:1-3:121)
+include: integrity check failed for "config.llt": expected 0000000000000000000000000000000000000000000000000000000000000000, got d2a944c7458c8c98ceb79d02d159673711ed97790031b36b06343c70ac914a29 (defined at 3:1-3:121)
   in [load ...] at 3:1-3:121

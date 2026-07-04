@@ -1,4 +1,4 @@
 [- -9223372036854775808 1]
 === error
-[E032] -: integer overflow (defined at 1:1-1:27)
+-: integer overflow (defined at 1:1-1:27)
   in [- ...] at 1:1-1:27

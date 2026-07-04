@@ -17,7 +17,7 @@
 # It tests E080 (UserError from $raise builtin) instead.
 [p: [proxy [fn [let key] [raise "handler called"]]]  result: p.test]
 === error
-[E080] handler called (defined at stdlib/prelude.llt:2471:28-2471:47)
+handler called (defined at stdlib/prelude.llt:2471:28-2471:47)
   --> stdlib/prelude.llt:2471:28-2471:47
    |
   2471 | """]: [fn [let msg@String] [builtin-raise msg]]

@@ -2,7 +2,7 @@
 [json: [include %libdir "codecs/json.llt"]]
 [json.from-json "[1, 2"]
 === error
-[E099] str-slice: end index 1 out of bounds (string has 0 characters) (defined at 279:3-279:26)
+str-slice: end index 1 out of bounds (string has 0 characters) (defined at 279:3-279:26)
   in [str-slice ...] at 279:3-279:26
   in materialized at stdlib/prelude.llt:537:21-537:44
    |

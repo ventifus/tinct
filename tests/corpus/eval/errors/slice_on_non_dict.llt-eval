@@ -2,7 +2,7 @@
 
 [slice 0 2 x]
 === error
-[E010] each-kv: expected Dict, got Int (defined at stdlib/prelude.llt:1484:82-1484:84)
+each-kv: expected Dict, got Int (defined at stdlib/prelude.llt:1484:82-1484:84)
   --> stdlib/prelude.llt:1484:82-1484:84
    |
   1484 |   [build-dict [builtin-take [builtin-sub end start] [builtin-drop start [each-kv xs]]]]]

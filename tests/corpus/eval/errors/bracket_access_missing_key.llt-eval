@@ -2,5 +2,5 @@
 
 data.b
 === error
-[E001] key not found: b (available keys: a) (defined at 1:8-1:14) (accessed at 3:1-3:7)
+key not found: b (available keys: a) (defined at 1:8-1:14) (accessed at 3:1-3:7)
   in accessing .b at 3:1-3:7

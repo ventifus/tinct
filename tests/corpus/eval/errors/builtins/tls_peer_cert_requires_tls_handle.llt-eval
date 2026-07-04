@@ -6,7 +6,7 @@
 [tls-peer-cert h]
 
 === error
-[E002] undefined variable: builtin-tls-peer-cert (defined at stdlib/prelude.llt:2713:63-2713:84) (called at 5:1-5:18)
+undefined variable: builtin-tls-peer-cert (defined at stdlib/prelude.llt:2713:63-2713:84) (called at 5:1-5:18)
   --> stdlib/prelude.llt:2713:63-2713:84
    |
   2713 | tls-peer-cert@[doc: "Extract TLS peer certificate metadata"]: builtin-tls-peer-cert

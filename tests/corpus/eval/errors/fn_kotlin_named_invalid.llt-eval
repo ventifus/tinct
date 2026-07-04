@@ -4,6 +4,6 @@
   result: [f 1 2 z: 99]
 ]
 === error
-[E022] unexpected named argument: z (valid parameter names: a, b) (defined at 3:11-3:24)
+unexpected named argument: z (valid parameter names: a, b) (defined at 3:11-3:24)
   in [f ...] at 3:11-3:24
   in [f ...] at 3:11-3:24

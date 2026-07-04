@@ -2,4 +2,4 @@
 # head uses match on Seq.Cons/Seq.End; empty Dict causes a match failure
 [head []]
 === error
-[E010]
+type mismatch:

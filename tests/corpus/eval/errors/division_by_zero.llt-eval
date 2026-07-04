@@ -1,7 +1,7 @@
 # quot: integer division by zero propagates E031 (DivisionByZero) through stdlib
 [quot 10 0]
 === error
-[E031] /: division by zero (defined at stdlib/prelude.llt:1056:37-1056:54) (called at stdlib/prelude.llt:962:14-962:39)
+/: division by zero (defined at stdlib/prelude.llt:1056:37-1056:54) (called at stdlib/prelude.llt:962:14-962:39)
   --> stdlib/prelude.llt:1056:37-1056:54
    |
   1056 | """] [let a@Number b@Number] [trunc [builtin-div a b]]]

@@ -4,4 +4,4 @@
 # function expects Int, so the Int guard would fire at runtime on a non-Int value.
 [call [fn [let x@Int] x] [from-json "\"hello\""]]
 === error
-[E002] undefined variable: from-json (defined at 4:27-4:36)
+undefined variable: from-json (defined at 4:27-4:36)

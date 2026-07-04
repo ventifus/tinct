@@ -2,7 +2,7 @@
 # Division by zero produces infinity: 1.0 / 0.0 = inf
 [floor [quot 1.0 0.0]]
 === error
-[E033] /: inf is not a finite number (defined at stdlib/prelude.llt:1056:37-1056:54) (called at stdlib/prelude.llt:962:14-962:39)
+/: inf is not a finite number (defined at stdlib/prelude.llt:1056:37-1056:54) (called at stdlib/prelude.llt:962:14-962:39)
   --> stdlib/prelude.llt:1056:37-1056:54
    |
   1056 | """] [let a@Number b@Number] [trunc [builtin-div a b]]]

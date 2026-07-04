@@ -2,4 +2,4 @@
 # After T-1380, range is pure tinct: [fn [let start@Int end@Int] ...]
 [range]
 === error
-[E024] missing argument for required parameter 'start'
+missing argument for required parameter 'start'

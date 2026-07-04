@@ -4,7 +4,7 @@
 [f: [fn [] [x: [raise "live"]] x]]
 [f]
 === error
-[E080] live (defined at stdlib/prelude.llt:2471:28-2471:47)
+live (defined at stdlib/prelude.llt:2471:28-2471:47)
   --> stdlib/prelude.llt:2471:28-2471:47
    |
   2471 | """]: [fn [let msg@String] [builtin-raise msg]]

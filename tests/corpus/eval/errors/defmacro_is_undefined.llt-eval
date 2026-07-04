@@ -3,4 +3,4 @@
 # this produces an E002 undefined variable error at runtime.
 [defmacro my-add [let args] args]
 === error
-[E002] undefined variable: defmacro (did you mean the string "defmacro"? Use quotes.) (defined at 3:2-3:10)
+undefined variable: defmacro (did you mean the string "defmacro"? Use quotes.) (defined at 3:2-3:10)

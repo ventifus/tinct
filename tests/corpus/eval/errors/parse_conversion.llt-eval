@@ -1,5 +1,5 @@
 # E060: ParseConversion — to-int rejects a non-numeric string.
 [to-int "not-a-number"]
 === error
-[E060] to-int: cannot parse "not-a-number" as Int (defined at 1:1-1:24)
+to-int: cannot parse "not-a-number" as Int (defined at 1:1-1:24)
   in [to-int ...] at 1:1-1:24

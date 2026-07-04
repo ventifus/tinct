@@ -3,5 +3,5 @@
 
 data.level1.level2.nonexistent
 === error
-[E010] dot access: expected Dict, Proxy, or Variant, got Int (defined at 3:1-3:19) (accessed at 3:1-3:31)
+dot access: expected Dict, Proxy, or Variant, got Int (defined at 3:1-3:19) (accessed at 3:1-3:31)
   in accessing .nonexistent at 3:1-3:31

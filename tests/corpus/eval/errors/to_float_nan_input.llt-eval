@@ -1,5 +1,5 @@
 # to-float: "NaN" parses to a non-finite value and is rejected (E033)
 [to-float "NaN"]
 === error
-[E033] to-float: NaN is not a finite number (defined at 1:1-1:17)
+to-float: NaN is not a finite number (defined at 1:1-1:17)
   in [to-float ...] at 1:1-1:17

@@ -3,4 +3,4 @@
 [http-request "not-a-session" "GET" "/" [] ""]
 
 === error
-[E002] undefined variable: http-request (did you mean the string "http-request"? Use quotes.) (defined at 2:2-2:14)
+undefined variable: http-request (did you mean the string "http-request"? Use quotes.) (defined at 2:2-2:14)

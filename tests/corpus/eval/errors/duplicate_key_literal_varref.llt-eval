@@ -4,4 +4,4 @@
 [k: "x"
  result: [$k: 1  "x": 2]]
 === error
-[E030] duplicate key: x (defined at 4:18-4:24)
+duplicate key: x (defined at 4:18-4:24)

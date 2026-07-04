@@ -2,4 +2,4 @@
 # tail uses match on Seq.Cons/Seq.End; empty Dict causes a match failure
 [tail []]
 === error
-[E010]
+type mismatch:

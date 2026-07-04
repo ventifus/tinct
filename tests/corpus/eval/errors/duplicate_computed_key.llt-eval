@@ -5,4 +5,4 @@
 [k1: "x"  k2: "x"]
 [result: [$k1: 1  $k2: 2]]
 === error
-[E030] duplicate key: <computed key> (defined at 5:19-5:25)
+duplicate key: <computed key> (defined at 5:19-5:25)

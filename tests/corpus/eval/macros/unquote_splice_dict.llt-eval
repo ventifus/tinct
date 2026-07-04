@@ -6,4 +6,4 @@
   basic: [quote [a: 1  [unquote-splice [b: 2  c: 3]]  d: 4]]
 ]
 === error
-[E081] unquote-splice must be in a list position
+unquote-splice must be in a list position

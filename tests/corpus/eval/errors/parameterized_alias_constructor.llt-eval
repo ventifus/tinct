@@ -9,5 +9,5 @@
 ]
 success.value
 === error
-[E010] dot access: expected Dict, Proxy, or Variant, got Int (defined at 6:12-6:26) (accessed at 9:1-9:14)
+dot access: expected Dict, Proxy, or Variant, got Int (defined at 6:12-6:26) (accessed at 9:1-9:14)
   in accessing .value at 9:1-9:14

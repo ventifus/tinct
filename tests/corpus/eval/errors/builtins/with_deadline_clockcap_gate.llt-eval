@@ -4,5 +4,5 @@
 --- uses: ["core"]
 [builtin-with-deadline 42 [builtin-context] 1000]
 === error
-[E010] type mismatch: expected ClockCap, got Int (defined at 4:1-4:50)
+type mismatch: expected ClockCap, got Int (defined at 4:1-4:50)
   in [builtin-with-deadline ...] at 4:1-4:50

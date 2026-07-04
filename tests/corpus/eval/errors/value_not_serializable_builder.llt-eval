@@ -3,4 +3,4 @@
 # the output serializer to raise E035 (Builder has no JSON representation).
 [make-builder]
 === error
-[E035] cannot serialize Builder to JSON (defined at 3:1-3:15)
+cannot serialize Builder to JSON (defined at 3:1-3:15)

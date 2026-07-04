@@ -4,4 +4,4 @@
 # and the type assertion propagates that error correctly.
 [@[x: Int] [merge [x: 1] [raise "not-a-dict"]]]
 === error
-[E080] not-a-dict
+not-a-dict

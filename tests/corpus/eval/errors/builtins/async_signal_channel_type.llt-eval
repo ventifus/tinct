@@ -2,6 +2,6 @@
 
 [type-of [signal-channel [seq SIGUSR1 []]]]
 === error
-[E010] type mismatch: expected [Seq Signal], got Dict (defined at 2:10-2:43)
+type mismatch: expected [Seq Signal], got Dict (defined at 2:10-2:43)
   in [signal-channel ...] at 2:10-2:43
   in [type-of ...] at 2:1-2:44

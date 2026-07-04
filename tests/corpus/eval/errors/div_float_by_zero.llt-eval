@@ -1,5 +1,5 @@
 # /: integer division by zero produces E031 (DivisionByZero)
 [/ 1 0]
 === error
-[E031] /: division by zero (defined at 1:1-1:8)
+/: division by zero (defined at 1:1-1:8)
   in [/ ...] at 1:1-1:8

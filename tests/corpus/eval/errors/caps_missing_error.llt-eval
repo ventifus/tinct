@@ -3,6 +3,6 @@
 --- caps: [%nc: @NetCap]
 [result: "should not execute"]
 === error
-[E044] %nc@NetCap is required but not provided
+%nc@NetCap is required but not provided
   inject it with:  tinct run --cap-net nc=HOST:PORT ...
   or unrestricted: tinct run --cap-net nc=any ... (defined at 2:5-2:25)

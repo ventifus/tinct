@@ -5,4 +5,4 @@
 
 [accepts-let 99]
 === error
-[E012] macro expansion error: macro 'accepts-let': argument 'binding' expected LetDecl, got Literal (defined at 5:1-5:17)
+macro expansion error: macro 'accepts-let': argument 'binding' expected LetDecl, got Literal (defined at 5:1-5:17)

@@ -1,7 +1,7 @@
 # join: error when separator is not a string
 [join 42 [1 2 3]]
 === error
-[E010] join: expected String, got Int (defined at stdlib/prelude.llt:2999:40-2999:43)
+join: expected String, got Int (defined at stdlib/prelude.llt:2999:40-2999:43)
   --> stdlib/prelude.llt:2999:40-2999:43
    |
   2999 | """] [let sep@String xs] [builtin-join sep xs]]

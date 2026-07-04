@@ -9,5 +9,5 @@
 
 [broadcast-channel]
 === error
-[E080] broadcast-channel expects 1 argument, got 0 (defined at 9:1-9:20)
+broadcast-channel expects 1 argument, got 0 (defined at 9:1-9:20)
   in [broadcast-channel ...] at 9:1-9:20
