@@ -3038,9 +3038,20 @@ pub(crate) fn infer_surface_expr<'a>(
 
                     // Type-check guard if present, and apply is: predicate narrowing.
                     let arm_env = if let Some(guard) = &arm.guard {
-                        let _guard_ty =
+                        let guard_ty =
                             infer_surface_expr(guard, &arm_env, state, constraints, type_map)
                                 .await?;
+                        // Resolve Matchable instance binding for the guard's return type.
+                        // Writes the binding name to arm.guard_matchable_binding so the lowerer
+                        // carries it through to CoreMatchArm and the evaluator uses it directly.
+                        if let Some(type_name) = type_to_matchable_key(&guard_ty) {
+                            let binding_name = crate::type_def::instance_binding_name(
+                                "Matchable",
+                                "to-match",
+                                &[type_name.as_str()],
+                            );
+                            arm.guard_matchable_binding.set(Some(binding_name));
+                        }
                         // extract_narrowings walks SurfaceExpression natively — pass guard directly.
                         // Uses arm_env to look up param_narrowings on called functions.
                         let guard_narrowings = extract_narrowings(guard, &arm_env);

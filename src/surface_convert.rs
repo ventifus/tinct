@@ -401,7 +401,7 @@ pub fn core_expr_to_expr_value(
             payload.insert(
                 HashableValue::Str("implied".into()),
                 ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    Value::boolean(*implied),
+                    Value::Int(if *implied { 1 } else { 0 }),
                     synth.clone(),
                 ))),
             );
@@ -471,7 +471,7 @@ pub fn core_expr_to_expr_value(
                 param_dict.insert(
                     HashableValue::Str("variadic".into()),
                     ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                        Value::boolean(param.node.variadic),
+                        Value::Int(if param.node.variadic { 1 } else { 0 }),
                         synth.clone(),
                     ))),
                 );
@@ -1009,7 +1009,7 @@ fn get_bool_field(
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<bool, AstError> {
     let val = get_field(dict, key, path, ctx)?;
-    Ok(val.as_bool_sync())
+    Ok(val.is_truthy())
 }
 
 fn get_dict_field(
@@ -1155,7 +1155,7 @@ pub(crate) fn alloc_str(s: &str, span: &Span, ctx: &Arc<crate::eval::EvalContext
 
 pub(crate) fn alloc_bool(b: bool, span: &Span, ctx: &Arc<crate::eval::EvalContext>) -> ThunkId {
     ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-        Value::boolean(b),
+        Value::Int(if b { 1 } else { 0 }),
         span.clone(),
     )))
 }
@@ -1326,7 +1326,7 @@ pub(crate) fn alloc_param_list(
         p_payload.insert(
             HashableValue::Str("variadic".into()),
             ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                Value::boolean(p.node.variadic),
+                Value::Int(if p.node.variadic { 1 } else { 0 }),
                 p.span.clone(),
             ))),
         );
@@ -1538,7 +1538,7 @@ pub(crate) fn get_bool_field_with_aliases(
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<bool, AstError> {
     let val = get_field_with_aliases(dict, key, aliases, ctx)?;
-    Ok(val.as_bool_sync())
+    Ok(val.is_truthy())
 }
 
 pub(crate) fn get_int_field_with_aliases(
@@ -1849,6 +1849,7 @@ pub(crate) fn get_match_arm_list_field_with_aliases(
             pattern,
             guard,
             body,
+            guard_matchable_binding: crate::ast::MatchableBinding::new(),
         });
     }
     Ok(arms)
@@ -2520,7 +2521,7 @@ fn surface_decl_to_thunk_id(
                 dict.insert(
                     HashableValue::Str("injective".into()),
                     ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                        Value::boolean(true),
+                        Value::Int(1),
                         span.clone(),
                     ))),
                 );
@@ -2679,7 +2680,7 @@ fn override_bare_in_literal_variant(
             let payload_thunk = ctx.get_thunk(payload_id);
             if let Some(Value::Dict(mut dict)) = payload_thunk.try_get_materialized() {
                 let new_bare_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    Value::boolean(bare),
+                    Value::Int(if bare { 1 } else { 0 }),
                     span.clone(),
                 )));
                 dict.insert(HashableValue::Str("bare".into()), new_bare_id);
@@ -2774,7 +2775,7 @@ fn alloc_entry_list_with_opts(
             // blank-before: true when there is a blank line before this entry
             let is_blank = comment_maps.blank_before.get(&offset) == Some(&true);
             let blank_tid = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                Value::boolean(is_blank),
+                Value::Int(if is_blank { 1 } else { 0 }),
                 entry.span.clone(),
             )));
             payload.insert(HashableValue::Str("blank-before".into()), blank_tid);
@@ -2783,7 +2784,7 @@ fn alloc_entry_list_with_opts(
         // When no comment maps, always include blank-before: false as default
         if opts.comments.is_none() {
             let blank_tid = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                Value::boolean(false),
+                Value::Int(0),
                 entry.span.clone(),
             )));
             payload.insert(HashableValue::Str("blank-before".into()), blank_tid);
@@ -2980,7 +2981,7 @@ mod tests {
                                                         assert_eq!(
                                                             bare_thunk
                                                                 .try_get_materialized(),
-                                                            Some(Value::boolean(true)),
+                                                            Some(Value::Int(1)),
                                                             "bare should be true for bare word 'foo'"
                                                         );
                                                     }
@@ -3076,7 +3077,7 @@ mod tests {
                                                         assert_eq!(
                                                             bare_thunk
                                                                 .try_get_materialized(),
-                                                            Some(Value::boolean(false)),
+                                                            Some(Value::Int(0)),
                                                             "bare should be false for quoted string \"foo\""
                                                         );
                                                     }
@@ -3291,7 +3292,7 @@ mod tests {
                                                         assert_eq!(
                                                             blank_thunk
                                                                 .try_get_materialized(),
-                                                            Some(Value::boolean(true)),
+                                                            Some(Value::Int(1)),
                                                             "blank-before should be true for second entry"
                                                         );
                                                     }
@@ -3387,7 +3388,7 @@ mod tests {
                                                         assert_eq!(
                                                             bare_thunk
                                                                 .try_get_materialized(),
-                                                            Some(Value::boolean(false)),
+                                                            Some(Value::Int(0)),
                                                             "bare should be false when source is None"
                                                         );
 
@@ -3401,7 +3402,7 @@ mod tests {
                                                         assert_eq!(
                                                             blank_thunk
                                                                 .try_get_materialized(),
-                                                            Some(Value::boolean(false)),
+                                                            Some(Value::Int(0)),
                                                             "blank-before should be false when comments is None"
                                                         );
 

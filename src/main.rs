@@ -2051,7 +2051,7 @@ async fn run_eval(
         // strict: whether type errors are fatal.
         dict.insert(
             HashableValue::Str("strict".into()),
-            alloc_val(Value::boolean(strict)),
+            alloc_val(Value::Int(if strict { 1 } else { 0 })),
         );
 
         Value::Dict(dict)

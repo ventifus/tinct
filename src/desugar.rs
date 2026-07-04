@@ -277,6 +277,7 @@ fn desugar_instance_decls_expr(expr: &SurfaceExpression, _span: Span) -> Surface
                         pattern: arm.pattern.clone(),
                         guard: new_guard,
                         body: new_body,
+                        guard_matchable_binding: arm.guard_matchable_binding.clone(),
                     }
                 })
                 .collect();

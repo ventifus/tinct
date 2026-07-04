@@ -371,11 +371,11 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
                             core_entries
                                 .push(Spanned::new(CoreEntry { key, value }, se.span.clone()));
                         }
-                        crate::ast::SurfaceDeclaration::ClassDecl { .. } => {
+                        crate::ast::SurfaceDeclaration::ClassDecl { methods, name, .. } => {
                             // Named ClassDecl: emit an empty-dict runtime value so the outer
                             // key occupies a slot. This allows leading-dot re-exports like
                             // `Indexable: .Indexable` to reference the class across dict
-                            // boundaries. Class methods are not emitted here.
+                            // boundaries.
                             if se.node.key.is_some() {
                                 let key = se.node.key.as_ref().map(|k| {
                                     let lowered = match &k.expr {
@@ -393,6 +393,33 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
                                 ));
                                 core_entries
                                     .push(Spanned::new(CoreEntry { key, value }, se.span.clone()));
+                            }
+                            // Emit placeholder entries for each class method name so they
+                            // occupy slots matching what surface_dict_static_keys produces.
+                            // The type checker's call_dispatch rewrites these at every call
+                            // site to the correct instance binding. The placeholder is an
+                            // empty dict: if call_dispatch somehow doesn't fire, the call
+                            // fails at eval time rather than silently using a wrong value.
+                            for method in methods {
+                                if let Some(key_node) = &method.node.key {
+                                    let method_name = match &key_node.expr {
+                                        SurfaceExpression::VarRef { name: n, .. } => n.clone(),
+                                        SurfaceExpression::Str(s) => s.clone(),
+                                        _ => continue,
+                                    };
+                                    let key = Some(Arc::new(Spanned::new(
+                                        CoreExpr::Str(method_name),
+                                        key_node.span.clone(),
+                                    )));
+                                    let value = Arc::new(Spanned::new(
+                                        CoreExpr::Dict(vec![]),
+                                        se.span.clone(),
+                                    ));
+                                    core_entries.push(Spanned::new(
+                                        CoreEntry { key, value },
+                                        se.span.clone(),
+                                    ));
+                                }
                             }
                         }
                         _ => {
@@ -526,6 +553,7 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
                     ),
                     guard: arm.guard.as_ref().map(|g| Arc::new(lower(g))),
                     body: Arc::new(lower(&arm.body)),
+                    guard_matchable_binding: arm.guard_matchable_binding.clone(),
                 })
                 .collect(),
         },
@@ -720,6 +748,7 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
                     pattern: arm.pattern.clone(),
                     guard: arm.guard.as_ref().map(|g| core_expr_to_surface_node(g)),
                     body: core_expr_to_surface_node(&arm.body),
+                    guard_matchable_binding: crate::ast::MatchableBinding::new(),
                 })
                 .collect(),
         },

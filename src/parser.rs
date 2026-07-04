@@ -5809,6 +5809,7 @@ fn push_expr_to_parent(
                         pattern: Spanned::new(Pattern::Wildcard, node.span.clone()),
                         guard: None,
                         body: node,
+                        guard_matchable_binding: crate::ast::MatchableBinding::new(),
                     });
                     Ok(())
                 } else if pending_pattern.is_none() && pending_pattern_expr.is_none() {
@@ -5823,6 +5824,7 @@ fn push_expr_to_parent(
                         pattern,
                         guard,
                         body: node,
+                        guard_matchable_binding: crate::ast::MatchableBinding::new(),
                     });
                     Ok(())
                 } else {

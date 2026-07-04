@@ -383,6 +383,10 @@ pub(crate) struct MatchGuardCheckData {
     /// On the second entry into MatchGuardCheck, `result` is the call's return value
     /// and truthiness is checked directly without re-invoking.
     pub(crate) callable_invoked: bool,
+    /// Pre-resolved Matchable instance binding name for the guard's return type.
+    /// When `Some`, the evaluator uses call_to_match_resolved for direct dispatch.
+    /// When `None` (type checking skipped), falls back to call_to_match dynamic dispatch.
+    pub(crate) guard_matchable_binding: Option<String>,
 }
 
 /// Payload for Cont::MatchPredicateCheck (T-1140). Boxed to keep the Cont enum ≤96 bytes.
@@ -3082,6 +3086,7 @@ pub(crate) async fn apply_cont(
                             // Pattern matched. If there is a guard, evaluate it.
                             if let Some(guard_expr) = &arm.guard {
                                 // Push a continuation to check the guard result.
+                                let guard_binding = arm.guard_matchable_binding.get().cloned();
                                 stack.push(Cont::MatchGuardCheck(Box::new(MatchGuardCheckData {
                                     arm_idx: i,
                                     arms: Arc::clone(&arms),
@@ -3092,6 +3097,7 @@ pub(crate) async fn apply_cont(
                                     scrutinee_value: scrutinee_value.clone(),
                                     body: Arc::clone(&eval_body),
                                     callable_invoked: false,
+                                    guard_matchable_binding: guard_binding,
                                 })));
 
                                 return Action::EvalCore {
@@ -3130,6 +3136,7 @@ pub(crate) async fn apply_cont(
                 scrutinee_value,
                 body,
                 callable_invoked,
+                guard_matchable_binding,
             } = *data;
 
             match result {
@@ -3175,6 +3182,7 @@ pub(crate) async fn apply_cont(
                                 scrutinee_value,
                                 body,
                                 callable_invoked: true,
+                                guard_matchable_binding,
                             })));
                             return Action::Materialize {
                                 thunk: call_thunk,
@@ -3183,7 +3191,15 @@ pub(crate) async fn apply_cont(
                         }
                     }
 
-                    let guard_passed = crate::eval::call_to_match(&guard_value, &arm_env, &ctx, &match_span).await;
+                    let guard_passed = if let Some(ref binding_name) = guard_matchable_binding {
+                        // Compile-time resolved: use the pre-resolved Matchable instance binding.
+                        crate::eval::call_to_match_resolved(
+                            &guard_value, binding_name, &arm_env, &ctx, &match_span,
+                        ).await
+                    } else {
+                        // Type checking was skipped — fall back to dynamic dispatch.
+                        crate::eval::call_to_match(&guard_value, &arm_env, &ctx, &match_span).await
+                    };
 
                     if guard_passed {
                         // Guard passed — evaluate the body
@@ -3278,6 +3294,8 @@ pub(crate) async fn apply_cont(
                         // If the arm also has a guard, evaluate it before accepting the match.
                         // Predicate patterns bind no variables, so use `env` (not arm_env).
                         if let Some(guard_expr) = &arms[arm_idx].guard {
+                            let guard_binding =
+                                arms[arm_idx].guard_matchable_binding.get().cloned();
                             stack.push(Cont::MatchGuardCheck(Box::new(MatchGuardCheckData {
                                 arm_idx,
                                 arms: Arc::clone(&arms),
@@ -3288,6 +3306,7 @@ pub(crate) async fn apply_cont(
                                 scrutinee_value,
                                 body,
                                 callable_invoked: false,
+                                guard_matchable_binding: guard_binding,
                             })));
                             return Action::EvalCore {
                                 expr: Arc::clone(guard_expr),
@@ -4585,8 +4604,8 @@ mod tests {
         let span = test_span(1, 1, 1, 10);
         let ctx = test_ctx();
 
-        // Inner thunk: a Bool value — fails the Int guard.
-        let inner = Arc::new(Thunk::new_materialized(Value::boolean(true), span.clone()));
+        // Inner thunk: a Float value — fails the Int guard.
+        let inner = Arc::new(Thunk::new_materialized(Value::Float(1.0), span.clone()));
 
         let guarded = Arc::new(Thunk::new_guarded(
             Arc::clone(&inner),
@@ -4595,11 +4614,11 @@ mod tests {
             span,
         ));
 
-        // First materialization: guard fires, Bool ≠ Int → type assertion failure.
+        // First materialization: guard fires, Float ≠ Int → type assertion failure.
         let result1 = materialize(&guarded, None, &ctx).await;
         assert!(
             result1.is_err(),
-            "Bool value should fail Int guard (no default), but got success"
+            "Float value should fail Int guard (no default), but got success"
         );
         let err1 = result1.unwrap_err();
         assert!(
@@ -4775,7 +4794,7 @@ mod tests {
             let span = args.call_span;
             Box::pin(async move {
                 Ok(Arc::new(Thunk::new_materialized(
-                    Value::boolean(true),
+                    Value::Int(1),
                     span,
                 )))
             })
@@ -4816,7 +4835,7 @@ mod tests {
         );
         assert_eq!(
             result.unwrap(),
-            Value::boolean(true),
+            Value::Int(1),
             "dummy builtin must succeed with both args pre-materialized"
         );
     }

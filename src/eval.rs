@@ -1674,6 +1674,7 @@ fn eval_quote_preprocess<'a>(
                         pattern: arm.pattern.clone(),
                         guard: processed_guard,
                         body: processed_body,
+                        guard_matchable_binding: arm.guard_matchable_binding.clone(),
                     });
                 }
                 Ok(make_node(SurfaceExpression::Match {
@@ -3588,7 +3589,7 @@ pub(crate) fn match_pattern<'a>(
 /// No payload-Variant or Seq deep comparison. No cross-type Int/Float
 /// comparison — use type-specific builtins instead.
 ///
-/// This is the primitive equality kernel used by `builtin-eq`, pattern matching
+/// This is the primitive equality kernel used by `builtin-eq-int/float/string`, pattern matching
 /// (Pin and case-arm exact-value checks), and bind-or-pin.
 pub(crate) fn primitive_eq(a: Value, b: Value) -> bool {
     // Peel Annotated wrappers — metadata is transparent for equality.
@@ -3622,8 +3623,8 @@ pub(crate) fn primitive_eq(a: Value, b: Value) -> bool {
             },
         ) => tag1 == tag2,
         // Dict shallow equality: same keys and same thunk IDs (no value materialization).
-        // This covers null equality ([] == []) and self-equality ([builtin-eq x x] where
-        // x is a Dict) without deep structural comparison of values.
+        // This covers null equality ([] == []) and self-equality for Dicts,
+        // without deep structural comparison of values.
         (Value::Dict(a), Value::Dict(b)) => {
             if a.len() != b.len() {
                 return false;
@@ -8782,7 +8783,7 @@ mod tests {
 
     /// B-427: tail-recursive LLT function evaluates correctly using builtin names.
     ///
-    /// Tests a tail-recursive accumulator function. Uses `builtin-if`, `builtin-eq`,
+    /// Tests a tail-recursive accumulator function. Uses `builtin-if`, `builtin-eq-int`,
     /// `builtin-add`, `builtin-sub` directly — no prelude aliases needed.
     /// The function sums 1..=100 using an accumulator; result must be 5050.
     #[tokio::test]
@@ -8794,7 +8795,7 @@ mod tests {
         // sum-to 100 0 = 1 + 2 + ... + 100 = 5050
         let source = r#"[
             sum-to: [fn [let n acc]
-                [builtin-if [builtin-eq n 0]
+                [builtin-if [builtin-eq-int n 0]
                     acc
                     [sum-to [builtin-sub n 1] [builtin-add acc n]]]]
             result: [sum-to 100 0]

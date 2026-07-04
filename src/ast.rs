@@ -1035,6 +1035,10 @@ pub struct SurfaceMatchArm {
     pub pattern: Spanned<Pattern>,
     pub guard: Option<Arc<SurfaceNode>>,
     pub body: Arc<SurfaceNode>,
+    /// Compile-time-resolved Matchable instance binding name for the guard expression.
+    /// Resolved by the type checker after the guard's return type is inferred.
+    /// When resolved, the evaluator uses this for direct dispatch instead of call_to_match.
+    pub guard_matchable_binding: MatchableBinding,
 }
 
 /// Compile-time-only declaration forms — removed from SurfaceExpression so the
@@ -1468,6 +1472,9 @@ pub struct CoreMatchArm {
     pub pattern: Spanned<Pattern>,
     pub guard: Option<Arc<Spanned<CoreExpr>>>,
     pub body: Arc<Spanned<CoreExpr>>,
+    /// Pre-resolved Matchable instance binding name for the guard's return type.
+    /// Set by the type checker on the SurfaceMatchArm and carried through lowering.
+    pub guard_matchable_binding: MatchableBinding,
 }
 
 #[cfg(test)]
