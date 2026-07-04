@@ -138,17 +138,22 @@ pub enum ErrorKind {
     ArityMismatch {
         expected: ArityBound,
         got: usize,
+        /// Name of the function being called, if known (e.g. "[= ...]").
+        callee: Option<std::sync::Arc<str>>,
     },
     MissingRequiredParam {
         param: String,
+        callee: Option<std::sync::Arc<str>>,
     },
     NamedArgConflict {
         param: String,
+        callee: Option<std::sync::Arc<str>>,
     },
     UnknownNamedArg {
         name: String,
         /// Names of all valid named parameters for this function (for error hint).
         valid_params: Vec<String>,
+        callee: Option<std::sync::Arc<str>>,
     },
     NamedArgRejected {
         builtin: String,
@@ -379,27 +384,31 @@ impl PartialEq for ErrorKind {
                 Self::ArityMismatch {
                     expected: e1,
                     got: g1,
+                    ..
                 },
                 Self::ArityMismatch {
                     expected: e2,
                     got: g2,
+                    ..
                 },
             ) => e1 == e2 && g1 == g2,
             (
-                Self::MissingRequiredParam { param: p1 },
-                Self::MissingRequiredParam { param: p2 },
+                Self::MissingRequiredParam { param: p1, .. },
+                Self::MissingRequiredParam { param: p2, .. },
             ) => p1 == p2,
-            (Self::NamedArgConflict { param: p1 }, Self::NamedArgConflict { param: p2 }) => {
+            (Self::NamedArgConflict { param: p1, .. }, Self::NamedArgConflict { param: p2, .. }) => {
                 p1 == p2
             }
             (
                 Self::UnknownNamedArg {
                     name: n1,
                     valid_params: v1,
+                    ..
                 },
                 Self::UnknownNamedArg {
                     name: n2,
                     valid_params: v2,
+                    ..
                 },
             ) => n1 == n2 && v1 == v2,
             (Self::NamedArgRejected { builtin: b1 }, Self::NamedArgRejected { builtin: b2 }) => {
@@ -934,27 +943,39 @@ impl fmt::Display for ErrorKind {
             Self::MacroError { message } => {
                 write!(f, "macro expansion error: {message}")
             }
-            Self::ArityMismatch { expected, got } => {
-                write!(f, "arity mismatch: expected {expected}, got {got}")
+            Self::ArityMismatch { expected, got, callee } => {
+                if let Some(name) = callee {
+                    write!(f, "arity mismatch: `{name}` expected {expected}, got {got}")
+                } else {
+                    write!(f, "arity mismatch: expected {expected}, got {got}")
+                }
             }
-            Self::MissingRequiredParam { param } => {
-                write!(f, "missing argument for required parameter '{param}'")
+            Self::MissingRequiredParam { param, callee } => {
+                if let Some(name) = callee {
+                    write!(f, "missing argument for required parameter '{param}' in call to `{name}`")
+                } else {
+                    write!(f, "missing argument for required parameter '{param}'")
+                }
             }
-            Self::NamedArgConflict { param } => write!(
-                f,
-                "parameter '{param}' received both positional and named argument"
-            ),
-            Self::UnknownNamedArg { name, valid_params } => {
+            Self::NamedArgConflict { param, callee } => {
+                if let Some(name) = callee {
+                    write!(f, "parameter '{param}' received both positional and named argument in call to `{name}`")
+                } else {
+                    write!(f, "parameter '{param}' received both positional and named argument")
+                }
+            }
+            Self::UnknownNamedArg { name, valid_params, callee } => {
+                let callee_str = callee.as_deref().map(|n| format!(" in call to `{n}`")).unwrap_or_default();
                 if valid_params.is_empty() {
                     write!(
                         f,
-                        "unexpected named argument: {name} (function has no parameters)"
+                        "unexpected named argument: {name} (function has no parameters){callee_str}"
                     )
                 } else {
                     let valid = valid_params.join(", ");
                     write!(
                         f,
-                        "unexpected named argument: {name} (valid parameter names: {valid})"
+                        "unexpected named argument: {name} (valid parameter names: {valid}){callee_str}"
                     )
                 }
             }
@@ -1238,6 +1259,7 @@ impl EvalError {
             kind: ErrorKind::ArityMismatch {
                 expected: ArityBound::Exact(expected),
                 got,
+                callee: None,
             },
             definition_span,
             materialization_span: None,
@@ -1251,7 +1273,7 @@ impl EvalError {
 
     pub fn arity_mismatch_bound(expected: ArityBound, got: usize, definition_span: Span) -> Self {
         Self {
-            kind: ErrorKind::ArityMismatch { expected, got },
+            kind: ErrorKind::ArityMismatch { expected, got, callee: None },
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
@@ -1259,6 +1281,18 @@ impl EvalError {
             macro_expansion: None,
             blame: None,
             pipeline_stage: None,
+        }
+    }
+
+    /// Attach a callee name to call-related errors (arity, missing param, named arg issues).
+    /// No-op for other error kinds.
+    pub fn set_arity_callee(&mut self, callee: Option<std::sync::Arc<str>>) {
+        match self.kind {
+            ErrorKind::ArityMismatch { callee: ref mut c, .. } => *c = callee,
+            ErrorKind::MissingRequiredParam { callee: ref mut c, .. } => *c = callee,
+            ErrorKind::NamedArgConflict { callee: ref mut c, .. } => *c = callee,
+            ErrorKind::UnknownNamedArg { callee: ref mut c, .. } => *c = callee,
+            _ => {}
         }
     }
 
@@ -1553,7 +1587,7 @@ impl EvalError {
 
     pub fn named_arg_conflict(param: String, definition_span: Span) -> Self {
         Self {
-            kind: ErrorKind::NamedArgConflict { param },
+            kind: ErrorKind::NamedArgConflict { param, callee: None },
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
@@ -1570,7 +1604,7 @@ impl EvalError {
         definition_span: Span,
     ) -> Self {
         Self {
-            kind: ErrorKind::UnknownNamedArg { name, valid_params },
+            kind: ErrorKind::UnknownNamedArg { name, valid_params, callee: None },
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
@@ -1729,6 +1763,7 @@ impl EvalError {
         Self {
             kind: ErrorKind::MissingRequiredParam {
                 param: param.into(),
+                callee: None,
             },
             definition_span: span,
             materialization_span: None,

@@ -74,6 +74,8 @@ pub struct ArityMismatch {
     pub span: Span,
     pub notes: Vec<String>,
     pub call_stack: Vec<TypeSpanFrame>,
+    /// Name of the function being called, if known (e.g. "builtin-if", "[f ...]").
+    pub callee: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -124,6 +126,8 @@ pub struct NotAFunction {
     pub span: Span,
     pub notes: Vec<String>,
     pub call_stack: Vec<TypeSpanFrame>,
+    /// The expression being called, if known (e.g. "task", "[task ...]").
+    pub callee: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -498,7 +502,11 @@ impl TypeErrorTyped {
     pub fn message(&self) -> String {
         match self {
             Self::ArityMismatch(e) => {
-                format!("expected {} arguments, got {}", e.expected, e.got)
+                if let Some(ref name) = e.callee {
+                    format!("`{}` expected {} arguments, got {}", name, e.expected, e.got)
+                } else {
+                    format!("expected {} arguments, got {}", e.expected, e.got)
+                }
             }
             Self::UndefinedVariable(e) => format!("undefined variable: {}", e.name),
             Self::UndefinedType(e) => format!("undefined type: {}", e.name),
@@ -507,7 +515,13 @@ impl TypeErrorTyped {
                 format!("field '{}' not found in {}", e.field, e.record_type)
             }
             Self::NotARecord(e) => format!("expected record type, got {}", e.actual),
-            Self::NotAFunction(e) => format!("expected function type, got {}", e.actual),
+            Self::NotAFunction(e) => {
+                if let Some(ref name) = e.callee {
+                    format!("expected `{}` to be a function, got {}", name, e.actual)
+                } else {
+                    format!("expected function type, got {}", e.actual)
+                }
+            }
             Self::TypeAssertFailed(e) => {
                 format!(
                     "type assertion failed: expected {}, got {}",

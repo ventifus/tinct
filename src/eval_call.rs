@@ -140,7 +140,8 @@ pub async fn invoke_function(ctx: &CallContext<'_>) -> EvalResult<Arc<Thunk>> {
         ctx.ctx,
         &ctx.call_span,
     )
-    .await?;
+    .await
+    .map_err(|mut e| { e.set_arity_callee(ctx.origin.clone()); e })?;
     let mut thunk = Thunk::new_unevaluated_core(
         Arc::clone(ctx.body),
         call_env,
@@ -170,7 +171,8 @@ pub(crate) async fn invoke_function_tco(
         ctx.ctx,
         &ctx.call_span,
     )
-    .await?;
+    .await
+    .map_err(|mut e| { e.set_arity_callee(ctx.origin.clone()); e })?;
 
     Ok((Arc::clone(ctx.body), call_env))
 }

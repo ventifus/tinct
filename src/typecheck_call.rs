@@ -430,6 +430,7 @@ pub(crate) async fn check_call_with_scheme(
                         vec![]
                     },
                     call_stack: vec![],
+                    callee: func_name.map(|s| s.to_string()),
                 })]);
             }
 
@@ -830,6 +831,7 @@ pub(crate) async fn check_call_with_scheme(
                     span,
                     notes: vec!["unit variant constructor takes exactly 1 argument".to_string()],
                     call_stack: vec![],
+                    callee: Some(tag.clone()),
                 })]);
             }
             if !named_args.is_empty() {
@@ -864,12 +866,14 @@ pub(crate) async fn check_call_with_scheme(
             span: func_span,
             notes: vec![],
             call_stack: vec![],
+            callee: func_name.map(|s| s.to_string()),
         })]),
         _ => Err(vec![TypeErrorTyped::NotAFunction(NotAFunction {
             actual: func_ty.clone(),
             span: func_span,
             notes: vec![],
             call_stack: vec![],
+            callee: func_name.map(|s| s.to_string()),
         })]),
     }
 }
@@ -906,6 +910,15 @@ pub(crate) async fn check_call(
     constraints: &mut Vec<Constraint>,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
+    // Derive callee name from the function expression for error messages.
+    let func_callee: Option<String> = match &func.expr {
+        crate::ast::SurfaceExpression::VarRef { name, .. } => Some(name.clone()),
+        crate::ast::SurfaceExpression::Field { field: crate::ast::DotKey::Ident(name), .. } => {
+            Some(name.clone())
+        }
+        _ => None,
+    };
+
     let func_ty = infer_surface_expr(func, env, state, constraints, type_map).await?;
     // Apply state.subst to resolve any TypeVars bound during infer_expr (e.g., from infer_fn
     // with polymorphic return annotations). Without this, has_inference_vars() incorrectly returns
@@ -966,6 +979,7 @@ pub(crate) async fn check_call(
                         vec![]
                     },
                     call_stack: vec![],
+                    callee: func_callee.clone(),
                 })]);
             }
 
@@ -1579,6 +1593,7 @@ pub(crate) async fn check_call(
                     span,
                     notes: vec!["unit variant constructor takes exactly 1 argument".to_string()],
                     call_stack: vec![],
+                    callee: Some(tag.clone()),
                 })]);
             }
             if !named_args.is_empty() {
@@ -1614,6 +1629,7 @@ pub(crate) async fn check_call(
             span: func.span.clone(),
             notes: vec![],
             call_stack: vec![],
+            callee: func_callee.clone(),
         })]),
         _ => {
             // T003: func_ty is a concrete non-callable type (e.g., Str, Int, Bool).
@@ -1645,6 +1661,7 @@ pub(crate) async fn check_call(
                 span: func.span.clone(),
                 notes: vec![],
                 call_stack: vec![],
+                callee: func_callee.clone(),
             })])
         }
     }
