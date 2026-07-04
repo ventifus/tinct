@@ -5049,7 +5049,7 @@ fn collect_pattern_variables(pattern: &Pattern, vars: &mut std::collections::Has
                 collect_pattern_variables(&inner_pat.node, vars);
             }
         }
-        Pattern::Predicate(_) => {
+        Pattern::Predicate { .. } => {
             // Predicate patterns do not introduce variable bindings
         }
     }
@@ -5319,7 +5319,7 @@ fn surface_node_to_pattern_with_guard(
                         //   at match time, call it with the scrutinee appended as the last arg.
                         // Keywords (let, fn, type, match, etc.) are not reachable here because
                         // they parse as dedicated StackFrame forms, not as Call nodes.
-                        (Pattern::Predicate(Arc::clone(&node)), None)
+                        (Pattern::Predicate { call: Arc::clone(&node), to_match_binding: crate::ast::MatchableBinding::new() }, None)
                     }
                     _ => {
                         return Err(ParseError {
@@ -5357,7 +5357,7 @@ fn surface_node_to_pattern_with_guard(
             } else {
                 // T-1140: Non-VarRef, non-Field call head — treat as predicate pattern.
                 // Covers lambda-headed patterns: [[fn [let x] [> x 3]] ...] (unusual but valid).
-                (Pattern::Predicate(Arc::clone(&node)), None)
+                (Pattern::Predicate { call: Arc::clone(&node), to_match_binding: crate::ast::MatchableBinding::new() }, None)
             }
         }
         // T-963: TypeAssert ([@Type expr]) in pattern position → TypeAssertPending
@@ -5391,7 +5391,7 @@ fn surface_node_to_pattern_with_guard(
         // T-1140: Function literal in pattern position — predicate pattern.
         // [fn [let x] body] as a pattern: the fn expression is evaluated to produce a function,
         // then called with the scrutinee as its argument. Useful for inline predicates.
-        SurfaceExpression::Fn { .. } => (Pattern::Predicate(Arc::clone(&node)), None),
+        SurfaceExpression::Fn { .. } => (Pattern::Predicate { call: Arc::clone(&node), to_match_binding: crate::ast::MatchableBinding::new() }, None),
         _ => {
             return Err(ParseError {
                 message: "invalid pattern: expected identifier, literal, dict, or _".to_string(),
@@ -6742,7 +6742,7 @@ fn stamp_pattern(pat: &mut Pattern, file: &Arc<SourceFile>) {
             }
         }
 
-        Pattern::Predicate(_) => {} // predicate expr spans not stamped (evaluated at match time)
+        Pattern::Predicate { .. } => {} // predicate expr spans not stamped (evaluated at match time)
     }
 }
 

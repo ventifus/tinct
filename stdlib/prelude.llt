@@ -963,10 +963,10 @@ Note: Errors if xs is a Seq (collect first). Inherently materializing: short-cir
 #
 # = and < are resolver-visible wrappers so the resolver can find these names.
 # Typeclass dispatch overrides these via call_dispatch for well-typed calls.
-# builtin-eq / builtin-lt return Int(1/0); wrap with builtin-if to return Boolean.
-=: [fn@Boolean [let x y] [builtin-if [builtin-eq x y] Boolean.True Boolean.False]]
+# The constraint annotation is required so untyped calls are rejected by the type checker.
+=: [fn@[return: Boolean  constraint: [a: Equatable]  doc: "Equality test. Dispatches via Equatable typeclass."] [let x y] [builtin-if [builtin-eq x y] Boolean.True Boolean.False]]
 
-<: [fn@Boolean [let x y] [builtin-if [builtin-lt x y] Boolean.True Boolean.False]]
+<: [fn@[return: Boolean  constraint: [a: Comparable]  doc: "Less-than. Dispatches via Comparable typeclass."] [let x y] [builtin-if [builtin-lt x y] Boolean.True Boolean.False]]
 
 >: [fn@[return: Boolean  constraint: [a: Comparable]  doc: """
 Greater than.
@@ -2454,35 +2454,26 @@ Equatable@[doc: "Type class for types that support equality comparison"]:
 # to-match converts a value to an Int match signal: nonzero = truthy, zero = falsy.
 # This is the typeclass gate — only Matchable types are valid as predicate returns.
 #
-# The Rust runtime (eval.rs::call_to_match) looks up "to-match" in the current
-# environment and dispatches through it for all values. It then checks whether
-# the returned Int is nonzero (truthy) or zero (falsy).
+# The Rust runtime (eval.rs::call_to_match) looks up the instance binding directly:
+#   instance_binding_name("Matchable", "to-match", [type_name])
+# The binding name format is: ɪɴꜱᴛᴀɴᴄᴇ⧼Matchable∷to-match⟨TypeName⟩⧽
+# This requires anonymous multi-arm instances so lower.rs emits the binding names.
 
 Matchable@[doc: """
 Typeclass for types whose values can serve as pattern predicates.
 to-match converts a value to an Int match signal: nonzero = truthy, zero = falsy.
-The Rust pattern matching engine calls to-match on guard predicate return values.
+The Rust pattern matching engine looks up the instance binding directly by type name.
 """]:
   [class [let Matchable a]
     to-match: [Fn@Int [a]]]
 
-# Boolean is Matchable: True maps to 1, False maps to 0.
-MatchableBoolean@[doc: "Matchable instance for Boolean: True → 1, False → 0"]:
-  [instance Matchable
-    [let a@Boolean]: [to-match: [fn@Int [let x@Boolean]
-      [match x Boolean.True: 1 _: 0]]]]
+# Matchable instances for Boolean and Int — anonymous multi-arm so lower.rs emits
+# instance_binding_name keys (ɪɴꜱᴛᴀɴᴄᴇ⧼Matchable∷to-match⟨Boolean⟩⧽, etc.).
+[instance Matchable
+  [let a@Boolean]: [to-match: [fn@Int [let x@Boolean]
+    [match x Boolean.True: 1 _: 0]]]
+  [let a@Int]:     [to-match: [fn@Int [let x@Int] x]]]
 
-# Int is Matchable: the value itself is the signal (nonzero = truthy, zero = falsy).
-MatchableInt@[doc: "Matchable instance for Int: the Int value is the match signal directly"]:
-  [instance Matchable
-    [let a@Int]: [to-match: [fn@Int [let x@Int] x]]]
-
-# to-match: top-level callable for the Matchable protocol.
-# Needed because class method declarations do not yet inject method names as
-# top-level callables (T-1492: fix class method injection). Once fixed,
-# this wrapper goes away — the class method IS to-match.
-to-match@[doc: "Convert to match signal (1=match, 0=no-match) via Matchable typeclass."]:
-  [fn@Int [let x] [bool->int x]]
 
 # ============================================================================
 # Type Class Declarations: Comparable

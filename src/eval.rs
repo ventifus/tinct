@@ -2057,35 +2057,95 @@ fn eval_core_expr<'a>(
 /// # Side effects
 ///
 /// Mutates the thunk's internal state via `ThunkInner`. On success, transitions to
-/// Convert a tinct value to a match signal by calling the tinct-side `to-match` function.
+/// Convert a tinct value to a match signal via direct Matchable instance binding lookup.
 ///
-/// **All values** are dispatched through the tinct-level `to-match` function, which is
-/// backed by the `Matchable` typeclass declared in `prelude.llt`. The `to-match` function
-/// returns `Value::Int(n)` where `n != 0` is truthy and `n == 0` is falsy.
+/// Looks up the instance binding `ɪɴꜱᴛᴀɴᴄᴇ⧼Matchable∷to-match⟨TypeName⟩⧽` in the
+/// environment, where `TypeName` is derived from the value's runtime type. This is the
+/// same mechanism the type checker's `call_dispatch` uses at compile time — direct binding
+/// lookup by instance name, no global `to-match` wrapper needed.
 ///
-/// No Rust-side fast paths exist — no type-specific cases, no Int bypass.
-/// The Matchable typeclass is the sole gate controlling which types are valid match predicates.
-/// Int and Boolean both have Matchable instances in prelude; other types produce conservative
-/// `false` (to-match not found in pre-prelude bootstrap contexts) or a prelude error.
+/// The Matchable typeclass instances in `prelude.llt` are anonymous multi-arm instances so
+/// that `lower.rs` emits them as instance_binding_name-keyed dict entries. The Rust runtime
+/// and the type checker both use `instance_binding_name("Matchable", "to-match", [type])`.
+///
+/// Returns `false` in bootstrap/pre-prelude contexts (before the Matchable instances are
+/// loaded) or for types with no Matchable instance.
 pub async fn call_to_match(
     val: &Value,
     env: &Arc<RwLock<Environment>>,
     ctx: &Arc<EvalContext>,
     span: &Span,
 ) -> bool {
-    // All types go through to-match dispatch — look it up from the environment.
-    // This covers Boolean.True/False (handled by the Matchable Boolean instance),
-    // and any user-defined Matchable types.
-    //
-    // The `to-match` function is defined in the prelude and is visible in any environment
-    // that descends from the prelude scope (which includes all user code environments).
+    // Derive the type name from the value for instance binding lookup.
+    let type_name = match val {
+        Value::Int(_) | Value::U64(_) => "Int",
+        Value::Variant { tag, payload: None } => {
+            // "Boolean.True" → "Boolean" (the type name is the prefix before the first '.')
+            match tag.split_once('.') {
+                Some((type_part, _)) => type_part,
+                None => tag.as_str(),
+            }
+        }
+        // No Matchable instance for other types — return false (type error caught by type checker)
+        _ => return false,
+    };
+
+    // Compute the instance binding name and look it up in the environment.
+    let binding_name =
+        crate::type_def::instance_binding_name("Matchable", "to-match", &[type_name]);
+
     let to_match_thunk = {
         let env_read = env.read().unwrap();
-        env_read.get_by_name("to-match")
+        env_read.get_by_name(&binding_name)
     };
     let Some(to_match_fn) = to_match_thunk else {
-        // to-match not loaded yet (bootstrap / pre-prelude context): conservative false
+        // Matchable instance not loaded yet (bootstrap / pre-prelude context): conservative false
         return false;
+    };
+
+    let val_thunk = Arc::new(Thunk::new_materialized(val.clone(), span.clone()));
+    let call_thunk = Arc::new(Thunk::new_pending_call(
+        to_match_fn,
+        vec![val_thunk],
+        IndexMap::new(),
+        span.clone(),
+        Arc::clone(env),
+        span.clone(),
+        Some(Arc::from("to-match")),
+        Arc::clone(ctx),
+        crate::builtins::synthetic_call_expr(span.clone()),
+    ));
+
+    match materialize(&call_thunk, Some(span), ctx).await {
+        Ok(Value::Int(n)) => n != 0,
+        _ => false,
+    }
+}
+
+/// Convert a tinct value to a match signal using a pre-resolved Matchable instance binding name.
+///
+/// This is the compile-time-resolved variant of `call_to_match`. The type checker resolves
+/// the Matchable instance at type-checking time and stores the binding name (e.g.,
+/// `"ɪɴꜱᴛᴀɴᴄᴇ⧼Matchable∷to-match⟨Boolean⟩⧽"`) on the pattern. The evaluator uses this
+/// to look up the `to-match` method directly, avoiding the dynamic type-name derivation
+/// that `call_to_match` performs.
+///
+/// Returns `false` if the binding is not found in the environment (pre-prelude bootstrap).
+pub async fn call_to_match_resolved(
+    val: &Value,
+    binding_name: &str,
+    env: &Arc<RwLock<Environment>>,
+    ctx: &Arc<EvalContext>,
+    span: &Span,
+) -> bool {
+    let to_match_thunk = {
+        let env_read = env.read().unwrap();
+        env_read.get_by_name(binding_name)
+    };
+    let Some(to_match_fn) = to_match_thunk else {
+        // Binding not found — instance not loaded yet (bootstrap / pre-prelude context).
+        // Fall back to dynamic dispatch as a safety net.
+        return call_to_match(val, env, ctx, span).await;
     };
 
     let val_thunk = Arc::new(Thunk::new_materialized(val.clone(), span.clone()));
@@ -3091,7 +3151,7 @@ fn collect_pattern_variable_names(pattern: &Spanned<Pattern>, out: &mut Vec<(Str
             }
         }
         // T-1140: Predicate patterns introduce no variable bindings.
-        Pattern::Predicate(_) => {}
+        Pattern::Predicate { .. } => {}
     }
 }
 
@@ -3488,7 +3548,7 @@ pub(crate) fn match_pattern<'a>(
                 // None of the sub-patterns matched
                 Ok(None)
             }
-            Pattern::Predicate(_) => {
+            Pattern::Predicate { .. } => {
                 // T-1140: Predicate patterns must be intercepted in MatchDispatch before
                 // reaching match_pattern. This arm exists as a safety guard — it should
                 // never be reached in correctly structured evaluation paths.

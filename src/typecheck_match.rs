@@ -200,11 +200,10 @@ pub(crate) fn elaborate_pattern<'a>(
             // sub-patterns and require no annotation resolution.
             Pattern::Wildcard | Pattern::Literal(_) | Pattern::Pin(..) => Ok(pat.clone()),
 
-            // T-1140: Predicate patterns — pass through unchanged.
-            // The contained SurfaceNode is not type-checked here; it will be evaluated at runtime.
-            // Return type is checked to be Bool/Unknown only by convention, not enforced here.
-            // Predicate patterns do not affect exhaustiveness (treated as wildcard).
-            Pattern::Predicate(_) => Ok(pat.clone()),
+            // T-1140: Predicate patterns — pass through unchanged at the elaboration level.
+            // The Matchable instance binding is resolved at the match-arm level in typecheck.rs
+            // (resolve_predicate_matchable) after elaborate_pattern returns.
+            Pattern::Predicate { .. } => Ok(pat.clone()),
         }
     }) // end Box::pin(async move {
 }

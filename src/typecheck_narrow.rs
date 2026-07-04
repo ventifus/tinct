@@ -558,7 +558,7 @@ pub(crate) fn collect_pattern_bindings(
             }
         }
         // T-1140: Predicate patterns introduce no variable bindings.
-        Pattern::Predicate(_) => {}
+        Pattern::Predicate { .. } => {}
     }
 }
 

@@ -617,7 +617,7 @@ pub fn ast_pattern_to_coverage(
         }
         // T-1140: Predicate patterns are opaque to coverage analysis (Karachalias et al. 2015, §2.4).
         // Like guards, they depend on runtime values and cannot be statically analyzed.
-        ast::Pattern::Predicate(_) => CoveragePattern::Wildcard,
+        ast::Pattern::Predicate { .. } => CoveragePattern::Wildcard,
     }
 }
 

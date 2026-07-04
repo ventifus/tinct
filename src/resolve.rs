@@ -191,7 +191,7 @@ impl SurfaceResolver {
                 }
             }
             // Leaf patterns with no Pin sub-patterns — nothing to resolve.
-            Pattern::Wildcard | Pattern::Literal(_) | Pattern::Predicate(_) => {}
+            Pattern::Wildcard | Pattern::Literal(_) | Pattern::Predicate { .. } => {}
         }
     }
 
@@ -1050,7 +1050,7 @@ fn collect_pattern_bindings(pattern: &Pattern, out: &mut Vec<String>) {
                 }
             }
         }
-        Pattern::Predicate(_) => {
+        Pattern::Predicate { .. } => {
             // T-1140: Predicate patterns introduce no variable bindings.
         }
     }

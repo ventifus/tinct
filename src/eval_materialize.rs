@@ -405,6 +405,10 @@ pub(crate) struct MatchPredicateCheckData {
     /// True when the predicate was a callable and has already been invoked via the CEK machine.
     /// On the second entry, `result` is the call's return value; check Bool(true) directly.
     pub(crate) callable_invoked: bool,
+    /// Pre-resolved Matchable instance binding name for `to-match`, set by the type checker.
+    /// When `Some`, the evaluator uses this to call the correct instance without dynamic dispatch.
+    /// When `None` (type checking skipped), falls back to `call_to_match` for dynamic resolution.
+    pub(crate) to_match_binding: Option<String>,  // extracted from MatchableBinding at eval time
 }
 
 /// Payload for Cont::PredicateCheck. Boxed to keep the Cont enum ≤96 bytes.
@@ -2936,7 +2940,8 @@ pub(crate) async fn apply_cont(
                         // child env bound to the scrutinee value. A Var(`%pred_subj`)
                         // core expression is appended as the final arg. The % prefix is
                         // reserved and cannot appear in user-written identifiers.
-                        if let crate::ast::Pattern::Predicate(pred_node) = &arm.pattern.node {
+                        if let crate::ast::Pattern::Predicate { call: pred_node, to_match_binding } = &arm.pattern.node {
+                            let resolved_binding = to_match_binding.get().cloned();
                             let lowered_pred = crate::lower::lower(pred_node);
                             let pred_span = lowered_pred.span.clone();
                             // Check if the lowered predicate is a Call expression.
@@ -3006,6 +3011,7 @@ pub(crate) async fn apply_cont(
                                     // result (Bool). For the non-Call path, the result is a function
                                     // value that must still be called with the scrutinee.
                                     callable_invoked: is_call_path,
+                                    to_match_binding: resolved_binding.clone(),
                                 },
                             )));
                             return Action::EvalCore {
@@ -3215,6 +3221,7 @@ pub(crate) async fn apply_cont(
                 scrutinee_value,
                 body,
                 callable_invoked,
+                to_match_binding,
             } = *data;
 
             match result {
@@ -3245,6 +3252,7 @@ pub(crate) async fn apply_cont(
                                     scrutinee_value,
                                     body,
                                     callable_invoked: true,
+                                    to_match_binding,
                                 },
                             )));
                             return Action::Materialize {
@@ -3254,7 +3262,16 @@ pub(crate) async fn apply_cont(
                         }
                     }
 
-                    let matched = crate::eval::call_to_match(&predicate_value, &env, &ctx, &match_span).await;
+                    let matched = if let Some(ref binding_name) = to_match_binding {
+                        // Compile-time resolved: look up the pre-resolved Matchable instance
+                        // binding directly, avoiding dynamic dispatch.
+                        crate::eval::call_to_match_resolved(
+                            &predicate_value, binding_name, &env, &ctx, &match_span,
+                        ).await
+                    } else {
+                        // Type checking was skipped — fall back to dynamic dispatch.
+                        crate::eval::call_to_match(&predicate_value, &env, &ctx, &match_span).await
+                    };
 
                     if matched {
                         // Predicate returned true — arm matches.

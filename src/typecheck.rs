@@ -1889,6 +1889,71 @@ fn record_pattern_elaborations(elaborated: &Pattern, original: &Pattern) {
     }
 }
 
+/// Resolve the Matchable instance `to-match` binding for a predicate pattern at compile time.
+///
+/// Type-checks the predicate call expression to infer its return type, then looks up the
+/// Matchable instance for that type in the instance environment. If found, the instance
+/// binding name (e.g., `"ɪɴꜱᴛᴀɴᴄᴇ⧼Matchable∷to-match⟨Boolean⟩⧽"`) is written to the
+/// pattern's `MatchableBinding` OnceLock for the evaluator to use directly.
+///
+/// This avoids dynamic dispatch at runtime: the evaluator no longer needs to derive the
+/// type name from the value and look up the binding dynamically via `call_to_match`.
+///
+/// If type inference fails or no Matchable instance exists for the inferred return type,
+/// the MatchableBinding is left empty and the evaluator falls back to dynamic dispatch.
+async fn resolve_predicate_matchable(
+    call: &std::sync::Arc<crate::ast::SurfaceNode>,
+    to_match_binding: &crate::ast::MatchableBinding,
+    env: &Rc<TypeEnv>,
+    state: &mut InferState,
+    constraints: &mut Vec<Constraint>,
+    type_map: &mut Option<&mut TypeMap>,
+) {
+    // Type-check the predicate call expression to infer its return type.
+    // Use a temporary constraints/type_map to avoid polluting the outer context.
+    let pred_ty = match infer_surface_expr(call, env, state, constraints, type_map).await {
+        Ok(ty) => ty,
+        Err(_) => return, // Type inference failed — leave binding unresolved
+    };
+
+    // Map the inferred return type to the type name used in instance binding lookup.
+    if let Some(type_name) = type_to_matchable_key(&pred_ty) {
+        let binding_name = crate::type_def::instance_binding_name(
+            "Matchable",
+            "to-match",
+            &[type_name.as_str()],
+        );
+        to_match_binding.set(Some(binding_name));
+    }
+}
+
+/// Map a type to the string key used in Matchable instance binding name generation.
+///
+/// The key must match the type argument used when the Matchable instance was declared
+/// in prelude.llt. Currently, Matchable instances exist for:
+/// - `Boolean` (unit constructors `Boolean.True` / `Boolean.False`)
+/// - `Int` (integers are directly truthy: nonzero = match)
+fn type_to_matchable_key(ty: &Type) -> Option<String> {
+    match ty {
+        Type::Int | Type::IntLiteral(_) => Some("Int".to_string()),
+        Type::TyCon(name) => {
+            // TyCon("Boolean") → "Boolean", TyCon("Int") → "Int", etc.
+            Some(name.clone())
+        }
+        Type::NominalVariant { tag, .. } => {
+            // "Boolean.True" → "Boolean"
+            tag.split('.').next().map(|s| s.to_string())
+        }
+        Type::Unknown => {
+            // Gradual typing: Unknown is consistent with any type. Default to Boolean
+            // since most predicates return Boolean values. The evaluator's fallback
+            // (call_to_match) handles the case where this guess is wrong.
+            Some("Boolean".to_string())
+        }
+        _ => None,
+    }
+}
+
 /// Extract a `CoveragePattern` from a `SurfaceExpression::CaseArm` pattern expression.
 ///
 /// In 3-arg `[case [let bindings] pattern body]` arms, the `SurfaceMatchArm.pattern` is a
@@ -2935,7 +3000,7 @@ pub(crate) fn infer_surface_expr<'a>(
                         Pattern::Wildcard | Pattern::Pin(..) => remaining_scrutinee.clone(),
                         // T-1140: Predicate patterns — no static scrutinee narrowing.
                         // The predicate is opaque; we cannot determine what types it accepts.
-                        Pattern::Predicate(_) => remaining_scrutinee.clone(),
+                        Pattern::Predicate { .. } => remaining_scrutinee.clone(),
                         _ => scrutinee_ty.clone(),
                     };
 
@@ -2949,6 +3014,15 @@ pub(crate) fn infer_surface_expr<'a>(
                     // Write resolved types inline on TypeAssertPending nodes so lower.rs
                     // can convert TypeAssertPending → TypeAssert in CoreMatchArm patterns (B-338).
                     record_pattern_elaborations(&elaborated_pat, &arm.pattern.node);
+
+                    // Resolve Matchable instance binding for predicate patterns at compile time.
+                    // Type-checks the predicate call expression to infer its return type, then
+                    // resolves the Matchable instance for that type. The binding name is written
+                    // to the pattern's MatchableBinding OnceLock so the lowerer carries it to
+                    // CoreMatchArm and the evaluator uses it for direct dispatch.
+                    if let Pattern::Predicate { call, to_match_binding } = &arm.pattern.node {
+                        resolve_predicate_matchable(call, to_match_binding, env, state, constraints, type_map).await;
+                    }
 
                     let mut pat_bindings: Vec<(String, Type)> = Vec::new();
                     collect_pattern_bindings(&elaborated_pat, &arm_scrutinee_ty, &mut pat_bindings);

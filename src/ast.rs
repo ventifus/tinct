@@ -249,12 +249,20 @@ pub enum Pattern {
     /// the match scrutinee as its last positional argument. If the result is `Value::boolean(true)`,
     /// the arm matches; otherwise the arm is skipped.
     ///
-    /// `[contains? "ob"]` in pattern position → `Predicate(SurfaceNode for [contains? "ob"])`.
+    /// `[contains? "ob"]` in pattern position → `Predicate { call: SurfaceNode for [contains? "ob"], .. }`.
     /// At match time: `[contains? "ob" scrutinee]` is evaluated.
     ///
     /// Predicate patterns do not introduce any variable bindings and do not count toward
     /// exhaustiveness analysis (treated as wildcard for coverage purposes).
-    Predicate(Arc<SurfaceNode>),
+    ///
+    /// `to_match_binding` is resolved by the type checker to the Matchable instance's
+    /// `to-match` method binding name (e.g., `"ɪɴꜱᴛᴀɴᴄᴇ⧼Matchable∷to-match⟨Boolean⟩⧽"`).
+    /// The evaluator uses this to call the correct instance without dynamic dispatch.
+    /// Empty if not yet resolved or type checking was skipped.
+    Predicate {
+        call: Arc<SurfaceNode>,
+        to_match_binding: MatchableBinding,
+    },
 }
 
 /// Literal pattern values
@@ -586,7 +594,7 @@ impl fmt::Display for Pattern {
                 }
                 Ok(())
             }
-            Pattern::Predicate(_) => write!(f, "<predicate>"),
+            Pattern::Predicate { .. } => write!(f, "<predicate>"),
         }
     }
 }
@@ -1291,6 +1299,54 @@ impl Default for Resolution {
 impl std::fmt::Debug for Resolution {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Resolution({:?})", self.0.get())
+    }
+}
+
+/// Inline annotation for a predicate pattern's resolved Matchable `to-match` instance
+/// binding name. Written once by the type checker during match arm elaboration; read by
+/// the lowerer to carry the binding name into `CoreMatchArm::Pattern::Predicate`.
+///
+/// Clone resets to empty (same semantics as other OnceLock annotations — cloned patterns
+/// in new scopes need fresh resolution).
+pub struct MatchableBinding(std::sync::OnceLock<Option<String>>);
+impl MatchableBinding {
+    pub fn new() -> Self {
+        Self(std::sync::OnceLock::new())
+    }
+    pub fn get(&self) -> Option<&String> {
+        self.0.get().and_then(|o| o.as_ref())
+    }
+    pub fn set(&self, val: Option<String>) {
+        let _ = self.0.set(val);
+    }
+}
+impl Clone for MatchableBinding {
+    fn clone(&self) -> Self {
+        // Preserve the resolved binding through clones — unlike Resolution/TypeAnnotation,
+        // MatchableBinding is scope-independent (the instance binding name is global).
+        match self.0.get() {
+            Some(val) => {
+                let new = Self::new();
+                let _ = new.0.set(val.clone());
+                new
+            }
+            None => Self::new(),
+        }
+    }
+}
+impl PartialEq for MatchableBinding {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+impl Default for MatchableBinding {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+impl std::fmt::Debug for MatchableBinding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "MatchableBinding({:?})", self.0.get())
     }
 }
 

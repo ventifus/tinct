@@ -167,7 +167,7 @@ fn lower_pattern(pat: &Pattern) -> Pattern {
 
         // T-1140: Predicate patterns carry a SurfaceNode — passed through unchanged.
         // The SurfaceNode is lowered on demand inside MatchDispatch at eval time.
-        Pattern::Predicate(_) => pat.clone(),
+        Pattern::Predicate { .. } => pat.clone(),
     }
 }
 
