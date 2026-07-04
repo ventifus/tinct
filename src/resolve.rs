@@ -469,7 +469,7 @@ impl SurfaceResolver {
                 // See doc/whatif/completed/type-annotations-v2.md §TypeVar Scoping:
                 // "Lowercase names in annotation position are always TypeVars, never value references."
                 const RESERVED_TYPE_KEYS: &[&str] =
-                    &["bind", "type", "return", "constraint", "kinds", "doc"];
+                    &["bind", "type", "return", "constraint", "kinds", "doc", "is"];
                 for entry in entries {
                     match &entry.node.key {
                         None => {

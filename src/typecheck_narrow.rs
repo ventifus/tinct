@@ -29,8 +29,15 @@ pub(crate) enum Narrowing {
 }
 
 /// Extract narrowing constraints from a condition expression (SurfaceNode version).
+///
+/// Uses the type environment to look up `param_narrowings` on called functions'
+/// TypeSchemes, enabling annotation-driven narrowing via `@[is: T]` on function
+/// parameters. No predicate function names are hardcoded here — any function whose
+/// first parameter carries an `@[is: T]` annotation will narrow its argument's type
+/// in the then-branch of an `if`.
+///
 /// Returns an empty vec for unrecognized patterns.
-pub(crate) fn extract_narrowings(cond: &Arc<SurfaceNode>) -> Vec<Narrowing> {
+pub(crate) fn extract_narrowings(cond: &Arc<SurfaceNode>, env: &Rc<TypeEnv>) -> Vec<Narrowing> {
     match &cond.expr {
         SurfaceExpression::Call {
             func,
@@ -74,100 +81,25 @@ pub(crate) fn extract_narrowings(cond: &Arc<SurfaceNode>) -> Vec<Narrowing> {
                     "and" => {
                         let mut narrowings = Vec::new();
                         for arg in args {
-                            narrowings.extend(extract_narrowings(arg));
+                            narrowings.extend(extract_narrowings(arg, env));
                         }
                         return narrowings;
                     }
-                    // Pattern: [int? x], [str? x], [dict? x], [bool? x], [float? x],
-                    // [fn? x], [null? x], [num? x], and type predicates
-                    "int?" if args.len() == 1 => {
+                    // Generic predicate narrowing: look up the function's declared scheme.
+                    // If any parameter has a param_narrowings entry (from @[is: T] annotation),
+                    // use it to narrow the corresponding argument's type.
+                    _ if args.len() == 1 => {
                         if let SurfaceExpression::VarRef { name: var_name, .. } = &args[0].expr {
-                            return vec![Narrowing::TypeOf {
-                                var: var_name.clone(),
-                                ty: Type::Int,
-                            }];
-                        }
-                    }
-                    "str?" if args.len() == 1 => {
-                        if let SurfaceExpression::VarRef { name: var_name, .. } = &args[0].expr {
-                            return vec![Narrowing::TypeOf {
-                                var: var_name.clone(),
-                                ty: Type::Str,
-                            }];
-                        }
-                    }
-                    "dict?" if args.len() == 1 => {
-                        if let SurfaceExpression::VarRef { name: var_name, .. } = &args[0].expr {
-                            // dict? narrows to open record with fresh RowVar
-                            return vec![Narrowing::TypeOf {
-                                var: var_name.clone(),
-                                ty: Type::Record(Row {
-                                    fields: indexmap::IndexMap::new(),
-                                    tail: crate::type_def::RowTail::Empty,
-                                }),
-                            }];
-                        }
-                    }
-                    "bool?" if args.len() == 1 => {
-                        if let SurfaceExpression::VarRef { name: var_name, .. } = &args[0].expr {
-                            return vec![Narrowing::TypeOf {
-                                var: var_name.clone(),
-                                ty: Type::TyCon("Boolean".to_string()),
-                            }];
-                        }
-                    }
-                    "float?" if args.len() == 1 => {
-                        if let SurfaceExpression::VarRef { name: var_name, .. } = &args[0].expr {
-                            return vec![Narrowing::TypeOf {
-                                var: var_name.clone(),
-                                ty: Type::Float,
-                            }];
-                        }
-                    }
-                    "fn?" if args.len() == 1 => {
-                        if let SurfaceExpression::VarRef { name: var_name, .. } = &args[0].expr {
-                            // HKT: fn? narrows to Function{params:[], ret:Unknown, variadic:true},
-                            // the "any function" type. Zero-param variadic now unifies with any
-                            // concrete function signature (fn-narrowing-variadic sprint).
-                            // Unknown ret type deferred until higher-kinded return type inference.
-                            return vec![Narrowing::TypeOf {
-                                var: var_name.clone(),
-                                ty: Type::Function {
-                                    params: vec![],
-                                    ret: Box::new(Type::Unknown),
-                                    variadic: true,
-                                    required_count: 0,
-                                },
-                            }];
-                        }
-                    }
-                    "null?" if args.len() == 1 => {
-                        if let SurfaceExpression::VarRef { name: var_name, .. } = &args[0].expr {
-                            // null? narrows to empty closed record
-                            return vec![Narrowing::TypeOf {
-                                var: var_name.clone(),
-                                ty: Type::Record(Row {
-                                    fields: indexmap::IndexMap::new(),
-                                    tail: crate::type_def::RowTail::Empty,
-                                }),
-                            }];
-                        }
-                    }
-                    "seq?" if args.len() == 1 => {
-                        if let SurfaceExpression::VarRef { name: var_name, .. } = &args[0].expr {
-                            return vec![Narrowing::TypeOf {
-                                var: var_name.clone(),
-                                ty: Type::App(Box::new(Type::TyCon("Seq".into())), Box::new(Type::Unknown)),
-                            }];
-                        }
-                    }
-                    "num?" if args.len() == 1 => {
-                        if let SurfaceExpression::VarRef { name: var_name, .. } = &args[0].expr {
-                            // num? narrows to Int | Float
-                            return vec![Narrowing::TypeOf {
-                                var: var_name.clone(),
-                                ty: Type::normalize_union(vec![Type::Int, Type::Float]),
-                            }];
+                            if let Some(scheme) = env.get(name) {
+                                if let Some(Some(narrowing_ty)) =
+                                    scheme.param_narrowings.first()
+                                {
+                                    return vec![Narrowing::TypeOf {
+                                        var: var_name.clone(),
+                                        ty: narrowing_ty.clone(),
+                                    }];
+                                }
+                            }
                         }
                     }
                     _ => {}
@@ -228,7 +160,6 @@ pub(crate) fn try_type_of(left: &Arc<SurfaceNode>, right: &Arc<SurfaceNode>) -> 
                                     fields: indexmap::IndexMap::new(),
                                     tail: crate::type_def::RowTail::Empty,
                                 })),
-                                "Seq" => Some(Type::App(Box::new(Type::TyCon("Seq".into())), Box::new(Type::Unknown))),
                                 _ => None,
                             };
                             return ty.map(|t| Narrowing::TypeOf {
@@ -305,9 +236,9 @@ pub(crate) fn apply_narrowings(
 
 /// Apply negation narrowings for the false branch of an `if` expression.
 ///
-/// For each `TypeOf { var, ty }` narrowing (e.g., produced by `[int? x]`), the false branch
-/// knows the predicate FAILED, so the variable's type is intersected with `Negation(ty)`.
-/// This is the BAS false-branch rule: ~[int? x] → x : ~Int.
+/// For each `TypeOf { var, ty }` narrowing, the false branch knows the predicate FAILED,
+/// so the variable's type is intersected with `Negation(ty)`. This is the BAS false-branch
+/// rule: when predicate returns false, the variable is narrowed to NOT the predicate's type.
 ///
 /// EqLiteral and HasKey narrowings are not negated in the false branch (they produce
 /// Negation(literal) which is rarely useful and can confuse downstream unification).

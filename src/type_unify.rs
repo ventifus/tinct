@@ -2467,7 +2467,7 @@ pub async fn unify(
             // has at least one parameter (concrete arity). It does NOT unify with zero-param
             // non-variadic (different semantics: zero-param variadic accepts any args, zero-param
             // non-variadic accepts exactly zero args).
-            // This enables precise `fn?` type predicate narrowing (fn-narrowing-variadic sprint).
+            // This enables precise function type predicate narrowing (fn-narrowing-variadic sprint).
             let is_any_function_1 = p1.is_empty() && *v1;
             let is_any_function_2 = p2.is_empty() && *v2;
 

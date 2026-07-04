@@ -148,6 +148,7 @@ fn inject_single_constructor(
                 kind_vars: vec![],
                 doc: None,
                 inner_schemes: None,
+                param_narrowings: Vec::new(),
             },
         );
     }
@@ -639,6 +640,11 @@ pub(crate) async fn infer_dict(
     // inferred, not leak across dict entries.
     let mut entry_constraints: HashMap<String, Vec<Constraint>> = HashMap::new();
 
+    // Track param narrowings from @[is: T] annotations on function parameters.
+    // Populated during Pass 3 (infer_fn sets state.pending_param_narrowings), consumed in Pass 4
+    // when attaching to TypeSchemes.
+    let mut entry_param_narrowings: HashMap<String, Vec<Option<Type>>> = HashMap::new();
+
     // Pass 0c: pre-register class/instance declarations so all classes and instances
     // are visible during body type-checking, regardless of declaration order in the file.
     // Modeled on Pass 2 (type alias pre-registration). (Wadler & Blott 1989 — class/instance
@@ -876,6 +882,16 @@ pub(crate) async fn infer_dict(
                     entry_constraints.insert(name.clone(), this_entry_constraints.clone());
                 }
 
+                // Consume pending param narrowings from infer_fn (if any).
+                // These are per-entry: each function's @[is: T] annotations are stored
+                // separately and attached to the TypeScheme in Pass 4.
+                if !state.pending_param_narrowings.is_empty() {
+                    entry_param_narrowings.insert(
+                        name.clone(),
+                        std::mem::take(&mut state.pending_param_narrowings),
+                    );
+                }
+
                 if should_check_recursion {
                     state.current_function = None;
                 }
@@ -1034,6 +1050,8 @@ pub(crate) async fn infer_dict(
                         if let Some(inner) = entry_inner_schemes.get(name) {
                             scheme.inner_schemes = Some(inner.clone());
                         }
+                        // Clear any pending narrowings from failed function inference
+                        entry_param_narrowings.remove(name);
                         dict_env.insert_scheme(name.clone(), scheme);
                         continue;
                     }
@@ -1058,6 +1076,12 @@ pub(crate) async fn infer_dict(
                     // Attach inner_schemes if this entry's value was a dict literal
                     if let Some(inner) = entry_inner_schemes.get(name) {
                         scheme.inner_schemes = Some(inner.clone());
+                    }
+
+                    // Attach param_narrowings from @[is: T] annotations on function parameters.
+                    // These were collected during Pass 3 and stored per-entry.
+                    if let Some(narrowings) = entry_param_narrowings.remove(name) {
+                        scheme.param_narrowings = narrowings;
                     }
 
                     // Update dict_env with the generalized scheme for subsequent SCCs

@@ -1971,6 +1971,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             kind_vars: Vec::new(),
             doc: None,
             inner_schemes: None,
+            param_narrowings: Vec::new(),
         },
     );
     // builtin-filter: ∀a. (a → Bool) → Seq(a) → Seq(a)
@@ -2000,6 +2001,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             kind_vars: Vec::new(),
             doc: None,
             inner_schemes: None,
+            param_narrowings: Vec::new(),
         },
     );
     // builtin-take: ∀T. Int → Seq(T) → Seq(T)
@@ -2021,6 +2023,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             kind_vars: Vec::new(),
             doc: None,
             inner_schemes: None,
+            param_narrowings: Vec::new(),
         },
     );
     // builtin-drop: ∀T. Int → Seq(T) → Seq(T)
@@ -2042,6 +2045,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             kind_vars: Vec::new(),
             doc: None,
             inner_schemes: None,
+            param_narrowings: Vec::new(),
         },
     );
 
@@ -2078,6 +2082,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             kind_vars: Vec::new(),
             doc: None,
             inner_schemes: None,
+            param_narrowings: Vec::new(),
         },
     );
     env.insert(
@@ -2123,6 +2128,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             kind_vars: Vec::new(),
             doc: None,
             inner_schemes: None,
+            param_narrowings: Vec::new(),
         },
     );
 
@@ -2160,6 +2166,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             kind_vars: Vec::new(),
             doc: None,
             inner_schemes: None,
+            param_narrowings: Vec::new(),
         },
     );
     // builtin-reverse: {} -> {}
@@ -2204,6 +2211,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             kind_vars: Vec::new(),
             doc: None,
             inner_schemes: None,
+            param_narrowings: Vec::new(),
         },
     );
     // proxy: (Str → Top) → Proxy
@@ -2262,6 +2270,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 kind_vars: Vec::new(),
                 doc: None,
                 inner_schemes: None,
+                param_narrowings: Vec::new(),
             },
         );
     }
@@ -2304,6 +2313,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 kind_vars: Vec::new(),
                 doc: None,
                 inner_schemes: None,
+                param_narrowings: Vec::new(),
             },
         );
     }
@@ -2341,6 +2351,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             kind_vars: Vec::new(),
             doc: None,
             inner_schemes: None,
+            param_narrowings: Vec::new(),
         },
     );
     // builtin-last: ∀T. Seq(T) → T
@@ -2360,6 +2371,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             kind_vars: Vec::new(),
             doc: None,
             inner_schemes: None,
+            param_narrowings: Vec::new(),
         },
     );
 
@@ -2509,6 +2521,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             kind_vars: Vec::new(),
             doc: None,
             inner_schemes: None,
+            param_narrowings: Vec::new(),
         },
     );
     // builtin-par-filter: ∀a. (a → Bool) → Seq(a) → Seq(a)
@@ -2538,6 +2551,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             kind_vars: Vec::new(),
             doc: None,
             inner_schemes: None,
+            param_narrowings: Vec::new(),
         },
     );
     // builtin-signal-channel: Top → Top

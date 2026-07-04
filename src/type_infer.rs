@@ -50,6 +50,13 @@ pub struct TypeScheme {
     pub doc: Option<String>,
     /// Nested schemes for function parameters (used for higher-rank types)
     pub inner_schemes: Option<HashMap<String, TypeScheme>>,
+    /// Per-parameter narrowing types for type predicates.
+    /// When param i has an `@[is: T]` annotation in its declaration,
+    /// param_narrowings[i] = Some(T). This enables any predicate function
+    /// to narrow its argument's type in the then-branch of an if, without
+    /// hardcoding function names in the type checker.
+    /// Empty vec means no narrowing annotations.
+    pub param_narrowings: Vec<Option<Type>>,
 }
 
 impl TypeScheme {
@@ -63,6 +70,7 @@ impl TypeScheme {
             kind_vars: Vec::new(),
             doc: None,
             inner_schemes: None,
+            param_narrowings: Vec::new(),
         }
     }
 }
@@ -213,6 +221,11 @@ pub struct InferState {
     /// the stack is borrowed mutably through the entire expansion call tree — any attempt
     /// to re-enter a stack entry produces the TypeVar sentinel rather than infinite recursion.
     pub expansion_stack: crate::typecheck::typecheck_annot::ExpansionStack,
+    /// Pending param narrowings from the most recently inferred function.
+    /// When `infer_fn` processes a function with `@[is: T]` annotations on parameters,
+    /// it stores the narrowing types here. The caller (e.g., `infer_dict`) consumes this
+    /// vec and attaches it to the TypeScheme. Reset to empty after consumption.
+    pub pending_param_narrowings: Vec<Option<Type>>,
     /// BAS TypeVar bounds: lower and upper bounds accumulated by C-Var1/2 constraint
     /// rewriting during unification. Each TypeVar name maps to its TypeVarBounds.
     ///
@@ -388,6 +401,7 @@ impl InferState {
             type_stage_env: None,
             pending_scheme_injections: Vec::new(),
             expansion_stack: Vec::new(),
+            pending_param_narrowings: Vec::new(),
             bounds: HashMap::new(),
         }
     }

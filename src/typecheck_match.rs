@@ -512,6 +512,54 @@ pub(crate) async fn typecheck_case_arm(
     }
 }
 
+/// Extract narrowing type from an `@[is: T]` annotation on a function parameter.
+///
+/// Looks for a `PropertyDict` annotation with an `"is"` key and resolves the value
+/// as a type annotation. Returns `None` if the annotation is not a PropertyDict,
+/// has no `"is"` key, or the value cannot be resolved as a type.
+///
+/// This enables annotation-driven type narrowing: any function whose parameter
+/// carries `@[is: T]` can narrow its argument's type in conditional branches,
+/// without the type checker needing to hardcode predicate function names.
+async fn extract_is_narrowing(
+    ann: &Annotation,
+    env: &Rc<TypeEnv>,
+    state: &mut InferState,
+    constraints: &mut Vec<Constraint>,
+    ann_mapping: &mut Option<&mut HashMap<String, String>>,
+    row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
+) -> Option<Type> {
+    if let Annotation::PropertyDict(entries) = ann {
+        for entry in entries {
+            if let Some(ref key) = entry.node.key {
+                if matches!(&key.expr, SurfaceExpression::Str(s) if s == "is") {
+                    // Resolve the value as a type annotation.
+                    // The value is typically a simple type name like Int, String, etc.
+                    let ann_for_value = match &entry.node.value.expr {
+                        SurfaceExpression::VarRef { name, .. } => {
+                            Annotation::Simple(name.clone())
+                        }
+                        _ => return None,
+                    };
+                    return resolve_annotation(
+                        &ann_for_value,
+                        env,
+                        entry.node.value.span.clone(),
+                        state,
+                        constraints,
+                        ann_mapping,
+                        row_ann_mapping,
+                        None,
+                    )
+                    .await
+                    .ok();
+                }
+            }
+        }
+    }
+    None
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn infer_fn(
     return_ann: &Option<Spanned<Annotation>>,
@@ -602,6 +650,33 @@ pub(crate) async fn infer_fn(
         };
         param_types.push((Some(p.node.name.clone()), ty));
     }
+
+    // Extract @[is: T] narrowing annotations from parameters.
+    // These enable annotation-driven type narrowing: when a predicate function
+    // like [fn@Boolean [let x@[is: Int]] ...] is used in a condition, the type
+    // checker narrows x to Int in the then-branch without hardcoding the predicate
+    // name — the narrowing type is derived from the annotation alone.
+    let mut param_narrowings: Vec<Option<Type>> = Vec::new();
+    let mut has_any_narrowing = false;
+    for p in params.iter() {
+        let narrowing = if let Some(ann) = &p.node.annotation {
+            extract_is_narrowing(&ann.node, env, state, constraints, &mut ann_mapping_opt, &mut row_ann_mapping_opt).await
+        } else {
+            None
+        };
+        if narrowing.is_some() {
+            has_any_narrowing = true;
+        }
+        param_narrowings.push(narrowing);
+    }
+    // Store narrowings on InferState for the caller to consume and attach to the TypeScheme.
+    // Only populate if at least one param has a narrowing annotation (avoid allocating for
+    // the common case of non-predicate functions).
+    state.pending_param_narrowings = if has_any_narrowing {
+        param_narrowings
+    } else {
+        Vec::new()
+    };
 
     let mut fn_env = TypeEnv::with_parent(env);
     for (i, param) in params.iter().enumerate() {

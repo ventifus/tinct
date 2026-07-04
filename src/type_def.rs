@@ -354,7 +354,7 @@ pub enum Type {
     Intersection(Vec<Type>),
     /// Negation type — ~A, the complement type. Represents "definitely not A".
     /// Essential for BAS constraint solving (C-Var1/2 rules) and false-branch narrowing.
-    /// Example: after `[int? x]` fails, x : (Int | Str) & ~Int = Str.
+    /// Example: after a type predicate guard on x fails, x : (Int | Str) & ~Int = Str.
     /// In annotation syntax: @[[without A]].
     Negation(Box<Type>),
     /// Never type — ⊥, the bottom type. Represents "no value can inhabit this type".
@@ -1075,7 +1075,7 @@ impl Type {
             (Type::Str | Type::StringLiteral(_), Type::Record(_)) => true,
             (Type::Bytes, Type::Record(_)) => true,
 
-            // Function vs primitives (for precise false-branch narrowing after fn? guards)
+            // Function vs primitives (for precise false-branch narrowing after function predicate guards)
             (Type::Function { .. }, Type::Int | Type::IntLiteral(_)) => true,
             (Type::Function { .. }, Type::Float) => true,
             (Type::Function { .. }, Type::Str | Type::StringLiteral(_)) => true,

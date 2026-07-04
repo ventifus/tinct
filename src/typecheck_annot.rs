@@ -1669,11 +1669,13 @@ pub(crate) async fn resolve_annotation(
             // the key is present and we only need the value node).
             //
             // The "type:" shorthand ONLY applies when all keys are annotation metadata
-            // (type:, default:, repr:, doc:). If there are non-metadata keys like "id:", "name:",
+            // (type:, default:, repr:, doc:, is:). If there are non-metadata keys like "id:", "name:",
             // etc., the annotation must be a structural record type — "type:" is a field name.
             // E.g.: @[type: String] → Type::Str (shorthand)
             //       @[type: String id: Int] → Record{type: Str, id: Int} (structural)
-            let metadata_keys = ["type", "default", "repr", "doc"];
+            // "is:" is narrowing metadata: @[is: Int] declares a type predicate narrowing hint
+            // for path-sensitive type narrowing in if/match conditions.
+            let metadata_keys = ["type", "default", "repr", "doc", "is"];
             let has_non_metadata_key = surface_entries.iter().any(|se| {
                 if let Some(ref k) = se.node.key {
                     match &k.expr {
@@ -1696,6 +1698,15 @@ pub(crate) async fn resolve_annotation(
             } else {
                 None
             };
+
+            // When all keys are annotation metadata but no "type:" key is present,
+            // the annotation carries only metadata (e.g., @[is: Int], @[default: 3],
+            // @[doc: "..."]). Return Unknown: the metadata doesn't define a type.
+            // Note: "label" is not in metadata_keys, so @[label: l] takes the normal
+            // has_non_metadata_key path and is handled by the label: branch below.
+            if !has_non_metadata_key && type_value_node.is_none() {
+                return Ok(Type::Unknown);
+            }
 
             if let Some(type_node) = type_value_node {
                 // @[type: T ...] shorthand — resolve the type: value as a type expression.

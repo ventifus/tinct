@@ -1713,6 +1713,7 @@ async fn register_type_aliases(
                             kind_vars: vec![],
                             doc: None,
                             inner_schemes: None,
+                            param_narrowings: Vec::new(),
                         };
                         // Register the qualified form (e.g., "Result.Ok") for pattern matching
                         // and dot-access from the type dict (Color.Red, Option.Some, etc.).
@@ -1752,16 +1753,17 @@ async fn infer_if(
     let _cond_ty = infer_surface_expr(cond, env, state, constraints, type_map).await?;
 
     // Extract narrowings from the condition — walks SurfaceExpression natively.
-    let narrowings = extract_narrowings(cond);
+    // Uses env to look up param_narrowings on called functions' TypeSchemes.
+    let narrowings = extract_narrowings(cond, env);
 
     // Fork the environment for the true branch
     let env_true = apply_narrowings(env, &narrowings, state);
 
     // Fork the environment for the false branch: apply negation narrowings (BAS false-branch).
-    // For each TypeOf narrowing (e.g., [int? x] → x : Int in true branch),
-    // the false branch narrows x to Negation(Int) — i.e., "definitely not Int".
-    // This enables false-branch type refinement: if x : Int | Str and [int? x] fails,
-    // then x : (Int | Str) & ~Int = Str in the false branch.
+    // For each TypeOf narrowing (type predicate on x narrows x to T in the true branch),
+    // the false branch narrows x to Negation(T) — i.e., "definitely not T".
+    // This enables false-branch type refinement: if x : T1 | T2 and the predicate fails,
+    // then x : (T1 | T2) & ~T1 = T2 in the false branch.
     let env_false = apply_negation_narrowings(env, &narrowings, state);
 
     // Infer the then and else branches in their respective environments
@@ -2933,7 +2935,8 @@ pub(crate) fn infer_surface_expr<'a>(
                             infer_surface_expr(guard, &arm_env, state, constraints, type_map)
                                 .await?;
                         // extract_narrowings walks SurfaceExpression natively — pass guard directly.
-                        let guard_narrowings = extract_narrowings(guard);
+                        // Uses arm_env to look up param_narrowings on called functions.
+                        let guard_narrowings = extract_narrowings(guard, &arm_env);
                         if guard_narrowings.is_empty() {
                             arm_env
                         } else {
@@ -3612,6 +3615,7 @@ async fn infer_class_decl_from_surface(
             kind_vars: vec![],
             doc: None,
             inner_schemes: None,
+            param_narrowings: Vec::new(),
         };
         state
             .pending_scheme_injections

@@ -1084,6 +1084,7 @@ async fn test_check_call_with_scheme_non_function_scheme() {
             kind_vars: Vec::new(),
             doc: None,
             inner_schemes: None,
+            param_narrowings: Vec::new(),
         },
     );
     let parent_env = Rc::new(parent_env);

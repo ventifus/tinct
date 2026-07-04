@@ -14,9 +14,7 @@
 //! **Type introspection:**
 //! - `type-of`: Return the runtime type name
 //! - `tag-of`: Extract tag from a Variant
-//! - All type predicates (`int?`, `float?`, `str?`, `bool?`, `null?`, `dict?`, `fn?`, `seq?`,
-//!   `bytes?`, `proxy?`, `num?`, `record?`, `map?`) are implemented in stdlib/prelude.llt
-//!   via `[match x [@Type _]: true _: false]` — no Rust implementations remain.
+//! - Type predicates: all implemented in stdlib/prelude.llt via type pattern matching.
 //!
 //! **AST and evaluation:**
 //! - `eval-ast`: Reconstruct and evaluate AST from dict representation
@@ -1393,9 +1391,7 @@ pub(crate) fn builtin_make_annotated(
     })
 }
 
-// All type predicates (int?, float?, str?, bool?, null?, dict?, fn?, seq?, bytes?, proxy?)
-// are implemented in stdlib/prelude.llt via [match x [@Type _]: true _: false].
-// The Rust implementations were removed in the type-predicates-to-tinct sprint.
+// Type predicates are implemented in stdlib/prelude.llt via type pattern matching.
 
 /// Helper for runtime type name extraction.
 fn type_name(val: &Value) -> String {

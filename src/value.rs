@@ -775,7 +775,7 @@ pub enum Value {
     // `load` returns Value::Program; `expand` takes and returns Value::Program;
     // `eval` takes [Seq Expr.*]; `ast-of` returns `Value::Variant { tag: "Expr.*", .. }`.
     //
-    // `dict?` returns false for Program and Document — they are nominal types, not plain Dicts.
+    // Type predicates return false for Program and Document — they are nominal types, not plain Dicts.
     // AST expression nodes are represented as `Expr.*` Variants (e.g. Expr.VarRef, Expr.Call).
     // Match dispatch on AST nodes uses the standard Variant tag mechanism.
     /// A complete tinct program — the type returned by `load` and `expand`.
