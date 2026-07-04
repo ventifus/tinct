@@ -2477,7 +2477,11 @@ MatchableInt@[doc: "Matchable instance for Int: the Int value is the match signa
   [instance Matchable
     [let a@Int]: [to-match: [fn@Int [let x@Int] x]]]
 
-to-match@[doc: "Convert to match signal (1=match, 0=no-match). Used by pattern matching engine."]:
+# to-match: top-level callable for the Matchable protocol.
+# Needed because class method declarations do not yet inject method names as
+# top-level callables (T-1492: fix class method injection). Once fixed,
+# this wrapper goes away — the class method IS to-match.
+to-match@[doc: "Convert to match signal (1=match, 0=no-match) via Matchable typeclass."]:
   [fn@Int [let x] [bool->int x]]
 
 # ============================================================================
