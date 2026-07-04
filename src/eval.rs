@@ -2057,6 +2057,63 @@ fn eval_core_expr<'a>(
 /// # Side effects
 ///
 /// Mutates the thunk's internal state via `ThunkInner`. On success, transitions to
+/// Convert a tinct value to a match signal by calling the tinct-side `to-match` function.
+///
+/// **Rust protocol:** Only `Value::Int` is handled directly — nonzero = true, zero = false.
+/// This is the native truth signal and requires no dispatch.
+///
+/// **All other types** (including `Boolean.True/False` variants) are dispatched through
+/// the tinct-level `to-match` function, which is backed by the `Matchable` typeclass.
+/// The `to-match` function returns `Value::Int(1)` for truthy values and `Value::Int(0)`
+/// for falsy values.
+///
+/// No fast paths for `Boolean.True`/`Boolean.False` tag strings — those go through
+/// tinct dispatch like any other non-Int type.
+pub async fn call_to_match(
+    val: &Value,
+    env: &Arc<RwLock<Environment>>,
+    ctx: &Arc<EvalContext>,
+    span: &Span,
+) -> bool {
+    // Int is the Rust-native truth signal — no dispatch needed
+    if let Value::Int(n) = val {
+        return *n != 0;
+    }
+
+    // For all other types, look up `to-match` from the current environment and dispatch.
+    // This covers Boolean.True/False (handled by the Matchable Boolean instance),
+    // and any user-defined Matchable types.
+    //
+    // The `to-match` function is defined in the prelude and is visible in any environment
+    // that descends from the prelude scope (which includes all user code environments).
+    let to_match_thunk = {
+        let env_read = env.read().unwrap();
+        env_read.get_by_name("to-match")
+    };
+    let Some(to_match_fn) = to_match_thunk else {
+        // to-match not loaded yet (bootstrap / pre-prelude context): conservative false
+        return false;
+    };
+
+    let val_thunk = Arc::new(Thunk::new_materialized(val.clone(), span.clone()));
+    let call_thunk = Arc::new(Thunk::new_pending_call(
+        to_match_fn,
+        vec![val_thunk],
+        IndexMap::new(),
+        span.clone(),
+        Arc::clone(env),
+        span.clone(),
+        Some(Arc::from("to-match")),
+        Arc::clone(ctx),
+        crate::builtins::synthetic_call_expr(span.clone()),
+    ));
+
+    match materialize(&call_thunk, Some(span), ctx).await {
+        Ok(Value::Int(n)) => n != 0,
+        _ => false,
+    }
+}
+
 /// `Materialized` via `set_materialized()`. On failure, transitions to `Failed` via
 /// `cache_failure_once()`.
 ///

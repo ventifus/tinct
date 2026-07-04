@@ -2447,6 +2447,20 @@ Equatable@[doc: "Type class for types that support equality comparison"]:
   [let a]: [=: [fn [let x y] Boolean.False]]]
 
 # ============================================================================
+# to-match: Rust-runtime match protocol
+# ============================================================================
+
+# Convert a tinct value to a match signal (Int 1/0) for the pattern matching engine.
+# The Rust runtime only understands Int as a truth signal — nonzero is truthy, zero is falsy.
+# All other types (including Boolean.True/False) must go through this function.
+#
+# This is the ONE tinct name the Rust runtime knows — eval.rs::call_to_match looks up
+# "to-match" in the current environment and dispatches through it for non-Int values.
+# Uses bool->int which already handles Boolean.True/False→1/0 and Int→passthrough.
+to-match@[doc: "Convert to match signal (1=match, 0=no-match). Used by pattern matching engine."]:
+  [fn@Int [let x] [bool->int x]]
+
+# ============================================================================
 # Type Class Declarations: Comparable
 # ============================================================================
 

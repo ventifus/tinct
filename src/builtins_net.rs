@@ -314,7 +314,7 @@ pub(crate) async fn build_tls_config(
     {
         let thunk = ctx.get_thunk(*thunk_id);
         let val = crate::eval::materialize(&thunk, Some(&opts_span), ctx).await?;
-        val.is_truthy()
+        val.as_bool_sync()
     } else {
         false
     };
@@ -354,7 +354,7 @@ pub(crate) async fn build_tls_config(
     {
         let thunk = ctx.get_thunk(*thunk_id);
         let val = crate::eval::materialize(&thunk, Some(&opts_span), ctx).await?;
-        val.is_truthy()
+        val.as_bool_sync()
     } else {
         false
     };

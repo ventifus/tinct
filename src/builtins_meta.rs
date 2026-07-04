@@ -383,7 +383,7 @@ pub(crate) fn builtin_until(
             named,
             call_span,
             ctx,
-            ..
+            caller_env,
         } = ctx_arg;
         reject_named("until", named.as_ref(), call_span.clone())?;
         if args.len() != 3 {
@@ -410,7 +410,7 @@ pub(crate) fn builtin_until(
 
             let pred_val = materialize(&pred_result, Some(&call_span), &ctx).await?;
 
-            if pred_val.is_truthy() {
+            if crate::eval::call_to_match(&pred_val, &caller_env, &ctx, &call_span).await {
                 // Predicate holds, return the current value (as thunk)
                 return Ok(val_thunk);
             } else {
@@ -3751,7 +3751,7 @@ fn validate_value(
                             {
                                 let req_thunk = ctx.get_thunk(req_thunk_id);
                                 let req_val = materialize(&req_thunk, Some(&span), &ctx).await?;
-                                req_val.is_truthy()
+                                req_val.as_bool_sync()
                             } else {
                                 false
                             };

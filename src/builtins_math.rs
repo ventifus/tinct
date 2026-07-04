@@ -547,11 +547,11 @@ pub(crate) fn builtin_lte(
         })
         .await?;
 
-        // Negate the result
+        // Negate the result (builtin_lt always returns Value::Int(0/1))
         let val = gt_result
             .try_get_materialized()
             .expect("builtin_lt returns materialized");
-        ok_val(Value::Int(if val.is_truthy() { 0 } else { 1 }), call_span)
+        ok_val(Value::Int(if matches!(val, Value::Int(n) if n != 0) { 0 } else { 1 }), call_span)
     })
 }
 
@@ -585,11 +585,11 @@ pub(crate) fn builtin_gte(
         })
         .await?;
 
-        // Negate the result
+        // Negate the result (builtin_lt always returns Value::Int(0/1))
         let val = lt_result
             .try_get_materialized()
             .expect("builtin_lt returns materialized");
-        ok_val(Value::Int(if val.is_truthy() { 0 } else { 1 }), call_span)
+        ok_val(Value::Int(if matches!(val, Value::Int(n) if n != 0) { 0 } else { 1 }), call_span)
     })
 }
 

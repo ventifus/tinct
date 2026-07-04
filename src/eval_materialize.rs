@@ -3177,9 +3177,9 @@ pub(crate) async fn apply_cont(
                         }
                     }
 
-                    let is_truthy = guard_value.is_truthy();
+                    let guard_passed = crate::eval::call_to_match(&guard_value, &arm_env, &ctx, &match_span).await;
 
-                    if is_truthy {
+                    if guard_passed {
                         // Guard passed — evaluate the body
                         Action::EvalCore {
                             expr: body,
@@ -3254,7 +3254,7 @@ pub(crate) async fn apply_cont(
                         }
                     }
 
-                    let matched = predicate_value.is_truthy();
+                    let matched = crate::eval::call_to_match(&predicate_value, &env, &ctx, &match_span).await;
 
                     if matched {
                         // Predicate returned true — arm matches.
@@ -3344,9 +3344,9 @@ pub(crate) async fn apply_cont(
                         }
                     }
 
-                    let is_truthy = predicate_value.is_truthy();
+                    let pred_passed = crate::eval::call_to_match(&predicate_value, &env, &ctx, &expr_span).await;
 
-                    if is_truthy {
+                    if pred_passed {
                         // Predicate passed — return the original value
                         Action::Continue(Ok(value))
                     } else {
@@ -3563,7 +3563,7 @@ fn eval_structural_pattern_inner<'a>(
                     let pred_result =
                         materialize(&pred_call_thunk, Some(&match_span), ctx).await?;
 
-                    if !pred_result.is_truthy() {
+                    if !crate::eval::call_to_match(&pred_result, arm_env, ctx, &match_span).await {
                         return Ok(false);
                     }
                 }
@@ -3773,7 +3773,7 @@ fn eval_structural_pattern_inner<'a>(
                         ));
                         let guard_result =
                             materialize(&guard_thunk, Some(&match_span), ctx).await?;
-                        Ok(guard_result.is_truthy())
+                        Ok(crate::eval::call_to_match(&guard_result, arm_env, ctx, &match_span).await)
                     }
 
                     other => Err(EvalError::type_mismatch_ctx(

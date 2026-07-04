@@ -987,14 +987,29 @@ impl Value {
         }
     }
 
+    /// Check if this value is truthy using the Rust-native Int protocol ONLY.
+    ///
+    /// Only `Value::Int(n)` is checked: nonzero = true, zero = false.
+    /// All other types (including `Boolean.True/False` variants) return `false` —
+    /// non-Int types must go through tinct-side `to-match` dispatch via `call_to_match`.
     pub fn is_truthy(&self) -> bool {
+        matches!(self, Value::Int(n) if *n != 0)
+    }
+
+    /// Synchronous truth check for compile-time / AST interpretation contexts
+    /// where async dispatch is not available.
+    ///
+    /// Handles both the Rust-native Int protocol (`Int(0)` = false, `Int(nonzero)` = true)
+    /// and the tinct-side Boolean nominal type (`Boolean.True` = true, `Boolean.False` = false).
+    ///
+    /// This is NOT part of the runtime match protocol — it exists only for sync AST
+    /// field interpretation (e.g., `surface_convert.rs`, `typecheck_annot.rs`).
+    pub fn as_bool_sync(&self) -> bool {
         match self {
-            Value::Int(0) => false,
-            Value::Int(_) => true,
+            Value::Int(n) => *n != 0,
             Value::Variant { tag, payload: None } if tag == "Boolean.True" => true,
             Value::Variant { tag, payload: None } if tag == "Boolean.False" => false,
-            Value::Dict(m) => !m.is_empty(),
-            _ => true,
+            _ => false,
         }
     }
 

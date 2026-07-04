@@ -1351,7 +1351,7 @@ pub(crate) fn builtin_par_filter(
         named,
         call_span,
         ctx,
-        ..
+        caller_env,
     } = ctx_arg;
     Box::pin(async move {
         let (pred_thunk, seq_thunk) =
@@ -1371,6 +1371,7 @@ pub(crate) fn builtin_par_filter(
             let ctx_clone = Arc::clone(&ctx);
             let call_span_clone = call_span.clone();
             let item_id_copy = *item_id;
+            let caller_env_clone = Arc::clone(&caller_env);
 
             let handle = crate::async_rt::spawn_local(async move {
                 // Materialize the predicate
@@ -1443,8 +1444,8 @@ pub(crate) fn builtin_par_filter(
                     }
                 };
 
-                // Check if result is truthy
-                if result.is_truthy() {
+                // Check if result is truthy via Matchable dispatch
+                if crate::eval::call_to_match(&result, &caller_env_clone, &ctx_clone, &call_span_clone).await {
                     Ok(Some((idx, item_id_copy)))
                 } else {
                     Ok(None)

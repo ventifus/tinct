@@ -897,7 +897,7 @@ pub(crate) fn builtin_sort(
         named,
         call_span,
         ctx,
-        ..
+        caller_env,
     } = ctx_arg;
     Box::pin(async move {
         reject_named("sort", named.as_ref(), call_span.clone())?;
@@ -1002,7 +1002,7 @@ pub(crate) fn builtin_sort(
                     };
 
                     let result_val = materialize(&result_thunk, Some(&call_span), &ctx).await?;
-                    if result_val.is_truthy() {
+                    if crate::eval::call_to_match(&result_val, &caller_env, &ctx, &call_span).await {
                         // truthy means a > b → swap
                         pairs.swap(j - 1, j);
                         j -= 1;

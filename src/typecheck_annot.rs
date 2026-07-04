@@ -4535,7 +4535,7 @@ fn typenode_value_to_type<'a>(
                             _ => indexmap::IndexMap::new(), // Empty or unrecognized fields → empty record
                         };
 
-                        let tail = if open_val.is_truthy() {
+                        let tail = if open_val.as_bool_sync() {
                             crate::type_def::RowTail::Uniform {
                                 key: None,
                                 value: Box::new(Type::Unknown),
