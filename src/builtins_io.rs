@@ -920,21 +920,21 @@ pub(crate) fn builtin_stat(
         dict.insert(
             HashableValue::Str("is-dir".into()),
             ctx.alloc_thunk(ok_val(
-                Value::boolean(metadata.is_dir()),
+                Value::Int(if metadata.is_dir() { 1 } else { 0 }),
                 call_span.clone(),
             )?),
         );
         dict.insert(
             HashableValue::Str("is-file".into()),
             ctx.alloc_thunk(ok_val(
-                Value::boolean(metadata.is_file()),
+                Value::Int(if metadata.is_file() { 1 } else { 0 }),
                 call_span.clone(),
             )?),
         );
         dict.insert(
             HashableValue::Str("is-symlink".into()),
             ctx.alloc_thunk(ok_val(
-                Value::boolean(metadata.is_symlink()),
+                Value::Int(if metadata.is_symlink() { 1 } else { 0 }),
                 call_span.clone(),
             )?),
         );
@@ -991,7 +991,7 @@ pub(crate) fn builtin_exists(
             )
         })?;
 
-        ok_val(Value::boolean(exists), call_span)
+        ok_val(Value::Int(if exists { 1 } else { 0 }), call_span)
     })
 }
 
@@ -1101,21 +1101,21 @@ pub(crate) fn builtin_stat_symlink(
         dict.insert(
             HashableValue::Str("is-dir".into()),
             ctx.alloc_thunk(ok_val(
-                Value::boolean(metadata.is_dir()),
+                Value::Int(if metadata.is_dir() { 1 } else { 0 }),
                 call_span.clone(),
             )?),
         );
         dict.insert(
             HashableValue::Str("is-file".into()),
             ctx.alloc_thunk(ok_val(
-                Value::boolean(metadata.is_file()),
+                Value::Int(if metadata.is_file() { 1 } else { 0 }),
                 call_span.clone(),
             )?),
         );
         dict.insert(
             HashableValue::Str("is-symlink".into()),
             ctx.alloc_thunk(ok_val(
-                Value::boolean(metadata.is_symlink()),
+                Value::Int(if metadata.is_symlink() { 1 } else { 0 }),
                 call_span.clone(),
             )?),
         );
@@ -2388,7 +2388,7 @@ pub(crate) fn builtin_file_write(
             )
         })?;
 
-        ok_val(Value::Dict(IndexMap::new()), call_span)
+        Ok(Arc::clone(&args[0]))
     })
 }
 
@@ -2436,7 +2436,7 @@ pub(crate) fn builtin_file_flush(
             )
         })?;
 
-        ok_val(Value::Dict(IndexMap::new()), call_span)
+        ok_val(Value::Int(1), call_span)
     })
 }
 
@@ -2468,7 +2468,7 @@ pub(crate) fn builtin_file_close(
             Value::File(_) => {
                 // Dropping the Rc here closes the file if no other references exist.
                 drop(val);
-                ok_val(Value::Dict(IndexMap::new()), call_span)
+                ok_val(Value::Int(1), call_span)
             }
             other => Err(EvalError::type_mismatch_ctx(
                 "builtin-file-close".to_string(),
@@ -2553,17 +2553,17 @@ pub(crate) fn builtin_file_seek(
                 )
             })?;
 
-        ok_val(Value::Dict(IndexMap::new()), call_span)
+        ok_val(Value::Int(1), call_span)
     })
 }
 
-/// `builtin-write-stdout`: Write a String to `std::io::stdout()`.
+/// `builtin-write-stdout`: Write a String to `std::io::stdout()`, return handle.
 ///
-/// Stateless: no handle argument, no capability check. Just writes to stdout directly.
-/// Returns empty dict `[]`.
+/// Args: (s: String, h: any). Writes s to stdout, returns h (the handle) for chaining.
+/// h is passed through lazily — it is not materialized.
 ///
 /// Used by the `%stdout` protocol dict in loader.llt Dict 2:
-///   `write: [fn [let s] [builtin-write-stdout s]]`
+///   `write: [fn [let s h] [builtin-write-stdout s h]]`
 pub(crate) fn builtin_write_stdout(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
@@ -2572,32 +2572,33 @@ pub(crate) fn builtin_write_stdout(
             args,
             named,
             call_span,
-            ctx,
             ..
         } = ctx_arg;
 
-        let val = crate::builtins::expect_one_arg(
-            "builtin-write-stdout",
-            &args,
-            named.as_ref(),
-            &ctx,
-            call_span.clone(),
-        )?;
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+        reject_named("builtin-write-stdout", named.as_ref(), call_span.clone())?;
 
-        let s = require_string("builtin-write-stdout", val, args[0].span.clone())?;
+        let s_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by pos_strictness[0]=Seq");
+
+        let s = require_string("builtin-write-stdout", s_val, args[0].span.clone())?;
 
         use std::io::Write;
         std::io::stdout().write_all(s.as_bytes()).map_err(|e| {
             EvalError::user_error(format!("builtin-write-stdout: {e}"), call_span.clone())
         })?;
 
-        ok_val(Value::Dict(IndexMap::new()), call_span)
+        Ok(Arc::clone(&args[1]))
     })
 }
 
-/// `builtin-write-stderr`: Write a String to `std::io::stderr()`.
+/// `builtin-write-stderr`: Write a String to `std::io::stderr()`, return handle.
 ///
-/// Stateless. Returns empty dict `[]`.
+/// Args: (s: String, h: any). Writes s to stderr, returns h (the handle) for chaining.
+/// h is passed through lazily — it is not materialized.
 pub(crate) fn builtin_write_stderr(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
@@ -2606,19 +2607,19 @@ pub(crate) fn builtin_write_stderr(
             args,
             named,
             call_span,
-            ctx,
             ..
         } = ctx_arg;
 
-        let val = crate::builtins::expect_one_arg(
-            "builtin-write-stderr",
-            &args,
-            named.as_ref(),
-            &ctx,
-            call_span.clone(),
-        )?;
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+        reject_named("builtin-write-stderr", named.as_ref(), call_span.clone())?;
 
-        let s = require_string("builtin-write-stderr", val, args[0].span.clone())?;
+        let s_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by pos_strictness[0]=Seq");
+
+        let s = require_string("builtin-write-stderr", s_val, args[0].span.clone())?;
 
         use std::io::Write;
         std::io::stderr().write_all(s.as_bytes()).map_err(|e| {
@@ -2628,7 +2629,7 @@ pub(crate) fn builtin_write_stderr(
             )
         })?;
 
-        ok_val(Value::Dict(IndexMap::new()), call_span)
+        Ok(Arc::clone(&args[1]))
     })
 }
 

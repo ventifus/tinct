@@ -84,12 +84,11 @@ impl DocumentState {
         let mut doc_map = DocMap::new();
         let mut scheme_map = SchemeMap::new();
 
-        // PIPELINE INVARIANT: expand → desugar → resolve → typecheck
-        // This order is enforced across all entry points (main.rs, lib.rs).
-        // Macros expand first (on SurfaceProgram), then $_ placeholders are desugared,
-        // then variable resolution runs, then the type checker sees the fully elaborated AST.
+        // PIPELINE INVARIANT: parse → desugar → resolve → typecheck
+        // Desugar $_ placeholders first, then variable resolution runs,
+        // then the type checker sees the fully elaborated AST.
         //
-        // The expanded+desugared SurfaceProgram is captured in `surface` for use by the
+        // The desugared SurfaceProgram is captured in `surface` for use by the
         // imports API (include-path collection, type-env building) and the type checker,
         // which both now operate directly on the Surface AST.
         let mut surface: Option<SurfaceProgram> = None;
@@ -98,41 +97,10 @@ impl DocumentState {
                 // Fatal parse error already captured in fatal_parse_error above
             }
             Ok(mut program) => {
-                // Expand macros on SurfaceProgram (Surface-based API, consistent with all other
-                // production entry points).
-                match crate::async_rt::block_on_anywhere(crate::expand::expand_surface_program(
-                    &mut program,
-                    Arc::clone(&eval_ctx.config.stdlib_env),
-                    eval_ctx.config.no_fs,
-                    &eval_ctx.config.base_dir,
-                )) {
-                    Ok(_) => {}
-                    Err(e) => {
-                        // Macro expansion error — convert to parse error and return early
-                        let expansion_error = crate::parser::ParseError {
-                            message: format!("macro expansion error: {}", e),
-                            span: None,
-                        };
-                        return Self {
-                            text: text.clone(),
-                            fatal_parse_error: Some(expansion_error.clone()),
-                            surface: None,
-                            parse_errors: vec![expansion_error],
-                            type_errors: vec![],
-                            type_diagnostics: vec![],
-                            eval_errors: vec![],
-                            type_map: TypeMap::new(),
-                            doc_map: DocMap::new(),
-                            scheme_map: SchemeMap::new(),
-                            literate_blocks: vec![],
-                        };
-                    }
-                }
-
-                // Desugar $_ implicit lambdas on SurfaceProgram (after expansion).
+                // Desugar $_ implicit lambdas on SurfaceProgram.
                 crate::desugar::desugar_surface_program(&mut program);
 
-                // Capture the expanded+desugared SurfaceProgram.
+                // Capture the desugared SurfaceProgram.
                 // The imports API and type checker now operate on SurfaceProgram directly.
                 surface = Some(program.clone());
 
@@ -645,7 +613,7 @@ impl DocumentStore {
 
     /// Get the base evaluation context.
     ///
-    /// Used by LSP analysis functions that need to expand macros.
+    /// Used by LSP analysis functions that need the evaluation context.
     pub fn eval_ctx(&self) -> &Arc<crate::eval::EvalContext> {
         &self.base_eval_ctx
     }

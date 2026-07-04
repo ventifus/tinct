@@ -152,6 +152,12 @@ pub struct InferState {
     /// names across separate type alias declarations (W042). A tag name appearing in two
     /// different `[type ...]` declarations produces a W042 diagnostic on the second occurrence.
     pub registered_nominal_tags: HashMap<String, Span>,
+    /// Instance binding name → slot within its definition scope frame.
+    /// Populated from the resolver's `instance_binding_slots` export in the eval pipeline.
+    /// Used by the type checker to write `call_dispatch` coordinates when dispatching a
+    /// typeclass method call: level comes from the class method stub VarRef's resolution,
+    /// slot comes from this map. Empty in typecheck-only paths (no lowering, so unused).
+    pub instance_binding_slots: std::collections::HashMap<String, u32>,
     // type_annotation_table removed: TypeAssert types and call_dispatch are now written
     // inline on AST nodes (TypeAnnotation OnceLock fields) rather than accumulated here.
     /// Resolved types for pipeline `expects:` contracts, keyed by the expects annotation's span.
@@ -169,6 +175,12 @@ pub struct InferState {
     /// Set by the TypeContext system during stdlib/prelude loading. The type-stage env
     /// contains type-level builtins (TypeNode, object-map, etc.) but no IO/caps/runtime API.
     pub type_stage_env: Option<Arc<RwLock<crate::value::Environment>>>,
+    /// Main runtime environment from the eval pipeline. When set, `eval_type_stage_expr`
+    /// chains this as the parent of the type-stage env so that type constructor names
+    /// (`Seq`, `Dict`, etc.) defined in the main env are visible during annotation evaluation.
+    /// This is the cross-stage bridge: type-stage can resolve types from the main env.
+    /// Only set in the eval path (builtin_eval_types); None in typecheck-only paths.
+    pub main_env: Option<Arc<RwLock<crate::value::Environment>>>,
     /// Pending method scheme injections from `infer_class_decl_from_surface`.
     ///
     /// When a `[class ...]` declaration is processed, `infer_class_decl_from_surface` builds
@@ -354,6 +366,8 @@ impl InferState {
             type_var_source_names: HashMap::new(),
             t013_emitted: std::collections::HashSet::new(),
             registered_nominal_tags: HashMap::new(),
+            instance_binding_slots: std::collections::HashMap::new(),
+            main_env: None,
             expects_resolved: HashMap::new(),
             type_stage_env: None,
             pending_scheme_injections: Vec::new(),

@@ -398,7 +398,7 @@ pub(crate) fn builtin_bytes_equal(
             }
         };
 
-        ok_val(Value::boolean(bytes1 == bytes2), call_span)
+        ok_val(Value::Int(if bytes1 == bytes2 { 1 } else { 0 }), call_span)
     })
 }
 
@@ -480,12 +480,12 @@ pub(crate) fn builtin_ct_equal(
 
         // Different lengths: return false (still in constant time per subtle docs)
         if bytes1.len() != bytes2.len() {
-            return ok_val(Value::boolean(false), call_span);
+            return ok_val(Value::Int(0), call_span);
         }
 
         // Constant-time comparison
         let result = bytes1.ct_eq(bytes2);
-        ok_val(Value::boolean(result.into()), call_span)
+        ok_val(Value::Int(if result.into() { 1 } else { 0 }), call_span)
     })
 }
 

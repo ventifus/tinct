@@ -314,19 +314,7 @@ pub(crate) async fn build_tls_config(
     {
         let thunk = ctx.get_thunk(*thunk_id);
         let val = crate::eval::materialize(&thunk, Some(&opts_span), ctx).await?;
-        match val.as_bool() {
-            Some(b) => b,
-            None if matches!(val, Value::Dict(ref d) if d.is_empty()) => false, // Null
-            None => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "tls-connect opts.no-system-roots".to_string(),
-                    "Bool",
-                    val.type_name(),
-                    opts_span.clone(),
-                )
-                .into())
-            }
-        }
+        val.is_truthy()
     } else {
         false
     };
@@ -366,19 +354,7 @@ pub(crate) async fn build_tls_config(
     {
         let thunk = ctx.get_thunk(*thunk_id);
         let val = crate::eval::materialize(&thunk, Some(&opts_span), ctx).await?;
-        match val.as_bool() {
-            Some(b) => b,
-            None if matches!(val, Value::Dict(ref d) if d.is_empty()) => false, // Null
-            None => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "tls-connect opts.mozilla-roots".to_string(),
-                    "Bool",
-                    val.type_name(),
-                    opts_span.clone(),
-                )
-                .into())
-            }
-        }
+        val.is_truthy()
     } else {
         false
     };

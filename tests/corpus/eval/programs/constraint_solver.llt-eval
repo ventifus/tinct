@@ -16,8 +16,9 @@
 
   solutions: [split "\n" [trim text]]
 
-  check-count: [if [= [length solutions] 8] True [raise "expected 8 solutions"]]
-  check-first: [if [= [get 0 solutions] "1+5+9=15"] True [raise "wrong first triple"]]
-
-  result: [begin check-count check-first [join "\n" solutions]]
+  result: [if [= [length solutions] 8]
+    [if [= [get 0 solutions] "1+5+9=15"]
+      [join "\n" solutions]
+      [raise "wrong first triple"]]
+    [raise "expected 8 solutions"]]
 ]

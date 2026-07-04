@@ -6,7 +6,7 @@
 # cap: DirCap, path: String
 # Returns: [Ok seq] or [Error message]
 read-lines@[doc: "Read a file as a lazy sequence of lines"]: [fn@Dict [let cap@DirCap path@String]
-  [try [fn [let] [lines [open cap path Readable]]]]]
+  [try [fn [let] [lines [open cap path "read"]]]]]
 
 # Print a string followed by a newline to stdout.
 println@[doc: "Print a string followed by a newline to stdout"]: [fn@Null [let s@String]
@@ -26,22 +26,22 @@ write-file@[doc: "Write a string to a file (creates or truncates)"]: [fn@Null [l
 write-file-atomic@[doc: "Atomically write a string to a file (write-to-temp + rename)"]: [fn@Null [let cap@DirCap path@String content@String]
   [write-atomic cap path content]]
 
-# Write a line to a file handle (protocol dict), appending a newline and flushing.
-# handle: protocol dict (from open), line: String
-write-line@[doc: "Write a line to a file handle, appending a newline and flushing"]: [fn@Null [let handle line@String]
-  [>> [handle.write [str line "\n"]] [handle.flush]]]
+# Write a line to a file handle, appending a newline and flushing.
+# line: String, h: handle (content first, handle last for pipeline chaining)
+write-line@[doc: "Write a line to a file handle, appending a newline and flushing (line first, handle last)"]: [fn [let line@String h]
+  [$h | [write [str line "\n"]] | flush]]
 
 # Append content to a file (creates if doesn't exist).
 # cap: DirCap, path: String, content: String
 append-file@[doc: "Append content to a file (creates if doesn't exist)"]: [fn@Null [let cap@DirCap path@String content@String]
   [h: [open cap path "append"]]
-  [>> [h.write content] [h.close]]]
+  [$h | [write content] | close]]
 
 # Open a file for writing (creates or truncates, returns protocol dict handle).
 # cap: DirCap, path: String
 # Returns: protocol dict {read-chunk, write, flush, close, seek}
 open-write@[doc: "Open a file for writing (creates or truncates, returns handle dict)"]: [fn [let cap@DirCap path@String]
-  [open cap path Writable]]
+  [open cap path "write"]]
 
 # Open a file for appending (creates if doesn't exist, returns protocol dict handle).
 # cap: DirCap, path: String
@@ -51,8 +51,8 @@ open-append@[doc: "Open a file for appending (creates if doesn't exist, returns 
 
 # Write a sequence of lines to a protocol dict handle.
 # handle: protocol dict (from open), lines: Seq of String
-write-lines@[doc: "Write a sequence of lines to a file handle (protocol dict)"]: [fn [let handle lines-seq]
-  [reduce [fn [let h line] [>> [h.write [str line "\n"]] h]] handle lines-seq]]
+write-lines@[doc: "Write a sequence of lines to a file handle"]: [fn [let handle lines-seq]
+  [reduce [fn [let h line] [$h | [write [str line "\n"]]]] handle lines-seq]]
 
 # has-cap? removed — Handle/WriteHandle capability dict is gone.
 # Protocol dict handles (from `open`) use has? to check for method existence.
@@ -63,6 +63,6 @@ has-cap?@[doc: "Check if a method key exists on a protocol dict handle."]: [fn@B
 # cap: DirCap, src: String source path, dst: String destination path
 # Reads the source file content and writes it to the destination (create/truncate).
 copy@[doc: "Copy a file from src to dst"]: [fn@Null [let cap@DirCap src@String dst@String]
-  [content: [read-all [open cap src Readable]]]
+  [content: [read-all [open cap src "read"]]]
   [write cap dst content]]
 ]

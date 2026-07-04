@@ -41,7 +41,7 @@ pub async fn format_source_tinct_with_dir(
     // Determine mode from script name: compact.llt → minimal AST; everything else → full AST.
     let compact = script_path.file_stem().and_then(|s| s.to_str()) == Some("compact");
 
-    // Open the base directory first (needed by both expand_surface_program and EvalContext).
+    // Open the base directory first (needed by EvalContext).
     let base_dir = match base_dir {
         Some(dir) => dir,
         None => {
@@ -59,7 +59,7 @@ pub async fn format_source_tinct_with_dir(
     // Parse the input source (no env/ctx needed yet).
     let parse_output = parse(input).map_err(|e| format!("{e}"))?;
 
-    // Load and expand the formatter script BEFORE creating env/ctx.
+    // Load the formatter script BEFORE creating env/ctx.
     // AMBIENT-OK: formatter script loaded from stdlib path.
     #[allow(clippy::disallowed_methods)]
     let formatter_source = std::fs::read_to_string(script_path).map_err(|e| {
@@ -71,22 +71,8 @@ pub async fn format_source_tinct_with_dir(
     let formatter_parsed =
         parse(&formatter_source).map_err(|e| format!("formatter parse error: {e}"))?;
 
-    // Build a fresh core env for macro expansion.
-    let expand_env = crate::builtins::build_core_env();
-
-    // PIPELINE INVARIANT: parse -> expand_surface_program -> desugar -> resolve -> typecheck.
-    // Use expand_surface_program (not expand_macros) so SurfaceItem::Decl macros are seen.
-    // Desugar AFTER macro expansion so that macros can introduce $_ patterns.
+    // PIPELINE INVARIANT: parse -> desugar -> resolve -> typecheck.
     let mut formatter_program = formatter_parsed.program;
-    let expand_result = crate::expand::expand_surface_program(
-        &mut formatter_program,
-        expand_env,
-        false, // formatter always has filesystem access
-        &base_dir,
-    )
-    .await
-    .map_err(|e| format!("formatter expand error: {e}"))?;
-    // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
     desugar::desugar_surface_program(&mut formatter_program);
     // Variable resolution pass — writes de Bruijn coordinates inline to AST nodes.
     let resolve_errors = resolve::resolve_surface_program(&formatter_program);
@@ -103,13 +89,12 @@ pub async fn format_source_tinct_with_dir(
             .collect();
         return Err(msgs.join("\n"));
     }
-    // Typecheck the expanded and desugared formatter (writes inline type annotations).
+    // Typecheck the desugared formatter (writes inline type annotations).
     let _ = typecheck::typecheck_surface_program_annotation_table(&formatter_program).await; // tycon_env discarded: formatter ctx has no runtime TypeAsserts on user-defined ADTs
 
     // Build a fresh core env for evaluation context.
     let env = crate::builtins::build_core_env();
     let ctx = EvalContext::new_empty(base_dir, Arc::clone(&env), false);
-    let _ = expand_result.macro_injects_map;
 
     // Convert input AST to dict using the now-stable ctx.
     use crate::surface_convert::{surface_program_to_dict, AstToDictOpts, CommentMaps};
@@ -460,7 +445,7 @@ impl<'a> Formatter<'a> {
                     self.output.push_str(s);
                 }
             }
-            SurfaceExpression::VarRef { name, escaped, .. } => {
+            SurfaceExpression::VarRef { name, escaped, annotation, .. } => {
                 // Emit `$` prefix if this was written as an escaped ref (`$name`).
                 // Bare identifiers and `%`-prefixed refs do not get a `$` prepended —
                 // the `%` is already part of `name`.
@@ -468,6 +453,11 @@ impl<'a> Formatter<'a> {
                     self.output.push('$');
                 }
                 self.output.push_str(name);
+                // Emit `@annotation` suffix if present.
+                if let Some(ann) = annotation {
+                    self.output.push('@');
+                    self.format_annotation(ann);
+                }
             }
             SurfaceExpression::Field { expr, field, .. } => {
                 if let Some(target) = expr {
@@ -520,11 +510,6 @@ impl<'a> Formatter<'a> {
                 self.format_expr(expr, true);
                 self.output.push(']');
             }
-            SurfaceExpression::Annotated { name, annotation } => {
-                self.output.push_str(name);
-                self.output.push('@');
-                self.format_annotation(annotation);
-            }
             SurfaceExpression::Quote(inner) => {
                 self.output.push('[');
                 self.output.push_str("quote");
@@ -546,7 +531,7 @@ impl<'a> Formatter<'a> {
                 self.format_expr(inner, true);
                 self.output.push(']');
             }
-            // MacroDecl, Splice, SyntaxClass, TypeAlias, ClassDecl, InstanceDecl
+            // Splice, SyntaxClass, TypeAlias, ClassDecl, InstanceDecl
             // are SurfaceDeclaration variants, not SurfaceExpression variants.
             // They are filtered out by document.expressions() and never reach format_expr.
             SurfaceExpression::Match { scrutinee, arms } => {
@@ -738,10 +723,11 @@ impl<'a> Formatter<'a> {
                     s.len()
                 }
             }
-            SurfaceExpression::VarRef { name, escaped, .. } => {
+            SurfaceExpression::VarRef { name, escaped, annotation, .. } => {
                 // Add 1 for `$` if this was an escaped ref.
                 // `%`-prefixed refs already include `%` in the stored name.
-                name.len() + if *escaped { 1 } else { 0 }
+                let ann_width = annotation.as_ref().map_or(0, |ann| 1 + self.measure_annotation_width(&ann.node));
+                name.len() + if *escaped { 1 } else { 0 } + ann_width
             }
             SurfaceExpression::Field { expr, field, .. } => {
                 let field_len = match field {
@@ -825,9 +811,7 @@ impl<'a> Formatter<'a> {
                     + self.measure_expr_width(expr)
                     + 1
             }
-            SurfaceExpression::Annotated { name, annotation } => {
-                name.len() + 1 + self.measure_annotation_width(&annotation.node)
-            }
+            // Annotated VarRef: handled by the VarRef { name, escaped, annotation, .. } arm below.
             SurfaceExpression::Quote(inner) => 1 + 5 + 1 + self.measure_expr_width(inner) + 1, // [quote <expr>]
             SurfaceExpression::Unquote(inner) => 1 + 7 + 1 + self.measure_expr_width(inner) + 1, // [unquote <expr>]
             SurfaceExpression::UnquoteSplice(inner) => {
@@ -1450,7 +1434,7 @@ impl<'a> Formatter<'a> {
             | SurfaceExpression::PatternDecl { .. }
             | SurfaceExpression::LetDecl { .. }
             | SurfaceExpression::CaseArm { .. } => Some('['),
-            SurfaceExpression::Annotated { name, .. } => name.chars().next(),
+            // Annotated VarRef: handled by VarRef arm above (name field contains the char).
             SurfaceExpression::Placeholder
             | SurfaceExpression::Rest(..)
             | SurfaceExpression::Decl(_) => Some('.'),

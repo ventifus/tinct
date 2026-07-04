@@ -229,7 +229,7 @@ enum Commands {
     },
     /// Type-check an LLT file without evaluating.
     ///
-    /// Runs parse → desugar → macro-expand → typecheck pipeline.
+    /// Runs parse → desugar → typecheck pipeline.
     /// Exits with code 1 if any type errors or warnings are found.
     /// Exits with code 0 on clean file.
     Lint {
@@ -2085,7 +2085,7 @@ async fn run_eval(
         // The initial environment (env) is the stdlib environment after all caps injection
         // above. %programs and %args are already injected into env before this point.
         //
-        // run_loader_pipeline handles parse → expand → desugar → resolve → typecheck →
+        // run_loader_pipeline handles parse → desugar → resolve → typecheck →
         // eval → materialize. It is the shared bootstrap path used by both the CLI and
         // the lib API (eval_source_with_config).
         //
@@ -2208,16 +2208,8 @@ async fn run_fmt(
         let output = parse_with_file(&source, Arc::clone(&sf))
             .map_err(|e| tinct::format_parse_error(&e, &source, file_path))?;
 
-        // PIPELINE INVARIANT: parse -> expand_surface_program -> desugar -> resolve -> typecheck.
-        // Desugar AFTER macro expansion so that macros can introduce $_ patterns.
-        let fmt_base_dir = open_file_base_dir(file_path, "fmt")?;
-        // Use expand_surface_program (not expand_macros) so SurfaceItem::Decl macros are seen.
+        // PIPELINE INVARIANT: parse -> desugar -> resolve -> typecheck.
         let mut program = output.program;
-        let fmt_expand_env = tinct::build_core_env();
-        tinct::expand::expand_surface_program(&mut program, fmt_expand_env, false, &fmt_base_dir)
-            .await
-            .map_err(|e| format!("{e}"))?;
-        // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
         tinct::desugar::desugar_surface_program(&mut program);
         let env = tinct::get_builtin_core_type_env()
             .await
@@ -2348,25 +2340,8 @@ async fn run_lint(
     let output = parse_with_file(&source, Arc::clone(&sf))
         .map_err(|e| tinct::format_parse_error(&e, &source, file_path))?;
 
-    // PIPELINE INVARIANT: parse -> expand_surface_program -> desugar -> resolve -> typecheck.
-    // Desugar AFTER macro expansion so that macros can introduce $_ patterns.
-    // AMBIENT-OK: CLI bootstrap — operator specified this file path.
-    let lint_base_dir = {
-        let p = std::path::Path::new(file_path);
-        let dir = p
-            .parent()
-            .filter(|d| !d.as_os_str().is_empty())
-            .unwrap_or(std::path::Path::new("."));
-        cap_std::fs::Dir::open_ambient_dir(dir, cap_std::ambient_authority())
-            .map_err(|e| format!("cannot open base directory for lint: {e}"))?
-    };
-    // Use expand_surface_program (not expand_macros) so SurfaceItem::Decl macros are seen.
+    // PIPELINE INVARIANT: parse -> desugar -> resolve -> typecheck.
     let mut program = output.program;
-    let lint_expand_env = tinct::build_core_env();
-    tinct::expand::expand_surface_program(&mut program, lint_expand_env, false, &lint_base_dir)
-        .await
-        .map_err(|e| format!("{e}"))?;
-    // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
     tinct::desugar::desugar_surface_program(&mut program);
     let env = tinct::get_builtin_core_type_env()
         .await
@@ -2604,16 +2579,8 @@ async fn run_literate_lint(tangled: &str, config: &LiterateConfig<'_>) -> Result
         }
     })?;
 
-    // PIPELINE INVARIANT: parse -> expand_surface_program -> desugar -> resolve -> typecheck.
-    // Desugar AFTER macro expansion so that macros can introduce $_ patterns.
-    let lint_base_dir = open_file_base_dir(markdown_path, "literate lint")?;
-    // Use expand_surface_program (not expand_macros) so SurfaceItem::Decl macros are seen.
+    // PIPELINE INVARIANT: parse -> desugar -> resolve -> typecheck.
     let mut program = output.program;
-    let lit_expand_env = tinct::build_core_env();
-    tinct::expand::expand_surface_program(&mut program, lit_expand_env, false, &lint_base_dir)
-        .await
-        .map_err(|e| format!("{e}"))?;
-    // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
     tinct::desugar::desugar_surface_program(&mut program);
     // Transform instance decls to method dicts (T-1142).
     tinct::desugar::desugar_instance_decls_surface_program(&mut program);
@@ -2706,25 +2673,8 @@ async fn run_describe(file_path: &str) -> Result<(), String> {
     let source = String::from(&*sf.content);
     let output = parse_with_file(&source, Arc::clone(&sf)).map_err(|e| format!("{e}"))?;
 
-    // PIPELINE INVARIANT: parse -> expand_surface_program -> desugar -> resolve -> typecheck.
-    // Desugar AFTER macro expansion so that macros can introduce $_ patterns.
-    // AMBIENT-OK: CLI bootstrap — operator specified this file path.
-    let describe_base_dir = {
-        let p = std::path::Path::new(file_path);
-        let dir = p
-            .parent()
-            .filter(|d| !d.as_os_str().is_empty())
-            .unwrap_or(std::path::Path::new("."));
-        cap_std::fs::Dir::open_ambient_dir(dir, cap_std::ambient_authority())
-            .map_err(|e| format!("cannot open base directory for describe: {e}"))?
-    };
-    // Use expand_surface_program (not expand_macros) so SurfaceItem::Decl macros are seen.
+    // PIPELINE INVARIANT: parse -> desugar -> resolve -> typecheck.
     let mut program = output.program;
-    let desc_expand_env = tinct::build_core_env();
-    tinct::expand::expand_surface_program(&mut program, desc_expand_env, false, &describe_base_dir)
-        .await
-        .map_err(|e| format!("{e}"))?;
-    // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
     tinct::desugar::desugar_surface_program(&mut program);
     // Type check to get DocMap (for doc strings).
     let env = tinct::get_builtin_core_type_env()
@@ -2850,11 +2800,9 @@ fn extract_doc_strings_from_doc(
                     // - SurfaceExpression::Str (string literal key)
                     // - SurfaceExpression::Annotated { name, .. } (annotated binding like name@[...])
                     // - SurfaceExpression::VarRef (bare identifier key)
+                    // Both plain and annotated VarRef use the name field.
                     let name_opt = match &key_node.expr {
                         tinct::ast::SurfaceExpression::Str(s) => Some(s.as_str()),
-                        tinct::ast::SurfaceExpression::Annotated { name, .. } => {
-                            Some(name.as_str())
-                        }
                         tinct::ast::SurfaceExpression::VarRef { name, .. } => Some(name.as_str()),
                         _ => None,
                     };

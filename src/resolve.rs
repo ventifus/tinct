@@ -29,15 +29,14 @@ struct SurfaceResolver {
     /// Unresolved VarRef / leading-dot references: (name, span).
     /// Collected during walking; surfaced as "undefined-variable" errors by builtin-resolve.
     pub unresolved: Vec<(String, crate::ast::Span)>,
-    /// Module slot tables — maps a binding name to its exported names in slot order.
-    ///
-    /// Populated when the resolver detects `[name: [include %libdir "mod.llt"]]` patterns.
-    /// Used to resolve `name.field` Field nodes to positional slot indices, enabling
-    /// the lowerer to emit `slot-get` (O(1)) instead of `field-get` (string-keyed).
-    ///
-    /// Key: binding name (e.g. `"math"`). Value: ordered list of exported names matching
-    /// the slot order of the included module's last top-level dict.
-    module_slots: std::collections::HashMap<String, Vec<String>>,
+    /// Maps instance binding name → slot within its scope frame.
+    /// Written during enter_scope for any key starting with 'ɪ' (instance binding marker).
+    pub instance_binding_slots: std::collections::HashMap<String, u32>,
+    /// Maps class method name (e.g. `=`) → any one instance binding name for that method
+    /// (e.g. `ɪɴꜱᴛᴀɴᴄᴇ⧼Equatable∷=⟨Int⟩⧽`). All instance bindings for the same method share
+    /// the same scope frame and thus the same de Bruijn level from any call site. Used by
+    /// the VarRef resolver to assign a valid level to class method names.
+    method_to_instance: std::collections::HashMap<String, String>,
 }
 
 impl SurfaceResolver {
@@ -45,7 +44,8 @@ impl SurfaceResolver {
         Self {
             scopes: Vec::new(),
             unresolved: Vec::new(),
-            module_slots: std::collections::HashMap::new(),
+            instance_binding_slots: std::collections::HashMap::new(),
+            method_to_instance: std::collections::HashMap::new(),
         }
     }
 
@@ -60,12 +60,21 @@ impl SurfaceResolver {
     /// at runtime evaluation. Any name not found in the chain is a genuine compile error.
     fn from_env(env: &Arc<RwLock<crate::value::Environment>>) -> Self {
         let mut frames: Vec<indexmap::IndexMap<String, u32>> = Vec::new();
+        let mut instance_binding_slots: std::collections::HashMap<String, u32> =
+            std::collections::HashMap::new();
         let mut current = Some(Arc::clone(env));
         while let Some(frame_arc) = current {
             let frame = frame_arc.read().unwrap();
             let mut scope: indexmap::IndexMap<String, u32> = indexmap::IndexMap::new();
             for (i, key) in frame.slot_names.iter().enumerate() {
-                scope.insert(key.clone(), u32::try_from(i).expect("slot overflow"));
+                let slot = u32::try_from(i).expect("slot overflow");
+                scope.insert(key.clone(), slot);
+                // Collect instance binding slots from the env chain (populated by the lowerer
+                // when flattening InstanceDecl entries into dicts). Keys starting with 'ɪ'
+                // (U+026A, instance binding marker) are guaranteed to be instance bindings.
+                if key.starts_with('ɪ') {
+                    instance_binding_slots.entry(key.clone()).or_insert(slot);
+                }
             }
             frames.push(scope);
             current = frame.parent.as_ref().map(Arc::clone);
@@ -74,20 +83,40 @@ impl SurfaceResolver {
         // We want frames[0] = deepest ancestor (outermost), frames[last] = env itself,
         // so that when the resolver iterates rev() it finds level 0 = env itself.
         frames.reverse();
+        // Populate method_to_instance from instance binding names in the env chain.
+        let mut method_to_instance: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        for frame in &frames {
+            for name in frame.keys() {
+                if name.starts_with('ɪ') {
+                    if let Some(method) = instance_binding_method_name(name) {
+                        method_to_instance.entry(method).or_insert_with(|| name.clone());
+                    }
+                }
+            }
+        }
+
         Self {
             scopes: frames,
             unresolved: Vec::new(),
-            module_slots: std::collections::HashMap::new(),
+            instance_binding_slots,
+            method_to_instance,
         }
     }
 
     fn enter_scope(&mut self, keys: &[String]) {
         let mut scope = indexmap::IndexMap::new();
         for (slot, key) in keys.iter().enumerate() {
-            scope.insert(
-                key.clone(),
-                u32::try_from(slot).expect("slot index overflow"),
-            );
+            let slot_u32 = u32::try_from(slot).expect("slot index overflow");
+            scope.insert(key.clone(), slot_u32);
+            if key.starts_with('ɪ') {
+                self.instance_binding_slots.insert(key.clone(), slot_u32);
+                // Build reverse lookup: method name → any instance binding name for that method.
+                // All instances for the same method share the same scope frame → same level.
+                if let Some(method) = instance_binding_method_name(key) {
+                    self.method_to_instance.entry(method).or_insert_with(|| key.clone());
+                }
+            }
         }
         self.scopes.push(scope);
     }
@@ -168,13 +197,31 @@ impl SurfaceResolver {
 
     fn walk_surface_expr(&mut self, arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) {
         match expr {
-            SurfaceExpression::VarRef { name, resolution, .. } => {
+            SurfaceExpression::VarRef { name, resolution, annotation, .. } => {
+                // Walk the annotation for runtime metadata (e.g., is:, default: fields).
+                if let Some(ann) = annotation {
+                    self.walk_surface_annotation(ann);
+                }
                 if let Some(coords) = self.resolve_name(name) {
                     resolution.set(Some(coords));
-                } else {
-                    // Mark as unresolvable so the lowerer knows the resolver ran but failed.
+                } else if name == "_" {
+                    // Universal wildcard — not a genuine undefined-variable error.
                     resolution.set(None);
-                    // Collect for structured error reporting by builtin-resolve.
+                } else if let Some(any_instance) =
+                    self.method_to_instance.get(name.as_str()).cloned()
+                {
+                    // Class method: resolve to the level of any instance binding in scope.
+                    // All instance bindings for the same method share the same scope frame
+                    // and thus the same de Bruijn level. The type checker selects the correct
+                    // slot via call_dispatch; this resolution only supplies the level.
+                    if let Some(coords) = self.resolve_name(&any_instance) {
+                        resolution.set(Some(coords));
+                    } else {
+                        resolution.set(None);
+                        self.unresolved.push((name.clone(), arc.span.clone()));
+                    }
+                } else {
+                    resolution.set(None);
                     self.unresolved.push((name.clone(), arc.span.clone()));
                 }
             }
@@ -186,26 +233,6 @@ impl SurfaceResolver {
                 for entry in entries {
                     if let Some(key) = &entry.node.key {
                         self.walk_surface_node(key);
-                    }
-                }
-
-                // Module slot detection: scan for `[name: [include %libdir "path.llt"]]` entries.
-                // When found, load the module's exported names (synchronously) and record them
-                // in module_slots so that subsequent `name.field` Field nodes can be resolved
-                // to positional slot indices.
-                for entry in entries.iter() {
-                    if let Some(key_node) = &entry.node.key {
-                        let binding_name = match &key_node.expr {
-                            SurfaceExpression::Str(s) => Some(s.clone()),
-                            SurfaceExpression::VarRef { name, .. } => Some(name.clone()),
-                            SurfaceExpression::Annotated { name, .. } => Some(name.clone()),
-                            _ => None,
-                        };
-                        if let Some(name) = binding_name {
-                            if let Some(exported) = detect_include_module(&entry.node.value.expr) {
-                                self.module_slots.insert(name, exported);
-                            }
-                        }
                     }
                 }
 
@@ -268,7 +295,7 @@ impl SurfaceResolver {
                 }
             }
 
-            SurfaceExpression::Field { expr: Some(inner), field, field_slot, resolution } => {
+            SurfaceExpression::Field { expr: Some(inner), field: _, field_slot: _, resolution } => {
                 self.walk_surface_node(inner);
                 // Resolve "field-get" to get the root scope level for the lowerer.
                 // The lowerer reads this to emit CoreExpr::Call with the correct root_level.
@@ -280,19 +307,6 @@ impl SurfaceResolver {
                     resolution.set(None);
                 }
 
-                // Module slot resolution: if the target is a VarRef to a known module AND
-                // the field is a string key, look up the field's slot index in the module's
-                // exported slot table and write it into field_slot. This enables the lowerer
-                // to emit `slot-get` (O(1) positional access) instead of `field-get` (string lookup).
-                if let crate::ast::DotKey::Ident(field_name) = field {
-                    if let SurfaceExpression::VarRef { name: module_name, .. } = &inner.expr {
-                        if let Some(exported_names) = self.module_slots.get(module_name.as_str()) {
-                            if let Some(pos) = exported_names.iter().position(|n| n == field_name) {
-                                field_slot.set(u32::try_from(pos).expect("slot overflow"));
-                            }
-                        }
-                    }
-                }
             }
 
             // Leading-dot form: `.name` with no preceding expression.
@@ -404,9 +418,6 @@ impl SurfaceResolver {
                 }
             }
 
-            SurfaceExpression::Annotated { annotation, .. } => {
-                self.walk_surface_annotation(annotation);
-            }
 
             // Terminals with no child expressions
             SurfaceExpression::Int(_)
@@ -415,8 +426,24 @@ impl SurfaceResolver {
             | SurfaceExpression::Str(_)
             | SurfaceExpression::Rest(..)
             | SurfaceExpression::Placeholder
-            | SurfaceExpression::Decl(_) // type-level declaration, no variable references to resolve
             | SurfaceExpression::Error(_) => {}
+
+            SurfaceExpression::Decl(decl) => {
+                // InstanceDecl arm bodies contain runtime code (e.g. `[fn [let x y] [builtin-eq x y]]`)
+                // with VarRefs that need resolution. Other Decl forms are type-level only.
+                //
+                // We walk only the method VALUES (fn bodies), NOT the arm patterns.
+                // The arm patterns are `[let a@Int b@Float c@Int]` — type-level declarations
+                // whose annotations contain TypeVar names (`a`) and type names (`Int`, `Seq`)
+                // that are resolved by the type checker (ann_mapping), not the runtime resolver.
+                if let SurfaceDeclaration::InstanceDecl { arms, .. } = decl.as_ref() {
+                    for (_pattern, method_entries) in arms {
+                        for me in method_entries {
+                            self.walk_surface_node(&me.node.value);
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -424,11 +451,41 @@ impl SurfaceResolver {
         match &ann.node {
             crate::ast::Annotation::Simple(_) => {}
             crate::ast::Annotation::PropertyDict(entries) => {
+                // Annotation PropertyDict entries fall into two categories:
+                //
+                // 1. TYPE-STAGE content — must NOT be walked by the runtime resolver:
+                //    - Auto-indexed entries (no key): represent type-stage expressions like
+                //      `[Seq a]` = {0: Seq, 1: a}. Names here are TypeVars or type constructors
+                //      resolved by the type-stage evaluator (eval_type_stage_expr), not the
+                //      runtime resolver. Walking them produces false "undefined variable" errors.
+                //    - Reserved type-level keys (`bind:`, `type:`, `return:`, `constraint:`,
+                //      `kinds:`): always type-stage, processed by typecheck_annot.rs.
+                //
+                // 2. RUNTIME content — SHOULD be walked:
+                //    - Non-reserved string-keyed entries (`default:`, `as-type:`, `children:`,
+                //      `guarding:`, `doc:`, arbitrary user keys): may hold runtime expressions
+                //      with VarRefs that need de Bruijn coordinates for evaluation.
+                //
+                // See doc/whatif/completed/type-annotations-v2.md §TypeVar Scoping:
+                // "Lowercase names in annotation position are always TypeVars, never value references."
+                const RESERVED_TYPE_KEYS: &[&str] =
+                    &["bind", "type", "return", "constraint", "kinds", "doc"];
                 for entry in entries {
-                    if let Some(key) = &entry.node.key {
-                        self.walk_surface_node(key);
+                    match &entry.node.key {
+                        None => {
+                            // Auto-indexed: type-stage expression — skip.
+                        }
+                        Some(key_node) => {
+                            if let SurfaceExpression::Str(key) = &key_node.expr {
+                                if !RESERVED_TYPE_KEYS.contains(&key.as_str()) {
+                                    // Non-reserved runtime metadata key — walk the value.
+                                    self.walk_surface_node(&entry.node.value);
+                                }
+                                // Reserved type-level key: type-stage content, skip.
+                            }
+                            // VarRef or other non-Str key: type-level expression, skip.
+                        }
                     }
-                    self.walk_surface_node(&entry.node.value);
                 }
             }
             crate::ast::Annotation::Annotated(_, inner) => {
@@ -470,13 +527,6 @@ impl SurfaceResolver {
                         self.walk_surface_node(&method.node.value);
                     }
                 }
-            }
-            SurfaceDeclaration::MacroDecl { .. } => {
-                // Macro bodies are AST templates resolved at expansion-time call sites,
-                // not at definition time. Walking params or body here produces false E002s
-                // for names that are valid when the macro is called but not yet in scope
-                // at definition time. Resolution happens in eval_surface_fn via
-                // resolve_surface_node_with_env when the macro is expanded.
             }
             SurfaceDeclaration::SyntaxClass { pattern, .. } => {
                 self.walk_surface_node(pattern);
@@ -523,8 +573,8 @@ impl SurfaceResolver {
         }
     }
 
-    fn finish(self) -> Vec<(String, crate::ast::Span)> {
-        self.unresolved
+    fn finish(self) -> (Vec<(String, crate::ast::Span)>, std::collections::HashMap<String, u32>) {
+        (self.unresolved, self.instance_binding_slots)
     }
 }
 
@@ -564,7 +614,7 @@ pub fn resolve_surface_program(program: &SurfaceProgram) -> Vec<(String, crate::
         }
     }
 
-    resolver.finish()
+    resolver.finish().0
 }
 
 /// Resolve all VarRef nodes in a SurfaceProgram seeded from a runtime environment chain.
@@ -576,24 +626,34 @@ pub fn resolve_surface_program(program: &SurfaceProgram) -> Vec<(String, crate::
 ///
 /// Names still unresolvable after searching the env chain will have no table entry;
 /// the lowering pass emits `CoreExpr::Error` for them (genuine compile errors).
-/// Resolve a single surface node (and its entire subtree) against a runtime env.
 ///
-/// Used by `eval_surface_fn` to resolve macro transformer bodies at expansion time,
-/// before the main per-file resolution pass runs. This gives VarRefs in macro bodies
-/// proper de Bruijn coordinates so evaluation succeeds.
+/// Used to resolve a single surface node (and its entire subtree) against a runtime env,
+/// giving VarRefs proper de Bruijn coordinates so evaluation succeeds.
 pub fn resolve_surface_node_with_env(
     node: &Arc<SurfaceNode>,
     env: &Arc<RwLock<crate::value::Environment>>,
 ) -> Vec<(String, crate::ast::Span)> {
     let mut resolver = SurfaceResolver::from_env(env);
     resolver.walk_surface_node(node);
-    resolver.finish()
+    resolver.finish().0
 }
 
 pub fn resolve_surface_program_with_env(
     program: &SurfaceProgram,
     env: &Arc<RwLock<crate::value::Environment>>,
 ) -> Vec<(String, crate::ast::Span)> {
+    resolve_surface_program_with_env_full(program, env).0
+}
+
+/// Like `resolve_surface_program_with_env` but also returns `instance_binding_slots`:
+/// a map from instance binding name to its slot within its scope frame.
+/// The slot is use-site-independent; the level comes from the class method stub VarRef's
+/// resolution at the call site. Thread this into `InferState.instance_binding_slots`
+/// before type-checking to enable compile-time typeclass dispatch coordinate writing.
+pub fn resolve_surface_program_with_env_full(
+    program: &SurfaceProgram,
+    env: &Arc<RwLock<crate::value::Environment>>,
+) -> (Vec<(String, crate::ast::Span)>, std::collections::HashMap<String, u32>) {
     let mut resolver = SurfaceResolver::from_env(env);
     let mut named_sections: Vec<String> = Vec::new();
 
@@ -641,7 +701,7 @@ pub fn resolve_surface_program_for_builtin_eval(
         resolver.walk_surface_document(doc);
     }
 
-    resolver.finish()
+    resolver.finish().0
 }
 
 /// Resolve a single document seeded from a runtime env, with proper scope accumulation
@@ -653,6 +713,50 @@ pub fn resolve_surface_program_for_builtin_eval(
 /// here match what the evaluator expects at runtime.
 ///
 /// Used by `builtin-resolve` when called with a `Value::Document` argument.
+/// Like `resolve_surface_document_with_scope_accumulation` but also returns
+/// `instance_binding_slots` — the slot of each instance binding name in its scope frame,
+/// collected from the env chain. Thread this into `InferState.instance_binding_slots`
+/// before type-checking to enable compile-time typeclass dispatch.
+pub fn resolve_surface_document_with_scope_accumulation_and_slots(
+    doc: &SurfaceDocument,
+    env: &std::sync::Arc<std::sync::RwLock<crate::value::Environment>>,
+) -> (Vec<(String, crate::ast::Span)>, std::collections::HashMap<String, u32>) {
+    let mut resolver = SurfaceResolver::from_env(env);
+
+    let expr_items: Vec<&std::sync::Arc<SurfaceNode>> = doc
+        .items
+        .iter()
+        .filter_map(|item| {
+            if let SurfaceItem::Expr(node) = item {
+                Some(node)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    let last_idx = expr_items.len().saturating_sub(1);
+    let mut injected = 0usize;
+
+    for (i, node) in expr_items.iter().enumerate() {
+        resolver.walk_surface_node(node);
+        if i < last_idx {
+            if let Some(keys) = surface_node_static_keys(node) {
+                if !keys.is_empty() {
+                    resolver.enter_scope(&keys);
+                    injected += 1;
+                }
+            }
+        }
+    }
+
+    for _ in 0..injected {
+        resolver.exit_scope();
+    }
+
+    resolver.finish()
+}
+
 pub fn resolve_surface_document_with_scope_accumulation(
     doc: &SurfaceDocument,
     env: &std::sync::Arc<std::sync::RwLock<crate::value::Environment>>,
@@ -695,7 +799,7 @@ pub fn resolve_surface_document_with_scope_accumulation(
         resolver.exit_scope();
     }
 
-    resolver.finish()
+    resolver.finish().0
 }
 
 /// Extract static string-keyed names from a SurfaceExpression::Dict's entries.
@@ -710,46 +814,111 @@ pub fn resolve_surface_document_with_scope_accumulation(
 ///
 /// Named InstanceDecl entries (with outer key like `EquatableInt: [instance ...]`) ARE
 /// included: the outer key is a real letrec slot that binds the instance dict as a value.
+/// Extract the class method name from an instance binding name.
+/// Format: `ɪɴꜱᴛᴀɴᴄᴇ⧼{class}∷{method}⟨{args}⟩⧽` or `ɪɴꜱᴛᴀɴᴄᴇ⧼{class}∷{method}⧽`
+/// The `∷` (U+2237) separates class from method; `⟨` or `⧽` ends the method name.
+fn instance_binding_method_name(name: &str) -> Option<String> {
+    // Split on ∷ (U+2237), take what comes after (method + suffix)
+    let after_class = name.split('∷').nth(1)?;
+    // Method name ends at ⟨ (with type args) or ⧽ (without)
+    let end = after_class.find('⟨').or_else(|| after_class.find('⧽'))?;
+    let method = &after_class[..end];
+    if method.is_empty() { None } else { Some(method.to_string()) }
+}
+
+/// Extract the static string key from a dict entry key node, if any.
+fn static_entry_key(key_node: &Arc<SurfaceNode>) -> Option<String> {
+    match &key_node.expr {
+        SurfaceExpression::Str(s) => Some(s.clone()),
+        // Both plain and annotated VarRef use the name field.
+        SurfaceExpression::VarRef { name, .. } => Some(name.clone()),
+        _ => None,
+    }
+}
+
+/// Compute the set of static string keys that a dict's entries contribute to the letrec scope.
+///
+/// Must match exactly what the lowerer (lower.rs Dict arm) emits as CoreEntry keys, so that
+/// resolver slot indices and evaluator slot_names are in agreement.
+///
+/// - Regular entries (non-Decl value): one key from the outer key node.
+/// - TypeAlias, Splice: one key from the outer key node.
+/// - ClassDecl: each class method name becomes a stub slot. The lowerer emits an empty-dict
+///   placeholder so slot indices stay valid. `=` VarRefs at call sites resolve to level L —
+///   same level as the instance bindings — so the type checker can read the level from the
+///   VarRef's resolution and the slot from the `instance_binding_slots` export.
+/// - SyntaxClass: no runtime representation — skipped.
+/// - Anonymous InstanceDecl: no outer key, but contributes synthetic instance binding names
+///   (e.g. `ɪɴꜱᴛᴀɴᴄᴇ⧼Equatable∷=⟨Int⟩⧽`) — one per arm × method.
+/// - Named InstanceDecl: one outer key + synthetic instance binding names for all arms.
 fn surface_dict_static_keys(entries: &[Spanned<SurfaceEntry>]) -> Vec<String> {
-    // Match exactly what the evaluator's lower.rs + eval_dict_core consider "static":
-    // - Entries whose key is Str/VarRef/Annotated (static string key)
-    // - Excluding non-runtime Decl forms that lowering skips:
-    //   ClassDecl, MacroDecl, SyntaxClass, anonymous InstanceDecl (no outer key)
-    //   Named InstanceDecl and TypeAlias entries ARE included (lowering produces runtime values).
-    entries
-        .iter()
-        .filter(|entry| {
-            // Skip entries whose VALUE is a Decl that lower.rs discards:
-            // - ClassDecl, MacroDecl, SyntaxClass → `_ => { continue; }` in lower.rs Dict arm
-            // - Anonymous InstanceDecl (key=None) → skipped after recent change
-            if let SurfaceExpression::Decl(decl) = &entry.node.value.expr {
-                match decl.as_ref() {
-                    SurfaceDeclaration::ClassDecl { .. }
-                    | SurfaceDeclaration::MacroDecl { .. }
-                    | SurfaceDeclaration::SyntaxClass { .. } => return false,
-                    SurfaceDeclaration::InstanceDecl { .. } => {
-                        // Anonymous (no outer key): skipped by lowering.
-                        // Named (has outer key): included.
-                        return entry.node.key.is_some();
+    let mut keys: Vec<String> = Vec::new();
+    for entry in entries {
+        if let SurfaceExpression::Decl(decl) = &entry.node.value.expr {
+            match decl.as_ref() {
+                SurfaceDeclaration::ClassDecl { .. } => {
+                    // Named ClassDecl (outer key present): the outer key gets a slot so that
+                    // leading-dot re-exports (`Indexable: .Indexable`) work across dict
+                    // boundaries. The runtime value is an empty dict (lowerer emits one).
+                    // Class methods are NOT static keys — they are dispatched via call_dispatch.
+                    if let Some(key_node) = &entry.node.key {
+                        if let Some(name) = static_entry_key(key_node) {
+                            keys.push(name);
+                        }
                     }
-                    _ => {} // TypeAlias, Splice: included
+                }
+                SurfaceDeclaration::SyntaxClass { .. } => {
+                    // No runtime representation.
+                }
+                SurfaceDeclaration::InstanceDecl { class_name, arms } => {
+                    // Named instance: outer key only. The binding names are inside the
+                    // named dict value and NOT flattened, to avoid duplicate key errors
+                    // when multiple instances of the same class coexist in the dict.
+                    if let Some(key_node) = &entry.node.key {
+                        if let Some(name) = static_entry_key(key_node) {
+                            keys.push(name);
+                        }
+                    } else {
+                        // Anonymous instance: synthetic binding names flattened into the
+                        // outer dict — one per arm × method. Must match lower.rs Dict arm.
+                        for (pattern, method_entries) in arms {
+                            let dispatch_tags =
+                                crate::lower::extract_dispatch_tags(&pattern.expr);
+                            let type_args: Vec<&str> =
+                                dispatch_tags.iter().filter_map(|t| t.as_deref()).collect();
+                            for me in method_entries {
+                                if let Some(key_node) = &me.node.key {
+                                    if let Some(method_name) = static_entry_key(key_node) {
+                                        keys.push(crate::type_def::instance_binding_name(
+                                            class_name,
+                                            &method_name,
+                                            &type_args,
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    // TypeAlias, Splice: use outer key if present.
+                    if let Some(key_node) = &entry.node.key {
+                        if let Some(name) = static_entry_key(key_node) {
+                            keys.push(name);
+                        }
+                    }
                 }
             }
-            true
-        })
-        .filter_map(|entry| {
-            entry
-                .node
-                .key
-                .as_ref()
-                .and_then(|key_node| match &key_node.expr {
-                    SurfaceExpression::Str(s) => Some(s.clone()),
-                    SurfaceExpression::VarRef { name, .. } => Some(name.clone()),
-                    SurfaceExpression::Annotated { name, .. } => Some(name.clone()),
-                    _ => None,
-                })
-        })
-        .collect()
+        } else {
+            // Regular (non-Decl) entry: use outer key if present.
+            if let Some(key_node) = &entry.node.key {
+                if let Some(name) = static_entry_key(key_node) {
+                    keys.push(name);
+                }
+            }
+        }
+    }
+    keys
 }
 
 /// Extract static string-keyed names from an Arc<SurfaceNode> if it is a Dict.
@@ -766,7 +935,7 @@ fn surface_node_static_keys(node: &Arc<SurfaceNode>) -> Option<Vec<String>> {
 /// scope. The `let_bindings` node is a `SurfaceExpression::LetDecl` whose `bindings`
 /// vector holds one node per declared name. Each binding node may be:
 /// - `SurfaceExpression::VarRef { name }` — a plain name
-/// - `SurfaceExpression::Annotated { name, .. }` — an annotated name (`n@Type`)
+/// - `SurfaceExpression::VarRef { name, annotation: Some(_), .. }` — an annotated name (`n@Type`)
 /// - `SurfaceExpression::Rest(Some(name), _)` — variadic (`...name`)
 ///
 /// Wildcard (`_`) and unnamed rest (`...`) are skipped — they bind nothing.
@@ -775,8 +944,8 @@ fn extract_surface_let_binding_names(lb: &Arc<SurfaceNode>) -> Vec<String> {
         SurfaceExpression::LetDecl { bindings } => bindings
             .iter()
             .filter_map(|b| match &b.expr {
+                // Both plain and annotated VarRef use the name field.
                 SurfaceExpression::VarRef { name, .. } if name != "_" => Some(name.clone()),
-                SurfaceExpression::Annotated { name, .. } if name != "_" => Some(name.clone()),
                 SurfaceExpression::Rest(Some(name), _) if name != "_" => Some(name.clone()),
                 _ => None,
             })
@@ -884,115 +1053,6 @@ fn collect_pattern_bindings(pattern: &Pattern, out: &mut Vec<String>) {
         Pattern::Predicate(_) => {
             // T-1140: Predicate patterns introduce no variable bindings.
         }
-    }
-}
-
-/// Detect whether a surface expression is a `[include %libdir "path.llt"]` call pattern
-/// and, if so, return the exported slot names from that file.
-///
-/// ## Pattern matched
-///
-/// `Call { func: VarRef("include"), args: [VarRef("%libdir"), Str("path.llt")] }` or
-/// `Call { func: VarRef("include"), args: [Str("path.llt")] }` (cwd-relative include).
-///
-/// Returns `Some(names)` when the file exists, can be parsed, and its last top-level dict
-/// has static string keys. Returns `None` on any failure (missing file, parse error, etc.)
-/// to allow graceful degradation — callers continue with `field-get` (key-based lookup).
-///
-/// The result is cached in `module_slots` by the caller to avoid re-loading on every
-/// dot-access reference.
-fn detect_include_module(expr: &SurfaceExpression) -> Option<Vec<String>> {
-    // Match the Call expression pattern for `[include %libdir "path.llt"]`
-    let path_str = extract_include_path(expr)?;
-
-    // Locate the stdlib directory using the same heuristic as lib.rs::find_libdir_path().
-    // %cwd-relative includes are not currently supported (no cwd available at resolve time).
-    let libdir = crate::find_libdir_path()?;
-    let file_path = libdir.join(&path_str);
-
-    // Read and parse the file synchronously.
-    let source = std::fs::read_to_string(&file_path).ok()?;
-    let parsed = crate::parser::parse(&source).ok()?;
-    let mut program = parsed.program;
-    crate::desugar::desugar_surface_program(&mut program);
-
-    // Extract the exported names from the last top-level dict in the program.
-    // The two-dict convention: the second (last) dict is the public API.
-    // We collect static keys from the last document's last expression.
-    extract_module_exported_names(&program)
-}
-
-/// Extract the string path argument from an `[include ... "path"]` call expression.
-///
-/// Matches:
-/// - `[include %libdir "path.llt"]` — %libdir-relative (the common stdlib pattern)
-/// - `[include %cwd "path.llt"]` — cwd-relative (not supported for slot resolution)
-///
-/// Returns `Some(path)` for %libdir-relative includes; `None` otherwise.
-fn extract_include_path(expr: &SurfaceExpression) -> Option<String> {
-    match expr {
-        SurfaceExpression::Call { func, args, .. } => {
-            // Check that the function is `include` or `builtin-include`
-            let is_include = match &func.expr {
-                SurfaceExpression::VarRef { name, .. } => {
-                    name == "include" || name == "builtin-include"
-                }
-                _ => false,
-            };
-            if !is_include {
-                return None;
-            }
-            // Pattern: [include %libdir "path.llt"] — 2 args, first is %libdir VarRef
-            if args.len() == 2 {
-                let is_libdir = matches!(&args[0].expr,
-                    SurfaceExpression::VarRef { name, .. } if name == "%libdir");
-                if is_libdir {
-                    if let SurfaceExpression::Str(path) = &args[1].expr {
-                        return Some(path.clone());
-                    }
-                }
-            }
-            // Pattern: [include "path.llt"] — single string arg (cwd-relative; not supported)
-            None
-        }
-        _ => None,
-    }
-}
-
-/// Extract the exported (public) slot names from a parsed module program.
-///
-/// Follows the two-dict library convention: the last expression in the last document is
-/// the public API dict. Returns its static keys in source order (slot order).
-fn extract_module_exported_names(program: &crate::ast::SurfaceProgram) -> Option<Vec<String>> {
-    // Find the last non-type-stage document
-    let last_doc = program
-        .documents
-        .iter()
-        .rev()
-        .find(|d| d.node.stage != Some(crate::ast::Stage::Type))?;
-
-    // Find the last top-level Expr item in that document
-    let last_expr = last_doc
-        .node
-        .items
-        .iter()
-        .rev()
-        .find_map(|item| match item {
-            crate::ast::SurfaceItem::Expr(node) => Some(node),
-            _ => None,
-        })?;
-
-    // It must be a Dict with static keys
-    match &last_expr.expr {
-        SurfaceExpression::Dict(entries) => {
-            let keys = surface_dict_static_keys(entries);
-            if keys.is_empty() {
-                None
-            } else {
-                Some(keys)
-            }
-        }
-        _ => None,
     }
 }
 

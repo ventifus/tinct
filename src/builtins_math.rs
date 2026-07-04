@@ -275,7 +275,7 @@ pub(crate) fn builtin_eq(
 
         let result =
             crate::eval::values_equal(left, right, call_span.clone(), Arc::clone(&ctx)).await?;
-        ok_val(Value::boolean(result), call_span)
+        ok_val(Value::Int(if result { 1 } else { 0 }), call_span)
     })
 }
 
@@ -325,8 +325,13 @@ pub(crate) fn builtin_lt(
                     end: end_b,
                 },
             ) => source_a[*start_a..*end_a] < source_b[*start_b..*end_b],
-            (a, b) if a.as_bool().is_some() && b.as_bool().is_some() => {
-                !a.as_bool().unwrap() && b.as_bool().unwrap() // false < true
+            (
+                Value::Variant { tag: a_tag, payload: None },
+                Value::Variant { tag: b_tag, payload: None },
+            ) if (a_tag == "Boolean.True" || a_tag == "Boolean.False")
+                && (b_tag == "Boolean.True" || b_tag == "Boolean.False") =>
+            {
+                a_tag == "Boolean.False" && b_tag == "Boolean.True" // false < true
             }
             // Cross-type: Int/Float promotion via `as f64` cast.
             // Precision guard: integers with |n| > 2^53 trigger an error, suggesting
@@ -350,7 +355,7 @@ pub(crate) fn builtin_lt(
                 .into());
             }
         };
-        ok_val(Value::boolean(result), call_span)
+        ok_val(Value::Int(if result { 1 } else { 0 }), call_span)
     })
 }
 
@@ -421,11 +426,8 @@ pub(crate) fn builtin_lte(
         // Negate the result
         let val = gt_result
             .try_get_materialized()
-            .expect("builtin_lt returns materialized Bool");
-        match val.as_bool() {
-            Some(b) => ok_val(Value::boolean(!b), call_span),
-            None => unreachable!("builtin_lt always returns Bool"),
-        }
+            .expect("builtin_lt returns materialized");
+        ok_val(Value::Int(if val.is_truthy() { 0 } else { 1 }), call_span)
     })
 }
 
@@ -462,11 +464,8 @@ pub(crate) fn builtin_gte(
         // Negate the result
         let val = lt_result
             .try_get_materialized()
-            .expect("builtin_lt returns materialized Bool");
-        match val.as_bool() {
-            Some(b) => ok_val(Value::boolean(!b), call_span),
-            None => unreachable!("builtin_lt always returns Bool"),
-        }
+            .expect("builtin_lt returns materialized");
+        ok_val(Value::Int(if val.is_truthy() { 0 } else { 1 }), call_span)
     })
 }
 
@@ -497,18 +496,17 @@ pub(crate) fn builtin_if(
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
 
-        match condition.as_bool() {
-            Some(true) => Ok(Arc::clone(&args[1])),
-            Some(false) => Ok(Arc::clone(&args[2])),
-            None => {
+        match condition {
+            Value::Int(0) => Ok(Arc::clone(&args[2])),
+            Value::Int(_) => Ok(Arc::clone(&args[1])),
+            _ => {
                 let cond_span = args[0].span.clone();
                 let mut err = EvalError::type_mismatch_ctx(
                     "if".to_string(),
-                    "Bool",
+                    "Int",
                     condition.type_name(),
                     cond_span.clone(),
                 );
-                // Add secondary span if different from definition span
                 if call_span != cond_span {
                     err = err.with_secondary_span(
                         cond_span,
@@ -850,7 +848,7 @@ pub(crate) fn builtin_nan_check(
     } = ctx_arg;
     Box::pin(async move {
         let val = extract_single_float("nan?", &args, named.as_ref(), &ctx, call_span.clone())?;
-        ok_val(Value::boolean(val.is_nan()), call_span)
+        ok_val(Value::Int(if val.is_nan() { 1 } else { 0 }), call_span)
     })
 }
 
@@ -868,7 +866,7 @@ pub(crate) fn builtin_inf_check(
     } = ctx_arg;
     Box::pin(async move {
         let val = extract_single_float("inf?", &args, named.as_ref(), &ctx, call_span.clone())?;
-        ok_val(Value::boolean(val.is_infinite()), call_span)
+        ok_val(Value::Int(if val.is_infinite() { 1 } else { 0 }), call_span)
     })
 }
 
@@ -886,7 +884,7 @@ pub(crate) fn builtin_finite_check(
     } = ctx_arg;
     Box::pin(async move {
         let val = extract_single_float("finite?", &args, named.as_ref(), &ctx, call_span.clone())?;
-        ok_val(Value::boolean(val.is_finite()), call_span)
+        ok_val(Value::Int(if val.is_finite() { 1 } else { 0 }), call_span)
     })
 }
 
@@ -1175,6 +1173,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }));
         // MAX_SAFE_INT.abs() > MAX_SAFE_INT is false → precision check passes → Float result
         let t = result.expect("expected Float result at MAX_SAFE_INT boundary");
@@ -1195,6 +1194,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }));
         assert!(
             result.is_err(),
@@ -1219,6 +1219,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }));
         let t = result.expect("expected Int(7)");
         assert_eq!(t.try_get_materialized(), Some(Value::Int(7)));
@@ -1232,6 +1233,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }));
         let t = result.expect("expected Int(42)");
         assert_eq!(t.try_get_materialized(), Some(Value::Int(42)));
@@ -1246,6 +1248,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }));
         // With dispatch restored: String+String → no Addable instance → NoInstance error.
         assert!(

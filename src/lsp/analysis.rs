@@ -2,7 +2,7 @@
 
 use lsp_types::{
     Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, DocumentSymbol, Location,
-    NumberOrString, SymbolKind, TextEdit, Uri,
+    SymbolKind, TextEdit, Uri,
 };
 
 use std::sync::Arc;
@@ -33,7 +33,7 @@ pub async fn hover_at(
     doc_url: &Uri,
     offset: usize,
     include_graph: &crate::lsp::document::IncludeGraph,
-    eval_ctx: &std::sync::Arc<crate::eval::EvalContext>,
+    _eval_ctx: &std::sync::Arc<crate::eval::EvalContext>,
 ) -> Option<String> {
     // For markdown documents, map offset to block-local coordinates
     if !doc.literate_blocks.is_empty() {
@@ -45,18 +45,8 @@ pub async fn hover_at(
         // doc.type_map is empty for markdown documents (type-checking runs per-block,
         // not at document level). We must re-run here to populate hover type info.
         let block_parsed = crate::parser::parse(&block.code).ok()?;
-        // Expand macros on SurfaceProgram, matching the
-        // pipeline invariant (expand → desugar → resolve → typecheck).
+        // Desugar and typecheck the block — pipeline: parse → desugar → resolve → typecheck.
         let mut program = block_parsed.program.clone();
-        crate::expand::expand_surface_program(
-            &mut program,
-            Arc::clone(&eval_ctx.config.stdlib_env),
-            eval_ctx.config.no_fs,
-            &eval_ctx.config.base_dir,
-        )
-        .await
-        .ok()?;
-        // Desugar $_ implicit lambdas on SurfaceProgram
         crate::desugar::desugar_surface_program(&mut program);
         let (seeded_env_rc, _) = crate::imports::build_type_env(&program, None).await;
         // typecheck_surface_program takes Arc<TypeEnv>; build_type_env returns Rc.
@@ -245,6 +235,21 @@ fn hover_at_surface_node(
     }
 
     match &node.expr {
+        SurfaceExpression::VarRef { name, annotation: Some(annotation), .. } => {
+            // Annotated VarRef: show both name and annotation.
+            Some(format!(
+                "Annotated: {}@{}{}",
+                name,
+                annotation.node,
+                type_suffix(
+                    node.span.clone(),
+                    type_map,
+                    scheme_map,
+                    include_graph,
+                    doc_url
+                )
+            ))
+        }
         SurfaceExpression::VarRef { name, .. } => {
             // Source-sniff: emit `$name` for EscapedRef tokens (first byte is `$`),
             // plain name for bare identifiers and `%`-prefixed refs (% is in name).
@@ -340,9 +345,8 @@ fn hover_at_surface_node(
                         // the user sees both the binding name and its bound type.
                         // Extract the display name from the key, covering all key forms.
                         let display_name: Option<String> = match &key.expr {
+                            // Both plain and annotated VarRef use the name field.
                             SurfaceExpression::VarRef { name, .. } => Some(name.clone()),
-                            // `name@[doc: "..."]` or `name@Type` key annotation
-                            SurfaceExpression::Annotated { name, .. } => Some(name.clone()),
                             // String literal keys: `"response->ok":` or hyphenated names
                             SurfaceExpression::Str(s) => Some(s.clone()),
                             _ => None,
@@ -357,8 +361,8 @@ fn hover_at_surface_node(
                             );
                             // Only look up doc for bare-name keys (not string literals)
                             let doc_name = match &key.expr {
-                                SurfaceExpression::VarRef { name, .. }
-                                | SurfaceExpression::Annotated { name, .. } => Some(name.as_str()),
+                                // Both plain and annotated VarRef use the name field.
+                                SurfaceExpression::VarRef { name, .. } => Some(name.as_str()),
                                 _ => None,
                             };
                             let doc = doc_name.map(|n| doc_suffix(n, doc_map)).unwrap_or_default();
@@ -506,18 +510,7 @@ fn hover_at_surface_node(
             })
         }
 
-        SurfaceExpression::Annotated { name, annotation } => Some(format!(
-            "Annotated: {}@{}{}",
-            name,
-            annotation.node,
-            type_suffix(
-                node.span.clone(),
-                type_map,
-                scheme_map,
-                include_graph,
-                doc_url
-            )
-        )),
+        // Annotated VarRef is handled by the first VarRef arm above.
 
         SurfaceExpression::Rest(name, _) => {
             Some(format!("Rest marker: {}", name.as_deref().unwrap_or("...")))
@@ -702,32 +695,6 @@ fn hover_at_declaration(
             include_graph,
             doc_url,
         ),
-        SurfaceDeclaration::MacroDecl {
-            name, params, body, ..
-        } => {
-            // Check params first, then body
-            hover_at_surface_node(
-                params,
-                offset,
-                type_map,
-                scheme_map,
-                doc_map,
-                source,
-                include_graph,
-                doc_url,
-            )
-            .or(hover_at_surface_node(
-                body,
-                offset,
-                type_map,
-                scheme_map,
-                doc_map,
-                source,
-                include_graph,
-                doc_url,
-            ))
-            .or_else(|| Some(format!("Macro declaration (v2): {}", name)))
-        }
         SurfaceDeclaration::Splice(forms) => {
             // Check each form
             for form in forms {
@@ -852,7 +819,8 @@ fn span_contains(span: Span, offset: usize) -> bool {
 pub(crate) fn key_name(key_node: &Arc<SurfaceNode>) -> Option<&str> {
     match &key_node.expr {
         SurfaceExpression::Str(s) => Some(s.as_str()),
-        SurfaceExpression::Annotated { name, .. } => Some(name.as_str()),
+        // Both plain and annotated VarRef use the name field.
+        SurfaceExpression::VarRef { name, .. } => Some(name.as_str()),
         _ => None,
     }
 }
@@ -944,7 +912,6 @@ fn name_at_offset(node: &Arc<SurfaceNode>, offset: usize) -> Option<String> {
         | SurfaceExpression::Rest(..)
         | SurfaceExpression::Placeholder
         | SurfaceExpression::Decl(_)
-        | SurfaceExpression::Annotated { .. }
         | SurfaceExpression::Error(_) => None,
     }
 }
@@ -1033,7 +1000,6 @@ fn find_key_definition(node: &Arc<SurfaceNode>, name: &str) -> Option<Span> {
         | SurfaceExpression::Rest(..)
         | SurfaceExpression::Placeholder
         | SurfaceExpression::Decl(_)
-        | SurfaceExpression::Annotated { .. }
         | SurfaceExpression::Error(_) => None,
     }
 }
@@ -1171,7 +1137,7 @@ pub fn document_symbols_at(doc: &DocumentState) -> Vec<DocumentSymbol> {
                         };
                         let name: Option<String> = match &key.expr {
                             SurfaceExpression::Str(s) => Some(s.clone()),
-                            SurfaceExpression::Annotated { name, .. } => Some(name.clone()),
+                            // Both plain and annotated VarRef use the name field.
                             SurfaceExpression::VarRef { name, .. } => Some(name.clone()),
                             _ => None,
                         };
@@ -1356,7 +1322,6 @@ fn collect_var_refs_spanned(
         | SurfaceExpression::Placeholder
         | SurfaceExpression::Decl(_)
         | SurfaceExpression::Rest(..)
-        | SurfaceExpression::Annotated { .. }
         | SurfaceExpression::Error(_) => {}
     }
 }
@@ -1368,7 +1333,7 @@ fn collect_var_refs_spanned(
 pub async fn diagnostics_for(
     doc: &DocumentState,
     uri: &Uri,
-    eval_ctx: &std::sync::Arc<crate::eval::EvalContext>,
+    _eval_ctx: &std::sync::Arc<crate::eval::EvalContext>,
 ) -> Vec<Diagnostic> {
     let source = &doc.text;
     let mut diagnostics = Vec::new();
@@ -1397,42 +1362,8 @@ pub async fn diagnostics_for(
                         diagnostics.push(diag);
                     }
 
-                    // Type errors
-                    // Expand macros on SurfaceProgram, matching the
-                    // pipeline invariant (expand → desugar → resolve → typecheck).
+                    // Type errors — pipeline: parse → desugar → resolve → typecheck.
                     let mut program = output.program.clone();
-                    if let Err(e) = crate::expand::expand_surface_program(
-                        &mut program,
-                        Arc::clone(&eval_ctx.config.stdlib_env),
-                        eval_ctx.config.no_fs,
-                        &eval_ctx.config.base_dir,
-                    )
-                    .await
-                    {
-                        // Macro expansion error — convert to diagnostic
-                        let mut diag = Diagnostic {
-                            range: llt_span_to_lsp_range(&e.definition_span, &block.code),
-                            severity: Some(DiagnosticSeverity::ERROR),
-                            code: Some(NumberOrString::String(e.kind.code().to_string())),
-                            source: Some("tinct".to_string()),
-                            message: e.to_string(),
-                            related_information: None,
-                            tags: None,
-                            code_description: None,
-                            data: None,
-                        };
-                        // Map span from block-local to markdown coordinates
-                        let md_span = crate::literate::block_span_to_md(
-                            &doc.literate_blocks,
-                            block_idx,
-                            e.definition_span,
-                            source,
-                        );
-                        diag.range = llt_span_to_lsp_range(&md_span, source);
-                        diagnostics.push(diag);
-                        continue;
-                    }
-                    // Desugar $_ implicit lambdas on SurfaceProgram
                     crate::desugar::desugar_surface_program(&mut program);
 
                     // Type check
@@ -3300,7 +3231,6 @@ fn collect_rename_edits_spanned(
         | SurfaceExpression::Placeholder
         | SurfaceExpression::Decl(_)
         | SurfaceExpression::Rest(..)
-        | SurfaceExpression::Annotated { .. }
         | SurfaceExpression::Error(_) => {}
     }
 }
@@ -3322,7 +3252,7 @@ fn collect_definition_key_edits(
                     // Check whether this key matches the name being renamed.
                     let key_matches = match &key.expr {
                         SurfaceExpression::Str(s) => s == name,
-                        SurfaceExpression::Annotated { name: kname, .. } => kname == name,
+                        // Both plain and annotated VarRef use the name field.
                         SurfaceExpression::VarRef { name: kname, .. } => kname == name,
                         _ => false,
                     };
@@ -3335,16 +3265,17 @@ fn collect_definition_key_edits(
                         // and for Annotated use the same key span (the name portion is a prefix).
                         // Editors that support partial-span edits will highlight correctly.
                         let range = llt_span_to_lsp_range(&key.span, source);
-                        // For Annotated, trim the range to just the name prefix.
+                        // For annotated VarRef, trim the range to just the name prefix.
                         let range = match &key.expr {
-                            SurfaceExpression::Annotated { name: kname, .. } => {
-                                // The name occupies bytes [key.span.start, key.span.start + kname.len())
+                            SurfaceExpression::VarRef { name: kname, annotation: Some(_), .. } => {
+                                let kname_len = kname.len();
+                                // The name occupies bytes [key.span.start, key.span.start + kname_len)
                                 let name_span = crate::ast::Span {
                                     start: key.span.start,
                                     end: crate::ast::Position {
-                                        offset: key.span.start.offset + kname.len(),
+                                        offset: key.span.start.offset + kname_len,
                                         line: key.span.start.line,
-                                        column: key.span.start.column + kname.len(),
+                                        column: key.span.start.column + kname_len,
                                     },
                                     file: None,
                                 };
@@ -4005,7 +3936,7 @@ pub fn workspace_symbols_for(
                         };
                         let name: Option<String> = match &key.expr {
                             SurfaceExpression::Str(s) => Some(s.clone()),
-                            SurfaceExpression::Annotated { name, .. } => Some(name.clone()),
+                            // Both plain and annotated VarRef use the name field.
                             SurfaceExpression::VarRef { name, .. } => Some(name.clone()),
                             _ => None,
                         };

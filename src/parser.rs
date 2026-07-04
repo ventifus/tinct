@@ -210,6 +210,7 @@ fn emit_tmpl_call(
             escaped: false,
             resolution: crate::ast::Resolution::new(),
             call_dispatch: crate::ast::CallDispatch::new(),
+            annotation: None,
         },
         span.clone(),
     ));
@@ -510,7 +511,7 @@ fn parse_annotation(
                 }
             };
 
-            // Reject declaration forms (type, class, instance, macro, syntax-class)
+            // Reject declaration forms (type, class, instance, syntax-class)
             // inside annotation brackets — only dict/call expressions are valid there.
             if let Some(first_doc) = sub_output.program.documents.first() {
                 if let Some(SurfaceItem::Decl(_)) = first_doc.node.items.first() {
@@ -566,7 +567,7 @@ fn parse_annotation(
                         ..
                     } if matches!(
                         &func.expr,
-                        SurfaceExpression::VarRef { .. } | SurfaceExpression::Annotated { .. }
+                        SurfaceExpression::VarRef { .. }
                     ) =>
                     {
                         let base = bracket_start_span.start;
@@ -734,13 +735,6 @@ enum StackFrame {
     /// Unquote-splice special form: `[unquote-splice expr]` (only valid in list positions inside quote)
     UnquoteSplice {
         expr: Option<Arc<SurfaceNode>>,
-        span_start: Position,
-    },
-    /// Macro declaration (macros-v2): `[macro name [let ...] body]`
-    MacroDecl {
-        name: Option<String>,
-        params: Option<Arc<SurfaceNode>>, // [let ...] pattern
-        body: Option<Arc<SurfaceNode>>,
         span_start: Position,
     },
     /// Syntax class declaration (macros-v2): `[syntax-class name pattern: [...] message: "..."]`
@@ -1241,7 +1235,6 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
             StackFrame::Quote { span_start, .. } => ("quote", *span_start),
             StackFrame::Unquote { span_start, .. } => ("unquote", *span_start),
             StackFrame::UnquoteSplice { span_start, .. } => ("unquote-splice", *span_start),
-            StackFrame::MacroDecl { span_start, .. } => ("macro", *span_start),
             StackFrame::SyntaxClass { span_start, .. } => ("syntax-class", *span_start),
             StackFrame::Match { span_start, .. } => ("match", *span_start),
             StackFrame::ClassDecl { span_start, .. } => ("class", *span_start),
@@ -1539,32 +1532,6 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                         continue;
                     }
                     Some((Token::Identifier(s), keyword_idx))
-                        if s == "macro"
-                            && !matches!(
-                                peek_next_horizontal(&token_vec, keyword_idx),
-                                Some((Token::Colon, _))
-                            ) =>
-                    {
-                        // MacroDecl form: [macro name [let ...] body]
-                        // (Not a macro form if the keyword is followed by colon: [macro: x] is a dict.)
-                        stack.push(StackFrame::MacroDecl {
-                            name: None,
-                            params: None,
-                            body: None,
-                            span_start: span.start,
-                        });
-                        i += 1; // Consume the OpenBracket
-                                // Skip whitespace and consume the "macro" token
-                        i += skip_whitespace_tokens(
-                            &token_vec,
-                            i,
-                            &mut leading_comments,
-                            &mut blank_before,
-                        );
-                        i += 1;
-                        continue;
-                    }
-                    Some((Token::Identifier(s), keyword_idx))
                         if s == "syntax-class"
                             && !matches!(
                                 peek_next_horizontal(&token_vec, keyword_idx),
@@ -1832,6 +1799,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                 escaped: false,
                                 resolution: crate::ast::Resolution::new(),
                                 call_dispatch: crate::ast::CallDispatch::new(),
+                                annotation: None,
                             },
                             func_span,
                         ));
@@ -2266,57 +2234,6 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                     &mut current_document_items,
                                     spanned_unquote_splice,
                                 ) {
-                                    close_bracket_recover!(push_err);
-                                }
-                            }
-                        }
-                    }
-
-                    StackFrame::MacroDecl {
-                        name,
-                        params,
-                        body,
-                        span_start,
-                    } => {
-                        if name.is_none() {
-                            close_bracket_recover!(ParseError {
-                                message: "macro form requires a name".to_string(),
-                                span: Some(span.clone()),
-                            });
-                        } else if params.is_none() {
-                            close_bracket_recover!(ParseError {
-                                message: "macro form requires a params expression ([let ...])"
-                                    .to_string(),
-                                span: Some(span.clone()),
-                            });
-                        } else if body.is_none() {
-                            close_bracket_recover!(ParseError {
-                                message: "macro form requires a body expression".to_string(),
-                                span: Some(span.clone()),
-                            });
-                        } else {
-                            #[allow(clippy::unnecessary_unwrap)] // Checked above by is_none() guard
-                            let decl = SurfaceDeclaration::MacroDecl {
-                                name: name.unwrap(),
-                                params: params.unwrap(),
-                                body: body.unwrap(),
-                            };
-                            let spanned_decl = Spanned::new(decl, dict_span(span_start));
-                            if stack.is_empty() {
-                                current_document_items.push(SurfaceItem::Decl(spanned_decl));
-                            } else {
-                                // Declaration appears inside an expression (e.g., dict value).
-                                // Preserve the full declaration via SurfaceExpression::Decl so
-                                // the type checker can register class/instance/type declarations
-                                // found inside dicts (Pass 0c). At runtime this evaluates as
-                                // Placeholder (error when forced outside type-checking context).
-                                let node = mk(
-                                    SurfaceExpression::Decl(Box::new(spanned_decl.node)),
-                                    spanned_decl.span,
-                                );
-                                if let Err(push_err) =
-                                    push_value(&mut stack, &mut current_document_items, node)
-                                {
                                     close_bracket_recover!(push_err);
                                 }
                             }
@@ -3135,6 +3052,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                         escaped: false,
                         resolution: crate::ast::Resolution::new(),
                         call_dispatch: crate::ast::CallDispatch::new(),
+                        annotation: None,
                     },
                     span.clone(),
                 ));
@@ -3179,6 +3097,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                         escaped: false,
                         resolution: crate::ast::Resolution::new(),
                         call_dispatch: crate::ast::CallDispatch::new(),
+                        annotation: None,
                     },
                     span.clone(),
                 ));
@@ -3235,7 +3154,13 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                 file: None,
                             };
                             let expr = mk(
-                                SurfaceExpression::Annotated { name, annotation },
+                                SurfaceExpression::VarRef {
+                                    name: name.clone(),
+                                    escaped: false,
+                                    resolution: crate::ast::Resolution::new(),
+                                    call_dispatch: crate::ast::CallDispatch::new(),
+                                    annotation: Some(crate::ast::normalize_varref_annotation(annotation, full_span.clone())),
+                                },
                                 full_span.clone(),
                             );
                             // If the annotated expression is immediately followed by ':', treat
@@ -3272,20 +3197,21 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                         // Store the name and annotation as the pending key so
                                         // the following value becomes a named arg carrying the
                                         // field-level annotation (e.g. `fields@Child: Type`).
-                                        if let SurfaceExpression::Annotated {
+                                        if let SurfaceExpression::VarRef {
                                             ref name,
-                                            ref annotation,
+                                            annotation: ref some_ann @ Some(_),
+                                            ..
                                         } = expr.expr
                                         {
                                             *pending_key = Some((
                                                 name.clone(),
                                                 full_span.clone(),
-                                                Some(annotation.clone()),
+                                                some_ann.clone(),
                                             ));
                                             last_significant_span = Some(full_span);
                                             continue;
                                         }
-                                        // Fallthrough: not Annotated (should not happen) — push as value
+                                        // Fallthrough: not annotated VarRef (should not happen) — push as value
                                     }
                                     _ => {}
                                 }
@@ -3399,6 +3325,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                     escaped: false,
                                     resolution: crate::ast::Resolution::new(),
                                     call_dispatch: crate::ast::CallDispatch::new(),
+                                    annotation: None,
                                 },
                                 span.clone(),
                             ));
@@ -3415,6 +3342,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                     escaped: false,
                                     resolution: crate::ast::Resolution::new(),
                                     call_dispatch: crate::ast::CallDispatch::new(),
+                                    annotation: None,
                                 },
                                 span.clone(),
                             ));
@@ -3448,6 +3376,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             escaped: false,
                             resolution: crate::ast::Resolution::new(),
                             call_dispatch: crate::ast::CallDispatch::new(),
+                            annotation: None,
                         },
                         span.clone(),
                     ));
@@ -3480,6 +3409,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                         escaped: true,
                         resolution: crate::ast::Resolution::new(),
                         call_dispatch: crate::ast::CallDispatch::new(),
+                        annotation: None,
                     },
                     span.clone(),
                 ));
@@ -4571,6 +4501,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                     escaped: false,
                                     resolution: crate::ast::Resolution::new(),
                                     call_dispatch: crate::ast::CallDispatch::new(),
+                                    annotation: None,
                                 },
                                 span.clone(),
                             ));
@@ -4587,6 +4518,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                     escaped: false,
                                     resolution: crate::ast::Resolution::new(),
                                     call_dispatch: crate::ast::CallDispatch::new(),
+                                    annotation: None,
                                 },
                                 span.clone(),
                             ));
@@ -4620,6 +4552,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             escaped: false,
                             resolution: crate::ast::Resolution::new(),
                             call_dispatch: crate::ast::CallDispatch::new(),
+                            annotation: None,
                         },
                         span.clone(),
                     ));
@@ -4973,10 +4906,6 @@ fn pop_last_value_from_frame(
                 })
             }
         }
-        Some(StackFrame::MacroDecl { .. }) => Err(ParseError {
-            message: "dot access is not valid inside macro form".to_string(),
-            span: Some(span),
-        }),
         Some(StackFrame::SyntaxClass { .. }) => Err(ParseError {
             message: "dot access is not valid inside syntax-class form".to_string(),
             span: Some(span),
@@ -5212,7 +5141,9 @@ fn surface_node_to_pattern_with_guard(
             (Pattern::Or(vec![left_pat, right_pat]), None)
         }
         // Handle annotated patterns (e.g., n@Int, n@[is: pred])
-        SurfaceExpression::Annotated { name, annotation } => {
+        // Now represented as VarRef { name, annotation: Some(ann) }.
+        SurfaceExpression::VarRef { name, annotation: Some(annotation), .. } => {
+            let name = name.as_str();
             // Extract guard from `is:` annotation
             let guard = extract_guard(annotation);
 
@@ -5220,7 +5151,7 @@ fn surface_node_to_pattern_with_guard(
             let base_pattern = if name == "_" {
                 Pattern::Wildcard
             } else if name.chars().next().is_some_and(|c| c.is_lowercase()) {
-                Pattern::Pin(name.clone(), crate::ast::Resolution::new())
+                Pattern::Pin(name.to_string(), crate::ast::Resolution::new())
             } else if name.chars().next().is_some_and(|c| c.is_uppercase()) {
                 // T-1109: Bare uppercase names in pattern position are unqualified constructor
                 // patterns and are now a hard parse error. Use qualified form (e.g., `Result.Ok:`
@@ -5521,12 +5452,13 @@ fn push_expr_to_parent(
                         // Validate all bindings are valid parameter patterns before extracting.
                         // Valid: VarRef (bare), Annotated (typed), Rest(Some(_)) (variadic),
                         //        Placeholder (skipped wildcard).
+                        // Annotated VarRef (VarRef { annotation: Some(_) }) is already
+                        // covered by the VarRef { .. } arm since annotation is just a field.
                         let all_valid_params = bindings.iter().all(|binding| {
                             matches!(
                                 &binding.expr,
                                 SurfaceExpression::VarRef { .. }
                                     | SurfaceExpression::Placeholder
-                                    | SurfaceExpression::Annotated { .. }
                                     | SurfaceExpression::Rest(Some(_), _)
                             )
                         });
@@ -5572,23 +5504,23 @@ fn push_expr_to_parent(
                         *params_consumed = true;
                         for binding in bindings {
                             match &binding.expr {
-                                SurfaceExpression::VarRef { name, .. } => {
-                                    // Untyped parameter
+                                SurfaceExpression::VarRef { name, annotation: Some(annotation), .. } => {
+                                    // Typed parameter (x@Int) — annotated VarRef
                                     params.push(Spanned::new(
                                         SurfaceParam {
                                             name: name.clone(),
-                                            annotation: None,
+                                            annotation: Some(annotation.clone()),
                                             variadic: false,
                                         },
                                         binding.span.clone(),
                                     ));
                                 }
-                                SurfaceExpression::Annotated { name, annotation } => {
-                                    // Typed parameter (x@Int)
+                                SurfaceExpression::VarRef { name, annotation: None, .. } => {
+                                    // Untyped parameter
                                     params.push(Spanned::new(
                                         SurfaceParam {
                                             name: name.clone(),
-                                            annotation: Some(annotation.clone()),
+                                            annotation: None,
                                             variadic: false,
                                         },
                                         binding.span.clone(),
@@ -5641,11 +5573,8 @@ fn push_expr_to_parent(
                     if let SurfaceExpression::LetDecl { bindings } = &node.expr {
                         let all_lowercase_params =
                             bindings.iter().all(|binding| match &binding.expr {
+                                // Both plain and annotated VarRef use the name field directly.
                                 SurfaceExpression::VarRef { name, .. } => {
-                                    name.chars().all(|c| c.is_lowercase() || c == '_')
-                                }
-                                SurfaceExpression::Annotated { name, .. } => {
-                                    // Accept annotated bindings like [type [let a@K b] T]
                                     name.chars().all(|c| c.is_lowercase() || c == '_')
                                 }
                                 _ => false,
@@ -5653,15 +5582,14 @@ fn push_expr_to_parent(
                         if all_lowercase_params {
                             for binding in bindings {
                                 match &binding.expr {
-                                    SurfaceExpression::VarRef { name, .. } => {
-                                        params.push((name.clone(), None));
-                                    }
-                                    SurfaceExpression::Annotated { name, annotation } => {
-                                        // Store the full Spanned<Annotation> (e.g., `@Covariant` from `a@Covariant`).
-                                        // The type checker (typecheck.rs) extracts the annotation name via
-                                        // `annotation_to_variance` to determine variance, and may use the full
-                                        // annotation for class constraint processing.
+                                    SurfaceExpression::VarRef { name, annotation: Some(annotation), .. } => {
+                                        // Annotated binding (e.g., `a@Covariant`).
+                                        // Store the full Spanned<Annotation> — the type checker extracts
+                                        // variance and class constraint info from it.
                                         params.push((name.clone(), Some(annotation.clone())));
+                                    }
+                                    SurfaceExpression::VarRef { name, annotation: None, .. } => {
+                                        params.push((name.clone(), None));
                                     }
                                     _ => {}
                                 }
@@ -5771,61 +5699,6 @@ fn push_expr_to_parent(
                 }
                 *unquote_splice_expr = Some(node);
                 Ok(())
-            }
-            Some(StackFrame::MacroDecl {
-                ref mut name,
-                ref mut params,
-                ref mut body,
-                ..
-            }) => {
-                // MacroDecl expects: [macro name [let ...] body]
-                // First expression: name (VarRef)
-                // Second expression: params ([let ...])
-                // Third expression: body
-                if name.is_none() {
-                    // First expression should be a VarRef (macro name)
-                    if let SurfaceExpression::VarRef { name: n, .. } = &node.expr {
-                        *name = Some(n.clone());
-                        Ok(())
-                    } else {
-                        Err(ParseError {
-                            message: "macro declaration requires a name (bare identifier)"
-                                .to_string(),
-                            span: Some(node.span.clone()),
-                        })
-                    }
-                } else if params.is_none() {
-                    // Second expression: params ([let ...] or [@[inject: ...] [let ...]])
-                    // Accept bare LetDecl or TypeAssert wrapping a LetDecl (inject: annotation).
-                    let is_valid_params = matches!(node.expr, SurfaceExpression::LetDecl { .. })
-                        || matches!(
-                            &node.expr,
-                            SurfaceExpression::TypeAssert { expr, .. }
-                                if matches!(expr.expr, SurfaceExpression::LetDecl { .. })
-                        );
-                    if is_valid_params {
-                        *params = Some(node);
-                        Ok(())
-                    } else {
-                        Err(ParseError {
-                            message: "macro declaration params must be a LetDecl ([let ...]) or \
-                                      an annotated LetDecl ([@[inject: ...] [let ...]])"
-                                .to_string(),
-                            span: Some(node.span.clone()),
-                        })
-                    }
-                } else if body.is_none() {
-                    // Third expression: body
-                    *body = Some(node);
-                    Ok(())
-                } else {
-                    Err(ParseError {
-                        message:
-                            "macro declaration expects exactly 3 arguments: name, params, body"
-                                .to_string(),
-                        span: Some(node.span.clone()),
-                    })
-                }
             }
             Some(StackFrame::SyntaxClass {
                 ref mut name,
@@ -6227,9 +6100,12 @@ fn commit_let_pending(
                 combined_span.clone(),
             );
             let annotated = mk(
-                SurfaceExpression::Annotated {
+                SurfaceExpression::VarRef {
                     name: key_name,
-                    annotation: ann,
+                    escaped: false,
+                    resolution: crate::ast::Resolution::new(),
+                    call_dispatch: crate::ast::CallDispatch::new(),
+                    annotation: Some(crate::ast::normalize_varref_annotation(ann, combined_span.clone())),
                 },
                 combined_span,
             );
@@ -6262,10 +6138,10 @@ fn commit_let_pending(
 fn inject_class_name_from_key(node: &Arc<SurfaceNode>, key: &Arc<SurfaceNode>) -> Arc<SurfaceNode> {
     // Extract the key name string from the key expression.
     // Keys may be Str (bare identifiers in dict position), VarRef, or Annotated (e.g. MyClass@[doc: "..."]).
+    // Both plain and annotated VarRef use the name field.
     let key_name = match &key.expr {
         SurfaceExpression::Str(s) => s.clone(),
         SurfaceExpression::VarRef { name, .. } => name.clone(),
-        SurfaceExpression::Annotated { name, .. } => name.clone(),
         _ => return Arc::clone(node),
     };
 
@@ -6626,7 +6502,7 @@ fn stamp_expr(expr: &mut SurfaceExpression, file: &Arc<SourceFile>) {
         | SurfaceExpression::U64(_)
         | SurfaceExpression::Float(_)
         | SurfaceExpression::Str(_)
-        | SurfaceExpression::VarRef { .. }
+        | SurfaceExpression::VarRef { annotation: None, .. }
         | SurfaceExpression::Rest(..)
         | SurfaceExpression::Placeholder => {}
 
@@ -6702,7 +6578,8 @@ fn stamp_expr(expr: &mut SurfaceExpression, file: &Arc<SourceFile>) {
             stamp_node(expr, file);
         }
 
-        SurfaceExpression::Annotated { annotation, .. } => {
+        // Annotated VarRef: stamp the annotation stored in the VarRef's annotation field.
+        SurfaceExpression::VarRef { annotation: Some(annotation), .. } => {
             stamp_annotation_spanned(annotation, file);
         }
 
@@ -6782,10 +6659,6 @@ fn stamp_decl(decl: &mut SurfaceDeclaration, file: &Arc<SourceFile>) {
                     stamp_node(&mut entry.node.value, file);
                 }
             }
-        }
-        SurfaceDeclaration::MacroDecl { params, body, .. } => {
-            stamp_node(params, file);
-            stamp_node(body, file);
         }
         SurfaceDeclaration::SyntaxClass { pattern, .. } => {
             stamp_node(pattern, file);
@@ -8607,14 +8480,18 @@ mod tests {
     fn test_annotated_bare_word() {
         let expr = parse_surf_node("word@Int");
         match &expr.expr {
-            SurfaceExpression::Annotated { name, annotation } => {
-                assert_eq!(name, "word");
+            // Annotation is now on VarRef directly (annotation: Some(Spanned<Annotation>)).
+            SurfaceExpression::VarRef { name, annotation: Some(annotation), .. } => {
+                assert_eq!(name.as_str(), "word");
                 match &annotation.node {
+                    Annotation::PropertyDict(_) => {
+                        // normalize_varref_annotation converts Simple("Int") → PropertyDict{type: Int}
+                    }
                     Annotation::Simple(s) => assert_eq!(s, "Int"),
-                    other => panic!("expected Simple annotation, got {other:?}"),
+                    other => panic!("expected annotation, got {other:?}"),
                 }
             }
-            other => panic!("expected Annotated, got {other:?}"),
+            other => panic!("expected annotated VarRef, got {other:?}"),
         }
     }
 

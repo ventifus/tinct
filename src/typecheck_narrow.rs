@@ -727,8 +727,8 @@ pub(crate) async fn extract_binding_types(
         SurfaceExpression::Call { .. } => {
             types.push(Type::Unknown);
         }
-        // a@Type form
-        SurfaceExpression::Annotated { annotation, .. } => {
+        // a@Type form (annotated VarRef — annotation is now on VarRef directly).
+        SurfaceExpression::VarRef { annotation: Some(annotation), .. } => {
             let mut ann_constraints: Vec<Constraint> = Vec::new();
             let ty = resolve_annotation(
                 &annotation.node,
@@ -744,9 +744,9 @@ pub(crate) async fn extract_binding_types(
             .map_err(|e| vec![e])?;
             types.push(ty);
         }
-        // Bare identifier in pattern position: try to resolve as a type name.
+        // Bare identifier in pattern position (no annotation): try to resolve as a type name.
         // Handles `Int` in [pattern [Int]] where the inner dict entry is VarRef("Int").
-        SurfaceExpression::VarRef { name, .. } => {
+        SurfaceExpression::VarRef { name, annotation: None, .. } => {
             let ann = Annotation::Simple(name.clone());
             let mut vref_constraints: Vec<Constraint> = Vec::new();
             match resolve_annotation(

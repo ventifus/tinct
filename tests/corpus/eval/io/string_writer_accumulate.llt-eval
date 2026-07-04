@@ -1,0 +1,10 @@
+# StringWriter accumulates string content functionally
+[
+  sw0: [StringWriter.Writer cells: ""]
+  sw1: [write "hello" sw0]
+  sw2: [write " world" sw1]
+  result: sw2.cells
+]
+.result
+=== out
+String("hello world")

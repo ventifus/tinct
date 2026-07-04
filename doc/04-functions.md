@@ -214,10 +214,10 @@ args: [5 10]
 **Pipeline placement:**
 
 ```text
-source → parse → expand → desugar → resolve → typecheck → eval
+source → parse → desugar → resolve → typecheck → eval
 ```
 
-The pass operates on `SurfaceProgram` (multi-document). All entry points call `desugar_surface_program()` after `expand_surface_program()` and before `surface_program_to_file()`. The type checker and evaluator receive the already-desugared `File`.
+The pass operates on `SurfaceProgram` (multi-document). All entry points call `desugar_surface_program()` before resolve and before eval. The type checker and evaluator receive the already-desugared program.
 
 **DIRECT predicate.** Tests whether an expression is `_` or a dot access chain rooted at `_`. Operates on **raw** (pre-desugaring) AST nodes. Dict entry keys are excluded — only the access *target* triggers desugaring:
 

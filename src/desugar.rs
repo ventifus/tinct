@@ -483,12 +483,12 @@ fn recurse_children_surface(node: &mut Arc<SurfaceNode>, depth: usize) {
     let node_mut = Arc::make_mut(node);
 
     match &mut node_mut.expr {
-        // Literals: no children
+        // Literals and unannotated VarRef: no children to recurse into.
         SurfaceExpression::Int(_)
         | SurfaceExpression::U64(_)
         | SurfaceExpression::Float(_)
         | SurfaceExpression::Str(_)
-        | SurfaceExpression::VarRef { .. }
+        | SurfaceExpression::VarRef { annotation: None, .. }
         | SurfaceExpression::Rest(..)
         | SurfaceExpression::Placeholder
         | SurfaceExpression::Decl(_) // type-level declaration, no evaluable children
@@ -585,8 +585,8 @@ fn recurse_children_surface(node: &mut Arc<SurfaceNode>, depth: usize) {
             desugar_surface(inner, depth);
         }
 
-        // Annotated: recurse into annotation
-        SurfaceExpression::Annotated { annotation, .. } => {
+        // Annotated VarRef: recurse into annotation (annotation is now on VarRef directly).
+        SurfaceExpression::VarRef { annotation: Some(annotation), .. } => {
             desugar_surface_annotation(&mut annotation.node, depth);
         }
 
@@ -741,6 +741,7 @@ fn apply_pipe_step(
                         escaped: *escaped,
                         resolution: crate::ast::Resolution::new(),
                         call_dispatch: crate::ast::CallDispatch::new(),
+                        annotation: None,
                     },
                     rhs_stage.span.clone(),
                 )),

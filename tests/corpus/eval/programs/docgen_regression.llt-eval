@@ -158,7 +158,7 @@ render-entry: [fn@String [let e]
 # (Original write-module wrote to %docdir; here we return the content instead.)
 emit-module: [fn@String [let full-path@String]
   [source:  [str [join "\n" [collect [lines [open %libdir full-path Readable]]]]]]
-  [program: [expand [load source name: full-path]]]
+  [program: [builtin-resolve [load source name: full-path]].resolved]
   [docs:    [extract-from-program program]]
   [name:    [mod-name full-path]]
   [if [empty? docs]

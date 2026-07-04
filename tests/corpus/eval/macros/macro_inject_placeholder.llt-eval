@@ -1,9 +1,0 @@
-# Task 4: inject: threading — basic infrastructure implemented.
-# The inject_default is extracted from MacroDecl params and passed as `binding` arg.
-# Full inject: syntax (inside [let ...] params as inject: name) is not yet in the parser.
-# See macros-v2.md for the full inject: design.
-# This test keeps a simple macro sanity check.
-[macro simple [let arg] arg]
-[simple 42]
-=== out
-Int(42)

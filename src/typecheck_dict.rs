@@ -353,10 +353,8 @@ fn collect_dependencies(
                     worklist.push(e);
                 }
             }
-            SurfaceExpression::Annotated { .. } => {
-                // Annotated is a name with annotation, not an expr containing expr
-                // No dependencies to collect
-            }
+            // Annotated VarRef (VarRef { annotation: Some(_) }) has no child expressions
+            // to collect as dependencies — annotation is type-level metadata only.
             SurfaceExpression::TypeAssert { expr, .. } => {
                 worklist.push(expr);
             }
@@ -455,8 +453,9 @@ pub(crate) async fn infer_dict(
                 if let SurfaceDeclaration::TypeAlias { params, body } = decl.as_ref() {
                     // T-1134: Extract type-level annotation from key (e.g., `Name@[doc: "..."]`).
                     let type_annotation: Option<crate::ast::Annotation> =
+                        // Annotated VarRef: annotation is now on VarRef directly.
                         entry.node.key.as_ref().and_then(|key_node| {
-                            if let SurfaceExpression::Annotated { annotation, .. } = &key_node.expr
+                            if let SurfaceExpression::VarRef { annotation: Some(annotation), .. } = &key_node.expr
                             {
                                 Some(annotation.node.clone())
                             } else {
@@ -610,13 +609,16 @@ pub(crate) async fn infer_dict(
                                 });
                                 dict_env.insert_tycon_def(name.clone(), Arc::clone(&tycon_def));
                                 state.tycon_env.insert(name.clone(), tycon_def);
-                                // Register the alias name as an Unknown-typed value so that
-                                // qualified access like `Color.Green` can resolve `Color` in
-                                // value position. T-1193: [type ...] now evaluates to a constructor
-                                // dict at runtime; the type checker uses Unknown as a placeholder.
+                                // Register the alias name with its resolved alias type so that
+                                // the exported env binds the alias to the correct union/record type.
+                                // T-1193: [type ...] evaluates to a constructor dict at runtime;
+                                // the type checker binds the alias name to the resolved alias body
+                                // (e.g., Union(NominalVariant("Red"), ...)) so callers can inspect
+                                // the alias type via env.get(). Type::Any would satisfy Unknown-audit
+                                // but loses the structural union information tests rely on.
                                 dict_env.insert_scheme(
                                     name.clone(),
-                                    crate::types::TypeScheme::mono(crate::types::Type::Unknown),
+                                    crate::types::TypeScheme::mono(alias_ty.clone()),
                                 );
                             }
                         }
@@ -1068,7 +1070,8 @@ pub(crate) async fn infer_dict(
                     // Extract doc string from key annotation (e.g., name@[doc: "..."])
                     let key_doc = if let Some(ref key_node) = entry.node.key {
                         match &key_node.expr {
-                            SurfaceExpression::Annotated { annotation, .. } => {
+                            // Annotated VarRef: annotation is now on VarRef directly.
+                            SurfaceExpression::VarRef { annotation: Some(annotation), .. } => {
                                 annotation.node.get_property("doc").and_then(|doc_node| {
                                     if let SurfaceExpression::Str(doc_string) = &doc_node.expr {
                                         Some(doc_string.clone())
@@ -1265,8 +1268,8 @@ pub(crate) async fn entry_key_name(
             SurfaceExpression::Str(s) => Some(s.clone()),
             SurfaceExpression::Int(n) => Some(n.to_string()),
             SurfaceExpression::U64(n) => Some(n.to_string()),
-            // Annotated key: name@[doc: "..."] — extract name directly
-            SurfaceExpression::Annotated { name, .. } => Some(name.clone()),
+            // Annotated VarRef key: name@[doc: "..."] — name field is the identifier.
+            SurfaceExpression::VarRef { name, .. } => Some(name.clone()),
             _ => match infer_surface_expr(key_node, env, state, &mut _key_constraints, type_map)
                 .await
             {
@@ -1334,6 +1337,7 @@ mod tests {
                 escaped: false,
                 resolution: crate::ast::Resolution::new(),
                 call_dispatch: crate::ast::CallDispatch::new(),
+                annotation: None,
             }),
         })
     }
@@ -1391,6 +1395,7 @@ mod tests {
                 escaped: false,
                 resolution: crate::ast::Resolution::new(),
                 call_dispatch: crate::ast::CallDispatch::new(),
+                annotation: None,
             }),
         });
         let entries = vec![a_entry, b_entry];
@@ -1422,6 +1427,7 @@ mod tests {
                 escaped: false,
                 resolution: crate::ast::Resolution::new(),
                 call_dispatch: crate::ast::CallDispatch::new(),
+                annotation: None,
             }),
         });
         let b_entry = sp(SurfaceEntry {
@@ -1431,6 +1437,7 @@ mod tests {
                 escaped: false,
                 resolution: crate::ast::Resolution::new(),
                 call_dispatch: crate::ast::CallDispatch::new(),
+                annotation: None,
             }),
         });
         let entries = vec![a_entry, b_entry];
@@ -1458,6 +1465,7 @@ mod tests {
                         escaped: false,
                         resolution: crate::ast::Resolution::new(),
                         call_dispatch: crate::ast::CallDispatch::new(),
+                        annotation: None,
                     }),
                 }),
                 sp(SurfaceEntry {
@@ -1467,6 +1475,7 @@ mod tests {
                         escaped: false,
                         resolution: crate::ast::Resolution::new(),
                         call_dispatch: crate::ast::CallDispatch::new(),
+                        annotation: None,
                     }),
                 }),
             ])),

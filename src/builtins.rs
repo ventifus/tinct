@@ -161,22 +161,6 @@ pub(crate) fn check_float_result(val: f64, op: &str, span: Span) -> EvalResult<A
 
 /// Stringify a single materialized value for `str` builtin.
 ///
-/// - Int -> decimal representation (e.g. `42`)
-/// - Float -> decimal representation (e.g. `3.14`)
-/// - String -> the string itself (no quotes)
-/// - Bool -> `"true"` / `"false"`
-/// - Dict, Function, Builtin -> delegated to `Value::Display`
-pub(crate) fn stringify(value: &Value) -> String {
-    match value {
-        Value::String {
-            ref source,
-            start,
-            end,
-        } => source[*start..*end].to_string(),
-        other => format!("{other}"),
-    }
-}
-
 /// Flatten a `Value::Overlay(L, R)` into an `IndexMap` by materializing both sides.
 ///
 /// L entries are inserted first, then R entries overwrite on key collision (R wins).
@@ -393,7 +377,7 @@ pub(crate) use crate::builtins_dict::{
 #[allow(unused_imports)] // used in test modules via `use super::*`
 pub(crate) use crate::builtins_meta::{
     builtin_annotation_of, builtin_apply, builtin_ast_of, builtin_big_int, builtin_blake3,
-    builtin_cap_identity, builtin_decimal, builtin_eval, builtin_eval_types, builtin_expand,
+    builtin_cap_identity, builtin_decimal, builtin_eval, builtin_eval_types,
     builtin_force, builtin_gensym, builtin_include_cache_get, builtin_include_cache_put,
     builtin_llt_repr, builtin_load, builtin_macro_error, builtin_macro_injects,
     builtin_make_annotated, builtin_raise, builtin_span_of, builtin_tag_of, builtin_try,
@@ -407,12 +391,10 @@ pub(crate) use crate::builtins_meta::{
 // are implemented using str-map-chars + str-to-upper-char / str-to-lower-char.
 // Implementations live in builtins_string.rs; re-exported here so that
 // builtin_module() registration and unit tests (via `use super::*`) still work.
-#[cfg(test)]
-pub(crate) use crate::builtins_string::MAX_SPLIT_PARTS;
 #[allow(unused_imports)] // used in test modules via `use super::*`
 pub(crate) use crate::builtins_string::{
     builtin_bytes_str, builtin_char_code, builtin_chr, builtin_regex_match, builtin_replace,
-    builtin_split, builtin_str, builtin_str_bytes, builtin_str_index_of, builtin_str_length,
+    builtin_str_bytes, builtin_str_index_of, builtin_str_length,
     builtin_str_map_chars, builtin_str_nth_char, builtin_str_slice, builtin_str_to_lower_char,
     builtin_str_to_upper_char, builtin_trim, builtin_trim_end, builtin_trim_start,
 };
@@ -594,10 +576,7 @@ pub fn core_builtin_types(env: &mut crate::types::TypeEnv) {
 
 // Re-exported here for test access via `use super::*`.
 #[allow(unused_imports)] // used in test modules via `use super::*`
-pub(crate) use crate::builtins_dict::{
-    builtin_concat, builtin_drop, builtin_filter, builtin_join, builtin_map, builtin_reduce,
-    builtin_reduce_dict_step, builtin_take,
-};
+pub(crate) use crate::builtins_dict::{builtin_concat, builtin_drop, builtin_take};
 
 /// `first`: Return the first element of a Dict, the first character of a String,
 /// or the first byte (as Int) of a Bytes value.
@@ -876,8 +855,13 @@ fn compare_values(a: &Value, b: &Value, call_span: Span) -> EvalResult<std::cmp:
                 end: end2,
             },
         ) => s1[*start1..*end1].cmp(&s2[*start2..*end2]),
-        (a, b) if a.as_bool().is_some() && b.as_bool().is_some() => {
-            a.as_bool().unwrap().cmp(&b.as_bool().unwrap())
+        (
+            Value::Variant { tag: a_tag, payload: None },
+            Value::Variant { tag: b_tag, payload: None },
+        ) if (a_tag == "Boolean.True" || a_tag == "Boolean.False")
+            && (b_tag == "Boolean.True" || b_tag == "Boolean.False") =>
+        {
+            a_tag.cmp(b_tag) // "Boolean.False" < "Boolean.True" lexically → false < true ✓
         }
         _ => {
             return Err(EvalError::type_mismatch_ctx(
@@ -1018,23 +1002,13 @@ pub(crate) fn builtin_sort(
                     };
 
                     let result_val = materialize(&result_thunk, Some(&call_span), &ctx).await?;
-                    match result_val.as_bool() {
-                        // true means a > b (first arg should come after second) → swap
-                        Some(true) => {
-                            pairs.swap(j - 1, j);
-                            j -= 1;
-                        }
-                        // false means a <= b → already in order, stop inner loop
-                        Some(false) => break,
-                        None => {
-                            return Err(EvalError::type_mismatch_ctx(
-                                "sort".to_string(),
-                                "Bool",
-                                result_val.type_name(),
-                                result_thunk.span.clone(),
-                            )
-                            .into());
-                        }
+                    if result_val.is_truthy() {
+                        // truthy means a > b → swap
+                        pairs.swap(j - 1, j);
+                        j -= 1;
+                    } else {
+                        // falsy means a <= b → already in order
+                        break;
                     }
                 }
             }
@@ -1419,11 +1393,6 @@ mod tests {
         let parsed = crate::parser::parse(llt_src)
             .unwrap_or_else(|e| panic!("parse_eval: parse failed for {:?}: {}", llt_src, e));
         let mut program = parsed.program;
-        let base_dir = Arc::clone(&crate::test_util::test_caps().root);
-        let expand_env = Arc::clone(&ctx.config.stdlib_env);
-        crate::expand::expand_surface_program(&mut program, expand_env, false, &base_dir)
-            .await
-            .unwrap_or_else(|e| panic!("parse_eval: expand failed for {:?}: {}", llt_src, e));
         crate::desugar::desugar_surface_program(&mut program);
         let resolve_errors = crate::resolve::resolve_surface_program(&program);
         if !resolve_errors.is_empty() {
@@ -1457,6 +1426,7 @@ mod tests {
                 escaped: false,
                 resolution: crate::ast::Resolution::new(), // Not set → unresolvable → CoreExpr::Error
                 call_dispatch: crate::ast::CallDispatch::new(),
+                annotation: None,
             },
             span: test_span(1, 1, 1, 10),
             type_guard: crate::ast::TypeAnnotation::new(),
@@ -1514,6 +1484,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(42));
@@ -1526,6 +1497,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(-7));
@@ -1538,6 +1510,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(0));
@@ -1550,6 +1523,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(3));
@@ -1563,6 +1537,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(-4));
@@ -1575,6 +1550,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(5));
@@ -1587,6 +1563,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(2));
@@ -1599,6 +1576,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -1612,6 +1590,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -1629,6 +1608,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -1646,6 +1626,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -1663,6 +1644,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -1680,6 +1662,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -1697,6 +1680,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -1714,6 +1698,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -1733,6 +1718,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -1750,6 +1736,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -1767,6 +1754,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -1784,6 +1772,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(42));
@@ -1796,6 +1785,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(-7));
@@ -1809,6 +1799,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(1));
@@ -1822,6 +1813,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(-1));
@@ -1834,6 +1826,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(2));
@@ -1846,6 +1839,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(3));
@@ -1859,6 +1853,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(-2));
@@ -1872,6 +1867,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(-3));
@@ -1884,6 +1880,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(2));
@@ -1896,6 +1893,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(-2));
@@ -1908,6 +1906,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(5));
@@ -1920,6 +1919,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -1933,6 +1933,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -1950,6 +1951,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -1967,6 +1969,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -1984,6 +1987,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -2001,6 +2005,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -2018,6 +2023,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -2035,6 +2041,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -2052,6 +2059,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -2069,6 +2077,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(42));
@@ -2081,6 +2090,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(-7));
@@ -2093,6 +2103,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(0));
@@ -2105,6 +2116,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(i64::MAX));
@@ -2117,6 +2129,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -2134,6 +2147,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -2151,6 +2165,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -2168,6 +2183,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -2185,6 +2201,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -2207,6 +2224,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -2224,6 +2242,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -2241,6 +2260,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -2258,6 +2278,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -2275,6 +2296,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -2292,6 +2314,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, Value::Float(3.14));
@@ -2305,6 +2328,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, Value::Float(42.0));
@@ -2317,6 +2341,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, Value::Float(-2.5));
@@ -2329,6 +2354,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, Value::Float(1.5e10));
@@ -2341,6 +2367,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, Value::Float(2.5e-3));
@@ -2353,6 +2380,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, Value::Float(0.0));
@@ -2366,6 +2394,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, Value::Float(0.5));
@@ -2378,6 +2407,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -2395,6 +2425,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -2412,6 +2443,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -2429,6 +2461,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -2446,6 +2479,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -2463,6 +2497,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -2480,6 +2515,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -2497,6 +2533,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -2514,6 +2551,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -2531,6 +2569,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -2551,6 +2590,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -2570,6 +2610,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -2588,6 +2629,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -2605,6 +2647,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -2618,6 +2661,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -2631,6 +2675,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -2649,6 +2694,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -2669,6 +2715,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         match result {
@@ -2690,6 +2737,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         match result {
@@ -2709,6 +2757,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -2728,6 +2777,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -2745,6 +2795,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -2774,6 +2825,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         match result {
@@ -2808,6 +2860,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         match result {
@@ -2815,7 +2868,9 @@ mod tests {
                 assert_eq!(tag, "Result.Error");
                 let payload_val =
                     mat_id(payload.expect("Result.Error should have payload"), &ctx).await;
-                assert_eq!(payload_val, string_val("builtin error".into()));
+                // builtin-try uses e.to_string() which includes error code and span.
+                let s = format!("{payload_val}");
+                assert!(s.contains("builtin error"), "error payload should contain 'builtin error', got: {s}");
             }
             _ => panic!("expected Variant(Result.Error, ...), got: {:?}", result),
         }
@@ -2847,6 +2902,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -2878,6 +2934,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(42));
@@ -2903,6 +2960,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(10));
@@ -2928,6 +2986,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(20));
@@ -2976,6 +3035,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(7));
@@ -2999,6 +3059,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .expect("should return thunk");
@@ -3031,6 +3092,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .expect("should return thunk");
@@ -3053,6 +3115,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .expect("should return thunk");
@@ -3073,6 +3136,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .expect("should return thunk");
@@ -3093,6 +3157,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, string_val("Int".into()));
@@ -3105,6 +3170,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, string_val("Float".into()));
@@ -3117,6 +3183,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, string_val("String".into()));
@@ -3129,6 +3196,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, string_val("Dict".into()));
@@ -3143,6 +3211,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, string_val("Function".into()));
@@ -3166,6 +3235,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, string_val("Function".into()));
@@ -3186,6 +3256,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, string_val("Color.Red".into()));
@@ -3198,6 +3269,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -3217,6 +3289,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         match result {
@@ -3239,6 +3312,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         match result {
@@ -3269,6 +3343,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         match result {
@@ -3300,6 +3375,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         match result {
@@ -3330,6 +3406,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         match result {
@@ -3354,6 +3431,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(0));
@@ -3372,6 +3450,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(3));
@@ -3389,6 +3468,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(2));
@@ -3409,6 +3489,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         // builtin_merge now returns Value::Overlay; flatten to verify contents.
@@ -3435,6 +3516,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         let map = flatten_val(result, &ctx).await;
@@ -3458,6 +3540,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         let map = flatten_val(result, &ctx).await;
@@ -3504,6 +3587,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         let map = flatten_val(result, &ctx).await;
@@ -3522,6 +3606,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         let map = flatten_val(result, &ctx).await;
@@ -3549,6 +3634,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         // Flatten and verify values are preserved correctly through the overlay.
@@ -3578,6 +3664,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         let map = flatten_val(result, &ctx).await;
@@ -3600,6 +3687,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -3619,6 +3707,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -3636,6 +3725,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -3655,6 +3745,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -3674,6 +3765,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -3693,6 +3785,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -3710,6 +3803,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -3733,6 +3827,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -3752,6 +3847,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(5));
@@ -3764,6 +3860,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(0));
@@ -3777,6 +3874,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(2));
@@ -3793,6 +3891,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         // builtin_merge itself succeeds — returns Overlay(Int(1), {})
@@ -3830,6 +3929,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         let overlay_thunk = result.unwrap();
@@ -3864,6 +3964,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         match result {
@@ -3888,6 +3989,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         match result {
@@ -3912,6 +4014,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         match result {
@@ -3937,6 +4040,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         match result {
@@ -3960,6 +4064,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         match result {
@@ -3986,6 +4091,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         match result {
@@ -4005,6 +4111,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -4023,6 +4130,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -4036,6 +4144,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -4058,6 +4167,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -4066,308 +4176,6 @@ mod tests {
             "got: {}",
             err.kind
         );
-    }
-
-    #[tokio::test]
-    async fn str_no_args() {
-        let result = mat(builtin_str(BuiltinArgs {
-            args: vec![],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        }))
-        .await;
-        assert_eq!(result, string_val("".into()));
-    }
-
-    #[tokio::test]
-    async fn str_single_int() {
-        let result = mat(builtin_str(BuiltinArgs {
-            args: vec![thunk(Value::Int(42))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        }))
-        .await;
-        assert_eq!(result, string_val("42".into()));
-    }
-
-    #[tokio::test]
-    async fn str_single_negative_int() {
-        let result = mat(builtin_str(BuiltinArgs {
-            args: vec![thunk(Value::Int(-7))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        }))
-        .await;
-        assert_eq!(result, string_val("-7".into()));
-    }
-
-    #[tokio::test]
-    async fn str_single_float() {
-        let result = mat(builtin_str(BuiltinArgs {
-            args: vec![thunk(Value::Float(3.14))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        }))
-        .await;
-        assert_eq!(result, string_val("3.14".into()));
-    }
-
-    #[tokio::test]
-    async fn str_single_string() {
-        let result = mat(builtin_str(BuiltinArgs {
-            args: vec![thunk(string_val("hello".into()))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        }))
-        .await;
-        assert_eq!(result, string_val("hello".into()));
-    }
-
-    #[tokio::test]
-    async fn str_single_dict() {
-        let ctx = test_ctx();
-        let dict = thunk_dict(
-            {
-                let mut m = IndexMap::new();
-                m.insert(
-                    HashableValue::Str("x".into()),
-                    Arc::new(Thunk::new_materialized(
-                        Value::Int(1),
-                        test_span(1, 1, 1, 5),
-                    )),
-                );
-                m
-            },
-            &ctx,
-        );
-        let result = mat(builtin_str(BuiltinArgs {
-            args: vec![dict],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Arc::clone(&ctx),
-        }))
-        .await;
-        assert_eq!(result, string_val("[x: <thunk>]".into()));
-    }
-
-    #[tokio::test]
-    async fn str_single_empty_string() {
-        let result = mat(builtin_str(BuiltinArgs {
-            args: vec![thunk(string_val("".into()))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        }))
-        .await;
-        assert_eq!(result, string_val("".into()));
-    }
-
-    #[tokio::test]
-    async fn str_concat_multiple_strings() {
-        let args = vec![
-            thunk(string_val("Hello".into())),
-            thunk(string_val(" ".into())),
-            thunk(string_val("World".into())),
-        ];
-        let result = mat(builtin_str(BuiltinArgs {
-            args,
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        }))
-        .await;
-        assert_eq!(result, string_val("Hello World".into()));
-    }
-
-    #[tokio::test]
-    async fn split_basic() {
-        let ctx = test_ctx();
-        let result = mat(builtin_split(BuiltinArgs {
-            args: vec![
-                thunk(string_val(",".into())),
-                thunk(string_val("a,b,c".into())),
-            ],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Arc::clone(&ctx),
-        }))
-        .await;
-        match result {
-            Value::Dict(map) => {
-                assert_eq!(map.len(), 3);
-                let v0 = mat_id(*map.get(&HashableValue::Int(0)).unwrap(), &ctx).await;
-                let v1 = mat_id(*map.get(&HashableValue::Int(1)).unwrap(), &ctx).await;
-                let v2 = mat_id(*map.get(&HashableValue::Int(2)).unwrap(), &ctx).await;
-                assert_eq!(v0, string_val("a".into()));
-                assert_eq!(v1, string_val("b".into()));
-                assert_eq!(v2, string_val("c".into()));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn split_empty_parts() {
-        let ctx = test_ctx();
-        let result = mat(builtin_split(BuiltinArgs {
-            args: vec![
-                thunk(string_val(",".into())),
-                thunk(string_val("a,,b".into())),
-            ],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Arc::clone(&ctx),
-        }))
-        .await;
-        match result {
-            Value::Dict(map) => {
-                assert_eq!(map.len(), 3);
-                let v1 = mat_id(*map.get(&HashableValue::Int(1)).unwrap(), &ctx).await;
-                assert_eq!(v1, string_val("".into()));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn split_single_char_separator() {
-        let result = mat(builtin_split(BuiltinArgs {
-            args: vec![
-                thunk(string_val("/".into())),
-                thunk(string_val("a/b/c/d".into())),
-            ],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        }))
-        .await;
-        match result {
-            Value::Dict(map) => assert_eq!(map.len(), 4),
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn split_no_match() {
-        let ctx = test_ctx();
-        let result = mat(builtin_split(BuiltinArgs {
-            args: vec![
-                thunk(string_val(",".into())),
-                thunk(string_val("hello".into())),
-            ],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Arc::clone(&ctx),
-        }))
-        .await;
-        match result {
-            Value::Dict(map) => {
-                assert_eq!(map.len(), 1);
-                let v0 = mat_id(*map.get(&HashableValue::Int(0)).unwrap(), &ctx).await;
-                assert_eq!(v0, string_val("hello".into()));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn split_multi_char_separator() {
-        let ctx = test_ctx();
-        let result = mat(builtin_split(BuiltinArgs {
-            args: vec![
-                thunk(string_val("::".into())),
-                thunk(string_val("a::b::c".into())),
-            ],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Arc::clone(&ctx),
-        }))
-        .await;
-        match result {
-            Value::Dict(map) => {
-                assert_eq!(map.len(), 3);
-                let v0 = mat_id(*map.get(&HashableValue::Int(0)).unwrap(), &ctx).await;
-                let v1 = mat_id(*map.get(&HashableValue::Int(1)).unwrap(), &ctx).await;
-                let v2 = mat_id(*map.get(&HashableValue::Int(2)).unwrap(), &ctx).await;
-                assert_eq!(v0, string_val("a".into()));
-                assert_eq!(v1, string_val("b".into()));
-                assert_eq!(v2, string_val("c".into()));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn split_empty_input() {
-        let ctx = test_ctx();
-        let result = mat(builtin_split(BuiltinArgs {
-            args: vec![thunk(string_val(",".into())), thunk(string_val("".into()))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Arc::clone(&ctx),
-        }))
-        .await;
-        match result {
-            Value::Dict(map) => {
-                assert_eq!(map.len(), 1);
-                let v0 = mat_id(*map.get(&HashableValue::Int(0)).unwrap(), &ctx).await;
-                assert_eq!(v0, string_val("".into()));
-            }
-            other => panic!("expected Dict, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn split_parts_limit_exceeded() {
-        // Splitting "a" repeated MAX_SPLIT_PARTS+1 times by empty separator produces
-        // MAX_SPLIT_PARTS+2 parts, which exceeds the limit.
-        // Verifies that ResourceLimitExceeded is returned and that the error fires
-        // after at most MAX_SPLIT_PARTS+1 allocations (not after the full split).
-        // Note: corpus tests for this would be impractical (require >1M element inputs),
-        // so we test the limit directly in unit tests.
-        let input = "a".repeat(MAX_SPLIT_PARTS + 1);
-        let result = run(builtin_split(BuiltinArgs {
-            args: vec![thunk(string_val("")), thunk(string_val(&input))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        }))
-        .await;
-        assert!(result.is_err(), "expected Err for > MAX_SPLIT_PARTS parts");
-        let err = result.unwrap_err();
-        assert!(
-            matches!(err.kind, ErrorKind::ResourceLimitExceeded { .. }),
-            "expected ResourceLimitExceeded, got {:?}",
-            err.kind
-        );
-    }
-
-    #[tokio::test]
-    async fn split_parts_at_limit_succeeds() {
-        // Splitting a string that produces exactly MAX_SPLIT_PARTS parts must succeed
-        // (guard is `>`, not `>=`). Construct "a,a,a,...,a" with MAX_SPLIT_PARTS items
-        // separated by commas, then split by "," — produces exactly MAX_SPLIT_PARTS parts.
-        let input = vec!["a"; MAX_SPLIT_PARTS].join(",");
-        let result = run(builtin_split(BuiltinArgs {
-            args: vec![thunk(string_val(",")), thunk(string_val(&input))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        }))
-        .await;
-        let val = match result {
-            Ok(t) => mat_val(t).await,
-            Err(e) => panic!("expected Ok for exactly MAX_SPLIT_PARTS parts, got Err: {e:?}"),
-        };
-        match val {
-            Value::Dict(map) => assert_eq!(map.len(), MAX_SPLIT_PARTS),
-            other => panic!("expected Dict, got {other:?}"),
-        }
     }
 
     #[tokio::test]
@@ -4381,6 +4189,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, string_val("hello Rust".into()));
@@ -4397,6 +4206,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, string_val("bonono".into()));
@@ -4413,6 +4223,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, string_val("hello".into()));
@@ -4429,6 +4240,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, string_val("-a-b-c-".into()));
@@ -4445,6 +4257,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, string_val("heo".into()));
@@ -4465,6 +4278,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert!(result.is_err());
@@ -4485,6 +4299,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         // 1000 'a' replaced with 'bb' -> 2000 'b'
@@ -4498,6 +4313,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, string_val("hello".into()));
@@ -4510,6 +4326,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, string_val("hello".into()));
@@ -4522,6 +4339,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, string_val("hello".into()));
@@ -4534,6 +4352,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, string_val("hello".into()));
@@ -4546,6 +4365,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, string_val("".into()));
@@ -4558,6 +4378,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, string_val("hello".into()));
@@ -4570,52 +4391,10 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, string_val("".into()));
-    }
-
-    #[tokio::test]
-    async fn split_wrong_arity_too_few() {
-        let err = run(builtin_split(BuiltinArgs {
-            args: vec![thunk(string_val(",".into()))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        }))
-        .await
-        .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("arity mismatch"),
-            "got: {}",
-            err.kind
-        );
-        assert!(
-            err.kind.to_string().contains("expected 2"),
-            "got: {}",
-            err.kind
-        );
-    }
-
-    #[tokio::test]
-    async fn split_wrong_arity_too_many() {
-        let err = run(builtin_split(BuiltinArgs {
-            args: vec![
-                thunk(string_val(",".into())),
-                thunk(string_val("a,b".into())),
-                thunk(string_val("extra".into())),
-            ],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        }))
-        .await
-        .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("arity mismatch"),
-            "got: {}",
-            err.kind
-        );
     }
 
     #[tokio::test]
@@ -4625,6 +4404,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -4647,60 +4427,12 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("arity mismatch"),
-            "got: {}",
-            err.kind
-        );
-    }
-
-    #[tokio::test]
-    async fn split_wrong_type_separator() {
-        let err = run(builtin_split(BuiltinArgs {
-            args: vec![thunk(Value::Int(42)), thunk(string_val("hello".into()))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        }))
-        .await
-        .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("expected String"),
-            "got: {}",
-            err.kind
-        );
-        assert!(
-            err.kind.to_string().contains("expected String"),
-            "got: {}",
-            err.kind
-        );
-        assert!(
-            err.kind.to_string().contains("got Int"),
-            "got: {}",
-            err.kind
-        );
-    }
-
-    #[tokio::test]
-    async fn split_wrong_type_input() {
-        let err = run(builtin_split(BuiltinArgs {
-            args: vec![thunk(string_val(",".into())), thunk(Value::Int(42))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        }))
-        .await
-        .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("expected String"),
-            "got: {}",
-            err.kind
-        );
-        assert!(
-            err.kind.to_string().contains("expected String"),
             "got: {}",
             err.kind
         );
@@ -4717,6 +4449,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -4743,6 +4476,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -4769,6 +4503,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -4791,6 +4526,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -4820,6 +4556,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -4839,6 +4576,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -4858,6 +4596,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -4877,28 +4616,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
-        }))
-        .await
-        .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("named arguments"),
-            "got: {}",
-            err.kind
-        );
-    }
-
-    #[tokio::test]
-    async fn split_rejects_named_args() {
-        let mut named = IndexMap::new();
-        named.insert("x".into(), thunk(Value::Int(1)));
-        let err = run(builtin_split(BuiltinArgs {
-            args: vec![
-                thunk(string_val(",".into())),
-                thunk(string_val("a,b".into())),
-            ],
-            named: Some(named),
-            call_span: call_span(),
-            ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -4922,6 +4640,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -4941,6 +4660,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -4960,6 +4680,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -4979,6 +4700,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -4998,6 +4720,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -5017,6 +4740,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -5036,6 +4760,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -5059,6 +4784,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -5087,6 +4813,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -5107,6 +4834,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -5129,6 +4857,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -5148,25 +4877,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
-        }))
-        .await
-        .unwrap_err();
-        assert!(
-            err.kind.to_string().contains("named arguments"),
-            "got: {}",
-            err.kind
-        );
-    }
-
-    #[tokio::test]
-    async fn str_rejects_named_args() {
-        let mut named = IndexMap::new();
-        named.insert("extra".into(), thunk(Value::Int(1)));
-        let err = run(builtin_str(BuiltinArgs {
-            args: vec![thunk(string_val("hello".into()))],
-            named: Some(named),
-            call_span: call_span(),
-            ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -5188,6 +4899,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -5209,6 +4921,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .expect("should return thunk");
@@ -5256,6 +4969,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(r, Value::Int(8));
@@ -5268,6 +4982,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(r, Value::Float(5.5));
@@ -5280,6 +4995,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(r, Value::Float(5.5));
@@ -5292,6 +5008,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(r, Value::Float(4.0));
@@ -5304,6 +5021,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(r, Value::Int(-7));
@@ -5316,6 +5034,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(r, Value::Int(0));
@@ -5328,6 +5047,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -5346,6 +5066,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -5368,6 +5089,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(3));
@@ -5380,6 +5102,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -5397,6 +5120,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -5414,6 +5138,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(r, Value::Int(7));
@@ -5426,6 +5151,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(r, Value::Float(6.5));
@@ -5438,6 +5164,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(r, Value::Float(7.5));
@@ -5450,6 +5177,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(r, Value::Float(7.0));
@@ -5462,6 +5190,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(r, Value::Int(-7));
@@ -5474,6 +5203,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(r, Value::Int(0));
@@ -5486,6 +5216,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -5503,6 +5234,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -5525,6 +5257,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(-1));
@@ -5537,6 +5270,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -5556,6 +5290,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(r, Value::Int(20));
@@ -5568,6 +5303,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(r, Value::Float(10.0));
@@ -5580,6 +5316,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(r, Value::Float(10.0));
@@ -5592,6 +5329,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(r, Value::Float(7.5));
@@ -5604,6 +5342,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(r, Value::Int(0));
@@ -5616,6 +5355,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(r, Value::Int(-12));
@@ -5628,6 +5368,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(r, Value::Int(-42));
@@ -5640,6 +5381,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -5657,6 +5399,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -5678,6 +5421,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -5695,6 +5439,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -5719,6 +5464,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -5736,6 +5482,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         match r {
@@ -5753,6 +5500,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         match r {
@@ -5768,6 +5516,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         match r {
@@ -5785,6 +5534,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(r, Value::Float(3.0));
@@ -5797,6 +5547,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -5826,6 +5577,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -5844,6 +5596,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -5861,6 +5614,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(r, Value::Float(0.0));
@@ -5873,9 +5627,10 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
-        assert_eq!(r, Value::boolean(true));
+        assert_eq!(r, Value::Int(1));
     }
 
     #[tokio::test]
@@ -5885,9 +5640,10 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
-        assert_eq!(r, Value::boolean(false));
+        assert_eq!(r, Value::Int(0));
     }
 
     #[tokio::test]
@@ -5897,9 +5653,10 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
-        assert_eq!(r, Value::boolean(true));
+        assert_eq!(r, Value::Int(1));
     }
 
     #[tokio::test]
@@ -5909,9 +5666,10 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
-        assert_eq!(r, Value::boolean(false));
+        assert_eq!(r, Value::Int(0));
     }
 
     #[tokio::test]
@@ -5924,9 +5682,10 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
-        assert_eq!(r, Value::boolean(true));
+        assert_eq!(r, Value::Int(1));
     }
 
     #[tokio::test]
@@ -5939,9 +5698,10 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
-        assert_eq!(r, Value::boolean(false));
+        assert_eq!(r, Value::Int(0));
     }
 
     #[tokio::test]
@@ -5951,9 +5711,10 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
-        assert_eq!(r, Value::boolean(true));
+        assert_eq!(r, Value::Int(1));
     }
 
     #[tokio::test]
@@ -5963,9 +5724,10 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
-        assert_eq!(r, Value::boolean(false));
+        assert_eq!(r, Value::Int(0));
     }
 
     #[tokio::test]
@@ -5975,9 +5737,10 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
-        assert_eq!(r, Value::boolean(true));
+        assert_eq!(r, Value::Int(1));
     }
 
     #[tokio::test]
@@ -5987,9 +5750,10 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
-        assert_eq!(r, Value::boolean(true));
+        assert_eq!(r, Value::Int(1));
     }
 
     #[tokio::test]
@@ -5999,9 +5763,10 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
-        assert_eq!(r, Value::boolean(false));
+        assert_eq!(r, Value::Int(0));
     }
 
     #[tokio::test]
@@ -6015,9 +5780,10 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
-        assert_eq!(r, Value::boolean(true));
+        assert_eq!(r, Value::Int(1));
     }
 
     #[tokio::test]
@@ -6027,9 +5793,10 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
-        assert_eq!(r, Value::boolean(false));
+        assert_eq!(r, Value::Int(0));
     }
 
     #[tokio::test]
@@ -6039,9 +5806,10 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
-        assert_eq!(r, Value::boolean(false));
+        assert_eq!(r, Value::Int(0));
     }
 
     #[tokio::test]
@@ -6051,9 +5819,10 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
-        assert_eq!(r, Value::boolean(false));
+        assert_eq!(r, Value::Int(0));
     }
 
     #[tokio::test]
@@ -6063,9 +5832,10 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
-        assert_eq!(r, Value::boolean(true));
+        assert_eq!(r, Value::Int(1));
     }
 
     #[tokio::test]
@@ -6075,6 +5845,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -6092,9 +5863,10 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
-        assert_eq!(r, Value::boolean(true));
+        assert_eq!(r, Value::Int(1));
     }
 
     #[tokio::test]
@@ -6104,9 +5876,10 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
-        assert_eq!(r, Value::boolean(false));
+        assert_eq!(r, Value::Int(0));
     }
 
     #[tokio::test]
@@ -6116,9 +5889,10 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
-        assert_eq!(r, Value::boolean(false));
+        assert_eq!(r, Value::Int(0));
     }
 
     #[tokio::test]
@@ -6128,9 +5902,10 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
-        assert_eq!(r, Value::boolean(true));
+        assert_eq!(r, Value::Int(1));
     }
 
     #[tokio::test]
@@ -6143,9 +5918,10 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
-        assert_eq!(r, Value::boolean(true));
+        assert_eq!(r, Value::Int(1));
     }
 
     #[tokio::test]
@@ -6158,9 +5934,10 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
-        assert_eq!(r, Value::boolean(false));
+        assert_eq!(r, Value::Int(0));
     }
 
     #[tokio::test]
@@ -6173,9 +5950,10 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
-        assert_eq!(r, Value::boolean(false));
+        assert_eq!(r, Value::Int(0));
     }
 
     #[tokio::test]
@@ -6188,9 +5966,10 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
-        assert_eq!(r, Value::boolean(true));
+        assert_eq!(r, Value::Int(1));
     }
 
     #[tokio::test]
@@ -6200,9 +5979,10 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
-        assert_eq!(r, Value::boolean(true));
+        assert_eq!(r, Value::Int(1));
     }
 
     #[tokio::test]
@@ -6212,9 +5992,10 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
-        assert_eq!(r, Value::boolean(true));
+        assert_eq!(r, Value::Int(1));
     }
 
     #[tokio::test]
@@ -6224,9 +6005,10 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
-        assert_eq!(r, Value::boolean(false));
+        assert_eq!(r, Value::Int(0));
     }
 
     #[tokio::test]
@@ -6236,6 +6018,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -6249,9 +6032,10 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
-        assert_eq!(r, Value::boolean(true));
+        assert_eq!(r, Value::Int(1));
     }
 
     #[tokio::test]
@@ -6261,9 +6045,10 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
-        assert_eq!(r, Value::boolean(false));
+        assert_eq!(r, Value::Int(0));
     }
 
     #[tokio::test]
@@ -6273,9 +6058,10 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
-        assert_eq!(r, Value::boolean(false));
+        assert_eq!(r, Value::Int(0));
     }
 
     #[tokio::test]
@@ -6285,9 +6071,10 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
-        assert_eq!(r, Value::boolean(false));
+        assert_eq!(r, Value::Int(0));
     }
 
     #[tokio::test]
@@ -6300,6 +6087,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -6313,6 +6101,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -6330,9 +6119,10 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
-        assert_eq!(r, Value::boolean(true));
+        assert_eq!(r, Value::Int(1));
     }
 
     #[tokio::test]
@@ -6342,15 +6132,16 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
-        assert_eq!(r, Value::boolean(false));
+        assert_eq!(r, Value::Int(0));
     }
 
     #[tokio::test]
     async fn if_true_returns_then_branch() {
         let args = vec![
-            thunk(Value::boolean(true)),
+            thunk(Value::Int(1)),
             thunk(Value::Int(42)),
             thunk(Value::Int(99)),
         ];
@@ -6359,6 +6150,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(42));
@@ -6367,7 +6159,7 @@ mod tests {
     #[tokio::test]
     async fn if_false_returns_else_branch() {
         let args = vec![
-            thunk(Value::boolean(false)),
+            thunk(Value::Int(0)),
             thunk(Value::Int(42)),
             thunk(Value::Int(99)),
         ];
@@ -6376,6 +6168,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(99));
@@ -6387,7 +6180,7 @@ mod tests {
         let error_thunk = make_undef_thunk(&ctx);
 
         let args = vec![
-            thunk(Value::boolean(true)),
+            thunk(Value::Int(1)),
             thunk(Value::Int(42)),
             error_thunk,
         ];
@@ -6396,6 +6189,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(42));
@@ -6407,7 +6201,7 @@ mod tests {
         let error_thunk = make_undef_thunk(&ctx);
 
         let args = vec![
-            thunk(Value::boolean(false)),
+            thunk(Value::Int(0)),
             error_thunk,
             thunk(Value::Int(99)),
         ];
@@ -6416,6 +6210,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(99));
@@ -6433,6 +6228,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -6460,6 +6256,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -6472,12 +6269,13 @@ mod tests {
 
     #[tokio::test]
     async fn if_arity_too_few() {
-        let args = vec![thunk(Value::boolean(true)), thunk(Value::Int(42))];
+        let args = vec![thunk(Value::Int(1)), thunk(Value::Int(42))];
         let e = run(builtin_if(BuiltinArgs {
             args,
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -6491,7 +6289,7 @@ mod tests {
     #[tokio::test]
     async fn if_arity_too_many() {
         let args = vec![
-            thunk(Value::boolean(true)),
+            thunk(Value::Int(1)),
             thunk(Value::Int(1)),
             thunk(Value::Int(2)),
             thunk(Value::Int(3)),
@@ -6501,6 +6299,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -6529,6 +6328,7 @@ mod tests {
             named: no_named(),
             call_span: call_span_val,
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -6573,6 +6373,7 @@ mod tests {
             named: no_named(),
             call_span: same_span,
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -6618,6 +6419,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         match result {
@@ -6649,6 +6451,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         match result {
@@ -6670,6 +6473,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         match result {
@@ -6692,6 +6496,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         match result {
@@ -6709,6 +6514,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert!(result.is_err());
@@ -6724,6 +6530,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert!(result.is_err());
@@ -6736,6 +6543,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert!(result.is_err());
@@ -6755,6 +6563,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
 
@@ -6785,6 +6594,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
 
@@ -6823,6 +6633,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
 
@@ -6867,6 +6678,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -6876,20 +6688,6 @@ mod tests {
             "expected TypeMismatch for Variant xs, got {:?}",
             err.kind
         );
-    }
-
-    #[tokio::test]
-    async fn join_empty_dict() {
-        // Task 3: Test $join with empty Dict to verify the parts.is_empty() guard
-        // prevents saturating_sub(1) wraparound
-        let result = mat(builtin_join(BuiltinArgs {
-            args: vec![thunk(string_val(",")), thunk(Value::Dict(IndexMap::new()))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-        }))
-        .await;
-        assert_eq!(result, string_val(""));
     }
 
     #[tokio::test]
@@ -6910,6 +6708,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
 
@@ -6953,6 +6752,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
 
@@ -6979,6 +6779,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap();
@@ -7002,6 +6803,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -7017,6 +6819,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -7036,6 +6839,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -7056,6 +6860,7 @@ mod tests {
             named: Some(named),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await
         .unwrap_err();
@@ -7082,7 +6887,6 @@ mod tests {
             "builtin-if",
             "builtin-raise",
             "builtin-type-of",
-            "builtin-str",
             "builtin-keys",
             "builtin-get",
             "builtin-merge",
@@ -7108,60 +6912,6 @@ mod tests {
             env.get_by_name("filter").is_none(),
             "filter should not be in core env"
         );
-    }
-
-    // === drop/reduce/join PendingCall chain construction tests ===
-
-    #[tokio::test]
-    async fn reduce_constructs_pending_call() {
-        // reduce(+, 0, [1, 2]) should create a PendingCall chain
-        let ctx = test_ctx();
-        let mut m = IndexMap::new();
-        m.insert(HashableValue::Int(0), thunk(Value::Int(1)));
-        m.insert(HashableValue::Int(1), thunk(Value::Int(2)));
-        let seq_val = thunk_dict(m, &ctx);
-
-        // T-719: get builtin-add from builtin_module("core").
-        // Note: "+" is defined via [instance Addable ...] in prelude; "builtin-add" is the
-        // stable alias in core_builtins() used by tests that don't load the full prelude.
-        let add_builtin = builtin_module("core")
-            .expect("core module must exist")
-            .into_iter()
-            .find(|def| def.name == "builtin-add")
-            .map(Value::Builtin)
-            .expect("builtin-add must be in core module");
-
-        let result = mat(builtin_reduce(BuiltinArgs {
-            args: vec![thunk(add_builtin), thunk(Value::Int(0)), seq_val],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Arc::clone(&ctx),
-        }))
-        .await;
-
-        // Result should be 3 (0 + 1 + 2)
-        assert_eq!(result, Value::Int(3));
-    }
-
-    #[tokio::test]
-    async fn join_constructs_pending_call() {
-        // join(",", ["a", "b"]) should create a PendingCall chain
-        let ctx = test_ctx();
-        let mut m = IndexMap::new();
-        m.insert(HashableValue::Int(0), thunk(string_val("a".into())));
-        m.insert(HashableValue::Int(1), thunk(string_val("b".into())));
-        let seq_val = thunk_dict(m, &ctx);
-
-        let result = mat(builtin_join(BuiltinArgs {
-            args: vec![thunk(string_val(",".into())), seq_val],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: Arc::clone(&ctx),
-        }))
-        .await;
-
-        // Result should be "a,b"
-        assert_eq!(result, string_val("a,b".into()));
     }
 
     // -------------------------------------------------------------------------
@@ -7200,6 +6950,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         let m = match result {
@@ -7219,6 +6970,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         match result {
@@ -7234,6 +6986,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         match result {
@@ -7250,6 +7003,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         let m = match result {
@@ -7269,6 +7023,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         match result {
@@ -7285,6 +7040,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         let m = match result {
@@ -7314,6 +7070,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         let m = match result {
@@ -7331,6 +7088,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         match result {
@@ -7353,6 +7111,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, Value::Int(20));
@@ -7368,6 +7127,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert!(
@@ -7386,6 +7146,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert!(matches!(result, Value::String { .. }));
@@ -7401,6 +7162,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         match result {
@@ -7424,6 +7186,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert_eq!(result, string_val("second".into()));
@@ -7440,6 +7203,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         assert!(result.is_err());
@@ -7480,6 +7244,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         let result_thunk = result.unwrap_or_else(|e| {
@@ -7521,6 +7286,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         let result_thunk = result.unwrap_or_else(|e| {
@@ -7555,6 +7321,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: Arc::clone(&ctx),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
         let result_thunk = result.unwrap_or_else(|e| {

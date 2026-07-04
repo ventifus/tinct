@@ -656,6 +656,10 @@ pub enum Value {
         body: Arc<Spanned<CoreExpr>>,
         env: Arc<RwLock<Environment>>,
         annotation: Option<Box<FnAnnotation>>,
+        /// Return type annotation from the `fn@Annotation` form.
+        /// For named-field constructors, this carries `Annotation::Simple(qualified_tag)`,
+        /// enabling pattern matching to identify the constructor tag at runtime.
+        return_ann: Option<crate::ast::Spanned<crate::ast::Annotation>>,
     },
     /// Rust-native built-in function
     Builtin(BuiltinDef),
@@ -957,6 +961,21 @@ pub fn bytes_val(data: &[u8]) -> Value {
 }
 
 impl Value {
+    /// Normalize a materialized value by peeling transparent wrappers:
+    /// - `Annotated { inner }` → recurse into inner (annotations are metadata, not type identity)
+    /// - `Overlay(L, R)` is left as-is here — callers that need a plain Dict should call
+    ///   `flatten_overlay` explicitly, since flattening requires async context.
+    ///
+    /// Called after strict-arg materialization so builtins see the canonical variant
+    /// rather than annotation wrappers. Overlay flattening is handled per-builtin.
+    pub fn peel_annotations(self) -> Value {
+        let mut v = self;
+        while let Value::Annotated { inner, .. } = v {
+            v = *inner;
+        }
+        v
+    }
+
     pub fn boolean(b: bool) -> Value {
         Value::Variant {
             tag: if b {
@@ -968,11 +987,14 @@ impl Value {
         }
     }
 
-    pub fn as_bool(&self) -> Option<bool> {
+    pub fn is_truthy(&self) -> bool {
         match self {
-            Value::Variant { tag, payload: None } if tag == "Boolean.True" => Some(true),
-            Value::Variant { tag, payload: None } if tag == "Boolean.False" => Some(false),
-            _ => None,
+            Value::Int(0) => false,
+            Value::Int(_) => true,
+            Value::Variant { tag, payload: None } if tag == "Boolean.True" => true,
+            Value::Variant { tag, payload: None } if tag == "Boolean.False" => false,
+            Value::Dict(m) => !m.is_empty(),
+            _ => true,
         }
     }
 
@@ -2301,6 +2323,11 @@ impl Environment {
         self.slots.push(thunk);
     }
 
+    /// Iterate over (name, thunk) pairs in this environment frame (not parents).
+    pub fn iter_slots(&self) -> impl Iterator<Item = (&str, &Arc<Thunk>)> {
+        self.slot_names.iter().map(String::as_str).zip(self.slots.iter())
+    }
+
     /// O(1) slot-based lookup with De Bruijn level-based parent chain walking.
     ///
     /// `level` is a De Bruijn index: 0 = current environment, 1 = parent, N = Nth ancestor.
@@ -2553,6 +2580,7 @@ mod tests {
             body: Arc::new(Spanned::new(CoreExpr::Int(0), test_span(1, 1, 1, 1))),
             env: Arc::new(RwLock::new(Environment::new())),
             annotation: None,
+            return_ann: None,
         };
         assert_ne!(f.clone(), f);
     }
@@ -2851,6 +2879,7 @@ mod tests {
             body,
             env,
             annotation: None,
+            return_ann: None,
         };
         assert_eq!(format!("{func}"), "[fn [let x y] ...]");
     }
@@ -2949,6 +2978,7 @@ mod tests {
             body,
             env,
             annotation: None,
+            return_ann: None,
         };
         assert_eq!(format!("{func:?}"), "Function(a, b)");
     }
@@ -3093,6 +3123,7 @@ mod tests {
                 )),
                 env: Arc::new(RwLock::new(Environment::new())),
                 annotation: None,
+                return_ann: None,
             },
             span.clone(),
         ));

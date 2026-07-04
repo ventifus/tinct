@@ -4,7 +4,7 @@
 //! [`parse_surface_expression`] parses a single expression and returns the native `Arc<SurfaceNode>` (no bridge).
 //!
 //! Additional public API:
-//! - [`eval_surface_file`] / [`eval_surface_file_with_input`] -- evaluate a `SurfaceProgram` with optional stdin input (requires prior `expand` + `desugar` + `resolve` passes)
+//! - [`eval_surface_file`] / [`eval_surface_file_with_input`] -- evaluate a `SurfaceProgram` with optional stdin input (requires prior `desugar` + `resolve` passes)
 //! - [`typecheck_source`] -- parse and typecheck only (no evaluation)
 //! - [`materialize`] -- force thunks (shallow)
 //! - [`build_core_env`] -- build a fresh env with only the core Rust builtins (starting point for `run_loader_pipeline`)
@@ -85,8 +85,6 @@ pub(crate) mod builtins_async;
 pub(crate) mod builtins_core;
 // $_ desugaring (pre-typecheck AST transformation).
 pub mod desugar;
-// Macro expansion (pre-desugar AST transformation).
-pub mod expand;
 // runtime-v2: lowering pass (SurfaceExpression → CoreExpr).
 pub(crate) mod lower;
 // runtime-v2: surface AST field extraction for match dispatch and dot-access.
@@ -187,8 +185,8 @@ pub use value::{
 pub async fn run_loader_pipeline(
     env: Arc<std::sync::RwLock<value::Environment>>,
     eval_ctx: &Arc<eval::EvalContext>,
-    libdir_dir: &cap_std::fs::Dir,
-    no_fs: bool,
+    _libdir_dir: &cap_std::fs::Dir,
+    _no_fs: bool,
     init_source: &str,
     init_path: &str,
 ) -> Result<(), String> {
@@ -199,21 +197,6 @@ pub async fn run_loader_pipeline(
     let loader_parsed = parse_with_file(init_source, Arc::clone(&loader_sf))
         .map_err(|e| format!("{init_path} parse error: {e}"))?;
     let mut loader_program = loader_parsed.program;
-
-    // Open a dup of libdir_dir for use as the expansion base directory.
-    // expand_surface_program requires a Dir for resolving relative paths in macros.
-    let loader_base_dir = libdir_dir
-        .open_dir(".")
-        .map_err(|e| format!("cannot dup libdir for loader expansion: {e}"))?;
-
-    expand::expand_surface_program(
-        &mut loader_program,
-        Arc::clone(&env),
-        no_fs,
-        &loader_base_dir,
-    )
-    .await
-    .map_err(|e| format!("{init_path} expansion error: {e}"))?;
 
     desugar::desugar_surface_program(&mut loader_program);
 
@@ -278,19 +261,8 @@ pub async fn run_loader_pipeline(
 /// (not quality diagnostics), use [`typecheck_source_errors_only`] instead.
 pub async fn typecheck_source(input: &str) -> Result<(), String> {
     let parsed = parse(input).map_err(|e| format!("{e}"))?;
-    // PIPELINE INVARIANT: parse -> expand_surface_program -> desugar -> typecheck.
-    // Use expand_surface_program (not expand_macros) so SurfaceItem::Decl macros are seen.
-    // Desugar AFTER macro expansion so that macros can introduce $_ patterns.
-    // AMBIENT-OK: lib.rs public API — callers provide source strings, no prior Dir available.
-    #[allow(clippy::disallowed_methods)]
-    let expand_base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
-        .map_err(|e| format!("cannot open cwd for macro expansion: {e}"))?;
+    // PIPELINE INVARIANT: parse -> desugar -> typecheck.
     let mut program = parsed.program;
-    let expand_env = builtins::build_core_env();
-    expand::expand_surface_program(&mut program, expand_env, false, &expand_base_dir)
-        .await
-        .map_err(|e| format!("{e}"))?;
-    // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
     desugar::desugar_surface_program(&mut program);
     let env = imports::get_builtin_core_type_env()
         .await
@@ -322,19 +294,8 @@ pub async fn typecheck_source(input: &str) -> Result<(), String> {
 /// open-record patterns that produce `Unknown` in intermediate type-map entries.
 pub async fn typecheck_source_errors_only(input: &str) -> Result<(), String> {
     let parsed = parse(input).map_err(|e| format!("{e}"))?;
-    // PIPELINE INVARIANT: parse -> expand_surface_program -> desugar -> typecheck.
-    // Use expand_surface_program (not expand_macros) so SurfaceItem::Decl macros are seen.
-    // Desugar AFTER macro expansion so that macros can introduce $_ patterns.
-    // AMBIENT-OK: lib.rs public API — callers provide source strings, no prior Dir available.
-    #[allow(clippy::disallowed_methods)]
-    let expand_base_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
-        .map_err(|e| format!("cannot open cwd for macro expansion: {e}"))?;
+    // PIPELINE INVARIANT: parse -> desugar -> typecheck.
     let mut program = parsed.program;
-    let expand_env = builtins::build_core_env();
-    expand::expand_surface_program(&mut program, expand_env, false, &expand_base_dir)
-        .await
-        .map_err(|e| format!("{e}"))?;
-    // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
     desugar::desugar_surface_program(&mut program);
     // Type check the surface program.
     let env = imports::get_builtin_core_type_env()

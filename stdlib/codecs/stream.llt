@@ -69,7 +69,7 @@
   # parse-expr: parse a single balanced expression string to an Expression.
   # Type: (String -> Expression)
   parse-expr: [fn [let s]
-    [head [head [expand [load s]].documents].expressions]]
+    [head [head [builtin-resolve [load s]].resolved.documents].expressions]]
 
   # program-exprs: extract all expressions from a Value::Program.
   # Type: (Program -> Seq)

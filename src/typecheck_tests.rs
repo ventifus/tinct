@@ -1574,6 +1574,7 @@ async fn test_property_dict_no_key_resolves_as_union() {
             escaped: false,
             resolution: crate::ast::Resolution::new(),
             call_dispatch: crate::ast::CallDispatch::new(),
+            annotation: None,
         },
     )]);
     let mut c = Vec::new();
@@ -1624,6 +1625,7 @@ async fn test_property_dict_unresolvable_type_propagates_error() {
             escaped: false,
             resolution: crate::ast::Resolution::new(),
             call_dispatch: crate::ast::CallDispatch::new(),
+            annotation: None,
         },
     )]);
     let mut c = Vec::new();
@@ -1687,9 +1689,15 @@ async fn test_property_dict_fn_type_error_propagates() {
     // number of entries: should propagate, not fall back to Any.
     let ann = Annotation::PropertyDict(vec![surf_ann_entry_tc(
         None,
-        SurfaceExpression::Annotated {
+        SurfaceExpression::VarRef {
             name: "Fn".into(),
-            annotation: Spanned::new(Annotation::Simple("Int".into()), span.clone()),
+            escaped: false,
+            resolution: crate::ast::Resolution::new(),
+            call_dispatch: crate::ast::CallDispatch::new(),
+            annotation: Some(crate::ast::normalize_varref_annotation(
+                Spanned::new(Annotation::Simple("Int".into()), span.clone()),
+                span.clone(),
+            )),
         },
     )]);
     let mut c = Vec::new();
@@ -5397,6 +5405,7 @@ async fn test_or_annotation_two_types() {
                 escaped: false,
                 resolution: crate::ast::Resolution::new(),
                 call_dispatch: crate::ast::CallDispatch::new(),
+                annotation: None,
             },
         ),
         surf_ann_entry_tc(
@@ -5406,6 +5415,7 @@ async fn test_or_annotation_two_types() {
                 escaped: false,
                 resolution: crate::ast::Resolution::new(),
                 call_dispatch: crate::ast::CallDispatch::new(),
+                annotation: None,
             },
         ),
         surf_ann_entry_tc(
@@ -5415,6 +5425,7 @@ async fn test_or_annotation_two_types() {
                 escaped: false,
                 resolution: crate::ast::Resolution::new(),
                 call_dispatch: crate::ast::CallDispatch::new(),
+                annotation: None,
             },
         ),
     ]);
@@ -5459,6 +5470,7 @@ async fn test_or_annotation_three_types() {
                         escaped: false,
                         resolution: crate::ast::Resolution::new(),
                         call_dispatch: crate::ast::CallDispatch::new(),
+                        annotation: None,
                     },
                 )
             })
@@ -5574,6 +5586,7 @@ async fn test_union_in_function_signature() {
                 escaped: false,
                 resolution: crate::ast::Resolution::new(),
                 call_dispatch: crate::ast::CallDispatch::new(),
+                annotation: None,
             },
         ),
         surf_ann_entry_tc(
@@ -5583,6 +5596,7 @@ async fn test_union_in_function_signature() {
                 escaped: false,
                 resolution: crate::ast::Resolution::new(),
                 call_dispatch: crate::ast::CallDispatch::new(),
+                annotation: None,
             },
         ),
     ]);
@@ -5916,22 +5930,29 @@ async fn test_adt_mixed_variants() {
                 members.len(),
                 members
             );
-            // First member: NominalVariant("Ok", ...)
+            // normalize_union sorts members by type_order: StringLiteral (4) < NominalVariant (38),
+            // so order is [StringLiteral("error"), StringLiteral("pending"), NominalVariant("Ok")].
+            // Use membership checks rather than positional assertions to be sort-stable.
             assert!(
-                matches!(&members[0], Type::NominalVariant { tag, .. } if tag == "Ok"),
-                "expected first member to be NominalVariant(Ok), got {}",
-                members[0]
-            );
-            // Second and third: StringLiteral
-            assert!(
-                matches!(&members[1], Type::StringLiteral(s) if s == "error"),
-                "expected second member StringLiteral(\"error\"), got {}",
-                members[1]
+                members
+                    .iter()
+                    .any(|m| matches!(m, Type::NominalVariant { tag, .. } if tag == "Ok")),
+                "union must contain NominalVariant(Ok), got {:?}",
+                members
             );
             assert!(
-                matches!(&members[2], Type::StringLiteral(s) if s == "pending"),
-                "expected third member StringLiteral(\"pending\"), got {}",
-                members[2]
+                members
+                    .iter()
+                    .any(|m| matches!(m, Type::StringLiteral(s) if s == "error")),
+                "union must contain StringLiteral(\"error\"), got {:?}",
+                members
+            );
+            assert!(
+                members
+                    .iter()
+                    .any(|m| matches!(m, Type::StringLiteral(s) if s == "pending")),
+                "union must contain StringLiteral(\"pending\"), got {:?}",
+                members
             );
         }
         other => panic!("expected Union body for Mixed type, got {other}"),

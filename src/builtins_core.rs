@@ -39,7 +39,7 @@ use crate::builtins_dict::{
 // String implementations.
 use crate::builtins_string::{
     builtin_bytes_str, builtin_char_code, builtin_chr, builtin_float_to_string,
-    builtin_int_to_string, builtin_regex_match, builtin_replace, builtin_split, builtin_str,
+    builtin_int_to_string, builtin_regex_match, builtin_replace,
     builtin_str_bytes, builtin_str_index_of, builtin_str_length, builtin_str_map_chars,
     builtin_str_nth_char, builtin_str_slice, builtin_str_to_lower_char, builtin_str_to_upper_char,
     builtin_string_concat, builtin_trim, builtin_trim_end, builtin_trim_start,
@@ -55,21 +55,19 @@ use crate::builtins::{builtin_floor, builtin_round, builtin_to_float, builtin_to
 use crate::stream::builtin_to_tinct;
 // Meta/eval implementations.
 use crate::builtins_meta::{
-    builtin_annotation_of, builtin_apply, builtin_ast_of, builtin_big_int, builtin_blake3,
-    builtin_builtin_module, builtin_cap_identity, builtin_current_env, builtin_decimal,
-    builtin_eval, builtin_eval_repr, builtin_eval_types, builtin_expand, builtin_extend_env,
-    builtin_force, builtin_fork_type_ctx, builtin_gensym, builtin_get_type_context,
-    builtin_include_cache_get, builtin_include_cache_put, builtin_is_contractive, builtin_llt_repr,
-    builtin_load, builtin_macro_error, builtin_macro_injects, builtin_make_annotated,
-    builtin_make_type_ctx, builtin_parse, builtin_program, builtin_raise, builtin_resolve,
-    builtin_sequential, builtin_span_of, builtin_tag_of, builtin_try, builtin_type_of,
-    builtin_typecheck, builtin_until, builtin_validate, builtin_variant_payload,
+    builtin_annotation_of, builtin_apply, builtin_ast_of, builtin_ast_to_program, builtin_big_int,
+    builtin_blake3, builtin_builtin_module, builtin_cap_identity, builtin_current_env,
+    builtin_decimal, builtin_eval, builtin_eval_macro_ast, builtin_eval_repr, builtin_eval_types,
+    builtin_extend_env, builtin_force, builtin_fork_type_ctx, builtin_gensym,
+    builtin_get_type_context, builtin_include_cache_get, builtin_include_cache_put,
+    builtin_is_contractive, builtin_llt_repr, builtin_load, builtin_macro_error,
+    builtin_macro_injects, builtin_make_annotated, builtin_make_type_ctx, builtin_parse,
+    builtin_program, builtin_raise, builtin_resolve, builtin_sequential, builtin_span_of,
+    builtin_tag_of, builtin_try, builtin_type_of, builtin_typecheck, builtin_until,
+    builtin_validate, builtin_variant_payload,
 };
 // I/O implementations.
-use crate::builtins_dict::{
-    builtin_concat, builtin_drop, builtin_filter, builtin_join, builtin_map, builtin_reduce,
-    builtin_take,
-};
+use crate::builtins_dict::{builtin_concat, builtin_drop, builtin_take};
 use crate::builtins_io::{
     // builtin_cap_data, builtin_close, builtin_flush, builtin_open, builtin_raw_create,
     // builtin_read_all, builtin_read_chunk, builtin_read_line, builtin_seek, builtin_seek_end,
@@ -343,7 +341,6 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             0
         ),
         // ── String ops ───────────────────────────────────────────────────────────────
-        builtin!("builtin-str", builtin_str, [Strictness::Seq]),
         builtin!(
             "builtin-int->string",
             builtin_int_to_string,
@@ -362,12 +359,6 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             builtin_float_to_string,
             [Strictness::Seq],
             1
-        ),
-        builtin!(
-            "builtin-split",
-            builtin_split,
-            [Strictness::Seq, Strictness::Seq],
-            2
         ),
         builtin!(
             "builtin-replace",
@@ -746,12 +737,14 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
         builtin!(
             "builtin-write-stdout",
             builtin_write_stdout,
-            [Strictness::Seq]
+            [Strictness::Seq, Strictness::Id],
+            2
         ),
         builtin!(
             "builtin-write-stderr",
             builtin_write_stderr,
-            [Strictness::Seq]
+            [Strictness::Seq, Strictness::Id],
+            2
         ),
         builtin!("builtin-read-stdin", builtin_read_stdin, [Strictness::Seq]),
         // ── Decomposed include primitives ─────────────────────────────────────────────
@@ -761,9 +754,8 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             builtin_cap_identity,
             [Strictness::Seq]
         ),
-        builtin!("builtin-expand", builtin_expand, [Strictness::Seq], 1),
         builtin!("builtin-load", builtin_load, [Strictness::Seq], 1),
-        // ── 5-stage pipeline primitives ───────────────────────────────────────────────
+        // ── 4-stage pipeline primitives ───────────────────────────────────────────────
         // Stage 1: builtin-parse  — Bytes + path → raw Program (parse only)
         builtin!(
             "builtin-parse",
@@ -809,6 +801,11 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
         // builtin-current-env: zero-arg; returns the calling lexical environment.
         // No force_count or pos_strictness — it inspects no arguments.
         builtin!("builtin-current-env", builtin_current_env, [], 0),
+        // builtin-eval-macro-ast: evaluate a macro-produced Expr.* AST in the call-site scope.
+        // Reads ᴍᴀᴄʀᴏ∷env and ᴍᴀᴄʀᴏ∷span from caller_env (injected by @Expr dispatch).
+        // pos_strictness[0] = Seq: the Expr.* arg must be materialized before conversion.
+        // force_count = 1: force the first positional arg before dispatching to the builtin.
+        builtin!("builtin-eval-macro-ast", builtin_eval_macro_ast, [Strictness::Seq], 1),
         builtin!(
             "builtin-eval-types",
             builtin_eval_types,
@@ -829,18 +826,6 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
         ),
         // ── Sequences — transforms ─────────────────────────────────────────────────────
         builtin!(
-            "builtin-map",
-            builtin_map,
-            [Strictness::Id, Strictness::Spine],
-            1
-        ),
-        builtin!(
-            "builtin-filter",
-            builtin_filter,
-            [Strictness::Id, Strictness::Spine],
-            1
-        ),
-        builtin!(
             "builtin-take",
             builtin_take,
             [Strictness::Seq, Strictness::Spine],
@@ -849,18 +834,6 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
         builtin!(
             "builtin-drop",
             builtin_drop,
-            [Strictness::Seq, Strictness::Spine],
-            2
-        ),
-        // ── Sequences — reductions (Dict-only; moved from builtins_seq_reduce.rs, T-1380) ────
-        builtin!(
-            "builtin-reduce",
-            builtin_reduce,
-            [Strictness::Id, Strictness::Id, Strictness::Spine]
-        ),
-        builtin!(
-            "builtin-join",
-            builtin_join,
             [Strictness::Seq, Strictness::Spine],
             2
         ),
@@ -984,6 +957,13 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
         // builtin-sequential: used by boot-level macros (>>, loader.llt) to construct
         // a Sequential AST node before the prelude's Expr type is in scope.
         builtin!("builtin-sequential", builtin_sequential, [Strictness::Seq]),
+        // builtin-ast-to-program: convert Expr.* AST node to Value::Program
+        builtin!(
+            "builtin-ast-to-program",
+            builtin_ast_to_program,
+            [Strictness::Seq],
+            1
+        ),
     ]
 }
 
@@ -1655,16 +1635,6 @@ pub fn core_type_env(env: &mut TypeEnv) {
             required_count: 1,
         },
     );
-    // builtin-expand: macro-expand and desugar a Program value.
-    env.insert(
-        "builtin-expand".to_string(),
-        Type::Function {
-            params: vec![(None, Type::Any)],
-            ret: Box::new(Type::Any), // Returns expanded Program
-            variadic: false,
-            required_count: 1,
-        },
-    );
     // builtin-parse: parse Bytes + path → raw Program (no expansion/resolution).
     env.insert(
         "builtin-parse".to_string(),
@@ -1767,23 +1737,6 @@ pub fn core_type_env(env: &mut TypeEnv) {
             required_count: 2,
         },
     );
-    // ── Type predicates ───────────────────────────────────────────────────────
-    // Accept any value (Top), return Bool
-    for name in [
-        "int?", "float?", "num?", "str?", "bool?", "bytes?", "null?", "dict?", "fn?", "record?",
-        "map?", "seq?",
-    ] {
-        env.insert(
-            name.to_string(),
-            Type::Function {
-                params: vec![(None, Type::Any)],
-                ret: Box::new(Type::TyCon("Boolean".to_string())),
-                variadic: false,
-                required_count: 1,
-            },
-        );
-    }
-
     // builtin-read-line and builtin-read-chunk type env entries removed (operated on Value::Handle).
     // builtin-read-all and write-handle type env entries removed (operated on Value::Handle).
     // builtin-exists: check whether a path exists under a capability.
@@ -1985,16 +1938,6 @@ pub fn core_type_env(env: &mut TypeEnv) {
             required_count: 1,
         },
     );
-    env.insert(
-        "seq?".to_string(),
-        Type::Function {
-            params: vec![(None, Type::Any)],
-            ret: Box::new(Type::TyCon("Boolean".to_string())),
-            variadic: false,
-            required_count: 1,
-        },
-    );
-
     // ── Sequences: transforms ──────────────────────────────────────────────────────────────────
     // builtin-map: ∀a b. (a → b) → Seq(a) → Seq(b)
     env.insert_scheme(
@@ -2784,6 +2727,18 @@ pub fn core_type_env(env: &mut TypeEnv) {
         Type::Function {
             params: vec![(None, Type::Any)],
             ret: Box::new(Type::Any), // returns Expression (typed as Top for now)
+            variadic: false,
+            required_count: 1,
+        },
+    );
+
+    // builtin-ast-to-program: Expression → Program (requires call-site-span: named arg)
+    // Converts an Expr.* AST node to a Value::Program wrapper.
+    env.insert(
+        "builtin-ast-to-program".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any)],
+            ret: Box::new(Type::Any), // returns Program (typed as Top for now)
             variadic: false,
             required_count: 1,
         },
@@ -3628,16 +3583,6 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 (Some("name".to_string()), Type::Str), // named, optional: display path
                 (Some("hash".to_string()), Type::Str), // named, optional: blake3 hex digest
             ],
-            ret: Box::new(program_type.clone()),
-            variadic: false,
-            required_count: 1,
-        },
-    );
-    // builtin-expand: Program → Program  (macro-expand and desugar a Program)
-    env.insert(
-        "builtin-expand".to_string(),
-        Type::Function {
-            params: vec![(None, program_type.clone())],
             ret: Box::new(program_type.clone()),
             variadic: false,
             required_count: 1,

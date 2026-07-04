@@ -1,6 +1,6 @@
 # fn with annotated params: [fn [let x@Int y@Int] body]
 # The parser handles this directly (not via macro).
-# fn/class/type macros are globally registered via expand.rs; no include required.
+# fn/class/type forms are handled directly by the parser; no include required.
 [mul: [fn [let x@Int y@Int] [* x y]]]
 [mul 6 7]
 === out

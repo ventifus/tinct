@@ -339,15 +339,14 @@ impl fmt::Display for SurfaceExpression {
             // Emit name as-is. `%`-prefixed refs already include `%` in the name.
             // Plain identifiers and (indistinguishable) EscapedRefs both display without `$` —
             // Display is used for error messages, not source roundtripping.
-            SurfaceExpression::VarRef { name, .. } => write!(f, "{name}"),
+            SurfaceExpression::VarRef { name, annotation: None, .. } => write!(f, "{name}"),
+            SurfaceExpression::VarRef { name, annotation: Some(ann), .. } => write!(f, "{name}@{}", ann.node),
             SurfaceExpression::Placeholder => write!(f, "..."),
             SurfaceExpression::Rest(None, _) => write!(f, "..."),
             SurfaceExpression::Rest(Some(name), Some(ann)) => write!(f, "...{name}@{}", ann.node),
             SurfaceExpression::Rest(Some(name), None) => write!(f, "...{name}"),
             SurfaceExpression::Error(span) => write!(f, "<error at {span}>"),
-            SurfaceExpression::Annotated { name, annotation } => {
-                write!(f, "{name}@{}", annotation.node)
-            }
+            // (Annotated variant removed — handled by VarRef above)
             SurfaceExpression::Dict(entries) => {
                 write!(f, "[")?;
                 for (i, entry) in entries.iter().enumerate() {
@@ -510,9 +509,6 @@ impl fmt::Display for SurfaceDeclaration {
                 }
                 write!(f, "]")
             }
-            SurfaceDeclaration::MacroDecl { name, params, body } => {
-                write!(f, "[macro {} {} {}]", name, params, body)
-            }
             SurfaceDeclaration::SyntaxClass {
                 name,
                 pattern,
@@ -645,6 +641,65 @@ pub struct SurfaceNode {
     pub provenance: Provenance,
 }
 
+impl SurfaceExpression {
+    /// If this is a VarRef, return its name.
+    pub fn varref_name(&self) -> Option<&str> {
+        if let SurfaceExpression::VarRef { name, .. } = self {
+            Some(name.as_str())
+        } else {
+            None
+        }
+    }
+}
+
+/// Normalize an annotation for storage on a VarRef.
+/// `Simple("T")` → `PropertyDict { "type": SurfaceNode(VarRef("T")) }`.
+/// `PropertyDict` and `Annotated` forms are kept as-is.
+pub fn normalize_varref_annotation(ann: Spanned<Annotation>, span: Span) -> Spanned<Annotation> {
+    if let Annotation::Simple(ref name) = ann.node {
+        let type_key = Arc::new(SurfaceNode::new(
+            SurfaceExpression::Str("type".to_string()),
+            span.clone(),
+        ));
+        let type_val = Arc::new(SurfaceNode::new(
+            SurfaceExpression::VarRef {
+                name: name.clone(),
+                escaped: false,
+                resolution: Resolution::new(),
+                call_dispatch: CallDispatch::new(),
+                annotation: None,
+            },
+            span.clone(),
+        ));
+        let entry = Spanned::new(
+            SurfaceEntry {
+                key: Some(Arc::clone(&type_key)),
+                value: type_val,
+            },
+            span.clone(),
+        );
+        Spanned::new(Annotation::PropertyDict(vec![entry]), ann.span)
+    } else {
+        ann
+    }
+}
+
+/// Default function for `Annotated.inner` when deserializing via `ExprConvert`.
+/// Returns a placeholder `Arc<SurfaceNode>` wrapping a `Placeholder` expression.
+/// This is only used when reconstructing an `Annotated` node from a dict repr that has no
+/// `inner` field (e.g., deserialized from user-facing AST dict). Callers that need a real
+/// inner VarRef must construct `Annotated` directly with the correct inner node.
+pub fn annotated_inner_default() -> Arc<SurfaceNode> {
+    Arc::new(SurfaceNode::new(
+        SurfaceExpression::Placeholder,
+        Span {
+            start: Position { offset: 0, line: 0, column: 0 },
+            end: Position { offset: 0, line: 0, column: 0 },
+            file: None,
+        },
+    ))
+}
+
 impl SurfaceNode {
     /// Construct a SurfaceNode with empty (fresh) inline annotations.
     /// Use this instead of struct literal to avoid manually specifying `type_guard` and `provenance`.
@@ -737,6 +792,10 @@ pub enum SurfaceExpression {
         resolution: Resolution,
         #[expr(skip, default_fn = "crate::ast::CallDispatch::new")]
         call_dispatch: CallDispatch,
+        /// Type/metadata annotation from `name@annotation` syntax.
+        /// `x@Simple("T")` is normalized to `x@[type: T]` (PropertyDict).
+        #[expr(skip, default_fn = "Option::default")]
+        annotation: Option<Spanned<Annotation>>,
     },
 
     // Access
@@ -814,14 +873,7 @@ pub enum SurfaceExpression {
         resolved_type: TypeAnnotation,
     },
 
-    // Annotated bare word, e.g. Fn@Number
-    #[expr(tag = "Annotated")]
-    Annotated {
-        #[expr(key = "name")]
-        name: String,
-        #[expr(key = "annotation", annotation)]
-        annotation: Spanned<Annotation>,
-    },
+    // (Annotated variant removed — annotation is now carried on VarRef.annotation directly)
 
     // Row variable / open record marker — None = unnamed (...), Some("name") = ...name.
     // The optional Annotation carries the type annotation from `...name@Type` syntax.
@@ -980,11 +1032,6 @@ pub enum SurfaceDeclaration {
         class_name: String,
         arms: Vec<(Arc<SurfaceNode>, Vec<Spanned<SurfaceEntry>>)>,
     },
-    MacroDecl {
-        name: String,
-        params: Arc<SurfaceNode>,
-        body: Arc<SurfaceNode>,
-    },
     SyntaxClass {
         name: String,
         pattern: Arc<SurfaceNode>,
@@ -1115,17 +1162,18 @@ pub struct MacroProvenance {
 }
 
 /// Inline call dispatch — written once by the type checker for typeclass method VarRef nodes.
-/// Stores the pre-computed instance binding name that the lowerer uses to rewrite the call.
-pub struct CallDispatch(std::sync::OnceLock<Option<String>>);
+/// Stores de Bruijn (level, slot) coordinates for the resolved instance binding so the lowerer
+/// can emit a direct CoreExpr::Var without any name-based lookup.
+pub struct CallDispatch(std::sync::OnceLock<Option<(u32, u32)>>);
 impl CallDispatch {
     pub fn new() -> Self {
         Self(std::sync::OnceLock::new())
     }
-    pub fn get(&self) -> Option<&str> {
-        self.0.get().and_then(|o| o.as_deref())
+    pub fn get(&self) -> Option<(u32, u32)> {
+        self.0.get().and_then(|o| *o)
     }
-    pub fn set(&self, name: String) {
-        let _ = self.0.set(Some(name));
+    pub fn set(&self, level: u32, slot: u32) {
+        let _ = self.0.set(Some((level, slot)));
     }
 }
 impl Clone for CallDispatch {
@@ -1145,15 +1193,10 @@ impl Default for CallDispatch {
 }
 impl std::fmt::Debug for CallDispatch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "CallDispatch({:?})",
-            self.0.get().and_then(|o| o.as_deref())
-        )
+        write!(f, "CallDispatch({:?})", self.0.get().and_then(|o| *o))
     }
 }
 
-/// Inline provenance — written once by macro expander, read by error reporter.
 pub struct Provenance(std::sync::OnceLock<Option<MacroProvenance>>);
 impl Provenance {
     pub fn new() -> Self {
@@ -1253,6 +1296,9 @@ pub enum CoreExpr {
         name: String,
         level: u32,
         slot: u32,
+        /// Annotation from `name@annotation` syntax, normalized to PropertyDict.
+        /// None for plain variable references.
+        annotation: Option<Spanned<Annotation>>,
     },
 
     /// First-class variant constructor. Produced by lower.rs for type declarations.
@@ -1290,10 +1336,6 @@ pub enum CoreExpr {
         /// Set by `wrap_with_nominal_validation` when a document has an `expects:` annotation.
         /// None for all other TypeAssert sites (user-written `[@Type expr]` annotations).
         pipeline_blame: Option<crate::error::PipelineBlame>,
-    },
-    Annotated {
-        name: String,
-        annotation: Spanned<Annotation>,
     },
     Rest(Option<String>),
     Match {

@@ -1852,7 +1852,11 @@ async fn resolve_property_dict_as_record(
                 let synth_node = synthesize_type_stage_node(entries, span.clone());
                 // Return Unknown when type-stage evaluation fails: env unavailable,
                 // eval error, or the result is TypeNode.Recursive/RecursiveRef (deferred).
-                Ok(eval_type_stage_expr(&synth_node, env, state)
+                let am_ref: Option<&HashMap<String, String>> = match &*ann_mapping {
+                    Some(m) => Some(&**m),
+                    None => None,
+                };
+                Ok(eval_type_stage_expr(&synth_node, env, state, am_ref)
                     .await
                     .unwrap_or(Type::Unknown))
             }
@@ -1872,7 +1876,8 @@ fn entries_look_like_type_dict(entries: &[Spanned<SurfaceEntry>]) -> bool {
     // auto-indexed with an Annotated node whose name is "Fn".
     if let Some(first) = entries.first() {
         if first.node.key.is_none() {
-            if let SurfaceExpression::Annotated { name, .. } = &first.node.value.expr {
+            // Annotated VarRef (annotation is now on VarRef directly).
+            if let SurfaceExpression::VarRef { name, annotation: Some(_), .. } = &first.node.value.expr {
                 if name == "Fn" {
                     return true;
                 }
@@ -1896,9 +1901,8 @@ fn entries_look_like_type_dict(entries: &[Spanned<SurfaceEntry>]) -> bool {
         let value_is_type_shaped = matches!(
             &entry.node.value.expr,
             SurfaceExpression::Str(_)
-                | SurfaceExpression::VarRef { .. }
+                | SurfaceExpression::VarRef { .. }  // includes annotated VarRef
                 | SurfaceExpression::Dict(_)
-                | SurfaceExpression::Annotated { .. }
         );
         has_str_key && value_is_type_shaped
     })
@@ -2856,9 +2860,8 @@ async fn resolve_type_dict_with_guard(
                 Some(k) => match &k.expr {
                     SurfaceExpression::Str(s) => s.clone(),
                     // Field with annotation: `field@Child: Type` (T-1052).
-                    // The annotation is stored in the SurfaceNode for T-1053 to process;
-                    // type resolution uses only the field name.
-                    SurfaceExpression::Annotated { name, .. } => name.clone(),
+                    // Annotation is now on VarRef directly; use the name field.
+                    SurfaceExpression::VarRef { name, .. } => name.clone(),
                     _ => {
                         return Err(TypeErrorTyped::Generic(GenericTypeError {
                             message: "type record keys must be bare words".to_string(),
@@ -2971,7 +2974,42 @@ pub(crate) async fn resolve_type_expr(
         // String literals in type position → Type::StringLiteral (tag-only enum variants).
         // VarRef still goes to resolve_type_name for type alias lookup.
         SurfaceExpression::Str(s) => Ok(Type::StringLiteral(s.clone())),
-        SurfaceExpression::VarRef { name, .. } => {
+        // Annotated VarRef (name@Type): annotation is now on VarRef directly.
+        // Must come before the plain VarRef arm to be reachable.
+        SurfaceExpression::VarRef { name, annotation: Some(annotation), .. } => {
+            if name == "Fn" {
+                Box::pin(resolve_fn_type(
+                    &annotation.node,
+                    env,
+                    annotation.span.clone(),
+                    state,
+                    constraints,
+                    ann_mapping,
+                    row_ann_mapping,
+                    type_params_scope,
+                ))
+                .await
+            } else {
+                // For all other parameterized type annotations in type-expression position
+                // (e.g., `Handle@DirCap`, `Seq@Int`, `Map@[key: Str value: Int]` inline),
+                // reconstruct the `Annotation::Annotated(name, inner)` and dispatch through
+                // `resolve_annotation` which handles `"Handle"`, `"Seq"`, `"Map"`, etc.
+                let full_ann =
+                    Annotation::Annotated(name.clone(), Box::new(annotation.node.clone()));
+                Box::pin(resolve_annotation(
+                    &full_ann,
+                    env,
+                    node.span.clone(),
+                    state,
+                    constraints,
+                    ann_mapping,
+                    row_ann_mapping,
+                    type_params_scope,
+                ))
+                .await
+            }
+        }
+        SurfaceExpression::VarRef { name, annotation: None, .. } => {
             // Primitive type names must be resolved as type names, not nominal variant
             // constructors.  Int, Float, String, Bool, Number etc. all start with an uppercase
             // letter and therefore match `is_constructor_name`, but they are NOT variants —
@@ -3026,43 +3064,6 @@ pub(crate) async fn resolve_type_expr(
             ))
             .await
         }
-        SurfaceExpression::Annotated { name, annotation } => {
-            if name == "Fn" {
-                Box::pin(resolve_fn_type(
-                    &annotation.node,
-                    env,
-                    annotation.span.clone(),
-                    state,
-                    constraints,
-                    ann_mapping,
-                    row_ann_mapping,
-                    type_params_scope,
-                ))
-                .await
-            } else {
-                // For all other parameterized type annotations in type-expression position
-                // (e.g., `Handle@DirCap`, `Seq@Int`, `Map@[key: Str value: Int]` inline),
-                // reconstruct the `Annotation::Annotated(name, inner)` and dispatch through
-                // `resolve_annotation` which handles `"Handle"`, `"Seq"`, `"Map"`, etc.
-                //
-                // Previously this called `resolve_annotation(&annotation.node, ...)` which
-                // dropped `name` entirely and resolved only the inner annotation — losing
-                // the Handle wrapper for `Handle@DirCap`, Seq wrapper for `Seq@Int`, etc.
-                let full_ann =
-                    Annotation::Annotated(name.clone(), Box::new(annotation.node.clone()));
-                Box::pin(resolve_annotation(
-                    &full_ann,
-                    env,
-                    node.span.clone(),
-                    state,
-                    constraints,
-                    ann_mapping,
-                    row_ann_mapping,
-                    type_params_scope,
-                ))
-                .await
-            }
-        }
         // This arm handles `SurfaceExpression::Call { implied: true }`, which arises when a
         // bare identifier (no `@` annotation) appears in head position inside a type expression,
         // e.g. `[Fn [Int Int]]` (missing the required `@` before the return type).
@@ -3080,7 +3081,8 @@ pub(crate) async fn resolve_type_expr(
             named_args,
             ..
         } => {
-            if let SurfaceExpression::Annotated { name, annotation } = &func.expr {
+            // Annotated VarRef (annotation is now on VarRef directly).
+            if let SurfaceExpression::VarRef { name, annotation: Some(annotation), .. } = &func.expr {
                 if name == "Fn" {
                     // Fn@RetType [Params] in new syntax: resolve return type from annotation,
                     // then resolve each arg as a parameter type. For zero params, args is empty.
@@ -3385,10 +3387,11 @@ pub(crate) async fn resolve_type_expr(
                         .collect();
 
                     // Collect payload fields from annotated positional args (data@String form).
+                    // Annotated VarRef: annotation is now on VarRef directly.
                     let payload_annotated: Vec<_> = args
                         .iter()
                         .filter_map(|arg| {
-                            if let SurfaceExpression::Annotated { name, annotation } = &arg.expr {
+                            if let SurfaceExpression::VarRef { name, annotation: Some(annotation), .. } = &arg.expr {
                                 Some((name.clone(), annotation.clone(), arg.span.clone()))
                             } else {
                                 None
@@ -3399,7 +3402,7 @@ pub(crate) async fn resolve_type_expr(
                     // Collect non-annotated positional args (old-style [Some a] payload).
                     let positional_non_annotated: Vec<_> = args
                         .iter()
-                        .filter(|arg| !matches!(&arg.expr, SurfaceExpression::Annotated { .. }))
+                        .filter(|arg| !matches!(&arg.expr, SurfaceExpression::VarRef { annotation: Some(_), .. }))
                         .collect();
 
                     let has_payload_named = !payload_named.is_empty();
@@ -3889,9 +3892,9 @@ pub(crate) async fn resolve_type_dict(
                 // The annotation carries type-level metadata; the name is the constructor tag.
                 // Both forms resolve identically for type-checking purposes; T-1053 reads
                 // the annotation from the SurfaceNode tree to populate FnAnnotation.extra.
+                // Both plain and annotated VarRef use the name field.
                 let tag_opt: Option<String> = match &first.node.value.expr {
                     SurfaceExpression::VarRef { name, .. } => Some(name.clone()),
-                    SurfaceExpression::Annotated { name, .. } => Some(name.clone()),
                     _ => None,
                 };
                 if let Some(tag) = tag_opt {
@@ -3945,8 +3948,8 @@ pub(crate) async fn resolve_type_dict(
                                     .value
                                     .expr
                                 {
+                                    // Both plain and annotated VarRef use the name field.
                                     SurfaceExpression::VarRef { name, .. } => Some(name.clone()),
-                                    SurfaceExpression::Annotated { name, .. } => Some(name.clone()),
                                     _ => None,
                                 };
                                 let second_is_constructor = second_tag_opt
@@ -4001,9 +4004,8 @@ pub(crate) async fn resolve_type_dict(
                                         // type resolution uses only the name.
                                         let field_name = match &k.expr {
                                             SurfaceExpression::Str(s) => s.clone(),
-                                            SurfaceExpression::Annotated { name, .. } => {
-                                                name.clone()
-                                            }
+                                            // Both plain and annotated VarRef use the name field.
+                                            SurfaceExpression::VarRef { name, .. } => name.clone(),
                                             _ => return Err(TypeErrorTyped::Generic(GenericTypeError {
                                                 message: "nominal variant field names must be bare words".to_string(),
                                                 span: k.span.clone(),
@@ -4126,12 +4128,9 @@ pub(crate) async fn resolve_type_dict(
         // Column constraint sentinel: key is `_` (bare wildcard) or `_@K` (typed wildcard).
         // Recognized in key position: SurfaceExpression::VarRef { name: "_" } or
         // SurfaceExpression::Annotated { name: "_", annotation: K }.
+        // Both plain and annotated VarRef use the name field.
         let is_wildcard_key = match &entry.node.key {
-            Some(k) => match &k.expr {
-                SurfaceExpression::VarRef { name, .. } if name == "_" => true,
-                SurfaceExpression::Annotated { name, .. } if name == "_" => true,
-                _ => false,
-            },
+            Some(k) => matches!(&k.expr, SurfaceExpression::VarRef { name, .. } if name == "_"),
             None => false,
         };
 
@@ -4154,8 +4153,9 @@ pub(crate) async fn resolve_type_dict(
             )
             .await?;
             // Check for typed-key form `_@K` vs plain `_`
+            // Check for typed-key form `_@K` (annotated VarRef) vs plain `_`.
             let key_ty = match entry.node.key.as_ref().map(|k| &k.expr) {
-                Some(SurfaceExpression::Annotated { annotation, .. }) => {
+                Some(SurfaceExpression::VarRef { annotation: Some(annotation), .. }) => {
                     // `_@K`: resolve K as the key type constraint.
                     let key_t = resolve_annotation(
                         &annotation.node,
@@ -4182,9 +4182,9 @@ pub(crate) async fn resolve_type_dict(
         let key = match &entry.node.key {
             Some(k) => match &k.expr {
                 SurfaceExpression::Str(s) => s.clone(),
-                // Annotated field key: `field@Child: Type` (T-1052).
-                // The annotation is metadata for T-1053; type resolution uses only the name.
-                SurfaceExpression::Annotated { name, .. } => name.clone(),
+                // Both plain and annotated VarRef use the name field.
+                // Annotated field key: `field@Child: Type` (T-1052) — annotation is on VarRef.
+                SurfaceExpression::VarRef { name, .. } => name.clone(),
                 _ => {
                     return Err(TypeErrorTyped::Generic(GenericTypeError {
                         message: "type record keys must be bare words".to_string(),
@@ -4526,7 +4526,7 @@ fn typenode_value_to_type<'a>(
                             _ => indexmap::IndexMap::new(), // Empty or unrecognized fields → empty record
                         };
 
-                        let tail = if open_val.as_bool() == Some(true) {
+                        let tail = if open_val.is_truthy() {
                             crate::type_def::RowTail::Uniform {
                                 key: None,
                                 value: Box::new(Type::Unknown),
@@ -4869,6 +4869,7 @@ pub(crate) async fn eval_type_stage_expr(
     node: &Arc<SurfaceNode>,
     _env: &TypeEnv,
     state: &mut InferState,
+    ann_mapping: Option<&HashMap<String, String>>,
 ) -> Result<Type, TypeError> {
     let node_span = node.span.clone();
 
@@ -4891,7 +4892,32 @@ pub(crate) async fn eval_type_stage_expr(
         },
     };
 
-    // Build a minimal EvalContext backed by the type-stage environment.
+    // Build the evaluation environment: type-stage env on top of main env (when available).
+    //
+    // state.main_env carries the full runtime environment from the eval pipeline.
+    // By chaining the type-stage env on top of it, the evaluator's tier-2 name-based
+    // fallback can find type constructor names (`Seq`, `Dict`, `Boolean`, etc.) that are
+    // defined in the main env but not in the type-stage env. This is the cross-stage bridge:
+    // type-stage expressions in annotations can reference types from the main environment
+    // without moving `[type ...]` declarations into the type-stage.
+    let eval_env: Arc<std::sync::RwLock<crate::value::Environment>> =
+        if let Some(ref main_env) = state.main_env {
+            // Create a new env frame that has type-stage bindings as its own slots
+            // and the main env as its parent chain. Type-stage names shadow main env names.
+            let mut combined =
+                crate::value::Environment::with_parent(Arc::clone(main_env));
+            {
+                let ts = type_stage_env.read().unwrap();
+                for (name, thunk) in ts.iter_slots() {
+                    combined.insert(name.to_string(), Arc::clone(thunk));
+                }
+            }
+            Arc::new(std::sync::RwLock::new(combined))
+        } else {
+            Arc::clone(&type_stage_env)
+        };
+
+    // Build a minimal EvalContext backed by the evaluation environment.
     // AMBIENT-OK: type-stage evaluation performs no file I/O.
     #[allow(clippy::disallowed_methods)]
     let base_dir =
@@ -4903,16 +4929,58 @@ pub(crate) async fn eval_type_stage_expr(
                 call_stack: vec![],
             })
         })?;
-    let ctx = crate::eval::EvalContext::new_empty(base_dir, Arc::clone(&type_stage_env), false);
+    let ctx = crate::eval::EvalContext::new_empty(base_dir, Arc::clone(&eval_env), false);
+
+    // Inject TypeVar bindings from ann_mapping into the eval env so that lowercase
+    // TypeVar names (`a`, `b`, etc.) resolve to TypeNode.TypeVar values during
+    // type-stage annotation evaluation (e.g. `@[Seq a]` can find `a`).
+    if let Some(mapping) = ann_mapping {
+        let mut env_guard = eval_env.write().unwrap();
+        for (source_name, fresh_var) in mapping.iter() {
+            // TypeNode.TypeVar { name: fresh_var, level: 0 }
+            let name_tid = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                crate::value::string_val(fresh_var),
+                node_span.clone(),
+            )));
+            let level_tid = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                crate::value::Value::Int(0),
+                node_span.clone(),
+            )));
+            let mut payload: indexmap::IndexMap<
+                crate::value::HashableValue,
+                crate::value::ThunkId,
+            > = indexmap::IndexMap::new();
+            payload.insert(
+                crate::value::HashableValue::Str("name".into()),
+                name_tid,
+            );
+            payload.insert(
+                crate::value::HashableValue::Str("level".into()),
+                level_tid,
+            );
+            let payload_tid = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                crate::value::Value::Dict(payload),
+                node_span.clone(),
+            )));
+            let typevar_val = crate::value::Value::Variant {
+                tag: "TypeNode.TypeVar".to_string(),
+                payload: Some(payload_tid),
+            };
+            env_guard.insert(
+                source_name.clone(),
+                Arc::new(Thunk::new_materialized(typevar_val, node_span.clone())),
+            );
+        }
+    }
 
     // No resolution pass for synthetic type-stage nodes; resolution is inline on nodes
     // (written at definition time). Names resolve via the env chain at eval time.
     // All type annotations are inline on AST nodes — no external tables needed.
 
-    // Wrap the SurfaceNode in a lazy thunk that will evaluate it in the type-stage env.
+    // Wrap the SurfaceNode in a lazy thunk that will evaluate it in the eval env.
     let surface_thunk = Arc::new(Thunk::new_surface(
         Arc::clone(node),
-        Arc::clone(&type_stage_env),
+        Arc::clone(&eval_env),
         Arc::clone(&ctx),
         node_span.clone(),
     ));
@@ -5536,8 +5604,9 @@ async fn try_resolve_fn_type_expr(
         _ => return Ok(None),
     };
 
+    // Annotated VarRef: annotation is now on VarRef directly.
     let (ann_node, ann_span) = match &first.node.value.expr {
-        SurfaceExpression::Annotated { name, annotation } if name == "Fn" => {
+        SurfaceExpression::VarRef { name, annotation: Some(annotation), .. } if name == "Fn" => {
             (&annotation.node, annotation.span.clone())
         }
         _ => return Ok(None),

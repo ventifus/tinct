@@ -236,7 +236,7 @@ write-module-file: [fn@String [let name@String content@String]
 # Returns the module name, or "" if the file has no documented bindings.
 write-module: [fn@String [let full-path@String]
   [source:  [str [join "\n" [collect [lines [open %libdir full-path Readable]]]]]]
-  [program: [expand [load source name: full-path]]]
+  [program: [builtin-resolve [load source name: full-path]].resolved]
   [docs:    [extract-from-program program]]
   [name:    [mod-name full-path]]
   [if [empty? docs]

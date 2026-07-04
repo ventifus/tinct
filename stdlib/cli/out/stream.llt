@@ -14,15 +14,14 @@
 [drain: [task
   [select [context]
     [seq [ch: %emit-channel  handler: [fn [let v]
-      [write-handle %stdout [str [to-tinct v] "\n"]]]] []]
+      [write [str [to-tinct v] "\n"] %stdout]]] []]
     identity]]]
 
 # 2. Force the return value to drive the lazy evaluation cascade.
 #    Forcing % drives program evaluation, triggering any emit calls.
 [_: [if [seq? %]
-  [reduce [fn [let _ x]
-    [write-handle %stdout [str [to-tinct x] "\n"]]] [] %]
-  [write-handle %stdout [str [to-tinct %] "\n"]]]]
+  [reduce [fn [let h x] [write [str [to-tinct x] "\n"] h]] %stdout %]
+  [write [str [to-tinct %] "\n"] %stdout]]]
 
 # 3. Wait for drain to finish consuming any emits triggered during forcing.
 [_: [await drain]]

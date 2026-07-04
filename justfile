@@ -219,6 +219,11 @@ fmt:
 run-file FILE:
     {{container}} run {{run_flags}} {{rust_image}} cargo run --bin tinct -- --max-memory {{tinct_max_memory}} run {{FILE}}
 
+# Run with a custom --init program and optional file arguments
+# Usage: just run-init stdlib/test-loader.llt tests/corpus/eval/simple_dict.llt-eval
+run-init INIT +FILES="":
+    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo run --bin tinct -- run --init {{INIT}} {{FILES}}
+
 # Clean build artifacts
 clean:
     {{container}} run {{run_flags}} {{rust_image}} cargo clean

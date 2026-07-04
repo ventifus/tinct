@@ -1,0 +1,18 @@
+--- uses: ["core"]
+
+# Minimal init: just proves our code changes are running.
+# No prelude loading, no test runner. No >> (not in scope here).
+
+[
+  %stdout: [write: [fn [let s h] [builtin-write-stdout s h]]
+            flush:  [fn [let h] h]
+            close:  [fn [let h] h]]
+  %stderr: [write: [fn [let s h] [builtin-write-stderr s h]]
+            flush:  [fn [let h] h]
+            close:  [fn [let h] h]]
+]
+
+# Force the write by using its return value as a condition
+[builtin-if [builtin-eq [%stderr.write "debug-init: running\n" %stderr] []]
+  "done"
+  "done"]

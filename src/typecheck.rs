@@ -167,7 +167,8 @@ pub(crate) fn extract_field_annotations_from_body(
                     if let Some(ref key_node) = entry.node.key {
                         // Extract field name and annotation from annotated keys
                         match &key_node.expr {
-                            SurfaceExpression::Annotated { name, annotation } => {
+                            // Annotated VarRef (annotation is now on VarRef directly).
+                            SurfaceExpression::VarRef { name, annotation: Some(annotation), .. } => {
                                 // Evaluate the annotation PropertyDict to literal values
                                 if let Some(annotation_map) =
                                     eval_type_annotation_property_dict(&annotation.node)
@@ -439,7 +440,7 @@ pub async fn typecheck_surface_program(
     Vec<crate::error::TypeDiagnostic>,
 ) {
     let (errors, type_map, doc_map, scheme_map, diagnostics, _state, _env) =
-        typecheck_surface_program_with_env(program, parent_env, true, None).await;
+        typecheck_surface_program_with_env(program, parent_env, true, None, Default::default(), None).await;
     // type_map is now populated during inference (enable_scheme_map=true path).
     (errors, type_map, doc_map, scheme_map, diagnostics)
 }
@@ -470,6 +471,8 @@ pub async fn typecheck_surface_program_with_env(
     parent_env: Arc<TypeEnv>,
     enable_scheme_map: bool,
     _resolution_table: Option<()>,
+    instance_binding_slots: std::collections::HashMap<String, u32>,
+    main_env: Option<Arc<std::sync::RwLock<crate::value::Environment>>>,
 ) -> (
     Vec<TypeError>,
     TypeMap,
@@ -485,6 +488,8 @@ pub async fn typecheck_surface_program_with_env(
     // which uses Rc<TypeEnv> throughout (TypeEnv::parent is Option<Rc<TypeEnv>>).
     let mut env: Rc<TypeEnv> = Rc::new((*parent_env).clone());
     let mut state = InferState::new();
+    state.instance_binding_slots = instance_binding_slots;
+    state.main_env = main_env;
 
     // Seed class_env and instance_env from TypeEnv. TypeEnv is the canonical persistent store;
     // InferState starts with empty ClassEnv/InstanceEnv (no pre-seeding). All class and instance
@@ -1195,7 +1200,8 @@ fn extract_doc_from_surface_node(
             for entry in entries {
                 let key_name: Option<String> =
                     entry.node.key.as_ref().and_then(|k| match &k.expr {
-                        SurfaceExpression::Annotated { name, annotation } => {
+                        // Annotated VarRef: annotation is now on VarRef directly.
+                        SurfaceExpression::VarRef { name, annotation: Some(annotation), .. } => {
                             if let Some(doc_node) = annotation.node.get_property("doc") {
                                 if let SurfaceExpression::Str(doc_string) = &doc_node.expr {
                                     doc_map.insert(name.clone(), doc_string.clone());
@@ -1407,10 +1413,12 @@ async fn register_type_aliases(
                 ) = match &key.expr {
                     SurfaceExpression::Str(name) => (Some(name.clone()), None),
                     // T-1052: `TypeName@[doc: "..." ...]` — annotated alias declaration key.
-                    // The annotation is the type-alias-level @[...] dict from the entry key.
-                    SurfaceExpression::Annotated { name, annotation } => {
+                    // Annotation is now on VarRef directly.
+                    SurfaceExpression::VarRef { name, annotation: Some(annotation), .. } => {
                         (Some(name.clone()), Some(annotation.node.clone()))
                     }
+                    // Plain VarRef key (no annotation).
+                    SurfaceExpression::VarRef { name, .. } => (Some(name.clone()), None),
                     _ => (None, None),
                 };
                 if let Some(name) = alias_name {
@@ -1976,8 +1984,12 @@ pub(crate) fn infer_surface_expr<'a>(
             SurfaceExpression::Float(_) => Ok(Type::Float),
             SurfaceExpression::Str(s) => Ok(Type::StringLiteral(s.clone())),
 
+            // Annotated VarRef (name@Type): handled by the arm at the end of this match.
+            // NOTE: this arm is for plain VarRef (no annotation) only.
+            // The annotated arm below handles VarRef { annotation: Some(_) }.
+            // Since Rust matches arms in order, we must use annotation: None here.
             SurfaceExpression::VarRef {
-                name, resolution, ..
+                name, resolution, annotation: None, ..
             } => {
                 // Fast path: if the resolver wrote de Bruijn coordinates into the VarRef,
                 // use slot-indexed lookup (O(1)) rather than the HashMap-based `get()`.
@@ -2286,20 +2298,6 @@ pub(crate) fn infer_surface_expr<'a>(
                         .await;
                     }
 
-                    // Special case: `builtin-map` is an alias for `map` — dispatch to check_map.
-                    if name == "builtin-map" && named_args.is_empty() && args.len() == 2 {
-                        let _ = infer_surface_expr(func, env, state, constraints, type_map).await; // Record func type for LSP hover
-                        return check_map(
-                            args,
-                            env,
-                            node.span.clone(),
-                            state,
-                            constraints,
-                            type_map,
-                        )
-                        .await;
-                    }
-
                     // Special case: `tls-layer` preserves input handle's capability row.
                     if name == "tls-layer" && named_args.is_empty() && args.len() == 3 {
                         let _ = infer_surface_expr(func, env, state, constraints, type_map).await; // Record func type for LSP hover
@@ -2552,12 +2550,28 @@ pub(crate) fn infer_surface_expr<'a>(
                                                     name,
                                                     &type_arg_refs,
                                                 );
-                                            // Write the instance binding name inline on the VarRef node.
-                                            if let SurfaceExpression::VarRef {
-                                                call_dispatch, ..
+                                            // Write (level, slot) to call_dispatch using the
+                                            // Write (level, slot) to call_dispatch:
+                                            // - level: from func VarRef's resolution, which the
+                                            //   resolver assigned via any instance binding in the
+                                            //   same scope frame (all share the same level)
+                                            // - slot: from instance_binding_slots for the
+                                            //   specific instance binding the type checker chose
+                                            if let crate::ast::SurfaceExpression::VarRef {
+                                                resolution,
+                                                call_dispatch,
+                                                ..
                                             } = &func.expr
                                             {
-                                                call_dispatch.set(binding_name);
+                                                if let Some(&slot) =
+                                                    state.instance_binding_slots.get(&binding_name)
+                                                {
+                                                    if let Some(Some((level, _))) =
+                                                        resolution.get()
+                                                    {
+                                                        call_dispatch.set(level, slot);
+                                                    }
+                                                }
                                             }
                                         }
                                         // Only process the first Class constraint (the primary dispatch).
@@ -2749,7 +2763,8 @@ pub(crate) fn infer_surface_expr<'a>(
                 result
             }
 
-            SurfaceExpression::Annotated { name, annotation } => {
+            // Annotated VarRef (name@Type): annotation is now on VarRef directly.
+            SurfaceExpression::VarRef { name, annotation: Some(annotation), .. } => {
                 // Create per-annotation-scope mappings for type and row variables.
                 let mut ann_mapping: Option<HashMap<String, String>> = Some(HashMap::new());
                 let mut row_ann_mapping: Option<HashMap<String, String>> = Some(HashMap::new());
@@ -3175,11 +3190,6 @@ pub(crate) fn infer_surface_expr<'a>(
                         unreachable!()
                     }
                 }
-                SurfaceDeclaration::MacroDecl { .. } => Err(vec![TypeErrorTyped::Generic(GenericTypeError {
-                    message: "MacroDecl should be removed by expansion pass before typechecking (internal error)".to_string(),
-                    span: node.span.clone(),
-                    notes: vec![], call_stack: vec![],
-                })]),
                 SurfaceDeclaration::Splice(..) => Err(vec![TypeErrorTyped::Generic(GenericTypeError {
                     message: "Splice should be removed by expansion pass before typechecking (internal error)".to_string(),
                     span: node.span.clone(),

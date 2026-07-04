@@ -55,7 +55,6 @@
   [Quote          expr: Expr]
   [Unquote        expr: Expr]
   [UnquoteSplice  expr: Expr]
-  [MacroDecl      name: String  params: Expr  body: Expr]
   [Splice         forms: [Seq Expr]]
   [SyntaxClass    name: String  pattern: Expr  message: [String Null]]
 

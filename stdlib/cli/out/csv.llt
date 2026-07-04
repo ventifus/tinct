@@ -50,14 +50,14 @@ csv-row: [fn@String [let row@Dict ks@Dict i@Int acc@String]
           [case [let _] [Result.Ok]
             # Won the race: write header + first row, cache keys
             [do [cell-set columns [keys v]]
-                [write-handle %stdout [csv-header [keys v] 0 ""]]
-                [write-handle %stdout [csv-row v [keys v] 0 ""]]]]
+                [write [csv-header [keys v] 0 ""] %stdout]
+                [write [csv-row v [keys v] 0 ""] %stdout]]]
           [case [let _] [Result.Error]
             # Lost the race: retrieve keys if not cached yet
             [do [if [= [cell-get columns] []]
                   [cell-set columns [recv header-rx]]
                   []]
-                [write-handle %stdout [csv-row v [cell-get columns] 0 ""]]]]]]] []]
+                [write [csv-row v [cell-get columns] 0 ""] %stdout]]]]]] []]
       identity]]
 ]
 
@@ -70,14 +70,14 @@ csv-row: [fn@String [let row@Dict ks@Dict i@Int acc@String]
       [case [let _] [Result.Ok]
         # Won the race: write header + first row, cache keys
         [do [cell-set columns [keys x]]
-            [write-handle %stdout [csv-header [keys x] 0 ""]]
-            [write-handle %stdout [csv-row x [keys x] 0 ""]]]]
+            [write [csv-header [keys x] 0 ""] %stdout]
+            [write [csv-row x [keys x] 0 ""] %stdout]]]
       [case [let _] [Result.Error]
         # Lost the race: retrieve keys if not cached yet, then write data row
         [do [if [= [cell-get columns] []]
               [cell-set columns [recv header-rx]]
               []]
-            [write-handle %stdout [csv-row x [cell-get columns] 0 ""]]]]]]
+            [write [csv-row x [cell-get columns] 0 ""] %stdout]]]]]]
     []
     %]
   # % is a scalar — if it's a dict, write it as a row
@@ -86,14 +86,14 @@ csv-row: [fn@String [let row@Dict ks@Dict i@Int acc@String]
       [case [let _] [Result.Ok]
         # Won the race: write header + single row, cache keys
         [do [cell-set columns [keys %]]
-            [write-handle %stdout [csv-header [keys %] 0 ""]]
-            [write-handle %stdout [csv-row % [keys %] 0 ""]]]]
+            [write [csv-header [keys %] 0 ""] %stdout]
+            [write [csv-row % [keys %] 0 ""] %stdout]]]
       [case [let _] [Result.Error]
         # Lost the race: retrieve keys if not cached yet, then write data row
         [do [if [= [cell-get columns] []]
               [cell-set columns [recv header-rx]]
               []]
-            [write-handle %stdout [csv-row % [cell-get columns] 0 ""]]]]]
+            [write [csv-row % [cell-get columns] 0 ""] %stdout]]]]
     []]]]
 
 # Sequential document expression 3: await drain.

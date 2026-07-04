@@ -161,16 +161,13 @@ Variant("Splice"  {forms: [...]  span: ...})
 ### Macros
 
 ```tinct
-# [macro name params body] — macro definition
-Variant("MacroDecl"  {name: "mymacro"  params: ...node...  body: ...node...  span: ...})
-
 # [syntax-class Name pattern: pat] — declare a syntax class for macro argument validation
 # message: is absent (not []) when no error message was specified
 Variant("SyntaxClass"  {name: "MyClass"  pattern: ...node...  span: ...})
 Variant("SyntaxClass"  {name: "MyClass"  pattern: ...node...  message: "expected X"  span: ...})
 ```
 
-`params` in `MacroDecl` is an Expr node (the parameter pattern expression, typically a `LetDecl`).
+Note: The `MacroDecl` variant (`[macro name params body]`) has been removed. The `[macro]` keyword is no longer recognized by the parser (T-1393) and `MacroDecl` has been removed from the AST (T-1392).
 
 ### Pattern Matching
 

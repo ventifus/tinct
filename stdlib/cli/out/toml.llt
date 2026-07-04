@@ -106,14 +106,13 @@ toml@[doc: "Convert dict to TOML format (flat keys + tables)"]: [fn@String [let 
 [drain: [task
   [select [context]
     [seq [ch: %emit-channel  handler: [fn [let v]
-      [write-handle %stdout [str [toml v] "\n"]]]] []]
+      [write [str [toml v] "\n"] %stdout]]] []]
     identity]]]
 
 # 2. Force the return value to drive the lazy evaluation cascade.
 [_: [if [seq? %]
-  [reduce [fn [let _ x]
-    [write-handle %stdout [str [toml x] "\n"]]] [] %]
-  [write-handle %stdout [str [toml %] "\n"]]]]
+  [reduce [fn [let h x] [write [str [toml x] "\n"] h]] %stdout %]
+  [write [str [toml %] "\n"] %stdout]]]
 
 # 3. Wait for drain to finish consuming any emits triggered during forcing.
 [_: [await drain]]

@@ -179,13 +179,14 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
         SurfaceExpression::Str(s) => CoreExpr::Str(s.clone()),
 
         SurfaceExpression::VarRef {
-            name, resolution, ..
+            name, resolution, annotation, ..
         } => {
             match resolution.get() {
                 Some(Some((level, slot))) => CoreExpr::Var {
                     name: name.clone(),
                     level,
                     slot,
+                    annotation: annotation.clone(),
                 },
                 _ => {
                     // Some(None) = unresolvable; None = resolver never ran.
@@ -240,6 +241,7 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
                     name: getter_name.to_string(),
                     level: root_level,
                     slot: getter_root_slot,
+                    annotation: None,
                 },
                 arc.span.clone(),
             ));
@@ -267,6 +269,7 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
                 name: name.clone(),
                 level,
                 slot,
+                annotation: None,
             },
             _ => CoreExpr::Error(arc.span.clone()),
         },
@@ -297,13 +300,57 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
             for se in entries {
                 if let SurfaceExpression::Decl(decl) = &se.node.value.expr {
                     match decl.as_ref() {
-                        crate::ast::SurfaceDeclaration::InstanceDecl { .. } => {
+                        crate::ast::SurfaceDeclaration::InstanceDecl {
+                            class_name,
+                            arms,
+                        } => {
                             if se.node.key.is_some() {
+                                // Named instance: emit outer key binding only.
+                                // Binding names are NOT flattened to avoid duplicate key errors
+                                // when multiple instances of the same class exist in the dict.
                                 let lowered = lower_expr(&se.node.value, &se.node.value.expr);
                                 let key = se.node.key.as_ref().map(|k| Arc::new(lower(k)));
                                 let value = Arc::new(Spanned::new(lowered, se.span.clone()));
                                 core_entries
                                     .push(Spanned::new(CoreEntry { key, value }, se.span.clone()));
+                            } else {
+                                // Anonymous instance: flatten binding names into the outer dict.
+                                // Matches the synthetic slots surface_dict_static_keys injects.
+                                for (pattern, method_entries) in arms {
+                                    let dispatch_tags = extract_dispatch_tags(&pattern.expr);
+                                    let type_args: Vec<&str> = dispatch_tags
+                                        .iter()
+                                        .filter_map(|t| t.as_deref())
+                                        .collect();
+                                    for me in method_entries {
+                                        let method_name = match me.node.key.as_ref() {
+                                            Some(key_node) => match &key_node.expr {
+                                                SurfaceExpression::Str(s) => s.clone(),
+                                                // Both plain and annotated VarRef use the name field.
+                                                SurfaceExpression::VarRef { name, .. } => {
+                                                    name.clone()
+                                                }
+                                                _ => continue,
+                                            },
+                                            None => continue,
+                                        };
+                                        let binding_name =
+                                            crate::type_def::instance_binding_name(
+                                                class_name,
+                                                &method_name,
+                                                &type_args,
+                                            );
+                                        let key = Some(Arc::new(Spanned::new(
+                                            CoreExpr::Str(binding_name),
+                                            se.span.clone(),
+                                        )));
+                                        let value = Arc::new(lower(&me.node.value));
+                                        core_entries.push(Spanned::new(
+                                            CoreEntry { key, value },
+                                            se.span.clone(),
+                                        ));
+                                    }
+                                }
                             }
                         }
                         crate::ast::SurfaceDeclaration::TypeAlias { body, .. } => {
@@ -312,10 +359,8 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
                                 lower_type_alias_to_constructor_dict(type_name_opt, body);
                             let key = se.node.key.as_ref().map(|k| {
                                 let lowered = match &k.expr {
+                                    // Both plain and annotated VarRef use the name field.
                                     SurfaceExpression::VarRef { name, .. } => {
-                                        CoreExpr::Str(name.clone())
-                                    }
-                                    SurfaceExpression::Annotated { name, .. } => {
                                         CoreExpr::Str(name.clone())
                                     }
                                     _ => lower_expr(k, &k.expr),
@@ -326,6 +371,30 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
                             core_entries
                                 .push(Spanned::new(CoreEntry { key, value }, se.span.clone()));
                         }
+                        crate::ast::SurfaceDeclaration::ClassDecl { .. } => {
+                            // Named ClassDecl: emit an empty-dict runtime value so the outer
+                            // key occupies a slot. This allows leading-dot re-exports like
+                            // `Indexable: .Indexable` to reference the class across dict
+                            // boundaries. Class methods are not emitted here.
+                            if se.node.key.is_some() {
+                                let key = se.node.key.as_ref().map(|k| {
+                                    let lowered = match &k.expr {
+                                        // Both plain and annotated VarRef use the name field.
+                                        SurfaceExpression::VarRef { name, .. } => {
+                                            CoreExpr::Str(name.clone())
+                                        }
+                                        _ => lower_expr(k, &k.expr),
+                                    };
+                                    Arc::new(Spanned::new(lowered, k.span.clone()))
+                                });
+                                let value = Arc::new(Spanned::new(
+                                    CoreExpr::Dict(vec![]),
+                                    se.span.clone(),
+                                ));
+                                core_entries
+                                    .push(Spanned::new(CoreEntry { key, value }, se.span.clone()));
+                            }
+                        }
                         _ => {
                             continue;
                         }
@@ -333,10 +402,8 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
                 } else {
                     let key = se.node.key.as_ref().map(|k| {
                         let lowered = match &k.expr {
+                            // Both plain and annotated VarRef use the name field.
                             SurfaceExpression::VarRef { name, .. } => CoreExpr::Str(name.clone()),
-                            SurfaceExpression::Annotated { name, .. } => {
-                                CoreExpr::Str(name.clone())
-                            }
                             _ => lower_expr(k, &k.expr),
                         };
                         Arc::new(Spanned::new(lowered, k.span.clone()))
@@ -358,28 +425,24 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
             // has a call_dispatch annotation set by the type checker, rewrite the function
             // reference to the instance binding name.
             let lowered_func = if let SurfaceExpression::VarRef {
-                name: _,
-                resolution,
+                name,
+                resolution: _,
                 call_dispatch,
                 ..
             } = &func.expr
             {
-                if let Some(binding_name) = call_dispatch.get() {
-                    // Read inline resolution from the func VarRef node.
-                    match resolution.get() {
-                        Some(Some((level, slot))) => Arc::new(Spanned::new(
-                            CoreExpr::Var {
-                                name: binding_name.to_string(),
-                                level,
-                                slot,
-                            },
-                            func.span.clone(),
-                        )),
-                        _ => Arc::new(Spanned::new(
-                            CoreExpr::Error(func.span.clone()),
-                            func.span.clone(),
-                        )),
-                    }
+                if let Some((level, slot)) = call_dispatch.get() {
+                    // Direct de Bruijn lookup — coordinates set by the type checker.
+                    // No name-based fallback; if coords are present they are authoritative.
+                    Arc::new(Spanned::new(
+                        CoreExpr::Var {
+                            name: name.clone(),
+                            level,
+                            slot,
+                            annotation: None,
+                        },
+                        func.span.clone(),
+                    ))
                 } else {
                     Arc::new(lower(func))
                 }
@@ -450,11 +513,6 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
             }
         }
 
-        SurfaceExpression::Annotated { name, annotation } => CoreExpr::Annotated {
-            name: name.clone(),
-            annotation: annotation.clone(),
-        },
-
         SurfaceExpression::Rest(name, _) => CoreExpr::Rest(name.clone()),
 
         SurfaceExpression::Match { scrutinee, arms } => CoreExpr::Match {
@@ -522,8 +580,8 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
                         let method_name = match me.node.key.as_ref() {
                             Some(key_node) => match &key_node.expr {
                                 SurfaceExpression::Str(s) => s.clone(),
+                                // Both plain and annotated VarRef use the name field.
                                 SurfaceExpression::VarRef { name, .. } => name.clone(),
-                                SurfaceExpression::Annotated { name, .. } => name.clone(),
                                 _ => continue,
                             },
                             None => continue,
@@ -590,11 +648,12 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
         CoreExpr::U64(n) => SurfaceExpression::U64(*n),
         CoreExpr::Float(f) => SurfaceExpression::Float(*f),
         CoreExpr::Str(s) => SurfaceExpression::Str(s.clone()),
-        CoreExpr::Var { name, .. } => SurfaceExpression::VarRef {
+        CoreExpr::Var { name, annotation, .. } => SurfaceExpression::VarRef {
             name: name.clone(),
             escaped: false,
             resolution: crate::ast::Resolution::new(),
             call_dispatch: crate::ast::CallDispatch::new(),
+            annotation: annotation.clone(),
         },
         CoreExpr::Sequential(exprs) => SurfaceExpression::Sequential(
             exprs.iter().map(|e| core_expr_to_surface_node(e)).collect(),
@@ -652,10 +711,6 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
             expr: core_expr_to_surface_node(expr),
             resolved_type: crate::ast::TypeAnnotation::new(),
         },
-        CoreExpr::Annotated { name, annotation } => SurfaceExpression::Annotated {
-            name: name.clone(),
-            annotation: annotation.clone(),
-        },
         CoreExpr::Rest(name) => SurfaceExpression::Rest(name.clone(), None),
         CoreExpr::Match { scrutinee, arms } => SurfaceExpression::Match {
             scrutinee: core_expr_to_surface_node(scrutinee),
@@ -711,6 +766,7 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
             escaped: false,
             resolution: crate::ast::Resolution::new(),
             call_dispatch: crate::ast::CallDispatch::new(),
+            annotation: None,
         },
     }
 }
@@ -728,8 +784,8 @@ fn lower_let_decl_binding(arc: &Arc<SurfaceNode>) -> Spanned<CoreExpr> {
     let span = arc.span.clone();
     let core_expr = match &arc.expr {
         // Declaration name forms: lower as string literal (name extraction path)
+        // Annotated VarRef (name@Type) is also lowered to Str — the annotation is stripped.
         SurfaceExpression::VarRef { name, .. } => CoreExpr::Str(name.clone()),
-        SurfaceExpression::Annotated { name, .. } => CoreExpr::Str(name.clone()),
         SurfaceExpression::Rest(Some(name), _) => CoreExpr::Str(name.clone()),
         // Wildcard / unnamed rest: use empty string (skipped by LetDecl eval arm)
         SurfaceExpression::Rest(None, _) => CoreExpr::Str(String::new()),
@@ -756,23 +812,41 @@ pub(crate) fn extract_dispatch_tags(arm_pattern: &SurfaceExpression) -> Vec<Opti
     bindings
         .iter()
         .map(|binding_spanned| {
-            // Each binding is Annotated { name, annotation } or VarRef { name } or Str(name)
+            // Each binding is VarRef { annotation: Some(_) } or VarRef { annotation: None } or Str(name)
             match &binding_spanned.expr {
-                SurfaceExpression::Annotated { annotation, .. } => {
-                    // Extract the type name from Simple annotations with uppercase names.
+                SurfaceExpression::VarRef { annotation: Some(ann), .. } => {
+                    // Extract the type name from annotations. VarRef annotations are normalized
+                    // from Simple("T") to PropertyDict{type: VarRef("T")} at parse time, so we
+                    // handle both forms. Only uppercase type names are valid dispatch tags.
                     use crate::ast::Annotation;
-                    match &annotation.node {
-                        Annotation::Simple(type_name)
-                            if type_name
-                                .chars()
-                                .next()
-                                .map(|c| c.is_uppercase())
-                                .unwrap_or(false) =>
-                        {
-                            Some(type_name.clone())
+                    let type_name_opt = match &ann.node {
+                        Annotation::Simple(type_name) => Some(type_name.as_str()),
+                        Annotation::PropertyDict(entries) => {
+                            // Find the "type" key entry and extract its VarRef name.
+                            entries.iter().find_map(|e| {
+                                let key_str = e.node.key.as_ref().and_then(|k| {
+                                    if let SurfaceExpression::Str(s) = &k.expr {
+                                        Some(s.as_str())
+                                    } else {
+                                        None
+                                    }
+                                });
+                                if key_str == Some("type") {
+                                    if let SurfaceExpression::VarRef { name, .. } = &e.node.value.expr {
+                                        Some(name.as_str())
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                }
+                            })
                         }
                         _ => None,
-                    }
+                    };
+                    type_name_opt
+                        .filter(|n| n.chars().next().map(|c| c.is_uppercase()).unwrap_or(false))
+                        .map(|n| n.to_string())
                 }
                 _ => None, // Unannotated binding
             }
@@ -792,8 +866,8 @@ fn extract_type_name_from_key(key: &Option<Arc<SurfaceNode>>) -> Option<String> 
     match key {
         Some(key_node) => match &key_node.expr {
             SurfaceExpression::Str(s) => Some(s.clone()),
+            // Both plain VarRef and annotated VarRef (name@Type) use the name field directly.
             SurfaceExpression::VarRef { name, .. } => Some(name.clone()),
-            SurfaceExpression::Annotated { name, .. } => Some(name.clone()),
             _ => None, // Computed key
         },
         None => None, // Positional entry
@@ -814,7 +888,7 @@ fn lower_type_alias_to_constructor_dict(
     type_name_opt: Option<String>,
     body: &Arc<SurfaceNode>,
 ) -> CoreExpr {
-    use crate::ast::{CoreEntry, CoreParam};
+    use crate::ast::CoreEntry;
 
     // Extract constructors from the body using the desugar.rs helpers.
     // We need to import the extraction logic. For now, we'll inline a simplified version.
@@ -871,6 +945,7 @@ fn lower_type_alias_to_constructor_dict(
                                 name: "builtin-make-annotated".to_string(),
                                 level: 0,
                                 slot: 0,
+                                annotation: None,
                             },
                             syn_span.clone(),
                         )),
@@ -884,14 +959,24 @@ fn lower_type_alias_to_constructor_dict(
                 variant_call
             }
         } else {
-            // Payload constructor: function that takes named args and returns a variant
-            // [fn [let ...fields] CoreExpr::Variant{tag, payload: Some(payload_dict)}]
-            let params: Vec<Spanned<CoreParam>> = ctor
-                .fields
+            // Named-field payload constructor: emit a function that accepts the fields
+            // as named parameters and constructs a Variant with the payload dict.
+            //
+            // The function carries `return_ann: Some(Annotation::Simple(qualified_tag))`
+            // so that pattern matching can identify the constructor tag via the function's
+            // return annotation, without any special "constructor" runtime type.
+            //
+            // Example: `[type ProgramItem [File path: String handle: Handle]]` produces:
+            //   `File: [fn@"ProgramItem.File" [let path handle]
+            //             [Variant "ProgramItem.File" {path: $path, handle: $handle}]]`
+            let fields = &ctor.fields;
+
+            // Build one CoreParam per field.
+            let fn_params: Vec<Spanned<crate::ast::CoreParam>> = fields
                 .iter()
                 .map(|field_name| {
                     Spanned::new(
-                        CoreParam {
+                        crate::ast::CoreParam {
                             name: field_name.clone(),
                             annotation: None,
                             variadic: false,
@@ -901,66 +986,61 @@ fn lower_type_alias_to_constructor_dict(
                 })
                 .collect();
 
-            // Build the payload dict: [dict field: field-value ...]
-            //
-            // CRITICAL: Use CoreExpr::Var { level: 1, slot: idx } here. The payload dict
-            // is evaluated by eval_dict_core which creates a letrec environment where each
-            // field name is bound as a key. Using Var { level: 0 } would resolve in the dict's
-            // own letrec env, finding the dict's own "field" entry (the thunk being forced),
-            // and triggering E070 circular dependency.
-            //
-            // Var { level: 1 } skips one level up past the dict's letrec env to the
-            // function's call env (created by bind_args_thunks), where the param is
-            // bound at slot `idx`. This correctly references the caller's argument
-            // without shadowing through the payload dict's letrec scope.
-            let payload_entries: Vec<Spanned<CoreEntry>> = ctor
-                .fields
+            // Build the payload dict: {field0: $field0, field1: $field1, ...}
+            // Each entry is a string-keyed CoreEntry pointing to the corresponding param.
+            // level=1 skips the function body's own letrec env to reach the params.
+            let payload_entries: Vec<Spanned<CoreEntry>> = fields
                 .iter()
                 .enumerate()
                 .map(|(idx, field_name)| {
-                    Spanned::new(
-                        CoreEntry {
-                            key: Some(Arc::new(Spanned::new(
-                                CoreExpr::Str(field_name.clone()),
-                                syn_span.clone(),
-                            ))),
-                            value: Arc::new(Spanned::new(
-                                // level=1: one env level up from the payload dict's letrec
-                                // env → reaches the function's call env (bind_args_thunks).
-                                // slot=idx: params are inserted in declaration order, so
-                                // the i-th field is at slot i in the call env.
-                                CoreExpr::Var {
-                                    name: field_name.clone(),
-                                    level: 1,
-                                    slot: idx as u32,
-                                },
-                                syn_span.clone(),
-                            )),
+                    let key = Some(Arc::new(Spanned::new(
+                        CoreExpr::Str(field_name.clone()),
+                        syn_span.clone(),
+                    )));
+                    let value = Arc::new(Spanned::new(
+                        CoreExpr::Var {
+                            name: field_name.clone(),
+                            level: 1,
+                            slot: idx as u32,
+                            annotation: None,
                         },
                         syn_span.clone(),
-                    )
+                    ));
+                    Spanned::new(CoreEntry { key, value }, syn_span.clone())
                 })
                 .collect();
 
-            let payload_dict = CoreExpr::Dict(payload_entries);
+            let payload_dict = Arc::new(Spanned::new(
+                CoreExpr::Dict(payload_entries),
+                syn_span.clone(),
+            ));
 
-            // Build CoreExpr::Variant { tag: "TypeName.CtorName", payload: Some(payload_dict) }
-            let variant_call = CoreExpr::Variant {
-                tag: qualified_tag,
-                payload: Some(Arc::new(Spanned::new(payload_dict, syn_span.clone()))),
-            };
+            // Build the variant body: Variant { tag, payload: Some(payload_dict) }
+            let variant_body = Arc::new(Spanned::new(
+                CoreExpr::Variant {
+                    tag: qualified_tag.clone(),
+                    payload: Some(payload_dict),
+                },
+                syn_span.clone(),
+            ));
+
+            // Build the return annotation — Annotation::Simple(qualified_tag) so pattern
+            // matching can extract the tag from the function's return_ann field.
+            let fn_return_ann = Some(Spanned::new(
+                crate::ast::Annotation::Simple(qualified_tag.clone()),
+                syn_span.clone(),
+            ));
 
             let fn_expr = Arc::new(Spanned::new(
                 CoreExpr::Fn {
-                    return_ann: None,
-                    params,
-                    body: Arc::new(Spanned::new(variant_call, syn_span.clone())),
+                    return_ann: fn_return_ann,
+                    params: fn_params,
+                    body: variant_body,
                     desugared: false,
                 },
                 syn_span.clone(),
             ));
 
-            // Wrap payload constructor with annotation if present (mirrors unit constructor handling)
             if let Some(ann_entries) = &ctor.annotation {
                 let ann_core_entries: Vec<Spanned<CoreEntry>> = ann_entries
                     .iter()
@@ -981,6 +1061,7 @@ fn lower_type_alias_to_constructor_dict(
                                 name: "builtin-make-annotated".to_string(),
                                 level: 0,
                                 slot: 0,
+                                annotation: None,
                             },
                             syn_span.clone(),
                         )),
@@ -1005,11 +1086,10 @@ fn lower_type_alias_to_constructor_dict(
 struct ConstructorInfo {
     name: String,
     is_unit: bool,
-    fields: Vec<String>,
-    /// Annotation entries from `@[...]` on the constructor declaration (T-1121).
-    /// Present when the constructor was written as `CtorName@[key: val ...]` in the type body.
-    /// Used by `lower_type_alias_to_constructor_dict` to emit `[builtin-make-annotated ...]`.
+    /// Annotation entries from `@[...]` on the constructor declaration.
     annotation: Option<Vec<Spanned<SurfaceEntry>>>,
+    /// Field names for named-field constructors (empty for unit constructors).
+    fields: Vec<String>,
 }
 
 /// Extract constructor information from a TypeAlias body.
@@ -1029,30 +1109,22 @@ fn extract_constructors_from_body(body: &SurfaceExpression) -> Vec<ConstructorIn
 
     fn try_extract_one(expr: &SurfaceExpression, ctors: &mut Vec<ConstructorInfo>) {
         match expr {
-            // Bare uppercase VarRef → unit constructor (no annotation)
-            SurfaceExpression::VarRef { name, .. } if is_ctor(name) => {
-                ctors.push(ConstructorInfo {
-                    name: name.clone(),
-                    is_unit: true,
-                    fields: Vec::new(),
-                    annotation: None,
-                });
-            }
-            // Annotated uppercase → unit constructor with annotation (T-1121).
-            // `Red@[category: "primary"]` → unit constructor carrying the PropertyDict entries.
-            SurfaceExpression::Annotated { name, annotation } if is_ctor(name) => {
-                // Extract PropertyDict entries for annotation wrapping at runtime.
-                let ann_entries = match &annotation.node {
-                    crate::ast::Annotation::PropertyDict(entries) if !entries.is_empty() => {
-                        Some(entries.clone())
+            // Uppercase VarRef → unit constructor.
+            // May carry a PropertyDict annotation (`Red@[category: "primary"]`).
+            SurfaceExpression::VarRef { name, annotation, .. } if is_ctor(name) => {
+                let ann_entries = annotation.as_ref().and_then(|ann| {
+                    match &ann.node {
+                        crate::ast::Annotation::PropertyDict(entries) if !entries.is_empty() => {
+                            Some(entries.clone())
+                        }
+                        _ => None,
                     }
-                    _ => None,
-                };
+                });
                 ctors.push(ConstructorInfo {
                     name: name.clone(),
                     is_unit: true,
-                    fields: Vec::new(),
                     annotation: ann_entries,
+                    fields: vec![],
                 });
             }
             // Call with uppercase func → unit or named-field constructor
@@ -1091,10 +1163,11 @@ fn extract_constructors_from_body(body: &SurfaceExpression) -> Vec<ConstructorIn
                             .collect();
 
                         // Payload fields from annotated positional args (data@String form).
+                        // Now represented as VarRef { name, annotation: Some(_) }.
                         let payload_annotated_fields: Vec<String> = args
                             .iter()
                             .filter_map(|arg| {
-                                if let SurfaceExpression::Annotated { name, .. } = &arg.expr {
+                                if let SurfaceExpression::VarRef { name, annotation: Some(_), .. } = &arg.expr {
                                     Some(name.clone())
                                 } else {
                                     None
@@ -1102,17 +1175,22 @@ fn extract_constructors_from_body(body: &SurfaceExpression) -> Vec<ConstructorIn
                             })
                             .collect();
 
-                        let fields: Vec<String> = payload_named_fields
-                            .into_iter()
-                            .chain(payload_annotated_fields)
-                            .collect();
-
-                        let is_unit = fields.is_empty();
+                        let is_unit = payload_named_fields.is_empty()
+                            && payload_annotated_fields.is_empty();
+                        let fields = if is_unit {
+                            vec![]
+                        } else {
+                            // Collect all payload fields: annotated positional args first,
+                            // then named args (non-literal values are runtime fields).
+                            let mut all_fields = payload_annotated_fields;
+                            all_fields.extend(payload_named_fields);
+                            all_fields
+                        };
                         ctors.push(ConstructorInfo {
                             name: name.clone(),
                             is_unit,
-                            fields,
                             annotation: None,
+                            fields,
                         });
                     }
                 }
@@ -1123,41 +1201,46 @@ fn extract_constructors_from_body(body: &SurfaceExpression) -> Vec<ConstructorIn
                 if first.node.key.is_some() {
                     return;
                 }
-                // Extract constructor name and annotation from the first (positional) entry
+                // Extract constructor name and annotation from the first (positional) entry.
+                // Both plain and annotated VarRef are now VarRef { name, annotation }.
                 let (ctor_name, ctor_annotation) = match &first.node.value.expr {
-                    SurfaceExpression::VarRef { name, .. } if is_ctor(name) => (name.clone(), None),
-                    SurfaceExpression::Annotated { name, annotation } if is_ctor(name) => {
-                        // Extract PropertyDict annotation entries for the constructor
-                        let ann = match &annotation.node {
-                            crate::ast::Annotation::PropertyDict(entries)
-                                if !entries.is_empty() =>
-                            {
-                                Some(entries.clone())
+                    SurfaceExpression::VarRef { name, annotation, .. } if is_ctor(name) => {
+                        let ann = annotation.as_ref().and_then(|ann| {
+                            match &ann.node {
+                                crate::ast::Annotation::PropertyDict(entries)
+                                    if !entries.is_empty() =>
+                                {
+                                    Some(entries.clone())
+                                }
+                                _ => None,
                             }
-                            _ => None,
-                        };
+                        });
                         (name.clone(), ann)
                     }
                     _ => return,
                 };
-                let fields: Vec<String> = entries[1..]
-                    .iter()
-                    .filter_map(|e| {
-                        let key = e.node.key.as_ref()?;
-                        match &key.expr {
-                            SurfaceExpression::Str(s) => Some(s.clone()),
-                            SurfaceExpression::VarRef { name, .. } => Some(name.clone()),
-                            SurfaceExpression::Annotated { name, .. } => Some(name.clone()),
-                            _ => None,
-                        }
-                    })
-                    .collect();
-                let is_unit = fields.is_empty();
+                let is_unit = entries[1..].is_empty()
+                    || entries[1..].iter().all(|e| e.node.key.is_none());
+                // Collect field names from keyed entries for named-field constructors.
+                let fields: Vec<String> = if is_unit {
+                    vec![]
+                } else {
+                    entries[1..]
+                        .iter()
+                        .filter_map(|e| {
+                            e.node.key.as_ref().and_then(|k| match &k.expr {
+                                SurfaceExpression::VarRef { name, .. } => Some(name.clone()),
+                                SurfaceExpression::Str(s) => Some(s.clone()),
+                                _ => None,
+                            })
+                        })
+                        .collect()
+                };
                 ctors.push(ConstructorInfo {
                     name: ctor_name,
                     is_unit,
-                    fields,
                     annotation: ctor_annotation,
+                    fields,
                 });
             }
             _ => {}
@@ -1174,10 +1257,9 @@ fn extract_constructors_from_body(body: &SurfaceExpression) -> Vec<ConstructorIn
                 if first.node.key.is_some() {
                     return false;
                 }
+                // Both plain and annotated VarRef are now VarRef { name, annotation }.
                 let first_is_ctor = matches!(&first.node.value.expr,
-                    SurfaceExpression::VarRef { name, .. } if is_ctor(name))
-                    || matches!(&first.node.value.expr,
-                    SurfaceExpression::Annotated { name, .. } if is_ctor(name));
+                    SurfaceExpression::VarRef { name, .. } if is_ctor(name));
                 let has_keyed = entries[1..].iter().any(|e| e.node.key.is_some());
                 first_is_ctor && has_keyed
             });
@@ -1237,6 +1319,7 @@ mod tests {
                 escaped: false,
                 resolution,
                 call_dispatch: CallDispatch::new(),
+                annotation: None,
             },
             span,
         );
@@ -1244,7 +1327,7 @@ mod tests {
         let lowered = lower(&node);
 
         match lowered.node {
-            CoreExpr::Var { name, level, slot } => {
+            CoreExpr::Var { name, level, slot, .. } => {
                 assert_eq!(name, "x");
                 assert_eq!(level, 0);
                 assert_eq!(slot, 3);
@@ -1263,6 +1346,7 @@ mod tests {
                 escaped: false,
                 resolution: Resolution::new(), // Not set — resolver never ran
                 call_dispatch: CallDispatch::new(),
+                annotation: None,
             },
             span.clone(),
         );
@@ -1294,6 +1378,7 @@ mod tests {
                 escaped: false,
                 resolution: Resolution::new(),
                 call_dispatch: CallDispatch::new(),
+                annotation: None,
             },
             span.clone(),
         );
@@ -1340,6 +1425,7 @@ mod tests {
                             escaped: false,
                             resolution: Resolution::new(),
                             call_dispatch: CallDispatch::new(),
+                            annotation: None,
                         },
                         span.clone(),
                     ),

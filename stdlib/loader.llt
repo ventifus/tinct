@@ -47,7 +47,7 @@
 #   Control: builtin-if
 #   I/O:     builtin-file-read, builtin-file-open, builtin-write-stdout, builtin-write-stderr, builtin-channel, builtin-send
 #   Bytes:   builtin-bytes, builtin-bytes-concat, builtin-length
-#   AST:     builtin-parse, builtin-expand, builtin-resolve, builtin-typecheck
+#   AST:     builtin-parse, builtin-resolve, builtin-typecheck
 #   Type:    builtin-get-type-context, builtin-make-type-ctx, builtin-fork-type-ctx
 #   Meta:    builtin-module, builtin-eval
 #   String:  builtin-str, builtin-str-bytes, builtin-str-hash, builtin-str-lt
@@ -61,8 +61,6 @@
 #   builtin-map           → fused into builtin-reduce in uses-scope
 #   builtin-dict-get      → builtin-get
 #   builtin-dict-length   → eliminated by passing formatter separately
-#   builtin-walk-expand   → folded into builtin-expand
-#   builtin-expand-one    → eliminated with builtin-walk-expand
 #   builtin-variant       → eliminated; use qualified ADT constructors (Seq.Cons,
 #                           TypeNode.Int, etc.) — bypassed the type system
 #   builtin-seq           → [Seq.Cons head: x  tail: rest] (tinct constructor)
@@ -82,16 +80,6 @@
 
 --- uses: ["core"]
 
-# ── Loader-level macros ───────────────────────────────────────────────────────
-# These macros are defined in loader.llt itself and expanded against the
-# initial env (core builtins only). They must not reference prelude functions.
-
-# >> — force a side-effectful expression then return a result.
-# Produces a Sequential AST node: evaluator forces effect eagerly, then returns result.
-# Uses builtin-sequential (core builtin) — no Expr type needed at boot level.
-[macro >> [let effect result]
-  [builtin-sequential [$effect result]]]
-
 # ============================================================================
 # Dict 1 — Private helpers
 # ============================================================================
@@ -106,6 +94,23 @@
     [builtin-if [bytes-empty? chunk]
       acc
       [read-file f [builtin-bytes-concat acc chunk]]]]
+
+  # reduce and join defined with core builtins only (prelude not yet loaded).
+  _reduce-loop: [fn [let f acc xs i len]
+    [builtin-if [builtin-gte i len]
+      acc
+      [_reduce-loop f [f acc [builtin-get i xs]] xs [builtin-add i 1] len]]]
+  reduce: [fn [let f init xs] [_reduce-loop f init xs 0 [builtin-length xs]]]
+
+  _join-loop: [fn [let sep acc xs i len]
+    [builtin-if [builtin-gte i len]
+      acc
+      [_join-loop sep
+        [builtin-if [builtin-eq i 0]
+          [builtin-get 0 xs]
+          [builtin-string-concat acc [builtin-string-concat sep [builtin-get i xs]]]]
+        xs [builtin-add i 1] len]]]
+  join: [fn [let sep xs] [_join-loop sep "" xs 0 [builtin-length xs]]]
 ]
 
 # ============================================================================
@@ -120,12 +125,12 @@
   # The `write` method on each calls the stateless builtin directly.
   # `flush` and `close` are no-ops (stateless stdio doesn't buffer or own FDs).
   # These shadow any %stdout/%stderr injected by the invoker (main.rs, lib.rs).
-  %stdout: [write:  [fn [let s] [builtin-write-stdout s]]
-            flush:  [fn [] []]
-            close:  [fn [] []]]
-  %stderr: [write:  [fn [let s] [builtin-write-stderr s]]
-            flush:  [fn [] []]
-            close:  [fn [] []]]
+  %stdout: [write:  [fn [let s h] [builtin-write-stdout s h]]
+            flush:  [fn [let h] h]
+            close:  [fn [let h] h]]
+  %stderr: [write:  [fn [let s h] [builtin-write-stderr s h]]
+            flush:  [fn [let h] h]
+            close:  [fn [let h] h]]
 
   # ── Foundation ────────────────────────────────────────────────────────────
   # Boolean is declared here (loader.llt dict 2), before prelude loads.
@@ -162,27 +167,25 @@
   # TypeContext before the file's body is type-checked.
   # Returns: merged dict of runtime impls, threaded into eval-document-runtime.
 
+  # Declaration files (builtin_NAME.llt) are optional — if absent, builtin-try
+  # catches the error. Returns a flat Dict of all module builtins.
+  # Typecheck is forced by using typed.warnings as a data dependency (no >> needed).
   uses-scope: [fn [let module-names]
-    [builtin-reduce
-      [fn [let env name]
-        [decl-path:     [builtin-str "builtin_" name ".llt"]]
-        [decl-handle:   [builtin-file-open %libdir decl-path "read"]]
-        [decl-bytes:    [read-file decl-handle [builtin-bytes]]]
-        [parse-result:  [builtin-parse decl-bytes decl-path]]
-        [>> [emit-diagnostics parse-result.errors]
-            [decl-raw: parse-result.program]]
-        # expand wrapper emits diagnostics and extracts expanded.expanded
-        [decl-expanded: [expand decl-raw]]
-        [resolve-result: [builtin-resolve decl-expanded]]
-        [>> [emit-diagnostics resolve-result.errors]
-            [decl-resolved: resolve-result.resolved]]
-        # Force typecheck side-effect (updates TypeContext), then return extended env.
-        # >> is required here: without it, builtin-typecheck sits in an intermediate
-        # dict body with no named key, is never accessed, and never executes under
-        # lazy evaluation — the TypeContext update silently doesn't fire.
-        [>> [builtin-typecheck decl-resolved [builtin-get-type-context]]
-            [builtin-extend-env env [builtin-module name]]]]
-      [builtin-extend-env [] []]
+    [reduce
+      [fn [let acc name]
+        [decl-path:  [builtin-string-concat "builtin_" [builtin-string-concat name ".llt"]]]
+        [tc-result:  [builtin-try [fn []
+            [decl-handle:    [builtin-file-open %libdir decl-path "read"]]
+            [decl-bytes:     [read-file decl-handle [builtin-bytes]]]
+            [parse-result:   [builtin-parse decl-bytes decl-path]]
+            [resolve-result: [builtin-resolve parse-result.program]]
+            [typed:          [builtin-typecheck resolve-result.resolved [builtin-get-type-context]]]
+            typed.warnings]]]
+        [warnings:   [builtin-if [builtin-eq [builtin-tag-of tc-result] "Result.Ok"]
+            [builtin-variant-payload tc-result]
+            []]]
+        [builtin-merge [emit-diagnostics warnings] [builtin-merge acc [builtin-module name]]]]
+      []
       module-names]]
 
   # ── Named section accumulation ────────────────────────────────────────────
@@ -190,18 +193,9 @@
   update-named: [fn [let state val doc]
     [match doc.name
       [case [let p] [DocName.Named p]
-        [builtin-merge state.named [[builtin-str "%" p.name]: val]]]
+        [builtin-merge state.named [[[builtin-string-concat "%" p.name]]: val]]]
       DocName.Unnamed:
         state.named]]
-
-  # ── Macro expansion ───────────────────────────────────────────────────────
-  # builtin-expand now returns {expanded, errors} rather than a raw Program.
-  # The expand wrapper extracts expanded.expanded and emits any errors to %stderr.
-
-  expand: [fn [let ast]
-    [result: [builtin-expand ast]]
-    [>> [emit-diagnostics result.errors]
-        result.expanded]]
 
   # ── Diagnostic formatting ─────────────────────────────────────────────────
   # Each diagnostic is a unified error dict:
@@ -211,49 +205,60 @@
   # Uses only core builtins — safe to call before prelude is loaded.
   format-diagnostic: [fn [let d]
     [s: d.span]
-    [file-part: [builtin-if [builtin-eq s.file []] "" [builtin-str s.file ":"]]]
-    [builtin-str file-part s.start-line ":" s.start-col ": " d.kind " — " d.message "\n"]]
+    [file-part: [builtin-if [builtin-eq s.file []] "" [builtin-string-concat s.file ":"]]]
+    [join "" [0: file-part  1: [builtin-int->string s.start-line]  2: ":"  3: [builtin-int->string s.start-col]  4: ": "  5: d.kind  6: " — "  7: d.message  8: "\n"]]]
 
   emit-diagnostics: [fn [let diagnostics]
-    [builtin-reduce
-      [fn [let _ d] [%stderr.write [format-diagnostic d]]]
+    # Use builtin-try per diagnostic so a formatting failure doesn't suppress remaining errors.
+    [reduce
+      [fn [let _ d]
+        [builtin-try [fn [] [%stderr.write [format-diagnostic d] %stderr]]]
+        _]
       []
       diagnostics]]
 
   # ── File loading ──────────────────────────────────────────────────────────
   # Stage 1: builtin-parse    — Bytes + path → raw AST
-  # Stage 2: expand           — macro expansion
-  # Stage 3: builtin-resolve  — name resolution
-  # Stage 4: builtin-typecheck — type checking (updates TypeContext in-place)
-  # Stage 5: builtin-eval     — execution
+  # Stage 2: builtin-resolve  — name resolution
+  # Stage 3: builtin-typecheck — type checking (updates TypeContext in-place)
+  # Stage 4: builtin-eval     — execution
   #
   # include does NOT take include-dir or prelude — it IS what loads prelude.
   # Uses zero-arg [builtin-get-type-context] (it is building the context).
 
-  include: [fn [let cap path]
+  include: [fn [let cap path extras@[default: []]]
     [handle:        [builtin-file-open cap path "read"]]
     [bytes:         [read-file handle [builtin-bytes]]]
     [parse-result:  [builtin-parse bytes path]]
-    [>> [emit-diagnostics parse-result.errors]
-        [raw: parse-result.program]]
-    # expand wrapper emits diagnostics and extracts expanded.expanded
-    [expanded:       [expand raw]]
-    [seed-env:       [uses-scope expanded.uses]]
-    [resolve-result: [builtin-resolve expanded env: seed-env]]
-    [>> [emit-diagnostics resolve-result.errors]
-        [resolved-prog: resolve-result.resolved]]
-    # Per-document resolve+eval: each document resolved against the current accumulated env.
-    [final-env: [builtin-reduce
+    # Stop on parse errors. Emit first (data dependency via builtin-add), then raise.
+    [n-parse:       [builtin-length parse-result.errors]]
+    [_pe:           [builtin-length [emit-diagnostics parse-result.errors]]]
+    [seed-env:      [builtin-if [builtin-eq [builtin-add n-parse _pe] 0]
+      [builtin-extend-env [] extras]
+      [builtin-raise [join "" [[builtin-int->string n-parse] " parse error(s) in " path]]]]]
+    # Per-document: each document gets its own module builtins via uses-scope.
+    # Stops on any resolve error rather than continuing with unresolved CoreExpr::Error nodes.
+    [final-env: [reduce
       [fn [let env doc]
-        [resolved: [builtin-resolve doc env: env]]
-        [builtin-eval resolved.doc env: env]]
+        # All documents (type-stage and runtime) evaluated uniformly.
+        # builtin-get-type-context handles TypeContext setup separately.
+        [call [fn [let]
+          [doc-env:  [builtin-extend-env env [uses-scope doc.uses]]]
+          [resolved: [builtin-resolve doc env: doc-env]]
+          [n-re:     [builtin-length resolved.errors]]
+          [_re:      [builtin-length [emit-diagnostics resolved.errors]]]
+          [builtin-if [builtin-eq [builtin-add n-re _re] 0]
+            [builtin-eval resolved.doc env: doc-env]
+            [builtin-raise [join "" [[builtin-int->string n-re] " resolve error(s) in " path]]]]]]]
       seed-env
-      expanded.documents]]
-    # Typecheck updates inference_env in the TypeContext so user files see this file's types.
-    # Emit diagnostics to %stderr with full context.
-    [typed: [builtin-typecheck resolved-prog [builtin-get-type-context]]]
-    [>> [emit-diagnostics typed.warnings]
-        [builtin-extend-env final-env final-env.%]]]
+      parse-result.program.documents]]
+    # Typecheck with the fully-built final-env so TypeContext gets correct type info.
+    [tc-resolved: [builtin-resolve parse-result.program env: final-env]]
+    [typed:       [builtin-typecheck tc-resolved.resolved [builtin-get-type-context]]]
+    # Emit diagnostics via data dependency (no >> needed).
+    [n-tc:        [builtin-length [emit-diagnostics tc-resolved.errors]]]
+    [n-warn:      [builtin-length [emit-diagnostics typed.warnings]]]
+    [builtin-if [builtin-eq [builtin-add n-tc n-warn] 0] final-env final-env]]
 
   # ── Document-level evaluation ─────────────────────────────────────────────
   # Builds the env for one user document via builtin-extend-env layers.
@@ -298,22 +303,22 @@
     # the included file with prelude in scope. The bare include in loader dict 2
     # evaluates in loader's closure (no prelude) — used only for bootstrapping.
     [ctx-include: [fn [let cap path]
-      [handle:       [builtin-file-open cap path "read"]]
-      [bytes:        [read-file handle [builtin-bytes]]]
-      [parse-result: [builtin-parse bytes path]]
-      [>> [emit-diagnostics parse-result.errors]
-          [raw: parse-result.program]]
-      # expand wrapper emits diagnostics and extracts expanded.expanded
-      [expanded: [expand raw]]
+      [handle:        [builtin-file-open cap path "read"]]
+      [bytes:         [read-file handle [builtin-bytes]]]
+      [parse-result:  [builtin-parse bytes path]]
+      # Emit parse errors as a data dependency (no >> needed).
+      [_pe:           [builtin-length [emit-diagnostics parse-result.errors]]]
       # Seed with prelude (the base environment for included files).
       # No mod-scope from uses-scope — ctx-include is for nested user includes
       # where the base env already has prelude's bindings available.
-      [builtin-reduce
-        [fn [let env sub-doc]
-          [sub-resolved: [builtin-resolve sub-doc env: env]]
-          [builtin-eval sub-resolved.doc env: env]]
-        prelude
-        expanded.documents]]]
+      [builtin-if [builtin-eq _pe _pe]
+        [reduce
+          [fn [let env sub-doc]
+            [sub-resolved: [builtin-resolve sub-doc env: env]]
+            [builtin-eval sub-resolved.doc env: env]]
+          prelude
+          parse-result.program.documents]
+        prelude]]]
     [full-env: [builtin-extend-env full-env [include: ctx-include]]]
     # Per-document resolve against the fully-constructed env for correct de Bruijn coords.
     [doc-resolved: [builtin-resolve doc env: full-env]]
@@ -336,44 +341,55 @@
     [file-include-dir: [builtin-path-dir item.path]]
     [bytes:        [read-file item.handle [builtin-bytes]]]
     [parse-result: [builtin-parse bytes item.path]]
-    [>> [emit-diagnostics parse-result.errors]
-        [raw: parse-result.program]]
-    # expand wrapper emits diagnostics and extracts expanded.expanded
-    [expanded: [expand raw]]
+    # Emit parse errors as a data dependency (no >> needed).
+    [_pe:          [builtin-length [emit-diagnostics parse-result.errors]]]
     # Resolve the whole program for type-checking (TypeContext side effects).
-    [resolve-result: [builtin-resolve expanded env: prelude]]
-    [>> [emit-diagnostics resolve-result.errors]
-        [resolved-prog: resolve-result.resolved]]
+    [resolve-result: [builtin-resolve parse-result.program env: prelude]]
+    [_re:          [builtin-length [emit-diagnostics resolve-result.errors]]]
+    [resolved-prog: resolve-result.resolved]
     [mod-scope: [uses-scope resolved-prog.uses]]
     # Typecheck: accumulates inference_env and collects diagnostics.
     [typed: [builtin-typecheck resolved-prog [builtin-get-type-context prelude]]]
-    # Emit all typecheck diagnostics to %stderr with full context.
-    [>> [emit-diagnostics typed.warnings]
-        [builtin-reduce
-          [fn [let state doc]
-            [eval-document-runtime state mod-scope doc file-include-dir prelude emit-ch]]
-          [percent: prev  named: []]
-          expanded.documents].percent]]
+    # Emit all typecheck diagnostics as a data dependency (no >> needed).
+    [_te:    [builtin-length [emit-diagnostics typed.warnings]]]
+    # Force emission of all diagnostics before evaluating documents.
+    # builtin-if with identical branches always returns the reduce result
+    # while ensuring _pe, _re, _te are forced (their sum is the condition).
+    [builtin-if [builtin-eq [builtin-add _pe [builtin-add _re _te]] 0]
+      [reduce
+        [fn [let state doc]
+          [eval-document-runtime state mod-scope doc file-include-dir prelude emit-ch]]
+        [percent: prev  named: []]
+        parse-result.program.documents].percent
+      [reduce
+        [fn [let state doc]
+          [eval-document-runtime state mod-scope doc file-include-dir prelude emit-ch]]
+        [percent: prev  named: []]
+        parse-result.program.documents].percent]]
 
   eval-expr: [fn [let src prev include-dir prelude emit-ch]
     [bytes:        [builtin-str-bytes src]]
     [parse-result: [builtin-parse bytes "<expr>"]]
-    [>> [emit-diagnostics parse-result.errors]
-        [raw: parse-result.program]]
-    # expand wrapper emits diagnostics and extracts expanded.expanded
-    [expanded: [expand raw]]
+    # Emit parse errors as a data dependency (no >> needed).
+    [_pe:          [builtin-length [emit-diagnostics parse-result.errors]]]
     # -e expressions rarely declare --- uses:, but uniform handling costs nothing.
-    [resolve-result: [builtin-resolve expanded env: prelude]]
-    [>> [emit-diagnostics resolve-result.errors]
-        [resolved-prog: resolve-result.resolved]]
+    [resolve-result: [builtin-resolve parse-result.program env: prelude]]
+    [_re:          [builtin-length [emit-diagnostics resolve-result.errors]]]
+    [resolved-prog: resolve-result.resolved]
     [mod-scope: [uses-scope resolved-prog.uses]]
     [typed: [builtin-typecheck resolved-prog [builtin-get-type-context prelude]]]
-    [>> [emit-diagnostics typed.warnings]
-        [builtin-reduce
-          [fn [let state doc]
-            [eval-document-runtime state mod-scope doc include-dir prelude emit-ch]]
-          [percent: prev  named: []]
-          expanded.documents].percent]]
+    [_te:    [builtin-length [emit-diagnostics typed.warnings]]]
+    [builtin-if [builtin-eq [builtin-add _pe [builtin-add _re _te]] 0]
+      [reduce
+        [fn [let state doc]
+          [eval-document-runtime state mod-scope doc include-dir prelude emit-ch]]
+        [percent: prev  named: []]
+        parse-result.program.documents].percent
+      [reduce
+        [fn [let state doc]
+          [eval-document-runtime state mod-scope doc include-dir prelude emit-ch]]
+        [percent: prev  named: []]
+        parse-result.program.documents].percent]]
 
   # ── CLI pipeline ──────────────────────────────────────────────────────────
   # Threads include-dir, prelude, and emit-ch — the only things that vary.
@@ -381,7 +397,7 @@
   # The formatter is passed separately and run last.
 
   cli-pipeline: [fn [let programs formatter initial include-dir prelude emit-ch]
-    [result: [builtin-reduce
+    [result: [reduce
       [fn [let prev item]
         [eval-pipeline-item item prev include-dir prelude emit-ch]]
       initial
@@ -397,12 +413,15 @@
 # This dict creates bindings visible to the final expression below.
 
 [
-  _prelude: [include %libdir "prelude.llt"]
+  # Thread Boolean/True/False from loader scope so prelude can use them unqualified.
+  # %prelude is a lazy forward reference — safe because prelude only forces it at call time.
+  _prelude: [include %libdir "prelude.llt"
+    [%prelude: _prelude  Boolean: Boolean  True: True  False: False]]
 
   emit-ch: [builtin-channel]
 
   out-fmt:    [builtin-get "output" %args]
-  out-path:   [builtin-str "cli/out/" out-fmt ".llt"]
+  out-path:   [builtin-string-concat "cli/out/" [builtin-string-concat out-fmt ".llt"]]
   out-handle: [builtin-file-open %libdir out-path "read"]
   formatter:  [ProgramItem.File path: out-path  handle: out-handle]
 ]
@@ -410,11 +429,9 @@
 # ============================================================================
 # Final expression — the document result IS the pipeline execution.
 # ============================================================================
-# Being a top-level expression (not a dict entry), materialize() forces this
-# directly: Sequential forces the empty-check side-effect, then returns the
-# cli-pipeline result. No Rust-side key-forcing needed.
+# builtin-if dispatches on the programs count: raises on empty, runs pipeline otherwise.
+# No >> needed — the error branch raises, the success branch returns the pipeline result.
 
-[>> [builtin-if [builtin-eq [builtin-length %programs] 0]
-       [builtin-raise "no input files or expressions specified"]
-       []]
-    [cli-pipeline %programs formatter [] %cwd _prelude emit-ch]]
+[builtin-if [builtin-eq [builtin-length %programs] 0]
+  [builtin-raise "no input files or expressions specified"]
+  [cli-pipeline %programs formatter [] %cwd _prelude emit-ch]]

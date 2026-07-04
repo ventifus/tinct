@@ -218,7 +218,7 @@ desugar-document: [fn [let doc@Document]
   [Document
     name: doc.name
     expressions: [map [fn [let e] [desugar-expr-impl e 0]] doc.expressions]
-    declarations: doc.declarations  # Declarations not desugared (done by expander)
+    declarations: doc.declarations  # Declarations are passed through without desugaring
     output-type: doc.output-type
     expects: doc.expects]]
 

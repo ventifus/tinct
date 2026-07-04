@@ -375,7 +375,7 @@ pub fn builtin_timestamp_lt(
         };
 
         Ok(Arc::new(Thunk::new_materialized(
-            Value::boolean(t1_nanos < t2_nanos),
+            Value::Int(if t1_nanos < t2_nanos { 1 } else { 0 }),
             call_span,
         )))
     })
@@ -422,7 +422,7 @@ pub fn builtin_timestamp_gt(
         };
 
         Ok(Arc::new(Thunk::new_materialized(
-            Value::boolean(t1_nanos > t2_nanos),
+            Value::Int(if t1_nanos > t2_nanos { 1 } else { 0 }),
             call_span,
         )))
     })
@@ -469,7 +469,7 @@ pub fn builtin_timestamp_eq(
         };
 
         Ok(Arc::new(Thunk::new_materialized(
-            Value::boolean(t1_nanos == t2_nanos),
+            Value::Int(if t1_nanos == t2_nanos { 1 } else { 0 }),
             call_span,
         )))
     })

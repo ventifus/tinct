@@ -41,6 +41,12 @@ Proposals formally accepted into the project. Implementation sprints exist in th
 | [Parameterized Type Annotations](completed/parameterized-dict.md) | **Accepted 2026-05-09.** Bracket application form `@[Seq T]`, `@[Map [K: V]]`, `@Map` bare; type alias composition (`T2: [type [Map T1]]`); Record/Map split; see `doc/feature/parameterized-types.md` |
 | [Type Annotations v2](completed/type-annotations-v2.md) | **Accepted 2026-05-14.** Bracket application `@[Type Arg]` replaces chained `@`; `or`/`each` type-stage combinators for union/intersection; `bind:`/`return:`/`constraint:`/`kinds:` annotation keys; TypeVar scoping via `bind:`; `@Record@[...]` and all chained-@ forms retired |
 
+## Language Architecture
+
+| Proposal | Summary |
+|----------|---------|
+| [Type-Stage Programming as the Foundation for Constructors, Typeclasses, and Pattern Matching](type-stage-foundation.md) | Replace hardwired Rust implementations of `[type ...]`, `[class ...]`, `[instance ...]`, and constructor pattern matching with type-stage tinct programs. Constructors become functions with a specific return type; the Constructor protocol unifies construction and deconstruction; pattern matching dispatches on the runtime value type with no AST heuristics; typeclasses are dict-passing macros; Rust runtime reduced to ~20 primitives plus CEK machine |
+
 ## Reflection and Metaprogramming
 
 | Proposal | Summary |

@@ -1,5 +1,5 @@
-# Test that [macro name [let params] body] parses and registers correctly.
-# MacroDecl is filtered from post-expansion AST and not typechecked directly.
-[macro my-if [let cond then else] [quote [if [unquote cond] [unquote then] [unquote else]]]]
+# T-1393: [macro] is no longer a keyword — "macro" is now a valid user identifier.
+# This test now shows that "macro" can be used as a regular function name.
+[macro: [fn [let name params body] body]]
 === out
-[macro my-if [let cond then else] [quote [if [unquote cond] [unquote then] [unquote else]]]]
+[macro: [fn [let name params body] body]]

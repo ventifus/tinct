@@ -13,7 +13,6 @@ use std::sync::Arc;
 
 use crate::ast::{Span, SurfaceExpression, SurfaceNode, SurfaceProgram};
 use crate::desugar;
-use crate::expand;
 use crate::parser;
 use crate::rust_span;
 use crate::typecheck::{typecheck_surface_program_with_env, TypeMap};
@@ -52,7 +51,7 @@ thread_local! {
 /// This env is used by type annotation evaluation (`@Int`, `@String`, custom type fns).
 ///
 /// No circular dependency: does NOT call `build_core_env` or
-/// `expand_surface_program` — type-stage docs are pure dict/fn (no macros needed).
+/// the type-stage docs are pure dict/fn (no macros needed).
 pub async fn get_prelude_type_stage_env(
 ) -> Option<Arc<std::sync::RwLock<crate::value::Environment>>> {
     let cached = PRELUDE_TYPE_STAGE_ENV_CACHE.with(|c| c.borrow().clone());
@@ -263,23 +262,10 @@ async fn build_stdlib_module_type_env_inner(module_path: &str) -> Option<Rc<Type
     // Step 4: Parse.
     let mut program = crate::parser::parse_with_file(&source, sf).ok()?.program;
 
-    // Step 5: Expand (no_fs=true — stdlib modules are type-checked in isolation, no nested I/O).
-    // AMBIENT-OK: type bootstrap — expand with no_fs=true makes no filesystem calls.
-    let dummy_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority()).ok()?;
-    let expand_env = crate::builtins::build_core_env();
-    crate::expand::expand_surface_program(
-        &mut program,
-        expand_env,
-        /*no_fs=*/ true,
-        &dummy_dir,
-    )
-    .await
-    .ok()?;
-
-    // Step 6: Desugar.
+    // Step 5: Desugar.
     crate::desugar::desugar_surface_program(&mut program);
 
-    // Step 7: Resolve (writes inline to AST nodes).
+    // Step 6: Resolve (writes inline to AST nodes).
     let _resolve_errors = crate::resolve::resolve_surface_program(&program);
 
     // Step 8: Build parent env — builtin_core TypeEnv contains Boolean, Handle, builtin-* names.
@@ -292,6 +278,8 @@ async fn build_stdlib_module_type_env_inner(module_path: &str) -> Option<Rc<Type
         typecheck_surface_program_with_env(
             &program, parent_env, false, // enable_scheme_map
             None,  // resolution_table
+            Default::default(), // instance_binding_slots
+            None,  // main_env
         )
         .await;
 
@@ -362,22 +350,6 @@ async fn build_builtin_core_type_env_inner() -> Option<Arc<TypeEnv>> {
     // Parse — extract .program from ParseOutput
     let mut program = crate::parser::parse_with_file(source, sf).ok()?.program;
 
-    // Open CWD as a dummy base_dir — no_fs=true means expand won't actually use it.
-    // AMBIENT-OK: type bootstrap — expand with no_fs=true makes no filesystem calls.
-    #[allow(clippy::disallowed_methods)]
-    let dummy_dir = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority()).ok()?;
-
-    // Expand (macro expansion — no filesystem access, no_fs=true ensures no I/O)
-    let expand_env = crate::builtins::build_core_env();
-    crate::expand::expand_surface_program(
-        &mut program,
-        expand_env,
-        /*no_fs=*/ true,
-        &dummy_dir,
-    )
-    .await
-    .ok()?;
-
     // Desugar
     crate::desugar::desugar_surface_program(&mut program);
 
@@ -395,6 +367,8 @@ async fn build_builtin_core_type_env_inner() -> Option<Arc<TypeEnv>> {
         typecheck_surface_program_with_env(
             &program, parent_env, false, // enable_scheme_map
             None,  // resolution_table
+            Default::default(), // instance_binding_slots
+            None,  // main_env
         )
         .await;
 
@@ -499,8 +473,8 @@ fn extract_bindings_from_node_to_vec(
                 if let Some(ref key_node) = entry.node.key {
                     let name = match &key_node.expr {
                         SurfaceExpression::Str(n) => Some(n.clone()),
+                        // Both plain and annotated VarRef use the name field.
                         SurfaceExpression::VarRef { name, .. } => Some(name.clone()),
-                        SurfaceExpression::Annotated { name, .. } => Some(name.clone()),
                         _ => None,
                     };
                     if let Some(name) = name {
@@ -638,11 +612,10 @@ fn collect_include_paths_from_node(
         | SurfaceExpression::U64(_)
         | SurfaceExpression::Float(_)
         | SurfaceExpression::Str(_)
-        | SurfaceExpression::VarRef { .. }
+        | SurfaceExpression::VarRef { .. }  // includes annotated VarRef
         | SurfaceExpression::Placeholder
         | SurfaceExpression::Decl(_) // type-level declaration, no include paths inside
         | SurfaceExpression::Rest(..)
-        | SurfaceExpression::Annotated { .. }
         | SurfaceExpression::Error(_) => {}
     }
 }
@@ -800,21 +773,8 @@ async fn resolve_includes(
             Err(_) => continue, // Skip unparseable files
         };
 
-        // Run macro expansion (tolerate errors).
-        // Use the provided cap_std Dir for expansion.
-        let expand_dir = cap_dir;
-        // PIPELINE INVARIANT: parse -> expand_surface_program -> desugar -> resolve.
-        // Use expand_surface_program (not expand_macros) so SurfaceItem::Decl macros are seen.
-        // Desugar AFTER macro expansion so that macros can introduce $_ patterns.
+        // PIPELINE INVARIANT: parse -> desugar -> resolve.
         let mut program = parsed.program;
-        let expand_env = crate::builtins::build_core_env();
-        if expand::expand_surface_program(&mut program, expand_env, true, expand_dir)
-            .await
-            .is_err()
-        {
-            continue;
-        }
-        // Desugar $_ implicit lambdas after macro expansion (macros may introduce $_ patterns).
         desugar::desugar_surface_program(&mut program);
 
         // Type-check with the appropriate environment.
@@ -836,7 +796,7 @@ async fn resolve_includes(
         // typecheck_surface_program_with_env takes Arc<TypeEnv> — convert from Rc.
         let typecheck_env_arc = Arc::new((*typecheck_env).clone());
         let (type_errors, type_map, _doc_map, _scheme_map, _diagnostics, _state, _final_env) =
-            typecheck_surface_program_with_env(&program, typecheck_env_arc, false, None).await;
+            typecheck_surface_program_with_env(&program, typecheck_env_arc, false, None, Default::default(), None).await;
 
         // Stdlib includes are user code — their type errors are surfaced like any other.
         if !type_errors.is_empty() {
@@ -1046,11 +1006,10 @@ fn apply_include_type_to_node(
         | SurfaceExpression::U64(_)
         | SurfaceExpression::Float(_)
         | SurfaceExpression::Str(_)
-        | SurfaceExpression::VarRef { .. }
+        | SurfaceExpression::VarRef { .. }  // includes annotated VarRef
         | SurfaceExpression::Placeholder
         | SurfaceExpression::Decl(_) // type-level declaration, no include paths inside
         | SurfaceExpression::Rest(..)
-        | SurfaceExpression::Annotated { .. }
         | SurfaceExpression::Error(_) => {}
     }
 }

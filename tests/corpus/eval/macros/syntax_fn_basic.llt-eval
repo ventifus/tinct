@@ -1,7 +1,7 @@
 # Test: parser handles [fn [let x y] body] params directly, no macro needed.
 # [fn [let x y] body] is parsed as Expr::Fn by the parser — it never reaches the fn macro.
 # This is a regression test for the parser's direct Fn node construction, not for macro expansion.
-# fn/class/type macros are globally registered via expand.rs; no include required.
+# fn/class/type forms are handled directly by the parser; no include required.
 [result: [[fn [let x y] [+ x y]] 3 4]]
 === out
 Dict({"result": Dict({0: Function(x, y), 1: Int(3), 2: Int(4)})})

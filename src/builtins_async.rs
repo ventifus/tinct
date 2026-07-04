@@ -209,6 +209,7 @@ pub(crate) fn builtin_task(
                     body,
                     env,
                     annotation: _,
+                    return_ann: _,
                 } => {
                     // Check for zero-arg function
                     if !params.is_empty() {
@@ -1113,6 +1114,7 @@ pub(crate) fn builtin_select_once(
                             body,
                             env,
                             annotation: _,
+                            return_ann: _,
                         } => {
                             if params.len() != 1 {
                                 return Err(EvalError::user_error(
@@ -1247,6 +1249,7 @@ pub(crate) fn builtin_par_map(
                         body,
                         env,
                         annotation: _,
+                        return_ann: _,
                     } => {
                         if params.len() != 1 {
                             return Err(EvalError::user_error(
@@ -1385,6 +1388,7 @@ pub(crate) fn builtin_par_filter(
                         body,
                         env,
                         annotation: _,
+                        return_ann: _,
                     } => {
                         if params.len() != 1 {
                             return Err(Box::new(EvalError::user_error(
@@ -1439,16 +1443,11 @@ pub(crate) fn builtin_par_filter(
                     }
                 };
 
-                // Check if result is true
-                match result.as_bool() {
-                    Some(true) => Ok(Some((idx, item_id_copy))),
-                    Some(false) => Ok(None),
-                    None => {
-                        Err(
-                            EvalError::type_mismatch("Bool", result.type_name(), call_span_clone)
-                                .into(),
-                        )
-                    }
+                // Check if result is truthy
+                if result.is_truthy() {
+                    Ok(Some((idx, item_id_copy)))
+                } else {
+                    Ok(None)
                 }
             });
 
@@ -2204,7 +2203,7 @@ pub(crate) fn builtin_cancelled_q(
         let ctx_val = materialize(&ctx_thunk, Some(&call_span), &ctx).await?;
 
         match ctx_val {
-            Value::Context(token) => ok_val(Value::boolean(token.is_cancelled()), call_span),
+            Value::Context(token) => ok_val(Value::Int(if token.is_cancelled() { 1 } else { 0 }), call_span),
             _ => Err(EvalError::type_mismatch("Context", ctx_val.type_name(), call_span).into()),
         }
     })

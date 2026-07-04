@@ -258,6 +258,28 @@ pub(crate) async fn bind_args_thunks(
         call_env.write().unwrap().insert(param.name.clone(), thunk);
     }
 
+    // BIND-SYSTEM: System-injected named args (names containing '∷') are bound directly
+    // into call_env and excluded from all user-visible named-arg validation.
+    //
+    // The '∷' separator is a Unicode character that cannot appear in parser-produced
+    // identifiers, so these names can only originate from Rust runtime code (e.g. the
+    // @Expr macro implicit-arg injection in eval_materialize.rs PendingCallDispatch).
+    // This makes the binding unconditional and invisible to tinct code — macro functions
+    // do not need to declare them as params, and they do not pollute variadic dicts.
+    //
+    // This allows builtin-eval-macro-ast to find ᴍᴀᴄʀᴏ∷env and ᴍᴀᴄʀᴏ∷span in the
+    // caller_env of any tinct function invoked in a macro context.
+    if let Some(named_args) = named {
+        for (name, thunk) in named_args {
+            if name.contains('∷') {
+                call_env
+                    .write()
+                    .unwrap()
+                    .insert(name.clone(), Arc::clone(thunk));
+            }
+        }
+    }
+
     // BIND-NAMED: Validation and collection for variadic
     //
     // Why two checks? BIND-POSITIONAL silently resolves conflicts via priority
@@ -272,6 +294,10 @@ pub(crate) async fn bind_args_thunks(
     let mut unmatched_named: Option<IndexMap<String, Arc<Thunk>>> = None;
     if let Some(named_args) = named {
         for (name, thunk) in named_args {
+            // Skip system-injected args — already handled by BIND-SYSTEM above.
+            if name.contains('∷') {
+                continue;
+            }
             // Single scan: C-NO-OVERLAP and C-NAMED-VALID in one position() call
             match regular_params.iter().position(|p| &p.name == name) {
                 Some(idx) if idx < positional.len() => {
@@ -380,6 +406,7 @@ mod tests {
             name: "my_func".to_string(),
             level: 0,
             slot: 0,
+            annotation: None,
         };
         let label = func_label_core(&expr);
         assert_eq!(label.as_deref(), Some("[my_func ...]"));

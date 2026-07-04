@@ -1,0 +1,90 @@
+--- uses: ["core"]
+
+# Minimal init: load prelude and verify flush is accessible.
+# Uses handle-threading I/O instead of >>. No Result type declaration needed.
+
+[macro >> [let effect result]
+  [builtin-sequential [$effect result]]]
+
+[
+  %stdout: [write: [fn [let s h] [builtin-write-stdout s h]]
+            flush:  [fn [let h] h]
+            close:  [fn [let h] h]]
+  %stderr: [write: [fn [let s h] [builtin-write-stderr s h]]
+            flush:  [fn [let h] h]
+            close:  [fn [let h] h]]
+
+  bytes-empty?: [fn [let b] [builtin-eq [builtin-length b] 0]]
+  read-file: [fn [let f acc]
+    [chunk: [builtin-file-read f 65536]]
+    [builtin-if [bytes-empty? chunk]
+      acc
+      [read-file f [builtin-bytes-concat acc chunk]]]]
+
+  emit-diagnostics: [fn [let diagnostics]
+    [builtin-reduce
+      [fn [let _ d]
+        [s: d.span]
+        [file-part: [builtin-if [builtin-eq s.file []] "" [builtin-str s.file ":"]]]
+        [msg: [builtin-str file-part s.start-line ":" s.start-col ": " d.kind " — " d.message "\n"]]
+        [%stderr.write msg %stderr]]
+      []
+      diagnostics]]
+
+  uses-scope: [fn [let module-names]
+    [builtin-reduce
+      [fn [let acc name]
+        [decl-path:  [builtin-str "builtin_" name ".llt"]]
+        [tc-result:  [builtin-try [fn []
+            [decl-handle:    [builtin-file-open %libdir decl-path "read"]]
+            [decl-bytes:     [read-file decl-handle [builtin-bytes]]]
+            [parse-result:   [builtin-parse decl-bytes decl-path]]
+            [resolve-result: [builtin-resolve parse-result.program]]
+            [decl-resolved:  resolve-result.resolved]
+            [typed:          [builtin-typecheck decl-resolved [builtin-get-type-context]]]
+            typed.warnings]]]
+        [warnings:   [builtin-if [builtin-eq [builtin-tag-of tc-result] "Result.Ok"]
+            [builtin-variant-payload tc-result]
+            []]]
+        [builtin-merge [emit-diagnostics warnings] [builtin-merge acc [builtin-module name]]]]
+      []
+      module-names]]
+
+  Boolean: [type True False]
+]
+
+[
+  _prelude-result: [builtin-try [fn []
+    [handle:        [builtin-file-open %libdir "prelude.llt" "read"]]
+    [bytes:         [read-file handle [builtin-bytes]]]
+    [parse-result:  [builtin-parse bytes "prelude.llt"]]
+    [n-parse:       [builtin-length parse-result.errors]]
+    [_pe:           [builtin-length [emit-diagnostics parse-result.errors]]]
+    [seed-env:      [builtin-if [builtin-eq [builtin-add n-parse _pe] 0]
+      [builtin-extend-env [] [%prelude: _prelude-result  Boolean: Boolean  True: True  False: False]]
+      [builtin-raise [builtin-str n-parse " parse error(s)"]]]]
+    [resolve-result: [builtin-resolve parse-result.program]]
+    [n-resolve:      [builtin-length resolve-result.errors]]
+    [_re:            [builtin-length [emit-diagnostics resolve-result.errors]]]
+    [resolved:      [builtin-if [builtin-eq [builtin-add n-resolve _re] 0]
+      resolve-result.resolved
+      [builtin-raise [builtin-str n-resolve " resolve error(s)"]]]]
+    [final-env: [builtin-reduce
+      [fn [let env doc]
+        [doc-env:  [builtin-extend-env env [uses-scope doc.uses]]]
+        [r:        [builtin-resolve doc env: doc-env]]
+        [builtin-if [builtin-eq [builtin-length r.errors] 0]
+          [builtin-eval r.doc env: doc-env]
+          [builtin-raise [builtin-str [builtin-length r.errors] " resolve error(s)"]]]]
+      seed-env
+      resolved.documents]]
+    final-env]]
+]
+
+# Final expression — forced by Rust. Handle-threading I/O, no >> needed.
+# Inner write runs first (as argument), outer write runs after.
+[%stderr.write
+  [builtin-if [builtin-eq [builtin-tag-of _prelude-result] "Result.Ok"]
+    "prelude loaded OK\n"
+    [builtin-str "prelude FAILED: " [builtin-variant-payload _prelude-result] "\n"]]
+  [%stderr.write "debug-prelude: load attempted\n" %stderr]]

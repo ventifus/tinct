@@ -775,7 +775,6 @@ impl ErrorKind {
                 | "builtin-builder-has?"
                 | "builtin-builder-get"
                 | "builtin-builder-get-or"
-                | "builtin-expand"
                 | "builtin-load"
                 | "builtin-eval"
                 | "builtin-eval-types"

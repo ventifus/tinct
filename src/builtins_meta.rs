@@ -59,70 +59,6 @@ use crate::value::{string_val, BuiltinArgs, Environment, HashableValue, Strictne
 
 // ── Unified error dict helpers ────────────────────────────────────────────────
 
-/// Build a unified error dict from an `EvalError` for return from pipeline builtins.
-///
-/// Schema: `{kind, message, span, notes, call-stack, macro-expand, blame}`
-/// where `span` is `{file, start-line, start-col, end-line, end-col}`.
-///
-/// Used by `builtin-expand` and similar pipeline builtins that return
-/// `{..., errors: [...]}` instead of raising.
-fn eval_error_to_dict(
-    err: &EvalError,
-    ctx: &Arc<crate::eval::EvalContext>,
-    call_span: &crate::ast::Span,
-) -> ThunkId {
-    let alloc = |v: Value| ctx.alloc_thunk(Arc::new(Thunk::new_materialized(v, call_span.clone())));
-
-    let def_span = &err.definition_span;
-    let span_id = make_span_dict(def_span, ctx, call_span);
-
-    // call-stack frames: [{label, span}] from EvalError.stack
-    let call_stack_val = if err.stack.is_empty() {
-        Value::Dict(IndexMap::new())
-    } else {
-        let mut cd = IndexMap::new();
-        for (fi, frame) in err.stack.iter().enumerate() {
-            let frame_span_id = make_span_dict(&frame.definition_span, ctx, call_span);
-            let mut fd: IndexMap<HashableValue, ThunkId> = IndexMap::new();
-            fd.insert(
-                HashableValue::Str("label".into()),
-                alloc(string_val(&frame.label)),
-            );
-            fd.insert(HashableValue::Str("span".into()), frame_span_id);
-            let frame_id = alloc(Value::Dict(fd));
-            cd.insert(HashableValue::Int(fi as i64), frame_id);
-        }
-        Value::Dict(cd)
-    };
-
-    let mut w: IndexMap<HashableValue, ThunkId> = IndexMap::new();
-    w.insert(
-        HashableValue::Str("kind".into()),
-        alloc(string_val(err.kind.kind_name())),
-    );
-    w.insert(
-        HashableValue::Str("message".into()),
-        alloc(string_val(&err.kind.to_string())),
-    );
-    w.insert(HashableValue::Str("span".into()), span_id);
-    w.insert(
-        HashableValue::Str("notes".into()),
-        alloc(Value::Dict(IndexMap::new())),
-    );
-    w.insert(
-        HashableValue::Str("call-stack".into()),
-        alloc(call_stack_val),
-    );
-    w.insert(
-        HashableValue::Str("macro-expand".into()),
-        alloc(Value::Dict(IndexMap::new())),
-    );
-    w.insert(
-        HashableValue::Str("blame".into()),
-        alloc(Value::Dict(IndexMap::new())),
-    );
-    alloc(Value::Dict(w))
-}
 
 /// Build a unified error dict from a `ParseError` for return from `builtin-parse`.
 ///
@@ -419,8 +355,9 @@ pub(crate) fn builtin_try(
                     return Err(e);
                 }
                 // Error: return Value::Variant { tag: "Result.Error", payload: Some(message) }
+                // Use full EvalError::to_string() to include span info (file:line:col).
                 let msg_thunk_id =
-                    ctx.alloc_thunk(ok_val(string_val(&e.kind.to_string()), call_span.clone())?);
+                    ctx.alloc_thunk(ok_val(string_val(&e.to_string()), call_span.clone())?);
                 ok_val(
                     Value::Variant {
                         tag: "Result.Error".to_string(),
@@ -475,39 +412,27 @@ pub(crate) fn builtin_until(
 
             let pred_val = materialize(&pred_result, Some(&call_span), &ctx).await?;
 
-            match pred_val.as_bool() {
-                Some(true) => {
-                    // Predicate holds, return the current value (as thunk)
-                    return Ok(val_thunk);
-                }
-                Some(false) => {
-                    // Predicate doesn't hold yet, apply f and materialize to get next value
-                    let f_result = Arc::new(Thunk::new_pending_call(
-                        Arc::clone(&f_thunk),
-                        vec![val_thunk],
-                        IndexMap::new(),
-                        call_span.clone(),
-                        Arc::clone(&ctx.config.stdlib_env),
-                        call_span.clone(),
-                        Some(Arc::from("until")),
-                        Arc::clone(&ctx),
-                        synthetic_call_expr(call_span.clone()),
-                    ));
+            if pred_val.is_truthy() {
+                // Predicate holds, return the current value (as thunk)
+                return Ok(val_thunk);
+            } else {
+                // Predicate doesn't hold yet, apply f and materialize to get next value
+                let f_result = Arc::new(Thunk::new_pending_call(
+                    Arc::clone(&f_thunk),
+                    vec![val_thunk],
+                    IndexMap::new(),
+                    call_span.clone(),
+                    Arc::clone(&ctx.config.stdlib_env),
+                    call_span.clone(),
+                    Some(Arc::from("until")),
+                    Arc::clone(&ctx),
+                    synthetic_call_expr(call_span.clone()),
+                ));
 
-                    // Eagerly materialize f(val) and re-wrap as a thunk for the next iteration
-                    // This breaks the thunk chain and prevents stack overflow
-                    let f_val = materialize(&f_result, Some(&call_span), &ctx).await?;
-                    val_thunk = Arc::new(Thunk::new_materialized(f_val, call_span.clone()));
-                }
-                _ => {
-                    return Err(EvalError::type_mismatch_ctx(
-                        "until".to_string(),
-                        "Bool",
-                        pred_val.type_name(),
-                        call_span,
-                    )
-                    .into())
-                }
+                // Eagerly materialize f(val) and re-wrap as a thunk for the next iteration
+                // This breaks the thunk chain and prevents stack overflow
+                let f_val = materialize(&f_result, Some(&call_span), &ctx).await?;
+                val_thunk = Arc::new(Thunk::new_materialized(f_val, call_span.clone()));
             }
         }
     })
@@ -1722,8 +1647,8 @@ pub(crate) fn builtin_load(
         })?;
 
         // load returns the raw parsed SurfaceProgram with empty tables.
-        // Formatters need the unexpanded AST. Callers that need expansion
-        // should call `[expand [load ...]]` explicitly.
+        // Formatters need the raw AST. Callers that need resolution
+        // should call `[builtin-resolve [load ...]]` explicitly.
         let program = parsed.program;
         let program_value = Value::Program {
             program: std::sync::Arc::new(program),
@@ -1732,240 +1657,6 @@ pub(crate) fn builtin_load(
         };
         let thunk = Arc::new(Thunk::new_materialized(program_value, call_span));
         Ok(thunk)
-    })
-}
-
-/// `expand`: takes a `Value::Program`, runs macro expansion, returns `Value::Program`.
-///
-/// For the include-decomp self-hosted pipeline which separates parse/expand/eval
-/// into distinct primitives.
-///
-/// Pipeline: unwrap Program → run expand_surface_program → wrap back as `{expanded, errors}`.
-///
-/// Returns `{expanded: Value::Program, errors: Dict<Int, ErrorDict>}` where errors is the
-/// unified error dict list. Includes both macro expansion errors and typecheck annotation errors.
-/// Never raises — callers should check `errors` before using `expanded`.
-pub(crate) fn builtin_expand(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    Box::pin(async move {
-        let BuiltinArgs {
-            args,
-            named,
-            call_span,
-            ctx,
-            ..
-        } = ctx_arg;
-        crate::builtins::reject_named("expand", named.as_ref(), call_span.clone())?;
-        if args.len() != 1 {
-            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
-        }
-        let val = args[0]
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
-        match val {
-            Value::Program {
-                program: surface_program,
-                expects_resolved: _old_expects_resolved,
-                warnings: _,
-            } => {
-                // Run macro expansion using expand_surface_program so SurfaceItem::Decl macros are seen.
-                // PIPELINE INVARIANT: expand -> desugar -> resolve (macros can introduce $_ patterns).
-                let mut new_surface_program = (*surface_program).clone();
-                let expand_result = crate::expand::expand_surface_program(
-                    &mut new_surface_program,
-                    Arc::clone(&ctx.config.stdlib_env),
-                    ctx.config.no_fs,
-                    &ctx.config.base_dir,
-                )
-                .await;
-
-                let alloc = |v: Value| {
-                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(v, call_span.clone())))
-                };
-
-                // Collect errors. Expansion errors and annotation table errors both go here.
-                let mut all_errors: Vec<ThunkId> = Vec::new();
-
-                // Handle expansion error (if any). On error, still return empty program so callers
-                // always get a usable {expanded, errors} dict.
-                if let Err(e) = expand_result {
-                    let err_id = eval_error_to_dict(&e, &ctx, &call_span);
-                    all_errors.push(err_id);
-                    // Return early with empty program + the expansion error.
-                    let empty_program = Value::Program {
-                        program: std::sync::Arc::new(crate::ast::SurfaceProgram {
-                            documents: vec![],
-                        }),
-                        expects_resolved: std::sync::Arc::new(std::collections::HashMap::new()),
-                        warnings: std::sync::Arc::new(vec![]),
-                    };
-                    let mut errors_dict: IndexMap<HashableValue, ThunkId> = IndexMap::new();
-                    for (i, eid) in all_errors.into_iter().enumerate() {
-                        errors_dict.insert(HashableValue::Int(i as i64), eid);
-                    }
-                    let expanded_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                        empty_program,
-                        call_span.clone(),
-                    )));
-                    let errors_id = alloc(Value::Dict(errors_dict));
-                    let mut result: IndexMap<HashableValue, ThunkId> = IndexMap::new();
-                    result.insert(HashableValue::Str("expanded".into()), expanded_id);
-                    result.insert(HashableValue::Str("errors".into()), errors_id);
-                    return Ok(Arc::new(Thunk::new_materialized(
-                        Value::Dict(result),
-                        call_span,
-                    )));
-                }
-
-                // Desugar $_ patterns introduced by macros.
-                crate::desugar::desugar_surface_program(&mut new_surface_program);
-                // Resolve VarRef nodes inline (writes to AST node resolution fields).
-                let resolve_errors = crate::resolve::resolve_surface_program(&new_surface_program);
-
-                // Convert resolve errors to unified error dicts.
-                for (name, span) in &resolve_errors {
-                    let span_id = make_span_dict(span, &ctx, &call_span);
-                    let mut w: IndexMap<HashableValue, ThunkId> = IndexMap::new();
-                    w.insert(
-                        HashableValue::Str("kind".into()),
-                        alloc(string_val("resolve-error")),
-                    );
-                    w.insert(
-                        HashableValue::Str("message".into()),
-                        alloc(string_val(&format!("undefined variable: {}", name))),
-                    );
-                    w.insert(HashableValue::Str("span".into()), span_id);
-                    w.insert(
-                        HashableValue::Str("notes".into()),
-                        alloc(Value::Dict(IndexMap::new())),
-                    );
-                    w.insert(
-                        HashableValue::Str("call-stack".into()),
-                        alloc(Value::Dict(IndexMap::new())),
-                    );
-                    w.insert(
-                        HashableValue::Str("macro-expand".into()),
-                        alloc(Value::Dict(IndexMap::new())),
-                    );
-                    w.insert(
-                        HashableValue::Str("blame".into()),
-                        alloc(Value::Dict(IndexMap::new())),
-                    );
-                    all_errors.push(alloc(Value::Dict(w)));
-                }
-
-                // Typecheck: writes type annotations inline on AST nodes.
-                // Annotation errors are collected and included in the returned errors list.
-                // Wire the tycon_env into ctx so that any subsequent evaluation of the
-                // expanded program (via builtin-eval) can resolve user-defined TyCons at
-                // runtime TypeAssert sites (e.g. @Boolean on a builtin-if condition arg).
-                let (annotation_errors, new_expects_resolved, expand_tycon_env) =
-                    crate::typecheck::typecheck_surface_program_annotation_table(
-                        &new_surface_program,
-                    )
-                    .await;
-                ctx.set_tycon_env(expand_tycon_env);
-
-                // Convert annotation errors to unified error dicts.
-                for te in &annotation_errors {
-                    let te_span = te.span();
-                    let span_id = make_span_dict(te_span, &ctx, &call_span);
-
-                    // notes
-                    let notes_val = {
-                        let notes = te.notes();
-                        if notes.is_empty() {
-                            Value::Dict(IndexMap::new())
-                        } else {
-                            let mut nd: IndexMap<HashableValue, ThunkId> = IndexMap::new();
-                            for (ni, note) in notes.iter().enumerate() {
-                                nd.insert(HashableValue::Int(ni as i64), alloc(string_val(note)));
-                            }
-                            Value::Dict(nd)
-                        }
-                    };
-
-                    // call-stack
-                    let call_stack_val = {
-                        let frames = te.call_stack();
-                        if frames.is_empty() {
-                            Value::Dict(IndexMap::new())
-                        } else {
-                            let mut cd: IndexMap<HashableValue, ThunkId> = IndexMap::new();
-                            for (fi, frame) in frames.iter().enumerate() {
-                                let frame_span_id = make_span_dict(&frame.span, &ctx, &call_span);
-                                let mut fd: IndexMap<HashableValue, ThunkId> = IndexMap::new();
-                                fd.insert(
-                                    HashableValue::Str("label".into()),
-                                    alloc(string_val(&frame.label)),
-                                );
-                                fd.insert(HashableValue::Str("span".into()), frame_span_id);
-                                cd.insert(HashableValue::Int(fi as i64), alloc(Value::Dict(fd)));
-                            }
-                            Value::Dict(cd)
-                        }
-                    };
-
-                    let mut w: IndexMap<HashableValue, ThunkId> = IndexMap::new();
-                    w.insert(
-                        HashableValue::Str("kind".into()),
-                        alloc(string_val(te.kind_name())),
-                    );
-                    w.insert(
-                        HashableValue::Str("message".into()),
-                        alloc(string_val(&te.message())),
-                    );
-                    w.insert(HashableValue::Str("span".into()), span_id);
-                    w.insert(HashableValue::Str("notes".into()), alloc(notes_val));
-                    w.insert(
-                        HashableValue::Str("call-stack".into()),
-                        alloc(call_stack_val),
-                    );
-                    w.insert(
-                        HashableValue::Str("macro-expand".into()),
-                        alloc(Value::Dict(IndexMap::new())),
-                    );
-                    w.insert(
-                        HashableValue::Str("blame".into()),
-                        alloc(Value::Dict(IndexMap::new())),
-                    );
-                    all_errors.push(alloc(Value::Dict(w)));
-                }
-
-                // Build errors Dict.
-                let mut errors_dict: IndexMap<HashableValue, ThunkId> = IndexMap::new();
-                for (i, eid) in all_errors.into_iter().enumerate() {
-                    errors_dict.insert(HashableValue::Int(i as i64), eid);
-                }
-
-                // Return as {expanded: Value::Program, errors: Dict}.
-                let expanded_val = Value::Program {
-                    program: std::sync::Arc::new(new_surface_program),
-                    expects_resolved: std::sync::Arc::new(new_expects_resolved),
-                    warnings: std::sync::Arc::new(vec![]),
-                };
-                let expanded_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    expanded_val,
-                    call_span.clone(),
-                )));
-                let errors_id = alloc(Value::Dict(errors_dict));
-                let mut result: IndexMap<HashableValue, ThunkId> = IndexMap::new();
-                result.insert(HashableValue::Str("expanded".into()), expanded_id);
-                result.insert(HashableValue::Str("errors".into()), errors_id);
-                Ok(Arc::new(Thunk::new_materialized(
-                    Value::Dict(result),
-                    call_span,
-                )))
-            }
-            _ => Err(EvalError::type_mismatch_ctx(
-                "expand".to_string(),
-                "Program",
-                val.type_name(),
-                call_span,
-            )
-            .into()),
-        }
     })
 }
 
@@ -1982,11 +1673,10 @@ pub(crate) fn builtin_expand(
 ///     Empty dict (`[]`) when parse succeeded with no errors.
 ///
 /// Callers should check `errors` before proceeding. The `program` is always present
-/// (may be an empty program on fatal parse failure). Callers must call `expand`
-/// (macro expansion + desugar + resolve) and then `builtin-typecheck` before
-/// passing the result to `builtin-eval`.
+/// (may be an empty program on fatal parse failure). Callers must call `builtin-resolve`
+/// (desugar + resolve) and then `builtin-typecheck` before passing the result to `builtin-eval`.
 ///
-/// This is Stage 1 of the 5-stage pipeline: parse → expand → resolve → typecheck → eval.
+/// This is Stage 1 of the 4-stage pipeline: parse → resolve → typecheck → eval.
 pub(crate) fn builtin_parse(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
@@ -2100,12 +1790,11 @@ pub(crate) fn builtin_parse(
     })
 }
 
-/// `builtin-resolve`: Expand, desugar, and resolve a raw `Value::Program`.
+/// `builtin-resolve`: Desugar and resolve a raw `Value::Program`.
 ///
-/// Takes a parsed (but unexpanded/unresolved) Program and applies:
-/// 1. `expand_surface_program` — macro expansion
-/// 2. `desugar_surface_program` — `$_` desugaring
-/// 3. `resolve_surface_program` (or `resolve_surface_program_with_env` if `env:` is provided)
+/// Takes a parsed (but unresolved) Program and applies:
+/// 1. `desugar_surface_program` — `$_` desugaring
+/// 2. `resolve_surface_program` (or `resolve_surface_program_with_env` if `env:` is provided)
 ///    — name resolution (De Bruijn levels)
 ///
 /// **Optional `env:` argument**: When provided (a `Value::Environment`), the resolver is
@@ -2115,7 +1804,7 @@ pub(crate) fn builtin_parse(
 ///
 /// Does NOT run the type checker. Call `builtin-typecheck` afterwards.
 ///
-/// This is Stage 3 of the 5-stage pipeline (Stages 1+2 are parse+expand from loader.llt).
+/// This is Stage 2 of the 4-stage pipeline (Stage 1 is parse from loader.llt).
 pub(crate) fn builtin_resolve(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
@@ -2180,24 +1869,10 @@ pub(crate) fn builtin_resolve(
                 expects_resolved: _,
                 warnings: _,
             } => {
-                // Step 1: macro expansion
+                // Step 1: desugar $_ patterns
                 let mut new_surface_program = (*surface_program).clone();
-                crate::expand::expand_surface_program(
-                    &mut new_surface_program,
-                    Arc::clone(&ctx.config.stdlib_env),
-                    ctx.config.no_fs,
-                    &ctx.config.base_dir,
-                )
-                .await
-                .map_err(|e| {
-                    EvalError::user_error(
-                        format!("builtin-resolve: macro expansion error: {}", e.kind),
-                        call_span.clone(),
-                    )
-                })?;
-                // Step 2: desugar $_ patterns introduced by macros
                 crate::desugar::desugar_surface_program(&mut new_surface_program);
-                // Step 3: name resolution — writes inline to AST node resolution fields.
+                // Step 2: name resolution — writes inline to AST node resolution fields.
                 let resolve_errors = if let Some(ref env) = env_arc {
                     crate::resolve::resolve_surface_program_for_builtin_eval(
                         &new_surface_program,
@@ -2242,7 +1917,7 @@ pub(crate) fn builtin_resolve(
                     errors_dict.insert(HashableValue::Int(i as i64), alloc_prog(Value::Dict(w)));
                 }
 
-                // Return {resolved: Program, errors: []} — same structure as builtin-parse and builtin-expand.
+                // Return {resolved: Program, errors: []} — same structure as builtin-parse.
                 let program_value = Value::Program {
                     program: std::sync::Arc::new(new_surface_program),
                     expects_resolved: std::sync::Arc::new(std::collections::HashMap::new()),
@@ -2379,6 +2054,7 @@ pub(crate) fn builtin_typecheck(
             named,
             call_span,
             ctx,
+            caller_env,
             ..
         } = ctx_arg;
         crate::builtins::reject_named("builtin-typecheck", named.as_ref(), call_span.clone())?;
@@ -2432,6 +2108,27 @@ pub(crate) fn builtin_typecheck(
                     }
                 };
 
+                // Collect instance binding slots from the runtime env chain.
+                // These are populated by the lowerer when it flattens InstanceDecl entries.
+                // The type checker uses them to write call_dispatch coordinates for typeclass
+                // method calls (level from the class method stub VarRef resolution, slot here).
+                let instance_binding_slots = {
+                    let mut slots = std::collections::HashMap::new();
+                    let mut current = Some(Arc::clone(&caller_env));
+                    while let Some(env_arc) = current {
+                        let env_guard = env_arc.read().unwrap();
+                        for (i, key) in env_guard.slot_names.iter().enumerate() {
+                            if key.starts_with('ɪ') {
+                                slots.entry(key.clone()).or_insert(
+                                    u32::try_from(i).expect("slot overflow"),
+                                );
+                            }
+                        }
+                        current = env_guard.parent.as_ref().map(Arc::clone);
+                    }
+                    slots
+                };
+
                 // Run the full typecheck pass seeded from the accumulated env.
                 // All type annotations are written inline on AST nodes.
                 // enable_scheme_map=false, resolution_table=None (program already resolved).
@@ -2441,6 +2138,8 @@ pub(crate) fn builtin_typecheck(
                         seed_env,
                         false, // enable_scheme_map
                         None,  // resolution_table
+                        instance_binding_slots,
+                        Some(Arc::clone(&caller_env)),
                     )
                     .await;
 
@@ -2628,7 +2327,7 @@ pub(crate) fn builtin_fork_type_ctx(
 ///
 /// This is the primitive for reconstructing programs after transformation (e.g., desugar.llt).
 /// The resolution, type annotation, and expects_resolved tables are initialized as empty —
-/// callers should use `expand` or other builtins to populate them if needed.
+/// callers should use `builtin-resolve` or other builtins to populate them if needed.
 ///
 /// Example usage in desugar.llt:
 /// ```llt
@@ -2903,7 +2602,7 @@ pub(crate) fn builtin_eval(
                     let val = materialize(&ctx.get_thunk(val_id), Some(&call_span), &ctx).await?;
                     match val {
                         Value::Variant { ref tag, .. } if tag.starts_with("Expr.") => {
-                            let node = crate::surface_convert::dict_to_surface_node(&val, &ctx)
+                            let node = crate::surface_convert::dict_to_surface_node(&val, &call_span, &ctx)
                                 .map_err(|e| {
                                     EvalError::internal(
                                         format!("eval: Expr.* conversion failed: {}", e),
@@ -3183,8 +2882,18 @@ pub(crate) fn builtin_extend_env(
         }));
 
         // Force arg[1] — must be Value::Dict or Value::Environment.
-        // Insert string-keyed entries into child_env as thunks.
-        let bindings_val = materialize(&args[1], Some(&call_span), &ctx).await?;
+        // Normalize: peel Annotated wrappers and flatten Overlay into a plain Dict.
+        // builtin-merge returns Value::Overlay (lazy); @Any annotations wrap in Annotated.
+        // Both have type_name()="Dict" but don't match Value::Dict directly.
+        let bindings_raw = materialize(&args[1], Some(&call_span), &ctx).await?;
+        let bindings_val = {
+            let mut v = bindings_raw;
+            while let Value::Annotated { inner, .. } = v { v = *inner; }
+            if let Value::Overlay(ref left, ref right) = v {
+                v = Value::Dict(crate::builtins::flatten_overlay(left, right, "extend-env", &ctx, call_span.clone()).await?);
+            }
+            v
+        };
         {
             let mut env_write = child_env.write().unwrap();
             match bindings_val {
@@ -3252,6 +2961,144 @@ pub(crate) fn builtin_current_env(
             Value::Environment(caller_env),
             call_span,
         )))
+    })
+}
+
+/// `builtin-eval-macro-ast`: evaluate a macro-produced AST in the call-site scope.
+///
+/// Takes 1 positional arg: an `Expr.*` Value::Variant representing the AST to evaluate.
+///
+/// The call-site environment and span are read from the `BuiltinArgs.caller_env` environment
+/// chain, where they were bound by `bind_args_thunks` under the system-injected names
+/// `ᴍᴀᴄʀᴏ∷env` and `ᴍᴀᴄʀᴏ∷span` (injected by the @Expr PendingCallDispatch handler in
+/// eval_materialize.rs).  This allows macro functions to call `[eval-macro-ast ast]` without
+/// explicitly threading `__call-env__` / `__call-span__` through their parameter lists.
+///
+/// Evaluation pipeline:
+///   1. Read `ᴍᴀᴄʀᴏ∷env` from caller_env → call-site `Value::Environment`
+///   2. Convert the `Expr.*` variant to a `SurfaceNode` using `dict_to_surface_node`
+///   3. Wrap in a single-expression `SurfaceProgram`
+///   4. Desugar + resolve in the call-site env
+///   5. Evaluate via `eval_document_exprs_with_env`
+///   6. Return the result thunk (the `%` of the resulting environment)
+///
+/// Falls back to `caller_env` as the evaluation environment when `ᴍᴀᴄʀᴏ∷env` is absent
+/// (i.e. when called outside a macro context — useful for testing and direct use).
+pub(crate) fn builtin_eval_macro_ast(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named: _,
+            call_span,
+            ctx,
+            caller_env,
+        } = ctx_arg;
+
+        if args.len() != 1 {
+            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+        }
+
+        // ── Step 1: Extract ᴍᴀᴄʀᴏ∷env from the caller_env chain ─────────────
+        //
+        // bind_args_thunks (eval_call.rs BIND-SYSTEM) unconditionally binds any named arg
+        // whose name contains '∷' into call_env.  The @Expr PendingCallDispatch handler
+        // injects "ᴍᴀᴄʀᴏ∷env" and "ᴍᴀᴄʀᴏ∷span" so they propagate through every
+        // tinct function in the macro call chain down to here.
+        const MACRO_ENV_NAME: &str = "ᴍᴀᴄʀᴏ∷env";
+
+        let call_site_env: Arc<RwLock<Environment>> = {
+            let env_thunk_opt = caller_env.read().unwrap().get_by_name(MACRO_ENV_NAME);
+            if let Some(env_thunk) = env_thunk_opt {
+                let env_val = materialize(&env_thunk, Some(&call_span), &ctx).await?;
+                match env_val {
+                    Value::Environment(e) => e,
+                    other => {
+                        return Err(EvalError::type_mismatch_ctx(
+                            "eval-macro-ast".to_string(),
+                            "Environment (ᴍᴀᴄʀᴏ∷env)",
+                            other.type_name(),
+                            call_span,
+                        )
+                        .into())
+                    }
+                }
+            } else {
+                // Not in a macro context — fall back to caller_env so direct calls work.
+                Arc::clone(&caller_env)
+            }
+        };
+
+        // ── Step 2: Convert Expr.* variant → SurfaceNode ─────────────────────
+        let expr_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by Strictness::Seq");
+
+        let expr_node = match expr_val {
+            Value::Variant { ref tag, .. } if tag.starts_with("Expr.") => {
+                crate::surface_convert::dict_to_surface_node(&expr_val, &call_span, &ctx)
+                    .map_err(|e| {
+                        EvalError::internal(
+                            format!("eval-macro-ast: Expr.* conversion failed: {}", e),
+                            call_span.clone(),
+                        )
+                    })?
+            }
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "eval-macro-ast".to_string(),
+                    "Expr.*",
+                    other.type_name(),
+                    call_span,
+                )
+                .into())
+            }
+        };
+
+        // ── Step 3: Wrap in a single-expression SurfaceProgram ────────────────
+        let document = crate::ast::SurfaceDocument {
+            stage: None,
+            name: None,
+            items: vec![crate::ast::SurfaceItem::Expr(expr_node)],
+            output_type: None,
+            expects: None,
+            caps: None,
+            uses: None,
+        };
+        let mut program = crate::ast::SurfaceProgram {
+            documents: vec![crate::ast::Spanned::new(document, call_span.clone())],
+        };
+
+        // ── Step 4: Desugar + resolve in the call-site environment ────────────
+        crate::desugar::desugar_surface_program(&mut program);
+        // Resolve errors (undefined variables) are non-fatal at this stage —
+        // they produce FreeVar references that will error lazily if accessed.
+        let _resolve_errors = crate::resolve::resolve_surface_program_for_builtin_eval(
+            &program,
+            &call_site_env,
+        );
+
+        // ── Step 5: Extract the single expression node ────────────────────────
+        let expression_nodes: Vec<Arc<crate::ast::SurfaceNode>> = program
+            .documents
+            .into_iter()
+            .flat_map(|d| d.node.items)
+            .filter_map(|item| {
+                if let crate::ast::SurfaceItem::Expr(node) = item {
+                    Some(node)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // ── Step 6: Evaluate and return the result thunk ──────────────────────
+        let (result_thunk, _leaf_env) =
+            crate::eval::eval_document_exprs_with_env(&expression_nodes, call_site_env, &ctx)
+                .await?;
+
+        Ok(result_thunk)
     })
 }
 
@@ -3341,17 +3188,36 @@ pub(crate) fn builtin_eval_types(
             env_with_bindings
         };
 
-        // Materialize the input — expects an integer-keyed Dict of Expression values
+        // Materialize the input — accepts Value::Document or integer-keyed Dict of Expression values
         let input_val = args[0]
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
+
+        // Document path: extract SurfaceNodes directly (same as builtin-eval Document path).
+        if let Value::Document(doc) = &input_val {
+            let expr_nodes: Vec<std::sync::Arc<crate::ast::SurfaceNode>> = doc
+                .items
+                .iter()
+                .filter_map(|item| {
+                    if let crate::ast::SurfaceItem::Expr(node) = item {
+                        Some(std::sync::Arc::clone(node))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            let (result_thunk, _) =
+                crate::eval::eval_document_exprs_with_env(&expr_nodes, Arc::clone(&final_env), &ctx)
+                    .await?;
+            return Ok(result_thunk);
+        }
 
         let input_map = match input_val {
             Value::Dict(m) => m,
             other => {
                 return Err(EvalError::type_mismatch_ctx(
                     "eval-types".to_string(),
-                    "Dict of Expression",
+                    "Document or Dict of Expression",
                     other.type_name(),
                     call_span,
                 )
@@ -3366,7 +3232,7 @@ pub(crate) fn builtin_eval_types(
             match val {
                 Value::Variant { ref tag, .. } if tag.starts_with("Expr.") => {
                     let node =
-                        crate::surface_convert::dict_to_surface_node(&val, &ctx).map_err(|e| {
+                        crate::surface_convert::dict_to_surface_node(&val, &call_span, &ctx).map_err(|e| {
                             EvalError::internal(
                                 format!("eval-types: Expr.* conversion failed: {}", e),
                                 call_span.clone(),
@@ -3896,7 +3762,7 @@ fn validate_value(
                             {
                                 let req_thunk = ctx.get_thunk(req_thunk_id);
                                 let req_val = materialize(&req_thunk, Some(&span), &ctx).await?;
-                                req_val.as_bool() == Some(true)
+                                req_val.is_truthy()
                             } else {
                                 false
                             };
@@ -4014,7 +3880,7 @@ pub(crate) fn builtin_is_contractive(
         )?;
 
         let result = is_contractive_value(&body_val, &ctx).await;
-        ok_val(Value::boolean(result), call_span)
+        ok_val(Value::Int(if result { 1 } else { 0 }), call_span)
     })
 }
 
@@ -4160,7 +4026,7 @@ pub(crate) fn builtin_sequential(
             match val {
                 Value::Variant { ref tag, .. } if tag.starts_with("Expr.") => {
                     let node =
-                        crate::surface_convert::dict_to_surface_node(&val, &ctx).map_err(|e| {
+                        crate::surface_convert::dict_to_surface_node(&val, &call_span, &ctx).map_err(|e| {
                             EvalError::internal(
                                 format!("builtin-sequential: Expr.* conversion failed: {}", e),
                                 call_span.clone(),
@@ -4190,6 +4056,146 @@ pub(crate) fn builtin_sequential(
     })
 }
 
+/// builtin-ast-to-program — convert an Expr.* Value::Variant to a Value::Program
+///
+/// Takes 1 positional arg (Expr.* variant) and 1 named arg (call-site-span: span dict).
+/// Converts the Expr.* AST node back to a SurfaceNode, wraps it in a single-expression
+/// SurfaceProgram with one SurfaceDocument containing one SurfaceItem::Expr.
+/// Returns Value::Program.
+pub(crate) fn builtin_ast_to_program(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+            ..
+        } = ctx_arg;
+
+        if args.len() != 1 {
+            return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
+        }
+
+        // Extract mandatory call-site-span: named arg
+        let call_site_span_thunk = if let Some(ref named_map) = named {
+            for key in named_map.keys() {
+                if key != "call-site-span" {
+                    return Err(
+                        EvalError::named_arg_rejected("ast-to-program".to_string(), call_span)
+                            .into(),
+                    );
+                }
+            }
+            match named_map.get("call-site-span") {
+                Some(t) => Arc::clone(t),
+                None => {
+                    return Err(EvalError::type_mismatch_ctx(
+                        "ast-to-program".to_string(),
+                        "span dict (for call-site-span: argument — required)",
+                        "absent",
+                        call_span,
+                    )
+                    .into())
+                }
+            }
+        } else {
+            return Err(EvalError::type_mismatch_ctx(
+                "ast-to-program".to_string(),
+                "span dict (for call-site-span: argument — required)",
+                "absent",
+                call_span,
+            )
+            .into());
+        };
+
+        // Materialize call-site-span: — must be a span dict
+        let call_site_span_val = materialize(&call_site_span_thunk, Some(&call_span), &ctx).await?;
+        let call_site_span_actual = match &call_site_span_val {
+            Value::Dict(dict) => {
+                // Extract span from the dict using extract_span
+                crate::surface_convert::extract_span(dict, &ctx).ok_or_else(|| {
+                    EvalError::type_mismatch_ctx(
+                        "ast-to-program".to_string(),
+                        "valid span dict (with start/end Position fields)",
+                        "invalid span dict",
+                        call_span.clone(),
+                    )
+                })?
+            }
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "ast-to-program".to_string(),
+                    "span dict (for call-site-span: argument)",
+                    other.type_name(),
+                    call_span,
+                )
+                .into())
+            }
+        };
+
+        // arg[0]: Expr.* Value::Variant
+        let expr_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by Strictness::Seq");
+
+        // Convert Expr.* Variant to SurfaceNode
+        let expr_node = match expr_val {
+            Value::Variant { ref tag, .. } if tag.starts_with("Expr.") => {
+                crate::surface_convert::dict_to_surface_node(
+                    &expr_val,
+                    &call_site_span_actual,
+                    &ctx,
+                )
+                .map_err(|e| {
+                    EvalError::internal(
+                        format!("ast-to-program: Expr.* conversion failed: {}", e),
+                        call_span.clone(),
+                    )
+                })?
+            }
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "ast-to-program".to_string(),
+                    "Expr.*",
+                    other.type_name(),
+                    call_span,
+                )
+                .into())
+            }
+        };
+
+        // Wrap in a SurfaceProgram: one document, one item (Expr)
+        let document = crate::ast::SurfaceDocument {
+            stage: None,
+            name: None,
+            items: vec![crate::ast::SurfaceItem::Expr(expr_node)],
+            output_type: None,
+            expects: None,
+            caps: None,
+            uses: None,
+        };
+
+        let program = crate::ast::SurfaceProgram {
+            documents: vec![crate::ast::Spanned::new(
+                document,
+                call_site_span_actual.clone(),
+            )],
+        };
+
+        // Return Value::Program
+        ok_val(
+            Value::Program {
+                program: Arc::new(program),
+                expects_resolved: Arc::new(std::collections::HashMap::new()),
+                warnings: Arc::new(vec![]),
+            },
+            call_span,
+        )
+    })
+}
+
 /// Register `builtin-*` type aliases for meta/reflection/eval builtins (T-1102).
 ///
 /// Each alias copies the TypeScheme from the canonical name already registered in
@@ -4208,7 +4214,6 @@ pub fn meta_builtin_types(env: &mut crate::types::TypeEnv) {
         ("builtin-narrow", "narrow"),
         ("builtin-raise", "raise"),
         ("builtin-blake3", "blake3"),
-        ("builtin-expand", "expand"),
         ("builtin-eval", "eval"),
         ("builtin-eval-types", "eval-types"),
         ("builtin-load", "load"),

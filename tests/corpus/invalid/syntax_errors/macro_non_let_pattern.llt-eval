@@ -1,4 +1,0 @@
-# macro declaration params must be a [let ...] form (not a bare identifier)
-[macro double x [quote [* 2 [unquote x]]]]
-=== out
-1:15: macro declaration params must be a LetDecl ([let ...]) or an annotated LetDecl ([@[inject: ...] [let ...]])

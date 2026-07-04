@@ -38,10 +38,10 @@ use std::sync::Arc;
 
 use indexmap::IndexMap;
 
-use crate::builtins::{builtin, ok_val, reject_named, synthetic_call_expr};
+use crate::builtins::{ok_val, reject_named};
 use crate::error::{EvalError, EvalResult};
 use crate::eval::materialize;
-use crate::value::{string_val, BuiltinArgs, Environment, HashableValue, Thunk, ThunkId, Value};
+use crate::value::{string_val, BuiltinArgs, HashableValue, Thunk, ThunkId, Value};
 
 /// `keys`: Takes 1 arg (a Dict). Returns a Dict with integer keys `0..n`
 /// mapping to the key values (Int keys become Int values, String keys become
@@ -609,6 +609,7 @@ async fn field_get_on_value(
                                 escaped: false,
                                 resolution: crate::ast::Resolution::new(),
                                 call_dispatch: crate::ast::CallDispatch::new(),
+                                annotation: None,
                             },
                             spanned_ann.span.clone(),
                         ));
@@ -627,15 +628,34 @@ async fn field_get_on_value(
             };
             Ok(Arc::new(Thunk::new_materialized(val, call_span)))
         }
-        Value::Environment(_) => {
-            // field-get on Environment is a type error — should have been compiled to slot-get.
-            Err(EvalError::type_mismatch_ctx(
-                "field-get".to_string(),
-                "Dict, Proxy, or Variant",
-                "Environment",
-                target_span,
-            )
-            .into())
+        Value::Environment(env_arc) => {
+            // Own-frame slot_names scan — does NOT walk the parent chain.
+            // This makes result-env.% and math.hypot work: the value is in the
+            // environment's own bindings (slot 0 for %, or position N for exports).
+            // The type-driven solution (T-1490) will replace this with slot-get once
+            // the type checker annotates field_slot from return-type information.
+            if let HashableValue::Str(ref field_name) = key {
+                let env_read = env_arc.read().unwrap();
+                match env_read
+                    .slot_names
+                    .iter()
+                    .position(|n| n == field_name.as_ref())
+                {
+                    Some(pos) => Ok(Arc::clone(&env_read.slots[pos])),
+                    None => {
+                        Err(EvalError::key_not_found(field_name.as_ref(), vec![], target_span)
+                            .into())
+                    }
+                }
+            } else {
+                Err(EvalError::type_mismatch_ctx(
+                    "field-get".to_string(),
+                    "String key for Environment dot access",
+                    "Int",
+                    target_span,
+                )
+                .into())
+            }
         }
         other => Err(EvalError::type_mismatch_ctx(
             "field-get".to_string(),
@@ -1655,7 +1675,7 @@ pub(crate) fn builtin_builder_has(
 
         // Check if the key exists
         let has = builder.has(&key);
-        ok_val(Value::boolean(has), call_span)
+        ok_val(Value::Int(if has { 1 } else { 0 }), call_span)
     })
 }
 
@@ -1930,299 +1950,6 @@ pub(crate) fn builtin_get_by_field(
 // ── Collection operations (moved from builtins_seq_xform.rs and builtins_seq_reduce.rs
 //    in T-1380 — Dict-only dispatch; Seq paths implemented as pure tinct in prelude.llt) ────────
 
-/// `builtin-map`: Apply a function to every element of a Dict.
-///
-/// Dict path only (T-1380). For Seq inputs, use the pure-tinct `map` wrapper in prelude.llt
-/// which dispatches to `seq-map-lazy`. This function errors on Seq input.
-///
-/// Returns a new Dict with the same keys and f(value) for each value. Values are lazy
-/// (PendingCall thunks — not evaluated until accessed).
-///
-/// Args: (f, xs)
-pub(crate) fn builtin_map(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    Box::pin(async move {
-        let BuiltinArgs {
-            args,
-            named,
-            call_span,
-            ctx,
-            ..
-        } = ctx_arg;
-        reject_named("map", named.as_ref(), call_span.clone())?;
-        if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
-        }
-
-        let f_thunk = Arc::clone(&args[0]);
-        let xs = args[1]
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
-        // Flatten Overlay to Dict before dispatch.
-        let xs = match xs {
-            Value::Overlay(l, r) => Value::Dict(
-                crate::builtins::flatten_overlay(&l, &r, "map", &ctx, call_span.clone()).await?,
-            ),
-            other => other,
-        };
-
-        match xs {
-            Value::Dict(ref map) => {
-                // Dict path: create PendingCall thunks for each value
-                let mut new_map = IndexMap::with_capacity(map.len());
-                for (key, value_thunk_id) in map {
-                    let value_thunk = ctx.get_thunk(*value_thunk_id);
-                    let pending_call = Arc::new(Thunk::new_pending_call(
-                        Arc::clone(&f_thunk),
-                        vec![Arc::clone(&value_thunk)],
-                        IndexMap::new(),
-                        call_span.clone(),
-                        Arc::clone(&ctx.config.stdlib_env),
-                        value_thunk.span.clone(),
-                        Some(Arc::from("map")),
-                        Arc::clone(&ctx),
-                        synthetic_call_expr(call_span.clone()),
-                    ));
-                    new_map.insert(key.clone(), ctx.alloc_thunk(pending_call));
-                }
-                ok_val(Value::Dict(new_map), call_span)
-            }
-            other => Err(EvalError::type_mismatch_ctx(
-                "map".to_string(),
-                "Dict",
-                other.type_name(),
-                call_span,
-            )
-            .into()),
-        }
-    })
-}
-
-/// `builtin-filter`: Keep only Dict elements where the predicate returns true.
-///
-/// Dict path only. For Seq inputs, use the pure-tinct `filter` wrapper in prelude.llt.
-/// Returns a Dict with the same keys as the input, but only entries where pred returns true.
-/// Predicate receives the value (not the key). O(n) eager.
-///
-/// Args: (pred, xs)
-pub(crate) fn builtin_filter(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    Box::pin(async move {
-        let BuiltinArgs {
-            args,
-            named,
-            call_span,
-            ctx,
-            ..
-        } = ctx_arg;
-        reject_named("filter", named.as_ref(), call_span.clone())?;
-        if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
-        }
-
-        let pred_thunk = Arc::clone(&args[0]);
-        let xs = args[1]
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
-        let xs = match xs {
-            Value::Overlay(l, r) => Value::Dict(
-                crate::builtins::flatten_overlay(&l, &r, "filter", &ctx, call_span.clone()).await?,
-            ),
-            other => other,
-        };
-
-        let map = match xs {
-            Value::Dict(m) => m,
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "filter".to_string(),
-                    "Dict",
-                    other.type_name(),
-                    call_span,
-                )
-                .into())
-            }
-        };
-
-        let mut result: IndexMap<HashableValue, ThunkId> = IndexMap::new();
-        for (key, val_id) in &map {
-            let value_thunk = ctx.get_thunk(*val_id);
-            let pred_call = Arc::new(Thunk::new_pending_call(
-                Arc::clone(&pred_thunk),
-                vec![Arc::clone(&value_thunk)],
-                IndexMap::new(),
-                call_span.clone(),
-                Arc::clone(&ctx.config.stdlib_env),
-                value_thunk.span.clone(),
-                Some(Arc::from("filter-dict pred")),
-                Arc::clone(&ctx),
-                crate::builtins::synthetic_call_expr(call_span.clone()),
-            ));
-            let pred_result = materialize(&pred_call, None, &ctx).await?;
-            let passes = match pred_result.as_bool() {
-                Some(b) => b,
-                None => {
-                    return Err(EvalError::type_mismatch_ctx(
-                        "filter".to_string(),
-                        "Bool",
-                        pred_result.type_name(),
-                        call_span,
-                    )
-                    .into())
-                }
-            };
-            if passes {
-                result.insert(key.clone(), *val_id);
-            }
-        }
-        ok_val(Value::Dict(result), call_span)
-    })
-}
-
-/// `builtin-reduce`: Fold a function over a Dict.
-///
-/// Dict path only (T-1380). For Seq inputs, use the pure-tinct `reduce` wrapper in prelude.llt.
-/// Uses PendingBuiltin step chain to avoid O(N) Rust stack depth for large inputs.
-///
-/// Args: (f, init, xs)
-pub(crate) fn builtin_reduce(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    Box::pin(async move {
-        let BuiltinArgs {
-            args,
-            named,
-            call_span,
-            ctx,
-            ..
-        } = ctx_arg;
-        reject_named("reduce", named.as_ref(), call_span.clone())?;
-        if args.len() != 3 {
-            return Err(EvalError::arity_mismatch(3, args.len(), call_span).into());
-        }
-
-        let f_thunk = Arc::clone(&args[0]);
-        let init_thunk = Arc::clone(&args[1]);
-        let xs = args[2]
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
-
-        // Flatten Overlay to Dict before dispatch.
-        let xs = match xs {
-            Value::Overlay(l, r) => Value::Dict(
-                crate::builtins::flatten_overlay(&l, &r, "reduce", &ctx, call_span.clone()).await?,
-            ),
-            // Auto-unpack variant payload for sum-type reduction.
-            Value::Variant {
-                payload: Some(payload_id),
-                ..
-            } => {
-                let payload_thunk = ctx.get_thunk(payload_id);
-                crate::eval::materialize(&payload_thunk, Some(&call_span), &ctx).await?
-            }
-            other => other,
-        };
-
-        match xs {
-            Value::Dict(ref map) => {
-                if map.is_empty() {
-                    return Ok(init_thunk);
-                }
-                let xs_thunk = Arc::new(Thunk::new_materialized(xs.clone(), call_span.clone()));
-                let idx_thunk = Arc::new(Thunk::new_materialized(Value::Int(0), call_span.clone()));
-                let step_thunk = Arc::new(Thunk::new_pending_builtin(
-                    builtin!("reduce_dict_step", builtin_reduce_dict_step),
-                    vec![f_thunk, init_thunk, xs_thunk, idx_thunk],
-                    None,
-                    call_span,
-                    Some(Arc::from("reduce")),
-                    Arc::new(std::sync::RwLock::new(Environment::new())),
-                    Arc::clone(&ctx),
-                ));
-                Ok(step_thunk)
-            }
-            other => Err(EvalError::type_mismatch_ctx(
-                "reduce".to_string(),
-                "Dict",
-                other.type_name(),
-                call_span,
-            )
-            .into()),
-        }
-    })
-}
-
-/// Internal step helper for reduce on Dict. Processes all entries in a single invocation.
-///
-/// Args: (f, acc, xs_dict, idx)
-pub(crate) fn builtin_reduce_dict_step(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    Box::pin(async move {
-        let BuiltinArgs {
-            args,
-            call_span,
-            ctx,
-            ..
-        } = ctx_arg;
-
-        let f_thunk = Arc::clone(&args[0]);
-        let mut acc_thunk = Arc::clone(&args[1]);
-        let xs = args[2]
-            .try_get_materialized()
-            .expect("xs should be materialized");
-        let idx_val = args[3]
-            .try_get_materialized()
-            .expect("idx should be materialized");
-
-        let start_idx = match idx_val {
-            Value::Int(i) => i as usize,
-            _ => {
-                return Err(EvalError::internal(
-                    "reduce_dict_step: idx must be Int".to_string(),
-                    call_span,
-                )
-                .into())
-            }
-        };
-
-        match xs {
-            Value::Dict(ref map) => {
-                for (_, value_thunk_id) in map.iter().skip(start_idx) {
-                    let value_thunk = ctx.get_thunk(*value_thunk_id);
-                    let call_thunk = Arc::new(Thunk::new_pending_call(
-                        Arc::clone(&f_thunk),
-                        vec![Arc::clone(&acc_thunk), Arc::clone(&value_thunk)],
-                        IndexMap::new(),
-                        call_span.clone(),
-                        Arc::clone(&ctx.config.stdlib_env),
-                        value_thunk.span.clone(),
-                        Some(Arc::from("reduce")),
-                        Arc::clone(&ctx),
-                        synthetic_call_expr(call_span.clone()),
-                    ));
-                    let new_acc_val =
-                        materialize(&call_thunk, None, &ctx)
-                            .await
-                            .map_err(|mut e| {
-                                e.push_frame("in reduce".to_string(), call_span.clone());
-                                e
-                            })?;
-                    acc_thunk = Arc::new(Thunk::new_materialized(new_acc_val, call_span.clone()));
-                }
-                Ok(acc_thunk)
-            }
-            _ => Err(EvalError::internal(
-                "reduce_dict_step: xs must be Dict".to_string(),
-                call_span,
-            )
-            .into()),
-        }
-    })
-}
-
 /// `builtin-take`: Take the first n elements from a Dict by position.
 ///
 /// Dict path only (T-1380). For Seq inputs, use the pure-tinct `take` wrapper in prelude.llt.
@@ -2362,86 +2089,6 @@ pub(crate) fn builtin_drop(
             }
             other => Err(EvalError::type_mismatch_ctx(
                 "drop".to_string(),
-                "Dict",
-                other.type_name(),
-                call_span,
-            )
-            .into()),
-        }
-    })
-}
-
-/// `builtin-join`: Join Dict elements as strings with a separator.
-///
-/// Dict path only (T-1380). For Seq inputs, use the pure-tinct `join` wrapper in prelude.llt.
-/// Materializes all Dict values, stringifies each, joins with separator.
-///
-/// Args: (sep, xs)
-pub(crate) fn builtin_join(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    Box::pin(async move {
-        let BuiltinArgs {
-            args,
-            named,
-            call_span,
-            ctx,
-            ..
-        } = ctx_arg;
-        reject_named("join", named.as_ref(), call_span.clone())?;
-        if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
-        }
-
-        let sep = args[0]
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
-        let sep_str = crate::builtins::require_string("join", sep, args[0].span.clone())?;
-
-        let xs = args[1]
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
-        // Flatten Overlay to Dict before dispatch.
-        let xs = match xs {
-            Value::Overlay(l, r) => Value::Dict(
-                crate::builtins::flatten_overlay(&l, &r, "join", &ctx, call_span.clone()).await?,
-            ),
-            other => other,
-        };
-
-        match xs {
-            Value::Dict(ref map) => {
-                let mut parts = Vec::with_capacity(map.len());
-                for (_key, value_thunk_id) in map.iter() {
-                    let value_thunk = ctx.get_thunk(*value_thunk_id);
-                    let val = materialize(&value_thunk, None, &ctx).await?;
-                    parts.push(crate::builtins::stringify(&val));
-                }
-
-                if parts.is_empty() {
-                    return ok_val(string_val(""), call_span);
-                }
-
-                let total_parts_len: usize = parts.iter().map(|p| p.len()).sum();
-                let sep_contribution = sep_str.len().saturating_mul(parts.len().saturating_sub(1));
-                let total_output_len = total_parts_len.saturating_add(sep_contribution);
-
-                if total_output_len > crate::builtins::MAX_STRING_SIZE {
-                    return Err(EvalError::resource_limit_exceeded(
-                        format!(
-                            "join: output would exceed {} MB limit ({} bytes)",
-                            crate::builtins::MAX_STRING_SIZE / (1024 * 1024),
-                            total_output_len
-                        ),
-                        call_span.clone(),
-                    )
-                    .into());
-                }
-
-                ok_val(string_val(&parts.join(&sep_str)), call_span)
-            }
-            other => Err(EvalError::type_mismatch_ctx(
-                "join".to_string(),
                 "Dict",
                 other.type_name(),
                 call_span,

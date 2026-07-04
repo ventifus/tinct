@@ -89,6 +89,7 @@ pub(crate) fn wrap_with_nominal_validation(
                     name: gensym_name,
                     level: 0,
                     slot: 0,
+                    annotation: None,
                 },
                 validation_span.clone(),
             )),
@@ -305,7 +306,7 @@ pub async fn eval_surface_document(
 ///
 /// # Precondition
 ///
-/// **Pipeline invariant:** `expand_surface_program` → `desugar_surface_program` →
+/// **Pipeline invariant:** `desugar_surface_program` →
 /// `resolve_surface_program` must be called before passing the program here —
 /// it writes de Bruijn coordinates inline to the AST nodes.
 /// If type checking was skipped, `TypeAssert` nodes will use Type::Unknown (accepts all values).
@@ -990,7 +991,11 @@ pub fn ground_type_of(v: &Value) -> Type {
         // U64 values have Int ground type — no dedicated Type::U64 yet (see typecheck.rs).
         Value::U64(_) => Type::Int,
         Value::Float(_) => Type::Float,
-        _ if v.as_bool().is_some() => Type::TyCon("Boolean".to_string()),
+        Value::Variant { tag, payload: None }
+            if tag == "Boolean.True" || tag == "Boolean.False" =>
+        {
+            Type::TyCon("Boolean".to_string())
+        }
         Value::String { .. } => Type::Str,
         Value::Bytes { .. } => Type::Bytes,
         Value::Dict(map) => Type::Record(extract_row(map)),
@@ -1107,7 +1112,8 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Type, ctx: &EvalConte
                     match discriminant.as_str() {
                         "Int" => matches!(value, Value::Int(_)),
                         "Str" => matches!(value, Value::String { .. }),
-                        "Bool" => value.as_bool().is_some(),
+                        "Bool" => matches!(value, Value::Variant { tag, .. }
+                            if tag == "Boolean.True" || tag == "Boolean.False"),
                         "Float" => matches!(value, Value::Float(_)),
                         "Bytes" => matches!(value, Value::Bytes { .. }),
                         "Dict" => matches!(value, Value::Dict(_)),
@@ -1403,7 +1409,7 @@ fn value_to_surface_node(
         ))),
         Value::Variant { .. } => {
             // Variant form of an AST node — convert via surface bridge
-            crate::surface_convert::dict_to_surface_node(value, ctx).map_err(|err| {
+            crate::surface_convert::dict_to_surface_node(value, &span, ctx).map_err(|err| {
                 EvalError::internal(
                     format!("unquote result Variant is not a valid AST: {}", err),
                     span,
@@ -1692,17 +1698,6 @@ fn eval_quote_preprocess<'a>(
                             body: processed_body,
                         }
                     }
-                    SurfaceDeclaration::MacroDecl { name, params, body } => {
-                        let processed_params =
-                            eval_quote_preprocess(Arc::clone(params), env, ctx).await?;
-                        let processed_body =
-                            eval_quote_preprocess(Arc::clone(body), env, ctx).await?;
-                        SurfaceDeclaration::MacroDecl {
-                            name: name.clone(),
-                            params: processed_params,
-                            body: processed_body,
-                        }
-                    }
                     SurfaceDeclaration::SyntaxClass {
                         name,
                         pattern,
@@ -1736,60 +1731,6 @@ fn eval_quote_preprocess<'a>(
     }) // end Box::pin(async move {
 }
 
-/// Evaluate a SurfaceNode function body with given params as a macro transformer.
-///
-/// Uses `lower::lower` + `eval_core_expr` to evaluate a SurfaceExpression::Fn directly,
-/// bypassing the old Expr-based eval entry point. No Expr or ast_convert bridge needed.
-///
-/// Returns the resulting `Value::Function` thunk, ready for use as a macro transformer.
-pub(crate) async fn eval_surface_fn(
-    params: Vec<Spanned<Param>>,
-    body: &Arc<crate::ast::SurfaceNode>,
-    span: Span,
-    env: Arc<RwLock<Environment>>,
-    ctx: &Arc<EvalContext>,
-) -> EvalResult<Arc<Thunk>> {
-    // Build SurfaceExpression::Fn directly (no Expr bridge needed)
-    let surface_params: Vec<Spanned<crate::ast::SurfaceParam>> = params
-        .into_iter()
-        .map(|p| {
-            Spanned::new(
-                crate::ast::SurfaceParam {
-                    name: p.node.name,
-                    annotation: p.node.annotation,
-                    variadic: p.node.variadic,
-                },
-                p.span,
-            )
-        })
-        .collect();
-    let fn_node = Arc::new(crate::ast::SurfaceNode::new(
-        crate::ast::SurfaceExpression::Fn {
-            return_ann: None,
-            params: surface_params,
-            body: Arc::clone(body),
-            desugared: false,
-        },
-        span.clone(),
-    ));
-    // Resolve the Fn node against the stdlib env so that VarRefs in macro transformer
-    // bodies (e.g., `builtin-sequential` in the `>>` macro) get proper de Bruijn coordinates.
-    // Resolution is written inline on the AST nodes.
-    let resolve_errors = crate::resolve::resolve_surface_node_with_env(&fn_node, &env);
-    if !resolve_errors.is_empty() {
-        let msgs: Vec<String> = resolve_errors
-            .iter()
-            .map(|(name, _)| format!("undefined variable: {}", name))
-            .collect();
-        return Err(EvalError::user_error(
-            format!("macro transformer resolve errors: {}", msgs.join(", ")),
-            span.clone(),
-        )
-        .into());
-    }
-    let core_fn = crate::lower::lower(&fn_node);
-    eval_core_expr(&core_fn, &env, ctx).await
-}
 
 /// Evaluate a CoreExpr to a thunk (transitional path for runtime-v2).
 ///
@@ -1834,7 +1775,14 @@ fn eval_core_expr<'a>(
             // EvalContext.do_infer_resolutions is never populated (set_do_infer_resolutions
             // is defined but never called from any pipeline path), making that block dead code.
             // Sentinels evaluate via the normal get_slot path below.
-            CoreExpr::Var { name, level, slot } => {
+            CoreExpr::Var { name, level, slot, .. } => {
+                if *level == u32::MAX || *slot == u32::MAX {
+                    return Err(EvalError::internal(
+                        format!("unresolved variable '{name}': resolver failed to assign de Bruijn coordinates (u32::MAX sentinel)"),
+                        span.clone(),
+                    )
+                    .into());
+                }
                 let env_lock = env.read().unwrap();
                 match env_lock.get_slot(*level, *slot) {
                     Some(thunk) => Ok(thunk),
@@ -1949,12 +1897,14 @@ fn eval_core_expr<'a>(
 
                 // Store the body directly as Arc<Spanned<CoreExpr>>.
                 // CoreExpr::Fn.body is already Arc<Spanned<CoreExpr>> — no conversion needed.
+                // Thread return_ann through to Value::Function for constructor pattern matching.
                 Ok(Arc::new(Thunk::new_materialized(
                     Value::Function {
                         params: Rc::new(fn_params),
                         body: Arc::clone(body),
                         env: Arc::clone(env),
                         annotation,
+                        return_ann: return_ann.clone(),
                     },
                     span.clone(),
                 )))
@@ -1970,11 +1920,6 @@ fn eval_core_expr<'a>(
                 span.clone(),
             ))),
 
-            // Annotated: evaluate as bare string
-            CoreExpr::Annotated { name, .. } => Ok(Arc::new(Thunk::new_materialized(
-                string_val(name),
-                span.clone(),
-            ))),
 
             // Rest: error (only valid in type expressions)
             CoreExpr::Rest(_) => Err(EvalError::internal(
@@ -2039,8 +1984,8 @@ fn eval_core_expr<'a>(
                         // lower_let_decl_binding converts declaration-position names to Str literals.
                         CoreExpr::Str(n) => n.clone(),
                         // Var node in declaration position: extract the name string directly.
+                        // Annotated Var (Var { annotation: Some(_) }) is also handled here.
                         CoreExpr::Var { name: n, .. } => n.clone(),
-                        CoreExpr::Annotated { name: n, .. } => n.clone(),
                         _ => {
                             return Err(EvalError::internal(
                                 format!(
@@ -2390,6 +2335,16 @@ pub fn materialize<'a>(
                 }
             };
 
+            // Peel Value::Annotated wrappers — annotated constructors (@[doc:"..."]) wrap
+            // their inner Variant in Value::Annotated; peel before dispatching the call.
+            let func_value = {
+                let mut v = func_value;
+                while let Value::Annotated { inner, .. } = v {
+                    v = *inner;
+                }
+                v
+            };
+
             match func_value {
                 Value::Function {
                     params, body, env, ..
@@ -2606,11 +2561,11 @@ pub fn materialize<'a>(
                         }
                     }
                 }
-                // Unit variant used as a constructor: e.g. `[Result.Ok payload]`.
-                // When a unit Variant (payload: None) is called with exactly one positional
-                // arg and no named args, treat it as constructing Variant(tag, payload).
-                // Unit constructors from `[type ...]` declarations are Value::Variant{payload:None}
-                // at runtime; calling them with one positional arg constructs a new Variant with that payload.
+                // Unit Variant used as a constructor. All constructors (unit and named-field)
+                // are Value::Variant{payload:None} at rest. Calling convention:
+                //   - One positional arg, no named: wrap arg as payload (e.g. [Result.Ok v])
+                //   - Named args only, no positional: build payload dict from named args
+                //     (e.g. [ProgramItem.File path: "x" handle: h])
                 Value::Variant { tag, payload: None }
                     if args.len() == 1 && named.as_ref().is_none_or(|m| m.is_empty()) =>
                 {
@@ -3545,8 +3500,13 @@ pub(crate) fn values_equal(
         match (a, b) {
             (Value::Int(x), Value::Int(y)) => Ok(x == y),
             (Value::Float(x), Value::Float(y)) => Ok(x == y),
-            (a, b) if a.as_bool().is_some() && b.as_bool().is_some() => {
-                Ok(a.as_bool() == b.as_bool())
+            (
+                Value::Variant { tag: a_tag, payload: None },
+                Value::Variant { tag: b_tag, payload: None },
+            ) if (a_tag == "Boolean.True" || a_tag == "Boolean.False")
+                && (b_tag == "Boolean.True" || b_tag == "Boolean.False") =>
+            {
+                Ok(a_tag == b_tag)
             }
             (
                 Value::String {
@@ -4153,9 +4113,11 @@ mod tests {
                 name: "x".to_string(),
                 level: 0,
                 slot: 0,
+                annotation: None,
             })),
             env: Arc::clone(&env),
             annotation: None,
+            return_ann: None,
         };
         env.write().unwrap().insert(
             "f".into(),
@@ -4188,9 +4150,11 @@ mod tests {
                 name: "b".to_string(),
                 level: 0,
                 slot: 1,
+                annotation: None,
             })),
             env: Arc::clone(&env),
             annotation: None,
+            return_ann: None,
         };
         env.write().unwrap().insert(
             "f".into(),
@@ -4241,9 +4205,11 @@ mod tests {
                 name: "x".to_string(),
                 level: 0,
                 slot: 0,
+                annotation: None,
             })),
             env: Arc::clone(&env),
             annotation: None,
+            return_ann: None,
         };
         env.write().unwrap().insert(
             "f".into(),
@@ -4276,9 +4242,11 @@ mod tests {
                 name: "x".to_string(),
                 level: 0,
                 slot: 0,
+                annotation: None,
             })),
             env: Arc::clone(&env),
             annotation: None,
+            return_ann: None,
         };
         env.write().unwrap().insert(
             "f".into(),
@@ -4314,9 +4282,11 @@ mod tests {
                 name: "y".to_string(),
                 level: 0,
                 slot: 1,
+                annotation: None,
             })),
             env: Arc::clone(&env),
             annotation: None,
+            return_ann: None,
         };
         env.write().unwrap().insert(
             "f".into(),
@@ -4353,9 +4323,11 @@ mod tests {
                 name: "y".to_string(),
                 level: 0,
                 slot: 1,
+                annotation: None,
             })),
             env: Arc::clone(&env),
             annotation: None,
+            return_ann: None,
         };
         env.write().unwrap().insert(
             "f".into(),
@@ -4383,9 +4355,11 @@ mod tests {
                 name: "x".to_string(),
                 level: 0,
                 slot: 0,
+                annotation: None,
             })),
             env: Arc::clone(&env),
             annotation: None,
+            return_ann: None,
         };
         env.write().unwrap().insert(
             "f".into(),
@@ -4425,9 +4399,11 @@ mod tests {
                 name: "y".to_string(),
                 level: 0,
                 slot: 1,
+                annotation: None,
             })),
             env: Arc::clone(&env),
             annotation: None,
+            return_ann: None,
         };
         env.write().unwrap().insert(
             "f".into(),
@@ -4554,9 +4530,11 @@ mod tests {
                 name: "x".to_string(),
                 level: 0,
                 slot: 0,
+                annotation: None,
             })),
             env: Arc::clone(&env),
             annotation: None,
+            return_ann: None,
         };
         env.write().unwrap().insert(
             "f".into(),
@@ -4612,9 +4590,11 @@ mod tests {
                 name: "x".to_string(),
                 level: 0,
                 slot: 0,
+                annotation: None,
             })),
             env: Arc::clone(&env),
             annotation: None,
+            return_ann: None,
         };
         env.write().unwrap().insert(
             "f".into(),
@@ -4843,6 +4823,7 @@ mod tests {
                 escaped: false,
                 resolution: crate::ast::Resolution::new(),
                 call_dispatch: crate::ast::CallDispatch::new(),
+                annotation: None,
             },
         )];
         let expr = Spanned::new(
@@ -4899,6 +4880,7 @@ mod tests {
                     escaped: false,
                     resolution: crate::ast::Resolution::new(),
                     call_dispatch: crate::ast::CallDispatch::new(),
+                    annotation: None,
                 },
             ),
             surf_ann_entry("default", SurfaceExpression::Int(0)),
@@ -4931,6 +4913,7 @@ mod tests {
                 escaped: false,
                 resolution: crate::ast::Resolution::new(),
                 call_dispatch: crate::ast::CallDispatch::new(),
+                annotation: None,
             },
         )];
         let expr = Spanned::new(
@@ -4968,6 +4951,7 @@ mod tests {
                     escaped: false,
                     resolution: crate::ast::Resolution::new(),
                     call_dispatch: crate::ast::CallDispatch::new(),
+                    annotation: None,
                 },
             ),
             surf_ann_entry("default", SurfaceExpression::Int(0)),
@@ -4985,10 +4969,9 @@ mod tests {
             },
             span,
         );
-        let thunk = eval_core_for_test(expr, empty_env(), &test_ctx())
-            .await
-            .unwrap();
-        let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
+        let ctx = test_ctx();
+        let thunk = eval_core_for_test(expr, empty_env(), &ctx).await.unwrap();
+        let val = materialize(&thunk, None, &ctx).await.unwrap();
         assert_eq!(val, Value::Int(0));
     }
 
@@ -5004,6 +4987,7 @@ mod tests {
                 escaped: false,
                 resolution: crate::ast::Resolution::new(),
                 call_dispatch: crate::ast::CallDispatch::new(),
+                annotation: None,
             },
         )];
         let expr = Spanned::new(
@@ -5042,6 +5026,7 @@ mod tests {
                     escaped: false,
                     resolution: crate::ast::Resolution::new(),
                     call_dispatch: crate::ast::CallDispatch::new(),
+                    annotation: None,
                 },
             ),
             surf_ann_entry(
@@ -5073,17 +5058,16 @@ mod tests {
             },
             span,
         );
-        let thunk = eval_core_for_test(expr, empty_env(), &test_ctx())
-            .await
-            .unwrap();
-        let val = materialize(&thunk, None, &test_ctx()).await.unwrap();
+        let ctx = test_ctx();
+        let thunk = eval_core_for_test(expr, empty_env(), &ctx).await.unwrap();
+        let val = materialize(&thunk, None, &ctx).await.unwrap();
         match val {
             Value::Dict(map) => {
                 let name_val = map
                     .get(&HashableValue::Str("name".into()))
                     .expect("name field missing");
-                let name_thunk = test_ctx().get_thunk(*name_val);
-                let name = materialize(&name_thunk, None, &test_ctx()).await.unwrap();
+                let name_thunk = ctx.get_thunk(*name_val);
+                let name = materialize(&name_thunk, None, &ctx).await.unwrap();
                 assert_eq!(name, string_val("fallback".into()));
             }
             _ => panic!("expected Dict, got: {:?}", val),
@@ -5260,11 +5244,13 @@ mod tests {
                     name: "missing".to_string(),
                     level: 0,
                     slot: u32::MAX,
+                    annotation: None,
                 },
                 test_span(1, 15, 1, 23),
             )),
             env: Arc::clone(&env),
             annotation: None,
+            return_ann: None,
         };
         env.write().unwrap().insert(
             "f".into(),
@@ -5307,11 +5293,13 @@ mod tests {
                     name: "missing".to_string(),
                     level: 0,
                     slot: u32::MAX,
+                    annotation: None,
                 },
                 test_span(1, 20, 1, 28),
             )),
             env: Arc::clone(&env),
             annotation: None,
+            return_ann: None,
         };
         env.write().unwrap().insert(
             "inner".into(),
@@ -5335,6 +5323,7 @@ mod tests {
                             name: "inner".to_string(),
                             level: 1,
                             slot: 0,
+                            annotation: None,
                         },
                         test_span(2, 21, 2, 26),
                     )),
@@ -5343,6 +5332,7 @@ mod tests {
                             name: "y".to_string(),
                             level: 0,
                             slot: 0,
+                            annotation: None,
                         },
                         test_span(2, 28, 2, 29),
                     ))],
@@ -5353,6 +5343,7 @@ mod tests {
             )),
             env: Arc::clone(&env),
             annotation: None,
+            return_ann: None,
         };
         env.write().unwrap().insert(
             "outer".into(),
@@ -5389,6 +5380,7 @@ mod tests {
                     name: "missing".to_string(),
                     level: 0,
                     slot: u32::MAX,
+                    annotation: None,
                 },
                 test_span(1, 8, 1, 15),
             )),
@@ -5448,6 +5440,7 @@ mod tests {
                         name: "missing".to_string(),
                         level: 0,
                         slot: u32::MAX,
+                        annotation: None,
                     },
                     test_span(1, 10, 1, 18),
                 )),
@@ -5497,6 +5490,7 @@ mod tests {
             name: "f".to_string(),
             level: 0,
             slot: 0,
+            annotation: None,
         });
         assert_eq!(label.as_deref(), Some("[f ...]"));
     }
@@ -5510,6 +5504,7 @@ mod tests {
             name: "field-get".to_string(),
             level: 0,
             slot: crate::builtins_core::FIELD_GET_ROOT_SLOT,
+            annotation: None,
         };
         let label = func_label_core(&func_var);
         assert_eq!(label.as_deref(), Some("[field-get ...]"));
@@ -5523,6 +5518,7 @@ mod tests {
             name: "slot-get".to_string(),
             level: 0,
             slot: crate::builtins_core::SLOT_GET_ROOT_SLOT,
+            annotation: None,
         });
         assert_eq!(label.as_deref(), Some("[slot-get ...]"));
     }
@@ -5546,6 +5542,7 @@ mod tests {
                 name: "missing".to_string(),
                 level: 0,
                 slot: u32::MAX,
+                annotation: None,
             },
             test_span(1, 1, 1, 8),
         );
@@ -5596,9 +5593,11 @@ mod tests {
                 name: "a".to_string(),
                 level: 0,
                 slot: 0,
+                annotation: None,
             })),
             env: Arc::clone(&env),
             annotation: None,
+            return_ann: None,
         };
         env.write().unwrap().insert(
             "f".into(),
@@ -5709,17 +5708,20 @@ mod tests {
                     name: "+".to_string(),
                     level: 1,
                     slot: 0,
+                    annotation: None,
                 })),
                 args: vec![
                     Arc::new(sp(CoreExpr::Var {
                         name: "x".to_string(),
                         level: 0,
                         slot: 0,
+                        annotation: None,
                     })),
                     Arc::new(sp(CoreExpr::Var {
                         name: "y".to_string(),
                         level: 0,
                         slot: 1,
+                        annotation: None,
                     })),
                 ],
                 named_args: vec![],
@@ -5727,6 +5729,7 @@ mod tests {
             })),
             env: Arc::clone(&env),
             annotation: None,
+            return_ann: None,
         };
 
         // Add the builtin $+ to the environment
@@ -5867,9 +5870,11 @@ mod tests {
                 name: "x".to_string(),
                 level: 0,
                 slot: 0,
+                annotation: None,
             })),
             env: Arc::clone(&env),
             annotation: None,
+            return_ann: None,
         };
 
         let func_thunk = Arc::new(Thunk::new_materialized(identity_fn, test_span(1, 1, 1, 10)));
@@ -5958,9 +5963,11 @@ mod tests {
                 name: "x".to_string(),
                 level: 0,
                 slot: 0,
+                annotation: None,
             })),
             env: Arc::clone(&env),
             annotation: None,
+            return_ann: None,
         };
 
         let func_thunk = Arc::new(Thunk::new_materialized(identity_fn, test_span(1, 1, 1, 10)));
@@ -6055,17 +6062,20 @@ mod tests {
                     name: "+".to_string(),
                     level: 1,
                     slot: 0,
+                    annotation: None,
                 })),
                 args: vec![
                     Arc::new(sp(CoreExpr::Var {
                         name: "a".to_string(),
                         level: 0,
                         slot: 0,
+                        annotation: None,
                     })),
                     Arc::new(sp(CoreExpr::Var {
                         name: "b".to_string(),
                         level: 0,
                         slot: 1,
+                        annotation: None,
                     })),
                 ],
                 named_args: vec![],
@@ -6073,6 +6083,7 @@ mod tests {
             })),
             env: Arc::clone(&env),
             annotation: None,
+            return_ann: None,
         };
 
         let func_thunk = Arc::new(Thunk::new_materialized(
@@ -6175,17 +6186,20 @@ mod tests {
                     name: "+".to_string(),
                     level: 1,
                     slot: 0,
+                    annotation: None,
                 })),
                 args: vec![
                     Arc::new(sp(CoreExpr::Var {
                         name: "x".to_string(),
                         level: 0,
                         slot: 0,
+                        annotation: None,
                     })),
                     Arc::new(sp(CoreExpr::Var {
                         name: "y".to_string(),
                         level: 0,
                         slot: 1,
+                        annotation: None,
                     })),
                 ],
                 named_args: vec![],
@@ -6193,6 +6207,7 @@ mod tests {
             })),
             env: Arc::clone(&env),
             annotation: None,
+            return_ann: None,
         };
 
         let func_thunk = Arc::new(Thunk::new_materialized(
@@ -6305,9 +6320,11 @@ mod tests {
                 name: "nonexistent".to_string(),
                 level: 0,
                 slot: u32::MAX,
+                annotation: None,
             })),
             env: Arc::clone(&env),
             annotation: None,
+            return_ann: None,
         };
 
         env.write().unwrap().insert(
@@ -6401,9 +6418,11 @@ mod tests {
                 name: "does_not_exist".to_string(),
                 level: 0,
                 slot: u32::MAX,
+                annotation: None,
             })),
             env: Arc::clone(&env),
             annotation: None,
+            return_ann: None,
         };
 
         let func_thunk = Arc::new(Thunk::new_materialized(failing_fn, test_span(1, 1, 1, 10)));
@@ -6452,6 +6471,7 @@ mod tests {
                 name: "nonexistent_func".to_string(),
                 level: 0,
                 slot: u32::MAX,
+                annotation: None,
             })),
             empty_env(),
             Arc::clone(&test_ctx()),
@@ -6503,6 +6523,7 @@ mod tests {
             name: "undefined_var".to_string(),
             level: 0,
             slot: u32::MAX,
+            annotation: None,
         });
         let env = empty_env();
         let thunk = Arc::new(Thunk::new_unevaluated_core(
@@ -6546,6 +6567,7 @@ mod tests {
                     name: "undefined_var".to_string(),
                     level: 0,
                     slot: u32::MAX,
+                    annotation: None,
                 },
                 error_span.clone(),
             )),
@@ -7059,6 +7081,7 @@ mod tests {
                 escaped: false,
                 resolution: crate::ast::Resolution::new(),
                 call_dispatch: crate::ast::CallDispatch::new(),
+                annotation: None,
             },
         )];
         assert!(!annotation_has_structural_fields(
@@ -7077,6 +7100,7 @@ mod tests {
                     escaped: false,
                     resolution: crate::ast::Resolution::new(),
                     call_dispatch: crate::ast::CallDispatch::new(),
+                    annotation: None,
                 },
             ),
             surf_ann_entry(
@@ -7086,6 +7110,7 @@ mod tests {
                     escaped: false,
                     resolution: crate::ast::Resolution::new(),
                     call_dispatch: crate::ast::CallDispatch::new(),
+                    annotation: None,
                 },
             ),
         ];
@@ -7105,6 +7130,7 @@ mod tests {
                     escaped: false,
                     resolution: crate::ast::Resolution::new(),
                     call_dispatch: crate::ast::CallDispatch::new(),
+                    annotation: None,
                 },
             ),
             surf_ann_entry("default", SurfaceExpression::Dict(vec![])),
@@ -7155,6 +7181,7 @@ mod tests {
                     escaped: false,
                     resolution: crate::ast::Resolution::new(),
                     call_dispatch: crate::ast::CallDispatch::new(),
+                    annotation: None,
                 },
             ),
             surf_ann_entry("default", SurfaceExpression::Dict(vec![])),
@@ -8724,7 +8751,7 @@ mod tests {
             sum-to: [fn [let n acc]
                 [builtin-if [builtin-eq n 0]
                     acc
-                    [$sum-to [builtin-sub n 1] [builtin-add acc n]]]]
+                    [sum-to [builtin-sub n 1] [builtin-add acc n]]]]
             result: [sum-to 100 0]
         ]"#;
 
@@ -8807,6 +8834,7 @@ mod tests {
             body: Arc::new(sp(CoreExpr::Dict(vec![]))),
             env: empty_env(),
             annotation: None,
+            return_ann: None,
         };
         match ground_type_of(&non_variadic) {
             Type::Function { variadic, .. } => {
@@ -8838,6 +8866,7 @@ mod tests {
             body: Arc::new(sp(CoreExpr::Dict(vec![]))),
             env: empty_env(),
             annotation: None,
+            return_ann: None,
         };
         match ground_type_of(&variadic_fn) {
             Type::Function {
@@ -8870,6 +8899,7 @@ mod tests {
             body: Arc::new(sp(CoreExpr::Dict(vec![]))),
             env: empty_env(),
             annotation: None,
+            return_ann: None,
         };
         match ground_type_of(&only_variadic) {
             Type::Function { variadic, .. } => {

@@ -33,17 +33,13 @@
   # ── Control flow ─────────────────────────────────────────────────────────────────────
   builtin-raise: [fn@Never  [let msg@String] ...]
   builtin-try:   [fn@[union a [Error msg: String]] [let f@[Fn@a []]] ...]
-  builtin-if:    [fn@a      [let cond@Boolean then@a else@a] ...]
+  # builtin-if takes Int condition: 0 = false, nonzero = true (not Boolean).
+  builtin-if:    [fn@a      [let cond@Int then@a else@a] ...]
 
   # ── String primitives ────────────────────────────────────────────────────────────────
-  builtin-str:      [fn@String  [let ...args@Any] ...]
-  builtin-str-bytes:[fn@Bytes   [let s@String] ...]
-  builtin-str-eq:   [fn@Boolean [let a@String b@String] ...]
-  builtin-str-hash: [fn@Int     [let s@String] ...]
-  builtin-str-lt:   [fn@Boolean [let a@String b@String] ...]
+  builtin-str-bytes:[fn@Bytes [let s@String] ...]
+  builtin-str-hash: [fn@Int   [let s@String] ...]
 
-  # ── Comparison primitives (backing typeclass instances) ──────────────────────────────
-  builtin-int-eq:   [fn@Boolean [let a@Int b@Int] ...]
-  builtin-lt:       [fn@Int     [let a@Int b@Int] ...]
-  builtin-float-lt: [fn@Boolean [let a@Float b@Float] ...]
+  # ── Comparison primitives — all return Int (1=true, 0=false) ────────────────────────
+  builtin-lt:       [fn@Int [let a@Int b@Int] ...]
 ]

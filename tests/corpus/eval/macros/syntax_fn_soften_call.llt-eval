@@ -1,5 +1,5 @@
 # fn [let ...] form: [fn [let x y] body] parsed directly by the parser.
-# fn/class/type macros are globally registered via expand.rs; no include required.
+# fn/class/type forms are handled directly by the parser; no include required.
 # Functions defined with [let ...] param lists work without any explicit include.
 [add: [fn [let x y] [+ x y]]]
 [add 3 4]

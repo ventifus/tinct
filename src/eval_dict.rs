@@ -166,21 +166,23 @@ fn eval_annotation_property_dict(
 /// Returns `true` if a dict key expression is "static" — i.e., its name is known at compile
 /// time and the resolver assigned it a slot index.
 ///
-/// A key is static iff it is a bare-word string (`CoreExpr::Str`) or an annotated bare-word
-/// (`CoreExpr::Annotated`). All other key forms (variable references, function calls, etc.)
-/// are computed at runtime and are excluded from letrec scope and slot assignment.
+/// A key is static iff it is a bare-word string (`CoreExpr::Str`) or an annotated var
+/// (`CoreExpr::Var { annotation: Some(_) }`). All other key forms (variable references,
+/// function calls, etc.) are computed at runtime and are excluded from letrec scope and
+/// slot assignment.
 ///
-/// **Invariant**: `CoreExpr::Annotated { name, .. }` always has a static `name: String` that is
-/// a bare identifier parsed from source (e.g., `Fn@Number` → name="Fn"). The parser creates
-/// `Annotated` only for `Token::Identifier` followed by `@` (parser.rs:3232-3254). Therefore,
-/// `CoreExpr::Annotated` keys are always static and suitable for letrec scope and slot assignment.
+/// **Invariant**: `CoreExpr::Var { annotation: Some(_), .. }` always has a static `name: String`
+/// that is a bare identifier parsed from source (e.g., `Fn@Number` → name="Fn"). The parser
+/// creates annotated VarRefs only for `Token::Identifier` followed by `@`. Therefore,
+/// annotated Var keys are always static and suitable for letrec scope and slot assignment.
 ///
 /// **Must stay in sync with `resolve.rs` `surface_dict_static_keys` / `surface_node_static_keys`.**
 /// Both the resolver and all three runtime insertion sites (eval_dict.rs, eval.rs Sequential,
 /// eval.rs document pipeline) use this predicate so that the slot indices they assign and count
 /// agree exactly.
 pub(crate) fn core_expr_is_static_key(k: &CoreExpr) -> bool {
-    matches!(k, CoreExpr::Str(_) | CoreExpr::Annotated { .. })
+    // Annotated VarRef (Var { annotation: Some(_) }) is now a static key too.
+    matches!(k, CoreExpr::Str(_) | CoreExpr::Var { annotation: Some(_), .. })
 }
 
 /// Evaluate a dict literal from `CoreExpr::Dict` entries with letrec semantics.
@@ -239,7 +241,7 @@ pub(crate) async fn eval_dict_core(
     let mut letrec_slots: Vec<(u32, ThunkId)> = Vec::new();
 
     for entry in entries {
-        // Determine if this entry has a static key (CoreExpr::Str or CoreExpr::Annotated).
+        // Determine if this entry has a static key (CoreExpr::Str or annotated Var).
         // Must match resolve.rs Resolver::walk_expr Dict arm exactly — use the shared predicate.
         let is_static_key = entry
             .node
@@ -293,7 +295,7 @@ pub(crate) async fn eval_dict_core(
         // T-1119: If the key is annotated (e.g., Pi@[doc: "..."]), wrap the value in Value::Annotated.
         // The annotation PropertyDict is evaluated to a Value::Dict at dict construction time.
         let thunk = if let Some(key_expr) = &entry.node.key {
-            if let CoreExpr::Annotated { annotation, .. } = &key_expr.node {
+            if let CoreExpr::Var { annotation: Some(annotation), .. } = &key_expr.node {
                 // Only PropertyDict annotations produce Value::Annotated at runtime.
                 // Simple annotations (e.g., Pi@Number) are type-level metadata, not runtime values.
                 if let Annotation::PropertyDict(ann_entries) = &annotation.node {
@@ -360,7 +362,7 @@ pub(crate) async fn eval_dict_core(
                     CoreExpr::Str(s) => s.clone(),
                     CoreExpr::Int(n) => n.to_string(),
                     CoreExpr::U64(n) => n.to_string(),
-                    CoreExpr::Annotated { name, .. } => name.clone(),
+                    CoreExpr::Var { name, .. } => name.clone(),
                     _ => "<computed key>".to_string(),
                 },
                 None => (auto_index - 1).to_string(),
@@ -393,7 +395,7 @@ pub(crate) async fn eval_dict_core(
     // the slot count recorded by the resolver for this dict's env_id. That information
     // is not currently stored in EvalContext in a queryable form — the resolver writes
     // slot indices into CoreExpr::Var nodes but does not separately record the total
-    // static-key count per scope. A runtime recount of CoreExpr::Str | CoreExpr::Annotated
+    // static-key count per scope. A runtime recount of CoreExpr::Str | CoreExpr::Var(annotated)
     // entries matches the same predicate used above to compute slot_idx, so any such
     // assert_eq would be tautological (comparing a value against itself). A proper
     // resolver/runtime alignment check requires storing the resolver's slot-count per
@@ -430,10 +432,11 @@ pub(crate) async fn eval_key_core(
             .into());
         }
         // Annotated keys (e.g., `name@[doc: "..."]`) always resolve to the bare name.
-        // eval_core_expr for CoreExpr::Annotated already returns string_val(name);
-        // skipping the thunk/materialize round-trip is both faster and avoids any
-        // environment-dependent lookup that could produce a wrong result.
-        CoreExpr::Annotated { name, .. } => return Ok(HashableValue::Str(Rc::from(name.as_str()))),
+        // The key is a Var { annotation: Some(_) } — the name field is the bare identifier.
+        // Skip the thunk/materialize round-trip to use the name directly.
+        CoreExpr::Var { name, annotation: Some(_), .. } => {
+            return Ok(HashableValue::Str(Rc::from(name.as_str())));
+        }
         _ => {}
     }
     // General path: must materialize because IndexMap requires concrete HashableValue keys

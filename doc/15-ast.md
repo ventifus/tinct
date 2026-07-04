@@ -102,12 +102,12 @@ struct SurfaceNamedArg {
     annotation: Option<Spanned<Annotation>>,  // None for plain `field: value`; Some for `field@Ann: value`
 }
 
-/// Declarations (TypeAlias, ClassDecl, InstanceDecl, MacroDecl, etc.)
+/// Declarations (TypeAlias, ClassDecl, InstanceDecl, SyntaxClass, etc.)
 enum SurfaceDeclaration {
     TypeAlias { params: Vec<String>, body: Arc<SurfaceNode> },
     ClassDecl { /* ... */ },
     InstanceDecl { /* ... */ },
-    MacroDecl { /* ... */ },
+    SyntaxClass { /* ... */ },
     // ... other variants
 }
 ```
@@ -285,9 +285,8 @@ enum Annotation {
 | `Quote(expr)` | `[quote expr]` | Quote special form — prevents evaluation of expr |
 | `Unquote(expr)` | `[unquote expr]` | Unquote inside quote — evaluates expr and splices result into quoted AST |
 | `UnquoteSplice(expr)` | `[unquote-splice expr]` | Unquote-splice inside quote — evaluates expr (must be list) and splices each element into enclosing list |
-| `MacroDecl { name, params, body }` | `[macro name [let ...] body]` | Macro definition — registers compile-time transformer function |
 | `SyntaxClass { name, pattern, message }` | `[syntax-class name pattern: [...] message: "..."]` | Syntax class declaration — names a set of syntactic patterns with a diagnostic message |
-| `Splice(Vec<Spanned<Expr>>)` | (internal) | Macro-expansion-internal splice — not a parser keyword; produced during macro expansion, not by direct source parsing |
+| `Splice(Vec<Spanned<Expr>>)` | (internal) | Splice — not a parser keyword; produced by AST transforms |
 | `Match { scrutinee, arms }` | `[match val pat1: body1 ...]` | Pattern matching with arms (pattern, optional guard, body) |
 | `ClassDecl { name, params, superclasses, methods, determines, resolver, resolver_injective }` | `[class [Name a] super... methods...]` | Type class declaration with type parameters, method signatures, optional functional dependencies (`determines`), optional resolver function (`resolver`), and `resolver_injective: bool` flag for CHR constraint head uniqueness |
 | `InstanceDecl { class_name, arms }` | `[instance ClassName [pattern [...]]: methods...]` | Type class instance with match-arm syntax; each arm pairs a `PatternDecl` expression with method entries |

@@ -49,7 +49,7 @@ fn value_to_surface_node(
         ))),
         Value::Variant { .. } => {
             // Variant form of an AST node — convert via surface bridge
-            crate::surface_convert::dict_to_surface_node(value, ctx).map_err(|err| {
+            crate::surface_convert::dict_to_surface_node(value, &span, ctx).map_err(|err| {
                 EvalError::internal(
                     format!("unquote result Variant is not a valid AST: {}", err),
                     span,
@@ -61,7 +61,7 @@ fn value_to_surface_node(
             // Check if this is an AST dict (has a "type" field)
             if dict.contains_key(&HashableValue::Str("type".into())) {
                 // It's an AST dict — convert via surface bridge
-                crate::surface_convert::dict_to_surface_node(value, ctx).map_err(|err| {
+                crate::surface_convert::dict_to_surface_node(value, &span, ctx).map_err(|err| {
                     EvalError::internal(
                         format!("unquote result dict is not a valid AST: {}", err),
                         span,
@@ -259,6 +259,7 @@ fn eval_quote_preprocess<'a>(
                                                         resolution: crate::ast::Resolution::new(),
                                                         call_dispatch:
                                                             crate::ast::CallDispatch::new(),
+                                                        annotation: None,
                                                     },
                                                     inner_span.clone(),
                                                 ))
@@ -483,17 +484,6 @@ fn eval_quote_preprocess<'a>(
                             body: processed_body,
                         }
                     }
-                    SurfaceDeclaration::MacroDecl { name, params, body } => {
-                        let processed_params =
-                            eval_quote_preprocess(Arc::clone(params), env, ctx).await?;
-                        let processed_body =
-                            eval_quote_preprocess(Arc::clone(body), env, ctx).await?;
-                        SurfaceDeclaration::MacroDecl {
-                            name: name.clone(),
-                            params: processed_params,
-                            body: processed_body,
-                        }
-                    }
                     SurfaceDeclaration::SyntaxClass {
                         name,
                         pattern,
@@ -650,7 +640,7 @@ pub(crate) fn eval_core_expr<'a>(
             // Coordinates are assigned at resolve time; slot lookup is fatal on miss —
             // there is no name-based fallback. A miss means the resolver failed to assign
             // correct coordinates, which is a compiler bug.
-            CoreExpr::Var { name, level, slot } => {
+            CoreExpr::Var { name, level, slot, .. } => {
                 // Variable lookup with de Bruijn coordinates — O(1) slot-based lookup.
                 // The do-infer sentinel block that previously used get_by_name was removed:
                 // EvalContext.do_infer_resolutions is never populated (set_do_infer_resolutions
@@ -771,12 +761,14 @@ pub(crate) fn eval_core_expr<'a>(
 
                 // Store the body directly as Arc<Spanned<CoreExpr>>.
                 // CoreExpr::Fn.body is already Arc<Spanned<CoreExpr>> — no conversion needed.
+                // Thread return_ann through to Value::Function for constructor pattern matching.
                 Ok(Arc::new(Thunk::new_materialized(
                     Value::Function {
                         params: Rc::new(fn_params),
                         body: Arc::clone(body),
                         env: Arc::clone(env),
                         annotation,
+                        return_ann: return_ann.clone(),
                     },
                     span.clone(),
                 )))
@@ -792,11 +784,6 @@ pub(crate) fn eval_core_expr<'a>(
                 span.clone(),
             ))),
 
-            // Annotated: evaluate as bare string
-            CoreExpr::Annotated { name, .. } => Ok(Arc::new(Thunk::new_materialized(
-                string_val(name),
-                span.clone(),
-            ))),
 
             // Rest: error (only valid in type expressions)
             CoreExpr::Rest(_) => Err(EvalError::internal(
@@ -861,8 +848,8 @@ pub(crate) fn eval_core_expr<'a>(
                         // lower_let_decl_binding converts declaration-position names to Str literals.
                         CoreExpr::Str(n) => n.clone(),
                         // Var node in declaration position: extract the name string directly.
+                        // Annotated Var (Var { annotation: Some(_) }) is also handled here.
                         CoreExpr::Var { name: n, .. } => n.clone(),
-                        CoreExpr::Annotated { name: n, .. } => n.clone(),
                         _ => {
                             return Err(EvalError::internal(
                                 format!(

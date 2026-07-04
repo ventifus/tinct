@@ -25,7 +25,6 @@ pub fn surface_decl_tag(decl: &SurfaceDeclaration) -> &'static str {
         SurfaceDeclaration::TypeAlias { .. } => "TypeAlias",
         SurfaceDeclaration::ClassDecl { .. } => "ClassDecl",
         SurfaceDeclaration::InstanceDecl { .. } => "InstanceDecl",
-        SurfaceDeclaration::MacroDecl { .. } => "MacroDecl",
         SurfaceDeclaration::SyntaxClass { .. } => "SyntaxClass",
         SurfaceDeclaration::Splice(_) => "Splice",
     }
@@ -146,9 +145,9 @@ pub fn surface_node_get_field(
         }
         (SurfaceExpression::TypeAssert { expr: inner, .. }, "expr") => expr_variant(inner),
 
-        // --- Annotated ---
-        (SurfaceExpression::Annotated { name, .. }, "name") => string_val(name),
-        (SurfaceExpression::Annotated { annotation, .. }, "annotation") => {
+        // --- Annotated VarRef (annotation is now on VarRef directly) ---
+        // Note: "name" for annotated VarRef is already handled by the VarRef arm above (line 98).
+        (SurfaceExpression::VarRef { annotation: Some(annotation), .. }, "annotation") => {
             annotation_to_value(annotation, ctx)
         }
 
@@ -624,33 +623,10 @@ fn annotation_inner_to_value(
                 // Convert the positional entry value to an annotation-like value using its text.
                 // For simple names (VarRef), expose as Simple. Otherwise expose text.
                 let part_val = match &pos_entry.node.value.expr {
-                    SurfaceExpression::VarRef { name, .. } => {
-                        // Simple name like "Seq", "k", "union"
-                        let mut p = indexmap::IndexMap::new();
-                        p.insert(
-                            HashableValue::Str("text".into()),
-                            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                                string_val(name),
-                                pos_entry.span.clone(),
-                            ))),
-                        );
-                        p.insert(
-                            HashableValue::Str("name".into()),
-                            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                                string_val(name),
-                                pos_entry.span.clone(),
-                            ))),
-                        );
-                        Value::Variant {
-                            tag: "Annotation.Simple".into(),
-                            payload: Some(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                                Value::Dict(p),
-                                pos_entry.span.clone(),
-                            )))),
-                        }
-                    }
-                    SurfaceExpression::Annotated { name, annotation } => {
-                        // e.g. Fn@a → Annotated
+                    // Annotated VarRef arm must come BEFORE plain VarRef arm (more specific).
+                    SurfaceExpression::VarRef { name, annotation: Some(annotation), .. } => {
+                        // e.g. Fn@a → annotated VarRef (annotation is now on VarRef directly)
+                        let name = name.as_str();
                         let inner_text = annotation.node.to_string();
                         let full_text = format!("{}@{}", name, inner_text);
                         let mut p = indexmap::IndexMap::new();
@@ -677,6 +653,31 @@ fn annotation_inner_to_value(
                         );
                         Value::Variant {
                             tag: "Annotation.Annotated".into(),
+                            payload: Some(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                                Value::Dict(p),
+                                pos_entry.span.clone(),
+                            )))),
+                        }
+                    }
+                    SurfaceExpression::VarRef { name, annotation: None, .. } => {
+                        // Simple name like "Seq", "k", "union" — no annotation.
+                        let mut p = indexmap::IndexMap::new();
+                        p.insert(
+                            HashableValue::Str("text".into()),
+                            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                                string_val(name),
+                                pos_entry.span.clone(),
+                            ))),
+                        );
+                        p.insert(
+                            HashableValue::Str("name".into()),
+                            ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                                string_val(name),
+                                pos_entry.span.clone(),
+                            ))),
+                        );
+                        Value::Variant {
+                            tag: "Annotation.Simple".into(),
                             payload: Some(ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                                 Value::Dict(p),
                                 pos_entry.span.clone(),

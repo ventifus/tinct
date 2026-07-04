@@ -108,11 +108,13 @@ Macros are tinct functions that receive AST-as-data and return AST-as-data. tinc
   [quote [if [unquote pred] [unquote body] []]]]
 ```
 
-### Expansion Pipeline
+### Pipeline
 
 ```text
-source → parse → expand_surface_program → desugar → resolve → typecheck → eval
+source → parse → desugar → resolve → typecheck → eval
 ```
+
+Note: The `expand_surface_program` pass and `[macro ...]` declaration forms have been removed. Macro-like behavior is implemented as ordinary runtime tinct functions in the stdlib.
 
 - `[macro name [let params] body]` registers a compile-time function
 - When `[name arg1 arg2 ...]` appears in source, the expander quotes the arguments (converts each AST node to a typed `Expr` variant value) and calls the macro function with the quoted forms
@@ -175,15 +177,15 @@ Macros defined in an included file are available to the includer **only when usi
 
 ### Parser / Grammar
 
-`src/parser.rs` recognizes three keywords: `macro` (produces `SurfaceDeclaration::MacroDecl`), `syntax-class` (produces `SurfaceDeclaration::SyntaxClass`), and `splice` (produces `SurfaceDeclaration::Splice` in dict context). Macro invocations are syntactically identical to function calls — the expander distinguishes them by name lookup against registered macros. No change to expression parsing.
+`src/parser.rs` recognizes `syntax-class` (produces `SurfaceDeclaration::SyntaxClass`) and `splice` (produces `SurfaceDeclaration::Splice` in dict context). The `macro` keyword has been removed from the parser (T-1393). Macro invocations are handled as ordinary function calls to stdlib functions like `tmpl`, `do`, `syntax-fn`.
 
 ### AST
 
-`src/parser.rs` (AST types) has `SurfaceDeclaration::MacroDecl` for `[macro ...]`, plus `SurfaceExpression::Quote`/`SurfaceExpression::Unquote`/`SurfaceExpression::UnquoteSplice` variants. `src/surface_convert.rs` defines a stable `SurfaceExpression -> Value::Variant` projection (`surface_program_to_dict`) and its inverse (`dict_to_surface_node`). The schema is a public API surface — schema changes break existing macros.
+`src/parser.rs` (AST types) has `SurfaceExpression::Quote`/`SurfaceExpression::Unquote`/`SurfaceExpression::UnquoteSplice` variants. `src/surface_convert.rs` defines a stable `SurfaceExpression -> Value::Variant` projection (`surface_program_to_dict`) and its inverse (`dict_to_surface_node`). The schema is a public API surface — schema changes break existing macros.
 
 ### Evaluator
 
-`src/eval.rs` gains a macro expansion phase between parsing and type checking: `parse → expand_surface_program → desugar → resolve → typecheck → eval`. The expander walks the AST top-down, calling macro functions when it encounters registered forms, and recurses into the expansion result until no macros remain (fixpoint). A depth limit prevents infinite expansion. Macro functions run in a separate evaluation context (eagerly, before main evaluation).
+`src/eval.rs` handles the pipeline: `parse → desugar → resolve → typecheck → eval`. Macro-like transformations (tmpl, do, syntax-fn) are implemented as ordinary tinct functions evaluated at runtime, not as a separate compile-time pass.
 
 ### Type Checker
 

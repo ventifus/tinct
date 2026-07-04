@@ -1571,43 +1571,19 @@ The round-trip paths are: in-memory (`[eval [seq [ast-of f]]]`, works for pure/s
 
 Quoted expressions have type `Expression`. No special type rules — `quote` is transparent to the type system.
 
-## Macro Expansion Pipeline
+## Pipeline
 
-After parsing, the pipeline inserts an expansion phase:
+After parsing, the pipeline is:
 
 ```text
-parse → expand_surface_program → desugar → resolve → typecheck → eval
+parse → desugar → resolve → typecheck → eval
 ```
 
-`expand_surface_program` walks the AST top-down. A **pre-scan pass** first walks the entire AST to register all `[macro ...]` and `[syntax-class ...]` declarations before the transformation walk begins — giving the expander a complete registry before it processes any form. Then, when a `Call` node's function name matches a registered macro, the expander:
-
-1. Quotes all arguments — converts each argument AST node into the corresponding typed `Expr` variant value (e.g., `Variant("Call", {fn: ..., args: ...})`). Arguments are never evaluated.
-2. Binds the quoted forms to the macro's `[let ...]` parameter pattern. If any parameter is annotated (e.g., `name@VarRef`), the expander validates the argument's Expr variant before binding — an annotation mismatch raises `MacroError` at the call site before the macro body runs.
-3. Calls the macro function with the bound arguments
-4. Converts the result back to AST and re-expands
-
-`[macro name [let params] body]` is processed by the expander: the body is evaluated in a **fresh `EvalContext`** (not shared with the runtime pass — prevents cache pollution and depth budget erosion) that inherits `EvalConfig` (capability flags, `no_fs`). The resulting callable is registered in `MacroEnv`. The `SurfaceExpression::MacroDecl` node is removed from the AST after registration — the typechecker and evaluator never see it.
-
-**Termination:** A **shared** depth counter of 100 total across all expansion in a file (not per call-site — a single recursive macro cannot consume the entire budget), plus a total node-count cap of 100k nodes post-expansion to prevent exponential AST blowup.
-
-**Namespace protection:** Macros cannot shadow registered Rust builtins — enforced at registration time.
+The macro expansion pre-scan infrastructure (`expand_surface_program`, `[macro ...]` declaration forms, `MacroDecl` AST nodes) has been removed. Macros defined in tinct source (via the `tmpl`, `do`, `syntax-fn`, etc. forms in the stdlib) are runtime values implemented as ordinary tinct functions — they are not compile-time transformers.
 
 **`gensym`:** Produces names of the form `ℊꜱʏᴍ⧼prefix⧽N` (`ℊ` U+210A, `ꜱʏᴍ` small-cap letters, `⧼⧽` U+29FC/29FD angle brackets). These codepoints require deliberate IME input — collision with user-written identifiers is practically impossible. Names are unique but not stable across evaluation orders. Wrap the returned string with `ident` to obtain a `VarRef` AST node.
 
-**`macro-error`:** `[macro-error message]` or `[macro-error message node]` terminates expansion with `ErrorKind::MacroError` (E012). With one argument, uses the call site span. With two arguments and an AST node, uses the node's span. This enables macros to report precise, call-site-attributed errors.
-
-**`splice`:** A macro returns `SurfaceExpression::UnquoteSplice` to inject multiple forms into the surrounding dict context. `UnquoteSplice` in expression position is an expansion-time error.
-
-**Include ordering:** The `$include` builtin runs the full pipeline (parse → expand_surface_program → desugar → resolve → eval) on included files. Macros defined in an included file are expanded within that file's scope, but are **not** propagated to the includer — macro definitions are expansion-time constructs that don't cross the runtime `$include` boundary. This is a consequence of Flatt (2002) phase separation.
-
-## Macro Hygiene
-
-Tinct's macro hygiene is complete without scope sets. Every name in a macro body is one of two kinds:
-
-- **Pattern-bound from user input** — names bound in the `[let ...]` argument pattern are the user's own names, inherently in user scope. No renaming needed; they hold pieces of the caller's input AST.
-- **Gensym'd** — `[gensym "prefix"]` returns `ℊꜱʏᴍ⧼prefix⧽N`, a name built from Unicode codepoints that are practically unguessable in normal input. Collision is structurally impossible.
-
-No third category exists where a macro could accidentally introduce a name that captures user scope. Scope sets (Flatt 2016) address that third category; tinct eliminates it instead by design.
+**`macro-error`:** `[macro-error message]` or `[macro-error message node]` terminates evaluation with `ErrorKind::MacroError` (E012). With one argument, uses the call site span. With two arguments and an AST node, uses the node's span.
 
 **`inject:`** provides a controlled anaphoric escape hatch. A macro declares `inject: it: default-expr` to deliberately introduce `it` into the caller's scope by convention. The `macro-injects` builtin lets callers reflect on which bindings a macro will inject and what their defaults are.
 

@@ -238,12 +238,12 @@ pub(crate) async fn typecheck_case_arm(
             for binding in bindings {
                 match &binding.expr {
                     // Wildcard: _ (check first to avoid binding "_" as a variable)
-                    SurfaceExpression::VarRef { name, .. } if name == "_" => {
+                    SurfaceExpression::VarRef { name, annotation: None, .. } if name == "_" => {
                         // Wildcard - no binding introduced
                     }
 
-                    // Plain binding: name
-                    SurfaceExpression::VarRef { name, .. } => {
+                    // Plain binding: name (no annotation)
+                    SurfaceExpression::VarRef { name, annotation: None, .. } => {
                         // Bind name to scrutinee type
                         arm_env.insert(name.clone(), scrutinee_ty.clone());
                     }
@@ -262,7 +262,9 @@ pub(crate) async fn typecheck_case_arm(
                     //
                     // Disambiguation: PropertyDict with "_constructor" sentinel key = structural test.
                     // All other annotation forms = typed binding.
-                    SurfaceExpression::Annotated { name, annotation } => {
+                    // Annotated VarRef: annotation is now on VarRef directly.
+                    SurfaceExpression::VarRef { name, annotation: Some(annotation), .. } => {
+                        let name = name.as_str();
                         // Check if this is a structural test: PropertyDict with "_constructor" sentinel
                         let constructor_name_opt = annotation
                             .node
@@ -363,7 +365,7 @@ pub(crate) async fn typecheck_case_arm(
                             // this warning is purely a static dead-code diagnostic.
 
                             if name != "_" {
-                                arm_env.insert(name.clone(), payload_ty);
+                                arm_env.insert(name.to_string(), payload_ty);
                             }
                         } else {
                             // Typed binding: `name@Type`
@@ -403,7 +405,7 @@ pub(crate) async fn typecheck_case_arm(
                             // normalize_intersection handles Unknown-as-identity and Top-as-identity.
                             let narrowed_ty =
                                 Type::normalize_intersection(vec![scrutinee_ty.clone(), ann_ty]);
-                            arm_env.insert(name.clone(), narrowed_ty);
+                            arm_env.insert(name.to_string(), narrowed_ty);
                         }
                     }
 
@@ -422,13 +424,8 @@ pub(crate) async fn typecheck_case_arm(
 
                         for (idx, nested) in nested_bindings.iter().enumerate() {
                             match &nested.expr {
-                                SurfaceExpression::VarRef { name, .. } if name != "_" => {
-                                    // Use constructor field type if available, otherwise Unknown
-                                    let field_ty =
-                                        field_types.get(idx).cloned().unwrap_or(Type::Unknown);
-                                    arm_env.insert(name.clone(), field_ty);
-                                }
-                                SurfaceExpression::Annotated { name, annotation } => {
+                                // Annotated VarRef (annotation is now on VarRef directly).
+                                SurfaceExpression::VarRef { name, annotation: Some(annotation), .. } => {
                                     let ann_ty = resolve_annotation(
                                         &annotation.node,
                                         env,
@@ -442,6 +439,12 @@ pub(crate) async fn typecheck_case_arm(
                                     .await
                                     .map_err(|e| vec![e])?;
                                     arm_env.insert(name.clone(), ann_ty);
+                                }
+                                SurfaceExpression::VarRef { name, annotation: None, .. } if name != "_" => {
+                                    // Use constructor field type if available, otherwise Unknown
+                                    let field_ty =
+                                        field_types.get(idx).cloned().unwrap_or(Type::Unknown);
+                                    arm_env.insert(name.clone(), field_ty);
                                 }
                                 _ => {
                                     // Wildcard or other — no binding

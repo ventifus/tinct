@@ -18,18 +18,17 @@
 [drain: [task
   [select [context]
     [seq [ch: %emit-channel  handler: [fn [let v]
-      [write-handle %stdout [raw v]]]] []]
+      [write [raw v] %stdout]]] []]
     identity]]]
 
 # 2. Force the return value to drive the lazy evaluation cascade.
 # Only write % if it is non-null ([] means "no return value" — output was via emit).
 # Wrapped in a dict so this intermediate document extends the scope.
 [_: [if [seq? %]
-  [reduce [fn [let _ x]
-    [write-handle %stdout [raw x]]] [] %]
+  [reduce [fn [let h x] [write [raw x] h]] %stdout %]
   [if [= [] %]
     []
-    [write-handle %stdout [raw %]]]]]
+    [write [raw %] %stdout]]]]
 
 # 3. Wait for drain to finish consuming any emits triggered during forcing.
 # Wrapped in a dict so this intermediate document extends the scope.

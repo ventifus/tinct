@@ -1,5 +1,5 @@
-# Test that [macro name [let params] body] parses and registers correctly.
-# MacroDecl is filtered from post-expansion AST and not typechecked directly.
-[macro double [let x] [quote [+ [unquote x] [unquote x]]]]
+# T-1393: [macro] is no longer a keyword — "macro" is now a valid user identifier.
+# This test now shows that "macro" can be used as a dict key.
+[macro: "available"]
 === out
-[macro double [let x] [quote [+ [unquote x] [unquote x]]]]
+[macro: "available"]

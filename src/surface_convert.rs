@@ -135,11 +135,15 @@ fn inject_span_into_expr_variant(
 /// Reads the Variant tag or `type:` field and dispatches to the native `SurfaceExpression`
 /// constructor. All variants are handled natively. Unknown tags return a hard `AstError`;
 /// there is no Expr-based fallback path.
+///
+/// `call_site_span` is used as the fallback span when the dict representation has no
+/// embedded span information (e.g., for AstError nodes).
 pub fn dict_to_surface_node(
     val: &Value,
+    call_site_span: &Span,
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<Arc<SurfaceNode>, AstError> {
-    dict_to_surface_node_inner(val, ctx)
+    dict_to_surface_node_inner(val, call_site_span, ctx)
 }
 
 /// Inner implementation of `dict_to_surface_node`.
@@ -148,6 +152,7 @@ pub fn dict_to_surface_node(
 /// All known `Expr.*` Variant tags are handled there. Unknown tags return a hard `AstError`.
 fn dict_to_surface_node_inner(
     val: &Value,
+    call_site_span: &Span,
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<Arc<SurfaceNode>, AstError> {
     // AstError is a skip variant — to_expr_variant produces a unit Expr.AstError (no payload).
@@ -160,8 +165,8 @@ fn dict_to_surface_node_inner(
         };
         if stripped == "AstError" {
             return Ok(Arc::new(SurfaceNode::new(
-                SurfaceExpression::Error(rust_span!()),
-                rust_span!(),
+                SurfaceExpression::Error(call_site_span.clone()),
+                call_site_span.clone(),
             )));
         }
     }
@@ -186,11 +191,483 @@ fn dict_to_surface_node_inner(
     Ok(node)
 }
 
+/// Convert a `CoreExpr` to an `Expr.*` `Value::Variant`.
+///
+/// This function converts a lowered `CoreExpr` back to the AST-as-data representation
+/// that macros and metaprogramming tools consume. The tag is qualified (e.g. `"Expr.VarRef"`)
+/// and the payload is a materialized dict with the node's fields.
+///
+/// **De Bruijn coordinates are dropped** — `CoreExpr::Var { level, slot, .. }` becomes
+/// `Expr.VarRef { name: String(name) }`. This preserves variable names for metaprogramming
+/// (e.g., quote/unquote) rather than exposing internal binding indices.
+///
+/// The function injects the source span from the `Spanned<CoreExpr>` into the Expr.*
+/// payload, similar to `surface_node_to_expr_variant`.
+pub fn core_expr_to_expr_value(
+    core: &Spanned<crate::ast::CoreExpr>,
+    ctx: &Arc<crate::eval::EvalContext>,
+) -> Value {
+    use crate::ast::CoreExpr;
+    use crate::value::HashableValue;
+
+    let synth = rust_span!(); // span for synthetic thunks wrapping primitive values
+
+    // Helper to recursively convert child CoreExpr nodes
+    let recurse = |child: &Spanned<CoreExpr>| -> ThunkId {
+        let child_val = core_expr_to_expr_value(child, ctx);
+        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(child_val, child.span.clone())))
+    };
+
+    // Helper to convert a Vec of CoreExpr to a Dict (auto-indexed)
+    let recurse_vec = |children: &[Arc<Spanned<CoreExpr>>]| -> ThunkId {
+        let mut dict = IndexMap::new();
+        for (i, child) in children.iter().enumerate() {
+            let child_id = recurse(child);
+            dict.insert(HashableValue::Int(i as i64), child_id);
+        }
+        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+            Value::Dict(dict),
+            synth.clone(),
+        )))
+    };
+
+    // Helper to build an Expr.* variant with a payload dict
+    let make_variant = |tag: &str, fields: IndexMap<HashableValue, ThunkId>| -> Value {
+        make_variant_with_payload(&format!("Expr.{}", tag), fields, &core.span, ctx)
+    };
+
+    let val = match &core.node {
+        // ── Literals ─────────────────────────────────────────────────────────────
+        CoreExpr::Int(n) => {
+            let mut payload = IndexMap::new();
+            payload.insert(
+                HashableValue::Str("kind".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    string_val("int"),
+                    synth.clone(),
+                ))),
+            );
+            payload.insert(
+                HashableValue::Str("value".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    Value::Int(*n),
+                    synth.clone(),
+                ))),
+            );
+            payload.insert(
+                HashableValue::Str("bare".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    Value::Dict(IndexMap::new()), // Null
+                    synth.clone(),
+                ))),
+            );
+            make_variant("Literal", payload)
+        }
+
+        CoreExpr::U64(n) => {
+            let mut payload = IndexMap::new();
+            payload.insert(
+                HashableValue::Str("kind".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    string_val("u64"),
+                    synth.clone(),
+                ))),
+            );
+            payload.insert(
+                HashableValue::Str("value".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    Value::Int(*n as i64),
+                    synth.clone(),
+                ))),
+            );
+            payload.insert(
+                HashableValue::Str("bare".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    Value::Dict(IndexMap::new()), // Null
+                    synth.clone(),
+                ))),
+            );
+            make_variant("Literal", payload)
+        }
+
+        CoreExpr::Float(f) => {
+            let mut payload = IndexMap::new();
+            payload.insert(
+                HashableValue::Str("kind".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    string_val("float"),
+                    synth.clone(),
+                ))),
+            );
+            payload.insert(
+                HashableValue::Str("value".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    Value::Float(*f),
+                    synth.clone(),
+                ))),
+            );
+            payload.insert(
+                HashableValue::Str("bare".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    Value::Dict(IndexMap::new()), // Null
+                    synth.clone(),
+                ))),
+            );
+            make_variant("Literal", payload)
+        }
+
+        CoreExpr::Str(s) => {
+            let mut payload = IndexMap::new();
+            payload.insert(
+                HashableValue::Str("kind".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    string_val("str"),
+                    synth.clone(),
+                ))),
+            );
+            payload.insert(
+                HashableValue::Str("value".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    string_val(s),
+                    synth.clone(),
+                ))),
+            );
+            payload.insert(
+                HashableValue::Str("bare".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    Value::Dict(IndexMap::new()), // Null
+                    synth.clone(),
+                ))),
+            );
+            make_variant("Literal", payload)
+        }
+
+        // ── Variables ────────────────────────────────────────────────────────────
+        // DROP de Bruijn coordinates — only preserve the name
+        CoreExpr::Var { name, .. } => {
+            let mut payload = IndexMap::new();
+            payload.insert(
+                HashableValue::Str("name".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    string_val(name),
+                    synth.clone(),
+                ))),
+            );
+            make_variant("VarRef", payload)
+        }
+
+        // ── Call ─────────────────────────────────────────────────────────────────
+        CoreExpr::Call {
+            func,
+            args,
+            named_args,
+            implied,
+        } => {
+            let mut payload = IndexMap::new();
+            payload.insert(HashableValue::Str("fn".into()), recurse(func));
+            payload.insert(HashableValue::Str("args".into()), recurse_vec(args));
+
+            // Convert named args to Dict
+            let mut named_dict = IndexMap::new();
+            for (i, named_arg) in named_args.iter().enumerate() {
+                let mut arg_dict = IndexMap::new();
+                arg_dict.insert(
+                    HashableValue::Str("name".into()),
+                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                        string_val(&named_arg.node.name),
+                        synth.clone(),
+                    ))),
+                );
+                arg_dict.insert(
+                    HashableValue::Str("value".into()),
+                    recurse(&named_arg.node.value),
+                );
+                named_dict.insert(
+                    HashableValue::Int(i as i64),
+                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                        Value::Dict(arg_dict),
+                        named_arg.span.clone(),
+                    ))),
+                );
+            }
+            payload.insert(
+                HashableValue::Str("named-args".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    Value::Dict(named_dict),
+                    synth.clone(),
+                ))),
+            );
+
+            payload.insert(
+                HashableValue::Str("implied".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    Value::boolean(*implied),
+                    synth.clone(),
+                ))),
+            );
+
+            make_variant("Call", payload)
+        }
+
+        // ── Dict ─────────────────────────────────────────────────────────────────
+        CoreExpr::Dict(entries) => {
+            let mut entries_dict = IndexMap::new();
+            for (i, entry) in entries.iter().enumerate() {
+                let mut entry_dict = IndexMap::new();
+                entry_dict.insert(
+                    HashableValue::Str("key".into()),
+                    match &entry.node.key {
+                        Some(k) => recurse(k),
+                        None => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                            Value::Dict(IndexMap::new()), // Null
+                            synth.clone(),
+                        ))),
+                    },
+                );
+                entry_dict.insert(
+                    HashableValue::Str("value".into()),
+                    recurse(&entry.node.value),
+                );
+                entries_dict.insert(
+                    HashableValue::Int(i as i64),
+                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                        Value::Dict(entry_dict),
+                        entry.span.clone(),
+                    ))),
+                );
+            }
+            let mut payload = IndexMap::new();
+            payload.insert(
+                HashableValue::Str("entries".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    Value::Dict(entries_dict),
+                    synth.clone(),
+                ))),
+            );
+            make_variant("Dict", payload)
+        }
+
+        // ── Fn ───────────────────────────────────────────────────────────────────
+        CoreExpr::Fn {
+            params,
+            body,
+            return_ann,
+            ..
+        } => {
+            let mut params_dict = IndexMap::new();
+            for (i, param) in params.iter().enumerate() {
+                let mut param_dict = IndexMap::new();
+                param_dict.insert(
+                    HashableValue::Str("name".into()),
+                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                        string_val(&param.node.name),
+                        synth.clone(),
+                    ))),
+                );
+                param_dict.insert(
+                    HashableValue::Str("annotation".into()),
+                    alloc_annotation_opt(param.node.annotation.as_ref(), ctx),
+                );
+                param_dict.insert(
+                    HashableValue::Str("variadic".into()),
+                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                        Value::boolean(param.node.variadic),
+                        synth.clone(),
+                    ))),
+                );
+                params_dict.insert(
+                    HashableValue::Int(i as i64),
+                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                        Value::Dict(param_dict),
+                        param.span.clone(),
+                    ))),
+                );
+            }
+
+            let mut payload = IndexMap::new();
+            payload.insert(
+                HashableValue::Str("params".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    Value::Dict(params_dict),
+                    synth.clone(),
+                ))),
+            );
+            payload.insert(HashableValue::Str("body".into()), recurse(body));
+            payload.insert(
+                HashableValue::Str("return-ann".into()),
+                alloc_annotation_opt(return_ann.as_ref(), ctx),
+            );
+            make_variant("Fn", payload)
+        }
+
+        // ── Sequential ───────────────────────────────────────────────────────────
+        CoreExpr::Sequential(exprs) => {
+            let mut payload = IndexMap::new();
+            payload.insert(HashableValue::Str("exprs".into()), recurse_vec(exprs));
+            make_variant("Sequential", payload)
+        }
+
+        // ── Match ────────────────────────────────────────────────────────────────
+        CoreExpr::Match { scrutinee, arms } => {
+            let mut arms_dict = IndexMap::new();
+            for (i, arm) in arms.iter().enumerate() {
+                // CoreMatchArm has pattern, guard, body — serialize as opaque Dict
+                let mut arm_dict = IndexMap::new();
+                // Pattern is Spanned<Pattern> — serialize as opaque for now
+                arm_dict.insert(
+                    HashableValue::Str("pattern".into()),
+                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                        Value::Dict(IndexMap::new()), // Opaque
+                        arm.pattern.span.clone(),
+                    ))),
+                );
+                arm_dict.insert(
+                    HashableValue::Str("guard".into()),
+                    match &arm.guard {
+                        Some(g) => recurse(g),
+                        None => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                            Value::Dict(IndexMap::new()), // Null
+                            synth.clone(),
+                        ))),
+                    },
+                );
+                arm_dict.insert(HashableValue::Str("body".into()), recurse(&arm.body));
+                arms_dict.insert(
+                    HashableValue::Int(i as i64),
+                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                        Value::Dict(arm_dict),
+                        synth.clone(),
+                    ))),
+                );
+            }
+            let mut payload = IndexMap::new();
+            payload.insert(HashableValue::Str("scrutinee".into()), recurse(scrutinee));
+            payload.insert(
+                HashableValue::Str("arms".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    Value::Dict(arms_dict),
+                    synth.clone(),
+                ))),
+            );
+            make_variant("Match", payload)
+        }
+
+        // ── Quote / Unquote / UnquoteSplice ──────────────────────────────────────
+        CoreExpr::Quote(e) => {
+            let mut payload = IndexMap::new();
+            payload.insert(HashableValue::Str("expr".into()), recurse(e));
+            make_variant("Quote", payload)
+        }
+
+        CoreExpr::Unquote(e) => {
+            let mut payload = IndexMap::new();
+            payload.insert(HashableValue::Str("expr".into()), recurse(e));
+            make_variant("Unquote", payload)
+        }
+
+        CoreExpr::UnquoteSplice(e) => {
+            let mut payload = IndexMap::new();
+            payload.insert(HashableValue::Str("expr".into()), recurse(e));
+            make_variant("UnquoteSplice", payload)
+        }
+
+        // ── TypeAssert ───────────────────────────────────────────────────────────
+        CoreExpr::TypeAssert {
+            annotation, expr, ..
+        } => {
+            let mut payload = IndexMap::new();
+            payload.insert(
+                HashableValue::Str("annotation".into()),
+                alloc_annotation_opt(Some(annotation), ctx),
+            );
+            payload.insert(HashableValue::Str("expr".into()), recurse(expr));
+            make_variant("TypeAssert", payload)
+        }
+
+
+        // ── Rest ─────────────────────────────────────────────────────────────────
+        CoreExpr::Rest(name_opt) => {
+            let mut payload = IndexMap::new();
+            payload.insert(
+                HashableValue::Str("name".into()),
+                alloc_string_opt(name_opt.as_deref(), ctx),
+            );
+            make_variant("Rest", payload)
+        }
+
+        // ── LetDecl / PatternDecl ────────────────────────────────────────────────
+        CoreExpr::LetDecl { bindings } => {
+            let mut payload = IndexMap::new();
+            let arc_bindings: Vec<Arc<Spanned<CoreExpr>>> =
+                bindings.iter().map(|b| Arc::new(b.clone())).collect();
+            payload.insert(HashableValue::Str("bindings".into()), recurse_vec(&arc_bindings));
+            make_variant("LetDecl", payload)
+        }
+
+        CoreExpr::PatternDecl { bindings } => {
+            let mut payload = IndexMap::new();
+            let arc_bindings: Vec<Arc<Spanned<CoreExpr>>> =
+                bindings.iter().map(|b| Arc::new(b.clone())).collect();
+            payload.insert(HashableValue::Str("bindings".into()), recurse_vec(&arc_bindings));
+            make_variant("PatternDecl", payload)
+        }
+
+        // ── CaseArm ──────────────────────────────────────────────────────────────
+        CoreExpr::CaseArm {
+            let_bindings,
+            pattern,
+            body,
+        } => {
+            let mut payload = IndexMap::new();
+            payload.insert(
+                HashableValue::Str("let-bindings".into()),
+                recurse(let_bindings),
+            );
+            payload.insert(HashableValue::Str("pattern".into()), recurse(pattern));
+            payload.insert(HashableValue::Str("body".into()), recurse(body));
+            make_variant("CaseArm", payload)
+        }
+
+        // ── Variant ──────────────────────────────────────────────────────────────
+        // This is AST variant construction (Expr.Variant), NOT Value::Variant itself
+        CoreExpr::Variant { tag, payload } => {
+            let mut fields = IndexMap::new();
+            fields.insert(
+                HashableValue::Str("tag".into()),
+                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                    string_val(tag),
+                    synth.clone(),
+                ))),
+            );
+            fields.insert(
+                HashableValue::Str("payload".into()),
+                match payload {
+                    Some(p) => recurse(p),
+                    None => ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                        Value::Dict(IndexMap::new()), // Null
+                        synth.clone(),
+                    ))),
+                },
+            );
+            make_variant("Variant", fields)
+        }
+
+        // ── Placeholder / Error ──────────────────────────────────────────────────
+        CoreExpr::Placeholder => make_unit_variant("Expr.Placeholder"),
+
+        CoreExpr::Error(_span) => make_unit_variant("Expr.ExprError"),
+    };
+
+    // Inject the span into the payload (like surface_node_to_expr_variant does)
+    inject_span_into_expr_variant(val, &core.span, ctx)
+}
+
 /// Convert a dict to a `Spanned<SurfaceEntry>`.
 ///
 /// Surface-native reverse for `surface_entry_to_thunk_id`.
 fn dict_to_surface_entry(
     val: &Value,
+    call_site_span: &Span,
     path: &[&str],
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<Spanned<SurfaceEntry>, AstError> {
@@ -207,13 +684,13 @@ fn dict_to_surface_entry(
     let key_val = get_dict_field(dict, "key", path, ctx)?;
     let key: Option<Arc<SurfaceNode>> = match &key_val {
         Value::Dict(d) if d.is_empty() => None,
-        _ => Some(dict_to_surface_node(&key_val, ctx)?),
+        _ => Some(dict_to_surface_node(&key_val, call_site_span, ctx)?),
     };
 
     let value_val = get_dict_field(dict, "value", path, ctx)?;
-    let value = dict_to_surface_node(&value_val, ctx)?;
+    let value = dict_to_surface_node(&value_val, call_site_span, ctx)?;
 
-    let span = extract_span(dict, ctx).unwrap_or_else(|| rust_span!());
+    let span = extract_span(dict, ctx).unwrap_or_else(|| call_site_span.clone());
 
     Ok(Spanned::new(SurfaceEntry { key, value }, span))
 }
@@ -308,13 +785,14 @@ fn dict_to_annotation(
             entries_path.push("entries".to_string());
             let path_refs: Vec<&str> = entries_path.iter().map(|s| s.as_str()).collect();
             let entries_list = extract_list(&entries_val, &path_refs, ctx)?;
+            let fallback_span = extract_span(dict, ctx).unwrap_or_else(|| rust_span!());
             let mut entries = Vec::new();
             for (i, entry_val) in entries_list.into_iter().enumerate() {
                 let mut entry_path = entries_path.clone();
                 let i_str = i.to_string();
                 entry_path.push(i_str.clone());
                 let entry_path_refs: Vec<&str> = entry_path.iter().map(|s| s.as_str()).collect();
-                let entry = dict_to_surface_entry(&entry_val, &entry_path_refs, ctx)?;
+                let entry = dict_to_surface_entry(&entry_val, &fallback_span, &entry_path_refs, ctx)?;
                 entries.push(entry);
             }
             Annotation::PropertyDict(entries)
@@ -531,13 +1009,7 @@ fn get_bool_field(
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<bool, AstError> {
     let val = get_field(dict, key, path, ctx)?;
-    match val.as_bool() {
-        Some(b) => Ok(b),
-        None => Err(AstError {
-            message: format!("field '{}' must be Bool", key),
-            field_path: path.iter().map(|s| s.to_string()).collect(),
-        }),
-    }
+    Ok(val.is_truthy())
 }
 
 fn get_dict_field(
@@ -574,7 +1046,7 @@ fn is_empty_dict(val: &Value) -> bool {
     matches!(val, Value::Dict(d) if d.is_empty())
 }
 
-fn extract_span(
+pub(crate) fn extract_span(
     dict: &IndexMap<HashableValue, ThunkId>,
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> Option<Span> {
@@ -1066,10 +1538,7 @@ pub(crate) fn get_bool_field_with_aliases(
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<bool, AstError> {
     let val = get_field_with_aliases(dict, key, aliases, ctx)?;
-    val.as_bool().ok_or_else(|| AstError {
-        message: format!("field '{}' must be Bool", key),
-        field_path: vec![key.to_string()],
-    })
+    Ok(val.is_truthy())
 }
 
 pub(crate) fn get_int_field_with_aliases(
@@ -1126,8 +1595,9 @@ pub(crate) fn get_child_field_with_aliases(
     aliases: &[&str],
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<Arc<SurfaceNode>, AstError> {
+    let fallback_span = extract_span(dict, ctx).unwrap_or_else(|| rust_span!());
     let val = get_field_with_aliases(dict, key, aliases, ctx)?;
-    dict_to_surface_node(&val, ctx).map_err(|mut e| {
+    dict_to_surface_node(&val, &fallback_span, ctx).map_err(|mut e| {
         e.field_path.insert(0, key.to_string());
         e
     })
@@ -1141,9 +1611,10 @@ pub(crate) fn get_child_opt_field_with_aliases(
     aliases: &[&str],
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<Option<Arc<SurfaceNode>>, AstError> {
+    let fallback_span = extract_span(dict, ctx).unwrap_or_else(|| rust_span!());
     match get_field_with_aliases(dict, key, aliases, ctx) {
         Ok(val) if !is_empty_dict(&val) => {
-            dict_to_surface_node(&val, ctx).map(Some).map_err(|mut e| {
+            dict_to_surface_node(&val, &fallback_span, ctx).map(Some).map_err(|mut e| {
                 e.field_path.insert(0, key.to_string());
                 e
             })
@@ -1159,10 +1630,11 @@ pub(crate) fn get_child_list_field_with_aliases(
     aliases: &[&str],
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<Vec<Arc<SurfaceNode>>, AstError> {
+    let fallback_span = extract_span(dict, ctx).unwrap_or_else(|| rust_span!());
     let val = get_field_with_aliases(dict, key, aliases, ctx)?;
     let list = extract_list(&val, &[key], ctx)?;
     list.into_iter()
-        .map(|v| dict_to_surface_node(&v, ctx))
+        .map(|v| dict_to_surface_node(&v, &fallback_span, ctx))
         .collect::<Result<Vec<_>, _>>()
 }
 
@@ -1172,6 +1644,7 @@ pub(crate) fn get_entry_list_field_with_aliases(
     aliases: &[&str],
     ctx: &Arc<crate::eval::EvalContext>,
 ) -> Result<Vec<Spanned<SurfaceEntry>>, AstError> {
+    let fallback_span = extract_span(dict, ctx).unwrap_or_else(|| rust_span!());
     let val = get_field_with_aliases(dict, key, aliases, ctx)?;
     let list = extract_list(&val, &[key], ctx)?;
     let mut entries = Vec::with_capacity(list.len());
@@ -1204,7 +1677,7 @@ pub(crate) fn get_entry_list_field_with_aliases(
             })?;
         let key_node = match &key_val {
             Value::Dict(d) if d.is_empty() => None,
-            _ => Some(dict_to_surface_node(&key_val, ctx).map_err(|mut e| {
+            _ => Some(dict_to_surface_node(&key_val, &fallback_span, ctx).map_err(|mut e| {
                 e.field_path.insert(0, "key".to_string());
                 e.field_path.insert(0, i_str.clone());
                 e.field_path.insert(0, key.to_string());
@@ -1225,7 +1698,7 @@ pub(crate) fn get_entry_list_field_with_aliases(
                 message: "Expr.Entry value not materialized".into(),
                 field_path: vec![key.to_string(), i_str.clone(), "value".to_string()],
             })?;
-        let value_node = dict_to_surface_node(&value_val, ctx).map_err(|mut e| {
+        let value_node = dict_to_surface_node(&value_val, &fallback_span, ctx).map_err(|mut e| {
             e.field_path.insert(0, "value".to_string());
             e.field_path.insert(0, i_str.clone());
             e.field_path.insert(0, key.to_string());
@@ -1236,7 +1709,7 @@ pub(crate) fn get_entry_list_field_with_aliases(
                 key: key_node,
                 value: value_node,
             },
-            rust_span!(),
+            fallback_span.clone(),
         ));
     }
     Ok(entries)
@@ -1280,7 +1753,8 @@ pub(crate) fn get_named_arg_list_field_with_aliases(
                 message: "Expr.NamedArg value not materialized".into(),
                 field_path: vec![key.to_string(), i_str.clone(), "value".to_string()],
             })?;
-        let value_node = dict_to_surface_node(&value_val, ctx).map_err(|mut e| {
+        let fallback_span = extract_span(&payload_dict, ctx).unwrap_or_else(|| rust_span!());
+        let value_node = dict_to_surface_node(&value_val, &fallback_span, ctx).map_err(|mut e| {
             e.field_path.insert(0, "value".to_string());
             e.field_path.insert(0, i_str.clone());
             e.field_path.insert(0, key.to_string());
@@ -1292,7 +1766,7 @@ pub(crate) fn get_named_arg_list_field_with_aliases(
                 value: value_node,
                 annotation: None,
             },
-            rust_span!(),
+            fallback_span,
         ));
     }
     Ok(named_args)
@@ -1360,16 +1834,17 @@ pub(crate) fn get_match_arm_list_field_with_aliases(
                 })
             }
         };
+        let arm_fallback_span = extract_span(&arm_dict, ctx).unwrap_or_else(|| rust_span!());
         let pattern_val = get_dict_field(&arm_dict, "pattern", &[key, &i_str], ctx)?;
         let pattern = dict_to_pattern(&pattern_val, &[key, &i_str, "pattern"], ctx)?;
         let guard = match get_optional_dict_field(&arm_dict, "guard", ctx)? {
             Some(guard_val) if !is_empty_dict(&guard_val) => {
-                Some(dict_to_surface_node(&guard_val, ctx)?)
+                Some(dict_to_surface_node(&guard_val, &arm_fallback_span, ctx)?)
             }
             _ => None,
         };
         let body_val = get_dict_field(&arm_dict, "body", &[key, &i_str], ctx)?;
-        let body = dict_to_surface_node(&body_val, ctx)?;
+        let body = dict_to_surface_node(&body_val, &arm_fallback_span, ctx)?;
         arms.push(SurfaceMatchArm {
             pattern,
             guard,
@@ -2110,25 +2585,6 @@ fn surface_decl_to_thunk_id(
                     Value::Dict(arms_dict),
                     span.clone(),
                 ))),
-            );
-        }
-
-        SurfaceDeclaration::MacroDecl { name, params, body } => {
-            variant_tag = "MacroDecl";
-            dict.insert(
-                HashableValue::Str("name".into()),
-                ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    string_val(name),
-                    span.clone(),
-                ))),
-            );
-            dict.insert(
-                HashableValue::Str("params".into()),
-                surface_node_to_thunk_id(params, opts, ctx)?,
-            );
-            dict.insert(
-                HashableValue::Str("body".into()),
-                surface_node_to_thunk_id(body, opts, ctx)?,
             );
         }
 

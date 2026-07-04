@@ -220,10 +220,6 @@ pub(crate) fn stq_walk_decl_unknown(
                 }
             }
         }
-        SurfaceDeclaration::MacroDecl { params, body, .. } => {
-            stq_walk_node_unknown(params, spans);
-            stq_walk_node_unknown(body, spans);
-        }
         SurfaceDeclaration::SyntaxClass { pattern, .. } => stq_walk_node_unknown(pattern, spans),
         SurfaceDeclaration::Splice(forms) => {
             for form in forms {
@@ -368,10 +364,6 @@ pub(crate) fn stq_walk_decl_overbroad(
                 }
             }
         }
-        SurfaceDeclaration::MacroDecl { params, body, .. } => {
-            stq_walk_node_overbroad(params, type_map, diagnostics);
-            stq_walk_node_overbroad(body, type_map, diagnostics);
-        }
         SurfaceDeclaration::SyntaxClass { pattern, .. } => {
             stq_walk_node_overbroad(pattern, type_map, diagnostics)
         }
@@ -506,10 +498,6 @@ pub(crate) fn stq_collect_decl_spans(
                     stq_collect_node_spans(&entry.node.value, map);
                 }
             }
-        }
-        SurfaceDeclaration::MacroDecl { params, body, .. } => {
-            stq_collect_node_spans(params, map);
-            stq_collect_node_spans(body, map);
         }
         SurfaceDeclaration::SyntaxClass { pattern, .. } => stq_collect_node_spans(pattern, map),
         SurfaceDeclaration::Splice(forms) => {
@@ -655,10 +643,6 @@ pub(crate) fn scan_explicit_unknown_t011(
                         emit_t011_for_node(&entry.node.value, diagnostics);
                     }
                 }
-            }
-            SurfaceDeclaration::MacroDecl { params, body, .. } => {
-                emit_t011_for_node(params, diagnostics);
-                emit_t011_for_node(body, diagnostics);
             }
             SurfaceDeclaration::SyntaxClass { pattern, .. } => {
                 emit_t011_for_node(pattern, diagnostics);

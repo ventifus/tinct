@@ -285,17 +285,12 @@ fn collect_free_vars(
 
         // Variable references — the decision point
         CoreExpr::Var { name, .. } => {
-            if !param_scope.contains(name.as_str()) && stdlib_env.get_by_name(name).is_none() {
+            if !param_scope.contains(name.as_str()) && stdlib_env.get_by_name(name.as_str()).is_none() {
                 out.insert(name.clone());
             }
         }
 
-        // Annotated is a variable reference in annotation position
-        CoreExpr::Annotated { name, .. } => {
-            if !param_scope.contains(name.as_str()) && stdlib_env.get_by_name(name).is_none() {
-                out.insert(name.clone());
-            }
-        }
+        // Annotated Var (Var { annotation: Some(_) }) is handled by the Var arm above.
 
         CoreExpr::Sequential(exprs) => {
             // Mirror the resolver's sequential scope injection (resolve.rs:118-134):
@@ -312,7 +307,8 @@ fn collect_free_vars(
                                 if core_expr_is_static_key(&key.node) {
                                     if let CoreExpr::Str(name) = &key.node {
                                         seq_scope.insert(name.clone());
-                                    } else if let CoreExpr::Annotated { name, .. } = &key.node {
+                                    // Annotated Var (Var { annotation: Some(_) }) is a static key.
+                                    } else if let CoreExpr::Var { name, annotation: Some(_), .. } = &key.node {
                                         seq_scope.insert(name.clone());
                                     }
                                 }
@@ -335,7 +331,8 @@ fn collect_free_vars(
                     if core_expr_is_static_key(&key.node) {
                         if let CoreExpr::Str(name) = &key.node {
                             dict_scope.insert(name.clone());
-                        } else if let CoreExpr::Annotated { name, .. } = &key.node {
+                        // Annotated Var (Var { annotation: Some(_) }) is a static key.
+                        } else if let CoreExpr::Var { name, annotation: Some(_), .. } = &key.node {
                             dict_scope.insert(name.clone());
                         }
                     }
@@ -421,8 +418,7 @@ fn collect_free_vars(
                 for binding in bindings {
                     if let CoreExpr::Str(name) = &binding.node {
                         arm_scope.insert(name.clone());
-                    } else if let CoreExpr::Annotated { name, .. } = &binding.node {
-                        arm_scope.insert(name.clone());
+                    // Annotated Var (Var { annotation: Some(_) }) is also handled by Var arm.
                     } else if let CoreExpr::Var { name, .. } = &binding.node {
                         arm_scope.insert(name.clone());
                     }
@@ -524,8 +520,7 @@ fn collect_free_vars_in_quote(
                 for binding in bindings {
                     if let CoreExpr::Str(name) = &binding.node {
                         arm_scope.insert(name.clone());
-                    } else if let CoreExpr::Annotated { name, .. } = &binding.node {
-                        arm_scope.insert(name.clone());
+                    // Annotated Var (Var { annotation: Some(_) }) is also handled by Var arm.
                     } else if let CoreExpr::Var { name, .. } = &binding.node {
                         arm_scope.insert(name.clone());
                     }
@@ -552,8 +547,7 @@ fn collect_free_vars_in_quote(
         | CoreExpr::U64(_)
         | CoreExpr::Float(_)
         | CoreExpr::Str(_)
-        | CoreExpr::Var { .. }
-        | CoreExpr::Annotated { .. }
+        | CoreExpr::Var { .. }  // includes annotated Var (Var { annotation: Some(_) })
         | CoreExpr::Rest(_)
         | CoreExpr::Placeholder
         | CoreExpr::Error(_) => {}
@@ -648,22 +642,7 @@ fn core_expr_to_tinct(
             }
         }
 
-        // Annotated is a variable reference in annotation position
-        CoreExpr::Annotated { name, .. } => {
-            if param_scope.contains(name.as_str()) {
-                Ok(rename_map
-                    .get(name)
-                    .cloned()
-                    .unwrap_or_else(|| name.clone()))
-            } else if let Some(scn) = substitutions.get(name) {
-                Ok(scn.clone())
-            } else {
-                Ok(rename_map
-                    .get(name)
-                    .cloned()
-                    .unwrap_or_else(|| name.clone()))
-            }
-        }
+        // Annotated Var (Var { annotation: Some(_) }) is handled by the Var arm above.
 
         // Sequential: emit each expression in order, progressively injecting dict-level
         // bindings into scope so that later expressions can reference names introduced by
@@ -689,7 +668,8 @@ fn core_expr_to_tinct(
                                 if core_expr_is_static_key(&key.node) {
                                     if let CoreExpr::Str(name) = &key.node {
                                         seq_scope.insert(name.clone());
-                                    } else if let CoreExpr::Annotated { name, .. } = &key.node {
+                                    // Annotated Var (Var { annotation: Some(_) }) is a static key.
+                                    } else if let CoreExpr::Var { name, annotation: Some(_), .. } = &key.node {
                                         seq_scope.insert(name.clone());
                                     }
                                 }
@@ -715,7 +695,8 @@ fn core_expr_to_tinct(
                     if core_expr_is_static_key(&key.node) {
                         if let CoreExpr::Str(name) = &key.node {
                             dict_scope.insert(name.clone());
-                        } else if let CoreExpr::Annotated { name, .. } = &key.node {
+                        // Annotated Var (Var { annotation: Some(_) }) is a static key.
+                        } else if let CoreExpr::Var { name, annotation: Some(_), .. } = &key.node {
                             dict_scope.insert(name.clone());
                         }
                     }
@@ -933,8 +914,7 @@ fn core_expr_to_tinct(
                 for binding in bindings {
                     if let CoreExpr::Str(name) = &binding.node {
                         arm_scope.insert(name.clone());
-                    } else if let CoreExpr::Annotated { name, .. } = &binding.node {
-                        arm_scope.insert(name.clone());
+                    // Annotated Var (Var { annotation: Some(_) }) is also handled by Var arm.
                     } else if let CoreExpr::Var { name, .. } = &binding.node {
                         arm_scope.insert(name.clone());
                     }
@@ -1051,9 +1031,9 @@ fn core_expr_to_tinct_raw(
             Some(n) => Ok(format!("...{}", n)),
             None => Ok("...".to_string()),
         },
-        // Inside quotes: variables are opaque AST data — emit their names as-is
+        // Inside quotes: variables are opaque AST data — emit their names as-is.
+        // Annotated Var (Var { annotation: Some(_) }) also uses the name field.
         CoreExpr::Var { name, .. } => Ok(name.clone()),
-        CoreExpr::Annotated { name, .. } => Ok(name.clone()),
 
         CoreExpr::Sequential(exprs) => {
             let mut parts = Vec::new();
@@ -1258,8 +1238,7 @@ fn core_expr_to_tinct_raw(
                 for binding in bindings {
                     if let CoreExpr::Str(name) = &binding.node {
                         arm_scope.insert(name.clone());
-                    } else if let CoreExpr::Annotated { name, .. } = &binding.node {
-                        arm_scope.insert(name.clone());
+                    // Annotated Var (Var { annotation: Some(_) }) is also handled by Var arm.
                     } else if let CoreExpr::Var { name, .. } = &binding.node {
                         arm_scope.insert(name.clone());
                     }
@@ -1438,6 +1417,7 @@ impl Value {
                 body,
                 env,
                 annotation: _,
+                return_ann: _,
             } => match ctx {
                 Some(ctx) => {
                     let env_guard = env.read().map_err(|_| "failed to read env lock")?;
