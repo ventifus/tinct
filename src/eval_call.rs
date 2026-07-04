@@ -225,9 +225,10 @@ pub(crate) async fn bind_args_thunks(
         } else {
             ArityBound::Exact(max_positional)
         };
-        return Err(
-            EvalError::arity_mismatch_bound(expected, positional.len(), call_span.clone()).into(),
-        );
+        let param_names: Vec<String> = regular_params.iter().map(|p| p.name.clone()).collect();
+        let mut err = EvalError::arity_mismatch_bound(expected, positional.len(), call_span.clone());
+        err.set_arity_params(param_names);
+        return Err(err.into());
     }
 
     // BIND-POSITIONAL: Bind args to params following C-PRIORITY chain

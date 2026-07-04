@@ -1470,7 +1470,7 @@ impl Substitution {
             | Type::Any
             | Type::Never
             | Type::Proxy
-            | Type::Error
+            | Type::Error(_)
             | Type::DirCap
             | Type::NetCap
             | Type::Uri
@@ -2110,7 +2110,7 @@ fn lower_levels_check_occurs(
         | Type::Proxy
         | Type::Unknown
         | Type::Any
-        | Type::Error
+        | Type::Error(_)
         | Type::DirCap
         | Type::NetCap
         | Type::TyCon(_)
@@ -2511,7 +2511,7 @@ pub async fn unify(
         // Error is a sentinel for failed sub-expression inference; absorbing it silently
         // prevents cascade errors in parent expressions. No substitution is modified --
         // Error carries no information that should propagate to type variables.
-        (Type::Error, _) | (_, Type::Error) => Ok(()),
+        (Type::Error(_), _) | (_, Type::Error(_)) => Ok(()),
 
         // Unknown-consistency with level zeroing: prevent generalization of Unknown-touched vars.
         // Unknown relates to other types via consistency, not unification. When Unknown meets
@@ -3493,7 +3493,7 @@ pub async fn constrain(
 
     match (&sub, &sup) {
         // Error absorption: absorb silently to prevent cascade errors.
-        (Type::Error, _) | (_, Type::Error) => return Ok(()),
+        (Type::Error(_), _) | (_, Type::Error(_)) => return Ok(()),
 
         // Unknown: directional — zero levels of affected vars, accept the constraint.
         (Type::Unknown, Type::TypeVar(name, _)) => {

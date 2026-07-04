@@ -87,6 +87,8 @@ pub(crate) async fn check_open(
             notes: vec!["`open` requires at least 3 arguments (DirCap, path, flag...)".to_string()],
             call_stack: vec![],
             callee: Some("open".to_string()),
+            params: vec![],
+            got_types: vec![],
         })]);
     }
 
@@ -221,6 +223,8 @@ pub(crate) async fn check_connect(
             notes: vec![],
             call_stack: vec![],
             callee: Some("connect".to_string()),
+            params: vec![],
+            got_types: vec![],
         })]);
     }
 
@@ -318,6 +322,8 @@ pub(crate) async fn check_map(
             notes: vec![],
             call_stack: vec![],
             callee: Some("map".to_string()),
+            params: vec![],
+            got_types: vec![],
         })]);
     }
 
@@ -369,6 +375,8 @@ pub(crate) async fn check_tls_layer(
             notes: vec![],
             call_stack: vec![],
             callee: Some("tls-layer".to_string()),
+            params: vec![],
+            got_types: vec![],
         })]);
     }
 
@@ -432,6 +440,8 @@ pub(crate) async fn check_get_in(
             },
             call_stack: vec![],
             callee: Some("get-in".to_string()),
+            params: vec![],
+            got_types: vec![],
         })]);
     }
 

@@ -684,6 +684,27 @@ pub fn normalize_varref_annotation(ann: Spanned<Annotation>, span: Span) -> Span
     }
 }
 
+/// Returns true if `ann` is an `@Expr` annotation in either canonical form:
+/// - `Simple("Expr")` — variadic rest params (bypass normalize_varref_annotation)
+/// - `PropertyDict { "type": VarRef("Expr") }` — regular params (normalized at parse time)
+///
+/// Used by the evaluator (eval_materialize.rs) and type checker (typecheck_match.rs) to
+/// identify params that receive raw quoted AST instead of evaluated values.
+pub fn is_expr_annotation(ann: &Annotation) -> bool {
+    match ann {
+        Annotation::Simple(s) => s == "Expr",
+        Annotation::PropertyDict(entries) => entries.iter().any(|e| {
+            let key_is_type = e.node.key.as_ref().and_then(|k| {
+                if let SurfaceExpression::Str(s) = &k.expr { Some(s.as_str()) } else { None }
+            }) == Some("type");
+            let val_is_expr = matches!(&e.node.value.expr,
+                SurfaceExpression::VarRef { name, .. } if name == "Expr");
+            key_is_type && val_is_expr
+        }),
+        _ => false,
+    }
+}
+
 /// Default function for `Annotated.inner` when deserializing via `ExprConvert`.
 /// Returns a placeholder `Arc<SurfaceNode>` wrapping a `Placeholder` expression.
 /// This is only used when reconstructing an `Annotated` node from a dict repr that has no

@@ -306,7 +306,12 @@ pub enum Type {
     /// the failure to parent expressions. `unify(Error, T)` is a no-op for all T (silent
     /// absorption), so parent expressions can continue inference without spurious downstream
     /// errors. `is_subtype(Error, _)` returns false; Error is not a subtype of anything.
-    Error,
+    ///
+    /// The payload carries the errors that caused this `Error` node. An empty `Vec` is the
+    /// "cascade sentinel" — an `Error` produced by absorbing a prior error rather than by
+    /// a direct failure at this site. Use `Type::error_cascade()` to construct the sentinel
+    /// and `Type::error_with(errs)` to construct a node with causal errors.
+    Error(Arc<Vec<TypeErrorTyped>>),
     /// Directory capability — wraps cap_std::fs::Dir. Injected via CLI --cap-fs or
     /// runtime env (cwd, libdir). Represents authority to access a specific directory tree.
     DirCap,
@@ -440,7 +445,7 @@ impl PartialEq for Type {
             (Type::TypeVar(n1, _), Type::TypeVar(n2, _)) => n1 == n2,
             (Type::Unknown, Type::Unknown) => true,
             (Type::Any, Type::Any) => true,
-            (Type::Error, Type::Error) => true,
+            (Type::Error(_), Type::Error(_)) => true,
             (Type::DirCap, Type::DirCap) => true,
             (Type::NetCap, Type::NetCap) => true,
             (Type::Uri, Type::Uri) => true,
@@ -506,7 +511,6 @@ impl std::hash::Hash for Type {
             | Type::Proxy
             | Type::Unknown
             | Type::Any
-            | Type::Error
             | Type::DirCap
             | Type::NetCap
             | Type::Uri
@@ -520,6 +524,9 @@ impl std::hash::Hash for Type {
             | Type::QuicDatagramHandle
             | Type::DatagramHandle
             | Type::Never => {}
+            // Error: hash the discriminant only (payload is intentionally not hashed — all
+            // Error nodes are equal to each other regardless of their causal payload).
+            Type::Error(_) => {}
             Type::IntLiteral(v) => v.hash(state),
             Type::StringLiteral(s) => s.hash(state),
             Type::Record(row) => {
@@ -733,6 +740,36 @@ pub(crate) fn extract_tycon_spine(ty: &Type) -> Option<(&str, Vec<&Type>)> {
 }
 
 impl Type {
+    // ── Error constructors and accessors ────────────────────────────────────────
+
+    /// Construct a "cascade sentinel" Error node — an Error produced by absorbing a prior
+    /// Error node rather than by a direct failure at this site.  The payload is empty.
+    pub fn error_cascade() -> Self {
+        Type::Error(Arc::new(vec![]))
+    }
+
+    /// Construct an Error node carrying the errors that caused it.
+    pub fn error_with(errs: Vec<TypeErrorTyped>) -> Self {
+        Type::Error(Arc::new(errs))
+    }
+
+    /// Returns `true` if this type is an `Error` node (with or without payload).
+    pub fn is_error(&self) -> bool {
+        matches!(self, Type::Error(_))
+    }
+
+    /// Extract the causal errors from an Error node.
+    /// Returns an empty slice for cascade sentinels or for non-Error types.
+    pub fn error_payload(&self) -> &[TypeErrorTyped] {
+        if let Type::Error(errs) = self {
+            errs.as_slice()
+        } else {
+            &[]
+        }
+    }
+
+    // ── Subtype / consistency relations ─────────────────────────────────────────
+
     /// Subtype relation with depth guard (defense-in-depth).
     ///
     /// Structural recursion on algebraic data types is safe (each call descends into a strict
@@ -821,7 +858,7 @@ impl Type {
     ) -> bool {
         // Error is not a subtype of anything (not even itself), and nothing is a subtype of Error.
         // It is a sentinel for failed inference and should not satisfy any constraint.
-        if matches!(sub, Type::Error) || matches!(sup, Type::Error) {
+        if matches!(sub, Type::Error(_)) || matches!(sup, Type::Error(_)) {
             return false;
         }
 
@@ -890,7 +927,7 @@ impl Type {
             return true;
         }
         // Error is never a consistent subtype of anything
-        if matches!(sub, Type::Error) || matches!(sup, Type::Error) {
+        if matches!(sub, Type::Error(_)) || matches!(sup, Type::Error(_)) {
             return false;
         }
         match (sub, sup) {
@@ -999,8 +1036,8 @@ impl Type {
         }
 
         // Unknown, Top, and Error are conservatively assumed to overlap with everything
-        if matches!(t1, Type::Unknown | Type::Any | Type::Error)
-            || matches!(t2, Type::Unknown | Type::Any | Type::Error)
+        if matches!(t1, Type::Unknown | Type::Any | Type::Error(_))
+            || matches!(t2, Type::Unknown | Type::Any | Type::Error(_))
         {
             return false;
         }
@@ -1131,7 +1168,7 @@ impl Type {
             return true;
         }
         // Error is not consistent with anything (sentinel for failed inference)
-        if matches!(a, Type::Error) || matches!(b, Type::Error) {
+        if matches!(a, Type::Error(_)) || matches!(b, Type::Error(_)) {
             return false;
         }
         // Structural decomposition
@@ -1746,7 +1783,7 @@ impl Type {
             | Type::Proxy
             | Type::Unknown
             | Type::Any
-            | Type::Error
+            | Type::Error(_)
             | Type::DirCap
             | Type::NetCap
             | Type::TyCon(_)
@@ -1897,8 +1934,8 @@ impl Type {
         }
 
         // Error is absorbing: any intersection containing Error becomes Error
-        if members.iter().any(|m| matches!(m, Type::Error)) {
-            return Type::Error;
+        if members.iter().any(|m| matches!(m, Type::Error(_))) {
+            return Type::error_cascade();
         }
 
         // Never is absorbing: T & Never = Never (S-ClsBot base case: bottom annihilates)
@@ -2277,7 +2314,7 @@ fn type_order(ty: &Type) -> u8 {
         Type::TypeVar(_, _) => 13,
         Type::Unknown => 14,
         Type::Any => 15,
-        Type::Error => 16,
+        Type::Error(_) => 16,
         Type::DirCap => 17,
         Type::NetCap => 18,
         Type::Uri => 20,
@@ -3015,8 +3052,8 @@ mod tests {
 
     #[test]
     fn test_bas_error_not_subtype() {
-        assert!(!Type::is_subtype(&Type::Error, &Type::Int, None));
-        assert!(!Type::is_subtype(&Type::Int, &Type::Error, None));
+        assert!(!Type::is_subtype(&Type::error_cascade(), &Type::Int, None));
+        assert!(!Type::is_subtype(&Type::Int, &Type::error_cascade(), None));
     }
 
     #[test]
@@ -3101,11 +3138,11 @@ mod tests {
 
         // TypeVar vs Error: Error guard fires first → false on BOTH sides.
         assert!(
-            !Type::is_subtype(&Type::TypeVar("a".into(), 0), &Type::Error, None),
+            !Type::is_subtype(&Type::TypeVar("a".into(), 0), &Type::error_cascade(), None),
             "TypeVar(a) <: Error must be false (Error guard fires first)"
         );
         assert!(
-            !Type::is_subtype(&Type::Error, &Type::TypeVar("a".into(), 0), None),
+            !Type::is_subtype(&Type::error_cascade(), &Type::TypeVar("a".into(), 0), None),
             "Error <: TypeVar(a) must be false (Error guard fires first)"
         );
 

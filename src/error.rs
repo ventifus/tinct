@@ -140,6 +140,8 @@ pub enum ErrorKind {
         got: usize,
         /// Name of the function being called, if known (e.g. "[= ...]").
         callee: Option<std::sync::Arc<str>>,
+        /// Parameter names, shown in the error message to help the user understand expected args.
+        params: Vec<std::sync::Arc<str>>,
     },
     MissingRequiredParam {
         param: String,
@@ -943,11 +945,16 @@ impl fmt::Display for ErrorKind {
             Self::MacroError { message } => {
                 write!(f, "macro expansion error: {message}")
             }
-            Self::ArityMismatch { expected, got, callee } => {
-                if let Some(name) = callee {
-                    write!(f, "arity mismatch: `{name}` expected {expected}, got {got}")
+            Self::ArityMismatch { expected, got, callee, params } => {
+                let params_str = if params.is_empty() {
+                    String::new()
                 } else {
-                    write!(f, "arity mismatch: expected {expected}, got {got}")
+                    format!(" [{}]", params.iter().map(|s| s.as_ref()).collect::<Vec<_>>().join(", "))
+                };
+                if let Some(name) = callee {
+                    write!(f, "arity mismatch: `{name}` expected {expected}{params_str}, got {got}")
+                } else {
+                    write!(f, "arity mismatch: expected {expected}{params_str}, got {got}")
                 }
             }
             Self::MissingRequiredParam { param, callee } => {
@@ -1260,6 +1267,7 @@ impl EvalError {
                 expected: ArityBound::Exact(expected),
                 got,
                 callee: None,
+                params: vec![],
             },
             definition_span,
             materialization_span: None,
@@ -1273,7 +1281,7 @@ impl EvalError {
 
     pub fn arity_mismatch_bound(expected: ArityBound, got: usize, definition_span: Span) -> Self {
         Self {
-            kind: ErrorKind::ArityMismatch { expected, got, callee: None },
+            kind: ErrorKind::ArityMismatch { expected, got, callee: None, params: vec![] },
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
@@ -1293,6 +1301,14 @@ impl EvalError {
             ErrorKind::NamedArgConflict { callee: ref mut c, .. } => *c = callee,
             ErrorKind::UnknownNamedArg { callee: ref mut c, .. } => *c = callee,
             _ => {}
+        }
+    }
+
+    /// Attach parameter names to an arity mismatch error.
+    /// No-op for other error kinds.
+    pub fn set_arity_params(&mut self, new_params: Vec<String>) {
+        if let ErrorKind::ArityMismatch { params: ref mut p, .. } = self.kind {
+            *p = new_params.into_iter().map(|s| std::sync::Arc::from(s.as_str())).collect();
         }
     }
 
@@ -2253,7 +2269,9 @@ mod tests {
         .is_catchable());
         assert!(ErrorKind::ArityMismatch {
             expected: ArityBound::Exact(1),
-            got: 2
+            got: 2,
+            callee: None,
+            params: vec![]
         }
         .is_catchable());
         assert!(ErrorKind::MissingRequiredParam {
@@ -2408,6 +2426,8 @@ mod tests {
             ErrorKind::ArityMismatch {
                 expected: ArityBound::Exact(1),
                 got: 2,
+                callee: None,
+                params: vec![],
             },
             ErrorKind::MissingRequiredParam {
                 param: "x".to_string(),
@@ -2626,7 +2646,9 @@ mod tests {
         .is_cacheable());
         assert!(ErrorKind::ArityMismatch {
             expected: ArityBound::Exact(1),
-            got: 2
+            got: 2,
+            callee: None,
+            params: vec![]
         }
         .is_cacheable());
         assert!(ErrorKind::MissingRequiredParam {
@@ -2825,7 +2847,9 @@ mod tests {
                 "{}",
                 ErrorKind::ArityMismatch {
                     expected: ArityBound::Exact(1),
-                    got: 0
+                    got: 0,
+                    callee: None,
+                    params: vec![]
                 }
             ),
             "arity mismatch: expected 1 argument, got 0"
@@ -2835,7 +2859,9 @@ mod tests {
                 "{}",
                 ErrorKind::ArityMismatch {
                     expected: ArityBound::Exact(2),
-                    got: 3
+                    got: 3,
+                    callee: None,
+                    params: vec![]
                 }
             ),
             "arity mismatch: expected 2 arguments, got 3"
@@ -2845,7 +2871,9 @@ mod tests {
                 "{}",
                 ErrorKind::ArityMismatch {
                     expected: ArityBound::Range(1, 3),
-                    got: 5
+                    got: 5,
+                    callee: None,
+                    params: vec![]
                 }
             ),
             "arity mismatch: expected 1 to 3 arguments, got 5"

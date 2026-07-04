@@ -36,6 +36,7 @@
   # builtin-if takes Int condition: 0 = false, nonzero = true (not Boolean).
   builtin-if:    [fn@a      [let cond@Int then@a else@a] ...]
 
+
   # ── String primitives ────────────────────────────────────────────────────────────────
   builtin-str-bytes:[fn@Bytes [let s@String] ...]
   builtin-str-hash: [fn@Int   [let s@String] ...]

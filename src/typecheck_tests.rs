@@ -2316,7 +2316,7 @@ async fn test_call_polymorphic_positional_plus_named_arity_ok() {
     .await;
     let result_ty = env.get("result").expect("result should be in env");
     assert!(
-        !matches!(&result_ty.body, Type::Error),
+        !matches!(&result_ty.body, Type::Error(_)),
         "result type should not be Type::Error, got: {:?}",
         result_ty.body
     );
@@ -5146,7 +5146,7 @@ async fn test_error_recorded_in_type_map_on_failure() {
     assert!(!errors.is_empty(), "expected type error for $undefined");
 
     // The type_map should contain at least one Type::Error entry
-    let has_error = type_map.values().any(|ty| matches!(ty, Type::Error));
+    let has_error = type_map.values().any(|ty| matches!(ty, Type::Error(_)));
     assert!(
         has_error,
         "type_map should contain Type::Error for failed sub-expression ($undefined), \
@@ -5208,7 +5208,7 @@ async fn test_error_absorbed_in_unify_does_not_corrupt_substitution() {
     let mut constraints = Vec::new();
     let result = unify(
         &Type::TypeVar("a".into(), 1),
-        &Type::Error,
+        &Type::error_cascade(),
         &mut subst,
         &mut state,
         &mut constraints,
@@ -8295,7 +8295,7 @@ async fn test_cond_impl_type_in_prelude_env() {
     // cond-impl should be in env and not Error
     if let Some(scheme) = cond_impl_scheme {
         assert!(
-            !matches!(scheme.body, crate::types::Type::Error),
+            !matches!(scheme.body, crate::types::Type::Error(_)),
             "cond-impl must not be Error"
         );
     } else {

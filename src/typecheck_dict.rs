@@ -703,7 +703,7 @@ pub(crate) async fn infer_dict(
                         // - is_subtype(Error, _) = false (TypeAsserts correctly reject)
                         // - T010 "inferred Unknown" diagnostic doesn't fire (Error ≠ Unknown)
                         // - lower.rs emits TypeAssert with Type::Unknown (accepts all values)
-                        field_types.insert(name.clone(), Type::Error);
+                        field_types.insert(name.clone(), Type::error_cascade());
                         state
                             .failed_bindings
                             .insert(name.clone(), entry.span.clone());
@@ -930,7 +930,7 @@ pub(crate) async fn infer_dict(
                             .await
                             {
                                 errors.push(e);
-                                field_types.insert(name.clone(), Type::Error);
+                                field_types.insert(name.clone(), Type::error_cascade());
                                 state
                                     .failed_bindings
                                     .insert(name.clone(), entry.span.clone());
@@ -948,7 +948,7 @@ pub(crate) async fn infer_dict(
                         // ensures callers see the declared type T rather than Error, preserving
                         // the purpose of the annotation as a type-interface boundary.
                         // Fall back to Error only when no assertion type is available.
-                        let fallback_ty = type_assert_ty.unwrap_or(Type::Error);
+                        let fallback_ty = type_assert_ty.unwrap_or_else(Type::error_cascade);
                         field_types.insert(name.clone(), fallback_ty.clone());
                         state
                             .failed_bindings

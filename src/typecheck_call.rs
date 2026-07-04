@@ -386,7 +386,7 @@ pub(crate) async fn check_call_with_scheme(
     // infer arguments for side effects and return Error to cascade the failure.
     // This prevents spurious "expected function type, got <error>" on call sites when the
     // function definition itself failed type-checking. The root cause has already been reported.
-    if matches!(func_ty, Type::Error) {
+    if matches!(func_ty, Type::Error(_)) {
         // Infer positional args for type map population and error propagation.
         for arg in args {
             let _ = infer_surface_expr(arg, env, state, constraints, type_map).await;
@@ -395,7 +395,7 @@ pub(crate) async fn check_call_with_scheme(
         for na in named_args {
             let _ = infer_surface_expr(&na.node.value, env, state, constraints, type_map).await;
         }
-        return Ok(Type::Error);
+        return Ok(Type::error_cascade());
     }
 
     match &func_ty {
@@ -405,388 +405,33 @@ pub(crate) async fn check_call_with_scheme(
             variadic,
             required_count,
         } => {
-            // Arity check: named args fill remaining parameter slots by name (Kotlin model in
-            // eval_call.rs), so count positional + named against total params.
-            let total_supplied = args.len() + named_args.len();
-            // B-349: use required_count (params without default values) as the minimum.
-            // For variadic functions, the last (variadic) param is not required.
-            let min_required = if *variadic && !params.is_empty() {
-                required_count.saturating_sub(1)
-            } else {
-                *required_count
-            };
-            if total_supplied < min_required || (!*variadic && total_supplied > params.len()) {
-                return Err(vec![TypeErrorTyped::ArityMismatch(ArityMismatch {
-                    expected: min_required,
-                    got: total_supplied,
-                    span,
-                    notes: if *variadic || !named_args.is_empty() {
-                        vec![format!(
-                            "{} positional, {} named",
-                            args.len(),
-                            named_args.len()
-                        )]
-                    } else {
-                        vec![]
-                    },
-                    call_stack: vec![],
-                    callee: func_name.map(|s| s.to_string()),
-                })]);
-            }
-
             // CALL-POLY: After instantiation, the function type always has type variables.
             // This is guaranteed by the guard at line 236: check_call_with_scheme is only called
             // for polymorphic schemes (non-empty type_vars or row_vars), and instantiate_scheme
             // produces fresh TypeVars/RowVars for each quantified variable. Since generalize only
             // quantifies variables that appear in the body, the instantiated type must contain
             // those fresh variables, so has_inference_vars() is always true.
-            // Synthesize arguments and unify (doc/06 §[CALL-POLY])
-            //
-            // Cascade prevention: if an argument fails inference, use Type::Error as its type
-            // (the error has already been recorded in type_map by infer_expr) rather than
-            // propagating the error immediately. Collect all argument errors, then report them.
-            // unify(Error, param_ty) = Ok(()) by the Error-absorption rule in unify(), so the
-            // rest of argument unification continues without spurious additional errors.
             debug_assert!(
                 func_ty.has_inference_vars(),
                 "check_call_with_scheme: func_ty must have inference vars after instantiation (invariant violated)"
             );
-            let mut arg_types = Vec::with_capacity(args.len());
-            let mut arg_errors: Option<Vec<TypeError>> = None;
-            for a in args {
-                match infer_surface_expr(a, env, state, constraints, type_map).await {
-                    Ok(ty) => arg_types.push(ty),
-                    Err(mut errs) => {
-                        arg_errors.get_or_insert_with(Vec::new).append(&mut errs);
-                        arg_types.push(Type::Error);
-                    }
-                }
-            }
-
-            if !params.is_empty() {
-                // Seed local subst from state.subst so that unification sees access-chain
-                // constraints and letrec bindings accumulated by prior inference steps.
-                // This mirrors infer_dict Pass 3a (lines 553-561): Algorithm W threads a
-                // single substitution through inference; the two-substitution model is a
-                // borrow-checker workaround. Without seeding, param_ty is unified against
-                // arg_ty in an empty substitution context, missing bindings for TypeVars
-                // that state.subst already resolved (Damas & Milner 1982, Theorem 2).
-                //
-                // Fresh type vars from instantiate_scheme are call-site-local and should not escape.
-                // The local substitution is consumed by subst.apply(ret) and does not need to propagate
-                // upstream — only the constraints accumulated during argument unification (merged back
-                // into state.subst at lines 1475-1480) need to be visible to downstream inference.
-                let mut subst = Substitution {
-                    type_map: std::cell::RefCell::new(state.subst.type_map.borrow().clone()),
-                    parent: state.subst.parent.clone(), // preserve parent chain for lookup_in_chain
-                    creation_level: state.subst.creation_level,
-                    name_counter: std::cell::Cell::new(state.subst.name_counter.get()),
-                };
-                // Track consumed param indices to prevent named args from overlapping with positional args.
-                // C-NO-OVERLAP: positional args consume params 0..args.len(). Named args searching
-                // ALL params by name could accidentally match a positional-consumed param.
-                let mut consumed_params = std::collections::HashSet::new();
-                // If the function is variadic, stop before the last param (which is the variadic param itself).
-                let non_variadic_param_count = if *variadic && !params.is_empty() {
-                    params.len() - 1
-                } else {
-                    params.len()
-                };
-                // T013 Task 4: Pre-collect the type vars in each param type so we can update
-                // constraint origin_span to per-argument spans after unification. Collecting
-                // before the loop avoids borrow-checker conflicts with the state borrows inside.
-                let param_vars_per_idx: Vec<HashSet<String>> = params
-                    .iter()
-                    .take(non_variadic_param_count)
-                    .map(|(_, param_ty)| {
-                        let mut vars = HashSet::new();
-                        param_ty.collect_type_vars(&mut vars);
-                        vars
-                    })
-                    .collect();
-                for (idx, ((_, param_ty), arg_ty)) in params
-                    .iter()
-                    .take(non_variadic_param_count)
-                    .zip(arg_types.iter())
-                    .enumerate()
-                {
-                    consumed_params.insert(idx);
-
-                    // Boundary guard tracking: if argument is Unknown and parameter expects
-                    // a concrete type, record this as a gradual typing boundary.
-                    if matches!(arg_ty, Type::Unknown) && is_concrete_type(param_ty) {
-                        // Record the expected type as an inline type guard on the argument node.
-                        // The lowerer reads SurfaceNode.type_guard and wraps it in CoreExpr::TypeAssert.
-                        if idx < args.len() {
-                            args[idx].type_guard.set(Some(param_ty.clone()));
-                        }
-                    }
-
-                    // Error-typed args absorb silently (unify(Error, T) = Ok(())),
-                    // so we only propagate unification errors from non-Error args.
-                    if let Err(e) = Box::pin(unify(
-                        param_ty,
-                        arg_ty,
-                        &mut subst,
-                        state,
-                        constraints,
-                        span.clone(),
-                    ))
-                    .await
-                    {
-                        arg_errors.get_or_insert_with(Vec::new).push(e);
-                    }
-                }
-                // T013 Task 4: Update constraint origin_span to per-argument span.
-                // instantiate_scheme set origin_span to func_span for all constraints. Here
-                // we refine that to the individual argument span: for each constraint whose
-                // vars appear in param[i]'s type, set origin_span to args[i].span.
-                // First-argument-wins for type vars shared across multiple params.
-                let mut var_to_arg_span: HashMap<String, Span> =
-                    HashMap::with_capacity(param_vars_per_idx.len() * 2);
-                for (idx, param_vars) in param_vars_per_idx.iter().enumerate() {
-                    if idx < args.len() {
-                        for var in param_vars {
-                            var_to_arg_span
-                                .entry(var.clone())
-                                .or_insert_with(|| args[idx].span.clone());
-                        }
-                    }
-                }
-                if !var_to_arg_span.is_empty() {
-                    for c in constraints[constraints_start..].iter_mut() {
-                        if let crate::type_class::Constraint::Class {
-                            vars, origin_span, ..
-                        } = c
-                        {
-                            // Find the arg span for this constraint's vars. first-match wins
-                            // (preserves the lowest argument index for shared type vars).
-                            let best_span = vars
-                                .iter()
-                                .find_map(|v| v.as_var().and_then(|s| var_to_arg_span.get(s)));
-                            if let Some(new_span) = best_span {
-                                *origin_span = Some(new_span.clone());
-                            }
-                        }
-                    }
-                }
-                // Check variadic args: if the function is variadic, unify all arg_types starting at
-                // non_variadic_param_count against the variadic param type. Widen literals first.
-                if *variadic && arg_types.len() > non_variadic_param_count {
-                    // The last param is the variadic param — extract the type to unify each arg against.
-                    // Two cases:
-                    //   Seq(T): standard variadic — each arg unified with element type T
-                    //   TypeVar: polymorphic variadic (e.g., `str: Showable a => a* -> Str`) — each
-                    //            arg unified directly with the TypeVar, discharging class constraints.
-                    //            Without this, the TypeVar is never unified and Showable constraints
-                    //            stay ambiguous, causing spurious T013 warnings.
-                    if let Some((_, variadic_param_ty)) = params.last() {
-                        let elem_ty: Option<Type> = if let Some(elem) = variadic_param_ty.as_seq() {
-                            Some(elem.clone())
-                        } else if matches!(variadic_param_ty, Type::TypeVar(_, _)) {
-                            Some(variadic_param_ty.clone())
-                        } else {
-                            None
-                        };
-                        if let Some(elem_ty) = elem_ty {
-                            for arg_ty in arg_types.iter().skip(non_variadic_param_count) {
-                                // Widen literal types before unifying
-                                let widened_ty = match arg_ty {
-                                    Type::IntLiteral(_) => Type::Int,
-                                    Type::StringLiteral(_) => Type::Str,
-                                    other => other.clone(),
-                                };
-                                if let Err(e) = Box::pin(unify(
-                                    &elem_ty,
-                                    &widened_ty,
-                                    &mut subst,
-                                    state,
-                                    constraints,
-                                    span.clone(),
-                                ))
-                                .await
-                                {
-                                    arg_errors.get_or_insert_with(Vec::new).push(e);
-                                }
-                            }
-                        }
-                    }
-                }
-                // B-321: Merge local subst (containing positional arg bindings, including
-                // determining-position bindings for FD constraints) back into state.subst
-                // BEFORE named arg processing. If any named arg value inference triggers
-                // dict inference → generalize_with_doc → is_discharged checks, those checks
-                // must see the determining-position bindings or FD constraints will
-                // spuriously fire T013.
-                for (k, v) in subst.type_map.borrow().iter() {
-                    state
-                        .subst
-                        .type_map
-                        .borrow_mut()
-                        .insert(k.clone(), v.clone());
-                }
-                // Check for duplicate named argument names
-                let mut seen_names: HashSet<&str> = HashSet::new();
-                for na in named_args {
-                    if !seen_names.insert(&na.node.name) {
-                        arg_errors
-                            .get_or_insert_with(Vec::new)
-                            .push(TypeErrorTyped::Generic(GenericTypeError {
-                                message: format!("duplicate named argument: '{}'", na.node.name),
-                                span: na.span.clone(),
-                                notes: vec![],
-                                call_stack: vec![],
-                            }));
-                    }
-                }
-                // Unify named args by matching them to params by name.
-                // Mirrors check_call CALL-POLY named-arg loop (same pattern, same error messages).
-                // `params` here are already the instantiated params from instantiate_scheme above.
-                for na in named_args {
-                    let arg_name = &na.node.name;
-                    // Find the param with matching name, tracking its index to detect overlap
-                    let param_match = params.iter().enumerate().find_map(|(idx, (pname, pty))| {
-                        if pname.as_ref() == Some(arg_name) {
-                            Some((idx, pty))
-                        } else {
-                            None
-                        }
-                    });
-
-                    match param_match {
-                        Some((param_idx, param_ty)) => {
-                            // C-NO-OVERLAP check: if this param was already consumed by a positional arg,
-                            // emit a type error and skip unification (the positional check already ran).
-                            if consumed_params.contains(&param_idx) {
-                                arg_errors.get_or_insert_with(Vec::new).push(
-                                    TypeErrorTyped::Generic(GenericTypeError {
-                                        message: format!(
-                                            "named argument '{}' conflicts with positional argument at position {}",
-                                            arg_name, param_idx
-                                        ),
-                                        span: na.span.clone(),
-                                        notes: vec![], call_stack: vec![],
-                                    }),
-                                );
-                                continue;
-                            }
-                            // Mark param as consumed (Task 1: Robinson idempotency)
-                            consumed_params.insert(param_idx);
-                            // Infer named arg type and unify
-                            match infer_surface_expr(
-                                &na.node.value,
-                                env,
-                                state,
-                                constraints,
-                                type_map,
-                            )
-                            .await
-                            {
-                                Ok(arg_ty) => {
-                                    // Task 2: merge state.subst updates from infer_surface_expr into local subst
-                                    subst
-                                        .type_map
-                                        .borrow_mut()
-                                        .extend(state.subst.type_map.borrow().clone());
-                                    if let Err(e) = Box::pin(unify(
-                                        &arg_ty,
-                                        param_ty,
-                                        &mut subst,
-                                        state,
-                                        constraints,
-                                        na.span.clone(),
-                                    ))
-                                    .await
-                                    {
-                                        arg_errors.get_or_insert_with(Vec::new).push(
-                                            TypeErrorTyped::Generic(GenericTypeError {
-                                                message: format!(
-                                                    "named argument '{}' type mismatch: {}",
-                                                    arg_name,
-                                                    e.message()
-                                                ),
-                                                span: na.span.clone(),
-                                                notes: vec![],
-                                                call_stack: vec![],
-                                            }),
-                                        );
-                                    }
-                                }
-                                Err(mut errs) => {
-                                    arg_errors.get_or_insert_with(Vec::new).append(&mut errs);
-                                }
-                            }
-                        }
-                        None => {
-                            // B-310: Variadic functions accept arbitrary named args (B-277).
-                            // Unmatched named args are collected into the variadic dict at runtime
-                            // per [C-NAMED-VALID]: ∀(k,_)∈named: (∃pᵢ∈P: pᵢ.name=k) ∨ V≠∅.
-                            // When variadic=true, infer the named arg value for type map population
-                            // and error propagation, but DO NOT emit "unknown named argument".
-                            if !*variadic {
-                                arg_errors.get_or_insert_with(Vec::new).push(
-                                    TypeErrorTyped::Generic(GenericTypeError {
-                                        message: format!(
-                                            "unknown named argument: function has no parameter named '{}'",
-                                            arg_name
-                                        ),
-                                        span: na.span.clone(),
-                                        notes: vec![], call_stack: vec![],
-                                    }),
-                                );
-                            } else {
-                                // Variadic function: infer the named arg value for type map and error propagation.
-                                // The value will be collected into the variadic dict at runtime; we don't know
-                                // the element type of the variadic dict statically (it's a mixed Dict of positionals
-                                // and named args), so we just ensure the arg itself type-checks.
-                                if let Err(mut errs) = infer_surface_expr(
-                                    &na.node.value,
-                                    env,
-                                    state,
-                                    constraints,
-                                    type_map,
-                                )
-                                .await
-                                {
-                                    arg_errors.get_or_insert_with(Vec::new).append(&mut errs);
-                                }
-                            }
-                        }
-                    }
-                }
-                // Merge local subst back into state.subst so that constraints from this
-                // polymorphic call site are visible to subsequent inference steps. Without
-                // this merge, bindings accumulated during argument unification (e.g., a
-                // TypeVar constrained to Int) are lost for downstream entries in the same
-                // letrec group. This mirrors infer_dict Pass 3d (lines 764-773).
-                // B-321: Merge BEFORE error return so that even if there are type errors,
-                // the bindings are visible to generalization (avoids spurious T013 warnings).
-                for (k, v) in subst.type_map.borrow().iter() {
-                    state
-                        .subst
-                        .type_map
-                        .borrow_mut()
-                        .insert(k.clone(), v.clone());
-                }
-                state.subst.check_size(span).map_err(|e| vec![e])?;
-                if let Some(errors) = arg_errors {
-                    return Err(errors);
-                }
-                // After merging local subst into state.subst, state.subst is a superset of subst.
-                // Applying state.subst directly is sufficient — a prior double-application
-                // (subst.apply then state.subst.apply) was redundant because state.subst already
-                // contains everything subst mapped.
-                Ok(state.subst.apply(ret))
-            } else {
-                // Zero-param: no arguments to unify, return type needs no substitution applied
-                // from local argument unification (there are no arguments). Apply state.subst
-                // for access-chain constraints that may bind type vars in the return type.
-                if state.subst.is_empty() {
-                    Ok((**ret).clone())
-                } else {
-                    Ok(state.subst.apply(ret))
-                }
-            }
+            Box::pin(check_call_args(
+                params,
+                ret,
+                *variadic,
+                *required_count,
+                func_name,
+                args,
+                named_args,
+                env,
+                span,
+                state,
+                constraints,
+                type_map,
+                constraints_start,
+                true, // is_poly
+            ))
+            .await
         }
         // Gradual: callee type is Unknown — infer args for LSP hover, return Unknown
         Type::Unknown => {
@@ -832,6 +477,8 @@ pub(crate) async fn check_call_with_scheme(
                     notes: vec!["unit variant constructor takes exactly 1 argument".to_string()],
                     call_stack: vec![],
                     callee: Some(tag.clone()),
+                    params: vec![],
+                    got_types: vec![],
                 })]);
             }
             if !named_args.is_empty() {
@@ -875,6 +522,653 @@ pub(crate) async fn check_call_with_scheme(
             call_stack: vec![],
             callee: func_name.map(|s| s.to_string()),
         })]),
+    }
+}
+
+/// Shared argument checker for both `check_call_with_scheme` (poly path) and `check_call`
+/// (mono and poly paths).
+///
+/// Takes already-unwrapped function type fields (`params`, `ret`, `variadic`,
+/// `required_count`) and the `is_poly` flag to select the argument checking strategy:
+///
+/// - `is_poly: true` — CALL-POLY path: infer each arg with `infer_surface_expr` then
+///   unify against the param type.  Used by `check_call_with_scheme` and by
+///   `check_call`'s CALL-POLY branch.
+/// - `is_poly: false` — CALL-MONO path: use `check_surface_expr` for lambda args and
+///   the subsumption-based path for all other args.  Used by `check_call`'s CALL-MONO
+///   branch.
+///
+/// **Deferred arity check:** all supplied args are inferred before the arity check fires,
+/// so `got_types` in the `ArityMismatch` error is naturally populated with the actual
+/// argument types instead of being left empty.
+#[allow(clippy::too_many_arguments)]
+async fn check_call_args(
+    params: &[(Option<String>, Type)],
+    ret: &Type,
+    variadic: bool,
+    required_count: usize,
+    func_name: Option<&str>,
+    args: &[Arc<SurfaceNode>],
+    named_args: &[Spanned<SurfaceNamedArg>],
+    env: &Rc<TypeEnv>,
+    span: Span,
+    state: &mut InferState,
+    constraints: &mut Vec<Constraint>,
+    type_map: &mut Option<&mut TypeMap>,
+    constraints_start: usize,
+    is_poly: bool,
+) -> Result<Type, Vec<TypeError>> {
+    let total_supplied = args.len() + named_args.len();
+    // B-349: use required_count (params without default values) as the minimum.
+    // For variadic functions, the last (variadic) param is not required.
+    let min_required = if variadic && !params.is_empty() {
+        required_count.saturating_sub(1)
+    } else {
+        required_count
+    };
+    let non_variadic_param_count = if variadic && !params.is_empty() {
+        params.len() - 1
+    } else {
+        params.len()
+    };
+
+    // Infer ALL positional arg types (even extras), so that:
+    //   1. `got_types` is populated for arity-mismatch errors with meaningful messages.
+    //   2. Type map entries are recorded for all args regardless of arity.
+    //   3. Unification still runs for in-range args on the happy path.
+    //
+    // On the CALL-POLY path we always infer+unify.
+    // On the CALL-MONO path we use check_surface_expr / subsumption for in-range args.
+    let mut arg_types: Vec<Type> = Vec::with_capacity(args.len());
+    let mut arg_errors: Option<Vec<TypeError>> = None;
+
+    if is_poly {
+        // CALL-POLY: infer every arg, collect errors (don't stop on first failure).
+        // Errors are stored inside the Error(errs) node for later extraction.
+        for a in args {
+            match infer_surface_expr(a, env, state, constraints, type_map).await {
+                Ok(ty) => arg_types.push(ty),
+                Err(errs) => {
+                    arg_types.push(Type::error_with(errs));
+                }
+            }
+        }
+    } else {
+        // CALL-MONO: for args that fall within the valid param range, use the proper
+        // bidirectional / subsumption check; for extra args, just infer for got_types.
+        for (idx, arg) in args.iter().enumerate() {
+            let param_ty_opt = if idx < non_variadic_param_count {
+                params.get(idx).map(|(_, ty)| ty)
+            } else if variadic {
+                // Variadic extra args — no per-arg infer here, handled below
+                None
+            } else {
+                None // beyond params.len() — extra arg
+            };
+
+            match param_ty_opt {
+                Some(param_ty) => {
+                    // In-range non-variadic arg: bidirectional check.
+                    match &arg.expr {
+                        SurfaceExpression::Fn { .. } => {
+                            // Lambda: use check_surface_expr for bidirectional lambda checking.
+                            if let Err(mut errs) = check_surface_expr(
+                                arg,
+                                param_ty,
+                                env,
+                                state,
+                                constraints,
+                                type_map,
+                            )
+                            .await
+                            {
+                                arg_errors.get_or_insert_with(Vec::new).append(&mut errs);
+                            }
+                            // Infer for type-string display (check_surface_expr doesn't return type).
+                            // Use Unknown as placeholder; the check already ran above.
+                            arg_types.push(Type::Unknown);
+                        }
+                        _ => {
+                            // Non-lambda: infer once, apply subst, boundary-guard, subsume.
+                            match infer_surface_expr(arg, env, state, constraints, type_map).await {
+                                Ok(arg_ty) => {
+                                    let arg_ty_resolved = if state.subst.is_empty() {
+                                        arg_ty.clone()
+                                    } else {
+                                        state.subst.apply(&arg_ty)
+                                    };
+                                    // Boundary guard: Unknown→concrete boundary.
+                                    if is_concrete_type(param_ty)
+                                        && matches!(arg_ty_resolved, Type::Unknown)
+                                    {
+                                        arg.type_guard.set(Some(param_ty.clone()));
+                                    }
+                                    let param_ty_resolved = if state.subst.is_empty() {
+                                        param_ty.clone()
+                                    } else {
+                                        state.subst.apply(param_ty)
+                                    };
+                                    let sub_passes = Type::is_subtype(
+                                        &arg_ty_resolved,
+                                        &param_ty_resolved,
+                                        Some(&state.tycon_env),
+                                    ) || ((contains_unknown_or_top(&arg_ty_resolved)
+                                        || contains_unknown_or_top(&param_ty_resolved))
+                                        && Type::is_consistent(&arg_ty_resolved, &param_ty_resolved));
+                                    if !sub_passes {
+                                        arg_errors.get_or_insert_with(Vec::new).push(
+                                            TypeErrorTyped::UnificationFailure(UnificationFailure {
+                                                expected: param_ty_resolved,
+                                                got: arg_ty_resolved.clone(),
+                                                span: arg.span.clone(),
+                                                notes: vec![],
+                                                call_stack: vec![],
+                                            }),
+                                        );
+                                    }
+                                    arg_types.push(arg_ty_resolved);
+                                }
+                                Err(errs) => {
+                                    arg_types.push(Type::error_with(errs));
+                                }
+                            }
+                        }
+                    }
+                }
+                None => {
+                    // Extra arg beyond param range (or variadic handled below): just infer.
+                    match infer_surface_expr(arg, env, state, constraints, type_map).await {
+                        Ok(ty) => arg_types.push(ty),
+                        Err(errs) => {
+                            arg_types.push(Type::error_with(errs));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Build got_types string representations from the inferred types.
+    let got_type_strs: Vec<String> = arg_types.iter().map(|ty| format!("{}", ty)).collect();
+
+    // Extract errors stored inside Error(errs) type nodes and fold them into arg_errors.
+    // These are inference failures from the zip loop above; they were stored in the type node
+    // (rather than discarded) so that got_type_strs above can show a meaningful display string.
+    for ty in &arg_types {
+        let payload = ty.error_payload();
+        if !payload.is_empty() {
+            arg_errors
+                .get_or_insert_with(Vec::new)
+                .extend(payload.to_vec());
+        }
+    }
+
+    // Arity mismatch: return only the arity error. Inference errors from Error(errs) arg
+    // nodes are visible in got_types and are reported at their original call sites through
+    // the normal type-checking pipeline — re-propagating them here causes cascade.
+    if total_supplied < min_required || (!variadic && total_supplied > params.len()) {
+        let param_descriptions: Vec<String> = params
+            .iter()
+            .map(|(name, ty)| {
+                if let Some(n) = name {
+                    format!("{}: {}", n, ty)
+                } else {
+                    format!("{}", ty)
+                }
+            })
+            .collect();
+        return Err(vec![TypeErrorTyped::ArityMismatch(ArityMismatch {
+            expected: min_required,
+            got: total_supplied,
+            span,
+            notes: if variadic || !named_args.is_empty() {
+                vec![format!(
+                    "{} positional, {} named",
+                    args.len(),
+                    named_args.len()
+                )]
+            } else {
+                vec![]
+            },
+            call_stack: vec![],
+            callee: func_name.map(|s| s.to_string()),
+            params: param_descriptions,
+            got_types: got_type_strs,
+        })]);
+    }
+
+    if params.is_empty() {
+        // Zero-param: no arguments to unify.
+        if let Some(errors) = arg_errors {
+            return Err(errors);
+        }
+        return if state.subst.is_empty() {
+            Ok((*ret).clone())
+        } else {
+            Ok(state.subst.apply(ret))
+        };
+    }
+
+    if is_poly {
+        // CALL-POLY unification pass.
+        //
+        // Seed local subst from state.subst so that unification sees access-chain
+        // constraints and letrec bindings accumulated by prior inference steps.
+        // This mirrors infer_dict Pass 3a: Algorithm W threads a single substitution
+        // through inference; the two-substitution model is a borrow-checker workaround.
+        // Without seeding, param_ty is unified against arg_ty in an empty substitution
+        // context, missing bindings for TypeVars that state.subst already resolved
+        // (Damas & Milner 1982, Theorem 2).
+        let mut subst = Substitution {
+            type_map: std::cell::RefCell::new(state.subst.type_map.borrow().clone()),
+            parent: state.subst.parent.clone(),
+            creation_level: state.subst.creation_level,
+            name_counter: std::cell::Cell::new(state.subst.name_counter.get()),
+        };
+        // Track consumed param indices to prevent named args from overlapping with positional args.
+        // C-NO-OVERLAP: positional args consume params 0..args.len(). Named args searching
+        // ALL params by name could accidentally match a positional-consumed param.
+        let mut consumed_params = std::collections::HashSet::new();
+
+        // T013 Task 4: Pre-collect the type vars in each param type so we can update
+        // constraint origin_span to per-argument spans after unification.
+        let param_vars_per_idx: Vec<HashSet<String>> = params
+            .iter()
+            .take(non_variadic_param_count)
+            .map(|(_, param_ty)| {
+                let mut vars = HashSet::new();
+                param_ty.collect_type_vars(&mut vars);
+                vars
+            })
+            .collect();
+
+        for (idx, ((_, param_ty), arg_ty)) in params
+            .iter()
+            .take(non_variadic_param_count)
+            .zip(arg_types.iter())
+            .enumerate()
+        {
+            consumed_params.insert(idx);
+
+            // Boundary guard tracking.
+            if matches!(arg_ty, Type::Unknown) && is_concrete_type(param_ty) {
+                if idx < args.len() {
+                    args[idx].type_guard.set(Some(param_ty.clone()));
+                }
+            }
+
+            // Error-typed args absorb silently (unify(Error, T) = Ok(())).
+            if let Err(e) = Box::pin(unify(
+                param_ty,
+                arg_ty,
+                &mut subst,
+                state,
+                constraints,
+                span.clone(),
+            ))
+            .await
+            {
+                arg_errors.get_or_insert_with(Vec::new).push(e);
+            }
+        }
+
+        // T013 Task 4: Update constraint origin_span to per-argument span.
+        let mut var_to_arg_span: HashMap<String, Span> =
+            HashMap::with_capacity(param_vars_per_idx.len() * 2);
+        for (idx, param_vars) in param_vars_per_idx.iter().enumerate() {
+            if idx < args.len() {
+                for var in param_vars {
+                    var_to_arg_span
+                        .entry(var.clone())
+                        .or_insert_with(|| args[idx].span.clone());
+                }
+            }
+        }
+        if !var_to_arg_span.is_empty() {
+            for c in constraints[constraints_start..].iter_mut() {
+                if let crate::type_class::Constraint::Class {
+                    vars, origin_span, ..
+                } = c
+                {
+                    let best_span = vars
+                        .iter()
+                        .find_map(|v| v.as_var().and_then(|s| var_to_arg_span.get(s)));
+                    if let Some(new_span) = best_span {
+                        *origin_span = Some(new_span.clone());
+                    }
+                }
+            }
+        }
+
+        // Check variadic args: unify all arg_types starting at non_variadic_param_count
+        // against the variadic param element type.
+        if variadic && arg_types.len() > non_variadic_param_count {
+            if let Some((_, variadic_param_ty)) = params.last() {
+                let elem_ty: Option<Type> = if let Some(elem) = variadic_param_ty.as_seq() {
+                    Some(elem.clone())
+                } else if matches!(variadic_param_ty, Type::TypeVar(_, _)) {
+                    Some(variadic_param_ty.clone())
+                } else {
+                    None
+                };
+                if let Some(elem_ty) = elem_ty {
+                    for arg_ty in arg_types.iter().skip(non_variadic_param_count) {
+                        let widened_ty = match arg_ty {
+                            Type::IntLiteral(_) => Type::Int,
+                            Type::StringLiteral(_) => Type::Str,
+                            other => other.clone(),
+                        };
+                        if let Err(e) = Box::pin(unify(
+                            &elem_ty,
+                            &widened_ty,
+                            &mut subst,
+                            state,
+                            constraints,
+                            span.clone(),
+                        ))
+                        .await
+                        {
+                            arg_errors.get_or_insert_with(Vec::new).push(e);
+                        }
+                    }
+                }
+            }
+        }
+
+        // B-321: Merge local subst back into state.subst BEFORE named arg processing.
+        for (k, v) in subst.type_map.borrow().iter() {
+            state.subst.type_map.borrow_mut().insert(k.clone(), v.clone());
+        }
+
+        // Check for duplicate named argument names.
+        let mut seen_names: HashSet<&str> = HashSet::new();
+        for na in named_args {
+            if !seen_names.insert(&na.node.name) {
+                arg_errors
+                    .get_or_insert_with(Vec::new)
+                    .push(TypeErrorTyped::Generic(GenericTypeError {
+                        message: format!("duplicate named argument: '{}'", na.node.name),
+                        span: na.span.clone(),
+                        notes: vec![],
+                        call_stack: vec![],
+                    }));
+            }
+        }
+
+        // Unify named args by matching them to params by name.
+        for na in named_args {
+            let arg_name = &na.node.name;
+            let param_match = params.iter().enumerate().find_map(|(idx, (pname, pty))| {
+                if pname.as_ref() == Some(arg_name) {
+                    Some((idx, pty))
+                } else {
+                    None
+                }
+            });
+
+            match param_match {
+                Some((param_idx, param_ty)) => {
+                    if consumed_params.contains(&param_idx) {
+                        arg_errors.get_or_insert_with(Vec::new).push(
+                            TypeErrorTyped::Generic(GenericTypeError {
+                                message: format!(
+                                    "named argument '{}' conflicts with positional argument at position {}",
+                                    arg_name, param_idx
+                                ),
+                                span: na.span.clone(),
+                                notes: vec![],
+                                call_stack: vec![],
+                            }),
+                        );
+                        continue;
+                    }
+                    consumed_params.insert(param_idx);
+                    match infer_surface_expr(
+                        &na.node.value,
+                        env,
+                        state,
+                        constraints,
+                        type_map,
+                    )
+                    .await
+                    {
+                        Ok(arg_ty) => {
+                            // Task 2: merge state.subst updates from infer_surface_expr into local subst
+                            subst
+                                .type_map
+                                .borrow_mut()
+                                .extend(state.subst.type_map.borrow().clone());
+                            if let Err(e) = Box::pin(unify(
+                                &arg_ty,
+                                param_ty,
+                                &mut subst,
+                                state,
+                                constraints,
+                                na.span.clone(),
+                            ))
+                            .await
+                            {
+                                arg_errors.get_or_insert_with(Vec::new).push(
+                                    TypeErrorTyped::Generic(GenericTypeError {
+                                        message: format!(
+                                            "named argument '{}' type mismatch: {}",
+                                            arg_name,
+                                            e.message()
+                                        ),
+                                        span: na.span.clone(),
+                                        notes: vec![],
+                                        call_stack: vec![],
+                                    }),
+                                );
+                            }
+                        }
+                        Err(mut errs) => {
+                            arg_errors.get_or_insert_with(Vec::new).append(&mut errs);
+                        }
+                    }
+                }
+                None => {
+                    // B-310: Variadic functions accept arbitrary named args.
+                    if !variadic {
+                        arg_errors.get_or_insert_with(Vec::new).push(
+                            TypeErrorTyped::Generic(GenericTypeError {
+                                message: format!(
+                                    "unknown named argument: function has no parameter named '{}'",
+                                    arg_name
+                                ),
+                                span: na.span.clone(),
+                                notes: vec![],
+                                call_stack: vec![],
+                            }),
+                        );
+                    } else {
+                        if let Err(mut errs) = infer_surface_expr(
+                            &na.node.value,
+                            env,
+                            state,
+                            constraints,
+                            type_map,
+                        )
+                        .await
+                        {
+                            arg_errors.get_or_insert_with(Vec::new).append(&mut errs);
+                        }
+                    }
+                }
+            }
+        }
+
+        // B-321: Merge local subst back into state.subst AFTER named arg processing.
+        for (k, v) in subst.type_map.borrow().iter() {
+            state.subst.type_map.borrow_mut().insert(k.clone(), v.clone());
+        }
+        state.subst.check_size(span).map_err(|e| vec![e])?;
+        if let Some(errors) = arg_errors {
+            return Err(errors);
+        }
+        Ok(state.subst.apply(ret))
+    } else {
+        // CALL-MONO: arg types already checked above (bidirectional / subsumption).
+        // Now handle variadic extra args (they were inferred but not checked above).
+        if variadic && args.len() > non_variadic_param_count {
+            let last_seq_elem = params.last().and_then(|(_, t)| t.as_seq()).cloned();
+            if let Some(elem_ty) = last_seq_elem {
+                for (idx, arg) in args.iter().enumerate().skip(non_variadic_param_count) {
+                    let arg_ty = &arg_types[idx];
+                    let widened_ty = widen_literal_types(arg_ty.clone());
+                    let mut subst = std::mem::take(&mut state.subst);
+                    if let Err(e) = Box::pin(unify(
+                        &widened_ty,
+                        &elem_ty,
+                        &mut subst,
+                        state,
+                        constraints,
+                        arg.span.clone(),
+                    ))
+                    .await
+                    {
+                        arg_errors.get_or_insert_with(Vec::new).push(e);
+                    }
+                    state.subst = subst;
+                }
+            }
+        }
+
+        // Check for duplicate named argument names.
+        let mut seen_names: HashSet<&str> = HashSet::new();
+        for na in named_args {
+            if !seen_names.insert(&na.node.name) {
+                arg_errors
+                    .get_or_insert_with(Vec::new)
+                    .push(TypeErrorTyped::Generic(GenericTypeError {
+                        message: format!("duplicate named argument: '{}'", na.node.name),
+                        span: na.span.clone(),
+                        notes: vec![],
+                        call_stack: vec![],
+                    }));
+            }
+        }
+
+        // Track consumed param indices.
+        let mut consumed_params: HashSet<usize> = (0..args.len().min(non_variadic_param_count)).collect();
+
+        // Check named args by matching them to params by name.
+        for na in named_args {
+            let arg_name = &na.node.name;
+            let param_match = params.iter().enumerate().find_map(|(idx, (pname, pty))| {
+                if pname.as_ref() == Some(arg_name) {
+                    Some((idx, pty))
+                } else {
+                    None
+                }
+            });
+
+            match param_match {
+                Some((param_idx, param_ty)) => {
+                    if consumed_params.contains(&param_idx) {
+                        arg_errors.get_or_insert_with(Vec::new).push(
+                            TypeErrorTyped::Generic(GenericTypeError {
+                                message: format!(
+                                    "named argument '{}' conflicts with positional argument at position {}",
+                                    arg_name, param_idx
+                                ),
+                                span: na.span.clone(),
+                                notes: vec![],
+                                call_stack: vec![],
+                            }),
+                        );
+                        continue;
+                    }
+                    consumed_params.insert(param_idx);
+
+                    match infer_surface_expr(
+                        &na.node.value,
+                        env,
+                        state,
+                        constraints,
+                        type_map,
+                    )
+                    .await
+                    {
+                        Ok(arg_ty) => {
+                            // Boundary guard check.
+                            if is_concrete_type(param_ty) {
+                                let resolved_arg_ty = if state.subst.is_empty() {
+                                    arg_ty.clone()
+                                } else {
+                                    state.subst.apply(&arg_ty)
+                                };
+                                if matches!(resolved_arg_ty, Type::Unknown) {
+                                    na.node.value.type_guard.set(Some(param_ty.clone()));
+                                }
+                            }
+                            let mut subst = std::mem::take(&mut state.subst);
+                            let result = Box::pin(unify(
+                                &arg_ty,
+                                param_ty,
+                                &mut subst,
+                                state,
+                                constraints,
+                                na.span.clone(),
+                            ))
+                            .await;
+                            state.subst = subst;
+                            if let Err(e) = result {
+                                arg_errors.get_or_insert_with(Vec::new).push(
+                                    TypeErrorTyped::Generic(GenericTypeError {
+                                        message: format!(
+                                            "named argument '{}' type mismatch: {}",
+                                            arg_name,
+                                            e.message()
+                                        ),
+                                        span: na.span.clone(),
+                                        notes: vec![],
+                                        call_stack: vec![],
+                                    }),
+                                );
+                            }
+                        }
+                        Err(mut errs) => {
+                            arg_errors.get_or_insert_with(Vec::new).append(&mut errs);
+                        }
+                    }
+                }
+                None => {
+                    // B-310: Variadic functions accept arbitrary named args.
+                    if !variadic {
+                        arg_errors.get_or_insert_with(Vec::new).push(
+                            TypeErrorTyped::Generic(GenericTypeError {
+                                message: format!(
+                                    "unknown named argument: function has no parameter named '{}'",
+                                    arg_name
+                                ),
+                                span: na.span.clone(),
+                                notes: vec![],
+                                call_stack: vec![],
+                            }),
+                        );
+                    } else {
+                        if let Err(mut errs) = infer_surface_expr(
+                            &na.node.value,
+                            env,
+                            state,
+                            constraints,
+                            type_map,
+                        )
+                        .await
+                        {
+                            arg_errors.get_or_insert_with(Vec::new).append(&mut errs);
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some(errors) = arg_errors {
+            return Err(errors);
+        }
+        // Apply state.subst for defensive consistency.
+        Ok(state.subst.apply(ret))
     }
 }
 
@@ -935,7 +1229,7 @@ pub(crate) async fn check_call(
     // This prevents spurious T003 errors on every [include %libdir "..."] call when the prelude's
     // self-type-check encounters errors. The underlying cause (prelude type error) has already
     // been reported; return Error to cascade the failure rather than going gradual.
-    if matches!(func_ty, Type::Error) {
+    if matches!(func_ty, Type::Error(_)) {
         // Infer positional args for type map population and error propagation.
         for arg in args {
             let _ = infer_surface_expr(arg, env, state, constraints, type_map).await;
@@ -944,7 +1238,7 @@ pub(crate) async fn check_call(
         for na in named_args {
             let _ = infer_surface_expr(&na.node.value, env, state, constraints, type_map).await;
         }
-        return Ok(Type::Error);
+        return Ok(Type::error_cascade());
     }
 
     match &func_ty {
@@ -954,570 +1248,60 @@ pub(crate) async fn check_call(
             variadic,
             required_count,
         } => {
-            // Arity check: named args fill remaining parameter slots by name (Kotlin model in
-            // eval_call.rs), so count positional + named against total params.
-            let total_supplied = args.len() + named_args.len();
-            // B-349: use required_count (params without default values) as the minimum.
-            // For variadic functions, the last (variadic) param is not required.
-            let min_required = if *variadic && !params.is_empty() {
-                required_count.saturating_sub(1)
-            } else {
-                *required_count
-            };
-            if total_supplied < min_required || (!*variadic && total_supplied > params.len()) {
-                return Err(vec![TypeErrorTyped::ArityMismatch(ArityMismatch {
-                    expected: min_required,
-                    got: total_supplied,
-                    span,
-                    notes: if *variadic || !named_args.is_empty() {
-                        vec![format!(
-                            "{} positional, {} named",
-                            args.len(),
-                            named_args.len()
-                        )]
-                    } else {
-                        vec![]
-                    },
-                    call_stack: vec![],
-                    callee: func_callee.clone(),
-                })]);
-            }
-
-            // CALL-MONO: function type is fully concrete (no type variables)
-            // Use bidirectional checking for arguments via [SUB] rule (doc/06 §[CALL-MONO])
-            //
-            // ASYMMETRY: CALL-MONO collects all argument errors before returning (errors Vec
-            // accumulates then is returned at once), while CALL-POLY (below) stops at the first
-            // unification failure (map_err returns immediately). CALL-MONO's multi-error approach
-            // is preferred for user-facing type errors; CALL-POLY's early-exit is a limitation of
-            // sequential unification where later argument types may be meaningless if earlier
-            // unification fails (type variables left unbound). A future improvement would
-            // collect CALL-POLY errors too, but requires constraint-based solving (see comment below).
+            // CALL-MONO: function type is fully concrete (no type variables).
+            // Use bidirectional checking for arguments via [SUB] rule (doc/06 §[CALL-MONO]).
             if !func_ty.has_inference_vars() {
-                let mut errors = Vec::new();
-                // Track consumed param indices to prevent named args from overlapping with positional args.
-                // C-NO-OVERLAP: positional args consume params 0..args.len(). Named args searching
-                // ALL params by name could accidentally match a positional-consumed param if the call
-                // supplies both positional and named args (e.g., [call $f 42 x: 99] where param 0 is
-                // named x would check param 0 twice).
-                let mut consumed_params = std::collections::HashSet::new();
-                // Check positional args against non-variadic params.
-                // If the function is variadic, stop before the last param (which is the variadic param itself).
-                let non_variadic_param_count = if *variadic && !params.is_empty() {
-                    params.len() - 1
-                } else {
-                    params.len()
-                };
-                for (idx, (arg, (_param_name, param_ty))) in args
-                    .iter()
-                    .zip(params.iter().take(non_variadic_param_count))
-                    .enumerate()
-                {
-                    consumed_params.insert(idx);
-
-                    // Boundary guard tracking and bidirectional checking:
-                    // - For lambda args: use check_expr (lambda checking mode, no inference needed)
-                    // - For non-lambda args: infer, check for Unknown, then subsume (avoids double-inference)
-                    match &arg.expr {
-                        SurfaceExpression::Fn { .. } => {
-                            // Lambda: use check_surface_expr for bidirectional lambda checking mode.
-                            // Lambdas can't be Unknown, so no boundary guard needed.
-                            // param_ty is ground under the CALL-MONO invariant (!func_ty.has_inference_vars()),
-                            // so no explicit state.subst.apply() is needed here — check_surface_expr applies
-                            // state.subst to its expected type internally, which is a no-op on ground types.
-                            if let Err(mut errs) =
-                                check_surface_expr(arg, param_ty, env, state, constraints, type_map)
-                                    .await
-                            {
-                                errors.append(&mut errs);
-                            }
-                        }
-                        _ => {
-                            // Non-lambda: infer once, check Unknown, then subsume (no double-inference).
-                            match infer_surface_expr(arg, env, state, constraints, type_map).await {
-                                Ok(arg_ty) => {
-                                    // Apply substitution before Unknown check and subsumption.
-                                    let arg_ty_resolved = if state.subst.is_empty() {
-                                        arg_ty
-                                    } else {
-                                        state.subst.apply(&arg_ty)
-                                    };
-                                    // Boundary guard: Unknown→concrete boundary needs runtime guard.
-                                    if is_concrete_type(param_ty)
-                                        && matches!(arg_ty_resolved, Type::Unknown)
-                                    {
-                                        // Set inline type guard on the argument AST node.
-                                        arg.type_guard.set(Some(param_ty.clone()));
-                                    }
-                                    // CALL-MONO guarantees func_ty has no inference vars, so
-                                    // param_ty (drawn from func_ty.params) is always ground.
-                                    // Applying state.subst to a ground type is a no-op, but we
-                                    // do it for consistency with the arg side above.
-                                    // Unification is never needed here — use subsumption directly.
-                                    let param_ty_resolved = if state.subst.is_empty() {
-                                        param_ty.clone()
-                                    } else {
-                                        state.subst.apply(param_ty)
-                                    };
-                                    // Subsumption: arg_ty <: param_ty OR consistency if Unknown/Top present.
-                                    let sub_passes =
-                                        Type::is_subtype(
-                                            &arg_ty_resolved,
-                                            &param_ty_resolved,
-                                            Some(&state.tycon_env),
-                                        ) || ((contains_unknown_or_top(&arg_ty_resolved)
-                                            || contains_unknown_or_top(&param_ty_resolved))
-                                            && Type::is_consistent(
-                                                &arg_ty_resolved,
-                                                &param_ty_resolved,
-                                            ));
-                                    if !sub_passes {
-                                        errors.push(TypeErrorTyped::UnificationFailure(
-                                            UnificationFailure {
-                                                expected: param_ty_resolved,
-                                                got: arg_ty_resolved,
-                                                span: arg.span.clone(),
-                                                notes: vec![],
-                                                call_stack: vec![],
-                                            },
-                                        ));
-                                    }
-                                }
-                                Err(mut errs) => {
-                                    errors.append(&mut errs);
-                                }
-                            }
-                        }
-                    }
-                }
-                // Check variadic args: if the function is variadic, infer all args starting at
-                // non_variadic_param_count and unify them against the Seq element type.
-                // Use infer+unify instead of check_expr to allow literal widening (IntLiteral → Int).
-                if *variadic && args.len() > non_variadic_param_count {
-                    // The last param is the variadic param — extract its Seq element type
-                    let last_seq_elem = params.last().and_then(|(_, t)| t.as_seq()).cloned();
-                    if let Some(elem_ty) = last_seq_elem {
-                        for arg in args.iter().skip(non_variadic_param_count) {
-                            match infer_surface_expr(arg, env, state, constraints, type_map).await {
-                                Ok(arg_ty) => {
-                                    // Widen literal types before unifying to allow [f 10 20 30]
-                                    // where 10, 20, 30 all unify with Int element type.
-                                    // Also widen Record field values so that [f [1 2] [3 4]] does
-                                    // not fail with IntLiteral(1) ≠ IntLiteral(3).
-                                    let widened_ty = widen_literal_types(arg_ty);
-                                    let mut subst = std::mem::take(&mut state.subst);
-                                    if let Err(e) = Box::pin(unify(
-                                        &widened_ty,
-                                        &elem_ty,
-                                        &mut subst,
-                                        state,
-                                        constraints,
-                                        arg.span.clone(),
-                                    ))
-                                    .await
-                                    {
-                                        errors.push(e);
-                                    }
-                                    state.subst = subst;
-                                }
-                                Err(mut errs) => {
-                                    errors.append(&mut errs);
-                                }
-                            }
-                        }
-                    }
-                }
-                // Check for duplicate named argument names
-                let mut seen_names: HashSet<&str> = HashSet::new();
-                for na in named_args {
-                    if !seen_names.insert(&na.node.name) {
-                        errors.push(TypeErrorTyped::Generic(GenericTypeError {
-                            message: format!("duplicate named argument: '{}'", na.node.name),
-                            span: na.span.clone(),
-                            notes: vec![],
-                            call_stack: vec![],
-                        }));
-                    }
-                }
-                // Check named args by matching them to params by name
-                for na in named_args {
-                    let arg_name = &na.node.name;
-                    // Find the param with matching name, tracking its index to detect overlap
-                    let param_match = params.iter().enumerate().find_map(|(idx, (pname, pty))| {
-                        if pname.as_ref() == Some(arg_name) {
-                            Some((idx, pty))
-                        } else {
-                            None
-                        }
-                    });
-
-                    match param_match {
-                        Some((param_idx, param_ty)) => {
-                            // C-NO-OVERLAP check: if this param was already consumed by a positional arg,
-                            // emit a type warning and skip type checking (the positional check already ran).
-                            if consumed_params.contains(&param_idx) {
-                                errors.push(
-                                    TypeErrorTyped::Generic(GenericTypeError {
-                                        message: format!(
-                                            "named argument '{}' conflicts with positional argument at position {}",
-                                            arg_name, param_idx
-                                        ),
-                                        span: na.span.clone(),
-                                        notes: vec![], call_stack: vec![],
-                                    }),
-                                );
-                                continue;
-                            }
-                            // Mark param as consumed (Task 1: Robinson idempotency)
-                            consumed_params.insert(param_idx);
-
-                            // Infer the named arg type and unify against the param type.
-                            // Boundary guard tracking: after inferring the arg type, if it is
-                            // Unknown and the parameter expects a concrete type, record the span
-                            // for gradual typing boundary guard insertion. This avoids a redundant
-                            // pre-call infer_surface_expr that would mutate state before the actual check.
-                            match infer_surface_expr(
-                                &na.node.value,
-                                env,
-                                state,
-                                constraints,
-                                type_map,
-                            )
-                            .await
-                            {
-                                Ok(arg_ty) => {
-                                    // Boundary guard check (post-inference, single-pass)
-                                    if is_concrete_type(param_ty) {
-                                        let resolved_arg_ty = if state.subst.is_empty() {
-                                            arg_ty.clone()
-                                        } else {
-                                            state.subst.apply(&arg_ty)
-                                        };
-                                        if matches!(resolved_arg_ty, Type::Unknown) {
-                                            // Set inline type guard on the named arg's value AST node.
-                                            na.node.value.type_guard.set(Some(param_ty.clone()));
-                                        }
-                                    }
-                                    let mut subst = std::mem::take(&mut state.subst);
-                                    let result = Box::pin(unify(
-                                        &arg_ty,
-                                        param_ty,
-                                        &mut subst,
-                                        state,
-                                        constraints,
-                                        na.span.clone(),
-                                    ))
-                                    .await;
-                                    state.subst = subst;
-                                    if let Err(e) = result {
-                                        errors.push(TypeErrorTyped::Generic(GenericTypeError {
-                                            message: format!(
-                                                "named argument '{}' type mismatch: {}",
-                                                arg_name,
-                                                e.message()
-                                            ),
-                                            span: na.span.clone(),
-                                            notes: vec![],
-                                            call_stack: vec![],
-                                        }));
-                                    }
-                                }
-                                Err(mut errs) => {
-                                    errors.append(&mut errs);
-                                }
-                            }
-                        }
-                        None => {
-                            // B-310: Variadic functions accept arbitrary named args (B-277).
-                            // Unmatched named args are collected into the variadic dict at runtime
-                            // per [C-NAMED-VALID]: ∀(k,_)∈named: (∃pᵢ∈P: pᵢ.name=k) ∨ V≠∅.
-                            // When variadic=true, infer the named arg value for type map population
-                            // and error propagation, but DO NOT emit "unknown named argument".
-                            if !*variadic {
-                                errors.push(
-                                    TypeErrorTyped::Generic(GenericTypeError {
-                                        message: format!(
-                                            "unknown named argument: function has no parameter named '{}'",
-                                            arg_name
-                                        ),
-                                        span: na.span.clone(),
-                                        notes: vec![], call_stack: vec![],
-                                    }),
-                                );
-                            } else {
-                                // Variadic function: infer the named arg value for type map and error propagation.
-                                // The value will be collected into the variadic dict at runtime; we don't know
-                                // the element type of the variadic dict statically (it's a mixed Dict of positionals
-                                // and named args), so we just ensure the arg itself type-checks.
-                                if let Err(mut errs) = infer_surface_expr(
-                                    &na.node.value,
-                                    env,
-                                    state,
-                                    constraints,
-                                    type_map,
-                                )
-                                .await
-                                {
-                                    errors.append(&mut errs);
-                                }
-                            }
-                        }
-                    }
-                }
-                if !errors.is_empty() {
-                    return Err(errors);
-                }
-                // Apply state.subst for defensive consistency with check_call_with_scheme.
-                // The CALL-MONO guard (!func_ty.has_inference_vars()) means ret is typically fully
-                // concrete, making apply() a no-op. But applying defensively guards against
-                // edge cases where has_inference_vars() and the substitution domain diverge.
-                return Ok(state.subst.apply(ret));
+                return Box::pin(check_call_args(
+                    params,
+                    ret,
+                    *variadic,
+                    *required_count,
+                    func_callee.as_deref(),
+                    args,
+                    named_args,
+                    env,
+                    span,
+                    state,
+                    constraints,
+                    type_map,
+                    0, // constraints_start unused on CALL-MONO path (no TypeVar constraints)
+                    false, // is_poly = false → CALL-MONO subsumption path
+                ))
+                .await;
             }
 
-            // CALL-POLY: function type has type variables
-            // Instantiate the function type, then check arguments (doc/06 §[CALL-POLY])
-            // Unified with CALL-MONO: both paths use check_expr, which internally dispatches
-            // to unification (for TypeVars) or subsumption (for concrete types).
+            // CALL-POLY: function type has type variables.
+            // Instantiate the function type at the current level, then delegate to check_call_args.
             let inst_ty = instantiate_at_level(&func_ty, state);
+            let constraints_start = constraints.len();
 
-            let (inst_params, inst_ret) = match &inst_ty {
+            let (inst_params, inst_ret, inst_variadic, inst_required_count) = match &inst_ty {
                 Type::Function {
                     params,
                     ret,
-                    variadic: _,
-                    required_count: _,
-                } => (params, ret),
+                    variadic,
+                    required_count,
+                } => (params, ret, *variadic, *required_count),
                 _ => unreachable!("instantiate_at_level preserves Function variant"),
             };
 
-            // Check arguments against instantiated parameter types.
-            // check_expr will use unification because inst_params contain fresh TypeVars.
-            let mut arg_errors: Option<Vec<TypeError>> = None;
-
-            if !params.is_empty() {
-                // Track consumed param indices to prevent named args from overlapping with positional args.
-                // C-NO-OVERLAP: positional args consume params 0..args.len(). Named args searching
-                // ALL params by name could accidentally match a positional-consumed param.
-                let mut consumed_params = std::collections::HashSet::new();
-                // Check positional args via check_expr (unified CALL-MONO/CALL-POLY path).
-                // check_expr will use unification internally because inst_params contain TypeVars.
-                // If the function is variadic, stop before the last param (which is the variadic param itself).
-                let non_variadic_param_count = if *variadic && !inst_params.is_empty() {
-                    inst_params.len() - 1
-                } else {
-                    inst_params.len()
-                };
-                for (idx, (arg, (_param_name, param_ty))) in args
-                    .iter()
-                    .zip(inst_params.iter().take(non_variadic_param_count))
-                    .enumerate()
-                {
-                    consumed_params.insert(idx);
-                    if let Err(mut errs) =
-                        check_surface_expr(arg, param_ty, env, state, constraints, type_map).await
-                    {
-                        arg_errors.get_or_insert_with(Vec::new).append(&mut errs);
-                    }
-                }
-                // Check variadic args: if the function is variadic, infer all args starting at
-                // non_variadic_param_count and unify them against the Seq element type.
-                // Use infer+unify instead of check_expr to allow literal widening (IntLiteral → Int).
-                if *variadic && args.len() > non_variadic_param_count {
-                    // The last param is the variadic param — extract its Seq element type
-                    let last_inst_seq_elem =
-                        inst_params.last().and_then(|(_, t)| t.as_seq()).cloned();
-                    if let Some(elem_ty) = last_inst_seq_elem {
-                        for arg in args.iter().skip(non_variadic_param_count) {
-                            match infer_surface_expr(arg, env, state, constraints, type_map).await {
-                                Ok(arg_ty) => {
-                                    // Widen literal types before unifying.
-                                    // Also widen Record field values so that [f [1 2] [3 4]] does
-                                    // not fail with IntLiteral(1) ≠ IntLiteral(3).
-                                    let widened_ty = widen_literal_types(arg_ty);
-                                    let mut subst = std::mem::take(&mut state.subst);
-                                    if let Err(e) = Box::pin(unify(
-                                        &widened_ty,
-                                        &elem_ty,
-                                        &mut subst,
-                                        state,
-                                        constraints,
-                                        arg.span.clone(),
-                                    ))
-                                    .await
-                                    {
-                                        arg_errors.get_or_insert_with(Vec::new).push(e);
-                                    }
-                                    state.subst = subst;
-                                }
-                                Err(mut errs) => {
-                                    arg_errors.get_or_insert_with(Vec::new).append(&mut errs);
-                                }
-                            }
-                        }
-                    }
-                }
-                // Check for duplicate named argument names
-                let mut seen_names: HashSet<&str> = HashSet::new();
-                for na in named_args {
-                    if !seen_names.insert(&na.node.name) {
-                        arg_errors
-                            .get_or_insert_with(Vec::new)
-                            .push(TypeErrorTyped::Generic(GenericTypeError {
-                                message: format!("duplicate named argument: '{}'", na.node.name),
-                                span: na.span.clone(),
-                                notes: vec![],
-                                call_stack: vec![],
-                            }));
-                    }
-                }
-                // Check named args by matching them to params by name
-                for na in named_args {
-                    let arg_name = &na.node.name;
-                    // Find the param with matching name, tracking its index to detect overlap
-                    let param_match =
-                        inst_params
-                            .iter()
-                            .enumerate()
-                            .find_map(|(idx, (pname, pty))| {
-                                if pname.as_ref() == Some(arg_name) {
-                                    Some((idx, pty))
-                                } else {
-                                    None
-                                }
-                            });
-
-                    match param_match {
-                        Some((param_idx, param_ty)) => {
-                            // C-NO-OVERLAP check: if this param was already consumed by a positional arg,
-                            // emit a type error and skip checking (the positional check already ran).
-                            if consumed_params.contains(&param_idx) {
-                                arg_errors.get_or_insert_with(Vec::new).push(
-                                    TypeErrorTyped::Generic(GenericTypeError {
-                                        message: format!(
-                                            "named argument '{}' conflicts with positional argument at position {}",
-                                            arg_name, param_idx
-                                        ),
-                                        span: na.span.clone(),
-                                        notes: vec![], call_stack: vec![],
-                                    }),
-                                );
-                                continue;
-                            }
-                            // Mark param as consumed
-                            consumed_params.insert(param_idx);
-
-                            // Check named arg: infer arg type once, then record boundary guard
-                            // if arg is Unknown and param expects a concrete type, then unify.
-                            // This avoids a redundant pre-call infer_surface_expr that would mutate
-                            // state before the actual bidirectional check (the prior pattern of
-                            // calling infer_surface_expr twice — once for guard, once via check_expr —
-                            // left stale type vars from the first call affecting the second).
-                            match infer_surface_expr(
-                                &na.node.value,
-                                env,
-                                state,
-                                constraints,
-                                type_map,
-                            )
-                            .await
-                            {
-                                Ok(arg_ty) => {
-                                    // Boundary guard check (post-inference, single-pass)
-                                    if is_concrete_type(param_ty) {
-                                        let resolved_arg_ty = if state.subst.is_empty() {
-                                            arg_ty.clone()
-                                        } else {
-                                            state.subst.apply(&arg_ty)
-                                        };
-                                        if matches!(resolved_arg_ty, Type::Unknown) {
-                                            // Set inline type guard on the named arg's value AST node.
-                                            na.node.value.type_guard.set(Some(param_ty.clone()));
-                                        }
-                                    }
-                                    // Unify the inferred type against the expected param type
-                                    let mut subst = std::mem::take(&mut state.subst);
-                                    let result = Box::pin(unify(
-                                        &arg_ty,
-                                        param_ty,
-                                        &mut subst,
-                                        state,
-                                        constraints,
-                                        na.span.clone(),
-                                    ))
-                                    .await;
-                                    state.subst = subst;
-                                    if let Err(errs) = result {
-                                        arg_errors.get_or_insert_with(Vec::new).push(
-                                            TypeErrorTyped::Generic(GenericTypeError {
-                                                message: format!(
-                                                    "named argument '{}' type mismatch: {}",
-                                                    arg_name,
-                                                    errs.message()
-                                                ),
-                                                span: na.span.clone(),
-                                                notes: vec![],
-                                                call_stack: vec![],
-                                            }),
-                                        );
-                                    }
-                                }
-                                Err(mut errs) => {
-                                    arg_errors.get_or_insert_with(Vec::new).append(&mut errs);
-                                }
-                            }
-                        }
-                        None => {
-                            // B-310: Variadic functions accept arbitrary named args (B-277).
-                            // Unmatched named args are collected into the variadic dict at runtime
-                            // per [C-NAMED-VALID]: ∀(k,_)∈named: (∃pᵢ∈P: pᵢ.name=k) ∨ V≠∅.
-                            // When variadic=true, infer the named arg value for type map population
-                            // and error propagation, but DO NOT emit "unknown named argument".
-                            if !*variadic {
-                                arg_errors.get_or_insert_with(Vec::new).push(
-                                    TypeErrorTyped::Generic(GenericTypeError {
-                                        message: format!(
-                                            "unknown named argument: function has no parameter named '{}'",
-                                            arg_name
-                                        ),
-                                        span: na.span.clone(),
-                                        notes: vec![], call_stack: vec![],
-                                    }),
-                                );
-                            } else {
-                                // Variadic function: infer the named arg value for type map and error propagation.
-                                // The value will be collected into the variadic dict at runtime; we don't know
-                                // the element type of the variadic dict statically (it's a mixed Dict of positionals
-                                // and named args), so we just ensure the arg itself type-checks.
-                                if let Err(mut errs) = infer_surface_expr(
-                                    &na.node.value,
-                                    env,
-                                    state,
-                                    constraints,
-                                    type_map,
-                                )
-                                .await
-                                {
-                                    arg_errors.get_or_insert_with(Vec::new).append(&mut errs);
-                                }
-                            }
-                        }
-                    }
-                }
-                if let Some(errors) = arg_errors {
-                    return Err(errors);
-                }
-                // After checking all arguments via check_expr, state.subst has been updated
-                // with all unifications. Apply it to the return type to get the final result.
-                Ok(state.subst.apply(inst_ret))
-            } else {
-                // Zero-param polymorphic function: return the instantiated return type
-                // (not the original `ret` which contains the scheme-internal variable names)
-                if state.subst.is_empty() {
-                    Ok((**inst_ret).clone())
-                } else {
-                    Ok(state.subst.apply(inst_ret))
-                }
-            }
+            Box::pin(check_call_args(
+                inst_params,
+                inst_ret,
+                inst_variadic,
+                inst_required_count,
+                func_callee.as_deref(),
+                args,
+                named_args,
+                env,
+                span,
+                state,
+                constraints,
+                type_map,
+                constraints_start,
+                true, // is_poly
+            ))
+            .await
         }
         Type::TypeVar(_, _) => {
             // Unbound type variable (e.g. letrec forward reference to a function not yet
@@ -1594,6 +1378,8 @@ pub(crate) async fn check_call(
                     notes: vec!["unit variant constructor takes exactly 1 argument".to_string()],
                     call_stack: vec![],
                     callee: Some(tag.clone()),
+                    params: vec![],
+                    got_types: vec![],
                 })]);
             }
             if !named_args.is_empty() {

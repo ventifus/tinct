@@ -629,12 +629,9 @@ pub(crate) fn make_span_dict(
 }
 
 /// Returns true if the annotation is `@Expr`, meaning the parameter receives a quoted AST
-/// value instead of an evaluated argument.
-///
-/// Only `Annotation::Simple("Expr")` is handled — the `PropertyDict` case (`@[type: Expr]`)
-/// is intentionally deferred until it is needed.
+/// value instead of an evaluated argument. Delegates to `crate::ast::is_expr_annotation`.
 fn is_expr_annotation(ann: &crate::ast::Annotation) -> bool {
-    matches!(ann, crate::ast::Annotation::Simple(s) if s == "Expr")
+    crate::ast::is_expr_annotation(ann)
 }
 
 /// Used by:

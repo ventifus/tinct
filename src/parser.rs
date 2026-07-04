@@ -5531,7 +5531,12 @@ fn push_expr_to_parent(
                                     params.push(Spanned::new(
                                         SurfaceParam {
                                             name: name.clone(),
-                                            annotation: rest_ann.clone(),
+                                            annotation: rest_ann.as_ref().map(|ann| {
+                                                crate::ast::normalize_varref_annotation(
+                                                    ann.clone(),
+                                                    binding.span.clone(),
+                                                )
+                                            }),
                                             variadic: true,
                                         },
                                         binding.span.clone(),

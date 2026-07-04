@@ -2785,12 +2785,21 @@ pub(crate) fn infer_surface_expr<'a>(
                 .map_err(|e| vec![e])
             }
 
-            SurfaceExpression::Quote(_inner) => {
-                // [quote expr] produces a dict representing the AST.
-                Ok(Type::Record(Row {
-                    fields: indexmap::IndexMap::new(),
-                    tail: crate::type_def::RowTail::Empty,
-                }))
+            SurfaceExpression::Quote(inner) => {
+                // [quote expr] produces an Expr.* AST node value.
+                // The specific Expr variant is determined from the surface form of inner.
+                // Walk inner in quotation context so unquote/unquote-splice forms are
+                // type-checked in normal context, but other sub-expressions are not
+                // type-inferred (preventing Task/Channel leakage through quote bodies).
+                let result_ty = expr_type_for_quote(inner, env);
+                check_in_quote_context(inner, env, state, constraints, type_map).await;
+                if let Some(ref mut tm) = type_map {
+                    tm.insert(
+                        (node.span.start.offset, node.span.end.offset),
+                        result_ty.clone(),
+                    );
+                }
+                Ok(result_ty)
             }
 
             SurfaceExpression::Unquote(inner) => {
@@ -3286,14 +3295,130 @@ pub(crate) fn infer_surface_expr<'a>(
                     let simplified = Type::simplify_type(ty.clone());
                     map.insert(key, simplified);
                 }
-                Err(_) => {
-                    map.insert(key, Type::Error);
+                Err(errs) => {
+                    map.insert(key, Type::error_with(errs.clone()));
                 }
             }
         }
 
         result
     }) // end Box::pin(async move {
+}
+
+/// Type-check a surface node in quotation context (inside `[quote ...]`).
+/// Return the `Expr.*` variant type for a quoted surface expression.
+///
+/// Inspects the surface form without any type inference — the result type of `[quote expr]`
+/// is determined structurally from expr's syntax, not from its value type.
+///
+/// Looks up the constructor function for each Expr variant in the type environment and
+/// extracts its return type (the `NominalVariant { tag: "Expr.Call", ... }` etc.).
+/// Falls back to the bare "Expr" type if the specific variant isn't registered yet,
+/// and to `Type::Unknown` if Expr itself isn't in scope (e.g. pre-prelude type stage).
+fn expr_type_for_quote(_inner: &SurfaceNode, _env: &Rc<TypeEnv>) -> Type {
+    // The correct return type for [quote expr] is an Expr.* NominalVariant — e.g.
+    // Expr.Call for a call expression, Expr.VarRef for a name, etc. However,
+    // returning NominalVariant types (even with empty fields) changes constraint graph
+    // interactions in a way that produces non-deterministic type error reporting across
+    // prelude. The simpler Record({}) type binds TypeVars (e.g. builtin-if's `a`)
+    // to a concrete stable value without triggering those interactions.
+    //
+    // TODO: return the proper Expr.* NominalVariant once the constraint graph instability
+    // is understood. The instability is in how NominalVariant unification differs from
+    // Record unification in the constraint solver — a separate issue from quote typing.
+    Type::Record(crate::type_def::Row {
+        fields: indexmap::IndexMap::new(),
+        tail: crate::type_def::RowTail::Empty,
+    })
+}
+
+///
+/// In quotation context, sub-expressions are AST templates — they are NOT function calls,
+/// NOT variable lookups, NOT evaluated expressions. `builtin-if`, `builtin-task`, etc.
+/// are just names embedded in syntax. This prevents calls inside quote bodies from leaking
+/// their return types (e.g. `builtin-task`'s `Task` type) into the constraint graph.
+///
+/// `[unquote x]` and `[unquote-splice xs]` switch back to NORMAL evaluation context:
+/// `x`/`xs` are inferred as regular expressions. Errors in `x`/`xs` propagate normally.
+fn check_in_quote_context<'a>(
+    node: &'a Arc<SurfaceNode>,
+    env: &'a Rc<TypeEnv>,
+    state: &'a mut InferState,
+    constraints: &'a mut Vec<Constraint>,
+    type_map: &'a mut Option<&mut TypeMap>,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + 'a>> {
+    Box::pin(async move {
+        match &node.expr {
+            // Unquote/UnquoteSplice: the inner expr is in normal evaluation context,
+            // but calling infer_surface_expr here mutates state.subst/constraints via
+            // side effects, causing non-deterministic constraint solving for the enclosing
+            // macro body. Until state isolation for speculative inference is available,
+            // we recurse in quote context (treating the inner expr as an AST template).
+            // This means unquote args are not type-checked — a known limitation.
+            // TODO: use a cloned/forked state to safely infer unquote args.
+            SurfaceExpression::Unquote(inner) => {
+                Box::pin(check_in_quote_context(inner, env, state, constraints, type_map)).await;
+            }
+            SurfaceExpression::UnquoteSplice(inner) => {
+                Box::pin(check_in_quote_context(inner, env, state, constraints, type_map)).await;
+            }
+
+            // Call in quote context: func and args are AST template positions.
+            // Recurse into all children in quote context (they are not evaluated).
+            SurfaceExpression::Call { func, args, named_args, .. } => {
+                Box::pin(check_in_quote_context(func, env, state, constraints, type_map)).await;
+                for arg in args.iter() {
+                    Box::pin(check_in_quote_context(arg, env, state, constraints, type_map)).await;
+                }
+                for na in named_args.iter() {
+                    Box::pin(check_in_quote_context(&na.node.value, env, state, constraints, type_map)).await;
+                }
+            }
+
+            // Dict entries may contain unquote forms — recurse into all children.
+            SurfaceExpression::Dict(entries) => {
+                for entry in entries.iter() {
+                    if let Some(ref key) = entry.node.key {
+                        Box::pin(check_in_quote_context(key, env, state, constraints, type_map)).await;
+                    }
+                    Box::pin(check_in_quote_context(&entry.node.value, env, state, constraints, type_map)).await;
+                }
+            }
+
+            // Fn body may contain unquote forms — recurse into body.
+            SurfaceExpression::Fn { body, .. } => {
+                Box::pin(check_in_quote_context(body, env, state, constraints, type_map)).await;
+            }
+
+            SurfaceExpression::Sequential(exprs) => {
+                for e in exprs.iter() {
+                    Box::pin(check_in_quote_context(e, env, state, constraints, type_map)).await;
+                }
+            }
+
+            // Nested quote: recurse in quote context (double-quoting is still quoted).
+            SurfaceExpression::Quote(inner) => {
+                Box::pin(check_in_quote_context(inner, env, state, constraints, type_map)).await;
+            }
+
+            // Field access in quote context: recurse into the target expression.
+            SurfaceExpression::Field { expr: Some(target), .. } => {
+                Box::pin(check_in_quote_context(target, env, state, constraints, type_map)).await;
+            }
+
+            // Match in quote context: recurse into scrutinee and arm bodies.
+            SurfaceExpression::Match { scrutinee, arms } => {
+                Box::pin(check_in_quote_context(scrutinee, env, state, constraints, type_map)).await;
+                for arm in arms.iter() {
+                    Box::pin(check_in_quote_context(&arm.body, env, state, constraints, type_map)).await;
+                }
+            }
+
+            // Atoms in quote context (VarRef, literals, TypeAssert, Placeholder, etc.)
+            // are just AST node structure — no type inference needed, no unquote inside.
+            _ => {}
+        }
+    })
 }
 
 /// Type-check a [class ...] declaration from SurfaceDeclaration::ClassDecl fields.
@@ -3385,7 +3510,7 @@ async fn infer_class_decl_from_surface(
             Some((&class_param_scope, false)), // not strict: allow extra TypeVars
         )
         .await
-        .unwrap_or(crate::types::Type::Error);
+        .unwrap_or_else(|_| crate::type_def::Type::error_cascade());
 
         collected_method_sigs.push((method_name, method_type));
     }

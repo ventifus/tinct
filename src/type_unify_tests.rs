@@ -2250,7 +2250,7 @@ async fn test_constrain_error_absorption() {
     let span = rust_span!();
 
     let result = constrain(
-        &Type::Error,
+        &Type::error_cascade(),
         &Type::Int,
         &mut subst,
         &mut state,
@@ -2266,7 +2266,7 @@ async fn test_constrain_error_absorption() {
 
     let result2 = constrain(
         &Type::Int,
-        &Type::Error,
+        &Type::error_cascade(),
         &mut subst,
         &mut state,
         &mut Vec::new(),

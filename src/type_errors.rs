@@ -49,7 +49,7 @@ impl TypeSpanFrame {
     /// Construct a frame for a named function call.
     pub fn call(name: &str, span: Span) -> Self {
         TypeSpanFrame {
-            label: format!("in call to `{name}`"),
+            label: format!("call to `{name}`"),
             span,
         }
     }
@@ -57,7 +57,7 @@ impl TypeSpanFrame {
     /// Construct a frame for an anonymous (non-VarRef) call.
     pub fn call_anon(span: Span) -> Self {
         TypeSpanFrame {
-            label: "in call to anonymous function".to_string(),
+            label: "call to anonymous function".to_string(),
             span,
         }
     }
@@ -76,6 +76,10 @@ pub struct ArityMismatch {
     pub call_stack: Vec<TypeSpanFrame>,
     /// Name of the function being called, if known (e.g. "builtin-if", "[f ...]").
     pub callee: Option<String>,
+    /// Parameter names (or "name: Type" descriptions) to include in the error message.
+    pub params: Vec<String>,
+    /// Types of the actual arguments supplied (best-effort, may be empty).
+    pub got_types: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -502,10 +506,20 @@ impl TypeErrorTyped {
     pub fn message(&self) -> String {
         match self {
             Self::ArityMismatch(e) => {
-                if let Some(ref name) = e.callee {
-                    format!("`{}` expected {} arguments, got {}", name, e.expected, e.got)
+                let params_str = if e.params.is_empty() {
+                    String::new()
                 } else {
-                    format!("expected {} arguments, got {}", e.expected, e.got)
+                    format!(" [{}]", e.params.join(", "))
+                };
+                let got_str = if e.got_types.is_empty() {
+                    format!("{}", e.got)
+                } else {
+                    format!("{} [{}]", e.got, e.got_types.join(", "))
+                };
+                if let Some(ref name) = e.callee {
+                    format!("`{}` expected {} arguments{}, got {}", name, e.expected, params_str, got_str)
+                } else {
+                    format!("expected {} arguments{}, got {}", e.expected, params_str, got_str)
                 }
             }
             Self::UndefinedVariable(e) => format!("undefined variable: {}", e.name),

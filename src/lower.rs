@@ -502,7 +502,7 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
             // Type::Error (failed inference) → fall back to Type::Unknown (accept-all).
             // None (type checker didn't run, or --no-typecheck) → Type::Unknown.
             let ty = match resolved_type.get() {
-                Some(crate::type_def::Type::Error) | None => crate::type_def::Type::Unknown,
+                Some(crate::type_def::Type::Error(_)) | None => crate::type_def::Type::Unknown,
                 Some(ty) => ty.clone(),
             };
             CoreExpr::TypeAssert {

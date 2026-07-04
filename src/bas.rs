@@ -171,7 +171,7 @@ pub fn to_rdnf(ty: &Type) -> Rdnf {
         Type::Never => vec![],
 
         // Error = uninhabited sentinel
-        Type::Error => vec![],
+        Type::Error(_) => vec![],
 
         // Unknown: in BAS subtyping, Unknown is treated conservatively.
         // For `is_subtype`, the TypeVar guard fires first, and Unknown has its own guard.

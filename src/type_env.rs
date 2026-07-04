@@ -988,7 +988,7 @@ pub fn generalize_with_doc(
                                         let concrete = subst_snapshot
                                             .get(resolved.as_str())
                                             .cloned()
-                                            .unwrap_or(Type::Error);
+                                            .unwrap_or_else(Type::error_cascade);
                                         ConstraintArg::Ground(concrete)
                                     }
                                 }
@@ -1851,7 +1851,7 @@ pub fn format_type_error(err: &TypeError, source: &str, file_name: &str) -> Stri
         let frame_line = frame.span.start.line;
         let frame_col = frame.span.start.column;
         out.push('\n');
-        out.push_str(&format!("  = note: {}\n", frame.label));
+        out.push_str(&format!("  = note: in {}\n", frame.label));
         // Determine which file name to show for this frame.
         let frame_file = frame
             .span

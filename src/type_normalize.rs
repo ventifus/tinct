@@ -387,7 +387,13 @@ impl fmt::Display for Type {
             Type::TypeVar(name, _level) => write!(f, "{}", name),
             Type::Unknown => write!(f, "_"),
             Type::Any => write!(f, "Any"),
-            Type::Error => write!(f, "<error>"),
+            Type::Error(errs) => {
+                if let Some(first) = errs.first() {
+                    write!(f, "<error: {}>", first.message())
+                } else {
+                    write!(f, "<error>")
+                }
+            }
             Type::Union(types) => {
                 for (i, ty) in types.iter().enumerate() {
                     if i > 0 {
