@@ -613,207 +613,6 @@ impl ErrorKind {
         }
     }
 
-    /// Check if a name is a known builtin (for "did you mean string?" heuristic).
-    /// This is a curated subset — not an exhaustive mirror of the `builtin_module()` groups.
-    fn is_known_builtin(name: &str) -> bool {
-        matches!(
-            name,
-            "+" | "-"
-                | "*"
-                | "/"
-                | "="
-                | "<"
-                | "if"
-                | "keys"
-                | "length"
-                | "merge"
-                | "append"
-                | "str"
-                | "split"
-                | "replace"
-                | "upper"
-                | "lower"
-                | "trim"
-                | "trim-start"
-                | "trim-end"
-                | "str-to-upper-char"
-                | "str-to-lower-char"
-                | "str-map-chars"
-                | "str-index-of"
-                | "regex-match?"
-                | "floor"
-                | "round"
-                | "to-int"
-                | "to-float"
-                | "error"
-                | "try"
-                | "apply"
-                | "until"
-                | "type-of"
-                | "from-json"
-                | "include"
-                | "seq"
-                | "head"
-                | "tail"
-                | "collect"
-                | "seq?"
-                | "range"
-                | "repeat"
-                | "cycle"
-                | "iterate"
-                | "unfold"
-                | "map"
-                | "filter"
-                | "take"
-                | "drop"
-                | "reduce"
-                | "join"
-                | "concat"
-                | "rest"
-                | "cons"
-                | "reverse"
-                | "sort"
-                | "first"
-                | "last"
-                | "builtin-seq"
-                | "builtin-head"
-                | "builtin-tail"
-                | "builtin-collect"
-                | "builtin-range"
-                | "builtin-repeat"
-                | "builtin-cycle"
-                | "builtin-iterate"
-                | "builtin-unfold"
-                | "builtin-join"
-                | "builtin-concat"
-                | "builtin-first"
-                | "builtin-last"
-                | "builtin-rest"
-                | "builtin-cons"
-                | "builtin-reverse"
-                | "builtin-sort"
-                | "proxy"
-                // prelude-missing-wrappers: new builtin-* aliases
-                | "builtin-keys"
-                | "builtin-merge"
-                | "builtin-each"
-                | "builtin-each-key"
-                | "builtin-each-kv"
-                | "builtin-build-dict"
-                | "builtin-floor"
-                | "builtin-round"
-                | "builtin-to-float"
-                | "builtin-try"
-                | "builtin-apply"
-                | "builtin-type-of"
-                | "builtin-narrow"
-                | "builtin-from-json"
-                // builtin-privacy-operators-and-io: new builtin-* aliases
-                | "builtin-replace"
-                | "builtin-str-chars"
-                | "builtin-char-code"
-                | "builtin-chr"
-                | "builtin-str-bytes"
-                | "builtin-bytes-str"
-                | "builtin-str-index-of"
-                | "builtin-trim-start"
-                | "builtin-trim-end"
-                | "builtin-str-to-upper-char"
-                | "builtin-str-to-lower-char"
-                | "builtin-str-map-chars"
-                | "builtin-regex-match?"
-                | "builtin-pow"
-                | "builtin-sqrt"
-                | "builtin-log"
-                | "builtin-log2"
-                | "builtin-log10"
-                | "builtin-exp"
-                | "builtin-sin"
-                | "builtin-cos"
-                | "builtin-tan"
-                | "builtin-asin"
-                | "builtin-acos"
-                | "builtin-atan"
-                | "builtin-atan2"
-                | "builtin-nan?"
-                | "builtin-inf?"
-                | "builtin-finite?"
-                | "builtin-band"
-                | "builtin-bor"
-                | "builtin-bxor"
-                | "builtin-shl"
-                | "builtin-shr"
-                | "builtin-float"
-                // B-168: I/O and builder builtins
-                | "builtin-open"
-                | "builtin-write"
-                | "builtin-write-atomic"
-                | "builtin-write-handle"
-                | "builtin-flush"
-                | "builtin-close"
-                | "builtin-stat"
-                | "builtin-exists"
-                | "builtin-stat-symlink"
-                | "builtin-copy-file"
-                | "builtin-symlink"
-                | "builtin-set-permissions"
-                | "builtin-make-dir"
-                | "builtin-rename"
-                | "builtin-link"
-                | "builtin-read-link"
-                | "builtin-get-xattr"
-                | "builtin-set-xattr"
-                | "builtin-remove-xattr"
-                | "builtin-list-xattrs"
-                | "builtin-raw-create"
-                | "builtin-seek"
-                | "builtin-seek-end"
-                | "builtin-position"
-                | "builtin-revocable"
-                | "builtin-revoke-cap"
-                | "builtin-cap-data"
-                | "builtin-connect"
-                | "builtin-tls-layer"
-                | "builtin-tls-peer-cert"
-                | "builtin-send-datagram"
-                | "builtin-recv-datagram"
-                | "builtin-string-handle"
-                | "builtin-make-builder"
-                | "builtin-builder-set"
-                | "builtin-builder-delete"
-                | "builtin-builder-finish"
-                | "builtin-builder-snapshot"
-                | "builtin-builder-has?"
-                | "builtin-builder-get"
-                | "builtin-builder-get-or"
-                | "builtin-load"
-                | "builtin-eval"
-                | "builtin-eval-types"
-                | "builtin-blake3"
-                | "builtin-cap-identity"
-                | "builtin-include-cache-get"
-                | "builtin-include-cache-put"
-                // S-894: renamed bare builtins — prelude re-exports the user-facing names
-                | "get?"
-                | "materialize"
-                | "validate"
-                | "bytes"
-                | "bytes-find"
-                | "bytes-of"
-                | "bytes-equal?"
-                | "ct-equal?"
-                | "builtin-get?"
-                | "builtin-materialize"
-                | "builtin-until"
-                | "builtin-validate"
-                | "builtin-bytes"
-                | "builtin-bytes-find"
-                | "builtin-bytes-of"
-                | "builtin-bytes-equal?"
-                | "builtin-ct-equal?"
-        )
-    }
-
     /// Returns `false` for errors that must not be cached in Failed thunk state.
     /// All errors are cacheable — a failed thunk is always stored in Failed state
     /// and subsequent accesses return the cached error without re-evaluation.
@@ -906,21 +705,7 @@ impl fmt::Display for ErrorKind {
                 }
             }
             Self::UndefinedVariable { name } => {
-                // Phase 2: bare identifiers are references, no $ prefix in display.
-                // Check if this looks like an intended string literal (heuristic).
-                let looks_like_string = !name.starts_with('%')
-                    // name never starts with '$' (EscapedRef stores bare name without sigil)
-                    && !name.starts_with('$')
-                    && name
-                        .chars()
-                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
-                    && !Self::is_known_builtin(name);
-
-                if looks_like_string {
-                    write!(f, "undefined variable: {name} (did you mean the string \"{name}\"? Use quotes.)")
-                } else {
-                    write!(f, "undefined variable: {name}")
-                }
+                write!(f, "undefined variable: {name}")
             }
             Self::TypeMismatch {
                 context: Some(ctx),
@@ -2785,7 +2570,6 @@ mod tests {
             ),
             "key not found: name"
         );
-        // UndefinedVariable with likely string literal triggers hint
         assert_eq!(
             format!(
                 "{}",
@@ -2793,9 +2577,8 @@ mod tests {
                     name: "x".to_string()
                 }
             ),
-            "undefined variable: x (did you mean the string \"x\"? Use quotes.)"
+            "undefined variable: x"
         );
-        // UndefinedVariable with % prefix does not trigger hint
         assert_eq!(
             format!(
                 "{}",
@@ -2805,7 +2588,6 @@ mod tests {
             ),
             "undefined variable: %foo"
         );
-        // UndefinedVariable with known builtin does not trigger hint
         assert_eq!(
             format!(
                 "{}",
@@ -3793,11 +3575,7 @@ mod tests {
         let err = EvalError::undefined_variable("myvar".to_string(), span);
         assert!(matches!(err.kind, ErrorKind::UndefinedVariable { .. }));
         assert_eq!(err.kind.code(), "E002");
-        // "myvar" is all lowercase/alphanumeric and not a builtin, so triggers hint
-        assert_eq!(
-            err.kind.to_string(),
-            "undefined variable: myvar (did you mean the string \"myvar\"? Use quotes.)"
-        );
+        assert_eq!(err.kind.to_string(), "undefined variable: myvar");
         assert!(err.kind.is_catchable());
         assert!(err.kind.is_cacheable());
     }
