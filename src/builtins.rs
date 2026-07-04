@@ -90,7 +90,7 @@ pub(crate) fn ok_val(v: Value, span: Span) -> EvalResult<Arc<Thunk>> {
     Ok(Arc::new(Thunk::new_materialized(v, span)))
 }
 
-/// Convert a `Value::Bytes` slice into a Seq of `Value::Int` (one per byte).
+/// Convert a `Value::Bytes` slice into a lazy collection of `Value::Int` (one per byte).
 ///
 
 /// Helper: create a synthetic CoreExpr::Call for builtin-generated calls.
@@ -741,7 +741,7 @@ pub(crate) fn builtin_last(
 /// `builtin-rest`: Returns all elements of a Dict except the first, reindexed 0..n-1.
 ///
 /// - Takes 1 arg: a Dict. Dict path only — O(n).
-/// - For Seq use the tinct-defined `tail` in prelude.
+/// - For lazy collections use the tinct-defined `tail` in prelude.
 ///
 /// Inherently materializing: must copy all remaining entries.
 pub(crate) fn builtin_rest(
@@ -886,7 +886,7 @@ fn compare_values(a: &Value, b: &Value, call_span: Span) -> EvalResult<std::cmp:
 ///   or by calling the comparator function for each comparison.
 /// - O(n log n) using Rust's `sort_by`.
 /// - Errors on mixed incompatible types when using natural ordering.
-/// - Errors on Seq input (callers must `$collect` first).
+/// - Errors on lazy collection input (callers must `$collect` first).
 ///
 /// Inherently materializing: must inspect all values to determine sort order.
 pub(crate) fn builtin_sort(
@@ -1135,7 +1135,7 @@ pub fn build_builtins_type_env() -> crate::types::TypeEnv {
     // The body holds the concrete primitive Type so callers that read TyConDef.body directly
     // (e.g., type display, annotation-of) see the correct underlying type.
     // builtin_type: Some(name) marks each as opaque — expand_named returns a bare TyCon leaf
-    // without structural expansion (same treatment as Seq/Map/Handle in InferState::new()).
+    // without structural expansion (same treatment as builtin TyCons in InferState::new()).
     // params: vec![] and variance: vec![] for zero-parameter primitives.
 
     // Zero-parameter primitives

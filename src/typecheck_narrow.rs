@@ -79,7 +79,7 @@ pub(crate) fn extract_narrowings(cond: &Arc<SurfaceNode>) -> Vec<Narrowing> {
                         return narrowings;
                     }
                     // Pattern: [int? x], [str? x], [dict? x], [bool? x], [float? x],
-                    // [fn? x], [null? x], [seq? x], [num? x]
+                    // [fn? x], [null? x], [num? x], and type predicates
                     "int?" if args.len() == 1 => {
                         if let SurfaceExpression::VarRef { name: var_name, .. } = &args[0].expr {
                             return vec![Narrowing::TypeOf {
@@ -155,11 +155,9 @@ pub(crate) fn extract_narrowings(cond: &Arc<SurfaceNode>) -> Vec<Narrowing> {
                     }
                     "seq?" if args.len() == 1 => {
                         if let SurfaceExpression::VarRef { name: var_name, .. } = &args[0].expr {
-                            // HKT: seq? narrows to Seq(Unknown) — element type deferred until
-                            // higher-kinded type parameterization (Seq: * → *)
                             return vec![Narrowing::TypeOf {
                                 var: var_name.clone(),
-                                ty: Type::seq(Type::Unknown),
+                                ty: Type::App(Box::new(Type::TyCon("Seq".into())), Box::new(Type::Unknown)),
                             }];
                         }
                     }
@@ -230,7 +228,7 @@ pub(crate) fn try_type_of(left: &Arc<SurfaceNode>, right: &Arc<SurfaceNode>) -> 
                                     fields: indexmap::IndexMap::new(),
                                     tail: crate::type_def::RowTail::Empty,
                                 })),
-                                "Seq" => Some(Type::seq(Type::Unknown)),
+                                "Seq" => Some(Type::App(Box::new(Type::TyCon("Seq".into())), Box::new(Type::Unknown))),
                                 _ => None,
                             };
                             return ty.map(|t| Narrowing::TypeOf {

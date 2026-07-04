@@ -828,8 +828,17 @@ async fn check_call_args(
         // against the variadic param element type.
         if variadic && arg_types.len() > non_variadic_param_count {
             if let Some((_, variadic_param_ty)) = params.last() {
-                let elem_ty: Option<Type> = if let Some(elem) = variadic_param_ty.as_seq() {
-                    Some(elem.clone())
+                let elem_ty: Option<Type> = if let Type::Record(row) = variadic_param_ty {
+                    match &row.tail {
+                        crate::type_def::RowTail::Uniform { value, .. } => Some(*value.clone()),
+                        _ => None,
+                    }
+                } else if let Type::App(f, arg) = variadic_param_ty {
+                    if matches!(f.as_ref(), Type::TyCon(n) if n == "Seq") {
+                        Some(*arg.clone())
+                    } else {
+                        None
+                    }
                 } else if matches!(variadic_param_ty, Type::TypeVar(_, _)) {
                     Some(variadic_param_ty.clone())
                 } else {
@@ -979,7 +988,19 @@ async fn check_call_args(
         // CALL-MONO: arg types already checked above (bidirectional / subsumption).
         // Now handle variadic extra args (they were inferred but not checked above).
         if variadic && args.len() > non_variadic_param_count {
-            let last_seq_elem = params.last().and_then(|(_, t)| t.as_seq()).cloned();
+            let last_seq_elem = params.last().and_then(|(_, t)| {
+                if let Type::Record(row) = t {
+                    if let crate::type_def::RowTail::Uniform { value, .. } = &row.tail {
+                        return Some(*value.clone());
+                    }
+                }
+                if let Type::App(f, arg) = t {
+                    if matches!(f.as_ref(), Type::TyCon(n) if n == "Seq") {
+                        return Some(*arg.clone());
+                    }
+                }
+                None
+            });
             if let Some(elem_ty) = last_seq_elem {
                 for (idx, arg) in args.iter().enumerate().skip(non_variadic_param_count) {
                     let arg_ty = &arg_types[idx];

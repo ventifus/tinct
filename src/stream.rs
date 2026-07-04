@@ -21,7 +21,7 @@ use crate::value::{string_val, BuiltinArgs, Thunk};
 /// Takes one positional argument (WHNF-materialized via `force_count = 1`).
 /// Returns a `String` containing the canonical tinct source text for the value.
 ///
-/// Deep-forces all nested structures (dict entries, seq elements, variant payloads)
+/// Deep-forces all nested structures (dict entries, collection elements, variant payloads)
 /// before serialization to ensure `to_tinct` can access all materialized values.
 ///
 /// Errors if the value has no tinct representation (capabilities, tasks, channels, etc.).
@@ -48,7 +48,7 @@ pub(crate) fn builtin_to_tinct(
 
         // Deep-force all nested structures before serialization.
         // The WHNF-materialized value may contain unevaluated thunks in dict entries,
-        // seq elements, or variant payloads. force_dict_tree recursively materializes
+        // collection elements, or variant payloads. force_dict_tree recursively materializes
         // all nested values so that to_tinct's try_get_materialized calls succeed.
         let deep_val = force_dict_tree(&val, &ctx).await?;
 

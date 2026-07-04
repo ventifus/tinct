@@ -39,7 +39,7 @@ use super::{resolve_annotation, resolve_fn_metadata};
 ///     auto-qualifies for backwards compatibility. If already qualified, uses tag as-is.
 ///   - Not found / empty constructors: leaves pattern UNCHANGED (graceful fallback for T-1003).
 /// - `Dict { fields, .. }`: elaborates each field sub-pattern.
-/// - `Seq { head, tail }`: elaborates both sub-patterns.
+/// - `Cons { head, tail }`: elaborates both sub-patterns.
 /// - `TypeAssert { inner, .. }`: already resolved — recurse into inner if present.
 /// - All other patterns (`Variable`, `Wildcard`, `Literal`, `Pin`): pass through.
 ///
@@ -606,11 +606,11 @@ pub(crate) async fn infer_fn(
     let mut fn_env = TypeEnv::with_parent(env);
     for (i, param) in params.iter().enumerate() {
         if param.node.variadic {
-            // Variadic params collect extra positional args into a Seq(T) where T is inferred.
-            // Runtime still uses Dict with int keys (gradual typing allows this mismatch).
             let elem_ty = state.fresh_type_var();
-            let variadic_ty = Type::seq(elem_ty);
-            // Update param_types[i] to match the env binding so the function signature is accurate.
+            let variadic_ty = Type::Record(crate::type_def::Row {
+                fields: indexmap::IndexMap::new(),
+                tail: crate::type_def::RowTail::Uniform { key: None, value: Box::new(elem_ty) },
+            });
             param_types[i].1 = variadic_ty.clone();
             fn_env.insert(param.node.name.clone(), variadic_ty);
         } else {

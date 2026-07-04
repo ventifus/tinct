@@ -362,12 +362,12 @@ pub enum Type {
     /// #Ok & #Err via S-ClsBot) become Never. In annotation syntax: @Never.
     Never,
     /// Type constructor application — `App(f, a)` represents type constructor `f` applied to type `a`.
-    /// Example: `App(TyCon("Seq"), Int)` for a sequence of integers.
+    /// Example: `App(TyCon("Map"), Str)` partially applies Map to Str.
     /// Example: `App(App(TyCon("Map"), Str), Int)` for Map[Str, Int] (curried).
     App(Box<Type>, Box<Type>),
-    /// Named type constructor — a concrete type constructor like `Seq`, `Map`, or `Handle`.
-    /// Used as the head of `App` chains: `App(TyCon("Seq"), Int)` = Seq[Int].
-    /// Display: just the name (e.g., `Seq`).
+    /// Named type constructor — a concrete type constructor like `Map` or `Handle`.
+    /// Used as the head of `App` chains: `App(TyCon("Map"), Str)`.
+    /// Display: just the name.
     TyCon(String),
     /// Type constructor variable — represents a type constructor like `m` in `Monad m`.
     /// Kind: `Operator` (i.e., `* → *`). Used in typeclass constraints and generic functions.
@@ -715,7 +715,7 @@ pub fn unfold_once(rec: &Type) -> Type {
 /// Extract the root TyCon name and ordered argument list from a curried App chain.
 ///
 /// `App(App(TyCon("Map"), K), V)` → `Some(("Map", [&K, &V]))`
-/// `App(TyCon("Seq"), T)`         → `Some(("Seq", [&T]))`
+/// `App(TyCon("F"), T)`           → `Some(("F", [&T]))`
 /// `TyCon("Foo")`                 → `Some(("Foo", []))`  (zero-arity)
 /// Any other form                 → `None`
 ///
@@ -909,7 +909,7 @@ impl Type {
     /// The AGT consistent subtyping relation (Garcia et al. 2016, Proposition 22): `A ~<: B`.
     ///
     /// Used for `value_matches_type`: ground types carry `Unknown` at erased positions
-    /// (Seq elements, Map values, Dict field values, Function params/returns).
+    /// (collection elements, Map values, Dict field values, Function params/returns).
     /// Plain `is_subtype` rejects `Unknown`; this relation treats `Unknown` as consistent
     /// with all types at any depth.
     ///
@@ -939,7 +939,7 @@ impl Type {
             // Top accepts everything
             (_, Type::Any) => true,
             // Structural recursion — consistent subtyping throughout all composite types.
-            // App covers Seq[A] ~<: Seq[B] (TyCon("Seq") head) and Map similarly.
+            // App covers F[A] ~<: F[B] for any parameterized type constructor.
             (Type::App(f1, a1), Type::App(f2, a2)) => {
                 Self::is_consistent_subtype(f1, f2) && Self::is_consistent_subtype(a1, a2)
             }
@@ -988,7 +988,7 @@ impl Type {
                     return true;
                 }
                 // B-454: variadic flag must match. A variadic function (collects rest args
-                // into a Seq) has fundamentally different call semantics from a non-variadic
+                // into a rest parameter) has fundamentally different call semantics from a non-variadic
                 // function with the same declared param count. Consistent subtyping cannot
                 // paper over that difference: a caller that passes extra arguments to a
                 // non-variadic function will fail at runtime, regardless of Unknown positions.
@@ -1173,7 +1173,7 @@ impl Type {
         }
         // Structural decomposition
         match (a, b) {
-            // App covers Seq[A] ~ Seq[B] (TyCon("Seq") head) and Map similarly.
+            // App covers F[A] ~ F[B] for any parameterized type constructor.
             (Type::App(f1, a1), Type::App(f2, a2)) => {
                 Type::is_consistent(f1, f2) && Type::is_consistent(a1, a2)
             }
@@ -2243,11 +2243,6 @@ impl Type {
         }
     }
 
-    /// Construct `Seq[elem]` as `App(TyCon("Seq"), elem)`.
-    pub fn seq(elem: Type) -> Self {
-        Type::App(Box::new(Type::TyCon("Seq".into())), Box::new(elem))
-    }
-
     /// Construct `Map[k, v]` as `App(App(TyCon("Map"), k), v)` (curried).
     pub fn map(k: Type, v: Type) -> Self {
         Type::App(
@@ -2259,16 +2254,6 @@ impl Type {
     /// Construct `Handle[cap]` as `App(TyCon("Handle"), cap)`.
     pub fn handle(cap: Type) -> Self {
         Type::App(Box::new(Type::TyCon("Handle".into())), Box::new(cap))
-    }
-
-    /// Destructure `Seq[elem]` → `Some(elem)` or `None`.
-    pub fn as_seq(&self) -> Option<&Type> {
-        if let Type::App(f, arg) = self {
-            if matches!(f.as_ref(), Type::TyCon(n) if n == "Seq") {
-                return Some(arg);
-            }
-        }
-        None
     }
 
     /// Destructure `Map[k, v]` → `Some((k, v))` or `None`.
@@ -2398,10 +2383,11 @@ pub(crate) fn type_payload_cmp(a: &Type, b: &Type) -> std::cmp::Ordering {
 /// have InstanceDecl entries in TypeEnv or InferState. Adding a new primitive type to a class
 /// (e.g., `Equatable Bytes`) requires updating ONLY this function.
 ///
-/// Parametric/structural types (Seq, Map, Record) are declared in prelude.llt via
-/// `[instance ...]` forms and propagate through TypeEnv → InferState at typecheck time.
+/// Parametric/structural types (Map, Record) are handled by satisfies_constraint_inner.
+/// Prelude-defined types have their class instances declared via `[instance ...]` forms
+/// and propagate through TypeEnv → InferState at typecheck time.
 ///
-/// **Structural (parametric) types** (`Seq`, `Map`, `Record`, `NominalVariant`) are handled
+/// **Structural (parametric) types** (`Map`, `Record`, `NominalVariant`) are handled
 /// by structural propagation rules in `satisfies_constraint_inner` (e.g., `Record({f: τ})`
 /// satisfies `Showable` iff every field `τ` satisfies `Showable`). This function handles only
 /// **leaf** (non-compound) primitive types.
@@ -2438,8 +2424,7 @@ pub fn primitive_satisfies_constraint(ty: &Type, class_name: &str) -> bool {
         "Numeric" => matches!(ty, Type::Int | Type::IntLiteral(_) | Type::Float),
 
         // Showable: types that support string conversion ([str $a]).
-        // Structural types (Seq, Map, Record) are Showable but are handled by structural
-        // propagation in satisfies_constraint_inner, not listed here.
+        // Structural types (Map, Record) are handled by satisfies_constraint_inner.
         // Bytes is a primitive Showable — str() on Bytes produces a UTF-8 string at runtime.
         "Showable" => matches!(
             ty,
@@ -2452,8 +2437,7 @@ pub fn primitive_satisfies_constraint(ty: &Type, class_name: &str) -> bool {
         ),
 
         // Appendable: types that support concatenation/merge ([++ $a $b]).
-        // Seq, Map, and Record are Appendable but are structural — they need InstanceDecl
-        // entries with TypeVar patterns (e.g., Seq[T]) in InferState::new().
+        // Record is handled by satisfies_constraint_inner.
         // Str/StringLiteral are primitive leaf types, listed here.
         "Appendable" => matches!(ty, Type::Str | Type::StringLiteral(_)),
 
@@ -2466,7 +2450,7 @@ pub fn primitive_satisfies_constraint(ty: &Type, class_name: &str) -> bool {
 ///
 /// This implements the [KIND-LABEL-ERROR] kinding judgment from doc/whatif/completed/hkt-monads.md:
 /// Label-kinded TypeVars (Kind::Label) cannot appear in positions expecting Kind::Type (e.g., as
-/// the element type of Seq, as function parameters/return types, or as record field types).
+/// the element type of a parameterized type, as function parameters/return types, or as record field types).
 ///
 /// Returns an error if any TypeVar in the type has Kind::Label in `kind_env`.
 /// Generate the gensym'd binding name for a compile-time instance specialization.
@@ -3457,7 +3441,7 @@ mod tests {
 
     #[test]
     fn test_bas_app_covariant() {
-        // Seq[Int] <: Seq[Int] with tycon env
+        // App(TyCon, Int) <: App(TyCon, Int) with tycon env
         use std::sync::Arc;
         let tycon_env = {
             let mut env = HashMap::new();
@@ -3477,8 +3461,8 @@ mod tests {
             );
             env
         };
-        let seq_int = Type::App(Box::new(Type::TyCon("Seq".into())), Box::new(Type::Int));
-        assert!(Type::is_subtype(&seq_int, &seq_int, Some(&tycon_env)));
+        let coll_int = Type::App(Box::new(Type::TyCon("Coll".into())), Box::new(Type::Int));
+        assert!(Type::is_subtype(&coll_int, &coll_int, Some(&tycon_env)));
     }
 
     #[test]

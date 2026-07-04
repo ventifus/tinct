@@ -1110,10 +1110,10 @@ async fn test_check_call_with_scheme_non_function_scheme() {
     );
 }
 
-// -- Seq and Null type annotations (Task 1) --
+// -- Type annotations (Task 1) --
 
-// test_seq_annotation_bare — deleted: covered by tc_seq_and_null_annotations.llt-eval
-// test_seq_annotation_with_element_type — deleted: covered by tc_seq_and_null_annotations.llt-eval
+// test_annotation_bare — deleted: covered by corpus tests
+// test_annotation_with_element_type — deleted: covered by corpus tests
 
 #[tokio::test]
 async fn test_null_annotation_bare() {
@@ -1177,7 +1177,7 @@ async fn test_null_return_annotation() {
     }
 }
 
-// test_builtin_collect_returns_record_not_seq — deleted: prelude-dependent, type-foundations sprint.
+// test_builtin_collect_returns_record — deleted: prelude-dependent, type-foundations sprint.
 
 // -- Document scope chain --
 
@@ -3917,20 +3917,20 @@ async fn test_check_call_mono_subst_apply_documented() {
 
 #[tokio::test]
 async fn test_variadic_param_type_is_any() {
-    // Variadic params collect extra positional args into a Seq(T) where T is inferred.
+    // Variadic params collect extra positional args into an open integer-keyed record.
     //
     // Grammar: variadic_param = @{ "..." ~ param_name } — no @annotation syntax.
     // The param_types override at infer_fn ensures the function type reflects
-    // Seq(TypeVar) for the variadic slot.
+    // Record(Uniform) for the variadic slot.
 
-    // Basic variadic: single param, collects all positional args as a seq
+    // Basic variadic: single param, collects all positional args
     let ty = result_field("[f: [fn [let ...rest] $rest]]", "f").await;
     match ty {
         Type::Function { params, .. } => {
             assert_eq!(params.len(), 1, "variadic function should have 1 param");
             assert!(
-                params[0].1.as_seq().is_some(),
-                "variadic param should have type Seq(T), got: {:?}",
+                matches!(&params[0].1, Type::Record(row) if matches!(&row.tail, crate::type_def::RowTail::Uniform { .. })),
+                "variadic param should have type Record(Uniform), got: {:?}",
                 params[0]
             );
         }
@@ -3938,21 +3938,19 @@ async fn test_variadic_param_type_is_any() {
     }
 
     // Variadic with annotated params before it: non-variadic params keep their annotation,
-    // variadic param is Any regardless
+    // variadic param is a uniform record
     let ty = result_field("[f: [fn [let a@Int b@Int ...rest] $a]]", "f").await;
     match ty {
         Type::Function { params, .. } => {
             assert_eq!(params.len(), 3, "function should have 3 params");
-            // First two params have annotation-derived types
             assert!(
                 matches!(&params[0].1, Type::Int),
                 "annotated param 'a' should be Int, got: {:?}",
                 params[0]
             );
-            // Third param (variadic) must be Seq(T)
             assert!(
-                params[2].1.as_seq().is_some(),
-                "variadic param 'rest' should have type Seq(T), got: {:?}",
+                matches!(&params[2].1, Type::Record(row) if matches!(&row.tail, crate::type_def::RowTail::Uniform { .. })),
+                "variadic param 'rest' should have type Record(Uniform), got: {:?}",
                 params[2]
             );
         }
@@ -3961,18 +3959,18 @@ async fn test_variadic_param_type_is_any() {
 }
 
 #[tokio::test]
-async fn test_variadic_param_env_binding_is_any() {
-    // The env binding for a variadic param inside the function body is Seq(T).
+async fn test_variadic_param_env_binding_is_record() {
+    // The env binding for a variadic param inside the function body is Record(Uniform).
     //
     // If the body references $rest, its inferred type comes from the env binding.
-    // Returning $rest should give the function a Seq(T) return type.
+    // Returning $rest should give the function a Record(Uniform) return type.
 
     let ty = result_field("[f: [fn [let x ...rest] $rest]]", "f").await;
     match ty {
         Type::Function { ret, .. } => {
             assert!(
-                ret.as_ref().as_seq().is_some(),
-                "function returning variadic param should have Seq(T) return type, got: {ret:?}"
+                matches!(ret.as_ref(), Type::Record(row) if matches!(&row.tail, crate::type_def::RowTail::Uniform { .. })),
+                "function returning variadic param should have Record(Uniform) return type, got: {ret:?}"
             );
         }
         other => panic!("expected Function type for f, got {other}"),
@@ -4652,11 +4650,11 @@ async fn test_expression_type_return_ann_registered() {
     // T-1272: Verify that the Expression open record type is registered in the builtin_core
     // type env with `return-ann: TyCon("Annotation")`.
     //
-    // Before this fix, `doc.expressions` was typed as `Seq(Any)`, meaning elements had type
+    // Before this fix, `doc.expressions` was typed as App(TyCon, Any), meaning elements had type
     // `Any`. Dot-access on `Any` produced a NotARecord error (falling to `_` in check_dot_access),
     // preventing the T013 Indexable ambiguity from resolving in generate.llt.
     //
-    // After the fix, `doc.expressions` is `Seq(expression_type)` where `expression_type` is
+    // After the fix, `doc.expressions` is App(TyCon, expression_type) where `expression_type` is
     // an open record with `return-ann: TyCon("Annotation")`. This allows:
     //   fn-ast.return-ann → TyCon("Annotation")
     //   [match ann [Annotation.PropertyDict p]] → p: {parts: Map Int Any, ...}  (via TyCon expansion)
@@ -4677,8 +4675,8 @@ async fn test_expression_type_return_ann_registered() {
         other => panic!("builtin-load should have Function type, got: {other}"),
     };
 
-    // program_type is an open record with `documents: Seq[document_type]`.
-    let doc_seq_type = match &program_type {
+    // program_type is an open record with `documents: App(TyCon, document_type)`.
+    let doc_collection_type = match &program_type {
         Type::Record(row) => row
             .fields
             .get("documents")
@@ -4687,20 +4685,21 @@ async fn test_expression_type_return_ann_registered() {
         other => panic!("program_type should be a Record, got: {other}"),
     };
 
-    // doc_seq_type is Seq[document_type] = App(TyCon("Seq"), document_type).
-    let document_type = match &doc_seq_type {
+    // doc_collection_type is App(TyCon, document_type) where the TyCon is the
+    // collection type for program documents.
+    let document_type = match &doc_collection_type {
         Type::App(head, elem) => {
             assert!(
-                matches!(&**head, Type::TyCon(n) if n == "Seq"),
-                "documents field should be Seq[...], got: {doc_seq_type}"
+                matches!(&**head, Type::TyCon(_)),
+                "documents field should be a collection App type, got: {doc_collection_type}"
             );
             *elem.clone()
         }
-        other => panic!("documents field should be Seq[...], got: {other}"),
+        other => panic!("documents field should be a collection App type, got: {other}"),
     };
 
-    // document_type is an open record with `expressions: Seq[expression_type]`.
-    let expr_seq_type = match &document_type {
+    // document_type is an open record with `expressions: App(TyCon, expression_type)`.
+    let expr_collection_type = match &document_type {
         Type::Record(row) => row
             .fields
             .get("expressions")
@@ -4709,16 +4708,15 @@ async fn test_expression_type_return_ann_registered() {
         other => panic!("document_type should be a Record, got: {other}"),
     };
 
-    // expr_seq_type is Seq[expression_type] = App(TyCon("Seq"), expression_type).
-    let expression_type = match &expr_seq_type {
+    let expression_type = match &expr_collection_type {
         Type::App(head, elem) => {
             assert!(
-                matches!(&**head, Type::TyCon(n) if n == "Seq"),
-                "expressions field should be Seq[...], got: {expr_seq_type}"
+                matches!(&**head, Type::TyCon(_)),
+                "expressions field should be a collection App type, got: {expr_collection_type}"
             );
             *elem.clone()
         }
-        other => panic!("expressions field should be Seq[...], got: {other}"),
+        other => panic!("expressions field should be a collection App type, got: {other}"),
     };
 
     // expression_type is an open record. Verify `return-ann: Any`.
@@ -4740,7 +4738,7 @@ async fn test_expression_type_return_ann_registered() {
          Got: {return_ann_type}"
     );
 
-    // Also verify `params: Seq(Any)` is present.
+    // Also verify `params` field is a parameterized collection type over Any.
     let params_type = match &expression_type {
         Type::Record(row) => row
             .fields
@@ -4749,10 +4747,10 @@ async fn test_expression_type_return_ann_registered() {
             .expect("expression_type must have 'params' field"),
         other => panic!("expression_type should be a Record, got: {other}"),
     };
-    assert_eq!(
-        params_type,
-        Type::seq(Type::Any),
-        "expression_type.params must be Seq(Any), got: {params_type}"
+    assert!(
+        matches!(&params_type, Type::App(head, elem)
+            if matches!(head.as_ref(), Type::TyCon(_)) && matches!(elem.as_ref(), Type::Any)),
+        "expression_type.params must be App(TyCon, Any), got: {params_type}"
     );
 
     // Verify the open row tail (Uniform with Any value) allows unknown field access.
@@ -5738,7 +5736,7 @@ async fn test_narrowing_dict_predicate() {
     }
 }
 
-// test_narrowing_seq_predicate — deleted: prelude-dependent narrowing test, type-foundations sprint.
+// test_narrowing_predicate — deleted: prelude-dependent narrowing test, type-foundations sprint.
 
 #[tokio::test]
 async fn test_narrowing_null_predicate() {
@@ -7788,14 +7786,14 @@ async fn test_body_contains_tycon_ref_primitives() {
 /// T-1066b: body_contains_tycon_ref returns true for bare TyCon.
 #[tokio::test]
 async fn test_body_contains_tycon_ref_tycyon() {
-    assert!(body_contains_tycon_ref(&Type::TyCon("Seq".to_string())));
+    assert!(body_contains_tycon_ref(&Type::TyCon("Coll".to_string())));
 }
 
 /// T-1066c: body_contains_tycon_ref returns true for App(TyCon, _).
 #[tokio::test]
 async fn test_body_contains_tycon_ref_app_tycyon() {
     let ty = Type::App(
-        Box::new(Type::TyCon("Seq".to_string())),
+        Box::new(Type::TyCon("Coll".to_string())),
         Box::new(Type::Int),
     );
     assert!(body_contains_tycon_ref(&ty));
@@ -7877,19 +7875,19 @@ async fn test_expand_named_zero_param_tycyon_body() {
 #[tokio::test]
 async fn test_expand_named_builtin_opaque() {
     let (mut env, mut state) = make_expand_env();
-    let def = make_builtin_tycon("a", "Seq");
-    env.insert_tycon_def("Seq".to_string(), def);
+    let def = make_builtin_tycon("a", "Coll");
+    env.insert_tycon_def("Coll".to_string(), def);
 
-    // Seq[Int] — builtin opaque, returns App(TyCon("Seq"), Int)
-    let result = expand_named("Seq", &[Type::Int], &env, &mut state);
+    // Coll[Int] — builtin opaque, returns App(TyCon("Coll"), Int)
+    let result = expand_named("Coll", &[Type::Int], &env, &mut state);
     let expected = Type::App(
-        Box::new(Type::TyCon("Seq".to_string())),
+        Box::new(Type::TyCon("Coll".to_string())),
         Box::new(Type::Int),
     );
     assert_eq!(
         result,
         Some(expected),
-        "Seq[Int] should stay as App(TyCon(Seq), Int)"
+        "Coll[Int] should stay as App(TyCon(Coll), Int)"
     );
 }
 

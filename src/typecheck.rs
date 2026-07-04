@@ -1293,7 +1293,7 @@ fn collect_nominal_tags(ty: &Type) -> Vec<String> {
     match ty {
         Type::NominalVariant { tag, .. } => vec![tag.clone()],
         Type::Union(members) => members.iter().flat_map(collect_nominal_tags).collect(),
-        // Intersection, Seq, Record, and all scalar types carry no nominal tags.
+        // Intersection, App, Record, and all scalar types carry no nominal tags.
         _ => vec![],
     }
 }
@@ -1788,7 +1788,7 @@ async fn infer_if(
 ///
 /// Recursion mirrors the structure of `elaborate_pattern` exactly so the parallel walk
 /// stays in sync. Sub-patterns (inner, Or branches, Constructor binding, Dict fields,
-/// Seq head/tail) are walked in the same order as `elaborate_pattern`.
+/// cons head/tail) are walked in the same order as `elaborate_pattern`.
 fn record_pattern_elaborations(elaborated: &Pattern, original: &Pattern) {
     match (elaborated, original) {
         // The key case: TypeAssertPending was resolved to TypeAssert.
@@ -2284,7 +2284,7 @@ pub(crate) fn infer_surface_expr<'a>(
                         .await;
                     }
 
-                    // Special case: `map` synthesizes a precise return type for Seq input with callback.
+                    // Special case: `map` infers argument types for side effects on type_map.
                     if name == "map" && named_args.is_empty() && args.len() == 2 {
                         let _ = infer_surface_expr(func, env, state, constraints, type_map).await; // Record func type for LSP hover
                         return check_map(
@@ -2986,7 +2986,7 @@ pub(crate) fn infer_surface_expr<'a>(
                     // Boolean is now a TyCon — handled via TyCon lookup below.
                     // User-defined type constructors: look up TyConDef.constructors in tycon_env.
                     // Handles both bare TyCon(name) scrutinees and App(TyCon(name), arg) forms
-                    // (e.g., `Seq[Int]` or a user-defined parameterized type).
+                    // (e.g., a user-defined parameterized type).
                     // TyConDef.constructors is populated by T-1036 for nominal ADTs declared in
                     // prelude.llt. T-1003 (S-852) handles TypeEnv.tycon_defs population for
                     // user-defined [type ...] declarations. If constructors is empty, we return
@@ -3867,7 +3867,7 @@ async fn infer_instance_decl_from_surface(
         };
 
         // Structural overlap check: detect instances whose head types unify even if
-        // their string keys differ (e.g., `[Seq a]` vs `[Seq Int]`).
+        // their string keys differ (e.g., `[F a]` vs `[F Int]`).
         // Clone the instance_env to satisfy the borrow checker — check_structural_overlap
         // takes &self (read-only) but state is also needed mutably for freshening.
         // This follows the same clone pattern used in resolve_instance callers.
@@ -4109,11 +4109,14 @@ pub(super) async fn check_surface_expr(
                     let mut fn_env = TypeEnv::with_parent(env);
                     for (param, ty) in params.iter().zip(param_types.iter()) {
                         if param.node.variadic {
-                            // Variadic rest-parameter is typed as Seq(T) where T is a fresh type var.
-                            // This allows type checking on operations over the rest sequence
-                            // (e.g., [length xs] infers Seq(T) → Int).
                             let elem_var = state.fresh_type_var();
-                            fn_env.insert(param.node.name.clone(), Type::seq(elem_var));
+                            fn_env.insert(
+                                param.node.name.clone(),
+                                Type::Record(crate::type_def::Row {
+                                    fields: indexmap::IndexMap::new(),
+                                    tail: crate::type_def::RowTail::Uniform { key: None, value: Box::new(elem_var) },
+                                }),
+                            );
                         } else {
                             fn_env.insert(param.node.name.clone(), ty.clone());
                         }

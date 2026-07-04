@@ -265,7 +265,7 @@ impl SpanRecord {
 ///
 /// Maintains a stack of open span IDs to track nested materialization and provides
 /// methods to open/close spans, record stalls, and convert the collected spans to
-/// a tinct Value (Seq of dicts) for JSON serialization.
+/// a tinct Value (collection of dicts) for JSON serialization.
 #[derive(Debug)]
 pub struct ProfilingCollector {
     /// All completed spans (open spans remain here with end_us = 0 until closed).

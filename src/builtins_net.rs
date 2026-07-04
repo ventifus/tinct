@@ -2990,7 +2990,7 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
                 fields: indexmap::IndexMap::from_iter([
                     ("subject".to_string(), Type::Str),
                     ("issuer".to_string(), Type::Str),
-                    ("sans".to_string(), Type::seq(Type::Str)),
+                    ("sans".to_string(), Type::App(Box::new(Type::TyCon("Seq".into())), Box::new(Type::Str))),
                     ("not-before".to_string(), Type::Int),
                     ("not-after".to_string(), Type::Int),
                     ("spki-sha256".to_string(), Type::Str),

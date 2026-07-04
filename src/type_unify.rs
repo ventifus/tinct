@@ -42,9 +42,9 @@ const MAX_CONSTRAINT_DEPTH: usize = 256;
 /// `primitive_satisfies_constraint` in `type_def.rs`. The InstanceEnv pre-seeding in
 /// `InferState::new()` will automatically reflect the change.
 ///
-/// Structural types (Seq, Map) that require InstanceDecl patterns with TypeVars
-/// (e.g., `Showable Seq[T]`) are handled via `InstanceEnv::resolve_instance` in
-/// `check_constraints_on_var` — those instances are pre-seeded in `InferState::new()`.
+/// Parameterized types that require InstanceDecl patterns with TypeVars
+/// are handled via `InstanceEnv::resolve_instance` in `check_constraints_on_var`
+/// — those instances are declared in prelude.
 pub fn satisfies_constraint(ty: &Type, class_name: &str) -> bool {
     satisfies_constraint_inner(ty, class_name, 0)
 }
@@ -115,19 +115,8 @@ fn satisfies_constraint_inner(ty: &Type, class_name: &str, depth: usize) -> bool
         }
     }
 
-    // [CONSTRAIN-CONTAINER]: Seq[T] and Map[K V] are always Showable and Appendable,
-    // regardless of their element types. The runtime str() and ++ operations work for any
-    // collection at the semantic level. This rule is needed to handle structural propagation
-    // through Record fields that contain Seq or Map types.
-    //
-    // Seq and Map are now App(TyCon("Seq"), ...) and App(App(TyCon("Map"), ...), ...).
-    // Use the as_seq() / as_map() helpers for detection.
-    if (ty.as_seq().is_some() || ty.as_map().is_some()) && class_name == "Showable" {
-        return true;
-    }
-    // Appendable for Seq (any Seq can be appended via concat semantics).
-    // Appendable for Map: maps are not appendable (no Appendable Map instance in prelude).
-    if ty.as_seq().is_some() && class_name == "Appendable" {
+    // Map[K V] is always Showable — the runtime str() operation works for any map.
+    if ty.as_map().is_some() && class_name == "Showable" {
         return true;
     }
     // Record for Appendable: any record satisfies Appendable (dict merge semantics).
@@ -135,10 +124,9 @@ fn satisfies_constraint_inner(ty: &Type, class_name: &str, depth: usize) -> bool
         return true;
     }
 
-    // [CONSTRAIN-EQUATABLE-CONTAINER]: Seq[T], Map[K V], and Record are structurally
-    // equatable — the runtime equality check works for any sequence, map, or record.
+    // Record and Map are structurally equatable — the runtime equality check works for them.
     if class_name == "Equatable"
-        && (matches!(ty, Type::Record(_)) || ty.as_seq().is_some() || ty.as_map().is_some())
+        && (matches!(ty, Type::Record(_)) || ty.as_map().is_some())
     {
         return true;
     }
@@ -367,9 +355,8 @@ async fn check_constraints_on_var(
                     continue;
                 }
 
-                // Fast path returned false: try instance resolution for parametric structural
-                // types (Seq[T], Map[K V]) and user-defined instances. Pre-seeded InstanceDecl
-                // entries in InferState::new() cover the parametric cases.
+                // Fast path returned false: try instance resolution for parametric and
+                // user-defined instances declared in prelude.
                 // This enables user-defined instances (future work: dictionary construction)
                 // Clone instance_env to avoid borrowing state both immutably (for the
                 // field access) and mutably (as the unify parameter) at the same time.
@@ -1072,15 +1059,15 @@ async fn lookup_arithmetic_instance(
 /// `None` despite all determining positions being ground.
 ///
 /// Conservative rule: only return `true` for scalar/primitive types that are
-/// structurally incompatible with the class.  Structural types (Record, Union,
-/// Intersection, Top, Seq, Map) and the gradual `Unknown` can always
+/// structurally incompatible with the class. Structural types (Record, Union,
+/// Intersection, App, etc.) and the gradual `Unknown` can always
 /// potentially satisfy a class at runtime, so we return `false` for them.
 fn is_definitely_no_instance_for(class: &str, ty: &Type) -> bool {
     match class {
         "Indexable" => {
             // A type is definitively non-Indexable only if it is a scalar/primitive
             // that cannot possibly be a container at runtime.
-            // Record, Union, Intersection, Any, Seq, Map, Unknown, NominalVariant — might work.
+            // Record, Union, Intersection, Any, App, Unknown, NominalVariant — might work.
             // Scalars (Int/Float/Str and their literals), Function, Never — cannot.
             matches!(
                 ty,
@@ -1406,19 +1393,13 @@ pub fn apply_type_with_visited<'a>(
             let f_applied = apply_type_with_visited(f, type_vars, depth + 1, visited_types).into_owned();
             let a_applied = apply_type_with_visited(a, type_vars, depth + 1, visited_types).into_owned();
 
+            // Operator(Name) applied to arg → App(TyCon(Name), arg).
+            // All type constructors follow this uniform pattern.
             if let Type::Operator(ctor_name) = &f_applied {
-                if ctor_name.as_str() == "Seq" {
-                    return Cow::Owned(Type::seq(a_applied));
-                }
-                if ctor_name.as_str() == "Map" {
-                    return Cow::Owned(Type::App(
-                        Box::new(Type::TyCon("Map".into())),
-                        Box::new(a_applied),
-                    ));
-                }
-                if ctor_name.as_str() == "Handle" {
-                    return Cow::Owned(Type::handle(a_applied));
-                }
+                return Cow::Owned(Type::App(
+                    Box::new(Type::TyCon(ctor_name.clone())),
+                    Box::new(a_applied),
+                ));
             }
 
             Cow::Owned(Type::App(Box::new(f_applied), Box::new(a_applied)))
@@ -2604,8 +2585,7 @@ pub async fn unify(
         (Type::DatagramHandle, Type::DatagramHandle) => Ok(()),
         (Type::QuicDatagramHandle, Type::QuicDatagramHandle) => Ok(()),
         // UNIFY-TYCON: two TyCons unify iff they refer to the same type constructor definition.
-        // TyCon("Seq") does not unify with TyCon("Map") — distinct named constructors are
-        // distinct types regardless of arity or structure.
+        // Distinct named constructors are distinct types regardless of arity or structure.
         //
         // Name equality is checked first. When names match, Arc::ptr_eq checks pointer identity:
         // if two `[type Foo ...]` declarations in different scopes both registered under "Foo",

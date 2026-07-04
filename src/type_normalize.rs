@@ -199,7 +199,7 @@ pub fn normalize<'a>(
 /// Resolver functions (`AddResult`, etc.) receive TypeNode Variant values as arguments.
 ///
 /// Handles primitive types that appear as arithmetic resolver arguments.
-/// Complex types (Seq, Map, Union, Record, etc.) return `None` — arithmetic
+/// Complex types (App, Union, Record, etc.) return `None` — arithmetic
 /// resolvers never receive those as arguments.
 fn type_to_typenode(ty: &Type) -> Option<Value> {
     // Build a leaf TypeNode Variant (no payload) for the given tag name.
@@ -446,10 +446,6 @@ impl fmt::Display for Type {
             Type::Never => write!(f, "Never"),
             Type::NominalVariant { tag, .. } => write!(f, "{}", tag),
             Type::App(func, arg) => {
-                // Pretty-print common builtin type constructors in their familiar syntax
-                if let Some(elem) = self.as_seq() {
-                    return write!(f, "Seq[{}]", elem);
-                }
                 if let Some((k, v)) = self.as_map() {
                     return write!(f, "Map[{} {}]", k, v);
                 }
@@ -647,20 +643,26 @@ mod tests {
         assert!(!Type::Float.has_type_stage_app());
     }
 
-    /// Test: has_type_stage_app() returns true for Seq(TypeStageApp)
+    /// Test: has_type_stage_app() returns true for App(TyCon, TypeStageApp)
     #[tokio::test]
-    async fn test_has_type_stage_app_true_for_seq_containing_type_stage_app() {
-        let ty = Type::seq(Type::TypeStageApp {
-            fn_name: "AddResult".to_string(),
-            args: vec![Type::Int, Type::Float],
-        });
+    async fn test_has_type_stage_app_true_for_app_containing_type_stage_app() {
+        let ty = Type::App(
+            Box::new(Type::TyCon("Box".into())),
+            Box::new(Type::TypeStageApp {
+                fn_name: "AddResult".to_string(),
+                args: vec![Type::Int, Type::Float],
+            }),
+        );
         assert!(ty.has_type_stage_app());
     }
 
-    /// Test: has_type_stage_app() returns false for Seq(Int)
+    /// Test: has_type_stage_app() returns false for App(TyCon, Int)
     #[tokio::test]
-    async fn test_has_type_stage_app_false_for_seq_of_concrete() {
-        let ty = Type::seq(Type::Int);
+    async fn test_has_type_stage_app_false_for_app_of_concrete() {
+        let ty = Type::App(
+            Box::new(Type::TyCon("Box".into())),
+            Box::new(Type::Int),
+        );
         assert!(!ty.has_type_stage_app());
     }
 
@@ -778,14 +780,20 @@ mod tests {
         let mut ctx = NormCtxt::new(None);
 
         // Normalize a type with inference variables
-        let ty_with_var = Type::seq(Type::TypeVar("a".to_string(), 0));
+        let ty_with_var = Type::App(
+            Box::new(Type::TyCon("Box".into())),
+            Box::new(Type::TypeVar("a".to_string(), 0)),
+        );
         let _result1 = norm(&ty_with_var, &subst, &mut ctx).await;
 
         // Cache should NOT contain this type (has inference vars)
         assert!(!ctx.cache.contains_key(&ty_with_var));
 
         // Normalize a ground type
-        let ty_ground = Type::seq(Type::Int);
+        let ty_ground = Type::App(
+            Box::new(Type::TyCon("Box".into())),
+            Box::new(Type::Int),
+        );
         let _result2 = norm(&ty_ground, &subst, &mut ctx).await;
 
         // Cache SHOULD contain this type (ground)

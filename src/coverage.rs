@@ -239,7 +239,7 @@ impl ConstructorSignature {
     /// Callers should treat `None` as "skip coverage checking" — not as exhaustive.
     ///
     /// `tycon_env` is used to resolve `Type::TyCon(name)` and `Type::App(TyCon(name), _)`
-    /// union members — e.g., `Seq[T]` or a user-defined type constructor. Builtin TyCons
+    /// union members — parameterized or plain type constructors. Builtin TyCons
     /// with `builtin_type` set produce a `Variant` constructor; user-defined TyCons with
     /// declared constructors produce `Variant` constructors for each. If `constructors` is empty
     /// (pending population) and `builtin_type` is None, the member is treated as
@@ -311,11 +311,10 @@ impl ConstructorSignature {
                     let arity = if fields.fields.is_empty() { 0 } else { 1 };
                     constructors.push((ConstructorTag::Variant(qualified_tag), arity));
                 }
-                // General TyCon / App(TyCon, _) handling: replaces the hardcoded Seq arm.
-                // Look up the type constructor name in tycon_env:
-                //   - Builtin TyCon (builtin_type is Some, e.g. "Seq", "Map"): emit Variant.
+                // TyCon / App(TyCon, _) handling. Look up the type constructor in tycon_env:
+                //   - Builtin TyCon with declared builtin_type: emit Variant.
                 //   - User-defined TyCon with declared constructors: emit Variant for each.
-                //   - User-defined TyCon with no constructors (open type or nested dict type, see B-344): skip.
+                //   - User-defined TyCon with no constructors (open type, B-344): skip.
                 //   - Unknown TyCon (not in tycon_env): skip (open type, unrepresentable).
                 member
                     if matches!(member, Type::TyCon(_))
@@ -340,8 +339,8 @@ impl ConstructorSignature {
                             }
                         }
                         Some(def) if def.builtin_type.is_some() => {
-                            // Builtin TyCon (e.g. Seq, Map, Handle) with no declared constructors.
-                            // Emit a Variant so Variant patterns (e.g. [Seq]:) can match it.
+                            // Builtin TyCon with no declared constructors (opaque Rust-backed type).
+                            // Emit a Variant so Variant patterns can match it.
                             let tag_name = def.builtin_type.as_deref().unwrap();
                             constructors.push((ConstructorTag::Variant(tag_name.to_string()), 0));
                         }

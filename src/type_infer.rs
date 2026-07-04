@@ -185,7 +185,7 @@ pub struct InferState {
     pub type_stage_env: Option<Arc<RwLock<crate::value::Environment>>>,
     /// Main runtime environment from the eval pipeline. When set, `eval_type_stage_expr`
     /// chains this as the parent of the type-stage env so that type constructor names
-    /// (`Seq`, `Dict`, etc.) defined in the main env are visible during annotation evaluation.
+    /// (type constructors, etc.) defined in the main env are visible during annotation evaluation.
     /// This is the cross-stage bridge: type-stage can resolve types from the main env.
     /// Only set in the eval path (builtin_eval_types); None in typecheck-only paths.
     pub main_env: Option<Arc<RwLock<crate::value::Environment>>>,
@@ -315,7 +315,7 @@ impl InferState {
         // instead of the `is_builtin_type_name` fast-path string-match in resolve_type_dict.
         //
         // `builtin_type: Some(name)` marks each entry as opaque: `expand_named` will return a
-        // bare TypeConstructor leaf without structural expansion (same treatment as Seq/Map/Handle).
+        // bare TypeConstructor leaf without structural expansion (same treatment as builtin TyCons).
         // `body` holds the concrete primitive `Type` — not `Unknown` — so that callers which read
         // `TyConDef.body` directly (e.g., type display) see the correct underlying type.
         // `params: vec![]` — zero type parameters; `variance: vec![]` — no parameters to vary.
@@ -631,7 +631,7 @@ mod tests {
         let _tv0 = state.fresh_type_var();
         let _tv1 = state.fresh_type_var();
 
-        // Subtract 3 for the builtin entries (Seq, Map, Handle)
+        // Subtract 3 for the builtin TyCon entries
         let count_before = state.type_vars.len();
         state.compact_levels();
         let count_after = state.type_vars.len();

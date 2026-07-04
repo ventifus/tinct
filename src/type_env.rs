@@ -1339,11 +1339,11 @@ fn format_type_pretty(ty: &Type, rename: &HashMap<String, String>) -> String {
                 _ => format!("Fn@{ret_str} [{params_str}]"),
             }
         }
-        // App covers Seq[T], Map[K V], Handle[cap] — pretty-print by recursing into
+        // App covers parameterized types — pretty-print by recursing into
         // the structure using format_type_pretty so TypeVars get renamed.
         Type::TyCon(name) => name.clone(),
         Type::App(_, _) => {
-            // Use Display for the overall structure (handles Seq/Map/Handle formatting),
+            // Use Display for the overall structure (handles parameterized type formatting),
             // but rename TypeVars inline by applying the rename map to the Display output.
             // This is a conservative approach: Display already formats these correctly,
             // and pretty_type_str handles _tN → letter renaming in a post-pass.
@@ -2082,20 +2082,25 @@ mod help_suggestion_tests {
 
         let mut state = InferState::new();
 
-        // Create an instance: Appendable [Seq b]
-        // Method: append: [Fn@[Seq b] [[Seq b] [Seq b]]]
+        // Create a parameterized type Box[b] = App(TyCon("Box"), b)
         let b_var = || Type::TypeVar("b".to_string(), 0);
+        let box_of = |inner: Type| -> Type {
+            Type::App(Box::new(Type::TyCon("Box".into())), Box::new(inner))
+        };
+
+        // Create an instance: Appendable [Box b]
+        // Method: append: [Fn@[Box b] [[Box b] [Box b]]]
         let instance = InstanceDecl {
             class_name: "Appendable".to_string(),
-            instance_type: Type::seq(b_var()),
-            det_positions: vec![], // Single-parameter class, no FDs
+            instance_type: box_of(b_var()),
+            det_positions: vec![],
             method_types: {
                 let mut methods = HashMap::new();
                 methods.insert(
                     "append".to_string(),
                     Type::Function {
-                        params: vec![(None, Type::seq(b_var())), (None, Type::seq(b_var()))],
-                        ret: Box::new(Type::seq(b_var())),
+                        params: vec![(None, box_of(b_var())), (None, box_of(b_var()))],
+                        ret: Box::new(box_of(b_var())),
                         variadic: false,
                         required_count: 2,
                     },
@@ -2104,53 +2109,45 @@ mod help_suggestion_tests {
             },
         };
 
-        // Use a fresh InstanceEnv containing ONLY the test instance.
-        // InferState::new() pre-seeds instance_env with structural instances including
-        // Appendable Seq[T]. Cloning state.instance_env would therefore contain both
-        // Seq[T] and Seq[b], which are equally specific for Seq[Int] and cause an
-        // ambiguity error. An isolated InstanceEnv tests resolve_instance in isolation.
         let mut inst_env = crate::type_class::InstanceEnv::new();
         inst_env.insert(instance.clone()).unwrap();
 
-        // Resolve against Seq[Int]
-        let target = Type::seq(Type::Int);
+        // Resolve against Box[Int]
+        let target = box_of(Type::Int);
         let resolved = inst_env
             .resolve_instance("Appendable", &target, &mut state)
             .await
             .expect("resolve_instance should not error");
 
-        assert!(resolved.is_some(), "should resolve Appendable for Seq[Int]");
+        assert!(resolved.is_some(), "should resolve Appendable for Box[Int]");
         let resolved = resolved.unwrap();
 
-        // The method types should have Int substituted for b
         let append_ty = resolved.method_types.get("append");
         assert!(append_ty.is_some(), "append method should exist");
 
-        // Check that the method signature has Seq[Int], not Seq[b]
+        // Check that the method signature has Box[Int], not Box[b]
         if let Type::Function { params, ret, .. } = append_ty.unwrap() {
             assert_eq!(params.len(), 2);
-            // Both params should be Seq[Int] or Seq[_tN] (freshened)
             let p0 = &params[0].1;
-            if let Some(elem) = p0.as_seq() {
-                // Should be Int or a fresh type var that got unified with Int
+            if let Type::App(_, elem) = p0 {
                 assert!(
-                    matches!(elem, Type::Int | Type::TypeVar(..)),
-                    "first param should be Seq[Int] or Seq[fresh], got {:?}",
+                    matches!(elem.as_ref(), Type::Int | Type::TypeVar(..)),
+                    "first param should be Box[Int] or Box[fresh], got {:?}",
                     elem
                 );
             } else {
-                panic!("expected Seq type for first param, got {:?}", p0);
+                panic!("expected App type for first param, got {:?}", p0);
             }
 
             let ret_ty = ret.as_ref();
-            if let Some(elem) = ret_ty.as_seq() {
+            if let Type::App(_, elem) = ret_ty {
                 assert!(
-                    matches!(elem, Type::Int | Type::TypeVar(..)),
-                    "return should be Seq[Int] or Seq[fresh], got {:?}",
+                    matches!(elem.as_ref(), Type::Int | Type::TypeVar(..)),
+                    "return should be Box[Int] or Box[fresh], got {:?}",
                     elem
                 );
             } else {
-                panic!("expected Seq type for return, got {:?}", ret_ty);
+                panic!("expected App type for return, got {:?}", ret_ty);
             }
         } else {
             panic!("append should have Function type, got {:?}", append_ty);

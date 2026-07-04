@@ -298,13 +298,10 @@ pub(crate) async fn check_connect(
     }
 }
 
-/// Type check `map` — precise return type for Seq input with callback.
+/// Type check `map` — return type comes from prelude declaration, not Rust special cases.
 ///
-/// The static signature in TypeEnv is Top → Unknown → Unknown.
-/// This special case synthesizes a precise return type for the Seq path:
-/// - Seq(A) with callback A → B → Seq(B)
-/// - Dict input → Unknown (runtime dispatch, no precise type available)
-/// - Unknown or other → Unknown fallback
+/// The static signature in TypeEnv provides the type. This function infers argument types
+/// and returns Unknown; precise return typing is delegated to prelude type declarations.
 pub(crate) async fn check_map(
     args: &[Arc<SurfaceNode>],
     env: &Rc<TypeEnv>,
@@ -313,7 +310,6 @@ pub(crate) async fn check_map(
     constraints: &mut Vec<Constraint>,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
-    // Arity check: require exactly 2 args (callback, collection)
     if args.len() != 2 {
         return Err(vec![TypeErrorTyped::ArityMismatch(ArityMismatch {
             expected: 2,
@@ -327,29 +323,11 @@ pub(crate) async fn check_map(
         })]);
     }
 
-    // Infer both argument types
-    let callback_ty = infer_surface_expr(&args[0], env, state, constraints, type_map).await?;
-    let callback_ty = state.apply(&callback_ty);
+    // Infer both argument types (for side effects on type_map and constraints)
+    let _callback_ty = infer_surface_expr(&args[0], env, state, constraints, type_map).await?;
+    let _coll_ty = infer_surface_expr(&args[1], env, state, constraints, type_map).await?;
 
-    let coll_ty = infer_surface_expr(&args[1], env, state, constraints, type_map).await?;
-    let coll_ty = state.apply(&coll_ty);
-
-    // Synthesize return type based on collection and callback
-    match (&coll_ty, &callback_ty) {
-        (coll, Type::Function { ret, .. }) if coll.as_seq().is_some() => {
-            // Seq(A) with callback → Seq(B) where B is the callback's return type
-            Ok(Type::seq(*ret.clone()))
-        }
-        (coll, _) if coll.as_seq().is_some() => {
-            // Seq input but callback is not a function (could be Unknown, TypeVar, etc.)
-            // Fall back to Unknown
-            Ok(Type::Unknown)
-        }
-        _ => {
-            // Dict input or other → Unknown (runtime dispatch)
-            Ok(Type::Unknown)
-        }
-    }
+    Ok(Type::Unknown)
 }
 
 /// Type check `tls-layer` — preserve input handle's capability row.
@@ -671,7 +649,7 @@ pub(crate) async fn check_do_infer(
 ///   - Union containing records with ok/err fields → "result"
 ///   - `App(Operator("Result"), _)` → "result"
 ///   - `Operator("Result")` (bare type constructor) → "result"
-///   - `Seq(_)` → would be "seq-monad" (not yet implemented)
+///   - other parameterized TyCons → not recognized as a monad
 ///
 /// Returns `Some(monad_var_name)` if a known monad is recognized, `None` otherwise.
 ///

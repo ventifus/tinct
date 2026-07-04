@@ -432,7 +432,7 @@ impl InstanceEnv {
     /// for the same class.
     ///
     /// Two instances overlap when their head types can be unified — i.e., there exists a ground
-    /// type that satisfies both patterns. For example, `[Seq a]` and `[Seq Int]` overlap because
+    /// type that satisfies both patterns. For example, `[F a]` and `[F Int]` overlap because
     /// substituting `a = Int` satisfies both. Overlapping instances cause non-deterministic
     /// resolution: whichever instance is found first "wins", violating coherence.
     ///
@@ -471,7 +471,7 @@ impl InstanceEnv {
                 let saved_bounds = state.bounds.clone();
 
                 // Freshen both instance types independently so that a type variable named
-                // `a` in `[Seq a]` and a type variable named `a` in another instance map
+                // `a` in `[F a]` and a type variable named `a` in another instance map
                 // to distinct fresh variables and do not accidentally unify.
                 let fresh_existing = instantiate_at_level(&existing.instance_type, state);
                 let fresh_candidate = instantiate_at_level(&candidate.instance_type, state);
@@ -796,7 +796,7 @@ impl InstanceEnv {
     /// Currently has no external callers — provided for future use by the do-inference path.
     ///
     /// Note: only matches instances whose `instance_type` is a bare `Type::TyCon(n)` —
-    /// parameterized instances (e.g., `Seq[T]`) are not matched by this method.
+    /// parameterized instances (e.g., `F[T]`) are not matched by this method.
     pub fn lookup_scoped(&self, class_name: &str, tycon_name: &str) -> Option<&InstanceDecl> {
         // Check local frame first — inner scope wins.
         for ((cname, _), inst) in &self.instances {
@@ -826,8 +826,8 @@ impl InstanceEnv {
     /// TypeVars in the *original* (un-freshened) instance head that are not resolved by the
     /// unification substitution `temp_subst`. Because the substitution uses freshened names
     /// (e.g., `_t7` not `a`), original TypeVar names are never in `temp_subst`, so the score
-    /// equals the number of declared type variables in the instance head. `[Seq Int]` → 0
-    /// (most specific); `[Seq a]` → 1 (less specific).
+    /// equals the number of declared type variables in the instance head. `[F Int]` → 0
+    /// (most specific); `[F a]` → 1 (less specific).
     ///
     /// **Two-pass algorithm**:
     /// - Pass 1: probe each candidate with a temporary substitution, collect `(score, inst)` for
@@ -871,7 +871,7 @@ impl InstanceEnv {
         // Original TypeVar names (e.g., "a") are never in temp_subst (which binds freshened names
         // like "_t7"), so every TypeVar in inst.instance_type counts as unresolved. This gives
         // the count of declared type variables in the instance head, correctly ranking
-        // `[Seq Int]` (0) above `[Seq a]` (1).
+        // `[F Int]` (0) above `[F a]` (1).
         //
         // All state mutations from each probe are discarded; only the peak name_counter is kept
         // to prevent _tN name reuse across candidates (F1 fix).
@@ -1009,8 +1009,8 @@ impl Default for InstanceEnv {
 ///
 /// A TypeVar is "unresolved" if applying bindings to it still yields a TypeVar.
 /// This measures how polymorphic an instance head remains after unification with a
-/// target type: a fully concrete instance head (`[Seq Int]`) scores 0, while a
-/// fully polymorphic head (`[Seq a]`) scores 1 for each free type variable.
+/// target type: a fully concrete instance head (`[F Int]`) scores 0, while a
+/// fully polymorphic head (`[F a]`) scores 1 for each free type variable.
 ///
 /// Used by `resolve_instance` to select the most specific matching instance —
 /// the one with the fewest unresolved TypeVars after unification.
@@ -1096,12 +1096,16 @@ mod tests {
         env.check_structural_overlap(candidate, state).await
     }
 
-    fn make_seq_a() -> Type {
-        Type::seq(Type::TypeVar("a".to_string(), 0))
+    fn make_tycon_app(name: &str, elem: Type) -> Type {
+        Type::App(Box::new(Type::TyCon(name.into())), Box::new(elem))
     }
 
-    fn make_seq_int() -> Type {
-        Type::seq(Type::Int)
+    fn make_coll_a() -> Type {
+        make_tycon_app("Coll", Type::TypeVar("a".to_string(), 0))
+    }
+
+    fn make_coll_int() -> Type {
+        make_tycon_app("Coll", Type::Int)
     }
 
     fn make_appendable_instance(instance_type: Type) -> InstanceDecl {
@@ -1133,22 +1137,21 @@ mod tests {
         );
     }
 
-    /// `[Seq a]` and `[Seq Int]` overlap: substituting a=Int satisfies both.
+    /// `[Coll a]` and `[Coll Int]` overlap: substituting a=Int satisfies both.
     #[tokio::test]
-    async fn test_overlap_seq_a_vs_seq_int() {
+    async fn test_overlap_coll_a_vs_coll_int() {
         let mut state = InferState::new();
         let mut env = InstanceEnv::new();
 
-        let seq_a_inst = make_appendable_instance(make_seq_a());
-        let seq_int_inst = make_appendable_instance(make_seq_int());
+        let coll_a_inst = make_appendable_instance(make_coll_a());
+        let coll_int_inst = make_appendable_instance(make_coll_int());
 
-        env.insert(seq_a_inst).unwrap();
+        env.insert(coll_a_inst).unwrap();
 
-        // [Seq Int] overlaps with [Seq a] — must detect overlap
-        let result = check_structural_overlap_sync(&env, &seq_int_inst, &mut state).await;
+        let result = check_structural_overlap_sync(&env, &coll_int_inst, &mut state).await;
         assert!(
             result.is_err(),
-            "Seq[a] and Seq[Int] should be detected as overlapping instances"
+            "Coll[a] and Coll[Int] should be detected as overlapping instances"
         );
         let msg = result.unwrap_err();
         assert!(
@@ -1161,22 +1164,21 @@ mod tests {
         );
     }
 
-    /// `[Seq a]` and `[Seq b]` overlap: both accept any Seq, so they are universally overlapping.
+    /// `[Coll a]` and `[Coll b]` overlap: both accept any Coll, so they are universally overlapping.
     #[tokio::test]
-    async fn test_overlap_seq_a_vs_seq_b() {
+    async fn test_overlap_coll_a_vs_coll_b() {
         let mut state = InferState::new();
         let mut env = InstanceEnv::new();
 
-        let seq_a_inst = make_appendable_instance(Type::seq(Type::TypeVar("a".to_string(), 0)));
-        let seq_b_inst = make_appendable_instance(Type::seq(Type::TypeVar("b".to_string(), 0)));
+        let coll_a_inst = make_appendable_instance(make_tycon_app("Coll", Type::TypeVar("a".to_string(), 0)));
+        let coll_b_inst = make_appendable_instance(make_tycon_app("Coll", Type::TypeVar("b".to_string(), 0)));
 
-        env.insert(seq_a_inst).unwrap();
+        env.insert(coll_a_inst).unwrap();
 
-        // [Seq b] overlaps with [Seq a] — they are structurally equivalent
-        let result = check_structural_overlap_sync(&env, &seq_b_inst, &mut state).await;
+        let result = check_structural_overlap_sync(&env, &coll_b_inst, &mut state).await;
         assert!(
             result.is_err(),
-            "Seq[a] and Seq[b] should be detected as overlapping (both accept any Seq)"
+            "Coll[a] and Coll[b] should be detected as overlapping (both accept any Coll)"
         );
     }
 
@@ -1185,7 +1187,7 @@ mod tests {
     async fn test_no_overlap_empty_registry() {
         let mut state = InferState::new();
         let env = InstanceEnv::new();
-        let inst = make_appendable_instance(make_seq_a());
+        let inst = make_appendable_instance(make_coll_a());
         assert!(
             check_structural_overlap_sync(&env, &inst, &mut state)
                 .await
@@ -1200,7 +1202,7 @@ mod tests {
         let mut state = InferState::new();
         let mut env = InstanceEnv::new();
 
-        env.insert(make_appendable_instance(make_seq_a())).unwrap();
+        env.insert(make_appendable_instance(make_coll_a())).unwrap();
 
         let counter_before = state.name_counter;
         let type_vars_before = state.type_vars.clone();
@@ -1208,7 +1210,7 @@ mod tests {
         // This will detect overlap and return Err — but state must be restored.
         let _ = check_structural_overlap_sync(
             &env,
-            &make_appendable_instance(make_seq_int()),
+            &make_appendable_instance(make_coll_int()),
             &mut state,
         )
         .await;
@@ -1224,8 +1226,8 @@ mod tests {
         );
     }
 
-    /// When both `[Seq Int]` and `[Seq a]` are registered, resolving against `Seq[Int]`
-    /// must select `[Seq Int]` (score 0) over `[Seq a]` (score 1) by specificity.
+    /// When both `[Coll Int]` and `[Coll a]` are registered, resolving against `Coll[Int]`
+    /// must select `[Coll Int]` (score 0) over `[Coll a]` (score 1) by specificity.
     ///
     /// Note: We insert directly (bypassing `check_structural_overlap`) to simulate the
     /// scenario T-914 addresses — `resolve_instance` must handle this case even when both
@@ -1235,61 +1237,55 @@ mod tests {
         let mut state = InferState::new();
         let mut env = InstanceEnv::new();
 
-        // Insert both instances directly (bypassing structural overlap check).
-        // [Seq a] — polymorphic, score 1 when matched against Seq[Int]
-        env.insert(make_appendable_instance(make_seq_a())).unwrap();
-        // [Seq Int] — concrete, score 0 when matched against Seq[Int]
-        env.insert(make_appendable_instance(make_seq_int()))
+        env.insert(make_appendable_instance(make_coll_a())).unwrap();
+        env.insert(make_appendable_instance(make_coll_int()))
             .unwrap();
 
-        let target = make_seq_int(); // Seq[Int]
+        let target = make_coll_int();
         let resolved = env
             .resolve_instance("Appendable", &target, &mut state)
             .await
-            .expect("should not be ambiguous — [Seq Int] is strictly more specific than [Seq a]");
+            .expect("should not be ambiguous — concrete instance is strictly more specific");
 
         assert!(
             resolved.is_some(),
-            "should find a matching instance for Seq[Int]"
+            "should find a matching instance for Coll[Int]"
         );
         let resolved = resolved.unwrap();
 
-        // The winner must be the concrete [Seq Int] instance, not the polymorphic [Seq a].
-        // The freshened instance_type of [Seq Int] has no TypeVars, so it should be Seq[Int].
         assert!(
             !resolved.instance_type.has_inference_vars(),
-            "resolved instance should be [Seq Int] (no TypeVars), got: {}",
+            "resolved instance should be concrete (no TypeVars), got: {}",
             resolved.instance_type
         );
-        if let Some(elem) = resolved.instance_type.as_seq() {
+        if let Type::App(_, elem) = &resolved.instance_type {
             assert!(
-                matches!(elem, Type::Int),
-                "element of resolved Seq should be Int, got: {}",
+                matches!(elem.as_ref(), Type::Int),
+                "element of resolved type should be Int, got: {}",
                 elem
             );
         } else {
             panic!(
-                "resolved instance type should be Seq[Int], got: {}",
+                "resolved instance type should be Coll[Int], got: {}",
                 resolved.instance_type
             );
         }
     }
 
-    /// When `[Seq a]` and `[Seq b]` are both registered (equally polymorphic), resolving
-    /// against `Seq[Int]` must report ambiguity — both score 1, so neither wins.
+    /// When `[Coll a]` and `[Coll b]` are both registered (equally polymorphic), resolving
+    /// against `Coll[Int]` must report ambiguity — both score 1, so neither wins.
     #[tokio::test]
     async fn test_resolve_instance_ambiguity_equally_specific() {
         let mut state = InferState::new();
         let mut env = InstanceEnv::new();
 
-        // Two equally polymorphic instances — both score 1 for any Seq target.
-        let seq_a_inst = make_appendable_instance(Type::seq(Type::TypeVar("a".to_string(), 0)));
-        let seq_b_inst = make_appendable_instance(Type::seq(Type::TypeVar("b".to_string(), 0)));
+        let coll_a_inst = make_appendable_instance(make_tycon_app("Coll", Type::TypeVar("a".to_string(), 0)));
+        let coll_b_inst = make_appendable_instance(make_tycon_app("Coll", Type::TypeVar("b".to_string(), 0)));
 
-        env.insert(seq_a_inst).unwrap();
-        env.insert(seq_b_inst).unwrap();
+        env.insert(coll_a_inst).unwrap();
+        env.insert(coll_b_inst).unwrap();
 
-        let target = make_seq_int();
+        let target = make_coll_int();
         let result = env
             .resolve_instance("Appendable", &target, &mut state)
             .await;
@@ -1309,7 +1305,7 @@ mod tests {
         );
     }
 
-    /// When only `[Seq a]` is registered, it resolves for `Seq[Int]` without ambiguity —
+    /// When only `[Coll a]` is registered, it resolves for `Coll[Int]` without ambiguity —
     /// single match always wins regardless of polymorphism score.
     #[tokio::test]
     async fn test_resolve_instance_single_match_no_ambiguity() {
@@ -1317,9 +1313,9 @@ mod tests {
         let mut env = InstanceEnv::new();
 
         // Only the polymorphic instance — no competition.
-        env.insert(make_appendable_instance(make_seq_a())).unwrap();
+        env.insert(make_appendable_instance(make_coll_a())).unwrap();
 
-        let target = make_seq_int();
+        let target = make_coll_int();
         let resolved = env
             .resolve_instance("Appendable", &target, &mut state)
             .await
@@ -1327,7 +1323,7 @@ mod tests {
 
         assert!(
             resolved.is_some(),
-            "should find a matching instance for Seq[Int] via [Seq a]"
+            "should find a matching instance for Coll[Int] via [Coll a]"
         );
     }
 
@@ -1374,12 +1370,11 @@ mod tests {
         let mut state = InferState::new();
         let mut env = InstanceEnv::new();
 
-        // Only Seq[Int] registered.
-        env.insert(make_appendable_instance(make_seq_int()))
+        env.insert(make_appendable_instance(make_coll_int()))
             .unwrap();
 
-        // Target is Seq[Str] — does not match Seq[Int].
-        let target = Type::seq(Type::Str);
+        // Coll[Str] does not match Coll[Int].
+        let target = make_tycon_app("Coll", Type::Str);
         let resolved = env
             .resolve_instance("Appendable", &target, &mut state)
             .await
@@ -1387,7 +1382,7 @@ mod tests {
 
         assert!(
             resolved.is_none(),
-            "Seq[Str] should not match [Seq Int] instance"
+            "Coll[Str] should not match Coll[Int] instance"
         );
     }
 }

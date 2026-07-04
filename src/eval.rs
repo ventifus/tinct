@@ -1149,7 +1149,7 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Type, ctx: &EvalConte
 /// though `ground_type_of(Builtin)` is Unknown, which is consistent with everything.
 ///
 /// Key differences from value_matches_type:
-/// - Parameterized TyCon (e.g. Seq): matches any Variant whose tag starts with "Name."
+/// - Parameterized TyCon: matches any Variant whose tag starts with "Name."
 /// - Fn (variadic, 0 required params): matches both Value::Function AND Value::Builtin
 /// - Proxy: exact match only (not Unknown ≥ Proxy via gradual typing)
 /// - Unknown/Top: always match (gradual escape hatch for --no-typecheck, macros)
@@ -7546,7 +7546,7 @@ mod tests {
             }),
         );
         ctx.set_tycon_env(env);
-        // App(TyCon("MySeq"), Int) — type arg Int is ignored; dispatch on "Str" discriminant.
+        // App(TyCon("MyColl"), Int) — type arg Int is ignored; dispatch on "Str" discriminant.
         let app_type = Type::App(
             Box::new(Type::TyCon("MySeq".to_string())),
             Box::new(Type::Int),

@@ -985,7 +985,7 @@ async fn test_unify_concrete_left_with_recursive_right() {
 }
 
 #[tokio::test]
-async fn test_types_are_disjoint_function_vs_seq() {
+async fn test_types_are_disjoint_function_vs_tycon_app() {
     let fn_ty = Type::Function {
         params: vec![],
         ret: Box::new(Type::Unknown),
@@ -993,15 +993,15 @@ async fn test_types_are_disjoint_function_vs_seq() {
         required_count: 0,
     };
 
-    let seq_ty = Type::seq(Type::Int);
+    let app_ty = Type::App(Box::new(Type::TyCon("Coll".into())), Box::new(Type::Int));
 
     assert!(
-        Type::types_are_disjoint(&fn_ty, &seq_ty),
-        "Function should be disjoint from Seq"
+        Type::types_are_disjoint(&fn_ty, &app_ty),
+        "Function should be disjoint from TyCon App"
     );
     assert!(
-        Type::types_are_disjoint(&seq_ty, &fn_ty),
-        "Seq should be disjoint from Function (symmetric)"
+        Type::types_are_disjoint(&app_ty, &fn_ty),
+        "TyCon App should be disjoint from Function (symmetric)"
     );
 }
 
