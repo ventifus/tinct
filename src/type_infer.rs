@@ -1,14 +1,28 @@
-//! Type inference machinery: InferState, Substitution, generalization, instantiation.
+//! Type inference machinery: InferState, generalization, instantiation.
 //!
 //! This module contains the core type inference infrastructure including
-//! substitution and levels-based let-generalization (Kiselyov 2013).
+//! the unified TypeVar table and levels-based let-generalization (Kiselyov 2013).
 
+use indexmap::IndexMap;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use crate::ast::Span;
 use crate::type_def::TyConDef;
 use crate::types::{ClassEnv, Constraint, InstanceEnv, Kind, Type};
+
+/// All per-TypeVar metadata in one place.
+/// IndexMap preserves insertion order (= TypeVar creation order via monotonic counter),
+/// giving deterministic iteration across runs -- unlike HashMap which has random seeds.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypeVarEntry {
+    /// Creation-time level (previously in InferState.levels).
+    pub level: u32,
+    /// Current binding (previously in Substitution.type_map). None = still free.
+    pub binding: Option<Type>,
+    /// Kind of this TypeVar (previously in InferState.kind_env).
+    pub kind: Kind,
+}
 
 /// Polymorphic type scheme: ∀ type_vars kind_vars. constraints => body
 /// Used for let-bound polymorphism (Damas-Milner) and type class constraints.
@@ -66,17 +80,11 @@ pub type SchemeMap = HashMap<(usize, usize), TypeScheme>;
 #[derive(Debug, Clone)]
 pub struct InferState {
     pub level: u32,
-    pub levels: HashMap<String, u32>,
-    /// Global accumulated substitution: collects constraints from access-chain inference
-    /// and other constraint generators. Applied when resolving type variables during
-    /// inference, so that constraints from `$x.field1` are visible when processing
-    /// `$x.field2` in the same expression. See doc/07-type-extensions.md Part 5.
-    pub subst: Substitution,
-    /// Kind environment: maps TypeVar names to their kinds.
-    /// Populated during class method processing (Kind::Operator) and when `key@"k"` annotations
-    /// are resolved (Kind::Label). Used to prevent promotion of label-kinded TypeVars and to
-    /// enforce kind checking (e.g., reject `Seq(TypeVar(l, Label))`).
-    pub kind_env: HashMap<String, Kind>,
+    /// Unified TypeVar table: creation level, binding, and kind for each TypeVar.
+    /// IndexMap preserves insertion order (TypeVar creation order) for deterministic iteration.
+    pub type_vars: IndexMap<String, TypeVarEntry>,
+    /// Counter for fresh TypeVar names. Previously Substitution.name_counter.
+    pub name_counter: u32,
     /// Type class environment: registry of class declarations.
     /// Dict-scoped: class declarations are visible in the dict and children.
     pub class_env: ClassEnv,
@@ -214,7 +222,7 @@ pub struct InferState {
     /// At generalization time, bounds are compacted: if they determine a unique type for α,
     /// α is substituted; otherwise α remains free in the TypeScheme.
     ///
-    /// Coexists with Substitution — Substitution handles equational bindings (α = T),
+    /// Coexists with type_vars bindings — type_vars handles equational bindings (α = T),
     /// bounds handle inequality constraints (L ≤ α ≤ U).
     pub bounds: std::collections::HashMap<String, crate::bas::TypeVarBounds>,
 }
@@ -230,15 +238,24 @@ impl InferState {
         let class_env = ClassEnv::new();
         let instance_env = InstanceEnv::new();
 
-        // Builtin type constructors — pre-registered so resolve_type_dict
-        // uses the general kind_env path instead of string matching.
-        let mut kind_env = HashMap::new();
-        kind_env.insert("Seq".to_string(), Kind::Operator);
-        kind_env.insert(
-            "Map".to_string(),
-            Kind::Arrow(Box::new(Kind::Type), Box::new(Kind::Operator)),
-        );
-        kind_env.insert("Handle".to_string(), Kind::Operator);
+        // Builtin type constructors — pre-registered in type_vars so resolve_type_dict
+        // uses the general kind lookup path instead of string matching.
+        let mut type_vars = IndexMap::new();
+        type_vars.insert("Seq".to_string(), TypeVarEntry {
+            level: 0,
+            binding: None,
+            kind: Kind::Operator,
+        });
+        type_vars.insert("Map".to_string(), TypeVarEntry {
+            level: 0,
+            binding: None,
+            kind: Kind::Arrow(Box::new(Kind::Type), Box::new(Kind::Operator)),
+        });
+        type_vars.insert("Handle".to_string(), TypeVarEntry {
+            level: 0,
+            binding: None,
+            kind: Kind::Operator,
+        });
 
         // T-1018: Register builtin TyCons in tycon_env with their variance annotations.
         // This allows is_subtype to apply variance-directed subtyping for builtins.
@@ -348,9 +365,8 @@ impl InferState {
 
         Self {
             level: 0,
-            levels: HashMap::new(),
-            subst: Substitution::new(),
-            kind_env,
+            type_vars,
+            name_counter: 0,
             class_env,
             instance_env,
             failed_bindings: HashMap::new(),
@@ -397,17 +413,18 @@ impl InferState {
         constraints.push(Constraint::new(Arc::new(class_decl.clone()), var));
     }
 
-    /// Create a fresh type variable at the current level and register it in `state.levels`.
+    /// Create a fresh type variable at the current level and register it in `state.type_vars`.
     ///
-    /// The counter lives in `state.subst` (the current substitution frame). Child frames
-    /// (created by `Substitution::child()`) inherit the parent counter value, so TypeVar
-    /// names are globally unique across all active frames (Barendregt convention, T-927).
-    /// Sibling dicts continue from the parent's counter at the time each child was created.
+    /// TypeVar names are globally unique via the monotonic `name_counter` (Barendregt convention).
     pub fn fresh_type_var(&mut self) -> Type {
-        let n = self.subst.name_counter.get();
+        let n = self.name_counter;
+        self.name_counter = n.saturating_add(1);
         let name = format!("_t{}", n);
-        self.subst.name_counter.set(n.saturating_add(1));
-        self.levels.insert(name.clone(), self.level);
+        self.type_vars.insert(name.clone(), TypeVarEntry {
+            level: self.level,
+            binding: None,
+            kind: Kind::Type,
+        });
         Type::TypeVar(name, self.level)
     }
 
@@ -416,24 +433,143 @@ impl InferState {
     /// Used for T013 warnings to report "ambiguous type variable 'x'" (hiding the internal
     /// _tN name which is noise for users).
     pub fn fresh_type_var_with_source(&mut self, source_name: impl Into<String>) -> Type {
-        let n = self.subst.name_counter.get();
+        let n = self.name_counter;
+        self.name_counter = n.saturating_add(1);
         let internal_name = format!("_t{}", n);
-        self.subst.name_counter.set(n.saturating_add(1));
-        self.levels.insert(internal_name.clone(), self.level);
+        self.type_vars.insert(internal_name.clone(), TypeVarEntry {
+            level: self.level,
+            binding: None,
+            kind: Kind::Type,
+        });
         self.type_var_source_names
             .insert(internal_name.clone(), source_name.into());
         Type::TypeVar(internal_name, self.level)
     }
 
-    /// Compact the levels map by removing entries for TypeVars that have been unified.
-    /// A TypeVar is considered unified if its name appears in the substitution's type_map.
-    /// This prevents unbounded growth of the levels HashMap during long inference sessions.
+    /// Compact the type_vars map by removing entries for TypeVars that have been bound.
+    /// This prevents unbounded growth during long inference sessions.
     ///
     /// Call this periodically after unification rounds (e.g., at the end of infer_dict).
     pub fn compact_levels(&mut self) {
-        let type_map = self.subst.type_map.borrow();
-        self.levels
-            .retain(|name, _level| !type_map.contains_key(name));
+        self.type_vars.retain(|_name, entry| entry.binding.is_none());
+    }
+
+    /// Look up a TypeVar binding, following chains. Equivalent to old Substitution::apply for a single var.
+    pub fn lookup_binding(&self, name: &str) -> Option<Type> {
+        self.type_vars.get(name).and_then(|e| e.binding.clone())
+    }
+
+    /// Bind a TypeVar to a type in the unified table.
+    pub fn bind_type_var(&mut self, name: String, ty: Type) {
+        if let Some(entry) = self.type_vars.get_mut(&name) {
+            entry.binding = Some(ty);
+        } else {
+            // TypeVar not yet registered (e.g., from annotation); register at level 0
+            self.type_vars.insert(name, TypeVarEntry {
+                level: 0,
+                binding: Some(ty),
+                kind: Kind::Type,
+            });
+        }
+    }
+
+    /// Get the level of a TypeVar.
+    pub fn get_level(&self, name: &str) -> Option<u32> {
+        self.type_vars.get(name).map(|e| e.level)
+    }
+
+    /// Set the level of a TypeVar. If not registered, inserts it.
+    pub fn set_level(&mut self, name: String, level: u32) {
+        if let Some(entry) = self.type_vars.get_mut(&name) {
+            entry.level = level;
+        } else {
+            self.type_vars.insert(name, TypeVarEntry {
+                level,
+                binding: None,
+                kind: Kind::Type,
+            });
+        }
+    }
+
+    /// Get the kind of a TypeVar.
+    pub fn get_kind(&self, name: &str) -> Option<&Kind> {
+        self.type_vars.get(name).map(|e| &e.kind)
+    }
+
+    /// Set the kind of a TypeVar. If not registered, inserts it.
+    pub fn set_kind(&mut self, name: String, kind: Kind) {
+        if let Some(entry) = self.type_vars.get_mut(&name) {
+            entry.kind = kind;
+        } else {
+            self.type_vars.insert(name, TypeVarEntry {
+                level: self.level,
+                binding: None,
+                kind,
+            });
+        }
+    }
+
+    /// Check if the type_vars map has exceeded the maximum allowed size.
+    pub fn check_type_vars_size(&self, span: Span) -> Result<(), crate::type_errors::TypeErrorTyped> {
+        let len = self.type_vars.len();
+        if len > MAX_TYPE_VARS_SIZE {
+            Err(crate::type_errors::TypeErrorTyped::Generic(crate::type_errors::GenericTypeError {
+                message: format!(
+                    "type inference resource limit exceeded (type_vars size {} > {}) -- use fewer chained dot-accesses or add explicit type annotations to break constraint chains",
+                    len, MAX_TYPE_VARS_SIZE
+                ),
+                span,
+                notes: vec![], call_stack: vec![],
+            }))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Check if the substitution is empty (no bindings).
+    pub fn subst_is_empty(&self) -> bool {
+        self.type_vars.values().all(|e| e.binding.is_none())
+    }
+
+    /// Apply substitution to a type: resolve all bound TypeVars.
+    pub fn apply(&self, ty: &Type) -> Type {
+        crate::types::apply_substitution(ty, &self.type_vars)
+    }
+
+    /// Apply substitution with an externally-supplied visited set.
+    pub fn apply_with_visited(
+        &self,
+        ty: &Type,
+        visited_types: &mut std::collections::HashSet<String>,
+        _visited_rows: &mut std::collections::HashSet<String>,
+    ) -> Type {
+        crate::types::apply_type_with_visited(ty, &self.type_vars, 0, visited_types).into_owned()
+    }
+
+    /// Build a HashMap<String, Type> of all currently bound TypeVars.
+    /// Used by `emit_ambiguous_constraint_diagnostics` which needs a binding snapshot.
+    pub fn binding_snapshot(&self) -> HashMap<String, Type> {
+        self.type_vars
+            .iter()
+            .filter_map(|(name, entry)| {
+                entry
+                    .binding
+                    .as_ref()
+                    .map(|ty| (name.clone(), ty.clone()))
+            })
+            .collect()
+    }
+
+    /// Build a HashMap<String, Kind> view of type_vars for callsites that need it
+    /// (e.g., check_kind_wellformed). Only includes entries with non-default kinds
+    /// (Kind::Label, Kind::Operator) since Kind::Type is the default and omitting it
+    /// matches the old kind_env semantics (only non-Type kinds were registered).
+    pub fn kind_env(&self) -> HashMap<String, Kind> {
+        self.type_vars
+            .iter()
+            .filter(|(_, entry)| entry.kind != Kind::Type)
+            .map(|(name, entry)| (name.clone(), entry.kind.clone()))
+            .collect()
     }
 }
 
@@ -443,71 +579,62 @@ impl Default for InferState {
     }
 }
 
-// Substitution is defined in type_unify.rs and re-exported here so that
-// type_infer.rs callers can use it without a separate import.
-pub use crate::types::Substitution;
+/// Maximum size of the type_vars map.
+/// Prevents resource exhaustion from quadratic growth in pathological cases.
+pub const MAX_TYPE_VARS_SIZE: usize = 50_000;
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::types::Type;
 
-    /// `compact_levels()` removes entries for TypeVars that have been unified
-    /// (i.e., whose names appear in `state.subst.type_map`), while keeping entries
-    /// for unbound TypeVars.
-    ///
-    /// Mutation resistance: if `compact_levels()` were a no-op, the unified var
-    /// would still be present in `state.levels` after the call, failing the
-    /// `!state.levels.contains_key("_t0")` assertion.
+    /// `compact_levels()` removes entries for TypeVars that have been bound,
+    /// while keeping entries for unbound TypeVars.
     #[test]
     fn test_compact_levels_removes_unified_var() {
         let mut state = InferState::new();
 
         // Create two fresh TypeVars: _t0 and _t1.
-        let _tv0 = state.fresh_type_var(); // registers "_t0" in levels at level 0
-        let _tv1 = state.fresh_type_var(); // registers "_t1" in levels at level 0
+        let _tv0 = state.fresh_type_var();
+        let _tv1 = state.fresh_type_var();
 
         assert!(
-            state.levels.contains_key("_t0"),
-            "_t0 should be in levels before compaction"
+            state.type_vars.contains_key("_t0"),
+            "_t0 should be in type_vars before compaction"
         );
         assert!(
-            state.levels.contains_key("_t1"),
-            "_t1 should be in levels before compaction"
+            state.type_vars.contains_key("_t1"),
+            "_t1 should be in type_vars before compaction"
         );
 
-        // Bind _t0 → Int by inserting it into the substitution's type_map.
-        // This simulates what unification does when it solves a TypeVar.
-        state
-            .subst
-            .type_map
-            .borrow_mut()
-            .insert("_t0".to_string(), Type::Int);
+        // Bind _t0 -> Int by setting its binding.
+        state.bind_type_var("_t0".to_string(), Type::Int);
 
-        // compact_levels() should remove _t0 (now in type_map) but keep _t1 (unbound).
+        // compact_levels() should remove _t0 (now bound) but keep _t1 (unbound).
         state.compact_levels();
 
         assert!(
-            !state.levels.contains_key("_t0"),
-            "_t0 should be removed from levels after compaction (it is unified)"
+            !state.type_vars.contains_key("_t0"),
+            "_t0 should be removed from type_vars after compaction (it is bound)"
         );
         assert!(
-            state.levels.contains_key("_t1"),
-            "_t1 should remain in levels after compaction (it is still unbound)"
+            state.type_vars.contains_key("_t1"),
+            "_t1 should remain in type_vars after compaction (it is still unbound)"
         );
     }
 
     /// `compact_levels()` is a no-op when no TypeVars have been unified.
-    /// All registered TypeVars remain in `levels`.
+    /// All registered TypeVars remain in `type_vars`.
     #[test]
     fn test_compact_levels_preserves_unbound_vars() {
         let mut state = InferState::new();
         let _tv0 = state.fresh_type_var();
         let _tv1 = state.fresh_type_var();
 
-        let count_before = state.levels.len();
+        // Subtract 3 for the builtin entries (Seq, Map, Handle)
+        let count_before = state.type_vars.len();
         state.compact_levels();
-        let count_after = state.levels.len();
+        let count_after = state.type_vars.len();
 
         assert_eq!(
             count_before, count_after,

@@ -251,7 +251,7 @@ pub(crate) async fn expand_type_alias(
     //
     // Safety of dropping constraints: resolve_type_expr may push Constraint::Class entries
     // when a class name appears in the type alias body (e.g. `@Comparable` in a bound).
-    // Those constraints reference fresh TypeVars allocated via state.subst.name_counter.
+    // Those constraints reference fresh TypeVars allocated via state.name_counter.
     // Constraint::Class entries are only ever acted upon by check_constraints_on_var, which
     // fires when a TypeVar is unified with a concrete type. Since expand_type_alias discards
     // the resolved Type entirely (the `let _ =` above), those fresh TypeVars are never placed
@@ -259,7 +259,7 @@ pub(crate) async fn expand_type_alias(
     // can never fire — dropping them is safe. The name counter and level increments in state
     // persist but are harmless: they produce orphaned TypeVar IDs that will never be referenced.
     // All other side effects of resolve_type_expr (error propagation, alias registration) flow
-    // through the return value or through state.subst directly, not through the constraints Vec.
+    // through the return value or through state.type_vars directly, not through the constraints Vec.
     let mut _unused_type_alias_constraints: Vec<Constraint> = Vec::new();
     let _ = resolve_type_expr(
         inner,
@@ -319,14 +319,14 @@ pub(crate) async fn resolve_type_assert(
     if let Some(default_node) = annotation.node.get_property("default") {
         match infer_surface_expr(default_node, env, state, constraints, type_map).await {
             Ok(default_ty) => {
-                // Apply state.subst to both types before comparison — access-chain constraints
-                // may have bound TypeVars in state.subst (e.g., $data.name generates row-variable
-                // bindings). Without substitution, the comparison uses stale TypeVars.
+                // Apply type_vars bindings to both types before comparison — access-chain constraints
+                // may have bound TypeVars (e.g., $data.name generates row-variable
+                // bindings). Without applying bindings, the comparison uses stale TypeVars.
                 // Guard: skip allocation when subst is empty (common case for concrete programs).
-                let (default_ty, expected_resolved) = if state.subst.is_empty() {
+                let (default_ty, expected_resolved) = if state.subst_is_empty() {
                     (default_ty, expected.clone())
                 } else {
-                    (state.subst.apply(&default_ty), state.subst.apply(&expected))
+                    (state.apply(&default_ty), state.apply(&expected))
                 };
                 let passes =
                     Type::is_subtype(&default_ty, &expected_resolved, Some(&state.tycon_env))
@@ -389,10 +389,10 @@ pub(crate) async fn resolve_type_assert(
     // The expected type may contain TypeVars that were bound during checking mode or
     // access-chain inference (e.g., check_dot_access binds row variables).
     // Guard: skip allocation when subst is empty (common case for concrete programs).
-    let expected = if state.subst.is_empty() {
+    let expected = if state.subst_is_empty() {
         expected
     } else {
-        state.subst.apply(&expected)
+        state.apply(&expected)
     };
 
     Ok(expected)
@@ -540,10 +540,10 @@ pub(crate) async fn resolve_fn_metadata(
                                             }));
                                         }
                                         // Create fresh TypeVar and register in ann_mapping
-                                        let n = state.subst.name_counter.get();
+                                        let n = state.name_counter;
                                         let fresh = format!("_t{}", n);
-                                        state.subst.name_counter.set(n.saturating_add(1));
-                                        state.levels.insert(fresh.clone(), state.level);
+                                        state.name_counter = n.saturating_add(1);
+                                        state.set_level(fresh.clone(), state.level);
                                         // Register source name for better T013 diagnostics
                                         state
                                             .type_var_source_names
@@ -631,10 +631,10 @@ pub(crate) async fn resolve_fn_metadata(
                                         notes: vec![], call_stack: vec![],
                                     }));
                                 }
-                                let n = state.subst.name_counter.get();
+                                let n = state.name_counter;
                                 let fresh = format!("_t{}", n);
-                                state.subst.name_counter.set(n.saturating_add(1));
-                                state.levels.insert(fresh.clone(), state.level);
+                                state.name_counter = n.saturating_add(1);
+                                state.set_level(fresh.clone(), state.level);
                                 // Register source name for better T013 diagnostics
                                 state
                                     .type_var_source_names
@@ -745,7 +745,7 @@ pub(crate) async fn resolve_fn_metadata(
                                                 }))
                                             }
                                         };
-                                        state.kind_env.insert(type_var, kind);
+                                        state.set_kind(type_var, kind);
                                     }
                                     _ => {
                                         return Err(TypeErrorTyped::Generic(GenericTypeError {
@@ -805,10 +805,10 @@ pub(crate) async fn resolve_fn_metadata(
                                     if let Some(existing_var) = mapping.get(&typevar_name) {
                                         existing_var.clone()
                                     } else {
-                                        let n = state.subst.name_counter.get();
+                                        let n = state.name_counter;
                                         let fresh = format!("_t{}", n);
-                                        state.subst.name_counter.set(n.saturating_add(1));
-                                        state.levels.insert(fresh.clone(), state.level);
+                                        state.name_counter = n.saturating_add(1);
+                                        state.set_level(fresh.clone(), state.level);
                                         // Register source name for better T013 diagnostics
                                         state
                                             .type_var_source_names
@@ -1328,7 +1328,7 @@ async fn resolve_fn_type(
                     variadic: false,
                     required_count: 0,
                 };
-                crate::types::check_kind_wellformed(&ty, &state.kind_env, span)?;
+                crate::types::check_kind_wellformed(&ty, &state.kind_env(), span)?;
                 Ok(ty)
             } else {
                 // All-positional or record-field style — delegate to resolve_type_dict.
@@ -1366,7 +1366,7 @@ async fn resolve_fn_type(
                 variadic: false,
                 required_count: 0,
             };
-            crate::types::check_kind_wellformed(&ty, &state.kind_env, span)?;
+            crate::types::check_kind_wellformed(&ty, &state.kind_env(), span)?;
             Ok(ty)
         }
     }
@@ -1753,27 +1753,26 @@ pub(crate) async fn resolve_annotation(
                                 if let Some(existing_var) = mapping.get(name.as_str()) {
                                     existing_var.clone()
                                 } else {
-                                    let n = state.subst.name_counter.get();
+                                    let n = state.name_counter;
                                     let v = format!("_label_{}", n);
-                                    state.subst.name_counter.set(n.saturating_add(1));
-                                    state.levels.insert(v.clone(), state.level);
-                                    state.kind_env.insert(v.clone(), Kind::Label);
+                                    state.name_counter = n.saturating_add(1);
+                                    state.set_level(v.clone(), state.level);
+                                    state.set_kind(v.clone(), Kind::Label);
                                     state.type_var_source_names.insert(v.clone(), name.clone());
                                     mapping.insert(name.clone(), v.clone());
                                     v
                                 }
                             } else {
-                                let n = state.subst.name_counter.get();
+                                let n = state.name_counter;
                                 let v = format!("_label_{}", n);
-                                state.subst.name_counter.set(n.saturating_add(1));
-                                state.levels.insert(v.clone(), state.level);
-                                state.kind_env.insert(v.clone(), Kind::Label);
+                                state.name_counter = n.saturating_add(1);
+                                state.set_level(v.clone(), state.level);
+                                state.set_kind(v.clone(), Kind::Label);
                                 v
                             };
-                            let current_level = *state
-                                .levels
-                                .get(&fresh)
-                                .expect("invariant: label var just inserted into levels");
+                            let current_level = state
+                                .get_level(&fresh)
+                                .expect("invariant: label var just inserted into type_vars");
                             Ok(Type::TypeVar(fresh, current_level))
                         }
                     }
@@ -1993,7 +1992,7 @@ async fn instantiate_tycon_def(
 
 /// Apply a type-level substitution to a type expression.
 ///
-/// This is distinct from `Substitution::apply` which operates on unification variables.
+/// This is distinct from `InferState::apply` which operates on unification variables.
 /// Type alias substitution replaces parameter names with concrete types.
 fn apply_type_alias_substitution(
     ty: &Type,
@@ -2007,7 +2006,7 @@ fn apply_type_alias_substitution(
                 replacement.clone()
             } else {
                 // Not a parameter — keep as-is but refresh the level from state
-                let level = *state.levels.get(name).unwrap_or(&state.level);
+                let level = state.get_level(name).unwrap_or(state.level);
                 Type::TypeVar(name.clone(), level)
             }
         }
@@ -2203,10 +2202,10 @@ pub(crate) fn resolve_type_name_with_guard(
         // T-1197: Class name used in annotation position in a recursive/guarded context.
         // Mirrors the same logic in resolve_type_name so both lookup paths handle class
         // names consistently. See resolve_type_name for the full rationale.
-        let n = state.subst.name_counter.get();
+        let n = state.name_counter;
         let fresh = format!("_t{}", n);
-        state.subst.name_counter.set(n.saturating_add(1));
-        state.levels.insert(fresh.clone(), state.level);
+        state.name_counter = n.saturating_add(1);
+        state.set_level(fresh.clone(), state.level);
         // Construct the Constraint::Class that @C should produce in this guarded path.
         // resolve_type_name_with_guard does not carry a constraints parameter (unlike
         // resolve_type_name), so we cannot push it to the caller's constraint vec. A local
@@ -2264,11 +2263,11 @@ pub(crate) fn resolve_type_name(
             // Anonymous Label-kinded TypeVar (parallel to `@Operator` error above).
             // Create a fresh system-generated name like `_label_0`.
             // This is for when the label TypeVar is not referenced elsewhere (e.g., `get`/`get-or`).
-            let n = state.subst.name_counter.get();
+            let n = state.name_counter;
             let fresh = format!("_label_{}", n);
-            state.subst.name_counter.set(n.saturating_add(1));
-            state.levels.insert(fresh.clone(), state.level);
-            state.kind_env.insert(fresh.clone(), crate::types::Kind::Label);
+            state.name_counter = n.saturating_add(1);
+            state.set_level(fresh.clone(), state.level);
+            state.set_kind(fresh.clone(), crate::types::Kind::Label);
             Ok(Type::TypeVar(fresh, state.level))
         }
         // Bare @Handle — no capability row argument. Resolves to Handle(Unknown),
@@ -2387,19 +2386,18 @@ pub(crate) fn resolve_type_name(
                     // Check if this annotation name already has a mapping
                     if let Some(existing_var) = mapping.get(name) {
                         // Already mapped: return the existing TypeVar with its current level
-                        // from state.levels. DO NOT reset the level - unification may have
+                        // from state.type_vars. DO NOT reset the level - unification may have
                         // lowered it, and level lowering must be monotone (Kiselyov 2013).
-                        let current_level = *state
-                            .levels
-                            .get(existing_var)
-                            .expect("invariant: annotation var registered in mapping must be in state.levels");
+                        let current_level = state
+                            .get_level(existing_var)
+                            .expect("invariant: annotation var registered in mapping must be in state.type_vars");
                         Ok(Type::TypeVar(existing_var.clone(), current_level))
                     } else {
                         // First time seeing this annotation: create fresh var and register level
-                        let n = state.subst.name_counter.get();
+                        let n = state.name_counter;
                         let fresh = format!("_t{}", n);
-                        state.subst.name_counter.set(n.saturating_add(1));
-                        state.levels.insert(fresh.clone(), state.level);
+                        state.name_counter = n.saturating_add(1);
+                        state.set_level(fresh.clone(), state.level);
                         // Register source name for better T013 diagnostics
                         state.type_var_source_names.insert(fresh.clone(), name.to_string());
                         mapping.insert(name.to_string(), fresh.clone());
@@ -2457,10 +2455,10 @@ pub(crate) fn resolve_type_name(
                     // not in the type variable namespace (unlike lowercase annotation names such as
                     // @a which are deduplicated via ann_mapping). Two parameters x@Comparable and
                     // y@Comparable get distinct TypeVars _tN and _tM, each independently constrained.
-                    let n = state.subst.name_counter.get();
+                    let n = state.name_counter;
                     let fresh = format!("_t{}", n);
-                    state.subst.name_counter.set(n.saturating_add(1));
-                    state.levels.insert(fresh.clone(), state.level);
+                    state.name_counter = n.saturating_add(1);
+                    state.set_level(fresh.clone(), state.level);
                     constraints.push(Constraint::Class {
                         class: Arc::new(class_decl),
                         vars: vec![ConstraintArg::Var(fresh.clone())],
@@ -2941,7 +2939,7 @@ async fn resolve_type_dict_with_guard(
             fields,
             tail: crate::type_def::RowTail::Empty,
         });
-        crate::types::check_kind_wellformed(&ty, &state.kind_env, span)?;
+        crate::types::check_kind_wellformed(&ty, &state.kind_env(), span)?;
         return Ok(ty);
     }
 
@@ -3668,7 +3666,7 @@ pub(crate) async fn resolve_type_dict(
         if let Some(first) = entries.first() {
             if first.node.key.is_none() {
                 if let SurfaceExpression::VarRef { name, .. } = &first.node.value.expr {
-                    if let Some(kind) = state.kind_env.get(name.as_str()) {
+                    if let Some(kind) = state.get_kind(name.as_str()) {
                         if kind.arity() > 0 {
                             let mut args: Vec<Type> = Vec::new();
                             for e in entries[1..].iter() {
@@ -4273,7 +4271,7 @@ pub(crate) async fn resolve_type_dict(
         fields,
         tail: effective_tail,
     });
-    crate::types::check_kind_wellformed(&ty, &state.kind_env, span)?;
+    crate::types::check_kind_wellformed(&ty, &state.kind_env(), span)?;
     Ok(ty)
 }
 

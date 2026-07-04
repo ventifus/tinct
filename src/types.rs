@@ -5,7 +5,7 @@
 //! Module structure:
 //! - `type_def`: Core type representations (Type enum, Row, Kind, structural operations)
 //! - `type_class`: Type class declarations (ClassDecl, Constraint, ClassEnv, InstanceEnv)
-//! - `type_infer`: Inference machinery (InferState, Substitution, generalization)
+//! - `type_infer`: Inference machinery (InferState, TypeVarEntry, generalization)
 //! - `type_normalize`: Normalization and Display implementations
 //! - `type_env`: Type environments and TypeError alias (submodule via #[path])
 //! - `type_unify`: Unification and substitution (submodule via #[path])

@@ -17,8 +17,8 @@ use crate::type_errors::{
     ArityMismatch, GenericTypeError, NotAFunction, NotARecord, TypeErrorTyped, UnificationFailure,
 };
 use crate::types::{
-    instantiate_at_level, instantiate_scheme, unify, Constraint, InferState, Row, Substitution,
-    Type, TypeEnv, TypeError, TypeScheme,
+    instantiate_at_level, instantiate_scheme, unify, Constraint, InferState, Row, Type, TypeEnv,
+    TypeError, TypeScheme,
 };
 
 /// Widen literal types in a type, recursively through Record fields.
@@ -104,7 +104,7 @@ pub(crate) async fn check_dot_access(
     let target_ty = infer_surface_expr(target, env, state, constraints, type_map).await?;
     // Apply the global accumulated substitution so that constraints from prior accesses
     // on the same target are visible (doc/07-type-extensions.md Part 5).
-    let target_ty = state.subst.apply(&target_ty);
+    let target_ty = state.apply(&target_ty);
     // TyCon expansion (T-1272): if the target has a named type constructor type, expand it
     // to the constructor's body for field lookup. This allows dot-access on TyCon-typed values
     // (e.g., `expr.return-ann` where `expr: Expression`, or `ann.text` where `ann: Annotation`).
@@ -151,17 +151,14 @@ pub(crate) async fn check_dot_access(
 
             // Unify TypeVar(α) with Record({field: β})
             let alpha_ty = Type::TypeVar(alpha.clone(), alpha_level);
-            let mut subst = std::mem::take(&mut state.subst);
             let result = Box::pin(unify(
                 &alpha_ty,
                 &record_ty,
-                &mut subst,
                 state,
                 constraints,
                 span,
             ))
             .await;
-            state.subst = subst;
             result.map_err(|e| vec![e])?;
 
             Ok(beta)
@@ -247,7 +244,7 @@ pub(crate) async fn check_dot_access_int(
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
     let target_ty = infer_surface_expr(target, env, state, constraints, type_map).await?;
-    let target_ty = state.subst.apply(&target_ty);
+    let target_ty = state.apply(&target_ty);
 
     let field_name = index.to_string();
 
@@ -271,17 +268,14 @@ pub(crate) async fn check_dot_access_int(
             });
 
             let alpha_ty = Type::TypeVar(alpha.clone(), *alpha_level);
-            let mut subst = std::mem::take(&mut state.subst);
             let result = Box::pin(unify(
                 &alpha_ty,
                 &record_ty,
-                &mut subst,
                 state,
                 constraints,
                 span,
             ))
             .await;
-            state.subst = subst;
             result.map_err(|e| vec![e])?;
             Ok(beta)
         }
@@ -632,10 +626,10 @@ async fn check_call_args(
                             // Non-lambda: infer once, apply subst, boundary-guard, subsume.
                             match infer_surface_expr(arg, env, state, constraints, type_map).await {
                                 Ok(arg_ty) => {
-                                    let arg_ty_resolved = if state.subst.is_empty() {
+                                    let arg_ty_resolved = if state.subst_is_empty() {
                                         arg_ty.clone()
                                     } else {
-                                        state.subst.apply(&arg_ty)
+                                        state.apply(&arg_ty)
                                     };
                                     // Boundary guard: Unknown→concrete boundary.
                                     if is_concrete_type(param_ty)
@@ -643,10 +637,10 @@ async fn check_call_args(
                                     {
                                         arg.type_guard.set(Some(param_ty.clone()));
                                     }
-                                    let param_ty_resolved = if state.subst.is_empty() {
+                                    let param_ty_resolved = if state.subst_is_empty() {
                                         param_ty.clone()
                                     } else {
-                                        state.subst.apply(param_ty)
+                                        state.apply(param_ty)
                                     };
                                     let sub_passes = Type::is_subtype(
                                         &arg_ty_resolved,
@@ -742,29 +736,20 @@ async fn check_call_args(
         if let Some(errors) = arg_errors {
             return Err(errors);
         }
-        return if state.subst.is_empty() {
+        return if state.subst_is_empty() {
             Ok((*ret).clone())
         } else {
-            Ok(state.subst.apply(ret))
+            Ok(state.apply(ret))
         };
     }
 
     if is_poly {
         // CALL-POLY unification pass.
         //
-        // Seed local subst from state.subst so that unification sees access-chain
-        // constraints and letrec bindings accumulated by prior inference steps.
-        // This mirrors infer_dict Pass 3a: Algorithm W threads a single substitution
-        // through inference; the two-substitution model is a borrow-checker workaround.
-        // Without seeding, param_ty is unified against arg_ty in an empty substitution
-        // context, missing bindings for TypeVars that state.subst already resolved
-        // (Damas & Milner 1982, Theorem 2).
-        let mut subst = Substitution {
-            type_map: std::cell::RefCell::new(state.subst.type_map.borrow().clone()),
-            parent: state.subst.parent.clone(),
-            creation_level: state.subst.creation_level,
-            name_counter: std::cell::Cell::new(state.subst.name_counter.get()),
-        };
+        // All bindings go directly into state.type_vars — no separate substitution needed.
+        // unify() reads and writes state.type_vars, which already contains all accumulated
+        // bindings from prior inference steps (Damas & Milner 1982, Theorem 2).
+        //
         // Track consumed param indices to prevent named args from overlapping with positional args.
         // C-NO-OVERLAP: positional args consume params 0..args.len(). Named args searching
         // ALL params by name could accidentally match a positional-consumed param.
@@ -801,7 +786,6 @@ async fn check_call_args(
             if let Err(e) = Box::pin(unify(
                 param_ty,
                 arg_ty,
-                &mut subst,
                 state,
                 constraints,
                 span.clone(),
@@ -861,7 +845,6 @@ async fn check_call_args(
                         if let Err(e) = Box::pin(unify(
                             &elem_ty,
                             &widened_ty,
-                            &mut subst,
                             state,
                             constraints,
                             span.clone(),
@@ -873,11 +856,6 @@ async fn check_call_args(
                     }
                 }
             }
-        }
-
-        // B-321: Merge local subst back into state.subst BEFORE named arg processing.
-        for (k, v) in subst.type_map.borrow().iter() {
-            state.subst.type_map.borrow_mut().insert(k.clone(), v.clone());
         }
 
         // Check for duplicate named argument names.
@@ -933,15 +911,9 @@ async fn check_call_args(
                     .await
                     {
                         Ok(arg_ty) => {
-                            // Task 2: merge state.subst updates from infer_surface_expr into local subst
-                            subst
-                                .type_map
-                                .borrow_mut()
-                                .extend(state.subst.type_map.borrow().clone());
                             if let Err(e) = Box::pin(unify(
                                 &arg_ty,
                                 param_ty,
-                                &mut subst,
                                 state,
                                 constraints,
                                 na.span.clone(),
@@ -998,15 +970,11 @@ async fn check_call_args(
             }
         }
 
-        // B-321: Merge local subst back into state.subst AFTER named arg processing.
-        for (k, v) in subst.type_map.borrow().iter() {
-            state.subst.type_map.borrow_mut().insert(k.clone(), v.clone());
-        }
-        state.subst.check_size(span).map_err(|e| vec![e])?;
+        state.check_type_vars_size(span).map_err(|e| vec![e])?;
         if let Some(errors) = arg_errors {
             return Err(errors);
         }
-        Ok(state.subst.apply(ret))
+        Ok(state.apply(ret))
     } else {
         // CALL-MONO: arg types already checked above (bidirectional / subsumption).
         // Now handle variadic extra args (they were inferred but not checked above).
@@ -1016,11 +984,9 @@ async fn check_call_args(
                 for (idx, arg) in args.iter().enumerate().skip(non_variadic_param_count) {
                     let arg_ty = &arg_types[idx];
                     let widened_ty = widen_literal_types(arg_ty.clone());
-                    let mut subst = std::mem::take(&mut state.subst);
                     if let Err(e) = Box::pin(unify(
                         &widened_ty,
                         &elem_ty,
-                        &mut subst,
                         state,
                         constraints,
                         arg.span.clone(),
@@ -1029,7 +995,6 @@ async fn check_call_args(
                     {
                         arg_errors.get_or_insert_with(Vec::new).push(e);
                     }
-                    state.subst = subst;
                 }
             }
         }
@@ -1093,26 +1058,23 @@ async fn check_call_args(
                         Ok(arg_ty) => {
                             // Boundary guard check.
                             if is_concrete_type(param_ty) {
-                                let resolved_arg_ty = if state.subst.is_empty() {
+                                let resolved_arg_ty = if state.subst_is_empty() {
                                     arg_ty.clone()
                                 } else {
-                                    state.subst.apply(&arg_ty)
+                                    state.apply(&arg_ty)
                                 };
                                 if matches!(resolved_arg_ty, Type::Unknown) {
                                     na.node.value.type_guard.set(Some(param_ty.clone()));
                                 }
                             }
-                            let mut subst = std::mem::take(&mut state.subst);
                             let result = Box::pin(unify(
                                 &arg_ty,
                                 param_ty,
-                                &mut subst,
                                 state,
                                 constraints,
                                 na.span.clone(),
                             ))
                             .await;
-                            state.subst = subst;
                             if let Err(e) = result {
                                 arg_errors.get_or_insert_with(Vec::new).push(
                                     TypeErrorTyped::Generic(GenericTypeError {
@@ -1168,7 +1130,7 @@ async fn check_call_args(
             return Err(errors);
         }
         // Apply state.subst for defensive consistency.
-        Ok(state.subst.apply(ret))
+        Ok(state.apply(ret))
     }
 }
 
@@ -1217,10 +1179,10 @@ pub(crate) async fn check_call(
     // Apply state.subst to resolve any TypeVars bound during infer_expr (e.g., from infer_fn
     // with polymorphic return annotations). Without this, has_inference_vars() incorrectly returns
     // true for already-bound TypeVars, causing CALL-POLY to fire and double-instantiate.
-    let func_ty = if state.subst.is_empty() {
+    let func_ty = if state.subst_is_empty() {
         func_ty
     } else {
-        state.subst.apply(&func_ty)
+        state.apply(&func_ty)
     };
 
     // Error cascade suppression: if the function type is Error (e.g., `include` failed prelude
@@ -1330,10 +1292,10 @@ pub(crate) async fn check_call(
             // TypeVar callee — create a fresh TypeVar for the return type to preserve inference.
             // This allows `[f x]` to unify later when `f`'s type becomes known, rather than
             // immediately going gradual with Unknown.
-            let n = state.subst.name_counter.get();
+            let n = state.name_counter;
             let fresh_name = format!("_t{}", n);
-            state.subst.name_counter.set(n.saturating_add(1));
-            state.levels.insert(fresh_name.clone(), state.level);
+            state.name_counter = n.saturating_add(1);
+            state.set_level(fresh_name.clone(), state.level);
             let ret_var = Type::TypeVar(fresh_name, state.level);
             Ok(ret_var)
         }
@@ -1433,7 +1395,7 @@ pub(crate) async fn check_call(
             //
             // Secondary mechanism (same-SCC case): Pass 1_i in typecheck_dict.rs pre-binds
             // ALL SCC keys to TypeVar placeholders. If `trim` and `f` land in the same SCC,
-            // state.subst.apply() (line ~651-655) resolves the TypeVar to Str before this
+            // state.apply() (line ~651-655) resolves the TypeVar to Str before this
             // match, bypassing the TypeVar arm (line 1140) that would suppress the error.
             //
             // Fix direction (tracked in B-275): in check_call's VarRef dispatch (line ~1436),

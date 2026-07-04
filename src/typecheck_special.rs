@@ -329,10 +329,10 @@ pub(crate) async fn check_map(
 
     // Infer both argument types
     let callback_ty = infer_surface_expr(&args[0], env, state, constraints, type_map).await?;
-    let callback_ty = state.subst.apply(&callback_ty);
+    let callback_ty = state.apply(&callback_ty);
 
     let coll_ty = infer_surface_expr(&args[1], env, state, constraints, type_map).await?;
-    let coll_ty = state.subst.apply(&coll_ty);
+    let coll_ty = state.apply(&coll_ty);
 
     // Synthesize return type based on collection and callback
     match (&coll_ty, &callback_ty) {
@@ -382,7 +382,7 @@ pub(crate) async fn check_tls_layer(
 
     // Infer all argument types (for type checking)
     let handle_ty = infer_surface_expr(&args[0], env, state, constraints, type_map).await?;
-    let handle_ty = state.subst.apply(&handle_ty);
+    let handle_ty = state.apply(&handle_ty);
 
     // Infer the other args to check them, but we don't use their types
     infer_surface_expr(&args[1], env, state, constraints, type_map).await?; // hostname
@@ -447,7 +447,7 @@ pub(crate) async fn check_get_in(
 
     // Infer the dict type
     let dict_ty = infer_surface_expr(&args[1], env, state, constraints, type_map).await?;
-    let dict_ty = state.subst.apply(&dict_ty);
+    let dict_ty = state.apply(&dict_ty);
 
     // Check if path is a literal dict with auto-indexed string entries
     let path_expr = &args[0].expr;
@@ -488,7 +488,7 @@ pub(crate) async fn check_get_in(
             let mut current_ty = dict_ty;
             for key in keys {
                 // Apply substitution before pattern matching to dereference bound TypeVars
-                current_ty = state.subst.apply(&current_ty);
+                current_ty = state.apply(&current_ty);
 
                 match &current_ty {
                     Type::Record(row) => {
@@ -584,7 +584,7 @@ pub(crate) async fn check_do_infer(
 
     // Rule 1: Check state.expected_return for a Result-like type.
     let resolved = if let Some(ret_ty) = state.expected_return.clone() {
-        let applied = state.subst.apply(&ret_ty);
+        let applied = state.apply(&ret_ty);
         resolve_monad_from_type(&applied, state)
     } else {
         None
@@ -598,7 +598,7 @@ pub(crate) async fn check_do_infer(
         let first_arg_ty = infer_surface_expr(&args[0], env, state, constraints, type_map)
             .await
             .ok()
-            .map(|ty| state.subst.apply(&ty));
+            .map(|ty| state.apply(&ty));
         let rule2_result = first_arg_ty.and_then(|ty| resolve_monad_from_type(&ty, state));
         (rule2_result, true)
     } else {
@@ -653,7 +653,7 @@ pub(crate) async fn check_do_infer(
     let ret = match method_str {
         "bind" | "pure" => {
             if let Some(ret_ty) = state.expected_return.clone() {
-                state.subst.apply(&ret_ty)
+                state.apply(&ret_ty)
             } else {
                 state.fresh_type_var()
             }

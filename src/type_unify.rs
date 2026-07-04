@@ -1,14 +1,19 @@
-//! Substitution, unification, and constraint solving for Hindley-Milner polymorphism
-//! with Boolean-Algebraic Subtyping (BAS) and structural record types.
+//! Unification, constraint solving, and substitution application for Hindley-Milner
+//! polymorphism with Boolean-Algebraic Subtyping (BAS) and structural record types.
+//!
+//! Type variable bindings are stored in `InferState.type_vars` (an `IndexMap<String, TypeVarEntry>`).
+//! The old `Substitution` struct has been removed; all binding operations go through
+//! `InferState.bind_type_var()` and lookups through `InferState.type_vars.get()`.
 
 use indexmap::IndexMap;
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::ast::Span;
 use crate::type_def::substitute_recvar;
 use crate::type_errors::{GenericTypeError, TypeErrorTyped, UnificationFailure};
+use crate::type_infer::TypeVarEntry;
 
 use super::*;
 
@@ -304,7 +309,6 @@ fn is_superclass_of_impl(
 async fn check_constraints_on_var(
     var_name: &str,
     concrete_ty: &Type,
-    subst: &Substitution,
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
     span: Span,
@@ -443,7 +447,6 @@ async fn check_constraints_on_var(
                     resolver_injective,
                     var_name,
                     concrete_ty,
-                    subst,
                     state,
                     constraints,
                     span.clone(),
@@ -479,7 +482,6 @@ async fn improve_functional_dependency(
     resolver_injective: bool,
     bound_var: &str,
     bound_type: &Type,
-    subst: &Substitution,
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
     span: Span,
@@ -504,7 +506,6 @@ async fn improve_functional_dependency(
         resolver_injective,
         bound_var,
         bound_type,
-        subst,
         state,
         constraints,
         span,
@@ -522,7 +523,6 @@ async fn improve_functional_dependency_inner(
     resolver_injective: bool,
     bound_var: &str,
     bound_type: &Type,
-    subst: &Substitution,
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
     span: Span,
@@ -552,7 +552,7 @@ async fn improve_functional_dependency_inner(
         //
         // Algorithm:
         // 1. Collect current types for all determined positions (using bound_type
-        //    for the in-flight binding, subst for already-bound vars).
+        //    for the in-flight binding, state for already-bound vars).
         // 2. If all determined positions are ground, scan the InstanceEnv for the
         //    instance whose determined-position type unifies with the bound types.
         // 3. Extract the determining-position types from that instance and unify
@@ -570,9 +570,9 @@ async fn improve_functional_dependency_inner(
                 }
                 let ty = match &args[pos] {
                     // In-flight binding for bound_var — use the type being bound right now.
-                    ConstraintArg::Var(v) if v.as_str() == bound_var => subst.apply(bound_type),
+                    ConstraintArg::Var(v) if v.as_str() == bound_var => state.apply(bound_type),
                     // Another Var position — look up in substitution.
-                    ConstraintArg::Var(v) => subst.apply(&Type::TypeVar(v.clone(), 0)),
+                    ConstraintArg::Var(v) => state.apply(&Type::TypeVar(v.clone(), 0)),
                     // Ground position — type already known from generalization (B-398).
                     ConstraintArg::Ground(t) => t.clone(),
                 };
@@ -621,17 +621,14 @@ async fn improve_functional_dependency_inner(
                         }
                         let det_type_var = Type::TypeVar(det_var.clone(), 0);
                         state.fd_in_progress.insert(det_var.clone());
-                        let mut local_subst = std::mem::take(&mut state.subst);
                         let result = Box::pin(unify(
                             &det_type_var,
                             det_ty,
-                            &mut local_subst,
                             state,
                             constraints,
                             span.clone(),
                         ))
                         .await;
-                        state.subst = local_subst;
                         state.fd_in_progress.remove(det_var.as_str());
                         result?;
                     }
@@ -652,20 +649,16 @@ async fn improve_functional_dependency_inner(
         //
         // CRITICAL: Two sources of truth must be consulted in order:
         //
-        // 1. `subst` — the active substitution being threaded through unification right now.
-        //    This contains bindings made during the current unify() call tree, including
-        //    bindings from earlier argument unifications. It is often separate from state.subst
-        //    because callers use mem::take to avoid borrow-checker conflicts.
+        // 1. `state.type_vars` — the unified TypeVar table containing all bindings.
         //
         // 2. `bound_type` — the concrete type being bound to `bound_var` RIGHT NOW.
-        //    check_constraints_on_var is called BEFORE the binding is written to subst
-        //    (see U-VAR arm: check_constraints_on_var → insert). So looking up `bound_var`
-        //    from subst would return the unbound TypeVar — not the value being bound.
+        //    check_constraints_on_var is called BEFORE the binding is written to state.type_vars
+        //    (see U-VAR arm: check_constraints_on_var → bind_type_var). So looking up `bound_var`
+        //    from state would return the unbound TypeVar — not the value being bound.
         //    We must use `bound_type` directly for the variable currently being bound.
         //
-        // Lookup order: for `bound_var` → use `bound_type` (in-flight, not yet in subst).
-        //               for all other vars → apply subst first (has recent bindings from
-        //               this call tree), then fall back to state.subst (global accumulated).
+        // Lookup order: for `bound_var` → use `bound_type` (in-flight, not yet bound).
+        //               for all other vars → apply state (has all bindings).
         let mut det_types = Vec::new();
         for &pos in det_positions {
             if pos >= args.len() {
@@ -673,9 +666,9 @@ async fn improve_functional_dependency_inner(
             }
             let ty = match &args[pos] {
                 // In-flight binding for bound_var — use the type being bound right now.
-                ConstraintArg::Var(v) if v.as_str() == bound_var => subst.apply(bound_type),
+                ConstraintArg::Var(v) if v.as_str() == bound_var => state.apply(bound_type),
                 // Another Var position — look up in substitution.
-                ConstraintArg::Var(v) => subst.apply(&Type::TypeVar(v.clone(), 0)),
+                ConstraintArg::Var(v) => state.apply(&Type::TypeVar(v.clone(), 0)),
                 // Ground position — type already known from generalization (B-398).
                 ConstraintArg::Ground(t) => t.clone(),
             };
@@ -780,7 +773,7 @@ async fn improve_functional_dependency_inner(
                 let mut norm_ctx =
                     crate::type_normalize::NormCtxt::new(state.type_stage_env.clone());
                 let resolved =
-                    crate::type_normalize::normalize(&stage_app, subst, &mut norm_ctx).await;
+                    crate::type_normalize::normalize(&stage_app, &state.type_vars, &mut norm_ctx).await;
 
                 // If normalization returned a stuck TypeStageApp, we can't improve yet.
                 // Defer: the deferred_equalities mechanism will retry when more types are ground.
@@ -914,29 +907,16 @@ async fn improve_functional_dependency_inner(
 
             let ded_type_var = Type::TypeVar(ded_var.clone(), 0);
 
-            // F2 FIX: Use state.subst for determined unification.
-            // We can't use the `subst` parameter directly because it's immutable (&Substitution).
-            // The correct approach is to take state.subst, unify, and restore it.
-            // This ensures the determined binding is written to the same substitution that
-            // the outer unify call will eventually merge back to state.subst.
-            //
-            // Note: The determining lookup (lines 488-520) uses the passed `subst` parameter
-            // to read bindings from the active call tree. The determined unification writes
-            // to state.subst, which is correct because state.subst is the authoritative store
-            // for completed bindings. The caller's `subst` parameter is a view/snapshot used
-            // for reading, not writing.
+            // Bindings go directly into state.type_vars — no separate substitution needed.
             state.fd_in_progress.insert(ded_var.clone());
-            let mut local_subst = std::mem::take(&mut state.subst);
             let result = Box::pin(unify(
                 &ded_type_var,
                 &result_type,
-                &mut local_subst,
                 state,
                 constraints,
                 span.clone(),
             ))
             .await;
-            state.subst = local_subst;
             state.fd_in_progress.remove(ded_var.as_str());
             result?;
         }
@@ -1150,7 +1130,7 @@ fn promote_literal_for_constrained_var(
 ) -> Type {
     // Label-kinded TypeVars must not be promoted regardless of constraint presence
     // (preserves StringLiteral identity for field access)
-    if state.kind_env.get(var_name) == Some(&Kind::Label) {
+    if state.get_kind(var_name) == Some(&Kind::Label) {
         return ty;
     }
 
@@ -1220,8 +1200,8 @@ pub fn resolve_has_field(
         Label::Concrete(s) => s.clone(),
         Label::Var(var_name) => {
             // Look up the label var in substitution
-            match state.subst.type_map.borrow().get(var_name) {
-                Some(Type::StringLiteral(s)) => s.clone(),
+            match state.lookup_binding(var_name) {
+                Some(Type::StringLiteral(s)) => s,
                 _ => {
                     return Err(TypeErrorTyped::Generic(GenericTypeError {
                         message: format!(
@@ -1238,7 +1218,7 @@ pub fn resolve_has_field(
     };
 
     // Apply substitution to dict_type to dereference any already-bound TypeVars
-    let dict_type = state.subst.apply(dict_type);
+    let dict_type = state.apply(dict_type);
 
     match &dict_type {
         // [HAS-FIELD-REC]: Record with matching field → return field type
@@ -1299,495 +1279,236 @@ pub fn resolve_has_field(
     }
 }
 
-/// Per-scope substitution frame with parent-chain lookup.
-///
-/// Each dict inference scope gets its own child frame. TypeVar bindings are routed
-/// to the frame whose `creation_level` matches the TypeVar's creation-time level,
-/// preventing TypeVars from one dict scope from escaping into sibling or ancestor scopes.
-///
-/// The parent chain is traversed by `apply_type` for lookup and by `bind_at_level`
-/// for writes. Interior mutability (`RefCell`) allows writes through `Arc` references.
-pub struct Substitution {
-    pub type_map: std::cell::RefCell<HashMap<String, Type>>, // α → τ  (kind: Type)
-    /// Parent frame in the scope chain. `None` for the root substitution.
-    pub parent: Option<Arc<Substitution>>,
-    /// The InferState level at which this substitution frame was created.
-    /// TypeVars whose creation-time level equals this value are bound here.
-    /// TypeVars with a lower level are routed to the parent chain.
-    pub creation_level: u32,
-    /// Per-frame monotonic counter for fresh TypeVar names within this substitution scope.
-    ///
-    /// Lives here (rather than on InferState) so that child substitution frames (T-926/T-927)
-    /// inherit the parent's counter value and continue from it. This ensures globally unique
-    /// TypeVar names across all active frames (Barendregt convention) — sibling dicts do NOT
-    /// reuse names; each continues from where the parent's counter left off.
-    ///
-    /// Using `Cell<u32>` provides interior mutability: `fresh_type_var` can advance the
-    /// counter through a shared reference to the Substitution without requiring the caller
-    /// to hold `&mut Substitution`. The `Clone` implementation copies the current counter
-    /// value, so probe save/restore patterns (which clone+restore the Substitution) correctly
-    /// capture and reset the counter as part of the probe's state rollback.
-    pub name_counter: std::cell::Cell<u32>,
-}
-
 const MAX_APPLY_DEPTH: usize = 256;
 
-/// Maximum size of the substitution map (type_map entries).
-/// Prevents resource exhaustion from quadratic growth in pathological cases.
-/// Raised from 10K to 50K to accommodate real-world K8s-style configs with
-/// hundreds of open-record dot-accesses that each bind a fresh type variable.
-pub const MAX_SUBST_SIZE: usize = 50_000;
-
-// T-991: Thread-local visited set for `Substitution::apply`.
-// Declared at module level (not inside the method) so the static-initialization semantics are
-// clear: the HashSet is allocated once per thread and reused across all `apply()` calls in that
-// thread. Moving this declaration inside the method body was syntactically valid but obscured
-// the amortization intent and risked accidental duplication during future refactors.
+// T-991: Thread-local visited set for `apply_substitution`.
+// Declared at module level so the static-initialization semantics are
+// clear: the HashSet is allocated once per thread and reused across all calls.
 thread_local! {
     static VISITED_TYPES: std::cell::RefCell<HashSet<String>> = std::cell::RefCell::new(HashSet::new());
 }
 
-impl Substitution {
-    /// Create a new root substitution frame (no parent).
-    ///
-    /// Performance note: `HashMap::new()` creates a map with zero capacity
-    /// and performs no heap allocation until the first insert. This is optimal
-    /// for fully-concrete dicts that generate no unification constraints.
-    pub fn new() -> Self {
-        Self {
-            type_map: std::cell::RefCell::new(HashMap::new()),
-            parent: None,
-            creation_level: 0,
-            name_counter: std::cell::Cell::new(0),
-        }
-    }
-
-    /// Create a child substitution frame for a nested dict scope.
-    ///
-    /// TypeVars at `level` are bound in this frame. TypeVars at lower levels
-    /// are routed up the parent chain by `bind_at_level`.
-    ///
-    /// The child's `name_counter` continues from the parent's current value to preserve
-    /// globally unique TypeVar names across all frames in the chain (Barendregt convention).
-    /// This is required for `lookup_in_chain` to be sound: it matches by name, so names
-    /// must be unique across all active frames.
-    ///
-    /// DESIGN NOTE (T-1002): The child's incremented name_counter is NOT propagated back
-    /// to the parent when the child frame is dropped. This is technically a Barendregt
-    /// violation — names generated in a child could collide with names in a later sibling
-    /// scope at the same level. However, this is safe due to LEVEL ROUTING: each level
-    /// gets its own namespace slice via the level-indexed `bind_at_level` routing, so
-    /// variables created at different levels never interact even if their numeric suffixes
-    /// collide. The parent only sees TypeVars at its own level or lower; child-level vars
-    /// are inaccessible after the child frame is dropped, preventing cross-contamination.
-    pub fn child(parent: &Arc<Substitution>, level: u32) -> Self {
-        Self {
-            type_map: std::cell::RefCell::new(HashMap::new()),
-            parent: Some(Arc::clone(parent)),
-            creation_level: level,
-            name_counter: std::cell::Cell::new(parent.name_counter.get()),
-        }
-    }
-
-    /// Bind a TypeVar to a type in the frame whose `creation_level` matches `var_level`.
-    ///
-    /// If `var_level == self.creation_level`, the binding goes in this frame's `type_map`.
-    /// Otherwise the call is routed to the parent chain. If no frame matches (root reached
-    /// without a level match), the root frame absorbs the binding — this handles TypeVars
-    /// created at a level that no longer has an active frame (e.g., after scope exit).
-    pub fn bind_at_level(&self, name: String, var_level: u32, ty: Type) {
-        if self.creation_level == var_level || self.parent.is_none() {
-            // Bind here: either we match the level, or we're the root and must absorb it.
-            self.type_map.borrow_mut().insert(name, ty);
-        } else if let Some(ref p) = self.parent {
-            p.bind_at_level(name, var_level, ty);
-        }
-    }
-
-    /// Look up a variable name in the local frame first, then in the parent chain.
-    ///
-    /// Returns `Some(bound_type)` from the first frame that has a binding, or `None`
-    /// if no frame in the chain has bound this variable.
-    fn lookup_in_chain(&self, name: &str) -> Option<Type> {
-        // Check local frame first (most recent bindings override parent bindings)
-        if let Some(ty) = self.type_map.borrow().get(name).cloned() {
-            return Some(ty);
-        }
-        // Walk up the parent chain
-        if let Some(ref p) = self.parent {
-            return p.lookup_in_chain(name);
-        }
-        None
-    }
-
-    /// Check if this frame (and its parent chain) is empty (no bindings).
-    /// Used to guard against unnecessary allocation in apply() operations.
-    pub fn is_empty(&self) -> bool {
-        if !self.type_map.borrow().is_empty() {
-            return false;
-        }
-        match &self.parent {
-            Some(p) => p.is_empty(),
-            None => true,
-        }
-    }
-
-    /// Check if the LOCAL frame's type_map has exceeded the maximum allowed size.
-    /// Only counts local entries — parent chain entries are counted when their own
-    /// frame calls check_size. This prevents double-counting shared parent bindings.
-    pub(crate) fn check_size(&self, span: Span) -> Result<(), TypeError> {
-        let len = self.type_map.borrow().len();
-        if len > MAX_SUBST_SIZE {
-            Err(TypeErrorTyped::Generic(GenericTypeError {
-                message: format!(
-                    "type inference resource limit exceeded (substitution size {} > {}) — use fewer chained dot-accesses or add explicit type annotations to break constraint chains",
-                    len, MAX_SUBST_SIZE
-                ),
-                span,
-                notes: vec![], call_stack: vec![],
-            }))
-        } else {
-            Ok(())
-        }
-    }
-
-    pub fn apply(&self, ty: &Type) -> Type {
-        if self.is_empty() {
+/// Apply substitution to a type: resolve all bound TypeVars by looking up bindings
+/// in the unified `type_vars` IndexMap.
+pub fn apply_substitution(ty: &Type, type_vars: &IndexMap<String, TypeVarEntry>) -> Type {
+    // Fast-path for concrete types: no type variables, return clone immediately.
+    match ty {
+        Type::Int
+        | Type::IntLiteral(_)
+        | Type::Float
+        | Type::Str
+        | Type::StringLiteral(_)
+        | Type::Bytes
+        | Type::Unknown
+        | Type::Any
+        | Type::Never
+        | Type::Proxy
+        | Type::Error(_)
+        | Type::DirCap
+        | Type::NetCap
+        | Type::Uri
+        | Type::Timestamp
+        | Type::Duration
+        | Type::ClockCap
+        | Type::Timezone
+        | Type::QuicSession
+        | Type::Http2Session
+        | Type::Http3Session
+        | Type::DatagramHandle
+        | Type::QuicDatagramHandle => {
             return ty.clone();
         }
-        // Fast path: if no parent, use the existing single-frame logic below.
-        // With a parent chain, apply_type walks the chain for each TypeVar lookup.
-        // Fast-path for concrete types: no type variables, so return clone immediately.
-        // Avoids allocating visited_types HashSet for the common case.
-        match ty {
-            Type::Int
-            | Type::IntLiteral(_)
-            | Type::Float
-            | Type::Str
-            | Type::StringLiteral(_)
-            | Type::Bytes
-            | Type::Unknown
-            | Type::Any
-            | Type::Never
-            | Type::Proxy
-            | Type::Error(_)
-            | Type::DirCap
-            | Type::NetCap
-            | Type::Uri
-            | Type::Timestamp
-            | Type::Duration
-            | Type::ClockCap
-            | Type::Timezone
-            | Type::QuicSession
-            | Type::Http2Session
-            | Type::Http3Session
-            | Type::DatagramHandle
-            | Type::QuicDatagramHandle => {
-                return ty.clone();
-            }
-            _ => {}
-        }
-        // Second fast-path: structured types with no inference variables are concrete.
-        // Covers e.g. Function{params: [Int], ret: Str} — no TypeVars, nothing to substitute.
-        if !ty.has_inference_vars() {
-            return ty.clone();
-        }
-        // Reuse thread-local visited set (declared at module level) to avoid per-call
-        // HashSet allocation. The set is cleared before use to ensure correctness.
-        VISITED_TYPES.with(|visited_cell| {
-            let mut visited = visited_cell.borrow_mut();
-            visited.clear();
-            self.apply_type(ty, 0, &mut visited).into_owned()
-        })
+        _ => {}
     }
-
-    /// Apply substitution with an externally-supplied visited set.
-    /// Allows sharing the visited set across multiple apply() calls to avoid repeated allocation.
-    /// The caller must clear the visited set between uses.
-    pub fn apply_with_visited(
-        &self,
-        ty: &Type,
-        visited_types: &mut HashSet<String>,
-        _visited_rows: &mut HashSet<String>, // kept for call-site compatibility; unused under BAS
-    ) -> Type {
-        if self.is_empty() {
-            return ty.clone();
-        }
-        self.apply_type(ty, 0, visited_types).into_owned()
+    // Second fast-path: structured types with no inference variables are concrete.
+    if !ty.has_inference_vars() {
+        return ty.clone();
     }
+    // Check if there are any bindings at all
+    if type_vars.values().all(|e| e.binding.is_none()) {
+        return ty.clone();
+    }
+    VISITED_TYPES.with(|visited_cell| {
+        let mut visited = visited_cell.borrow_mut();
+        visited.clear();
+        apply_type_with_visited(ty, type_vars, 0, &mut visited).into_owned()
+    })
+}
 
-    fn apply_type<'a>(
-        &self,
-        ty: &'a Type,
-        depth: usize,
-        visited_types: &mut HashSet<String>,
-    ) -> Cow<'a, Type> {
-        if depth >= MAX_APPLY_DEPTH {
-            return Cow::Borrowed(ty);
+/// Apply substitution with an externally-supplied visited set and depth tracking.
+pub fn apply_type_with_visited<'a>(
+    ty: &'a Type,
+    type_vars: &IndexMap<String, TypeVarEntry>,
+    depth: usize,
+    visited_types: &mut HashSet<String>,
+) -> Cow<'a, Type> {
+    if depth >= MAX_APPLY_DEPTH {
+        return Cow::Borrowed(ty);
+    }
+    match ty {
+        Type::TypeVar(name, level) => {
+            if visited_types.contains(name) {
+                return Cow::Borrowed(ty);
+            }
+            let bound_opt = type_vars.get(name.as_str()).and_then(|e| e.binding.clone());
+            match bound_opt {
+                Some(bound) => {
+                    visited_types.insert(name.clone());
+                    let result = apply_type_with_visited(&bound, type_vars, 0, visited_types).into_owned();
+                    visited_types.remove(name);
+                    Cow::Owned(result)
+                }
+                None => Cow::Owned(Type::TypeVar(name.clone(), *level)),
+            }
         }
-        match ty {
-            Type::TypeVar(name, level) => {
-                if visited_types.contains(name) {
-                    return Cow::Borrowed(ty);
-                }
-                // Look up the binding for this TypeVar: check local frame first,
-                // then walk up the parent chain. This is O(depth) per lookup;
-                // path compression below flattens chains after first resolution.
-                let bound_opt = self.lookup_in_chain(name);
-                match bound_opt {
-                    Some(bound) => {
-                        visited_types.insert(name.clone());
-                        // Reset depth to 0 when following a TypeVar binding: chain-following
-                        // is cycle-protected by visited_types; depth guards structural
-                        // recursion only. Resetting prevents premature truncation of
-                        // long-but-shallow substitution chains (items 5/6).
-                        let result = self.apply_type(&bound, 0, visited_types).into_owned();
-                        visited_types.remove(name);
-
-                        // PATH COMPRESSION: if the resolved type differs from the immediate binding,
-                        // cache the concrete type in the local frame to avoid repeated parent-chain
-                        // traversal. This collapses chains like t0 → t1 → t2 → Int into
-                        // local[t0 → Int] after first traversal.
-                        // Only compress when result is not a TypeVar to avoid premature compression
-                        // of still-growing chains.
-                        if !matches!(result, Type::TypeVar(..)) && result != bound {
-                            self.type_map
-                                .borrow_mut()
-                                .insert(name.clone(), result.clone());
-                        }
-
-                        Cow::Owned(result)
-                    }
-                    None => Cow::Owned(Type::TypeVar(name.clone(), *level)),
-                }
-            }
-            Type::Record(row) => {
-                let applied_row = self.apply_row(row, depth + 1, visited_types);
-                Cow::Owned(Type::Record(applied_row))
-            }
-            Type::Function {
-                params,
-                ret,
-                variadic,
-                required_count,
-            } => Cow::Owned(Type::Function {
-                params: params
-                    .iter()
-                    .map(|(name, p_ty)| {
-                        (
-                            name.clone(),
-                            self.apply_type(p_ty, depth + 1, visited_types).into_owned(),
-                        )
-                    })
-                    .collect(),
-                ret: Box::new(self.apply_type(ret, depth + 1, visited_types).into_owned()),
-                variadic: *variadic,
-                required_count: *required_count,
-            }),
-            Type::Union(members) => {
-                let applied_members: Vec<Type> = members
-                    .iter()
-                    .map(|m| self.apply_type(m, depth + 1, visited_types).into_owned())
-                    .collect();
-                // Re-normalize after substitution to maintain invariants
-                Cow::Owned(Type::normalize_union(applied_members))
-            }
-            Type::Intersection(members) => {
-                let applied_members: Vec<Type> = members
-                    .iter()
-                    .map(|m| self.apply_type(m, depth + 1, visited_types).into_owned())
-                    .collect();
-                // Re-normalize after substitution to maintain invariants
-                Cow::Owned(Type::normalize_intersection(applied_members))
-            }
-            Type::Negation(inner) => Cow::Owned(Type::Negation(Box::new(
-                self.apply_type(inner, depth + 1, visited_types)
-                    .into_owned(),
-            ))),
-            Type::App(f, a) => {
-                let f_applied = self.apply_type(f, depth + 1, visited_types).into_owned();
-                let a_applied = self.apply_type(a, depth + 1, visited_types).into_owned();
-
-                // Normalize App(Operator("Seq"), T) → App(TyCon("Seq"), T) (bind Operator → TyCon)
-                // When an Operator TypeVar resolves to a concrete constructor name, update to TyCon.
-                if let Type::Operator(ctor_name) = &f_applied {
-                    if ctor_name.as_str() == "Seq" {
-                        return Cow::Owned(Type::seq(a_applied));
-                    }
-                    if ctor_name.as_str() == "Map" {
-                        // App(Operator("Map"), K) → App(TyCon("Map"), K) (partial application)
-                        return Cow::Owned(Type::App(
-                            Box::new(Type::TyCon("Map".into())),
-                            Box::new(a_applied),
-                        ));
-                    }
-                    if ctor_name.as_str() == "Handle" {
-                        return Cow::Owned(Type::handle(a_applied));
-                    }
-                }
-
-                Cow::Owned(Type::App(Box::new(f_applied), Box::new(a_applied)))
-            }
-            Type::TypeStageApp { fn_name, args } => Cow::Owned(Type::TypeStageApp {
-                fn_name: fn_name.clone(),
-                args: args
-                    .iter()
-                    .map(|arg| self.apply_type(arg, depth + 1, visited_types).into_owned())
-                    .collect(),
-            }),
-            Type::NominalVariant { tag, fields } => {
-                let applied_fields = self.apply_row(fields, depth + 1, visited_types);
-                Cow::Owned(Type::NominalVariant {
-                    tag: tag.clone(),
-                    fields: applied_fields,
+        Type::Record(row) => {
+            let applied_row = apply_row_with_visited(row, type_vars, depth + 1, visited_types);
+            Cow::Owned(Type::Record(applied_row))
+        }
+        Type::Function {
+            params,
+            ret,
+            variadic,
+            required_count,
+        } => Cow::Owned(Type::Function {
+            params: params
+                .iter()
+                .map(|(name, p_ty)| {
+                    (
+                        name.clone(),
+                        apply_type_with_visited(p_ty, type_vars, depth + 1, visited_types).into_owned(),
+                    )
                 })
-            }
-            Type::TyCon(_) => Cow::Borrowed(ty), // TyCon is always concrete, no substitution needed
-            // S-860 / T-1077 (S-861): apply_type for Recursive — recurse into the body.
-            // The `var` binder name is a gensym'd μ-binder, not a unification variable, and
-            // must NOT be looked up in the substitution. The body may contain TypeVar sentinels
-            // placed by expand_named cycle detection (Step 4) that need substitution applied.
-            // T-1077 specifies: var is NOT in the substitution namespace; recurse into body only.
-            Type::Recursive { var, body } => {
-                let applied_body = self.apply_type(body, depth + 1, visited_types);
-                match applied_body {
-                    Cow::Borrowed(_) => Cow::Borrowed(ty), // body unchanged — no clone needed
-                    Cow::Owned(new_body) => Cow::Owned(Type::Recursive {
-                        var: var.clone(),
-                        body: Box::new(new_body),
-                    }),
-                }
-            }
-            Type::Operator(name) => {
-                // Look up Operator variable in substitution map (local frame + parent chain)
-                if visited_types.contains(name) {
-                    return Cow::Borrowed(ty);
-                }
-                let bound_opt = self.lookup_in_chain(name);
-                match bound_opt {
-                    Some(bound) => {
-                        visited_types.insert(name.clone());
-                        let result = self.apply_type(&bound, 0, visited_types).into_owned();
-                        visited_types.remove(name);
-
-                        // PATH COMPRESSION for Operator chains: cache in local frame
-                        if result != bound {
-                            self.type_map
-                                .borrow_mut()
-                                .insert(name.clone(), result.clone());
-                        }
-
-                        Cow::Owned(result)
-                    }
-                    None => Cow::Owned(Type::Operator(name.clone())),
-                }
-            }
-            // Primitive types (Int, Float, Bool, Str, etc.) have no type variables;
-            // return a borrow to avoid cloning the whole type tree when substitution
-            // does not apply. Cow::Borrowed eliminates the clone on the hot path.
-            _ => Cow::Borrowed(ty),
+                .collect(),
+            ret: Box::new(apply_type_with_visited(ret, type_vars, depth + 1, visited_types).into_owned()),
+            variadic: *variadic,
+            required_count: *required_count,
+        }),
+        Type::Union(members) => {
+            let applied_members: Vec<Type> = members
+                .iter()
+                .map(|m| apply_type_with_visited(m, type_vars, depth + 1, visited_types).into_owned())
+                .collect();
+            Cow::Owned(Type::normalize_union(applied_members))
         }
-    }
-
-    pub(crate) fn apply_row(
-        &self,
-        row: &Row,
-        depth: usize,
-        visited_types: &mut HashSet<String>,
-    ) -> Row {
-        if depth >= MAX_APPLY_DEPTH {
-            return row.clone();
+        Type::Intersection(members) => {
+            let applied_members: Vec<Type> = members
+                .iter()
+                .map(|m| apply_type_with_visited(m, type_vars, depth + 1, visited_types).into_owned())
+                .collect();
+            Cow::Owned(Type::normalize_intersection(applied_members))
         }
+        Type::Negation(inner) => Cow::Owned(Type::Negation(Box::new(
+            apply_type_with_visited(inner, type_vars, depth + 1, visited_types)
+                .into_owned(),
+        ))),
+        Type::App(f, a) => {
+            let f_applied = apply_type_with_visited(f, type_vars, depth + 1, visited_types).into_owned();
+            let a_applied = apply_type_with_visited(a, type_vars, depth + 1, visited_types).into_owned();
 
-        // Apply substitution to field types and to RowTail::Uniform key/value types.
-        let new_fields: IndexMap<String, Type> = row
-            .fields
-            .iter()
-            .map(|(k, v)| {
-                (
-                    k.clone(),
-                    self.apply_type(v, depth + 1, visited_types).into_owned(),
-                )
+            if let Type::Operator(ctor_name) = &f_applied {
+                if ctor_name.as_str() == "Seq" {
+                    return Cow::Owned(Type::seq(a_applied));
+                }
+                if ctor_name.as_str() == "Map" {
+                    return Cow::Owned(Type::App(
+                        Box::new(Type::TyCon("Map".into())),
+                        Box::new(a_applied),
+                    ));
+                }
+                if ctor_name.as_str() == "Handle" {
+                    return Cow::Owned(Type::handle(a_applied));
+                }
+            }
+
+            Cow::Owned(Type::App(Box::new(f_applied), Box::new(a_applied)))
+        }
+        Type::TypeStageApp { fn_name, args } => Cow::Owned(Type::TypeStageApp {
+            fn_name: fn_name.clone(),
+            args: args
+                .iter()
+                .map(|arg| apply_type_with_visited(arg, type_vars, depth + 1, visited_types).into_owned())
+                .collect(),
+        }),
+        Type::NominalVariant { tag, fields } => {
+            let applied_fields = apply_row_with_visited(fields, type_vars, depth + 1, visited_types);
+            Cow::Owned(Type::NominalVariant {
+                tag: tag.clone(),
+                fields: applied_fields,
             })
-            .collect();
-
-        let new_tail = match &row.tail {
-            crate::type_def::RowTail::Empty => crate::type_def::RowTail::Empty,
-            crate::type_def::RowTail::Uniform { key, value } => {
-                let new_key = key
-                    .as_ref()
-                    .map(|k| Box::new(self.apply_type(k, depth + 1, visited_types).into_owned()));
-                let new_value = Box::new(
-                    self.apply_type(value, depth + 1, visited_types)
-                        .into_owned(),
-                );
-                crate::type_def::RowTail::Uniform {
-                    key: new_key,
-                    value: new_value,
-                }
+        }
+        Type::TyCon(_) => Cow::Borrowed(ty),
+        Type::Recursive { var, body } => {
+            let applied_body = apply_type_with_visited(body, type_vars, depth + 1, visited_types);
+            match applied_body {
+                Cow::Borrowed(_) => Cow::Borrowed(ty),
+                Cow::Owned(new_body) => Cow::Owned(Type::Recursive {
+                    var: var.clone(),
+                    body: Box::new(new_body),
+                }),
             }
-        };
-
-        Row {
-            fields: new_fields,
-            tail: new_tail,
         }
-    }
-
-    /// Test-only introspection: lookup a type variable binding in the type_map.
-    /// Used in type checker tests for asserting substitution contents; not called from production code.
-    /// For production access to substitution results, use `apply()` instead.
-    #[cfg(test)]
-    pub fn get(&self, name: &str) -> Option<Type> {
-        self.type_map.borrow().get(name).cloned()
-    }
-}
-
-impl Default for Substitution {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl std::fmt::Debug for Substitution {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Substitution")
-            .field("type_map", &self.type_map)
-            .field("creation_level", &self.creation_level)
-            .field("has_parent", &self.parent.is_some())
-            .field("name_counter", &self.name_counter.get())
-            .finish()
-    }
-}
-
-/// Clone a substitution frame.
-///
-/// The parent chain is shared via `Arc::clone` (not deep-copied). This is correct:
-/// parent frames are shared across multiple child frames and must not be duplicated.
-/// The local `type_map` is deep-cloned so that the cloned frame has independent bindings.
-impl Clone for Substitution {
-    fn clone(&self) -> Self {
-        Self {
-            type_map: std::cell::RefCell::new(self.type_map.borrow().clone()),
-            parent: self.parent.clone(), // Arc::clone — shared parent chain
-            creation_level: self.creation_level,
-            // Copy the current counter value so that probe save/restore patterns
-            // (which clone+restore the Substitution) correctly reset the counter
-            // along with the rest of the frame's state.
-            name_counter: std::cell::Cell::new(self.name_counter.get()),
+        Type::Operator(name) => {
+            if visited_types.contains(name) {
+                return Cow::Borrowed(ty);
+            }
+            let bound_opt = type_vars.get(name.as_str()).and_then(|e| e.binding.clone());
+            match bound_opt {
+                Some(bound) => {
+                    visited_types.insert(name.clone());
+                    let result = apply_type_with_visited(&bound, type_vars, 0, visited_types).into_owned();
+                    visited_types.remove(name);
+                    Cow::Owned(result)
+                }
+                None => Cow::Owned(Type::Operator(name.clone())),
+            }
         }
+        _ => Cow::Borrowed(ty),
     }
 }
 
-/// PartialEq compares only `type_map` contents (matching prior semantics).
-///
-/// `parent` and `creation_level` are structural metadata, not semantic state.
-/// Two substitutions are equal if they bind the same variables to the same types
-/// in their local frames, regardless of their position in the scope chain.
-/// This matches the prior derived `PartialEq` behavior (which had no parent field).
-impl PartialEq for Substitution {
-    fn eq(&self, other: &Self) -> bool {
-        *self.type_map.borrow() == *other.type_map.borrow()
+/// Apply substitution to a Row.
+pub fn apply_row_with_visited(
+    row: &Row,
+    type_vars: &IndexMap<String, TypeVarEntry>,
+    depth: usize,
+    visited_types: &mut HashSet<String>,
+) -> Row {
+    if depth >= MAX_APPLY_DEPTH {
+        return row.clone();
+    }
+
+    let new_fields: IndexMap<String, Type> = row
+        .fields
+        .iter()
+        .map(|(k, v)| {
+            (
+                k.clone(),
+                apply_type_with_visited(v, type_vars, depth + 1, visited_types).into_owned(),
+            )
+        })
+        .collect();
+
+    let new_tail = match &row.tail {
+        crate::type_def::RowTail::Empty => crate::type_def::RowTail::Empty,
+        crate::type_def::RowTail::Uniform { key, value } => {
+            let new_key = key
+                .as_ref()
+                .map(|k| Box::new(apply_type_with_visited(k, type_vars, depth + 1, visited_types).into_owned()));
+            let new_value = Box::new(
+                apply_type_with_visited(value, type_vars, depth + 1, visited_types)
+                    .into_owned(),
+            );
+            crate::type_def::RowTail::Uniform {
+                key: new_key,
+                value: new_value,
+            }
+        }
+    };
+
+    Row {
+        fields: new_fields,
+        tail: new_tail,
     }
 }
 
@@ -1804,7 +1525,6 @@ impl PartialEq for Substitution {
 async fn unify_rows(
     row1: &Row,
     row2: &Row,
-    subst: &mut Substitution,
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
     span: Span,
@@ -1817,7 +1537,7 @@ async fn unify_rows(
     {
         for (key, ty1) in &row1.fields {
             let ty2 = &row2.fields[key];
-            Box::pin(unify(ty1, ty2, subst, state, constraints, span.clone())).await?;
+            Box::pin(unify(ty1, ty2, state, constraints, span.clone())).await?;
         }
         // Fall through to tail unification — do NOT return here.
     } else {
@@ -1832,7 +1552,7 @@ async fn unify_rows(
             }
             if let Some(ty2) = row2.fields.get(key) {
                 shared_count += 1;
-                Box::pin(unify(ty1, ty2, subst, state, constraints, span.clone())).await?;
+                Box::pin(unify(ty1, ty2, state, constraints, span.clone())).await?;
             }
         }
         for ty2 in row2.fields.values() {
@@ -1867,8 +1587,8 @@ async fn unify_rows(
                     ty.collect_type_vars(&mut vars2);
                 }
                 for var_name in vars1.intersection(&vars2) {
-                    if let Some(current_level) = state.levels.get_mut(var_name) {
-                        *current_level = 0;
+                    if let Some(entry) = state.type_vars.get_mut(var_name.as_str()) {
+                        entry.level = 0;
                     }
                 }
             } else {
@@ -1895,14 +1615,14 @@ async fn unify_rows(
         // Both Uniform — unify value types, key types, then validate named fields
         // (T-1007/UNIFY-UNIFORM steps 1-3).
         (RowTail::Uniform { key: k1, value: v1 }, RowTail::Uniform { key: k2, value: v2 }) => {
-            Box::pin(unify(v1, v2, subst, state, constraints, span.clone())).await?;
+            Box::pin(unify(v1, v2, state, constraints, span.clone())).await?;
 
             // B-327: Unify key type constraints when both sides specify them.
             // When only one side specifies a key type (asymmetric), the unconstrained
             // side is implicitly compatible with any key type (Unknown semantics) and
             // no error is emitted — the keyed side's constraint is preserved in its row.
             if let (Some(k1_ty), Some(k2_ty)) = (k1, k2) {
-                Box::pin(unify(k1_ty, k2_ty, subst, state, constraints, span.clone())).await?;
+                Box::pin(unify(k1_ty, k2_ty, state, constraints, span.clone())).await?;
             }
 
             // UNIFY-UNIFORM steps 2-3: after unifying the value types, apply the
@@ -1910,7 +1630,7 @@ async fn unify_rows(
             //
             // After unify(v1, v2), v1 and v2 are the same type (one may be bound to the
             // other). Apply substitution to v1 to get the resolved value type.
-            let v_fixed = subst.apply(v1);
+            let v_fixed = state.apply(v1);
 
             // Collect named field types from both rows.
             let all_fields: Vec<Type> = row1
@@ -1928,7 +1648,6 @@ async fn unify_rows(
                     Box::pin(unify(
                         &Type::TypeVar(alpha.clone(), 0),
                         &join,
-                        subst,
                         state,
                         constraints,
                         span.clone(),
@@ -1937,7 +1656,7 @@ async fn unify_rows(
                 } else if !v_fixed.has_inference_vars() {
                     // Step 3: V is concrete — each named field Ti must be a subtype of V.
                     for field_ty in &all_fields {
-                        let field_fixed = subst.apply(field_ty);
+                        let field_fixed = state.apply(field_ty);
                         if !Type::is_subtype(&field_fixed, &v_fixed, Some(&state.tycon_env)) {
                             return Err(TypeErrorTyped::Generic(GenericTypeError {
                                 message: format!(
@@ -1971,7 +1690,7 @@ async fn unify_rows(
         // Uniform+Uniform case which correctly chains both rows' fields.
         (RowTail::Empty, RowTail::Uniform { value, .. })
         | (RowTail::Uniform { value, .. }, RowTail::Empty) => {
-            let v_fixed = subst.apply(value);
+            let v_fixed = state.apply(value);
 
             // Collect named field types from both rows (T-1024: both rows contribute).
             let field_types: Vec<Type> = row1
@@ -1992,7 +1711,6 @@ async fn unify_rows(
                 Box::pin(unify(
                     &Type::TypeVar(alpha.clone(), 0),
                     &join,
-                    subst,
                     state,
                     constraints,
                     span.clone(),
@@ -2001,7 +1719,7 @@ async fn unify_rows(
             } else if !v_fixed.has_inference_vars() {
                 // V is concrete: each named field Ti must be a subtype of V.
                 for field_ty in &field_types {
-                    let field_fixed = subst.apply(field_ty);
+                    let field_fixed = state.apply(field_ty);
                     if !Type::is_subtype(&field_fixed, &v_fixed, Some(&state.tycon_env)) {
                         return Err(TypeErrorTyped::Generic(GenericTypeError {
                             message: format!(
@@ -2037,10 +1755,8 @@ fn lower_levels_check_occurs(
     match ty {
         Type::TypeVar(name, _) => {
             let found = name == occurs_name;
-            let current_level = state.levels.get(name).copied().unwrap_or(0);
-            state
-                .levels
-                .insert(name.clone(), current_level.min(cap_level));
+            let current_level = state.get_level(name).unwrap_or(0);
+            state.set_level(name.clone(), current_level.min(cap_level));
             found
         }
         Type::Record(row) => {
@@ -2093,10 +1809,8 @@ fn lower_levels_check_occurs(
         }
         Type::Operator(name) => {
             let found = name == occurs_name;
-            let current_level = state.levels.get(name).copied().unwrap_or(0);
-            state
-                .levels
-                .insert(name.clone(), current_level.min(cap_level));
+            let current_level = state.get_level(name).unwrap_or(0);
+            state.set_level(name.clone(), current_level.min(cap_level));
             found
         }
         // Leaf types — no type variables to lower, no occurs check needed.
@@ -2240,7 +1954,6 @@ fn transfer_class_constraints(alpha: &str, beta: &str, constraints: &mut Vec<Con
 async fn bas_cvar1_rewrite(
     compound_members: &[Type],
     concrete: &Type,
-    subst: &mut Substitution,
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
     span: Span,
@@ -2331,7 +2044,7 @@ async fn bas_cvar1_rewrite(
             continue;
         };
 
-        let alpha_level = state.levels.get(var_name).copied().unwrap_or(0);
+        let alpha_level = state.get_level(var_name).unwrap_or(0);
         if lower_levels_check_occurs(&bound_type, var_name, alpha_level, state) {
             return Err(TypeErrorTyped::Generic(GenericTypeError {
                 message: format!("infinite type: {var_name} occurs in {bound_type}"),
@@ -2349,11 +2062,10 @@ async fn bas_cvar1_rewrite(
                 constraints,
                 state,
             );
-            check_constraints_on_var(var_name, &promoted, subst, state, constraints, span.clone())
+            check_constraints_on_var(var_name, &promoted, state, constraints, span.clone())
                 .await?;
-            let var_level = state.levels.get(var_name).copied().unwrap_or(0);
-            subst.bind_at_level(var_name.clone(), var_level, promoted);
-            return subst.check_size(span);
+            state.bind_type_var(var_name.clone(), promoted);
+            return state.check_type_vars_size(span);
         } else {
             // Multiple TypeVars: add as lower bound (inequality constraint)
             state
@@ -2378,7 +2090,6 @@ async fn bas_cvar1_rewrite(
 async fn bas_cvar2_rewrite(
     compound_members: &[Type],
     concrete: &Type,
-    subst: &mut Substitution,
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
     span: Span,
@@ -2430,7 +2141,7 @@ async fn bas_cvar2_rewrite(
             continue;
         };
 
-        let alpha_level = state.levels.get(var_name).copied().unwrap_or(0);
+        let alpha_level = state.get_level(var_name).unwrap_or(0);
         if lower_levels_check_occurs(&bound_type, var_name, alpha_level, state) {
             return Err(TypeErrorTyped::Generic(GenericTypeError {
                 message: format!("infinite type: {var_name} occurs in {bound_type}"),
@@ -2448,11 +2159,10 @@ async fn bas_cvar2_rewrite(
                 constraints,
                 state,
             );
-            check_constraints_on_var(var_name, &promoted, subst, state, constraints, span.clone())
+            check_constraints_on_var(var_name, &promoted, state, constraints, span.clone())
                 .await?;
-            let var_level = state.levels.get(var_name).copied().unwrap_or(0);
-            subst.bind_at_level(var_name.clone(), var_level, promoted);
-            return subst.check_size(span);
+            state.bind_type_var(var_name.clone(), promoted);
+            return state.check_type_vars_size(span);
         } else {
             // Multiple TypeVars: add as upper bound
             state
@@ -2469,7 +2179,6 @@ async fn bas_cvar2_rewrite(
 pub async fn unify(
     a: &Type,
     b: &Type,
-    subst: &mut Substitution,
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
     span: Span,
@@ -2478,38 +2187,36 @@ pub async fn unify(
     // Shared visited set avoids redundant allocation across both apply() calls.
     let mut visited_types = HashSet::new();
     let mut visited_rows = HashSet::new(); // kept for apply_with_visited API compatibility
-    let a_substituted = subst.apply_with_visited(a, &mut visited_types, &mut visited_rows);
+    let a_substituted = state.apply_with_visited(a, &mut visited_types, &mut visited_rows);
     visited_types.clear();
-    let b_substituted = subst.apply_with_visited(b, &mut visited_types, &mut visited_rows);
+    let b_substituted = state.apply_with_visited(b, &mut visited_types, &mut visited_rows);
 
-    // Normalize both types (for TypeStageApp reduction)
-    // subst is passed explicitly — NormCtxt no longer holds a reference to it, so there is
-    // no immutable borrow conflict with the mutable reference used in the match arms below.
+    // Normalize both types (for TypeStageApp reduction).
     // allow_eval is set to false inside unify to prevent runtime errors from propagating
     // into type inference (e.g., a failing resolver should produce a stuck TypeStageApp, not
     // a type error).
     let mut norm_ctx = crate::type_normalize::NormCtxt::new(state.type_stage_env.clone());
     norm_ctx.allow_eval = false;
-    let a = crate::type_normalize::normalize(&a_substituted, subst, &mut norm_ctx).await;
-    let b = crate::type_normalize::normalize(&b_substituted, subst, &mut norm_ctx).await;
+    let a = crate::type_normalize::normalize(&a_substituted, &state.type_vars, &mut norm_ctx).await;
+    let b = crate::type_normalize::normalize(&b_substituted, &state.type_vars, &mut norm_ctx).await;
     drop(norm_ctx);
 
     if a == b {
         return Ok(());
     }
 
-    // Robinson (1965) invariant: after unifying X and Y, `subst` is extended with at most one
-    // new binding (the TypeVar arm inserts exactly one entry into subst.type_map). Subsequent
-    // calls to `unify` operate on the extended substitution via the `apply_with_visited` calls
-    // at the top of each recursive invocation -- those calls chase the substitution chain and
-    // return fully-walked types before the match. We do NOT re-apply `subst` to already-unified
-    // terms between match arms because (a) the occurs check prevents cycles, so there are no
+    // Robinson (1965) invariant: after unifying X and Y, `state.type_vars` is extended with at
+    // most one new binding (the TypeVar arm inserts exactly one entry). Subsequent calls to
+    // `unify` operate on the extended state via the `apply_with_visited` calls at the top of
+    // each recursive invocation -- those calls chase the binding chain and return fully-walked
+    // types before the match. We do NOT re-apply the substitution to already-unified terms
+    // between match arms because (a) the occurs check prevents cycles, so there are no
     // self-referential chains to chase, and (b) each arm receives pre-applied operands (a, b)
-    // that are already walk-complete with respect to the substitution at entry time.
+    // that are already walk-complete with respect to the bindings at entry time.
     match (&a, &b) {
         // Error absorption: unify(Error, T) = Ok(()) for all T.
         // Error is a sentinel for failed sub-expression inference; absorbing it silently
-        // prevents cascade errors in parent expressions. No substitution is modified --
+        // prevents cascade errors in parent expressions. No binding is modified --
         // Error carries no information that should propagate to type variables.
         (Type::Error(_), _) | (_, Type::Error(_)) => Ok(()),
 
@@ -2517,11 +2224,11 @@ pub async fn unify(
         // Unknown relates to other types via consistency, not unification. When Unknown meets
         // a type variable, we zero the variable's level to prevent generalization (Siek & Taha 2006).
         (Type::Unknown, Type::TypeVar(name, _)) => {
-            state.levels.insert(name.clone(), 0);
+            state.set_level(name.clone(), 0);
             Ok(())
         }
         (Type::TypeVar(name, _), Type::Unknown) => {
-            state.levels.insert(name.clone(), 0);
+            state.set_level(name.clone(), 0);
             Ok(())
         }
         (Type::Unknown, other) | (other, Type::Unknown) => {
@@ -2531,7 +2238,7 @@ pub async fn unify(
             let mut type_vars = HashSet::new();
             other.collect_all_vars(&mut type_vars);
             for var in &type_vars {
-                state.levels.insert(var.clone(), 0);
+                state.set_level(var.clone(), 0);
             }
             Ok(())
         }
@@ -2539,18 +2246,18 @@ pub async fn unify(
         // Top unification: Top should not appear in unification positions (it's for checking only).
         // If it does appear, treat it like Unknown for now (accepting unification with anything).
         (Type::Any, Type::TypeVar(name, _)) => {
-            state.levels.insert(name.clone(), 0);
+            state.set_level(name.clone(), 0);
             Ok(())
         }
         (Type::TypeVar(name, _), Type::Any) => {
-            state.levels.insert(name.clone(), 0);
+            state.set_level(name.clone(), 0);
             Ok(())
         }
         (Type::Any, other) | (other, Type::Any) => {
             let mut type_vars = HashSet::new();
             other.collect_all_vars(&mut type_vars);
             for var in &type_vars {
-                state.levels.insert(var.clone(), 0);
+                state.set_level(var.clone(), 0);
             }
             Ok(())
         }
@@ -2562,31 +2269,28 @@ pub async fn unify(
         // no-op. No occurs-check is needed because the two variables are distinct — the
         // same-name case (`a == b`) is caught by the early return above.
         (Type::TypeVar(name_a, _), Type::TypeVar(name_b, _)) => {
-            let level_a = state.levels.get(name_a).copied().unwrap_or(0);
-            let level_b = state.levels.get(name_b).copied().unwrap_or(0);
+            let level_a = state.get_level(name_a).unwrap_or(0);
+            let level_b = state.get_level(name_b).unwrap_or(0);
 
             // Bind the higher-level variable to the lower-level one.
             // If levels are equal, bind left-to-right for determinism.
-            // bind_at_level routes the binding to the substitution frame whose
-            // creation_level matches the TypeVar's level, keeping per-dict bindings local.
+            // Bind the higher-level variable to the lower-level one for determinism.
             if level_a >= level_b {
                 // Bind name_a → TypeVar(name_b)
                 transfer_class_constraints(name_a, name_b, constraints);
-                subst.bind_at_level(
+                state.bind_type_var(
                     name_a.clone(),
-                    level_a,
                     Type::TypeVar(name_b.clone(), level_b),
                 );
             } else {
                 // Bind name_b → TypeVar(name_a)
                 transfer_class_constraints(name_b, name_a, constraints);
-                subst.bind_at_level(
+                state.bind_type_var(
                     name_b.clone(),
-                    level_b,
                     Type::TypeVar(name_a.clone(), level_a),
                 );
             }
-            subst.check_size(span)?;
+            state.check_type_vars_size(span)?;
             Ok(())
         }
 
@@ -2595,7 +2299,7 @@ pub async fn unify(
             // Fused occurs check + level lowering: one tree walk, zero HashSet allocations.
             // lower_levels_check_occurs returns true if `name` appears in the type tree
             // (infinite-type guard), and simultaneously lowers all var levels to cap_level.
-            let alpha_level = state.levels.get(name).copied().unwrap_or(0);
+            let alpha_level = state.get_level(name).unwrap_or(0);
             if lower_levels_check_occurs(&b, name, alpha_level, state) {
                 return Err(TypeErrorTyped::Generic(GenericTypeError {
                     message: format!("infinite type: {name} occurs in {b}"),
@@ -2617,23 +2321,23 @@ pub async fn unify(
             if let Type::TypeVar(beta_name, _) = &b {
                 transfer_class_constraints(name, beta_name, constraints);
                 // After transferring constraints, bind α to β directly — no check_constraints_on_var
-                subst.bind_at_level(name.clone(), alpha_level, b);
+                state.bind_type_var(name.clone(), b);
             } else if let Type::Operator(beta_name) = &b {
                 transfer_class_constraints(name, beta_name, constraints);
                 // After transferring constraints, bind α to β directly — no check_constraints_on_var
-                subst.bind_at_level(name.clone(), alpha_level, b);
+                state.bind_type_var(name.clone(), b);
             } else {
                 // Binding α to a concrete type — check constraints normally
-                check_constraints_on_var(name, &b, subst, state, constraints, span.clone()).await?;
-                subst.bind_at_level(name.clone(), alpha_level, b);
+                check_constraints_on_var(name, &b, state, constraints, span.clone()).await?;
+                state.bind_type_var(name.clone(), b);
             }
-            subst.check_size(span)?;
+            state.check_type_vars_size(span)?;
             Ok(())
         }
         // U-VAR-LEVEL-SYM: bind α to τ, lower levels of all β ∈ FTV(τ) and all ρ ∈ FRV(τ)
         (_, Type::TypeVar(name, _)) => {
             // Fused occurs check + level lowering: one tree walk, zero HashSet allocations.
-            let alpha_level = state.levels.get(name).copied().unwrap_or(0);
+            let alpha_level = state.get_level(name).unwrap_or(0);
             if lower_levels_check_occurs(&a, name, alpha_level, state) {
                 return Err(TypeErrorTyped::Generic(GenericTypeError {
                     message: format!("infinite type: {name} occurs in {a}"),
@@ -2653,17 +2357,17 @@ pub async fn unify(
             if let Type::TypeVar(beta_name, _) = &a {
                 transfer_class_constraints(name, beta_name, constraints);
                 // After transferring constraints, bind α to β directly — no check_constraints_on_var
-                subst.bind_at_level(name.clone(), alpha_level, a);
+                state.bind_type_var(name.clone(), a);
             } else if let Type::Operator(beta_name) = &a {
                 transfer_class_constraints(name, beta_name, constraints);
                 // After transferring constraints, bind α to β directly — no check_constraints_on_var
-                subst.bind_at_level(name.clone(), alpha_level, a);
+                state.bind_type_var(name.clone(), a);
             } else {
                 // Binding α to a concrete type — check constraints normally
-                check_constraints_on_var(name, &a, subst, state, constraints, span.clone()).await?;
-                subst.bind_at_level(name.clone(), alpha_level, a);
+                check_constraints_on_var(name, &a, state, constraints, span.clone()).await?;
+                state.bind_type_var(name.clone(), a);
             }
-            subst.check_size(span)?;
+            state.check_type_vars_size(span)?;
             Ok(())
         }
 
@@ -2702,7 +2406,7 @@ pub async fn unify(
             let fresh = state.fresh_type_var();
             let opened_a = substitute_recvar(ba, va, &fresh);
             let opened_b = substitute_recvar(bb, vb, &fresh);
-            Box::pin(unify(&opened_a, &opened_b, subst, state, constraints, span)).await
+            Box::pin(unify(&opened_a, &opened_b, state, constraints, span)).await
         }
 
         // Arm 4 (open-left): left is Recursive, right is a concrete type (not TypeVar — that
@@ -2711,7 +2415,7 @@ pub async fn unify(
         (Type::Recursive { var: va, body: ba }, _) => {
             let fresh = state.fresh_type_var();
             let opened_a = substitute_recvar(ba, va, &fresh);
-            Box::pin(unify(&opened_a, &b, subst, state, constraints, span)).await
+            Box::pin(unify(&opened_a, &b, state, constraints, span)).await
         }
 
         // Arm 5 (open-right): right is Recursive, left is a concrete type (not TypeVar — caught
@@ -2720,7 +2424,7 @@ pub async fn unify(
         (_, Type::Recursive { var: vb, body: bb }) => {
             let fresh = state.fresh_type_var();
             let opened_b = substitute_recvar(bb, vb, &fresh);
-            Box::pin(unify(&a, &opened_b, subst, state, constraints, span)).await
+            Box::pin(unify(&a, &opened_b, state, constraints, span)).await
         }
 
         // Literal type promotion shortcuts (performance optimization over U-SUBSUME).
@@ -2789,11 +2493,11 @@ pub async fn unify(
             // Apply special case when one side is zero-param variadic and the other has params.
             if is_any_function_1 && !p2.is_empty() {
                 // Zero-param variadic unifies with any concrete-arity function.
-                return Box::pin(unify(r1, r2, subst, state, constraints, span)).await;
+                return Box::pin(unify(r1, r2, state, constraints, span)).await;
             }
             if is_any_function_2 && !p1.is_empty() {
                 // Zero-param variadic unifies with any concrete-arity function (symmetric).
-                return Box::pin(unify(r1, r2, subst, state, constraints, span)).await;
+                return Box::pin(unify(r1, r2, state, constraints, span)).await;
             }
 
             if p1.len() != p2.len() {
@@ -2826,9 +2530,9 @@ pub async fn unify(
             // from earlier parameter unifications are therefore visible to later ones via
             // the shared `subst` -- this is correct Robinson (1965) unification.
             for ((_name_a, ty_a), (_name_b, ty_b)) in p1.iter().zip(p2.iter()) {
-                Box::pin(unify(ty_a, ty_b, subst, state, constraints, span.clone())).await?;
+                Box::pin(unify(ty_a, ty_b, state, constraints, span.clone())).await?;
             }
-            Box::pin(unify(r1, r2, subst, state, constraints, span)).await
+            Box::pin(unify(r1, r2, state, constraints, span)).await
         }
 
         (Type::Proxy, Type::Proxy) => Ok(()),
@@ -2851,7 +2555,7 @@ pub async fn unify(
 
         // Negation unification: structural (for now, basic support)
         (Type::Negation(t1), Type::Negation(t2)) => {
-            Box::pin(unify(t1, t2, subst, state, constraints, span)).await
+            Box::pin(unify(t1, t2, state, constraints, span)).await
         }
 
         // Negation disjointness: if T <: A, then T & ~A = Never (provably empty intersection).
@@ -3032,21 +2736,21 @@ pub async fn unify(
         // UNIFY-OPERATOR-TO-OPERATOR: bind higher-level Operator to lower-level Operator.
         // Follows Kiselyov L3 invariant (same as TypeVar-to-TypeVar at lines 1837-1860).
         (Type::Operator(m), Type::Operator(n)) if m != n => {
-            let level_m = state.levels.get(m).copied().unwrap_or(0);
-            let level_n = state.levels.get(n).copied().unwrap_or(0);
+            let level_m = state.get_level(m).unwrap_or(0);
+            let level_n = state.get_level(n).unwrap_or(0);
 
             // Bind the higher-level operator to the lower-level one.
             // If levels are equal, bind left-to-right for determinism.
             if level_m >= level_n {
                 // Bind m → Operator(n)
                 transfer_class_constraints(m, n, constraints);
-                subst.bind_at_level(m.clone(), level_m, Type::Operator(n.clone()));
+                state.bind_type_var(m.clone(), Type::Operator(n.clone()));
             } else {
                 // Bind n → Operator(m)
                 transfer_class_constraints(n, m, constraints);
-                subst.bind_at_level(n.clone(), level_n, Type::Operator(m.clone()));
+                state.bind_type_var(n.clone(), Type::Operator(m.clone()));
             }
-            subst.check_size(span)?;
+            state.check_type_vars_size(span)?;
             Ok(())
         }
 
@@ -3055,7 +2759,7 @@ pub async fn unify(
         // Kind check premise is deferred to hkt-kind-inference.
         (Type::Operator(m), _) => {
             // Fused occurs check + level lowering (Kiselyov L3 invariant for Operator variables)
-            let alpha_level = state.levels.get(m).copied().unwrap_or(0);
+            let alpha_level = state.get_level(m).unwrap_or(0);
             if lower_levels_check_occurs(&b, m, alpha_level, state) {
                 return Err(TypeErrorTyped::Generic(GenericTypeError {
                     message: format!("infinite type: operator variable {} occurs in {}", m, b),
@@ -3069,19 +2773,19 @@ pub async fn unify(
             // bind_at_level routes to the frame matching the Operator variable's creation level.
             if let Type::TypeVar(beta_name, _) = &b {
                 transfer_class_constraints(m, beta_name, constraints);
-                subst.bind_at_level(m.clone(), alpha_level, b.clone());
+                state.bind_type_var(m.clone(), b.clone());
             } else {
                 // Binding to concrete type — check constraints
-                check_constraints_on_var(m, &b, subst, state, constraints, span.clone()).await?;
-                subst.bind_at_level(m.clone(), alpha_level, b.clone());
+                check_constraints_on_var(m, &b, state, constraints, span.clone()).await?;
+                state.bind_type_var(m.clone(), b.clone());
             }
-            subst.check_size(span)?;
+            state.check_type_vars_size(span)?;
             Ok(())
         }
         // UNIFY-OPERATOR-SYM: symmetric case
         (_, Type::Operator(m)) => {
             // Fused occurs check + level lowering (Kiselyov L3 invariant for Operator variables)
-            let alpha_level = state.levels.get(m).copied().unwrap_or(0);
+            let alpha_level = state.get_level(m).unwrap_or(0);
             if lower_levels_check_occurs(&a, m, alpha_level, state) {
                 return Err(TypeErrorTyped::Generic(GenericTypeError {
                     message: format!("infinite type: operator variable {} occurs in {}", m, a),
@@ -3095,13 +2799,13 @@ pub async fn unify(
             // bind_at_level routes to the frame matching the Operator variable's creation level.
             if let Type::TypeVar(beta_name, _) = &a {
                 transfer_class_constraints(m, beta_name, constraints);
-                subst.bind_at_level(m.clone(), alpha_level, a.clone());
+                state.bind_type_var(m.clone(), a.clone());
             } else {
                 // Binding to concrete type — check constraints
-                check_constraints_on_var(m, &a, subst, state, constraints, span.clone()).await?;
-                subst.bind_at_level(m.clone(), alpha_level, a.clone());
+                check_constraints_on_var(m, &a, state, constraints, span.clone()).await?;
+                state.bind_type_var(m.clone(), a.clone());
             }
-            subst.check_size(span)?;
+            state.check_type_vars_size(span)?;
             Ok(())
         }
 
@@ -3130,7 +2834,6 @@ pub async fn unify(
                                     Box::pin(unify(
                                         arg_a,
                                         arg_b,
-                                        subst,
                                         state,
                                         constraints,
                                         span.clone(),
@@ -3141,7 +2844,6 @@ pub async fn unify(
                                     Box::pin(unify(
                                         arg_b,
                                         arg_a,
-                                        subst,
                                         state,
                                         constraints,
                                         span.clone(),
@@ -3152,13 +2854,12 @@ pub async fn unify(
                                     // Invariant: bind TypeVars, but reject ground-type subsumption.
                                     // U-SUBSUME must not fire here — Int and Number are distinct
                                     // invariant positions and must not unify via subtyping.
-                                    let ra = subst.apply(arg_a);
-                                    let rb = subst.apply(arg_b);
+                                    let ra = state.apply(arg_a);
+                                    let rb = state.apply(arg_b);
                                     if ra.has_inference_vars() || rb.has_inference_vars() {
                                         Box::pin(unify(
                                             &ra,
                                             &rb,
-                                            subst,
                                             state,
                                             constraints,
                                             span.clone(),
@@ -3189,13 +2890,13 @@ pub async fn unify(
                 }
             }
             // Fallback for non-TyCon App forms or unknown constructors: structural recursion.
-            Box::pin(unify(f1, f2, subst, state, constraints, span.clone())).await?;
-            Box::pin(unify(a1, a2, subst, state, constraints, span)).await
+            Box::pin(unify(f1, f2, state, constraints, span.clone())).await?;
+            Box::pin(unify(a1, a2, state, constraints, span)).await
         }
 
         // Record unification: delegate to row unification
         (Type::Record(row1), Type::Record(row2)) => {
-            unify_rows(row1, row2, subst, state, constraints, span).await
+            unify_rows(row1, row2, state, constraints, span).await
         }
 
         // NominalVariant unification: tags must match (nominal identity), then unify fields structurally
@@ -3221,7 +2922,7 @@ pub async fn unify(
                 }));
             }
             // Tags match — unify fields structurally
-            unify_rows(fields1, fields2, subst, state, constraints, span).await
+            unify_rows(fields1, fields2, state, constraints, span).await
         }
 
         // NominalVariant vs Record: never unifiable (nominal vs structural distinction)
@@ -3266,7 +2967,7 @@ pub async fn unify(
         {
             let members = members.clone();
             for member in &members {
-                Box::pin(unify(&a, member, subst, state, constraints, span.clone())).await?;
+                Box::pin(unify(&a, member, state, constraints, span.clone())).await?;
             }
             Ok(())
         }
@@ -3275,7 +2976,7 @@ pub async fn unify(
         {
             let members = members.clone();
             for member in &members {
-                Box::pin(unify(member, &b, subst, state, constraints, span.clone())).await?;
+                Box::pin(unify(member, &b, state, constraints, span.clone())).await?;
             }
             Ok(())
         }
@@ -3311,7 +3012,7 @@ pub async fn unify(
                 && members.iter().any(|m| matches!(m, Type::TypeVar(_, _))) =>
         {
             let members = members.clone();
-            bas_cvar1_rewrite(&members, concrete, subst, state, constraints, span).await
+            bas_cvar1_rewrite(&members, concrete, state, constraints, span).await
         }
 
         // Symmetric C-Var1: Union on the left, concrete on the right
@@ -3320,7 +3021,7 @@ pub async fn unify(
                 && members.iter().any(|m| matches!(m, Type::TypeVar(_, _))) =>
         {
             let members = members.clone();
-            bas_cvar1_rewrite(&members, concrete, subst, state, constraints, span).await
+            bas_cvar1_rewrite(&members, concrete, state, constraints, span).await
         }
 
         // [C-VAR2] (BAS constraint rewriting — Parreaux & Chau 2022, §3.2.1):
@@ -3340,7 +3041,7 @@ pub async fn unify(
                 && members.iter().any(|m| matches!(m, Type::TypeVar(_, _))) =>
         {
             let members = members.clone();
-            bas_cvar2_rewrite(&members, concrete, subst, state, constraints, span).await
+            bas_cvar2_rewrite(&members, concrete, state, constraints, span).await
         }
 
         // Symmetric C-Var2: concrete on the left, Intersection on the right
@@ -3349,7 +3050,7 @@ pub async fn unify(
                 && members.iter().any(|m| matches!(m, Type::TypeVar(_, _))) =>
         {
             let members = members.clone();
-            bas_cvar2_rewrite(&members, concrete, subst, state, constraints, span).await
+            bas_cvar2_rewrite(&members, concrete, state, constraints, span).await
         }
 
         // TypeStageApp unification cases (after normalization in chr-normalization sprint).
@@ -3378,7 +3079,7 @@ pub async fn unify(
                 }));
             }
             for (arg1, arg2) in a1.iter().zip(a2.iter()) {
-                Box::pin(unify(arg1, arg2, subst, state, constraints, span.clone())).await?;
+                Box::pin(unify(arg1, arg2, state, constraints, span.clone())).await?;
             }
             Ok(())
         }
@@ -3468,7 +3169,6 @@ pub async fn unify(
 pub async fn constrain(
     sub: &Type,
     sup: &Type,
-    subst: &mut Substitution,
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
     span: Span,
@@ -3476,15 +3176,15 @@ pub async fn constrain(
     // Apply current substitution to both sides.
     let mut visited_types = HashSet::new();
     let mut visited_rows = HashSet::new();
-    let sub_substituted = subst.apply_with_visited(sub, &mut visited_types, &mut visited_rows);
+    let sub_substituted = state.apply_with_visited(sub, &mut visited_types, &mut visited_rows);
     visited_types.clear();
-    let sup_substituted = subst.apply_with_visited(sup, &mut visited_types, &mut visited_rows);
+    let sup_substituted = state.apply_with_visited(sup, &mut visited_types, &mut visited_rows);
 
     // Normalize both types.
     let mut norm_ctx = crate::type_normalize::NormCtxt::new(state.type_stage_env.clone());
     norm_ctx.allow_eval = false;
-    let sub = crate::type_normalize::normalize(&sub_substituted, subst, &mut norm_ctx).await;
-    let sup = crate::type_normalize::normalize(&sup_substituted, subst, &mut norm_ctx).await;
+    let sub = crate::type_normalize::normalize(&sub_substituted, &state.type_vars, &mut norm_ctx).await;
+    let sup = crate::type_normalize::normalize(&sup_substituted, &state.type_vars, &mut norm_ctx).await;
     drop(norm_ctx);
 
     if sub == sup {
@@ -3497,18 +3197,18 @@ pub async fn constrain(
 
         // Unknown: directional — zero levels of affected vars, accept the constraint.
         (Type::Unknown, Type::TypeVar(name, _)) => {
-            state.levels.insert(name.clone(), 0);
+            state.set_level(name.clone(), 0);
             return Ok(());
         }
         (Type::TypeVar(name, _), Type::Unknown) => {
-            state.levels.insert(name.clone(), 0);
+            state.set_level(name.clone(), 0);
             return Ok(());
         }
         (Type::Unknown, other) | (other, Type::Unknown) => {
             let mut type_vars = HashSet::new();
             other.collect_all_vars(&mut type_vars);
             for var in &type_vars {
-                state.levels.insert(var.clone(), 0);
+                state.set_level(var.clone(), 0);
             }
             return Ok(());
         }
@@ -3524,7 +3224,7 @@ pub async fn constrain(
                 && members.iter().any(|m| matches!(m, Type::TypeVar(_, _))) =>
         {
             let members = members.clone();
-            return bas_cvar1_rewrite(&members, &sub, subst, state, constraints, span).await;
+            return bas_cvar1_rewrite(&members, &sub, state, constraints, span).await;
         }
 
         // [C-VAR2] (Parreaux & Chau 2022, §3.2.1): α ∧ τ₁ ≤ τ₂ → α ≤ ~τ₁ ∨ τ₂
@@ -3537,7 +3237,7 @@ pub async fn constrain(
                 && members.iter().any(|m| matches!(m, Type::TypeVar(_, _))) =>
         {
             let members = members.clone();
-            return bas_cvar2_rewrite(&members, &sup, subst, state, constraints, span).await;
+            return bas_cvar2_rewrite(&members, &sup, state, constraints, span).await;
         }
 
         // TypeVar accumulation: sub <: TypeVar(α) → α has lower bound sub.
@@ -3546,7 +3246,7 @@ pub async fn constrain(
         // Guard: sub must be a ground type (no inference vars) to avoid pushing unsolved TypeVars
         // as bounds. If sub contains TypeVars, fall through to unify() which handles U-VAR-LEVEL.
         (_, Type::TypeVar(var_name, _)) if !sub.has_inference_vars() => {
-            let alpha_level = state.levels.get(var_name).copied().unwrap_or(0);
+            let alpha_level = state.get_level(var_name).unwrap_or(0);
             if lower_levels_check_occurs(&sub, var_name, alpha_level, state) {
                 return Err(TypeErrorTyped::Generic(GenericTypeError {
                     message: format!("infinite type: {var_name} occurs in {sub}"),
@@ -3572,7 +3272,7 @@ pub async fn constrain(
         // Guard: sup must be a ground type (no inference vars) to avoid pushing unsolved TypeVars
         // as bounds. If sup contains TypeVars, fall through to unify() which handles U-VAR-LEVEL.
         (Type::TypeVar(var_name, _), _) if !sup.has_inference_vars() => {
-            let alpha_level = state.levels.get(var_name).copied().unwrap_or(0);
+            let alpha_level = state.get_level(var_name).unwrap_or(0);
             if lower_levels_check_occurs(&sup, var_name, alpha_level, state) {
                 return Err(TypeErrorTyped::Generic(GenericTypeError {
                     message: format!("infinite type: {var_name} occurs in {sup}"),
@@ -3599,7 +3299,7 @@ pub async fn constrain(
         _ => {}
     }
 
-    unify(&sub, &sup, subst, state, constraints, span).await
+    unify(&sub, &sup, state, constraints, span).await
 }
 
 /// Process deferred equality constraints for stuck TypeStageApp applications.
@@ -3622,7 +3322,6 @@ pub async fn constrain(
 /// See doc/06-type-inference.md:884.
 pub async fn process_deferred_equalities(
     state: &mut InferState,
-    subst: &mut Substitution,
     constraints: &mut Vec<Constraint>,
     span: Span,
 ) {
@@ -3641,8 +3340,8 @@ pub async fn process_deferred_equalities(
         let mut norm_ctx = crate::type_normalize::NormCtxt::new(state.type_stage_env.clone());
         for (a, b) in deferred {
             // Normalize both sides
-            let a_norm = crate::type_normalize::normalize(&a, subst, &mut norm_ctx).await;
-            let b_norm = crate::type_normalize::normalize(&b, subst, &mut norm_ctx).await;
+            let a_norm = crate::type_normalize::normalize(&a, &state.type_vars, &mut norm_ctx).await;
+            let b_norm = crate::type_normalize::normalize(&b, &state.type_vars, &mut norm_ctx).await;
 
             if !a_norm.has_type_stage_app() && !b_norm.has_type_stage_app() {
                 // Both sides fully reduced — attempt unification.
@@ -3650,7 +3349,6 @@ pub async fn process_deferred_equalities(
                 match Box::pin(unify(
                     &a_norm,
                     &b_norm,
-                    subst,
                     state,
                     constraints,
                     span.clone(),

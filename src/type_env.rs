@@ -14,7 +14,7 @@ use super::*;
 /// Used for CALL-POLY: when calling a polymorphic function, instantiate its type
 /// at the current level to enable proper generalization (Kiselyov 2013).
 ///
-/// This function registers fresh variables in `state.levels` so they participate in
+/// This function registers fresh variables in `state.type_vars` so they participate in
 /// level-based generalization. Without this, fresh variables would default to level 0
 /// and be permanently excluded from generalization by [U-VAR-LEVEL].
 ///
@@ -25,7 +25,7 @@ use super::*;
 /// - Fresh variables from the function's own inference (e.g., from type annotations)
 /// - Unbound inference variables that need fresh instances for this call site
 ///
-/// Free variables from the enclosing scope would already be bound in `state.subst` and would
+/// Free variables from the enclosing scope would already be bound in `state.type_vars` and would
 /// not appear as TypeVars in the input type. Per Algorithm W, instantiation only applies to
 /// the syntactic type variables present in the type expression, which are all treated uniformly here.
 pub fn instantiate_at_level(ty: &Type, state: &mut InferState) -> Type {
@@ -48,47 +48,36 @@ pub fn instantiate_at_level(ty: &Type, state: &mut InferState) -> Type {
     // avoiding a resize when the type var count is known upfront (CALL-POLY hot path).
     // Note: capacity hint may be larger than actual unique count if there are duplicates,
     // but this wastes at most a few slots and is cheaper than deduplicating first.
-    let renaming = Substitution {
-        type_map: std::cell::RefCell::new(HashMap::with_capacity(type_vars.len())),
-        parent: None,
-        creation_level: 0,
-        name_counter: std::cell::Cell::new(0),
-    };
+    let mut renaming: HashMap<String, Type> = HashMap::with_capacity(type_vars.len());
     for var in type_vars {
         // First-write-wins: skip if this var was already mapped (handles duplicates from the Vec).
-        if !renaming.type_map.borrow().contains_key(&var) {
-            let n = state.subst.name_counter.get();
+        if !renaming.contains_key(&var) {
+            let n = state.name_counter;
             let fresh_name = format!("_t{}", n);
-            state.subst.name_counter.set(n.saturating_add(1));
-            state.levels.insert(fresh_name.clone(), state.level);
+            state.name_counter = n.saturating_add(1);
+            state.set_level(fresh_name.clone(), state.level);
 
             // If this var appears as Type::Operator in the original type, preserve the Operator kind
             if operator_names.contains(&var) {
                 // Register the fresh name in kind_env as Kind::Operator
-                state.kind_env.insert(fresh_name.clone(), Kind::Operator);
-                renaming
-                    .type_map
-                    .borrow_mut()
-                    .insert(var, Type::Operator(fresh_name));
+                state.set_kind(fresh_name.clone(), Kind::Operator);
+                renaming.insert(var, Type::Operator(fresh_name));
             } else {
-                renaming
-                    .type_map
-                    .borrow_mut()
-                    .insert(var, Type::TypeVar(fresh_name, state.level));
+                renaming.insert(var, Type::TypeVar(fresh_name, state.level));
             }
         }
     }
 
-    renaming.apply(ty)
+    apply_renaming(ty, &renaming)
 }
 
 /// Rename a single type variable `old_name -> Type::TypeVar(fresh_name, level)` inline.
 ///
-/// This is equivalent to `Substitution { type_map: {old_name -> TypeVar(fresh,level)},
-/// row_map: {} }.apply(ty)` but avoids allocating 2 HashMaps and 2 HashSets.
-/// Safe to use without cycle detection because scheme bodies from `generalize` are
-/// acyclic with respect to quantified type variables (no self-referential TypeVar bindings
-/// can appear in a scheme body -- TypeVars in a scheme are free variables, not bound ones).
+/// This is equivalent to `apply_renaming(ty, {old_name -> TypeVar(fresh,level)})` but
+/// avoids allocating a HashMap. Safe to use without cycle detection because scheme bodies
+/// from `generalize` are acyclic with respect to quantified type variables (no
+/// self-referential TypeVar bindings can appear in a scheme body -- TypeVars in a scheme
+/// are free variables, not bound ones).
 fn rename_single_type_var(ty: &Type, old_name: &str, fresh_name: &str, level: u32) -> Type {
     match ty {
         Type::TypeVar(name, _) if name == old_name => Type::TypeVar(fresh_name.to_owned(), level),
@@ -186,15 +175,100 @@ fn rename_single_type_var_in_row(row: &Row, old_name: &str, fresh_name: &str, le
     }
 }
 
+/// Apply a renaming map to a type, replacing TypeVars and Operators whose names
+/// appear as keys in the map with the corresponding replacement types.
+///
+/// This is the multi-variable generalization of `rename_single_type_var`. Used during
+/// `instantiate_at_level` and `instantiate_scheme` to apply freshened variable mappings
+/// without requiring a Substitution struct.
+fn apply_renaming(ty: &Type, map: &HashMap<String, Type>) -> Type {
+    match ty {
+        Type::TypeVar(name, _) => {
+            if let Some(replacement) = map.get(name.as_str()) {
+                replacement.clone()
+            } else {
+                ty.clone()
+            }
+        }
+        Type::Operator(name) => {
+            if let Some(replacement) = map.get(name.as_str()) {
+                replacement.clone()
+            } else {
+                ty.clone()
+            }
+        }
+        Type::Record(row) => Type::Record(apply_renaming_in_row(row, map)),
+        Type::Function {
+            params,
+            ret,
+            variadic,
+            required_count,
+        } => Type::Function {
+            params: params
+                .iter()
+                .map(|(name, p_ty)| (name.clone(), apply_renaming(p_ty, map)))
+                .collect(),
+            ret: Box::new(apply_renaming(ret, map)),
+            variadic: *variadic,
+            required_count: *required_count,
+        },
+        Type::App(f, a) => Type::App(
+            Box::new(apply_renaming(f, map)),
+            Box::new(apply_renaming(a, map)),
+        ),
+        Type::TyCon(_) => ty.clone(),
+        Type::Union(members) => {
+            Type::Union(members.iter().map(|m| apply_renaming(m, map)).collect())
+        }
+        Type::Intersection(members) => {
+            Type::Intersection(members.iter().map(|m| apply_renaming(m, map)).collect())
+        }
+        Type::Negation(inner) => Type::Negation(Box::new(apply_renaming(inner, map))),
+        Type::TypeStageApp { fn_name, args } => Type::TypeStageApp {
+            fn_name: fn_name.clone(),
+            args: args.iter().map(|arg| apply_renaming(arg, map)).collect(),
+        },
+        Type::NominalVariant { tag, fields } => Type::NominalVariant {
+            tag: tag.clone(),
+            fields: apply_renaming_in_row(fields, map),
+        },
+        Type::Recursive { var, body } => Type::Recursive {
+            var: var.clone(),
+            body: Box::new(apply_renaming(body, map)),
+        },
+        _ => ty.clone(),
+    }
+}
+
+fn apply_renaming_in_row(row: &Row, map: &HashMap<String, Type>) -> Row {
+    let new_tail = match &row.tail {
+        crate::type_def::RowTail::Empty => crate::type_def::RowTail::Empty,
+        crate::type_def::RowTail::Uniform { key, value } => crate::type_def::RowTail::Uniform {
+            key: key
+                .as_ref()
+                .map(|k| Box::new(apply_renaming(k, map))),
+            value: Box::new(apply_renaming(value, map)),
+        },
+    };
+    Row {
+        fields: row
+            .fields
+            .iter()
+            .map(|(k, v)| (k.clone(), apply_renaming(v, map)))
+            .collect(),
+        tail: new_tail,
+    }
+}
+
 /// Instantiate a type scheme by creating fresh type variables at the given level.
 /// Used for VAR-POLY: when a polymorphic binding is referenced, create fresh instances.
 ///
 /// Variables in `scheme.type_vars` are instantiated as `Type::TypeVar(fresh, level)`.
 /// Variables in `scheme.kind_vars` with `Kind::Operator` are instantiated as
-/// `Type::Operator(fresh)` and registered in `state.kind_env` with `Kind::Operator`,
+/// `Type::Operator(fresh)` and registered with `Kind::Operator` in `state.type_vars`,
 /// enabling them to unify with type constructor applications via UNIFY-OPERATOR.
 /// Variables in `scheme.kind_vars` with `Kind::Label` are treated identically to
-/// label_vars (registered in `state.kind_env` with `Kind::Label`).
+/// label_vars (registered with `Kind::Label` in `state.type_vars`).
 pub fn instantiate_scheme(
     scheme: &TypeScheme,
     level: u32,
@@ -212,13 +286,13 @@ pub fn instantiate_scheme(
     let mut var_renaming: HashMap<String, String> = HashMap::new();
 
     // Fast path: single regular type variable with no kind_vars --
-    // avoid building Substitution (HashMap + apply HashSet).
+    // avoid building a renaming HashMap.
     // Inline rename is allocation-free aside from the string format for the fresh name.
     if scheme.type_vars.len() == 1 && scheme.kind_vars.is_empty() {
-        let n = state.subst.name_counter.get();
+        let n = state.name_counter;
         let fresh_name = format!("_t{}", n);
-        state.subst.name_counter.set(n.saturating_add(1));
-        state.levels.insert(fresh_name.clone(), level);
+        state.name_counter = n.saturating_add(1);
+        state.set_level(fresh_name.clone(), level);
         var_renaming.insert(scheme.type_vars[0].clone(), fresh_name.clone());
 
         // Copy constraints with renamed variables.
@@ -303,37 +377,29 @@ pub fn instantiate_scheme(
 
         // Re-register label vars in kind_env with Kind::Label
         if scheme.label_vars.contains(&scheme.type_vars[0]) {
-            state.kind_env.insert(fresh_name.clone(), Kind::Label);
+            state.set_kind(fresh_name.clone(), Kind::Label);
         }
 
         return rename_single_type_var(&scheme.body, &scheme.type_vars[0], &fresh_name, level);
     }
 
-    // General path: multiple type variables and/or kind_vars -- build a full Substitution.
+    // General path: multiple type variables and/or kind_vars -- build a renaming map.
     // Total capacity is type_vars + kind_vars (each kind_var also gets a renaming entry).
     let total_vars = scheme.type_vars.len() + scheme.kind_vars.len();
-    let renaming = Substitution {
-        type_map: std::cell::RefCell::new(HashMap::with_capacity(total_vars)),
-        parent: None,
-        creation_level: 0,
-        name_counter: std::cell::Cell::new(0),
-    };
+    let mut renaming: HashMap<String, Type> = HashMap::with_capacity(total_vars);
 
     // Instantiate regular type variables as Type::TypeVar.
     for var in &scheme.type_vars {
-        let n = state.subst.name_counter.get();
+        let n = state.name_counter;
         let fresh_name = format!("_t{}", n);
-        state.subst.name_counter.set(n.saturating_add(1));
-        state.levels.insert(fresh_name.clone(), level);
+        state.name_counter = n.saturating_add(1);
+        state.set_level(fresh_name.clone(), level);
         var_renaming.insert(var.clone(), fresh_name.clone());
-        renaming
-            .type_map
-            .borrow_mut()
-            .insert(var.clone(), Type::TypeVar(fresh_name.clone(), level));
+        renaming.insert(var.clone(), Type::TypeVar(fresh_name.clone(), level));
 
         // Re-register label vars in kind_env with Kind::Label
         if scheme.label_vars.contains(var) {
-            state.kind_env.insert(fresh_name, Kind::Label);
+            state.set_kind(fresh_name, Kind::Label);
         }
     }
 
@@ -342,21 +408,21 @@ pub fn instantiate_scheme(
     // Kind::Label    → Type::TypeVar(fresh_name, level), registered in kind_env as Label.
     // Kind::Type     → Type::TypeVar(fresh_name, level) (same as a regular type_var).
     for (var, kind) in &scheme.kind_vars {
-        let n = state.subst.name_counter.get();
+        let n = state.name_counter;
         let fresh_name = format!("_t{}", n);
-        state.subst.name_counter.set(n.saturating_add(1));
-        state.levels.insert(fresh_name.clone(), level);
+        state.name_counter = n.saturating_add(1);
+        state.set_level(fresh_name.clone(), level);
         var_renaming.insert(var.clone(), fresh_name.clone());
 
         let instantiated_type = match kind {
             Kind::Operator => {
                 // Register in kind_env so that resolve_type_expr and UNIFY-OPERATOR
                 // recognise the fresh variable as a type constructor, not a type.
-                state.kind_env.insert(fresh_name.clone(), Kind::Operator);
+                state.set_kind(fresh_name.clone(), Kind::Operator);
                 Type::Operator(fresh_name.clone())
             }
             Kind::Label => {
-                state.kind_env.insert(fresh_name.clone(), Kind::Label);
+                state.set_kind(fresh_name.clone(), Kind::Label);
                 Type::TypeVar(fresh_name.clone(), level)
             }
             Kind::Type => Type::TypeVar(fresh_name.clone(), level),
@@ -367,10 +433,7 @@ pub fn instantiate_scheme(
             ),
         };
 
-        renaming
-            .type_map
-            .borrow_mut()
-            .insert(var.clone(), instantiated_type);
+        renaming.insert(var.clone(), instantiated_type);
     }
 
     // Copy constraints with renamed variables (from both type_vars and kind_vars).
@@ -448,7 +511,7 @@ pub fn instantiate_scheme(
         }
     }
 
-    renaming.apply(&scheme.body)
+    apply_renaming(&scheme.body, &renaming)
 }
 
 /// Simplify a set of constraints by removing redundant constraints.
@@ -676,7 +739,7 @@ pub fn generalize_with_doc(
     // Apply substitution first -- defense-in-depth per Damas & Milner (1982).
     // Generalization must operate over the image of the substitution.
     // Without this, a bound TypeVar would be generalized incorrectly.
-    let ty = &state.subst.apply(ty);
+    let ty = &state.apply(ty);
 
     // BAS bounds compaction (T-1213): compact TypeVar bounds into substitutions.
     //
@@ -691,13 +754,12 @@ pub fn generalize_with_doc(
         let bounds_snapshot: Vec<(String, crate::bas::TypeVarBounds)> =
             state.bounds.drain().collect();
         for (var_name, var_bounds) in bounds_snapshot {
-            // Skip TypeVars already bound in the substitution
-            if state.subst.type_map.borrow().contains_key(&var_name) {
+            // Skip TypeVars already bound in type_vars
+            if state.lookup_binding(&var_name).is_some() {
                 continue;
             }
             if let Some(compacted) = var_bounds.compact(Some(&state.tycon_env)) {
-                let var_level = state.levels.get(&var_name).copied().unwrap_or(0);
-                state.subst.bind_at_level(var_name, var_level, compacted);
+                state.bind_type_var(var_name, compacted);
             } else if !var_bounds.lower.is_empty() && !var_bounds.upper.is_empty() {
                 // compact() returns None when both lower and upper bounds are non-empty
                 // and cannot be reconciled to a single type. We must verify that the
@@ -747,7 +809,7 @@ pub fn generalize_with_doc(
     }
 
     // Re-apply substitution after bounds compaction (new bindings may have been added)
-    let ty = &state.subst.apply(ty);
+    let ty = &state.apply(ty);
 
     // Early exit for monomorphic types (common case: all-concrete config dicts)
     if !ty.has_inference_vars() {
@@ -756,10 +818,10 @@ pub fn generalize_with_doc(
         // appears in constraint but not in the type).
         // Guard: skip constraints already discharged (bound to concrete type) during unification.
         if !constraints.is_empty() {
-            let subst_snapshot: HashMap<String, Type> = state.subst.type_map.borrow().clone();
+            let binding_snapshot = state.binding_snapshot();
             emit_ambiguous_constraint_diagnostics(
                 constraints,
-                &subst_snapshot,
+                &binding_snapshot,
                 &state.type_var_source_names,
                 &mut state.diagnostics,
                 span,
@@ -786,7 +848,7 @@ pub fn generalize_with_doc(
     let generalizable_type_vars: Vec<String> = all_type_vars
         .into_iter()
         .filter(|var| {
-            let var_level = state.levels.get(var).copied().unwrap_or(0);
+            let var_level = state.get_level(var).unwrap_or(0);
             let is_generalizable = var_level > level;
             // Deduplicate: only include var if we haven't seen it and it's generalizable
             is_generalizable && seen.insert(var.clone())
@@ -799,10 +861,10 @@ pub fn generalize_with_doc(
         // (the TypeVar appears in the constraint but not in the type).
         // Guard: skip constraints already discharged (bound to concrete type) during unification.
         if !constraints.is_empty() {
-            let subst_snapshot: HashMap<String, Type> = state.subst.type_map.borrow().clone();
+            let binding_snapshot = state.binding_snapshot();
             emit_ambiguous_constraint_diagnostics(
                 constraints,
-                &subst_snapshot,
+                &binding_snapshot,
                 &state.type_var_source_names,
                 &mut state.diagnostics,
                 span,
@@ -823,15 +885,15 @@ pub fn generalize_with_doc(
         // Filter constraints: keep only those on generalized variables
         let generalizable_vars: HashSet<String> = generalizable_type_vars.iter().cloned().collect();
 
-        // Snapshot the substitution map so the filter closure can look up TypeVar→TypeVar
+        // Snapshot the binding map so the filter closure can look up TypeVar→TypeVar
         // bindings without borrowing `state` during `constraints.iter()`.
         //
         // When a fresh var "_bt0" from `instantiate_scheme` is bound to "_label_0"
-        // (the actual label TypeVar from the function param) in `state.subst`, the HasField
+        // (the actual label TypeVar from the function param) in `state.type_vars`, the HasField
         // constraint records "_bt0" as the label var. But "_bt0" is not in `generalizable_vars`
         // (it's a bound intermediate). We must resolve through one substitution level to find
         // the effective free variable "_label_0" before checking generalizable membership.
-        let subst_snapshot: HashMap<String, Type> = state.subst.type_map.borrow().clone();
+        let subst_snapshot: HashMap<String, Type> = state.binding_snapshot();
 
         // Helper: resolve a type variable name through the full substitution chain.
         // T5 FIX: Follow chains like α→β→γ to the end (was only doing one hop).
@@ -1163,7 +1225,7 @@ pub fn generalize_with_doc(
         // Collect label vars: TypeVars that are label-kinded (Kind::Label in kind_env)
         let label_vars: Vec<String> = generalizable_type_vars
             .iter()
-            .filter(|var| state.kind_env.get(var.as_str()) == Some(&Kind::Label))
+            .filter(|var| state.get_kind(var.as_str()) == Some(&Kind::Label))
             .cloned()
             .collect();
 
@@ -2106,7 +2168,7 @@ mod help_suggestion_tests {
         );
 
         let mut state = InferState::new();
-        state.kind_env.insert("m".to_string(), Kind::Operator);
+        state.set_kind("m".to_string(), Kind::Operator);
 
         // Instantiate at level 1
         state.level = 1;
@@ -2120,7 +2182,7 @@ mod help_suggestion_tests {
                     Type::Operator(fresh_name) => {
                         // Check that the fresh name was registered in kind_env with Kind::Operator
                         assert_eq!(
-                            state.kind_env.get(fresh_name.as_str()),
+                            state.get_kind(fresh_name.as_str()),
                             Some(&Kind::Operator)
                         );
                     }
@@ -2393,7 +2455,7 @@ mod help_suggestion_tests {
     ///
     /// Concretely: the scheme `∀(f: Operator) a. f a` should produce
     /// `App(Operator("_t0"), TypeVar("_t1", 1))` when instantiated at level 1,
-    /// and the fresh Operator name must be registered in `state.kind_env` so that
+    /// and the fresh Operator name must be registered in `state.type_vars` (with Kind::Operator) so that
     /// subsequent UNIFY-OPERATOR and KIND-OPERATOR rules can recognise it as a
     /// type constructor rather than a monomorphic type variable.
     ///
@@ -2443,16 +2505,16 @@ mod help_suggestion_tests {
                     Type::Operator(fresh_f) => {
                         // The fresh Operator name must be registered in kind_env with Kind::Operator.
                         assert_eq!(
-                            state.kind_env.get(fresh_f.as_str()),
+                            state.get_kind(fresh_f.as_str()),
                             Some(&Kind::Operator),
                             "fresh Operator name '{}' must be in kind_env with Kind::Operator",
                             fresh_f
                         );
-                        // Levels map should contain the fresh name so level-based
+                        // type_vars map should contain the fresh name so level-based
                         // generalization can track it.
                         assert!(
-                            state.levels.contains_key(fresh_f.as_str()),
-                            "fresh Operator name '{}' must be registered in state.levels",
+                            state.type_vars.contains_key(fresh_f.as_str()),
+                            "fresh Operator name '{}' must be registered in state.type_vars",
                             fresh_f
                         );
                     }
@@ -2464,7 +2526,7 @@ mod help_suggestion_tests {
                         assert_eq!(*lv, 1, "TypeVar level must match instantiation level");
                         // a must NOT be in kind_env as Operator (it's a regular type var).
                         assert_ne!(
-                            state.kind_env.get(fresh_a.as_str()),
+                            state.get_kind(fresh_a.as_str()),
                             Some(&Kind::Operator),
                             "regular type_var 'a' must not be Kind::Operator in kind_env"
                         );
@@ -2508,7 +2570,7 @@ mod help_suggestion_tests {
             "monomorphic scheme must return body unchanged"
         );
         assert_eq!(
-            state.subst.name_counter.get(),
+            state.name_counter,
             0,
             "monomorphic instantiation must not increment name counter"
         );

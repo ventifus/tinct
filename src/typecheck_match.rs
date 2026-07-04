@@ -709,24 +709,20 @@ pub(crate) async fn infer_fn(
             let result = if actual_ann.has_inference_vars() {
                 let body_ty =
                     infer_surface_expr(body, &fn_env, state, constraints, type_map).await?;
-                // Borrow-split: mem::take + restore avoids simultaneous &mut state.subst and &mut state
-                let mut subst = std::mem::take(&mut state.subst);
                 let result = Box::pin(unify(
                     &body_ty,
                     &actual_ann,
-                    &mut subst,
                     state,
                     constraints,
                     body.span.clone(),
                 ))
                 .await;
-                state.subst = subst;
                 result.map_err(|e| vec![e])?;
                 // Apply substitution to resolve any TypeVars bound during unification.
                 // Without this, the returned Type::Function would have has_inference_vars() == true,
                 // causing check_call to enter the CALL-POLY path unnecessarily (see check_call's
                 // has_inference_vars guard). This prevents call sites from entering CALL-POLY.
-                state.subst.apply(&actual_ann)
+                state.apply(&actual_ann)
             } else {
                 // Use checking mode for concrete return types (no type variables)
                 check_surface_expr(body, &actual_ann, &fn_env, state, constraints, type_map)

@@ -699,12 +699,12 @@ async fn typecheck_surface_document(
                     .expects_resolved
                     .insert(expects_ann.span.clone(), expected_type.clone());
 
-                let (pipeline_type_resolved, expected_type_resolved) = if state.subst.is_empty() {
+                let (pipeline_type_resolved, expected_type_resolved) = if state.subst_is_empty() {
                     (pipeline_type.clone(), expected_type.clone())
                 } else {
                     (
-                        state.subst.apply(pipeline_type),
-                        state.subst.apply(&expected_type),
+                        state.apply(pipeline_type),
+                        state.apply(&expected_type),
                     )
                 };
                 let passes = Type::is_subtype(
@@ -902,13 +902,13 @@ async fn typecheck_surface_document(
             .await
             {
                 Ok(expected_output) => {
-                    let (result_type_resolved, expected_output_resolved) = if state.subst.is_empty()
+                    let (result_type_resolved, expected_output_resolved) = if state.subst_is_empty()
                     {
                         (result_type.clone(), expected_output.clone())
                     } else {
                         (
-                            state.subst.apply(&result_type),
-                            state.subst.apply(&expected_output),
+                            state.apply(&result_type),
+                            state.apply(&expected_output),
                         )
                     };
                     let passes = Type::is_subtype(
@@ -1066,12 +1066,12 @@ async fn typecheck_surface_document(
         .await
         {
             Ok(expected_output) => {
-                let (result_type_resolved, expected_output_resolved) = if state.subst.is_empty() {
+                let (result_type_resolved, expected_output_resolved) = if state.subst_is_empty() {
                     (result_type.clone(), expected_output.clone())
                 } else {
                     (
-                        state.subst.apply(&result_type),
-                        state.subst.apply(&expected_output),
+                        state.apply(&result_type),
+                        state.apply(&expected_output),
                     )
                 };
                 let passes = Type::is_subtype(
@@ -1521,10 +1521,10 @@ async fn register_type_aliases(
             let mut alias_constraints: Vec<crate::type_class::Constraint> = Vec::new();
             // Pre-seed param names so they map to fresh TypeVars.
             for (idx, (p, ann)) in params.iter().enumerate() {
-                let n = state.subst.name_counter.get();
+                let n = state.name_counter;
                 let fresh = format!("_t{}", n);
-                state.subst.name_counter.set(n.saturating_add(1));
-                state.levels.insert(fresh.clone(), state.level);
+                state.name_counter = n.saturating_add(1);
+                state.set_level(fresh.clone(), state.level);
                 alias_ann_map.insert(p.clone(), fresh.clone());
                 // Process variance annotation if present (T-953).
                 // ann is now Option<Spanned<Annotation>> — extract the Simple name for variance lookup.
@@ -1584,7 +1584,7 @@ async fn register_type_aliases(
                 .iter()
                 .filter_map(|(n, _)| {
                     alias_ann_map.get(n).map(|fresh| {
-                        let level = state.levels.get(fresh).copied().unwrap_or(state.level);
+                        let level = state.get_level(fresh).unwrap_or(state.level);
                         (n.clone(), crate::types::Type::TypeVar(fresh.clone(), level))
                     })
                 })
@@ -2346,7 +2346,7 @@ pub(crate) fn infer_surface_expr<'a>(
                     if state.current_function.as_ref() == Some(name) {
                         let fn_resolved_ty = env
                             .get(name)
-                            .map(|scheme| state.subst.apply(&scheme.body))
+                            .map(|scheme| state.apply(&scheme.body))
                             .unwrap_or_else(|| state.fresh_type_var());
 
                         match &fn_resolved_ty {
@@ -2392,7 +2392,6 @@ pub(crate) fn infer_surface_expr<'a>(
                                     let arg_ty =
                                         infer_surface_expr(arg, env, state, constraints, type_map)
                                             .await?;
-                                    let mut subst = std::mem::take(&mut state.subst);
                                     // Argument-passing is a subtype relationship: arg_ty <: param_ty.
                                     // Use constrain() (directional) rather than unify() (symmetric) so
                                     // that C-Var1/2 fire with the correct polarity. When param_ty is
@@ -2406,13 +2405,11 @@ pub(crate) fn infer_surface_expr<'a>(
                                     let constrain_result = Box::pin(constrain(
                                         &arg_ty,
                                         param_ty,
-                                        &mut subst,
                                         state,
                                         constraints,
                                         arg.span.clone(),
                                     ))
                                     .await;
-                                    state.subst = subst;
                                     if let Err(uerr) = constrain_result {
                                         state.bounds = saved_bounds;
                                         return Err(vec![uerr]);
@@ -2428,7 +2425,7 @@ pub(crate) fn infer_surface_expr<'a>(
                                     )
                                     .await?;
                                 }
-                                return Ok(state.subst.apply(&ret));
+                                return Ok(state.apply(&ret));
                             }
                             _ => {
                                 // TypeVar or other non-Function type: allow speculatively.
@@ -2509,7 +2506,6 @@ pub(crate) fn infer_surface_expr<'a>(
                                                     crate::type_class::ConstraintArg::Var(
                                                         var_name,
                                                     ) => state
-                                                        .subst
                                                         .apply(&Type::TypeVar(var_name.clone(), 0)),
                                                     crate::type_class::ConstraintArg::Ground(
                                                         ty,
@@ -2816,17 +2812,14 @@ pub(crate) fn infer_surface_expr<'a>(
                     tail: crate::type_def::RowTail::Empty,
                 });
 
-                let mut subst = std::mem::take(&mut state.subst);
                 let result = Box::pin(unify(
                     &inner_ty,
                     &expected_list_ty,
-                    &mut subst,
                     state,
                     constraints,
                     inner.span.clone(),
                 ))
                 .await;
-                state.subst = subst;
                 result.map_err(|_e| {
                     vec![TypeErrorTyped::Generic(GenericTypeError {
                         message: format!("unquote-splice expects a list (Dict), got {}", inner_ty),
@@ -2843,7 +2836,7 @@ pub(crate) fn infer_surface_expr<'a>(
                 // Infer scrutinee type — needed for exhaustiveness checking.
                 let scrutinee_ty =
                     infer_surface_expr(scrutinee, env, state, constraints, type_map).await?;
-                let scrutinee_ty = state.subst.apply(&scrutinee_ty);
+                let scrutinee_ty = state.apply(&scrutinee_ty);
                 // TyCon expansion (T-1272): expand a named type constructor to its body before
                 // pattern narrowing. This enables `collect_pattern_bindings` to extract payload
                 // types from constructor patterns when the scrutinee is typed as a TyCon.
@@ -3464,7 +3457,10 @@ async fn infer_class_decl_from_surface(
     let class_param_scope: HashMap<String, crate::types::Type> = params
         .iter()
         .map(|p| {
-            state.levels.entry(p.clone()).or_insert(state.level);
+            // Register class type param in unified TypeVar table if not already present
+            if state.type_vars.get(p.as_str()).is_none() {
+                state.set_level(p.clone(), state.level);
+            }
             state.type_var_source_names.insert(p.clone(), p.clone());
             (
                 p.clone(),
@@ -3585,7 +3581,7 @@ async fn infer_class_decl_from_surface(
     state.class_env.insert((*class_decl_arc).clone());
     for (param_name, kind) in &class_decl_arc.params {
         if *kind == Kind::Operator {
-            state.kind_env.insert(param_name.clone(), Kind::Operator);
+            state.set_kind(param_name.clone(), Kind::Operator);
         }
     }
 
@@ -3974,10 +3970,10 @@ pub(super) async fn check_surface_expr(
             // to the less precise synthesize+subsume path.
             // Per Algorithm W (Damas & Milner, 1982): substitutions must be applied before
             // inspecting types, maintaining the substitution threading invariant.
-            let resolved_expected = if state.subst.is_empty() {
+            let resolved_expected = if state.subst_is_empty() {
                 expected.clone()
             } else {
-                state.subst.apply(expected)
+                state.apply(expected)
             };
             // Only use lambda checking mode if expected type is fully concrete after applying subst
             if let Type::Function {
@@ -4056,18 +4052,15 @@ pub(super) async fn check_surface_expr(
                                 // for any TypeVar (conservative approximation — see is_subtype_bas docstring),
                                 // so it would silently accept without binding, leaving TypeVars unresolved.
                                 if resolved.has_inference_vars() {
-                                    let mut subst = std::mem::take(&mut state.subst);
                                     let mut check_fn_constraints: Vec<Constraint> = Vec::new();
                                     let result = Box::pin(unify(
                                         expected_ty,
                                         &resolved,
-                                        &mut subst,
                                         state,
                                         &mut check_fn_constraints,
                                         ann.span.clone(),
                                     ))
                                     .await;
-                                    state.subst = subst;
                                     result.map_err(|_e| {
                                         vec![TypeErrorTyped::Generic(GenericTypeError {
                                             message: format!("parameter annotation {resolved} is more restrictive than required type {expected_ty}"),
@@ -4078,12 +4071,12 @@ pub(super) async fn check_surface_expr(
                                 } else {
                                     // Apply substitution before consistency check
                                     let (expected_ty_resolved, resolved_ty) =
-                                        if state.subst.is_empty() {
+                                        if state.subst_is_empty() {
                                             (expected_ty.clone(), resolved.clone())
                                         } else {
                                             (
-                                                state.subst.apply(expected_ty),
-                                                state.subst.apply(&resolved),
+                                                state.apply(expected_ty),
+                                                state.apply(&resolved),
                                             )
                                         };
                                     let sub_passes =
@@ -4148,18 +4141,15 @@ pub(super) async fn check_surface_expr(
                             // for any TypeVar (conservative approximation — see is_subtype_bas docstring),
                             // so it would silently accept without binding, leaving TypeVars unresolved.
                             if declared.has_inference_vars() {
-                                let mut subst = std::mem::take(&mut state.subst);
                                 let mut ret_constraints: Vec<Constraint> = Vec::new();
                                 let result = Box::pin(unify(
                                     &declared,
                                     expected_ret,
-                                    &mut subst,
                                     state,
                                     &mut ret_constraints,
                                     ann.span.clone(),
                                 ))
                                 .await;
-                                state.subst = subst;
                                 result.map_err(|_e| {
                                     vec![TypeErrorTyped::UnificationFailure(UnificationFailure {
                                         expected: (**expected_ret).clone(),
@@ -4172,12 +4162,12 @@ pub(super) async fn check_surface_expr(
                             } else {
                                 // Apply substitution before consistency check
                                 let (declared_resolved, expected_ret_resolved) =
-                                    if state.subst.is_empty() {
+                                    if state.subst_is_empty() {
                                         (declared.clone(), (**expected_ret).clone())
                                     } else {
                                         (
-                                            state.subst.apply(&declared),
-                                            state.subst.apply(expected_ret),
+                                            state.apply(&declared),
+                                            state.apply(expected_ret),
                                         )
                                     };
                                 let sub_passes =
@@ -4226,10 +4216,10 @@ pub(super) async fn check_surface_expr(
                             // (from the resolved type) has no TypeVars. Annotation unification
                             // binds annotation-fresh TypeVars, not expected_ret TypeVars. Retained
                             // as a safety net per Algorithm W substitution threading invariant.
-                            let applied_ret = if state.subst.type_map.borrow().is_empty() {
+                            let applied_ret = if state.subst_is_empty() {
                                 *expected_ret.clone()
                             } else {
-                                state.subst.apply(expected_ret)
+                                state.apply(expected_ret)
                             };
                             Box::pin(check_surface_expr(
                                 body,
@@ -4266,10 +4256,10 @@ pub(super) async fn check_surface_expr(
     // may have bound TypeVars in state.subst. Without substitution, the comparison
     // uses stale TypeVars.
     // Guard: skip allocation when subst is empty (common case for concrete programs).
-    let (actual, expected_resolved) = if state.subst.is_empty() {
+    let (actual, expected_resolved) = if state.subst_is_empty() {
         (actual, expected.clone())
     } else {
-        (state.subst.apply(&actual), state.subst.apply(expected))
+        (state.apply(&actual), state.apply(expected))
     };
 
     // Unified CALL-MONO/CALL-POLY path: eliminates verdict divergence between monomorphic
@@ -4282,17 +4272,14 @@ pub(super) async fn check_surface_expr(
         // This is the CALL-POLY path: the function is polymorphic, and we need to
         // instantiate type variables based on the argument types.
         //
-        let mut subst = std::mem::take(&mut state.subst);
         let result = Box::pin(unify(
             &actual,
             &expected_resolved,
-            &mut subst,
             state,
             constraints,
             node.span.clone(),
         ))
         .await;
-        state.subst = subst;
         result.map_err(|e| vec![e])
     } else {
         // Expected type is concrete — use subsumption with gradual typing fallback.
@@ -4307,12 +4294,12 @@ pub(super) async fn check_surface_expr(
         // is_subtype is directional (Int <: Number but NOT Number <: Int).
 
         // Apply substitution before consistency check
-        let (actual_resolved, expected_final) = if state.subst.is_empty() {
+        let (actual_resolved, expected_final) = if state.subst_is_empty() {
             (actual.clone(), expected_resolved.clone())
         } else {
             (
-                state.subst.apply(&actual),
-                state.subst.apply(&expected_resolved),
+                state.apply(&actual),
+                state.apply(&expected_resolved),
             )
         };
 

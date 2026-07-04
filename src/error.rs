@@ -2275,16 +2275,19 @@ mod tests {
         }
         .is_catchable());
         assert!(ErrorKind::MissingRequiredParam {
-            param: "x".to_string()
+            param: "x".to_string(),
+            callee: None,
         }
         .is_catchable());
         assert!(ErrorKind::NamedArgConflict {
-            param: "x".to_string()
+            param: "x".to_string(),
+            callee: None,
         }
         .is_catchable());
         assert!(ErrorKind::UnknownNamedArg {
             name: "x".to_string(),
-            valid_params: vec![]
+            valid_params: vec![],
+            callee: None,
         }
         .is_catchable());
         assert!(ErrorKind::NamedArgRejected {
@@ -2431,13 +2434,16 @@ mod tests {
             },
             ErrorKind::MissingRequiredParam {
                 param: "x".to_string(),
+                callee: None,
             },
             ErrorKind::NamedArgConflict {
                 param: "x".to_string(),
+                callee: None,
             },
             ErrorKind::UnknownNamedArg {
                 name: "x".to_string(),
                 valid_params: vec![],
+                callee: None,
             },
             ErrorKind::NamedArgRejected {
                 builtin: "test".to_string(),
@@ -2652,16 +2658,19 @@ mod tests {
         }
         .is_cacheable());
         assert!(ErrorKind::MissingRequiredParam {
-            param: "x".to_string()
+            param: "x".to_string(),
+            callee: None,
         }
         .is_cacheable());
         assert!(ErrorKind::NamedArgConflict {
-            param: "x".to_string()
+            param: "x".to_string(),
+            callee: None,
         }
         .is_cacheable());
         assert!(ErrorKind::UnknownNamedArg {
             name: "x".to_string(),
-            valid_params: vec![]
+            valid_params: vec![],
+            callee: None,
         }
         .is_cacheable());
         assert!(ErrorKind::NamedArgRejected {
@@ -2882,7 +2891,8 @@ mod tests {
             format!(
                 "{}",
                 ErrorKind::MissingRequiredParam {
-                    param: "name".to_string()
+                    param: "name".to_string(),
+                    callee: None,
                 }
             ),
             "missing argument for required parameter 'name'"
@@ -2891,7 +2901,8 @@ mod tests {
             format!(
                 "{}",
                 ErrorKind::NamedArgConflict {
-                    param: "x".to_string()
+                    param: "x".to_string(),
+                    callee: None,
                 }
             ),
             "parameter 'x' received both positional and named argument"
@@ -2902,6 +2913,7 @@ mod tests {
                 ErrorKind::UnknownNamedArg {
                     name: "foo".to_string(),
                     valid_params: vec!["x".to_string(), "y".to_string()],
+                    callee: None,
                 }
             ),
             "unexpected named argument: foo (valid parameter names: x, y)"
@@ -2912,6 +2924,7 @@ mod tests {
                 ErrorKind::UnknownNamedArg {
                     name: "foo".to_string(),
                     valid_params: vec![],
+                    callee: None,
                 }
             ),
             "unexpected named argument: foo (function has no parameters)"

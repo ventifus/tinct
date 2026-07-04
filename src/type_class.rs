@@ -462,17 +462,13 @@ impl InstanceEnv {
                     continue;
                 }
 
-                // Save ALL fields BEFORE freshening — instantiate_at_level advances the
-                // name_counter (now in state.subst) and extends state.levels with fresh type
-                // variable entries. Saving before the call means both the freshening allocations
-                // and the unification probe are fully rolled back, making this check completely
-                // side-effect-free (mirrors patterns_overlap in typecheck.rs).
-                // NOTE: name_counter is part of state.subst, so saved_subst captures it.
-                let saved_levels = state.levels.clone();
-                let saved_kind_env = state.kind_env.clone();
+                // Save ALL fields BEFORE freshening — instantiate_at_level advances
+                // name_counter and extends state.type_vars with fresh entries. Saving before
+                // means both freshening and the unification probe are fully rolled back.
+                let saved_type_vars = state.type_vars.clone();
+                let saved_name_counter = state.name_counter;
                 let saved_deferred = state.deferred_equalities.clone();
                 let saved_bounds = state.bounds.clone();
-                let saved_subst = state.subst.clone();
 
                 // Freshen both instance types independently so that a type variable named
                 // `a` in `[Seq a]` and a type variable named `a` in another instance map
@@ -480,12 +476,10 @@ impl InstanceEnv {
                 let fresh_existing = instantiate_at_level(&existing.instance_type, state);
                 let fresh_candidate = instantiate_at_level(&candidate.instance_type, state);
 
-                let mut temp_subst = state.subst.clone();
                 let mut probe_constraints: Vec<Constraint> = Vec::new();
                 let overlaps = Box::pin(unify(
                     &fresh_existing,
                     &fresh_candidate,
-                    &mut temp_subst,
                     state,
                     &mut probe_constraints,
                     rust_span!(),
@@ -494,12 +488,10 @@ impl InstanceEnv {
                 .is_ok();
 
                 // Always restore state — this is a pure probe.
-                // Restoring state.subst also restores name_counter (it lives in the Substitution).
-                state.levels = saved_levels;
-                state.kind_env = saved_kind_env;
+                state.type_vars = saved_type_vars;
+                state.name_counter = saved_name_counter;
                 state.deferred_equalities = saved_deferred;
                 state.bounds = saved_bounds;
-                state.subst = saved_subst;
 
                 if overlaps {
                     return Err(format!(
@@ -544,15 +536,12 @@ impl InstanceEnv {
             }
 
             // F1 FIX: Save state before candidate probe to prevent leakage from failed matches.
-            // unify() mutates state.levels, state.kind_env, state.deferred_equalities,
-            // and state.subst (which now includes name_counter via instantiate_at_level).
+            // unify() mutates state.type_vars and state.deferred_equalities.
             // Failed candidates must not leak these mutations.
-            // NOTE: name_counter is part of state.subst, so saved_subst captures it.
-            let saved_levels = state.levels.clone();
-            let saved_kind_env = state.kind_env.clone();
+            let saved_type_vars = state.type_vars.clone();
+            let saved_name_counter = state.name_counter;
             let saved_deferred = state.deferred_equalities.clone();
             let saved_bounds = state.bounds.clone();
-            let saved_subst = state.subst.clone();
 
             // Freshen the ENTIRE instance_type at once so that shared type variables
             // (e.g. `K` in both `Map[K V]` and the standalone `K` position) map to the
@@ -575,12 +564,10 @@ impl InstanceEnv {
                         .collect(),
                     _ => {
                         // Malformed instance, skip — restore state first
-                        // Restoring state.subst also restores name_counter.
-                        state.levels = saved_levels;
-                        state.kind_env = saved_kind_env;
+                        state.type_vars = saved_type_vars.clone();
+                        state.name_counter = saved_name_counter;
                         state.deferred_equalities = saved_deferred;
                         state.bounds = saved_bounds;
-                        state.subst = saved_subst;
                         continue;
                     }
                 }
@@ -588,18 +575,15 @@ impl InstanceEnv {
 
             // Check arity
             if instance_det_types.len() != determining_types.len() {
-                // Restoring state.subst also restores name_counter.
-                state.levels = saved_levels;
-                state.kind_env = saved_kind_env;
+                state.type_vars = saved_type_vars.clone();
+                state.name_counter = saved_name_counter;
                 state.deferred_equalities = saved_deferred;
                 state.bounds = saved_bounds;
-                state.subst = saved_subst;
                 continue;
             }
 
             // Attempt unification of all determining positions.
-            // Use a temporary substitution to avoid polluting the global state.
-            let mut temp_subst = state.subst.clone();
+            // Probe directly into state.type_vars; snapshot/restore isolates the probe.
             let mut all_match = true;
 
             let mut probe_constraints: Vec<Constraint> = Vec::new();
@@ -607,7 +591,6 @@ impl InstanceEnv {
                 if Box::pin(unify(
                     inst_ty,
                     query_ty,
-                    &mut temp_subst,
                     state,
                     &mut probe_constraints,
                     rust_span!(),
@@ -621,19 +604,15 @@ impl InstanceEnv {
             }
 
             if all_match {
-                // F1 FIX: On successful match, restore state but keep the successful temp_subst results.
-                // The state mutations from this probe ARE valid, but we don't commit temp_subst to
-                // state.subst — the caller will handle substitution propagation.
-                // Restoring state.subst also restores name_counter.
-                state.levels = saved_levels;
-                state.kind_env = saved_kind_env;
+                // Capture resolved instance type BEFORE restoring state (bindings are in state.type_vars).
+                let resolved_instance_type = state.apply(&freshened_instance_type);
+
+                // Restore state: discard probe mutations.
+                state.type_vars = saved_type_vars.clone();
+                state.name_counter = saved_name_counter;
                 state.deferred_equalities = saved_deferred;
                 state.bounds = saved_bounds;
-                state.subst = saved_subst;
 
-                // Return the freshened instance_type with temp_subst applied so that
-                // determined positions resolve to concrete types (not raw instance TypeVars).
-                let resolved_instance_type = temp_subst.apply(&freshened_instance_type);
                 return Some(InstanceDecl {
                     class_name: inst.class_name.clone(),
                     instance_type: resolved_instance_type,
@@ -641,13 +620,11 @@ impl InstanceEnv {
                     method_types: inst.method_types.clone(),
                 });
             } else {
-                // F1 FIX: Restore state after failed probe (discard leaked mutations).
-                // Restoring state.subst also restores name_counter.
-                state.levels = saved_levels;
-                state.kind_env = saved_kind_env;
+                // Restore state after failed probe (discard leaked mutations).
+                state.type_vars = saved_type_vars.clone();
+                state.name_counter = saved_name_counter;
                 state.deferred_equalities = saved_deferred;
                 state.bounds = saved_bounds;
-                state.subst = saved_subst;
             }
         }
 
@@ -688,11 +665,11 @@ impl InstanceEnv {
             }
 
             // Save state before probe — restore on failure.
-            let saved_levels = state.levels.clone();
-            let saved_kind_env = state.kind_env.clone();
+            let saved_type_vars = state.type_vars.clone();
+            let saved_name_counter = state.name_counter;
             let saved_deferred = state.deferred_equalities.clone();
             let saved_bounds = state.bounds.clone();
-            let saved_subst = state.subst.clone();
+            // type_vars snapshot captures levels, bindings, and kinds in one clone
 
             // Freshen the entire instance type at once so shared type variables
             // across positions map to the same fresh names.
@@ -708,27 +685,27 @@ impl InstanceEnv {
                 _ => {
                     // Single-parameter class or malformed: no determined positions to match.
                     // Restore and skip.
-                    state.levels = saved_levels;
-                    state.kind_env = saved_kind_env;
+                    state.type_vars = saved_type_vars.clone();
+                    state.name_counter = saved_name_counter;
                     state.deferred_equalities = saved_deferred;
                     state.bounds = saved_bounds;
-                    state.subst = saved_subst;
+                    // type_vars restored above (includes levels, bindings, kinds)
                     continue;
                 }
             };
 
             // Arity check: must have the same number of determined types.
             if instance_ded_types.len() != ded_types.len() {
-                state.levels = saved_levels;
-                state.kind_env = saved_kind_env;
+                state.type_vars = saved_type_vars.clone();
+                state.name_counter = saved_name_counter;
                 state.deferred_equalities = saved_deferred;
                 state.bounds = saved_bounds;
-                state.subst = saved_subst;
+                // type_vars restored above (includes levels, bindings, kinds)
                 continue;
             }
 
             // Probe: attempt to unify all determined positions with the query types.
-            let mut temp_subst = state.subst.clone();
+            // Probe directly into state.type_vars; snapshot/restore isolates the probe.
             let mut all_match = true;
 
             let mut rl_probe_constraints: Vec<Constraint> = Vec::new();
@@ -736,7 +713,6 @@ impl InstanceEnv {
                 if Box::pin(unify(
                     inst_ded_ty,
                     query_ded_ty,
-                    &mut temp_subst,
                     state,
                     &mut rl_probe_constraints,
                     rust_span!(),
@@ -751,44 +727,42 @@ impl InstanceEnv {
 
             if all_match {
                 // Extract the determining-position types from the matched instance,
-                // applying temp_subst so that type variables in the determining positions
-                // are resolved to concrete types derived from the determined-position unification.
-                //
-                // Example: instance `Seq a b c` with det_positions=[0,1] and ded_positions=[2].
-                // If temp_subst binds `a_fresh → Int`, the determining type at pos 0 is `Int`.
+                // applying state (probe bindings) so that type variables in the determining
+                // positions are resolved to concrete types derived from the determined-position
+                // unification. Capture BEFORE restoring state.
                 let det_position_indices: Vec<usize> = inst.det_positions.clone();
                 let determining_types: Vec<Type> = match &freshened_instance_type {
                     Type::Record(row) => det_position_indices
                         .iter()
                         .filter_map(|&pos| row.fields.get(&pos.to_string()).cloned())
-                        .map(|ty| temp_subst.apply(&ty))
+                        .map(|ty| state.apply(&ty))
                         .collect(),
                     _ => {
                         // No determining positions to back-propagate for single-param classes.
-                        state.levels = saved_levels;
-                        state.kind_env = saved_kind_env;
+                        state.type_vars = saved_type_vars.clone();
+                        state.name_counter = saved_name_counter;
                         state.deferred_equalities = saved_deferred;
                         state.bounds = saved_bounds;
-                        state.subst = saved_subst;
+                        // type_vars restored above (includes levels, bindings, kinds)
                         continue;
                     }
                 };
 
                 // Restore state — the caller handles the actual unification of determining vars.
-                state.levels = saved_levels;
-                state.kind_env = saved_kind_env;
+                state.type_vars = saved_type_vars.clone();
+                state.name_counter = saved_name_counter;
                 state.deferred_equalities = saved_deferred;
                 state.bounds = saved_bounds;
-                state.subst = saved_subst;
+                // type_vars restored above (includes levels, bindings, kinds)
 
                 return Some((determining_types, det_position_indices));
             } else {
                 // Restore state after failed probe.
-                state.levels = saved_levels;
-                state.kind_env = saved_kind_env;
+                state.type_vars = saved_type_vars.clone();
+                state.name_counter = saved_name_counter;
                 state.deferred_equalities = saved_deferred;
                 state.bounds = saved_bounds;
-                state.subst = saved_subst;
+                // type_vars restored above (includes levels, bindings, kinds)
             }
         }
 
@@ -905,31 +879,22 @@ impl InstanceEnv {
 
         for inst in &candidates {
             // F1 FIX: Save state before candidate probe to prevent leakage from failed matches.
-            // unify() mutates state.levels, state.kind_env, state.deferred_equalities,
-            // and state.subst.name_counter (via instantiate_at_level). Failed candidates must not leak
-            // levels/kind_env/deferred, but the name_counter must be preserved at its peak
-            // value (not rolled back) to prevent _tN name reuse across candidates.
-            //
-            // B-325: Also save state.subst because FD-improvement bindings during the probe must not
-            // survive if the probe ultimately fails (e.g., unify succeeds but FD constraints fail).
-            let saved_levels = state.levels.clone();
-            let saved_kind_env = state.kind_env.clone();
+            // unify() mutates state.type_vars and state.deferred_equalities. Failed candidates
+            // must not leak bindings/levels/kinds, but the name_counter must be preserved at
+            // its peak value (not rolled back) to prevent _tN name reuse across candidates.
+            let saved_type_vars = state.type_vars.clone();
+            let saved_name_counter = state.name_counter;
             let saved_deferred = state.deferred_equalities.clone();
             let saved_bounds = state.bounds.clone();
-            let saved_subst = state.subst.clone();
-            let saved_counter = state.subst.name_counter.get();
 
             // Freshen the instance type to prevent variable leakage across resolution attempts.
             let freshened_instance_type = instantiate_at_level(&inst.instance_type, state);
 
-            // Use a temporary substitution so the global state is not polluted.
-            let mut temp_subst = state.subst.clone();
-
+            // Probe directly into state.type_vars; snapshot/restore isolates the probe.
             let mut probe_constraints: Vec<Constraint> = Vec::new();
             let unify_ok = Box::pin(unify(
                 &freshened_instance_type,
                 target_type,
-                &mut temp_subst,
                 state,
                 &mut probe_constraints,
                 rust_span!(),
@@ -937,24 +902,21 @@ impl InstanceEnv {
             .await
             .is_ok();
 
-            // Always restore state after the probe; preserve peak name_counter (F1 fix).
-            let peak_counter = state.subst.name_counter.get();
-            state.levels = saved_levels;
-            state.kind_env = saved_kind_env;
+            // Compute specificity BEFORE restoring state (bindings needed for resolution).
+            let score = if unify_ok {
+                Some(count_unresolved_vars(&inst.instance_type, &state.type_vars))
+            } else {
+                None
+            };
+
+            // Always restore state after the probe; preserve peak name_counter.
+            let peak_counter = state.name_counter;
+            state.type_vars = saved_type_vars.clone();
+            state.name_counter = saved_name_counter.max(peak_counter);
             state.deferred_equalities = saved_deferred;
             state.bounds = saved_bounds;
-            state.subst = saved_subst;
-            state
-                .subst
-                .name_counter
-                .set(saved_counter.max(peak_counter));
 
-            if unify_ok {
-                // Compute specificity from the ORIGINAL instance type using temp_subst.
-                // Original TypeVar names are not in temp_subst (freshened names are), so
-                // every TypeVar in inst.instance_type is counted as unresolved — giving
-                // the number of declared type variables in the instance head.
-                let score = count_unresolved_vars(&inst.instance_type, &temp_subst);
+            if let Some(score) = score {
                 matches.push((score, inst));
             }
         }
@@ -989,53 +951,44 @@ impl InstanceEnv {
         }
 
         // Unique winner: re-run the unification to build the resolved InstanceDecl.
-        // Pass 1 discarded all state mutations — we need the temp_subst from the winning
+        // Pass 1 discarded all state mutations — we need the bindings from the winning
         // instance to apply to method types, so we unify once more.
         let winner = winners[0];
 
-        let saved_levels = state.levels.clone();
-        let saved_kind_env = state.kind_env.clone();
+        let saved_type_vars = state.type_vars.clone();
+        let saved_name_counter = state.name_counter;
         let saved_deferred = state.deferred_equalities.clone();
         let saved_bounds = state.bounds.clone();
-        let saved_subst = state.subst.clone();
-        let saved_counter = state.subst.name_counter.get();
 
         let freshened_instance_type = instantiate_at_level(&winner.instance_type, state);
-        let mut temp_subst = state.subst.clone();
 
         // This unification must succeed — we confirmed it in Pass 1.
         let mut winner_constraints: Vec<Constraint> = Vec::new();
         let _ = Box::pin(unify(
             &freshened_instance_type,
             target_type,
-            &mut temp_subst,
             state,
             &mut winner_constraints,
             rust_span!(),
         ))
         .await;
 
-        // Apply the unification substitution to method types.
+        // Apply the unification bindings to method types (capture BEFORE restoring state).
         let freshened_method_types: HashMap<String, Type> = winner
             .method_types
             .iter()
             .map(|(name, ty)| {
                 let freshened_ty = instantiate_at_level(ty, state);
-                (name.clone(), temp_subst.apply(&freshened_ty))
+                (name.clone(), state.apply(&freshened_ty))
             })
             .collect();
 
-        // Restore state after resolution; preserve peak name_counter (F1 fix).
-        let peak_counter = state.subst.name_counter.get();
-        state.levels = saved_levels;
-        state.kind_env = saved_kind_env;
+        // Restore state after resolution; preserve peak name_counter.
+        let peak_counter = state.name_counter;
+        state.type_vars = saved_type_vars.clone();
+        state.name_counter = saved_name_counter.max(peak_counter);
         state.deferred_equalities = saved_deferred;
         state.bounds = saved_bounds;
-        state.subst = saved_subst;
-        state
-            .subst
-            .name_counter
-            .set(saved_counter.max(peak_counter));
 
         Ok(Some(InstanceDecl {
             class_name: winner.class_name.clone(),
@@ -1052,39 +1005,30 @@ impl Default for InstanceEnv {
     }
 }
 
-/// Count TypeVars in `ty` that are not resolved (bound) in `subst`.
+/// Count TypeVars in `ty` that are not resolved (bound) in `type_vars`.
 ///
-/// A TypeVar is "unresolved" if applying `subst` to it still yields a TypeVar.
+/// A TypeVar is "unresolved" if applying bindings to it still yields a TypeVar.
 /// This measures how polymorphic an instance head remains after unification with a
 /// target type: a fully concrete instance head (`[Seq Int]`) scores 0, while a
 /// fully polymorphic head (`[Seq a]`) scores 1 for each free type variable.
 ///
 /// Used by `resolve_instance` to select the most specific matching instance —
 /// the one with the fewest unresolved TypeVars after unification.
-///
-/// Note: The `subst` argument is only meaningful when scoring the freshened instance
-/// head after unification (Pass 1, line 844). When scoring the ORIGINAL instance head
-/// (as is done in resolve_instance), `subst` contains only bindings for freshened
-/// variable names like `_t7`, while the original head contains universally quantified
-/// names like `a`. Because `a` is not bound in `subst`, applying `subst` returns a
-/// TypeVar unchanged, so every original-head TypeVar is counted — giving the total
-/// number of declared type parameters in the instance, which is the correct specificity
-/// measure (e.g., `[Seq a]` scores 1, `[Seq Int]` scores 0).
-fn count_unresolved_vars(ty: &Type, subst: &crate::types::Substitution) -> usize {
+fn count_unresolved_vars(ty: &Type, type_vars: &indexmap::IndexMap<String, crate::type_infer::TypeVarEntry>) -> usize {
     match ty {
         Type::TypeVar(name, level) => {
             // Apply the substitution: if still a TypeVar, it is unresolved.
-            match subst.apply(&Type::TypeVar(name.clone(), *level)) {
+            match crate::types::apply_substitution(&Type::TypeVar(name.clone(), *level), type_vars) {
                 Type::TypeVar(_, _) => 1,
                 _ => 0,
             }
         }
-        Type::App(f, a) => count_unresolved_vars(f, subst) + count_unresolved_vars(a, subst),
+        Type::App(f, a) => count_unresolved_vars(f, type_vars) + count_unresolved_vars(a, type_vars),
         Type::TyCon(_) => 0, // TyCon has no vars
         Type::Record(row) => row
             .fields
             .values()
-            .map(|field_ty| count_unresolved_vars(field_ty, subst))
+            .map(|field_ty| count_unresolved_vars(field_ty, type_vars))
             .sum(),
         Type::Function {
             params,
@@ -1094,29 +1038,29 @@ fn count_unresolved_vars(ty: &Type, subst: &crate::types::Substitution) -> usize
         } => {
             let param_count: usize = params
                 .iter()
-                .map(|(_, p_ty)| count_unresolved_vars(p_ty, subst))
+                .map(|(_, p_ty)| count_unresolved_vars(p_ty, type_vars))
                 .sum();
-            param_count + count_unresolved_vars(ret, subst)
+            param_count + count_unresolved_vars(ret, type_vars)
         }
         Type::Union(members) => members
             .iter()
-            .map(|m| count_unresolved_vars(m, subst))
+            .map(|m| count_unresolved_vars(m, type_vars))
             .sum(),
         Type::Intersection(members) => members
             .iter()
-            .map(|m| count_unresolved_vars(m, subst))
+            .map(|m| count_unresolved_vars(m, type_vars))
             .sum(),
-        Type::Negation(inner) => count_unresolved_vars(inner, subst),
+        Type::Negation(inner) => count_unresolved_vars(inner, type_vars),
         Type::TypeStageApp { fn_name: _, args } => {
-            args.iter().map(|a| count_unresolved_vars(a, subst)).sum()
+            args.iter().map(|a| count_unresolved_vars(a, type_vars)).sum()
         }
         Type::NominalVariant { tag: _, fields } => fields
             .fields
             .values()
-            .map(|field_ty| count_unresolved_vars(field_ty, subst))
+            .map(|field_ty| count_unresolved_vars(field_ty, type_vars))
             .sum(),
         // S-860: equirecursive-types-core — recurse into the body.
-        Type::Recursive { var: _, body } => count_unresolved_vars(body, subst),
+        Type::Recursive { var: _, body } => count_unresolved_vars(body, type_vars),
         // Concrete types: Int, Float, Str, Bool, Number, Unknown, Top, Error, etc.
         _ => 0,
     }
@@ -1258,8 +1202,8 @@ mod tests {
 
         env.insert(make_appendable_instance(make_seq_a())).unwrap();
 
-        let counter_before = state.subst.name_counter.get();
-        let levels_before = state.levels.clone();
+        let counter_before = state.name_counter;
+        let type_vars_before = state.type_vars.clone();
 
         // This will detect overlap and return Err — but state must be restored.
         let _ = check_structural_overlap_sync(
@@ -1270,13 +1214,13 @@ mod tests {
         .await;
 
         assert_eq!(
-            state.subst.name_counter.get(),
+            state.name_counter,
             counter_before,
             "name_counter must be restored after overlap check"
         );
         assert_eq!(
-            state.levels, levels_before,
-            "levels must be restored after overlap check"
+            state.type_vars, type_vars_before,
+            "type_vars must be restored after overlap check"
         );
     }
 

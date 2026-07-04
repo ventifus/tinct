@@ -7,9 +7,11 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, RwLock};
 
+use indexmap::IndexMap;
+
 use crate::rust_span;
 use crate::type_def::Type;
-use crate::types::Substitution;
+use crate::type_infer::TypeVarEntry;
 use crate::value::{Environment, Thunk, Value};
 
 /// Normalization context for type expressions.
@@ -85,12 +87,12 @@ impl NormCtxt {
 #[allow(clippy::doc_overindented_list_items)] // multi-level numbered sub-list requires deeper indentation
 pub fn normalize<'a>(
     ty: &'a Type,
-    subst: &'a Substitution,
+    type_vars: &'a IndexMap<String, TypeVarEntry>,
     ctx: &'a mut NormCtxt,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Type> + 'a>> {
     Box::pin(async move {
         // Step 1: Apply current substitution
-        let ty_substituted = subst.apply(ty);
+        let ty_substituted = crate::types::apply_substitution(ty, type_vars);
 
         // Check cache before computing (only for ground types)
         if !ty_substituted.has_inference_vars() {
@@ -116,7 +118,7 @@ pub fn normalize<'a>(
                 ctx.depth += 1;
                 let mut normalized_args: Vec<Type> = Vec::with_capacity(args.len());
                 for arg in args.iter() {
-                    normalized_args.push(Box::pin(normalize(arg, subst, ctx)).await);
+                    normalized_args.push(Box::pin(normalize(arg, type_vars, ctx)).await);
                 }
                 ctx.depth -= 1;
 
@@ -519,54 +521,56 @@ impl fmt::Display for Type {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::Kind;
     use std::collections::HashSet;
 
-    /// Helper: create an empty substitution for testing
-    fn empty_subst() -> Substitution {
-        Substitution::new()
+    /// Helper: create an empty type_vars map for testing
+    fn empty_type_vars() -> IndexMap<String, TypeVarEntry> {
+        IndexMap::new()
     }
 
-    async fn norm(ty: &Type, subst: &Substitution, ctx: &mut NormCtxt) -> Type {
-        normalize(ty, subst, ctx).await
+    async fn norm(ty: &Type, type_vars: &IndexMap<String, TypeVarEntry>, ctx: &mut NormCtxt) -> Type {
+        normalize(ty, type_vars, ctx).await
     }
 
-    /// Test: normalize(Int, subst, ctx) returns Int unchanged
+    /// Test: normalize(Int, type_vars, ctx) returns Int unchanged
     #[tokio::test]
     async fn test_normalize_identity_concrete_type() {
-        let subst = empty_subst();
+        let tv = empty_type_vars();
         let mut ctx = NormCtxt::new(None);
         let ty = Type::Int;
-        let result = norm(&ty, &subst, &mut ctx).await;
+        let result = norm(&ty, &tv, &mut ctx).await;
         assert_eq!(result, Type::Int);
     }
 
-    /// Test: normalize(TypeVar("a"), subst, ctx) returns the bound type if "a" is in subst
+    /// Test: normalize(TypeVar("a"), type_vars, ctx) returns the bound type if "a" is bound
     #[tokio::test]
     async fn test_normalize_substitution() {
-        let subst = Substitution::new();
-        subst
-            .type_map
-            .borrow_mut()
-            .insert("a".to_string(), Type::Str);
+        let mut tv = IndexMap::new();
+        tv.insert("a".to_string(), TypeVarEntry {
+            level: 0,
+            binding: Some(Type::Str),
+            kind: Kind::Type,
+        });
         let mut ctx = NormCtxt::new(None);
         let ty = Type::TypeVar("a".to_string(), 0);
-        let result = norm(&ty, &subst, &mut ctx).await;
+        let result = norm(&ty, &tv, &mut ctx).await;
         assert_eq!(result, Type::Str);
     }
 
     /// Test: normalize() cache - second call returns cached result
     #[tokio::test]
     async fn test_normalize_cache() {
-        let subst = empty_subst();
+        let tv = empty_type_vars();
         let mut ctx = NormCtxt::new(None);
         let ty = Type::Int;
 
         // First call - populates cache
-        let result1 = norm(&ty, &subst, &mut ctx).await;
+        let result1 = norm(&ty, &tv, &mut ctx).await;
         assert_eq!(result1, Type::Int);
 
         // Second call - should return cached result
-        let result2 = norm(&ty, &subst, &mut ctx).await;
+        let result2 = norm(&ty, &tv, &mut ctx).await;
         assert_eq!(result2, Type::Int);
 
         // Verify cache entry exists (use concrete Int, not Seq)
@@ -576,7 +580,7 @@ mod tests {
     /// Test: normalize() cycle detection - TypeStageApp with fn_name already in call_stack returns stuck
     #[tokio::test]
     async fn test_normalize_cycle_detection() {
-        let subst = empty_subst();
+        let tv = empty_type_vars();
         let mut ctx = NormCtxt::new(None);
 
         // Manually push "Recursive" to call_stack to simulate cycle
@@ -587,7 +591,7 @@ mod tests {
             args: vec![Type::Int],
         };
 
-        let result = norm(&ty, &subst, &mut ctx).await;
+        let result = norm(&ty, &tv, &mut ctx).await;
 
         // Should return stuck (unchanged) due to cycle detection
         assert_eq!(
@@ -602,7 +606,7 @@ mod tests {
     /// Test: normalize() depth guard - depth > max_depth returns stuck
     #[tokio::test]
     async fn test_normalize_depth_guard() {
-        let subst = empty_subst();
+        let tv = empty_type_vars();
         let mut ctx = NormCtxt::new(None);
 
         // Set depth to max_depth
@@ -613,7 +617,7 @@ mod tests {
             args: vec![Type::Int],
         };
 
-        let result = norm(&ty, &subst, &mut ctx).await;
+        let result = norm(&ty, &tv, &mut ctx).await;
 
         // Should return stuck (unchanged) due to depth exceeded
         assert_eq!(
@@ -738,7 +742,7 @@ mod tests {
     /// Test: normalize() with non-ground TypeStageApp args returns stuck
     #[tokio::test]
     async fn test_normalize_type_stage_app_non_ground_args() {
-        let subst = empty_subst();
+        let subst = empty_type_vars();
         let mut ctx = NormCtxt::new(None);
         let ty = Type::TypeStageApp {
             fn_name: "AddResult".to_string(),
@@ -770,7 +774,7 @@ mod tests {
     /// Test: cache only stores ground types
     #[tokio::test]
     async fn test_normalize_cache_only_ground_types() {
-        let subst = empty_subst();
+        let subst = empty_type_vars();
         let mut ctx = NormCtxt::new(None);
 
         // Normalize a type with inference variables
@@ -831,7 +835,7 @@ mod tests {
     /// Test: unknown resolver returns stuck TypeStageApp
     #[tokio::test]
     async fn test_resolver_cache_miss_unknown_resolver() {
-        let subst = empty_subst();
+        let subst = empty_type_vars();
         let mut ctx = NormCtxt::new(None);
         let ty = Type::TypeStageApp {
             fn_name: "UnknownResolver".to_string(),

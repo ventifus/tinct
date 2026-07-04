@@ -8,8 +8,7 @@ use super::{infer_surface_expr, resolve_annotation, resolve_type_expr, TypeMap};
 use crate::ast::{Span, Spanned, SurfaceDeclaration, SurfaceEntry, SurfaceExpression, SurfaceNode};
 use crate::type_def::{TyConDef, Variance};
 use crate::types::{
-    generalize_with_doc, unify, Constraint, InferState, Row, Substitution, Type, TypeEnv,
-    TypeError, TypeScheme,
+    generalize_with_doc, unify, Constraint, InferState, Row, Type, TypeEnv, TypeError, TypeScheme,
 };
 
 /// Inject NominalVariant constructor function types into `dict_env` for ADT constructor scoping.
@@ -396,30 +395,12 @@ pub(crate) async fn infer_dict(
     let enclosing_level = state.level;
     state.level += 1;
 
-    // Per-dict substitution frame: create a child frame of the current state.subst so that
-    // TypeVar bindings produced during this dict's SCC inference stay scoped to this dict's level.
-    // The outer frame is preserved via Arc and restored when infer_dict returns.
-    //
-    // Design: `state.subst` is replaced with a child frame whose `creation_level` matches the
-    // new dict level. Bindings for TypeVars at this level route to the child frame;
-    // bindings for lower-level TypeVars route up to the parent frame via bind_at_level.
-    // When inference completes, the parent frame is restored so the caller sees its
-    // accumulated bindings unchanged (plus any parent-level bindings added during this call).
-    //
-    // The `Arc::try_unwrap` at the end attempts to take the outer substitution back without
-    // cloning; if the Arc has been cloned (e.g., shared into a child frame that outlives this
-    // scope), it falls back to cloning the inner value.
-    let outer_subst = Arc::new(std::mem::take(&mut state.subst));
-    state.subst = Substitution::child(&outer_subst, state.level);
-
-    // Per-dict levels map: save the enclosing levels map and start fresh for this dict's TypeVars.
-    // TypeVar names created during this dict's SCC inference (at level state.level) are registered
-    // in state.levels during fresh_type_var(). With per-dict TypeVar name counters (T-927), the
-    // same name (e.g., _t0) may appear at different levels in sibling dicts — sharing the levels
-    // map would cause ambiguous level lookups. Saving/restoring here mirrors the child Substitution
-    // frame pattern from T-926: each dict scope owns its levels entries, and the enclosing dict's
-    // entries are invisible during nested inference, then restored when nesting exits.
-    let saved_levels = std::mem::take(&mut state.levels);
+    // Per-dict snapshot: save the type_vars table before this dict's inference.
+    // TypeVar names are globally unique via the monotonic counter, so no name collisions.
+    // After generalization, TypeVars at this dict's level have been either quantified or
+    // resolved. The snapshot is used only for the restore at dict exit.
+    let saved_type_vars = state.type_vars.clone();
+    let saved_name_counter = state.name_counter;
 
     let mut dict_env = TypeEnv::with_parent(env);
     let mut key_entries: Vec<(Option<String>, bool)> = Vec::new();
@@ -531,10 +512,10 @@ pub(crate) async fn infer_dict(
 
                     let mut alias_ann_map: HashMap<String, String> = HashMap::new();
                     for (p, _ann) in params {
-                        let n = state.subst.name_counter.get();
+                        let n = state.name_counter;
                         let fresh = format!("_t{}", n);
-                        state.subst.name_counter.set(n.saturating_add(1));
-                        state.levels.insert(fresh.clone(), state.level);
+                        state.name_counter = n.saturating_add(1);
+                        state.set_level(fresh.clone(), state.level);
                         alias_ann_map.insert(p.clone(), fresh.clone());
                     }
                     // Build the type_params_scope: maps declared param names → TypeVars.
@@ -543,7 +524,7 @@ pub(crate) async fn infer_dict(
                         .iter()
                         .filter_map(|(n, _)| {
                             alias_ann_map.get(n).map(|fresh| {
-                                let level = state.levels.get(fresh).copied().unwrap_or(state.level);
+                                let level = state.get_level(fresh).unwrap_or(state.level);
                                 (n.clone(), crate::types::Type::TypeVar(fresh.clone(), level))
                             })
                         })
@@ -645,14 +626,10 @@ pub(crate) async fn infer_dict(
         }
     }
 
-    // Initialize global substitution and field types accumulator.
-    // Start with empty local substitution and incrementally merge state.subst entries per SCC.
-    // Eliminates O(n) upfront clone of state.subst.type_map (cycle-31 major item).
-    let mut subst = Substitution::new();
+    // Initialize field types accumulator.
+    // All bindings go directly into state.type_vars — no separate local substitution.
     let mut field_types: indexmap::IndexMap<String, Type> = indexmap::IndexMap::new();
     let mut errors = Vec::new();
-
-    // state.subst entries are fully re-merged into local subst after each SCC iteration.
 
     // Track inner_schemes for nested dict values (DOT-POLY support)
     let mut entry_inner_schemes: HashMap<String, HashMap<String, TypeScheme>> = HashMap::new();
@@ -922,7 +899,6 @@ pub(crate) async fn infer_dict(
                             if let Err(e) = Box::pin(unify(
                                 bound_var,
                                 &value_ty,
-                                &mut subst,
                                 state,
                                 &mut this_entry_constraints,
                                 entry.node.value.span.clone(),
@@ -967,66 +943,13 @@ pub(crate) async fn infer_dict(
             }
         }
 
-        // Merge state.subst into local subst after each SCC (full re-merge every iteration)
-        {
-            // Every entry in state.subst is re-merged into the local subst on each SCC iteration.
-            // For each entry (k, v) from state.subst:
-            //   - v is first resolved through the local subst (applied_v = subst.apply(v)).
-            //   - If k is already bound in the local subst, the two bindings are unified
-            //     (removing k first to avoid self-unification, then re-inserting the winner).
-            //     On unification failure the original local binding is restored and an error
-            //     is recorded, but inference continues.
-            //   - If k is not yet bound in the local subst, it is inserted directly.
-            // This handles the case where state.subst accumulates new bindings produced by
-            // recursive calls during SCC inference, and ensures the local subst stays
-            // consistent with the global state after each SCC is processed.
-            let state_type_entries: Vec<(String, Type)> = {
-                let state_map = state.subst.type_map.borrow();
-                state_map
-                    .iter()
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect()
-            };
-
-            for (k, v) in state_type_entries {
-                let applied_v = subst.apply(&v);
-                let existing_opt = subst.type_map.borrow().get(&k).cloned();
-                match existing_opt {
-                    Some(existing) => {
-                        subst.type_map.borrow_mut().remove(&k);
-                        let mut merge_constraints: Vec<Constraint> = Vec::new();
-                        if let Err(e) = Box::pin(unify(
-                            &existing,
-                            &applied_v,
-                            &mut subst,
-                            state,
-                            &mut merge_constraints,
-                            span.clone(),
-                        ))
-                        .await
-                        {
-                            errors.push(e);
-                            subst.type_map.borrow_mut().insert(k, existing);
-                            continue;
-                        }
-                        let resolved = subst.apply(&applied_v);
-                        subst.type_map.borrow_mut().insert(k, resolved);
-                    }
-                    None => {
-                        subst.type_map.borrow_mut().insert(k, applied_v);
-                    }
-                }
-            }
-        }
-
-        // Process deferred equality constraints after this SCC's substitution merge.
+        // Process deferred equality constraints after this SCC.
         // This attempts to resolve TypeStageApp and Union-vs-Union constraints that may
         // have become ground after unification in this SCC. See doc/06-type-inference.md:884.
         if !state.deferred_equalities.is_empty() {
             let mut deferred_constraints: Vec<Constraint> = Vec::new();
             crate::types::process_deferred_equalities(
                 state,
-                &mut subst,
                 &mut deferred_constraints,
                 span.clone(),
             )
@@ -1038,25 +961,14 @@ pub(crate) async fn infer_dict(
             let (ref key_name, _) = key_entries[idx];
             if let Some(name) = key_name {
                 if let Some(ty) = field_types.get(name) {
-                    let resolved_ty = subst.apply(ty);
+                    let resolved_ty = state.apply(ty);
                     field_types.insert(name.clone(), resolved_ty);
                 }
             }
         }
 
-        // Merge local subst into state.subst BEFORE generalization.
-        // This ensures generalize_with_doc's subst_snapshot (type_env.rs:561) includes
-        // bindings created during this SCC's inference, fixing is_discharged for FD constraints.
-        // Previously this merge happened after all SCCs (line 807), causing is_discharged to
-        // return false for TypeVars bound in earlier SCCs, triggering spurious T013 warnings.
-        for (k, v) in subst.type_map.borrow().iter() {
-            state
-                .subst
-                .type_map
-                .borrow_mut()
-                .insert(k.clone(), v.clone());
-        }
-        if let Err(e) = state.subst.check_size(span.clone()) {
+        // Check type_vars size to prevent resource exhaustion.
+        if let Err(e) = state.check_type_vars_size(span.clone()) {
             errors.push(e);
         }
 
@@ -1212,34 +1124,17 @@ pub(crate) async fn infer_dict(
         field_types.insert(constructor_name.clone(), constructor_ty.clone());
     }
 
-    // Restore the outer substitution frame.
-    // Merge any parent-level bindings that were written into the outer frame (via bind_at_level
-    // routing through the child's parent) back to the restored state.subst. The child frame
-    // itself is discarded — its local bindings were for TypeVars at this dict's level and are
-    // no longer needed after generalization.
-    //
-    // Arc::try_unwrap succeeds (no clone) when the child frame has dropped its Arc::clone of the
-    // outer frame. If somehow the Arc is still shared (which shouldn't happen in the current
-    // single-threaded design), we clone the inner Substitution as a fallback.
-    let restored_outer = Arc::try_unwrap(outer_subst).unwrap_or_else(|arc| (*arc).clone());
-    // Take the current state.subst (the child frame, possibly with parent-level bindings
-    // already merged via bind_at_level). We discard the child frame but preserve anything
-    // written into the parent frame through the Arc.
-    let _child_frame = std::mem::replace(&mut state.subst, restored_outer);
-    // Drop child frame: all its bindings are at this dict's level and have been generalized away.
-    drop(_child_frame);
-
-    // Restore the enclosing levels map. This dict's TypeVar level entries (registered during
-    // fresh_type_var() calls above) are now stale — those TypeVars have been either generalized
-    // (promoted to ∀-quantified variables in TypeSchemes) or resolved by unification. Restoring
-    // saved_levels drops all of this dict's level entries and reinstates the enclosing dict's
-    // entries, exactly mirroring the child Substitution frame restore above.
-    state.levels = saved_levels;
+    // Restore the outer type_vars and name_counter snapshots.
+    // This dict's TypeVar entries have been either generalized (quantified in TypeSchemes)
+    // or resolved by unification. Restoring drops all this dict's level entries and
+    // reinstates the enclosing dict's state.
+    state.type_vars = saved_type_vars;
+    state.name_counter = saved_name_counter;
 
     // Restore enclosing level
     state.level = enclosing_level;
 
-    // Compact the levels map: remove entries for TypeVars that have been unified.
+    // Compact the type_vars map: remove entries for TypeVars that have been unified.
     // This prevents unbounded growth during long inference sessions (e.g., prelude loading).
     state.compact_levels();
 

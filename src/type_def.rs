@@ -4,7 +4,7 @@
 //! and purely structural operations on types (subtyping, consistency, variable collection).
 //!
 //! Inference machinery (`InferState`, generalization) lives in `type_infer.rs`.
-//! Substitution and unify live in `type_unify.rs`.
+//! Unification lives in `type_unify.rs`.
 //! Type class declarations (`ClassDecl`, `Constraint`) live in `type_class.rs`.
 //! Normalization and Display impls live in `type_normalize.rs`.
 

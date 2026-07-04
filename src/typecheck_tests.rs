@@ -1,7 +1,6 @@
 use super::*;
 use crate::ast::{SurfaceEntry, SurfaceExpression, SurfaceNode};
 use crate::rust_span;
-use crate::types::Substitution;
 use crate::Annotation;
 use indexmap::IndexMap;
 
@@ -1283,7 +1282,7 @@ async fn test_annotation_type_var() {
     // Should be a fresh TypeVar (not literally "a"), at level 0
     matches!(ty, Type::TypeVar(ref s, 0) if s.starts_with("_t"));
     // Counter should have advanced
-    assert_eq!(state.subst.name_counter.get(), 1);
+    assert_eq!(state.name_counter, 1);
 }
 
 #[tokio::test]
@@ -1342,7 +1341,7 @@ async fn test_resolve_type_name_outside_function_scope() {
     }
 
     // Counter should have advanced twice
-    assert_eq!(state.subst.name_counter.get(), 2);
+    assert_eq!(state.name_counter, 2);
 }
 
 #[tokio::test]
@@ -1394,7 +1393,7 @@ async fn test_resolve_type_name_outside_function_scope_monotonicity() {
     // inside function scope where mapping reuses the same fresh var. That path is tested
     // by test_annotation_level_monotonicity (within-function scope).
     assert_eq!(
-        state.subst.name_counter.get(),
+        state.name_counter,
         2,
         "counter must advance once per fresh var"
     );
@@ -5200,16 +5199,14 @@ async fn test_error_absorbed_in_unify_does_not_corrupt_substitution() {
     // polymorphic call would resolve to Error, suppressing valid type information
     // for the surrounding context.
     let span = rust_span!();
-    let mut subst = Substitution::new();
     let mut state = InferState::new();
-    state.levels.insert("a".into(), 1);
+    state.set_level("a".into(), 1);
 
     // Simulate: polymorphic param type is TypeVar("a"), arg type is Error
     let mut constraints = Vec::new();
     let result = unify(
         &Type::TypeVar("a".into(), 1),
         &Type::error_cascade(),
-        &mut subst,
         &mut state,
         &mut constraints,
         span,
@@ -5217,7 +5214,7 @@ async fn test_error_absorbed_in_unify_does_not_corrupt_substitution() {
     .await;
     assert!(result.is_ok(), "unify(TypeVar, Error) must succeed");
     assert!(
-        subst.type_map.borrow().is_empty(),
+        state.lookup_binding("a").is_none(),
         "TypeVar must NOT be bound when unified with Error (Error carries no type info)"
     );
 }
@@ -6694,16 +6691,14 @@ async fn test_c_var1_binds_typevar_in_union() {
     // C-Var1: unify(Int, Union([Str, TypeVar(a)])) → bind a = Int
     // because Int is not covered by the non-var member Str
     let mut state = InferState::new();
-    let mut subst = Substitution::new();
     let var_name = "_a0".to_string();
-    state.levels.insert(var_name.clone(), 1);
+    state.set_level(var_name.clone(), 1);
     let a = Type::Int;
     let b = Type::Union(vec![Type::Str, Type::TypeVar(var_name.clone(), 1)]);
     let mut constraints = Vec::new();
     let result = unify(
         &a,
         &b,
-        &mut subst,
         &mut state,
         &mut constraints,
         rust_span!(),
@@ -6712,7 +6707,7 @@ async fn test_c_var1_binds_typevar_in_union() {
     assert!(result.is_ok(), "C-Var1 should succeed: {result:?}");
     // a is bound to Int
     assert_eq!(
-        subst.get(&var_name),
+        state.lookup_binding(&var_name),
         Some(Type::Int),
         "TypeVar should be bound to Int"
     );
@@ -6722,16 +6717,14 @@ async fn test_c_var1_binds_typevar_in_union() {
 async fn test_c_var1_already_covered_no_binding() {
     // C-Var1: unify(Int, Union([Int, TypeVar(a)])) → Int already covered, no binding needed
     let mut state = InferState::new();
-    let mut subst = Substitution::new();
     let var_name = "_a1".to_string();
-    state.levels.insert(var_name.clone(), 1);
+    state.set_level(var_name.clone(), 1);
     let a = Type::Int;
     let b = Type::Union(vec![Type::Int, Type::TypeVar(var_name.clone(), 1)]);
     let mut constraints = Vec::new();
     let result = unify(
         &a,
         &b,
-        &mut subst,
         &mut state,
         &mut constraints,
         rust_span!(),
@@ -6743,7 +6736,7 @@ async fn test_c_var1_already_covered_no_binding() {
     );
     // TypeVar should NOT be bound (Int already covered by non-var member)
     assert!(
-        subst.get(&var_name).is_none(),
+        state.lookup_binding(&var_name).is_none(),
         "TypeVar should not be bound when already covered"
     );
 }
@@ -6752,16 +6745,14 @@ async fn test_c_var1_already_covered_no_binding() {
 async fn test_c_var1_symmetric_union_on_left() {
     // C-Var1 symmetric: unify(Union([Str, TypeVar(a)]), Int) → bind a = Int
     let mut state = InferState::new();
-    let mut subst = Substitution::new();
     let var_name = "_a2".to_string();
-    state.levels.insert(var_name.clone(), 1);
+    state.set_level(var_name.clone(), 1);
     let a = Type::Union(vec![Type::Str, Type::TypeVar(var_name.clone(), 1)]);
     let b = Type::Int;
     let mut constraints = Vec::new();
     let result = unify(
         &a,
         &b,
-        &mut subst,
         &mut state,
         &mut constraints,
         rust_span!(),
@@ -6772,7 +6763,7 @@ async fn test_c_var1_symmetric_union_on_left() {
         "C-Var1 symmetric should succeed: {result:?}"
     );
     assert_eq!(
-        subst.get(&var_name),
+        state.lookup_binding(&var_name),
         Some(Type::Int),
         "TypeVar should be bound to Int"
     );
@@ -6783,9 +6774,8 @@ async fn test_c_var2_binds_typevar_in_intersection() {
     // C-Var2: unify(Intersection([Str, TypeVar(a)]), Int) → bind a = Int
     // because Str alone doesn't satisfy Int
     let mut state = InferState::new();
-    let mut subst = Substitution::new();
     let var_name = "_a3".to_string();
-    state.levels.insert(var_name.clone(), 1);
+    state.set_level(var_name.clone(), 1);
     // Intersection([Str, TypeVar(a)]) — Str doesn't satisfy Int, so bind a = Int
     let a = Type::Intersection(vec![Type::Str, Type::TypeVar(var_name.clone(), 1)]);
     let b = Type::Int;
@@ -6793,7 +6783,6 @@ async fn test_c_var2_binds_typevar_in_intersection() {
     let result = unify(
         &a,
         &b,
-        &mut subst,
         &mut state,
         &mut constraints,
         rust_span!(),
@@ -6801,7 +6790,7 @@ async fn test_c_var2_binds_typevar_in_intersection() {
     .await;
     assert!(result.is_ok(), "C-Var2 should succeed: {result:?}");
     assert_eq!(
-        subst.get(&var_name),
+        state.lookup_binding(&var_name),
         Some(Type::Int),
         "TypeVar should be bound to Int"
     );

@@ -797,18 +797,11 @@ pub(crate) async fn patterns_overlap(
     }
 
     // Save every field that unify() may touch so this probe is side-effect-free.
-    let saved_levels = state.levels.clone();
-    let saved_kind_env = state.kind_env.clone();
+    let saved_type_vars = state.type_vars.clone();
+    let saved_name_counter = state.name_counter;
     let saved_deferred = state.deferred_equalities.clone();
     let saved_bounds = state.bounds.clone();
-    // Also save subst: improve_functional_dependency writes directly to state.subst
-    // (via std::mem::take/replace) rather than through temp_subst, and resolve_instance
-    // may advance name_counter (which now lives in state.subst). Restoring state.subst
-    // restores the name_counter as well.
-    let saved_subst = state.subst.clone();
 
-    // Use a temporary substitution so state.subst is also unaffected.
-    let mut temp_subst = state.subst.clone();
     let mut probe_constraints: Vec<Constraint> = Vec::new();
     let mut overlaps = true;
     for (ty_a, ty_b) in types_a.iter().zip(types_b.iter()) {
@@ -822,7 +815,6 @@ pub(crate) async fn patterns_overlap(
         if Box::pin(unify(
             ty_a,
             ty_b,
-            &mut temp_subst,
             state,
             &mut probe_constraints,
             rust_span!(),
@@ -836,12 +828,10 @@ pub(crate) async fn patterns_overlap(
     }
 
     // Restore all mutated fields.
-    // Restoring state.subst also restores name_counter (it lives in the Substitution).
-    state.levels = saved_levels;
-    state.kind_env = saved_kind_env;
+    state.type_vars = saved_type_vars;
+    state.name_counter = saved_name_counter;
     state.deferred_equalities = saved_deferred;
     state.bounds = saved_bounds;
-    state.subst = saved_subst;
 
     Ok(overlaps)
 }
@@ -872,26 +862,17 @@ pub(crate) async fn types_can_unify(
     }
 
     // Save every field that unify() may touch so this probe is side-effect-free.
-    // Restoring state.subst also restores name_counter (it lives in the Substitution).
-    let saved_levels = state.levels.clone();
-    let saved_kind_env = state.kind_env.clone();
+    let saved_type_vars = state.type_vars.clone();
+    let saved_name_counter = state.name_counter;
     let saved_deferred = state.deferred_equalities.clone();
     let saved_bounds = state.bounds.clone();
-    let saved_subst = state.subst.clone();
 
-    // Use a temporary substitution for the probe.
-    // Note: this probe uses a separate temp_subst; constraint checking via
-    // check_constraints_on_var may miss bindings from the probe. This is acceptable
-    // for instance consistency checks where types are typically concrete annotations,
-    // but would need to be addressed for general-purpose unification probes.
-    let mut temp_subst = state.subst.clone();
     let mut probe_constraints: Vec<Constraint> = Vec::new();
     let mut can_unify = true;
     for (ty_a, ty_b) in types_a.iter().zip(types_b.iter()) {
         if Box::pin(unify(
             ty_a,
             ty_b,
-            &mut temp_subst,
             state,
             &mut probe_constraints,
             rust_span!(),
@@ -905,12 +886,10 @@ pub(crate) async fn types_can_unify(
     }
 
     // Restore all mutated fields.
-    // Restoring state.subst also restores name_counter (it lives in the Substitution).
-    state.levels = saved_levels;
-    state.kind_env = saved_kind_env;
+    state.type_vars = saved_type_vars;
+    state.name_counter = saved_name_counter;
     state.deferred_equalities = saved_deferred;
     state.bounds = saved_bounds;
-    state.subst = saved_subst;
 
     Ok(can_unify)
 }

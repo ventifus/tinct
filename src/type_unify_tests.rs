@@ -9,17 +9,16 @@ use super::{
 async fn unify_sync<'a>(
     a: &'a crate::types::Type,
     b: &'a crate::types::Type,
-    subst: &'a mut crate::types::Substitution,
     state: &'a mut crate::types::InferState,
     constraints: &'a mut Vec<crate::types::Constraint>,
     span: crate::ast::Span,
 ) -> Result<(), crate::TypeError> {
-    unify(a, b, subst, state, constraints, span).await
+    unify(a, b, state, constraints, span).await
 }
 use crate::rust_span;
 use crate::type_class::ConstraintArg;
 use crate::type_def::{TyConDef, Variance};
-use crate::types::{Constraint, InferState, Kind, Label, Row, Substitution, Type, TypeEnv};
+use crate::types::{Constraint, InferState, Kind, Label, Row, Type, TypeEnv};
 use indexmap::IndexMap;
 use std::collections::HashMap;
 
@@ -190,18 +189,18 @@ async fn test_promote_literal_not_promoted_for_non_promotable_class() {
 #[tokio::test]
 async fn test_union_vs_union_with_typevars_defers() {
     let mut state = InferState::new();
-    let mut subst = Substitution::new();
+
     let span = rust_span!();
 
     // Register levels for the type vars
-    state.levels.insert("a".to_string(), 0);
-    state.levels.insert("b".to_string(), 0);
+    state.set_level("a".to_string(), 0);
+    state.set_level("b".to_string(), 0);
 
     // Union([Int, TypeVar(a)]) ~ Union([Str, TypeVar(b)])
     let lhs = Type::Union(vec![Type::Int, Type::TypeVar("a".to_string(), 0)]);
     let rhs = Type::Union(vec![Type::Str, Type::TypeVar("b".to_string(), 0)]);
 
-    let result = unify_sync(&lhs, &rhs, &mut subst, &mut state, &mut Vec::new(), span).await;
+    let result = unify_sync(&lhs, &rhs, &mut state, &mut Vec::new(), span).await;
 
     // Should succeed (not a hard error)
     assert!(
@@ -223,7 +222,7 @@ async fn test_union_vs_union_with_typevars_defers() {
 #[tokio::test]
 async fn test_union_vs_union_concrete_no_deferral() {
     let mut state = InferState::new();
-    let mut subst = Substitution::new();
+
     let span = rust_span!();
 
     // Union([Int]) ~ Union([Int]) — concrete, no TypeVars
@@ -232,7 +231,7 @@ async fn test_union_vs_union_concrete_no_deferral() {
 
     // This falls through to the generic _ => Err arm (no C-Var1 match either),
     // not the deferral arm. Deferred_equalities should remain empty.
-    let _ = unify_sync(&lhs, &rhs, &mut subst, &mut state, &mut Vec::new(), span).await;
+    let _ = unify_sync(&lhs, &rhs, &mut state, &mut Vec::new(), span).await;
 
     assert_eq!(
         state.deferred_equalities.len(),
@@ -245,10 +244,10 @@ async fn test_union_vs_union_concrete_no_deferral() {
 #[tokio::test]
 async fn test_unify_type_var_occurs_in_type_stage_app() {
     let mut state = InferState::new();
-    let mut subst = Substitution::new();
+
     let span = rust_span!();
 
-    state.levels.insert("a".to_string(), 0);
+    state.set_level("a".to_string(), 0);
 
     let type_var_a = Type::TypeVar("a".to_string(), 0);
     let type_stage_app_f_a = Type::TypeStageApp {
@@ -259,7 +258,6 @@ async fn test_unify_type_var_occurs_in_type_stage_app() {
     let result = unify_sync(
         &type_var_a,
         &type_stage_app_f_a,
-        &mut subst,
         &mut state,
         &mut Vec::new(),
         span,
@@ -285,7 +283,7 @@ async fn test_unify_type_var_occurs_in_type_stage_app() {
 #[tokio::test]
 async fn test_unify_variadic_zero_with_concrete_arity() {
     let mut state = InferState::new();
-    let mut subst = Substitution::new();
+
     let span = rust_span!();
 
     let any_function = Type::Function {
@@ -305,7 +303,6 @@ async fn test_unify_variadic_zero_with_concrete_arity() {
     let result = unify_sync(
         &any_function,
         &concrete_fn,
-        &mut subst,
         &mut state,
         &mut Vec::new(),
         span,
@@ -322,7 +319,7 @@ async fn test_unify_variadic_zero_with_concrete_arity() {
 #[tokio::test]
 async fn test_unify_variadic_zero_with_zero_non_variadic() {
     let mut state = InferState::new();
-    let mut subst = Substitution::new();
+
     let span = rust_span!();
 
     let any_function = Type::Function {
@@ -342,7 +339,6 @@ async fn test_unify_variadic_zero_with_zero_non_variadic() {
     let result = unify_sync(
         &any_function,
         &concrete_fn,
-        &mut subst,
         &mut state,
         &mut Vec::new(),
         span,
@@ -358,7 +354,7 @@ async fn test_unify_variadic_zero_with_zero_non_variadic() {
 #[tokio::test]
 async fn test_unify_variadic_zero_with_multi_param() {
     let mut state = InferState::new();
-    let mut subst = Substitution::new();
+
     let span = rust_span!();
 
     let any_function = Type::Function {
@@ -382,7 +378,6 @@ async fn test_unify_variadic_zero_with_multi_param() {
     let result = unify_sync(
         &any_function,
         &concrete_fn,
-        &mut subst,
         &mut state,
         &mut Vec::new(),
         span,
@@ -451,7 +446,7 @@ async fn test_is_subtype_any_function_reflexivity() {
 #[tokio::test]
 async fn test_unify_two_any_functions() {
     let mut state = InferState::new();
-    let mut subst = Substitution::new();
+
     let span = rust_span!();
 
     let any_function_1 = Type::Function {
@@ -471,7 +466,6 @@ async fn test_unify_two_any_functions() {
     let result = unify_sync(
         &any_function_1,
         &any_function_2,
-        &mut subst,
         &mut state,
         &mut Vec::new(),
         span,
@@ -488,7 +482,7 @@ async fn test_unify_two_any_functions() {
 #[tokio::test]
 async fn test_unify_concrete_fn_with_any_function_symmetric() {
     let mut state = InferState::new();
-    let mut subst = Substitution::new();
+
     let span = rust_span!();
 
     let concrete_fn = Type::Function {
@@ -508,7 +502,6 @@ async fn test_unify_concrete_fn_with_any_function_symmetric() {
     let result = unify_sync(
         &concrete_fn,
         &any_function,
-        &mut subst,
         &mut state,
         &mut Vec::new(),
         span,
@@ -698,16 +691,15 @@ async fn test_types_are_disjoint_function_vs_record() {
 #[tokio::test]
 async fn test_apply_type_recursive_does_not_bind_var_name() {
     let mut state = InferState::new();
-    let mut subst = Substitution::new();
+
     let span = rust_span!();
 
     // Create a TypeVar _t0 and bind it to Int
-    state.levels.insert("_t0".to_string(), 0);
+    state.set_level("_t0".to_string(), 0);
     let tv = Type::TypeVar("_t0".to_string(), 0);
     let _ = unify_sync(
         &tv,
         &Type::Int,
-        &mut subst,
         &mut state,
         &mut Vec::new(),
         span,
@@ -730,7 +722,7 @@ async fn test_apply_type_recursive_does_not_bind_var_name() {
         })),
     };
 
-    let applied = subst.apply(&rec_ty);
+    let applied = state.apply(&rec_ty);
 
     // The Recursive wrapper must survive — binder name unchanged
     match &applied {
@@ -757,7 +749,7 @@ async fn test_apply_type_recursive_does_not_bind_var_name() {
 #[tokio::test]
 async fn test_unify_recursive_recursive_isomorphic() {
     let mut state = InferState::new();
-    let mut subst = Substitution::new();
+
     let span = rust_span!();
 
     // μ_a. {head: Int, tail: TypeVar("_a", 0)}
@@ -791,7 +783,6 @@ async fn test_unify_recursive_recursive_isomorphic() {
     let result = unify_sync(
         &rec_a,
         &rec_b,
-        &mut subst,
         &mut state,
         &mut Vec::new(),
         span,
@@ -809,7 +800,7 @@ async fn test_unify_recursive_recursive_isomorphic() {
 #[tokio::test]
 async fn test_unify_recursive_recursive_incompatible_fields() {
     let mut state = InferState::new();
-    let mut subst = Substitution::new();
+
     let span = rust_span!();
 
     // μ_a. {head: Int, tail: TypeVar("_a", 0)}
@@ -843,7 +834,6 @@ async fn test_unify_recursive_recursive_incompatible_fields() {
     let result = unify_sync(
         &rec_int,
         &rec_str,
-        &mut subst,
         &mut state,
         &mut Vec::new(),
         span,
@@ -862,10 +852,10 @@ async fn test_unify_recursive_recursive_incompatible_fields() {
 #[tokio::test]
 async fn test_unify_typevar_binds_to_recursive_type() {
     let mut state = InferState::new();
-    let mut subst = Substitution::new();
+
     let span = rust_span!();
 
-    state.levels.insert("_t0".to_string(), 1);
+    state.set_level("_t0".to_string(), 1);
 
     let tv = Type::TypeVar("_t0".to_string(), 1);
     let rec_ty = Type::Recursive {
@@ -881,7 +871,7 @@ async fn test_unify_typevar_binds_to_recursive_type() {
         })),
     };
 
-    let result = unify_sync(&tv, &rec_ty, &mut subst, &mut state, &mut Vec::new(), span).await;
+    let result = unify_sync(&tv, &rec_ty, &mut state, &mut Vec::new(), span).await;
 
     assert!(
         result.is_ok(),
@@ -890,7 +880,7 @@ async fn test_unify_typevar_binds_to_recursive_type() {
     );
 
     // After unification, applying the substitution to _t0 should yield the Recursive type
-    let applied = subst.apply(&tv);
+    let applied = state.apply(&tv);
     assert!(
         matches!(applied, Type::Recursive { .. }),
         "TypeVar should be bound to the full Recursive type, not its opened body; got {:?}",
@@ -905,10 +895,10 @@ async fn test_unify_typevar_binds_to_recursive_type() {
 #[tokio::test]
 async fn test_unify_recursive_left_with_typevar_right() {
     let mut state = InferState::new();
-    let mut subst = Substitution::new();
+
     let span = rust_span!();
 
-    state.levels.insert("_t42".to_string(), 1);
+    state.set_level("_t42".to_string(), 1);
 
     // μ_r. {x: Int}  — a trivial "recursive" type whose body doesn't reference the var
     // This is non-contractive in the full sense, but valid for testing Arm 4 mechanics:
@@ -937,7 +927,6 @@ async fn test_unify_recursive_left_with_typevar_right() {
     let result = unify_sync(
         &rec_ty,
         &record_ty,
-        &mut subst,
         &mut state,
         &mut Vec::new(),
         span,
@@ -955,7 +944,7 @@ async fn test_unify_recursive_left_with_typevar_right() {
 #[tokio::test]
 async fn test_unify_concrete_left_with_recursive_right() {
     let mut state = InferState::new();
-    let mut subst = Substitution::new();
+
     let span = rust_span!();
 
     let record_ty = Type::Record(Row {
@@ -982,7 +971,6 @@ async fn test_unify_concrete_left_with_recursive_right() {
     let result = unify_sync(
         &record_ty,
         &rec_ty,
-        &mut subst,
         &mut state,
         &mut Vec::new(),
         span,
@@ -1078,12 +1066,11 @@ async fn test_handle_capability_partialeq_limitation() {
 
     // However, they should unify successfully
     let mut state = InferState::new();
-    let mut subst = Substitution::new();
+
 
     let result = unify_sync(
         &handle_a,
         &handle_b,
-        &mut subst,
         &mut state,
         &mut Vec::new(),
         rust_span!(),
@@ -1155,8 +1142,8 @@ async fn test_reverse_fd_back_propagates_determining_type() {
     state.instance_env.insert(inst).unwrap();
 
     // Create type variables t0 (determining, pos 0) and t1 (determined, pos 1).
-    state.levels.insert("t0".to_string(), 0);
-    state.levels.insert("t1".to_string(), 0);
+    state.set_level("t0".to_string(), 0);
+    state.set_level("t1".to_string(), 0);
 
     // Add the constraint: MySeq [t0, t1]
     let mut constraints: Vec<Constraint> = vec![Constraint::Class {
@@ -1171,12 +1158,11 @@ async fn test_reverse_fd_back_propagates_determining_type() {
 
     // Unify t1 (determined position) with Str.
     // This should trigger the reverse FD and back-propagate t0 = Int.
-    let mut subst = Substitution::new();
+
     let t1 = Type::TypeVar("t1".to_string(), 0);
     let result = unify_sync(
         &t1,
         &Type::Str,
-        &mut subst,
         &mut state,
         &mut constraints,
         rust_span!(),
@@ -1190,7 +1176,7 @@ async fn test_reverse_fd_back_propagates_determining_type() {
     );
 
     // Check that t0 was back-propagated to Int via reverse FD.
-    let t0_bound = state.subst.apply(&Type::TypeVar("t0".to_string(), 0));
+    let t0_bound = state.apply(&Type::TypeVar("t0".to_string(), 0));
     assert!(
         matches!(t0_bound, Type::Int),
         "Reverse FD should have back-propagated t0 = Int, but got: {:?}",
@@ -1246,8 +1232,8 @@ async fn test_reverse_fd_does_not_fire_when_not_injective() {
     };
     state.instance_env.insert(inst).unwrap();
 
-    state.levels.insert("t0".to_string(), 0);
-    state.levels.insert("t1".to_string(), 0);
+    state.set_level("t0".to_string(), 0);
+    state.set_level("t1".to_string(), 0);
 
     let mut constraints: Vec<Constraint> = vec![Constraint::Class {
         class: my_class,
@@ -1260,12 +1246,11 @@ async fn test_reverse_fd_does_not_fire_when_not_injective() {
     }];
 
     // Unify t1 with Str — should NOT back-propagate t0.
-    let mut subst = Substitution::new();
+
     let t1 = Type::TypeVar("t1".to_string(), 0);
     let result = unify_sync(
         &t1,
         &Type::Str,
-        &mut subst,
         &mut state,
         &mut constraints,
         rust_span!(),
@@ -1279,7 +1264,7 @@ async fn test_reverse_fd_does_not_fire_when_not_injective() {
     );
 
     // t0 must remain unbound (no reverse FD fired).
-    let t0_bound = state.subst.apply(&Type::TypeVar("t0".to_string(), 0));
+    let t0_bound = state.apply(&Type::TypeVar("t0".to_string(), 0));
     assert!(
         matches!(t0_bound, Type::TypeVar(ref n, _) if n == "t0"),
         "With non-injective resolver, t0 must remain unbound, but got: {:?}",
@@ -1291,167 +1276,119 @@ async fn test_reverse_fd_does_not_fire_when_not_injective() {
 // T-994: Level semantics unit tests (type-system-health-s841-followup sprint)
 // ============================================================================
 
-/// Child substitution frame inherits name_counter from parent.
+/// TypeVarEntry stores level, binding, and kind in one place.
 #[tokio::test]
-async fn test_substitution_child_inherits_name_counter() {
-    use std::sync::Arc;
-
-    let parent = Arc::new(Substitution::new());
-
-    // Simulate parent counter being advanced (e.g., through fresh_type_var calls).
-    parent.name_counter.set(5);
-
-    let child = Substitution::child(&parent, 1);
-
-    // Child should inherit the parent's counter value (5).
-    assert_eq!(
-        child.name_counter.get(),
-        5,
-        "Child substitution should inherit parent's name_counter value"
-    );
-}
-
-/// bind_at_level routes to the correct frame based on creation_level.
-#[tokio::test]
-async fn test_bind_at_level_routes_to_correct_frame() {
-    use std::sync::Arc;
-
-    let root = Arc::new(Substitution::new()); // creation_level = 0
-    let child_level1 = Arc::new(Substitution::child(&root, 1));
-    let grandchild_level2 = Arc::new(Substitution::child(&child_level1, 2));
-
-    // Bind a variable created at level 1 through the grandchild frame.
-    // It should route to child_level1 (creation_level = 1).
-    grandchild_level2.bind_at_level("var_at_level1".to_string(), 1, Type::Int);
-
-    // Verify the binding landed in child_level1.
-    assert_eq!(
-        child_level1.type_map.borrow().get("var_at_level1").cloned(),
-        Some(Type::Int),
-        "Binding with var_level=1 should land in child_level1 frame"
-    );
-
-    // Verify it did NOT land in grandchild or root.
-    assert!(
-        grandchild_level2
-            .type_map
-            .borrow()
-            .get("var_at_level1")
-            .is_none(),
-        "Binding should not be in grandchild frame"
-    );
-    assert!(
-        root.type_map.borrow().get("var_at_level1").is_none(),
-        "Binding should not be in root frame"
-    );
-}
-
-/// bind_at_level absorbs binding in root if no frame matches the level.
-#[tokio::test]
-async fn test_bind_at_level_absorbs_in_root_if_no_match() {
-    use std::sync::Arc;
-
-    let root = Arc::new(Substitution::new()); // creation_level = 0
-    let child = Arc::new(Substitution::child(&root, 1)); // creation_level = 1
-
-    // Bind a variable with level 99 (no matching frame).
-    // The root (parent.is_none()) should absorb it.
-    child.bind_at_level("orphan_var".to_string(), 99, Type::Str);
-
-    // Verify it landed in the root frame.
-    assert_eq!(
-        root.type_map.borrow().get("orphan_var").cloned(),
-        Some(Type::Str),
-        "Orphan binding (no matching level) should be absorbed by root"
-    );
-
-    // Verify it's NOT in the child frame.
-    assert!(
-        child.type_map.borrow().get("orphan_var").is_none(),
-        "Orphan binding should not be in child frame"
-    );
-}
-
-/// lookup_in_chain traverses through parent frames, finding bindings in ancestors.
-#[tokio::test]
-async fn test_lookup_in_chain_traverses_parents() {
-    use std::sync::Arc;
-
-    let root = Arc::new(Substitution::new());
-    let child = Arc::new(Substitution::child(&root, 1));
-    let grandchild = Arc::new(Substitution::child(&child, 2));
-
-    // Bind variables at different levels.
-    root.type_map
-        .borrow_mut()
-        .insert("root_var".to_string(), Type::Int);
-    child
-        .type_map
-        .borrow_mut()
-        .insert("child_var".to_string(), Type::Str);
-    grandchild.type_map.borrow_mut().insert(
-        "grandchild_var".to_string(),
-        Type::TyCon("Boolean".to_string()),
-    );
-
-    // Lookup from grandchild: should find all three variables.
-    assert_eq!(
-        grandchild.lookup_in_chain("grandchild_var"),
-        Some(Type::TyCon("Boolean".to_string())),
-        "Lookup should find local binding"
-    );
-    assert_eq!(
-        grandchild.lookup_in_chain("child_var"),
-        Some(Type::Str),
-        "Lookup should find parent binding"
-    );
-    assert_eq!(
-        grandchild.lookup_in_chain("root_var"),
-        Some(Type::Int),
-        "Lookup should find grandparent binding"
-    );
-    assert_eq!(
-        grandchild.lookup_in_chain("nonexistent"),
-        None,
-        "Lookup should return None for missing variable"
-    );
-}
-
-/// Levels save/restore pattern (mem::take + restore).
-/// This tests that the pattern correctly captures and restores state.subst.
-#[tokio::test]
-async fn test_levels_save_restore_pattern() {
+async fn test_type_var_entry_stores_level_binding_kind() {
     let mut state = InferState::new();
 
-    // Bind some variables in the initial substitution.
-    state
-        .subst
-        .type_map
-        .borrow_mut()
-        .insert("original_var".to_string(), Type::Int);
+    // Register a TypeVar with specific level
+    state.set_level("a".to_string(), 3);
+    assert_eq!(state.get_level("a"), Some(3));
 
-    // Simulate a local unification path that takes state.subst.
-    let local_subst = std::mem::take(&mut state.subst);
+    // Initially unbound
+    assert!(state.lookup_binding("a").is_none());
 
-    // Add a binding to the local substitution.
-    local_subst
-        .type_map
-        .borrow_mut()
-        .insert("local_var".to_string(), Type::Str);
+    // Bind it
+    state.bind_type_var("a".to_string(), Type::Int);
+    assert_eq!(state.lookup_binding("a"), Some(Type::Int));
 
-    // Restore the substitution back to state.subst.
-    state.subst = local_subst;
+    // Kind defaults to Type
+    assert_eq!(state.get_kind("a"), Some(&Kind::Type));
 
-    // Verify both bindings are present after restore.
+    // Set a non-default kind
+    state.set_kind("b".to_string(), Kind::Operator);
+    assert_eq!(state.get_kind("b"), Some(&Kind::Operator));
+}
+
+/// bind_type_var writes to the unified type_vars map.
+#[tokio::test]
+async fn test_bind_type_var_writes_to_type_vars() {
+    let mut state = InferState::new();
+
+    state.set_level("var1".to_string(), 1);
+    state.bind_type_var("var1".to_string(), Type::Int);
+
+    state.set_level("var2".to_string(), 2);
+    state.bind_type_var("var2".to_string(), Type::Str);
+
+    // Both bindings are in the same map
+    assert_eq!(state.lookup_binding("var1"), Some(Type::Int));
+    assert_eq!(state.lookup_binding("var2"), Some(Type::Str));
+    assert!(state.lookup_binding("nonexistent").is_none());
+}
+
+/// name_counter is a simple u32 field on InferState (no longer in Substitution).
+#[tokio::test]
+async fn test_name_counter_increments() {
+    let mut state = InferState::new();
+    assert_eq!(state.name_counter, 0);
+
+    state.name_counter = 5;
+    assert_eq!(state.name_counter, 5);
+
+    // Snapshot/restore preserves name_counter
+    let saved = state.name_counter;
+    state.name_counter = 10;
+    state.name_counter = saved;
+    assert_eq!(state.name_counter, 5);
+}
+
+/// kind_env() builds a HashMap view of non-Type kinds.
+#[tokio::test]
+async fn test_kind_env_view() {
+    let mut state = InferState::new();
+
+    state.set_level("a".to_string(), 0);
+    state.set_kind("a".to_string(), Kind::Type); // default, should not appear in kind_env
+    state.set_level("b".to_string(), 0);
+    state.set_kind("b".to_string(), Kind::Operator);
+    state.set_level("c".to_string(), 0);
+    state.set_kind("c".to_string(), Kind::Label);
+
+    let ke = state.kind_env();
+    assert!(!ke.contains_key("a"), "Kind::Type should not appear in kind_env()");
+    assert_eq!(ke.get("b"), Some(&Kind::Operator));
+    assert_eq!(ke.get("c"), Some(&Kind::Label));
+}
+
+/// TypeVars snapshot/restore pattern.
+/// This tests that cloning and restoring state.type_vars preserves bindings correctly.
+#[tokio::test]
+async fn test_type_vars_snapshot_restore_pattern() {
+    let mut state = InferState::new();
+
+    // Bind a variable in the initial state.
+    state.set_level("original_var".to_string(), 0);
+    state.bind_type_var("original_var".to_string(), Type::Int);
+
+    // Snapshot state.type_vars before a probe.
+    let saved_type_vars = state.type_vars.clone();
+    let saved_name_counter = state.name_counter;
+
+    // Simulate a probe that adds a new binding.
+    state.set_level("probe_var".to_string(), 0);
+    state.bind_type_var("probe_var".to_string(), Type::Str);
+
+    // Verify probe binding is present before restore.
     assert_eq!(
-        state.subst.type_map.borrow().get("original_var").cloned(),
-        Some(Type::Int),
-        "Original binding should be preserved"
-    );
-    assert_eq!(
-        state.subst.type_map.borrow().get("local_var").cloned(),
+        state.lookup_binding("probe_var"),
         Some(Type::Str),
-        "Local binding should be present after restore"
+        "Probe binding should be present before restore"
+    );
+
+    // Restore state.type_vars (discarding probe bindings).
+    state.type_vars = saved_type_vars;
+    state.name_counter = saved_name_counter;
+
+    // Verify original binding is preserved and probe binding is gone.
+    assert_eq!(
+        state.lookup_binding("original_var"),
+        Some(Type::Int),
+        "Original binding should be preserved after restore"
+    );
+    assert!(
+        state.lookup_binding("probe_var").is_none(),
+        "Probe binding should be gone after restore"
     );
 }
 
@@ -1517,8 +1454,8 @@ async fn test_fd_in_progress_terminates_mutual_recursion() {
     state.instance_env.insert(inst).unwrap();
 
     // Create type variables.
-    state.levels.insert("t0".to_string(), 0);
-    state.levels.insert("t1".to_string(), 0);
+    state.set_level("t0".to_string(), 0);
+    state.set_level("t1".to_string(), 0);
 
     // Add the constraint.
     let mut constraints: Vec<Constraint> = vec![Constraint::Class {
@@ -1535,12 +1472,11 @@ async fn test_fd_in_progress_terminates_mutual_recursion() {
     // 1. Forward FD: t0=Int → t1=Str
     // 2. Reverse FD: t1=Str → attempt to bind t0 (but t0 is in fd_in_progress, so skip)
     // Result: terminates successfully without infinite loop.
-    let mut subst = Substitution::new();
+
     let t0 = Type::TypeVar("t0".to_string(), 0);
     let result = unify_sync(
         &t0,
         &Type::Int,
-        &mut subst,
         &mut state,
         &mut constraints,
         rust_span!(),
@@ -1554,10 +1490,9 @@ async fn test_fd_in_progress_terminates_mutual_recursion() {
     );
 
     // Verify both variables were bound correctly.
-    // t0 was bound in the outer `subst` (the direct unify call); FD-triggered bindings
-    // (t1=Str) go through state.subst via mem::take inside improve_functional_dependency.
-    let t0_bound = subst.apply(&Type::TypeVar("t0".to_string(), 0));
-    let t1_bound = state.subst.apply(&Type::TypeVar("t1".to_string(), 0));
+    // Both t0 and t1 are bound in state.type_vars (the unified binding store).
+    let t0_bound = state.apply(&Type::TypeVar("t0".to_string(), 0));
+    let t1_bound = state.apply(&Type::TypeVar("t1".to_string(), 0));
 
     assert!(
         matches!(t0_bound, Type::Int),
@@ -1683,13 +1618,13 @@ async fn test_tycondef_builtin_type() {
 #[tokio::test]
 async fn test_unify_tycon_same_name_ok() {
     let mut state = InferState::new();
-    let mut subst = Substitution::new();
+
     let span = rust_span!();
 
     let ty1 = Type::TyCon("Color".to_string());
     let ty2 = Type::TyCon("Color".to_string());
 
-    let result = unify_sync(&ty1, &ty2, &mut subst, &mut state, &mut Vec::new(), span).await;
+    let result = unify_sync(&ty1, &ty2, &mut state, &mut Vec::new(), span).await;
 
     assert!(
         result.is_ok(),
@@ -1703,13 +1638,13 @@ async fn test_unify_tycon_same_name_ok() {
 #[tokio::test]
 async fn test_unify_tycon_different_name_err() {
     let mut state = InferState::new();
-    let mut subst = Substitution::new();
+
     let span = rust_span!();
 
     let ty1 = Type::TyCon("Color".to_string());
     let ty2 = Type::TyCon("Shape".to_string());
 
-    let result = unify_sync(&ty1, &ty2, &mut subst, &mut state, &mut Vec::new(), span).await;
+    let result = unify_sync(&ty1, &ty2, &mut state, &mut Vec::new(), span).await;
 
     assert!(
         result.is_err(),
@@ -1722,13 +1657,13 @@ async fn test_unify_tycon_different_name_err() {
 #[tokio::test]
 async fn test_unify_tycon_vs_empty_name_err() {
     let mut state = InferState::new();
-    let mut subst = Substitution::new();
+
     let span = rust_span!();
 
     let ty1 = Type::TyCon("Foo".to_string());
     let ty2 = Type::TyCon("".to_string());
 
-    let result = unify_sync(&ty1, &ty2, &mut subst, &mut state, &mut Vec::new(), span).await;
+    let result = unify_sync(&ty1, &ty2, &mut state, &mut Vec::new(), span).await;
 
     assert!(
         result.is_err(),
@@ -1745,7 +1680,7 @@ async fn test_unify_tycon_vs_empty_name_err() {
 #[tokio::test]
 async fn test_unify_uniform_same_value_type_records_ok() {
     let mut state = InferState::new();
-    let mut subst = Substitution::new();
+
     let span = rust_span!();
 
     // Consistent: named field type matches Uniform value type.
@@ -1762,7 +1697,7 @@ async fn test_unify_uniform_same_value_type_records_ok() {
     let rec1 = Type::Record(row.clone());
     let rec2 = Type::Record(row);
 
-    let result = unify_sync(&rec1, &rec2, &mut subst, &mut state, &mut Vec::new(), span).await;
+    let result = unify_sync(&rec1, &rec2, &mut state, &mut Vec::new(), span).await;
 
     assert!(
         result.is_ok(),
@@ -1776,7 +1711,7 @@ async fn test_unify_uniform_same_value_type_records_ok() {
 #[tokio::test]
 async fn test_unify_uniform_inconsistent_named_field_type_errors() {
     let mut state = InferState::new();
-    let mut subst = Substitution::new();
+
     let span = rust_span!();
 
     // Inconsistent: named field type does NOT match Uniform value type.
@@ -1799,7 +1734,7 @@ async fn test_unify_uniform_inconsistent_named_field_type_errors() {
     let rec1 = Type::Record(row1);
     let rec2 = Type::Record(row2);
 
-    let result = unify_sync(&rec1, &rec2, &mut subst, &mut state, &mut Vec::new(), span).await;
+    let result = unify_sync(&rec1, &rec2, &mut state, &mut Vec::new(), span).await;
 
     assert!(
         result.is_err(),
@@ -1818,7 +1753,7 @@ async fn test_unify_uniform_inconsistent_named_field_type_errors() {
 #[tokio::test]
 async fn test_unify_empty_uniform_typevar_join() {
     let mut state = InferState::new();
-    let mut subst = Substitution::new();
+
     let span = rust_span!();
 
     // LHS: {x: Int} with Empty tail
@@ -1831,7 +1766,7 @@ async fn test_unify_empty_uniform_typevar_join() {
 
     // RHS: {_ : α} with Uniform TypeVar tail
     let alpha = "_t_eu_test1".to_string();
-    state.levels.insert(alpha.clone(), 0);
+    state.set_level(alpha.clone(), 0);
     let row_rhs = crate::type_def::Row {
         fields: IndexMap::new(),
         tail: crate::type_def::RowTail::Uniform {
@@ -1846,7 +1781,6 @@ async fn test_unify_empty_uniform_typevar_join() {
     let result = unify_sync(
         &rec_lhs,
         &rec_rhs,
-        &mut subst,
         &mut state,
         &mut Vec::new(),
         span,
@@ -1859,7 +1793,7 @@ async fn test_unify_empty_uniform_typevar_join() {
     );
 
     // After unification, α should be bound to Int (the field type from the Empty side).
-    let resolved = subst.apply(&Type::TypeVar(alpha, 0));
+    let resolved = state.apply(&Type::TypeVar(alpha, 0));
     assert_eq!(
         resolved,
         Type::Int,
@@ -1873,7 +1807,7 @@ async fn test_unify_empty_uniform_typevar_join() {
 #[tokio::test]
 async fn test_unify_empty_uniform_concrete_subtype_fail() {
     let mut state = InferState::new();
-    let mut subst = Substitution::new();
+
     let span = rust_span!();
 
     // LHS: {x: Int} with Empty tail
@@ -1899,7 +1833,6 @@ async fn test_unify_empty_uniform_concrete_subtype_fail() {
     let result = unify_sync(
         &rec_lhs,
         &rec_rhs,
-        &mut subst,
         &mut state,
         &mut Vec::new(),
         span,
@@ -2030,7 +1963,7 @@ async fn test_unify_tycon_expand_nominal_variant_member_ok() {
     use std::sync::Arc;
 
     let mut state = InferState::new();
-    let mut subst = Substitution::new();
+
     let span = rust_span!();
 
     // Build body: Union([NominalVariant{Red}, NominalVariant{Green}])
@@ -2070,7 +2003,6 @@ async fn test_unify_tycon_expand_nominal_variant_member_ok() {
     let result = unify_sync(
         &tycon,
         &red,
-        &mut subst,
         &mut state,
         &mut Vec::new(),
         span.clone(),
@@ -2090,7 +2022,7 @@ async fn test_unify_tycon_expand_nominal_variant_non_member_fails() {
     use std::sync::Arc;
 
     let mut state = InferState::new();
-    let mut subst = Substitution::new();
+
     let span = rust_span!();
 
     let red = Type::NominalVariant {
@@ -2132,7 +2064,7 @@ async fn test_unify_tycon_expand_nominal_variant_non_member_fails() {
             tail: crate::type_def::RowTail::Empty,
         },
     };
-    let result = unify_sync(&tycon, &blue, &mut subst, &mut state, &mut Vec::new(), span).await;
+    let result = unify_sync(&tycon, &blue, &mut state, &mut Vec::new(), span).await;
     assert!(
         result.is_err(),
         "TyCon(@Color) should NOT unify with NominalVariant(Blue) which is not in Color's union"
@@ -2146,7 +2078,7 @@ async fn test_unify_tycon_expand_nominal_variant_non_member_fails() {
 #[tokio::test]
 async fn test_unify_tycon_expand_no_registered_body_fails() {
     let mut state = InferState::new();
-    let mut subst = Substitution::new();
+
     let span = rust_span!();
 
     // "Unknown" is not registered in tycon_env
@@ -2162,7 +2094,6 @@ async fn test_unify_tycon_expand_no_registered_body_fails() {
     let result = unify_sync(
         &tycon,
         &variant,
-        &mut subst,
         &mut state,
         &mut Vec::new(),
         span,
@@ -2183,7 +2114,7 @@ async fn test_unify_tycon_expand_symmetric() {
     use std::sync::Arc;
 
     let mut state = InferState::new();
-    let mut subst = Substitution::new();
+
     let span = rust_span!();
 
     let red = Type::NominalVariant {
@@ -2216,14 +2147,13 @@ async fn test_unify_tycon_expand_symmetric() {
     let r1 = unify_sync(
         &tycon,
         &red,
-        &mut subst,
         &mut state,
         &mut Vec::new(),
         span.clone(),
     )
     .await;
     // (NominalVariant, TyCon) direction
-    let r2 = unify_sync(&red, &tycon, &mut subst, &mut state, &mut Vec::new(), span).await;
+    let r2 = unify_sync(&red, &tycon, &mut state, &mut Vec::new(), span).await;
 
     assert!(
         r1.is_ok(),
@@ -2246,13 +2176,12 @@ async fn test_unify_tycon_expand_symmetric() {
 #[tokio::test]
 async fn test_constrain_error_absorption() {
     let mut state = InferState::new();
-    let mut subst = Substitution::new();
+
     let span = rust_span!();
 
     let result = constrain(
         &Type::error_cascade(),
         &Type::Int,
-        &mut subst,
         &mut state,
         &mut Vec::new(),
         span.clone(),
@@ -2267,7 +2196,6 @@ async fn test_constrain_error_absorption() {
     let result2 = constrain(
         &Type::Int,
         &Type::error_cascade(),
-        &mut subst,
         &mut state,
         &mut Vec::new(),
         span,
@@ -2288,12 +2216,12 @@ async fn test_constrain_error_absorption() {
 #[tokio::test]
 async fn test_constrain_cvar1_multi_typevar_in_union_adds_bounds() {
     let mut state = InferState::new();
-    let mut subst = Substitution::new();
+
     let span = rust_span!();
 
     // Register α and β at level 0.
-    state.levels.insert("α".to_string(), 0);
-    state.levels.insert("β".to_string(), 0);
+    state.set_level("α".to_string(), 0);
+    state.set_level("β".to_string(), 0);
 
     let alpha = Type::TypeVar("α".to_string(), 0);
     let beta = Type::TypeVar("β".to_string(), 0);
@@ -2303,7 +2231,6 @@ async fn test_constrain_cvar1_multi_typevar_in_union_adds_bounds() {
     let result = constrain(
         &Type::Int,
         &sup,
-        &mut subst,
         &mut state,
         &mut Vec::new(),
         span,
@@ -2355,11 +2282,11 @@ async fn test_constrain_cvar1_multi_typevar_in_union_adds_bounds() {
 #[tokio::test]
 async fn test_constrain_cvar1_single_typevar_binds_subst() {
     let mut state = InferState::new();
-    let mut subst = Substitution::new();
+
     let span = rust_span!();
 
     // Register α at level 0.
-    state.levels.insert("α".to_string(), 0);
+    state.set_level("α".to_string(), 0);
 
     let alpha = Type::TypeVar("α".to_string(), 0);
     let sup = Type::Union(vec![Type::Str, alpha.clone()]);
@@ -2367,7 +2294,6 @@ async fn test_constrain_cvar1_single_typevar_binds_subst() {
     let result = constrain(
         &Type::Int,
         &sup,
-        &mut subst,
         &mut state,
         &mut Vec::new(),
         span,
@@ -2382,7 +2308,7 @@ async fn test_constrain_cvar1_single_typevar_binds_subst() {
 
     // With a single TypeVar, C-Var1 binds α in the substitution (equational constraint).
     // Int & ~Str ≈ Int (since Int and Str are disjoint). α must be bound to Int (or equivalent).
-    let alpha_applied = subst.apply(&alpha);
+    let alpha_applied = state.apply(&alpha);
     assert!(
         !matches!(alpha_applied, Type::TypeVar(ref n, _) if n == "α"),
         "C-Var1 single-TypeVar must bind α in subst (not leave it free); got: {:?}",
@@ -2402,18 +2328,17 @@ async fn test_constrain_cvar1_single_typevar_binds_subst() {
 #[tokio::test]
 async fn test_constrain_typevar_lower_bound_added() {
     let mut state = InferState::new();
-    let mut subst = Substitution::new();
+
     let span = rust_span!();
 
     // Register β at level 0.
-    state.levels.insert("β".to_string(), 0);
+    state.set_level("β".to_string(), 0);
 
     let beta = Type::TypeVar("β".to_string(), 0);
 
     let result = constrain(
         &Type::Int,
         &beta,
-        &mut subst,
         &mut state,
         &mut Vec::new(),
         span,
@@ -2427,7 +2352,7 @@ async fn test_constrain_typevar_lower_bound_added() {
     );
 
     // β must NOT be bound in the substitution (directional bound accumulation, not equality).
-    let beta_applied = subst.apply(&beta);
+    let beta_applied = state.apply(&beta);
     assert!(
         matches!(beta_applied, Type::TypeVar(ref n, _) if n == "β"),
         "constrain(Int, TypeVar) must not bind β in subst (use bounds instead); got: {:?}",
