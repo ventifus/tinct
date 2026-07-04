@@ -42,5 +42,8 @@
   builtin-str-hash: [fn@Int   [let s@String] ...]
 
   # ── Comparison primitives — all return Int (1=true, 0=false) ────────────────────────
-  builtin-lt:       [fn@Int [let a@Int b@Int] ...]
+  builtin-lt:         [fn@Int [let a@Int    b@Int]    ...]
+  builtin-eq-int:     [fn@Int [let a@Int    b@Int]    ...]
+  builtin-eq-float:   [fn@Int [let a@Float  b@Float]  ...]
+  builtin-eq-string:  [fn@Int [let a@String b@String] ...]
 ]

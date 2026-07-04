@@ -1180,7 +1180,7 @@ pub(crate) fn builtin_tag_of(
         // Value::Annotated { inner: Variant(...), annotation: {...} }.
         // Annotations are metadata-only — tag-of sees only the inner value.
         // Consistent with Pattern::Constructor (eval.rs:3411-3421),
-        // values_equal (eval.rs:3623-3627), and visit_value (lib.rs:588-591).
+        // primitive_eq (eval.rs), and visit_value (lib.rs:588-591).
         let peeled: &Value = {
             let mut v = &val;
             while let Value::Annotated { inner, .. } = v {
@@ -3695,13 +3695,13 @@ fn validate_value(
         }
 
         // Check enum constraint.
-        // Uses the canonical async values_equal so that all value types (including
-        // Variant with payload and Dict) are compared correctly.
+        // Uses primitive_eq — only primitive types (Int, Float, String, unit Variant)
+        // are compared. Dict/payload-Variant are not structurally compared.
         if let Some(&enum_thunk_id) = schema.get(&HashableValue::Str("enum".into())) {
             let enum_thunk = ctx.get_thunk(enum_thunk_id);
             let enum_val = materialize(&enum_thunk, Some(&span), &ctx).await?;
             if let Value::Dict(ref enum_dict) = enum_val {
-                // Pre-materialize all enum values, then check membership via canonical equality.
+                // Pre-materialize all enum values, then check membership via primitive equality.
                 let mut allowed_values = Vec::with_capacity(enum_dict.len());
                 for (_key, &val_thunk_id) in enum_dict.iter() {
                     let val_thunk = ctx.get_thunk(val_thunk_id);
@@ -3710,14 +3710,7 @@ fn validate_value(
 
                 let mut found = false;
                 for allowed in &allowed_values {
-                    if crate::eval::values_equal(
-                        allowed.clone(),
-                        data.clone(),
-                        span.clone(),
-                        Arc::clone(&ctx),
-                    )
-                    .await?
-                    {
+                    if crate::eval::primitive_eq(allowed.clone(), data.clone()) {
                         found = true;
                         break;
                     }

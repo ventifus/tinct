@@ -24,27 +24,20 @@ const MAX_CONSTRAINT_DEPTH: usize = 256;
 /// Check if a type satisfies a type class constraint.
 /// Returns true if the type is an instance of the class.
 ///
-/// This function handles three kinds of constraint satisfaction:
+/// This function handles structural meta-rules for the type lattice only:
 ///
-/// 1. **Gradual/lattice meta-rules**: Unknown satisfies all constraints vacuously; Never
-///    vacuously (uninhabited); Top only satisfies Showable (total function policy).
+/// 1. **Gradual/lattice meta-rules**: Unknown satisfies all constraints vacuously
+///    (AGT existential lifting); Never vacuously (uninhabited).
 ///
-/// 2. **Structural propagation**: Record, NominalVariant, Union, and Intersection types
-///    are checked by recursing into their fields/members. A compound type satisfies a
-///    structural class iff all of its components do.
+/// 2. **Union/Intersection**: A compound type satisfies a constraint iff all of its
+///    members do (both branches must be safe for union-typed runtime values).
 ///
-/// 3. **Primitive leaf membership**: Delegated to `primitive_satisfies_constraint` (defined
-///    in `type_def.rs`). That function is the **single authoritative source** of which
-///    concrete types belong to which classes. `InferState::new()` also calls it to pre-seed
-///    `InstanceEnv` — so primitive membership is defined once and used in both paths.
+/// All class-specific membership (primitive types, records, nominals, maps) is handled
+/// by `InstanceEnv::resolve_instance` in `check_constraints_on_var` — driven by instance
+/// declarations in prelude. This function returns `false` for all concrete types so the
+/// caller falls through to instance resolution.
 ///
-/// The separation means: to add a new primitive type to a class, update ONLY
-/// `primitive_satisfies_constraint` in `type_def.rs`. The InstanceEnv pre-seeding in
-/// `InferState::new()` will automatically reflect the change.
-///
-/// Parameterized types that require InstanceDecl patterns with TypeVars
-/// are handled via `InstanceEnv::resolve_instance` in `check_constraints_on_var`
-/// — those instances are declared in prelude.
+/// This keeps `satisfies_constraint_inner` free of class name strings.
 pub fn satisfies_constraint(ty: &Type, class_name: &str) -> bool {
     satisfies_constraint_inner(ty, class_name, 0)
 }
@@ -71,66 +64,6 @@ fn satisfies_constraint_inner(ty: &Type, class_name: &str, depth: usize) -> bool
         return true;
     }
 
-    // [CONSTRAIN-TOP]: Showable(⊤) satisfied, all other classes ⊢ error.
-    // Top concretizes only to itself (γ(⊤) = {⊤}), so class membership requires
-    // a literal Top instance. Showable is the sole exception (total function policy).
-    if matches!(ty, Type::Any) {
-        return class_name == "Showable";
-    }
-
-    // [CONSTRAIN-FIELD]: C(Record({f: τ})) ⊢ satisfied iff C(τ) for all fields.
-    // Applies to built-in STRUCTURAL/COMPOSITIONAL classes where constraint satisfaction
-    // is determined by field types: Numeric, Comparable, Equatable, Showable.
-    // Mappable and Appendable are NOT structural (they depend on collection semantics).
-    if let Type::Record(row) = ty {
-        match class_name {
-            "Numeric" | "Comparable" | "Equatable" | "Showable" => {
-                if row.fields.is_empty() {
-                    return matches!(class_name, "Equatable" | "Showable");
-                }
-                return row
-                    .fields
-                    .values()
-                    .all(|field_ty| satisfies_constraint_inner(field_ty, class_name, depth + 1));
-            }
-            _ => {} // Fall through to primitive check / instance resolution
-        }
-    }
-
-    // [CONSTRAIN-NOMINAL]: C(NominalVariant{tag, fields}) ⊢ satisfied iff C(τ) for all fields.
-    // NominalVariants are structurally Equatable/Showable if all their fields are.
-    // Comparable and Numeric do NOT apply to NominalVariants (they are not ordered scalars).
-    if let Type::NominalVariant { fields, .. } = ty {
-        match class_name {
-            "Equatable" | "Showable" => {
-                if fields.fields.is_empty() {
-                    return true;
-                }
-                return fields
-                    .fields
-                    .values()
-                    .all(|field_ty| satisfies_constraint_inner(field_ty, class_name, depth + 1));
-            }
-            _ => {} // Fall through to instance resolution
-        }
-    }
-
-    // Map[K V] is always Showable — the runtime str() operation works for any map.
-    if ty.as_map().is_some() && class_name == "Showable" {
-        return true;
-    }
-    // Record for Appendable: any record satisfies Appendable (dict merge semantics).
-    if matches!(ty, Type::Record(_)) && class_name == "Appendable" {
-        return true;
-    }
-
-    // Record and Map are structurally equatable — the runtime equality check works for them.
-    if class_name == "Equatable"
-        && (matches!(ty, Type::Record(_)) || ty.as_map().is_some())
-    {
-        return true;
-    }
-
     // [CONSTRAIN-UNION]: C(τ₁ | τ₂) ⊢ satisfied iff C(τ₁) ∧ C(τ₂) (ALL members).
     // A union-typed value could be either alternative at runtime, so both branches must
     // satisfy the constraint. Use all(), NOT any().
@@ -147,12 +80,10 @@ fn satisfies_constraint_inner(ty: &Type, class_name: &str, depth: usize) -> bool
             .all(|member| satisfies_constraint_inner(member, class_name, depth + 1));
     }
 
-    // Primitive leaf check: delegate to the canonical membership table in type_def.rs.
-    // This is the single source of truth for which concrete primitive types belong to which
-    // classes. InferState::new() pre-seeds InstanceEnv from the same function via
-    // primitive_satisfies_constraint, so InstanceEnv and satisfies_constraint are always
-    // in sync for primitive leaf types.
-    primitive_satisfies_constraint(ty, class_name)
+    // All concrete types (primitives, records, nominals, maps) are handled by
+    // InstanceEnv::resolve_instance in check_constraints_on_var. Return false so the
+    // caller falls through to instance resolution.
+    false
 }
 
 /// Check if a constraint is entailed by a context (set of constraints).
@@ -348,15 +279,15 @@ async fn check_constraints_on_var(
         match constraint {
             ApplicableConstraint::SingleParam { class } => {
                 // Single-parameter type class constraint (e.g., Numeric a)
-                // First, check via satisfies_constraint (structural meta-rules + primitive
-                // leaf membership from primitive_satisfies_constraint). This is the fast path
-                // that avoids instance resolution for the common case.
+                // First, check via satisfies_constraint (lattice meta-rules: Unknown, Never,
+                // Union, Intersection). Returns false for all concrete types — those are
+                // handled by InstanceEnv below.
                 if satisfies_constraint(concrete_ty, &class) {
                     continue;
                 }
 
-                // Fast path returned false: try instance resolution for parametric and
-                // user-defined instances declared in prelude.
+                // satisfies_constraint returned false: try instance resolution for all
+                // concrete types (primitives, records, nominals) and user-defined instances.
                 // This enables user-defined instances (future work: dictionary construction)
                 // Clone instance_env to avoid borrowing state both immutably (for the
                 // field access) and mutably (as the unify parameter) at the same time.
@@ -388,7 +319,26 @@ async fn check_constraints_on_var(
                         continue;
                     }
                     Ok(None) => {
-                        // No instance found - constraint violated
+                        // No instance found — try widening literal types (IntLiteral → Int,
+                        // StringLiteral → Str) and retry. This handles the case where a
+                        // literal type doesn't have a direct instance but its parent type does.
+                        let widened = crate::typecheck::typecheck_call::widen_literal_types(concrete_ty.clone());
+                        if widened != *concrete_ty {
+                            // Widened type differs — retry with widened type
+                            if satisfies_constraint(&widened, &class) {
+                                continue;
+                            }
+                            let inst_env2 = state.instance_env.clone();
+                            state.instance_resolution_depth += 1;
+                            let retry_result =
+                                Box::pin(inst_env2.resolve_instance(&class, &widened, state)).await;
+                            state.instance_resolution_depth -= 1;
+                            match retry_result {
+                                Ok(Some(_)) => continue,
+                                _ => {}
+                            }
+                        }
+                        // No instance found even after widening - constraint violated
                         return Err(TypeErrorTyped::Generic(GenericTypeError {
                             message: format!(
                                 "type {} does not satisfy constraint {}",
@@ -1106,9 +1056,16 @@ fn type_key(ty: &Type) -> &'static str {
 /// With promotion, `_t0` binds to `Int`, and both `IntLiteral(1)` and `IntLiteral(2)` unify
 /// with `Int` via the literal-to-parent promotion rules.
 ///
-/// Promotion is now restricted to known primitive classes where literal instances entail
-/// parent instances (Numeric, Comparable, Equatable, Showable, Add, Sub, Mul, Div).
-/// For other classes, preserve the literal type and let instance resolution handle it.
+/// When binding a constrained type variable, promote literal types to their parent types.
+/// This prevents `[+ 1 2]` from failing: without promotion, `_t0` (Numeric) would bind
+/// to `IntLiteral(1)`, then unification of `IntLiteral(1)` with `IntLiteral(2)` would fail.
+/// With promotion, `_t0` binds to `Int`, and both `IntLiteral(1)` and `IntLiteral(2)` unify
+/// with `Int` via the literal-to-parent promotion rules.
+///
+/// Promotion applies uniformly for ANY class constraint — no class-name whitelist.
+/// IntLiteral → Int and StringLiteral → Str are safe for all classes because literal
+/// instances always entail parent instances (a literal value is always a valid value of
+/// the parent type).
 fn promote_literal_for_constrained_var(
     var_name: &str,
     ty: Type,
@@ -1121,29 +1078,13 @@ fn promote_literal_for_constrained_var(
         return ty;
     }
 
-    // Only promote for known primitive classes where literal instances entail parent instances.
-    // These classes have the property that if IntLiteral(42) satisfies the class, then Int
-    // also satisfies it (and similarly for StringLiteral/Str).
-    const PROMOTABLE_CLASSES: &[&str] = &[
-        "Numeric",
-        "Comparable",
-        "Equatable",
-        "Showable",
-        "Addable",
-        "Subtractable",
-        "Multipliable",
-        "Divisible",
-    ];
-
-    let has_promotable_constraint = constraints.iter().any(|c| match c {
-        Constraint::Class { class, vars, .. } => {
-            vars.iter().any(|v| v.as_var() == Some(var_name))
-                && PROMOTABLE_CLASSES.contains(&class.name.as_str())
-        }
+    // Check if this variable has ANY class constraint — if so, promote literals.
+    let has_any_class_constraint = constraints.iter().any(|c| match c {
+        Constraint::Class { vars, .. } => vars.iter().any(|v| v.as_var() == Some(var_name)),
         _ => false,
     });
 
-    if !has_promotable_constraint {
+    if !has_any_class_constraint {
         return ty;
     }
 

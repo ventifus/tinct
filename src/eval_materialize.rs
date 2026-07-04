@@ -16,7 +16,7 @@ use crate::builtins::flatten_overlay;
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{
     as_record_row_merged, format_field_path, format_type_for_assert, match_pattern, materialize,
-    validate_and_wrap_record, value_matches_type, values_equal, EvalContext,
+    validate_and_wrap_record, value_matches_type, primitive_eq, EvalContext,
     DEFAULT_ANNOTATION_KEY, IS_ANNOTATION_KEY,
 };
 use crate::eval_call::{invoke_function, invoke_function_tco, CallContext};
@@ -3836,13 +3836,7 @@ fn eval_structural_pattern_inner<'a>(
                     match_span.clone(),
                 ));
                 let pat_val = materialize(&pat_expr_thunk, Some(&match_span), ctx).await?;
-                Ok(values_equal(
-                    pat_val,
-                    scrutinee_value.clone(),
-                    match_span,
-                    Arc::clone(ctx),
-                )
-                .await?)
+                Ok(primitive_eq(pat_val, scrutinee_value.clone()))
             }
         }
     })
@@ -3852,7 +3846,7 @@ fn eval_structural_pattern_inner<'a>(
 ///
 /// - If `name` is in `binding_set`: insert a new_materialized thunk into `arm_env`
 /// - If `name` is NOT in `binding_set`: look up `name` in `env` via de Bruijn coordinates
-///   (`pin_level`, `pin_slot`), compare with `values_equal`; return false (soft skip) if not equal
+///   (`pin_level`, `pin_slot`), compare with `primitive_eq`; return false (soft skip) if not equal
 ///
 /// `pin_level` and `pin_slot` are the de Bruijn coordinates of `name` in the enclosing scope.
 /// `u32::MAX` for both means no resolver coordinates were available (resolver error) —
@@ -3894,13 +3888,7 @@ async fn bind_or_pin_name(
             }
         };
         let pin_val = materialize(&pin_thunk, Some(match_span), ctx).await?;
-        Ok(values_equal(
-            pin_val,
-            scrutinee_value.clone(),
-            match_span.clone(),
-            Arc::clone(ctx),
-        )
-        .await?)
+        Ok(primitive_eq(pin_val, scrutinee_value.clone()))
     }
 }
 

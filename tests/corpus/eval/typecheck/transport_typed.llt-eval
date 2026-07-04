@@ -15,12 +15,14 @@
   extract-tag: [fn [let t] [tag-of t]]
   tcp-via-fn: [extract-tag Tcp]
 
-  # Equality works on variants
-  tcp-eq-tcp: [= Tcp Tcp]
+  # Variant comparison via pattern matching — no Equatable instance for Transport
+  tcp-is-tcp: [match Tcp
+    Transport.Tcp: Boolean.True
+    _:             Boolean.False]
 
   # All 6 transport constructors exist
   all-six: [0: Tcp  1: Udp  2: UnixStream  3: UnixDatagram  4: NamedPipe  5: Icmp]
 ]
 
 === out
-Dict({"tcp-type": String("Variant"), "udp-type": String("Variant"), "tcp-tag": String("Transport.Tcp"), "icmp-tag": String("Transport.Icmp"), "extract-tag": Function(t), "tcp-via-fn": String("Transport.Tcp"), "tcp-eq-tcp": Variant(Boolean.True, Null), "all-six": Dict({0: Variant(Transport.Tcp, Null), 1: Variant(Transport.Udp, Null), 2: Variant(Transport.UnixStream, Null), 3: Variant(Transport.UnixDatagram, Null), 4: Variant(Transport.NamedPipe, Null), 5: Variant(Transport.Icmp, Null)})})
+Dict({"tcp-type": String("Variant"), "udp-type": String("Variant"), "tcp-tag": String("Transport.Tcp"), "icmp-tag": String("Transport.Icmp"), "extract-tag": Function(t), "tcp-via-fn": String("Transport.Tcp"), "tcp-is-tcp": Variant(Boolean.True, Null), "all-six": Dict({0: Variant(Transport.Tcp, Null), 1: Variant(Transport.Udp, Null), 2: Variant(Transport.UnixStream, Null), 3: Variant(Transport.UnixDatagram, Null), 4: Variant(Transport.NamedPipe, Null), 5: Variant(Transport.Icmp, Null)})})

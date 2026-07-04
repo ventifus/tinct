@@ -142,13 +142,13 @@ async fn test_types_are_not_disjoint_multi_field_records() {
 
 // test_promote_literal_restricted_to_promotable_classes — deleted: Numeric class no longer in InferState::new() after type-foundations sprint.
 
-/// Task 4b: Literal NOT promoted for non-promotable classes
+/// Literal promotion applies uniformly for ANY class constraint.
+/// IntLiteral(42) with a "MyClass" constraint is promoted to Int.
 #[tokio::test]
-async fn test_promote_literal_not_promoted_for_non_promotable_class() {
+async fn test_promote_literal_promoted_for_any_class() {
     let state = InferState::new();
 
-    // Add a non-promotable constraint (e.g., custom class "MyClass")
-    // Create a dummy ClassDecl for testing
+    // Any class constraint triggers literal promotion — no class-name whitelist.
     use crate::types::{ClassDecl, Kind};
     let my_class = std::sync::Arc::new(ClassDecl {
         name: "MyClass".to_string(),
@@ -170,8 +170,8 @@ async fn test_promote_literal_not_promoted_for_non_promotable_class() {
         promote_literal_for_constrained_var("t0", Type::IntLiteral(42), &constraints, &state);
 
     match result {
-        Type::IntLiteral(42) => {} // Expected: NOT promoted
-        other => panic!("Expected IntLiteral(42), got {:?}", other),
+        Type::Int => {} // Expected: promoted to Int for any class constraint
+        other => panic!("Expected Int, got {:?}", other),
     }
 }
 

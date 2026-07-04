@@ -2433,13 +2433,14 @@ Equatable@[doc: "Type class for types that support equality comparison"]:
   [class [let a]
     =: [Fn@Bool [a a]]]
 
-# Concrete type Equatable instances — method key is = (operator name for dispatch)
-# builtin-eq returns Int(1/0); wrap with builtin-if to produce Boolean.True/Boolean.False.
+# Concrete type Equatable instances — use type-specific equality primitives.
+# builtin-eq-int/float/string return Int(1/0); wrap with builtin-if for Boolean.
+# Bool equality: convert to Int via bool->int-priv, then compare with builtin-eq-int.
 [instance Equatable
-  [let a@Int]:    [=: [fn [let x y] [builtin-if [builtin-eq x y] Boolean.True Boolean.False]]]
-  [let a@Float]:  [=: [fn [let x y] [builtin-if [builtin-eq x y] Boolean.True Boolean.False]]]
-  [let a@String]: [=: [fn [let x y] [builtin-if [builtin-eq x y] Boolean.True Boolean.False]]]
-  [let a@Bool]:   [=: [fn [let x y] [builtin-if [builtin-eq x y] Boolean.True Boolean.False]]]]
+  [let a@Int]:    [=: [fn [let x@Int    y@Int]    [builtin-if [builtin-eq-int    x y] Boolean.True Boolean.False]]]
+  [let a@Float]:  [=: [fn [let x@Float  y@Float]  [builtin-if [builtin-eq-float  x y] Boolean.True Boolean.False]]]
+  [let a@String]: [=: [fn [let x@String y@String] [builtin-if [builtin-eq-string x y] Boolean.True Boolean.False]]]
+  [let a@Bool]:   [=: [fn [let x@Bool   y@Bool]   [builtin-if [builtin-eq-int [bool->int-priv x] [bool->int-priv y]] Boolean.True Boolean.False]]]]
 
 # Cross-type catch-all: comparing values of different types always returns Boolean.False
 [instance Equatable
@@ -2503,6 +2504,18 @@ ShowableStr@[doc: "Showable instance for Str"]:
 ShowableBool@[doc: "Showable instance for Bool"]:
   [instance Showable
     [let a@Bool]: [str: [fn [let x] [if x "true" "false"]]]]
+
+ShowableBytes@[doc: "Showable instance for Bytes: UTF-8 decode to String"]:
+  [instance Showable
+    [let a@Bytes]: [str: [fn [let x] [builtin-bytes-str x]]]]
+
+ShowableDict@[doc: "Showable instance for Dict: produce LLT source representation"]:
+  [instance Showable
+    [let a@Dict]: [str: [fn [let x] [builtin-llt-repr x]]]]
+
+ShowableMap@[doc: "Showable instance for Map: produce LLT source representation"]:
+  [instance Showable
+    [let a@Map]: [str: [fn [let x] [builtin-llt-repr x]]]]
 
 # ============================================================================
 # Type Class Declarations: Printable
@@ -2638,7 +2651,7 @@ Int64LE/BE, UInt64LE/BE, Float32LE/BE, Float64LE/BE.
 # Hashable implies Equatable (dict equality requires value equality checks).
 #
 # Note: builtin-int-eq and builtin-str-eq are not yet separate builtins;
-# all equality instances currently use builtin-eq which handles all types.
+# Equatable instances use type-specific builtins (builtin-eq-int, builtin-eq-float, builtin-eq-string).
 # Type-specific equality builtins are tracked for a future sprint.
 
 Hashable@[doc: """

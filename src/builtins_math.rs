@@ -237,11 +237,9 @@ pub(crate) fn builtin_div_float(
 
 /// `=`: Equality comparison.
 ///
-/// Delegates all structural equality logic to the canonical `eval::values_equal`,
-/// which handles Int, Float, String, Bool, Variant (with/without payload), Dict,
-/// Seq. Cross-type combinations return false (no Int/Float promotion in equality).
-///
-/// Cycle detection for Dict/Seq is provided by `materialize`'s InProgress sentinel.
+/// Delegates to `eval::primitive_eq` which handles only primitive types:
+/// Int, Float, String, and unit Variant (including Bool). No cross-type
+/// Int/Float comparison. No Dict/Seq/payload-Variant deep structural comparison.
 ///
 /// Inherently materializing: must inspect values to determine equality.
 pub(crate) fn builtin_eq(
@@ -251,7 +249,7 @@ pub(crate) fn builtin_eq(
         args,
         named,
         call_span,
-        ctx,
+        ctx: _,
         ..
     } = ctx_arg;
     Box::pin(async move {
@@ -261,11 +259,11 @@ pub(crate) fn builtin_eq(
         }
 
         // Both args are pre-materialized by force_count/pos_strictness.
-        // NOTE: The canonical values_equal handles all types. Fast paths for
-        // Int/Float/String/Bool return immediately without async overhead.
-        // Cross-type comparisons (e.g. Int vs Float) return false — no implicit promotion.
-        // This prevents infinite recursion when EquatableInt.eq calls [builtin-eq a b]:
-        // values_equal dispatches on the value type directly, not through typeclass dispatch.
+        // primitive_eq handles only primitive types: Int, Float, String, unit Variant,
+        // and Dict (shallow: same keys + same thunk IDs). No cross-type comparison,
+        // no deep structural comparison.
+        // This prevents infinite recursion when Equatable instances call [builtin-eq a b]:
+        // primitive_eq dispatches on the value type directly, not through typeclass dispatch.
         let left = args[0]
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
@@ -274,8 +272,134 @@ pub(crate) fn builtin_eq(
             .expect("pre-materialized by force_count/pos_strictness");
 
         let result =
-            crate::eval::values_equal(left, right, call_span.clone(), Arc::clone(&ctx)).await?;
+            crate::eval::primitive_eq(left, right);
         ok_val(Value::Int(if result { 1 } else { 0 }), call_span)
+    })
+}
+
+/// `builtin-eq-int`: Type-specific integer equality.
+///
+/// Takes exactly two Int arguments, returns Int (1 if equal, 0 if not).
+/// No cross-type comparison — both args must be Int.
+pub(crate) fn builtin_eq_int(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ..
+    } = ctx_arg;
+    Box::pin(async move {
+        reject_named("builtin-eq-int", named.as_ref(), call_span.clone())?;
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+        let left = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let right = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        match (&left, &right) {
+            (Value::Int(a), Value::Int(b)) => {
+                ok_val(Value::Int(if a == b { 1 } else { 0 }), call_span)
+            }
+            _ => Err(EvalError::type_mismatch(
+                "Int",
+                &format!("{} and {}", left.type_name(), right.type_name()),
+                call_span,
+            )
+            .into()),
+        }
+    })
+}
+
+/// `builtin-eq-float`: Type-specific float equality.
+///
+/// Takes exactly two Float arguments, returns Int (1 if equal, 0 if not).
+/// No cross-type comparison — both args must be Float.
+pub(crate) fn builtin_eq_float(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ..
+    } = ctx_arg;
+    Box::pin(async move {
+        reject_named("builtin-eq-float", named.as_ref(), call_span.clone())?;
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+        let left = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let right = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        match (&left, &right) {
+            (Value::Float(a), Value::Float(b)) => {
+                ok_val(Value::Int(if a == b { 1 } else { 0 }), call_span)
+            }
+            _ => Err(EvalError::type_mismatch(
+                "Float",
+                &format!("{} and {}", left.type_name(), right.type_name()),
+                call_span,
+            )
+            .into()),
+        }
+    })
+}
+
+/// `builtin-eq-string`: Type-specific string equality.
+///
+/// Takes exactly two String arguments, returns Int (1 if equal, 0 if not).
+/// No cross-type comparison — both args must be String.
+pub(crate) fn builtin_eq_string(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ..
+    } = ctx_arg;
+    Box::pin(async move {
+        reject_named("builtin-eq-string", named.as_ref(), call_span.clone())?;
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+        let left = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        let right = args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by force_count/pos_strictness");
+        match (&left, &right) {
+            (
+                Value::String {
+                    source: s1,
+                    start: start1,
+                    end: end1,
+                },
+                Value::String {
+                    source: s2,
+                    start: start2,
+                    end: end2,
+                },
+            ) => {
+                let eq = s1[*start1..*end1] == s2[*start2..*end2];
+                ok_val(Value::Int(if eq { 1 } else { 0 }), call_span)
+            }
+            _ => Err(EvalError::type_mismatch(
+                "String",
+                &format!("{} and {}", left.type_name(), right.type_name()),
+                call_span,
+            )
+            .into()),
+        }
     })
 }
 

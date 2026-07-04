@@ -22,11 +22,11 @@ use crate::builtins::builtin;
 // Arithmetic, comparison, bitwise, type-conversion, and control-flow implementations.
 use crate::builtins_math::{
     builtin_acos, builtin_add, builtin_asin, builtin_atan, builtin_atan2, builtin_band,
-    builtin_bor, builtin_bxor, builtin_cos, builtin_div_float, builtin_eq, builtin_exp,
-    builtin_finite_check, builtin_float, builtin_gt, builtin_gte, builtin_if, builtin_inf_check,
-    builtin_log, builtin_log10, builtin_log2, builtin_lt, builtin_lte, builtin_mul,
-    builtin_nan_check, builtin_pow, builtin_shl, builtin_shr, builtin_sin, builtin_sqrt,
-    builtin_sub, builtin_tan,
+    builtin_bor, builtin_bxor, builtin_cos, builtin_div_float, builtin_eq, builtin_eq_float,
+    builtin_eq_int, builtin_eq_string, builtin_exp, builtin_finite_check, builtin_float,
+    builtin_gt, builtin_gte, builtin_if, builtin_inf_check, builtin_log, builtin_log10,
+    builtin_log2, builtin_lt, builtin_lte, builtin_mul, builtin_nan_check, builtin_pow,
+    builtin_shl, builtin_shr, builtin_sin, builtin_sqrt, builtin_sub, builtin_tan,
 };
 // Dict/access implementations.
 use crate::builtins_dict::{
@@ -215,6 +215,26 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
         builtin!(
             "builtin-eq",
             builtin_eq,
+            [Strictness::Seq, Strictness::Seq],
+            2
+        ),
+        // Type-specific equality primitives — used by Equatable instances.
+        // No cross-type comparison; each takes exactly two args of the same type.
+        builtin!(
+            "builtin-eq-int",
+            builtin_eq_int,
+            [Strictness::Seq, Strictness::Seq],
+            2
+        ),
+        builtin!(
+            "builtin-eq-float",
+            builtin_eq_float,
+            [Strictness::Seq, Strictness::Seq],
+            2
+        ),
+        builtin!(
+            "builtin-eq-string",
+            builtin_eq_string,
             [Strictness::Seq, Strictness::Seq],
             2
         ),
@@ -3058,6 +3078,38 @@ pub fn core_type_env(env: &mut TypeEnv) {
             },
         );
     }
+
+    // Type-specific equality primitives — used by Equatable instances.
+    // builtin-eq-int: Int → Int → Int
+    env.insert(
+        "builtin-eq-int".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Int), (None, Type::Int)],
+            ret: Box::new(Type::Int),
+            variadic: false,
+            required_count: 2,
+        },
+    );
+    // builtin-eq-float: Float → Float → Int
+    env.insert(
+        "builtin-eq-float".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Float), (None, Type::Float)],
+            ret: Box::new(Type::Int),
+            variadic: false,
+            required_count: 2,
+        },
+    );
+    // builtin-eq-string: Str → Str → Int
+    env.insert(
+        "builtin-eq-string".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Str), (None, Type::Str)],
+            ret: Box::new(Type::Int),
+            variadic: false,
+            required_count: 2,
+        },
+    );
 
     // ── Numeric rounding / parsing ────────────────────────────────────────────
     // builtin-floor / builtin-round: Number → Int

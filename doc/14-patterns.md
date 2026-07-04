@@ -230,17 +230,17 @@ Pattern::TypeAssert { resolved_type, inner } => {
 }
 ```
 
-### `values_equal` — Canonical Implementation
+### `primitive_eq` — Primitive Equality
 
-Tinct has one canonical `values_equal` function in `src/eval.rs` (async). All equality comparisons go through it:
+Tinct has one `primitive_eq` function in `src/eval.rs` (synchronous). Pattern matching and `builtin-eq` go through it:
 
-- `builtin_eq` (`=` operator) — calls `eval::values_equal`
-- `CaseArmExactValueCheck` — calls `eval::values_equal` with `.await`
-- `builtins_meta.rs` enum constraint handler — calls `eval::values_equal` with `.await`
+- `builtin_eq` (`builtin-eq`) — calls `eval::primitive_eq`
+- Pin patterns — calls `eval::primitive_eq`
+- `builtins_meta.rs` enum constraint handler — calls `eval::primitive_eq`
 
-The canonical implementation handles: `(Int, Int)`, `(Float, Float)`, `(Bool, Bool)`, `(String, String)`, `(Variant{payload:None}, Variant{payload:None})` unit-tag equality, `(Variant{tag:t1,payload:Some(p1)}, Variant{tag:t2,payload:Some(p2)})` payload-Variant equality, `(Dict, Dict)` structural equality with cycle detection via `materialize`'s InProgress sentinel (Launchbury 1993 blackholing). Cross-type comparisons return `Ok(false)`.
+The implementation handles: `(Int, Int)`, `(Float, Float)`, `(String, String)`, `(Variant{payload:None}, Variant{payload:None})` unit-tag equality. All other combinations (including cross-type Int/Float, Dict, payload Variants) return `false`.
 
-The invariant: **`[= a b]` returns true if and only if `a: arm` matches `b`**. All equality paths implement the same semantics.
+The `=` operator dispatches through Equatable type class instances. Type-specific builtins (`builtin-eq-int`, `builtin-eq-float`, `builtin-eq-string`) implement the instance methods. Types without an explicit Equatable instance fall through to the catch-all which returns `Boolean.False`. Use pattern matching for variant comparison.
 
 ### Exhaustiveness Checking
 

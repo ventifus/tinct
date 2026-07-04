@@ -25,7 +25,7 @@
 # BUG-A (FIXED B-441): builtin-tag-of now peels Value::Annotated wrappers before
 #   matching. The fix adds a while-let peeling loop in builtin_tag_of
 #   (src/builtins_meta.rs) consistent with Pattern::Constructor (eval.rs:3411-3421),
-#   values_equal (eval.rs:3623-3627), and visit_value (lib.rs:588-591).
+#   primitive_eq (eval.rs), and visit_value (lib.rs:588-591).
 #
 # BUG-B (FIXED B-444): Replaced `True`/`False` with `Boolean.True`/`Boolean.False`
 #   throughout this test. Boolean is injected by loader.llt. The guarding annotation

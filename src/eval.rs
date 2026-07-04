@@ -415,9 +415,7 @@ type MatchPatternFuture<'a> = std::pin::Pin<
     Box<dyn std::future::Future<Output = EvalResult<Option<Arc<RwLock<Environment>>>>> + 'a>,
 >;
 
-/// Type alias for the return type of `values_equal` — a recursive async fn returning bool.
-/// Must be `Pin<Box<...>>` to support recursion (direct `async fn` recursion is unsized).
-type ValuesEqualFuture = std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<bool>>>>;
+// ValuesEqualFuture removed — primitive_eq is synchronous (no async needed).
 
 #[cfg(test)]
 const ANNOTATION_META_KEYS: &[&str] = &["default", "type", "doc", "is", "repr", "_constructor"];
@@ -3236,15 +3234,9 @@ pub(crate) fn match_pattern<'a>(
                 };
                 let var_value = materialize(&var_thunk, Some(value_span), ctx).await?;
 
-                // Compare values for equality. Dict and Seq require materialization of
-                // their contents, so this is an async operation.
-                let matches = values_equal(
-                    var_value,
-                    value.clone(),
-                    value_span.clone(),
-                    Arc::clone(ctx),
-                )
-                .await?;
+                // Compare values for equality using primitive_eq — only handles
+                // Int, Float, String, unit Variant. No deep structural comparison.
+                let matches = primitive_eq(var_value, value.clone());
                 if matches {
                     Ok(Some(Arc::clone(env)))
                 } else {
@@ -3472,131 +3464,74 @@ pub(crate) fn match_pattern<'a>(
 /// and sequence elements must be materialized and compared recursively.
 ///
 /// # Strictness
-/// - `Int`, `Float`, `Bool`, `String`: compare without any materialization.
-/// - `Variant{payload:None}`: tag equality only.
-/// - `Variant{payload:Some(p)}`: tags must match, then payloads are materialized
-///   and compared recursively.
-/// - `Dict(a)` vs `Dict(b)`: same key set required; then each value pair is
-///   materialized and compared recursively. This forces all values in both
-///   dicts.
-/// - `Seq` vs `Seq`: head elements materialized and compared, then tails
-///   materialized and compared recursively.
+/// - `Int`: same-type integer comparison.
+/// - `Float`: same-type float comparison.
+/// - `String`: same-type string comparison.
+/// - `Variant{payload:None}`: tag equality only (covers Bool and unit constructors).
 /// - All other combinations (including cross-type) return `false`.
 ///
-/// Cycle detection for Dict/Seq is provided by `materialize`'s InProgress
-/// sentinel — re-entering an InProgress thunk produces a circular dependency
-/// error rather than infinite recursion.
+/// Annotated wrappers are stripped before comparison.
 ///
-/// Uses `Pin<Box<...>>` to support recursion (direct `async fn` recursion is unsized).
-/// Takes owned `Value` and copies `Span` to avoid self-referential lifetime issues in
-/// the recursive calls inside the pinned future.
-pub(crate) fn values_equal(
-    a: Value,
-    b: Value,
-    span: Span,
-    ctx: Arc<EvalContext>,
-) -> ValuesEqualFuture {
-    Box::pin(async move {
-        match (a, b) {
-            (Value::Int(x), Value::Int(y)) => Ok(x == y),
-            (Value::Float(x), Value::Float(y)) => Ok(x == y),
-            (
-                Value::Variant { tag: a_tag, payload: None },
-                Value::Variant { tag: b_tag, payload: None },
-            ) if (a_tag == "Boolean.True" || a_tag == "Boolean.False")
-                && (b_tag == "Boolean.True" || b_tag == "Boolean.False") =>
-            {
-                Ok(a_tag == b_tag)
+/// Dict comparison is shallow: same keys and same thunk IDs (no value
+/// materialization). This covers null equality ([] == []) and self-equality
+/// patterns ([builtin-eq x x]) without deep structural comparison.
+/// No payload-Variant or Seq deep comparison. No cross-type Int/Float
+/// comparison — use type-specific builtins instead.
+///
+/// This is the primitive equality kernel used by `builtin-eq`, pattern matching
+/// (Pin and case-arm exact-value checks), and bind-or-pin.
+pub(crate) fn primitive_eq(a: Value, b: Value) -> bool {
+    // Peel Annotated wrappers — metadata is transparent for equality.
+    let a = peel_annotated(a);
+    let b = peel_annotated(b);
+
+    match (&a, &b) {
+        (Value::Int(x), Value::Int(y)) => x == y,
+        (Value::Float(x), Value::Float(y)) => x == y,
+        (
+            Value::String {
+                source: s1,
+                start: start1,
+                end: end1,
+            },
+            Value::String {
+                source: s2,
+                start: start2,
+                end: end2,
+            },
+        ) => s1[*start1..*end1] == s2[*start2..*end2],
+        // Nullary variants: tag equality (covers Boolean.True/False, unit constructors)
+        (
+            Value::Variant {
+                tag: tag1,
+                payload: None,
+            },
+            Value::Variant {
+                tag: tag2,
+                payload: None,
+            },
+        ) => tag1 == tag2,
+        // Dict shallow equality: same keys and same thunk IDs (no value materialization).
+        // This covers null equality ([] == []) and self-equality ([builtin-eq x x] where
+        // x is a Dict) without deep structural comparison of values.
+        (Value::Dict(a), Value::Dict(b)) => {
+            if a.len() != b.len() {
+                return false;
             }
-            (
-                Value::String {
-                    source: s1,
-                    start: start1,
-                    end: end1,
-                },
-                Value::String {
-                    source: s2,
-                    start: start2,
-                    end: end2,
-                },
-            ) => Ok(s1[start1..end1] == s2[start2..end2]),
-            // Nullary variants compare by tag equality
-            (
-                Value::Variant {
-                    tag: tag1,
-                    payload: None,
-                },
-                Value::Variant {
-                    tag: tag2,
-                    payload: None,
-                },
-            ) => Ok(tag1 == tag2),
-            // Unary variants: tags must match, then materialize and compare payloads recursively.
-            // Mismatched presence (Some vs None) falls through to `_ => Ok(false)`.
-            (
-                Value::Variant {
-                    tag: tag1,
-                    payload: Some(id1),
-                },
-                Value::Variant {
-                    tag: tag2,
-                    payload: Some(id2),
-                },
-            ) => {
-                if tag1 != tag2 {
-                    return Ok(false);
-                }
-                let thunk1 = ctx.get_thunk(id1);
-                let thunk2 = ctx.get_thunk(id2);
-                let val1 = materialize(&thunk1, Some(&span), &ctx).await?;
-                let val2 = materialize(&thunk2, Some(&span), &ctx).await?;
-                values_equal(val1, val2, span, ctx).await
-            }
-            // Dict structural equality: same keys, then compare each value pair.
-            // Deep equality requires materializing all field values in both dicts.
-            (Value::Dict(map_a), Value::Dict(map_b)) => {
-                if map_a.len() != map_b.len() {
-                    return Ok(false);
-                }
-                // Keys must be identical (same set; insertion order is not required
-                // for equality — only that every key in a exists in b with the same value).
-                for (key, id_a) in &map_a {
-                    let id_b = match map_b.get(key) {
-                        Some(id) => *id,
-                        None => return Ok(false),
-                    };
-                    let thunk_a = ctx.get_thunk(*id_a);
-                    let thunk_b = ctx.get_thunk(id_b);
-                    let val_a = materialize(&thunk_a, Some(&span), &ctx).await?;
-                    let val_b = materialize(&thunk_b, Some(&span), &ctx).await?;
-                    if !values_equal(val_a, val_b, span.clone(), Arc::clone(&ctx)).await? {
-                        return Ok(false);
-                    }
-                }
-                Ok(true)
-            }
-            // Seq structural equality: materialize head and tail, compare element by element.
-            // Nominal variants (including Seq) fall through to cross-type false below.
-            // Cross-type Int/Float equality: equal when both represent the same number.
-            // Mirrors the pre-T-975 builtins_math.rs behavior and satisfies the typeclass
-            // Equatable instance for EquatableNum, where [= 1 1.0] returns true.
-            // Precision check is skipped here — cross-type equality is best-effort and
-            // values that exceed MAX_SAFE_INT have already been flagged at the call site.
-            (Value::Int(a), Value::Float(b)) => Ok(a as f64 == b),
-            (Value::Float(a), Value::Int(b)) => Ok(a == b as f64),
-            // Annotated is transparent for equality — unwrap inner and compare.
-            // This ensures [= Red Red] where Red is Value::Annotated{inner: Variant("T.Red")}
-            // returns true, consistent with Value::PartialEq's Annotated arms.
-            // Note: annotated constructors only arise when declared with @[...] (e.g.,
-            // `Red@[as-type: fn]`); unannotated constructors are bare Value::Variant.
-            (Value::Annotated { inner: a, .. }, Value::Annotated { inner: b, .. }) => {
-                values_equal(*a, *b, span, ctx).await
-            }
-            (Value::Annotated { inner, .. }, b) => values_equal(*inner, b, span, ctx).await,
-            (a, Value::Annotated { inner, .. }) => values_equal(a, *inner, span, ctx).await,
-            _ => Ok(false),
+            a.iter().all(|(k, id_a)| {
+                b.get(k).map_or(false, |id_b| id_a == id_b)
+            })
         }
-    })
+        _ => false,
+    }
+}
+
+/// Peel Value::Annotated wrappers, returning the inner value.
+fn peel_annotated(v: Value) -> Value {
+    match v {
+        Value::Annotated { inner, .. } => peel_annotated(*inner),
+        other => other,
+    }
 }
 
 #[cfg(test)]

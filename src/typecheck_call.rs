@@ -40,7 +40,7 @@ use crate::types::{
 /// `Record({0: IntLiteral(1), 1: IntLiteral(2)})` and the second would fail with
 /// `IntLiteral(1) ≠ IntLiteral(3)`.  Widening both records to
 /// `Record({0: Int, 1: Int})` lets them unify correctly.
-pub(super) fn widen_literal_types(ty: Type) -> Type {
+pub(crate) fn widen_literal_types(ty: Type) -> Type {
     match ty {
         Type::IntLiteral(_) => Type::Int,
         Type::StringLiteral(_) => Type::Str,

@@ -2534,6 +2534,39 @@ pub(crate) fn infer_surface_expr<'a>(
                                                         Some("Bool".to_string())
                                                     }
                                                     Type::TyCon(n) => Some(n.clone()),
+                                                    // NominalVariant: tag is "TypeName.CtorName";
+                                                    // extract "TypeName" to match instance annotation
+                                                    // patterns like [let a@Point].
+                                                    Type::NominalVariant { tag, .. } => {
+                                                        Some(tag.split('.').next().unwrap_or(tag).to_string())
+                                                    }
+                                                    // Union of NominalVariants: the TyCon name is the
+                                                    // common prefix of all tags. For a type like
+                                                    // Result (= Ok | Err), all tags share "Result".
+                                                    Type::Union(members) => {
+                                                        // Try to extract a common TyCon name from
+                                                        // NominalVariant tags in the union.
+                                                        let mut tycon_name: Option<&str> = None;
+                                                        let mut all_nominal = true;
+                                                        for m in members {
+                                                            if let Type::NominalVariant { tag, .. } = m {
+                                                                let name = tag.split('.').next().unwrap_or(tag);
+                                                                match tycon_name {
+                                                                    None => tycon_name = Some(name),
+                                                                    Some(existing) if existing == name => {}
+                                                                    _ => { all_nominal = false; break; }
+                                                                }
+                                                            } else {
+                                                                all_nominal = false;
+                                                                break;
+                                                            }
+                                                        }
+                                                        if all_nominal {
+                                                            tycon_name.map(|n| n.to_string())
+                                                        } else {
+                                                            Some(format!("{ty}"))
+                                                        }
+                                                    }
                                                     other => Some(format!("{other}")),
                                                 }
                                             })
