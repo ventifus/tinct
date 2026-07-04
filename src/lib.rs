@@ -356,7 +356,7 @@ pub trait ValueVisitor {
     ) -> Result<Self::Output, Box<error::EvalError>>;
     fn visit_proxy(&self, span: ast::Span) -> Result<Self::Output, Box<error::EvalError>>;
     fn visit_variant(&self, tag: String, payload: Self::Output) -> Self::Output;
-    /// Called when the value is `Absent.Absent` (the canonical absent/missing value).
+    /// Called when the value is the canonical absent/missing sentinel.
     /// Default: delegates to `visit_null()`.
     fn visit_absent(&self) -> Self::Output {
         self.visit_null()
@@ -447,10 +447,9 @@ pub fn visit_value<'a, V: ValueVisitor + 'a>(
                     .await?;
                 visit_value(&value::Value::Dict(map), ctx, depth, visitor, span).await
             }
-            value::Value::Variant {
-                ref tag,
-                payload: None,
-            } if tag == "Absent.Absent" => Ok(visitor.visit_absent()),
+            v @ value::Value::Variant { payload: None, .. } if v.is_absent() => {
+                Ok(visitor.visit_absent())
+            }
             value::Value::Function { params, .. } => visitor.visit_function(params, span),
             value::Value::Builtin(def) => visitor.visit_builtin(def.name, span),
             value::Value::Proxy { .. } => visitor.visit_proxy(span),
@@ -850,47 +849,43 @@ mod tests {
         assert_eq!(format!("{v}"), "Color.Red");
     }
 
-    /// B-448: Boolean.True and Boolean.False variants must serialise as variant dicts,
-    /// not as JSON/display booleans.  The serialiser must be agnostic to ADT tag names
-    /// — `Boolean.True` carries no special privilege over any other unit variant.
+    /// B-448: All unit variants must serialise uniformly as `Variant(Tag, Null)`.
+    /// The serialiser must be agnostic to ADT tag names — no tag name receives special privilege.
     ///
-    /// Before B-448, `visit_value` short-circuited on `Boolean.True`/`Boolean.False`
-    /// and dispatched to a now-deleted `visit_bool` method, producing `Bool(true)` in
-    /// the display format.  After the fix these values fall through to the generic
-    /// `Variant` arm, which produces `Variant(Boolean.True, Null)`.
-    /// `visit_bool` has since been removed from the `ValueVisitor` trait entirely.
+    /// Before B-448, `visit_value` short-circuited on certain variant tags and dispatched to a
+    /// now-deleted `visit_bool` method.  After the fix all variants fall through to the generic
+    /// `Variant` arm.  `visit_bool` has since been removed from the `ValueVisitor` trait entirely.
     #[tokio::test]
-    async fn test_display_boolean_variant_not_privileged() {
+    async fn test_display_unit_variant_uniform() {
         let ctx = test_ctx().await;
 
-        let true_val = Value::Variant {
-            tag: "Boolean.True".to_string(),
+        let red_val = Value::Variant {
+            tag: "Color.Red".to_string(),
             payload: None,
         };
-        let false_val = Value::Variant {
-            tag: "Boolean.False".to_string(),
+        let green_val = Value::Variant {
+            tag: "Color.Green".to_string(),
             payload: None,
         };
 
-        let true_display = value_to_display_string(&true_val, &ctx, rust_span!())
+        let red_display = value_to_display_string(&red_val, &ctx, rust_span!())
             .await
-            .expect("display should succeed for Boolean.True");
-        let false_display = value_to_display_string(&false_val, &ctx, rust_span!())
+            .expect("display should succeed for Color.Red");
+        let green_display = value_to_display_string(&green_val, &ctx, rust_span!())
             .await
-            .expect("display should succeed for Boolean.False");
+            .expect("display should succeed for Color.Green");
 
-        // Must serialize as a generic variant, not as Bool(...).
+        // Must serialize as a generic variant.
         assert_eq!(
-            true_display, "Variant(Boolean.True, Null)",
-            "Boolean.True must serialise as Variant(Boolean.True, Null), not Bool(true)"
+            red_display, "Variant(Color.Red, Null)",
+            "Color.Red must serialise as Variant(Color.Red, Null)"
         );
         assert_eq!(
-            false_display, "Variant(Boolean.False, Null)",
-            "Boolean.False must serialise as Variant(Boolean.False, Null), not Bool(false)"
+            green_display, "Variant(Color.Green, Null)",
+            "Color.Green must serialise as Variant(Color.Green, Null)"
         );
 
-        // A user-defined unit variant with a different type name must produce the
-        // same structure — confirming uniform treatment.
+        // A unit variant from a different type must produce the same structure.
         let user_val = Value::Variant {
             tag: "MyBool.Yes".to_string(),
             payload: None,
@@ -900,7 +895,7 @@ mod tests {
             .expect("display should succeed for MyBool.Yes");
         assert_eq!(
             user_display, "Variant(MyBool.Yes, Null)",
-            "User-defined unit variant must serialise identically to Boolean variants"
+            "User-defined unit variant must serialise uniformly"
         );
     }
 

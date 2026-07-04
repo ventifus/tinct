@@ -1815,8 +1815,8 @@ async fn run_eval(
     }
 
     // Determine env_allowed based on CLI flags.
-    // --no-env and --allow-env enforcement: the `env` builtin checks this field
-    // at runtime (see builtin_env in builtins.rs). Returns Null for disallowed vars.
+    // --no-env and --allow-env enforcement: the `env` prelude function uses builtin-env-has?
+    // to check this field before calling builtin-env, returning Absent.Absent for missing vars.
     // None = unrestricted, Some(empty) = all denied (--no-env), Some(set) = only those allowed
     let env_allowed = if no_env {
         Some(std::collections::HashSet::new()) // empty set = all denied

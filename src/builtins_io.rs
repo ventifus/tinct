@@ -132,9 +132,13 @@ pub(crate) fn builtin_emit(
     })
 }
 
-/// `env`: Read an environment variable by name.
-/// Returns the value as a String, or `Absent.Absent` if not set or not allowed.
-/// Gated by ctx.env_allowed: None = all denied, Some(set) = only those allowed.
+/// `builtin-env`: Read an environment variable by name.
+///
+/// Returns the value as a String. Raises a user error if the variable is not set
+/// or if access to it is not allowed by `ctx.env_allowed`. Prelude wraps this with
+/// `builtin-env-has?` to provide the Absent.Absent fallback for user-facing `env`.
+///
+/// Gated by ctx.env_allowed: None = unrestricted, Some(set) = only those in the set.
 pub(crate) fn builtin_env(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
@@ -158,27 +162,66 @@ pub(crate) fn builtin_env(
         };
 
         if !allowed {
-            // Return Absent.Absent if not allowed
-            return ok_val(
-                Value::Variant {
-                    tag: "Absent.Absent".into(),
-                    payload: None,
-                },
+            return Err(EvalError::user_error(
+                format!("environment variable not allowed: {name}"),
                 call_span,
-            );
+            )
+            .into());
         }
 
         // Read env var
-        match std::env::var(name) {
+        match std::env::var(&name) {
             Ok(value) => ok_val(string_val(&value), call_span),
-            Err(_) => ok_val(
-                Value::Variant {
-                    tag: "Absent.Absent".into(),
-                    payload: None,
-                },
+            Err(_) => Err(EvalError::user_error(
+                format!("environment variable not set: {name}"),
                 call_span,
-            ), // Not set -> Absent.Absent
+            )
+            .into()),
         }
+    })
+}
+
+/// `builtin-env-has?`: Check whether an environment variable exists and is allowed.
+///
+/// Returns `Int(1)` if the variable is set and access is permitted, `Int(0)` otherwise.
+/// Prelude uses this together with `builtin-env` to implement the user-facing `env`
+/// function that returns `Absent.Absent` for missing/disallowed variables without Rust
+/// ever constructing the Absent sentinel directly.
+///
+/// Gated by ctx.env_allowed: None = unrestricted, Some(set) = only those in the set.
+pub(crate) fn builtin_env_has(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+        ..
+    } = ctx_arg;
+    Box::pin(async move {
+        let val = crate::builtins::expect_one_arg(
+            "env-has?",
+            &args,
+            named.as_ref(),
+            &ctx,
+            call_span.clone(),
+        )?;
+        let name = require_string("env-has?", val, args[0].span.clone())?;
+
+        // Check env_allowed
+        let allowed = match &ctx.env_allowed {
+            None => true,
+            Some(set) => set.contains(&name),
+        };
+
+        if !allowed {
+            return ok_val(Value::Int(0), call_span);
+        }
+
+        // Check whether the env var is set
+        let present = std::env::var(&name).is_ok();
+        ok_val(Value::Int(if present { 1 } else { 0 }), call_span)
     })
 }
 

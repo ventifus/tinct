@@ -987,6 +987,26 @@ impl Value {
         }
     }
 
+    /// Construct the canonical absent/missing sentinel value.
+    ///
+    /// This is the ONE place in the entire Rust runtime that knows the "Absent.Absent"
+    /// tag string. All other code must call this function rather than constructing the
+    /// variant inline — Rust must be agnostic to the tag name everywhere else.
+    pub fn absent() -> Value {
+        Value::Variant {
+            tag: "Absent.Absent".to_string(),
+            payload: None,
+        }
+    }
+
+    /// Returns true if this value is the canonical absent sentinel (`Absent.Absent`).
+    ///
+    /// This is the ONE place that checks the "Absent.Absent" tag string. All
+    /// runtime code that needs to detect the absent sentinel must call this method.
+    pub fn is_absent(&self) -> bool {
+        matches!(self, Value::Variant { tag, payload: None } if tag == "Absent.Absent")
+    }
+
     /// Check if this value is truthy using the Rust-native Int protocol ONLY.
     ///
     /// Only `Value::Int(n)` is checked: nonzero = true, zero = false.
@@ -2340,7 +2360,10 @@ impl Environment {
 
     /// Iterate over (name, thunk) pairs in this environment frame (not parents).
     pub fn iter_slots(&self) -> impl Iterator<Item = (&str, &Arc<Thunk>)> {
-        self.slot_names.iter().map(String::as_str).zip(self.slots.iter())
+        self.slot_names
+            .iter()
+            .map(String::as_str)
+            .zip(self.slots.iter())
     }
 
     /// O(1) slot-based lookup with De Bruijn level-based parent chain walking.

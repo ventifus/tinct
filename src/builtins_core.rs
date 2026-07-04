@@ -39,10 +39,10 @@ use crate::builtins_dict::{
 // String implementations.
 use crate::builtins_string::{
     builtin_bytes_str, builtin_char_code, builtin_chr, builtin_float_to_string,
-    builtin_int_to_string, builtin_regex_match, builtin_replace,
-    builtin_str_bytes, builtin_str_index_of, builtin_str_length, builtin_str_map_chars,
-    builtin_str_nth_char, builtin_str_slice, builtin_str_to_lower_char, builtin_str_to_upper_char,
-    builtin_string_concat, builtin_trim, builtin_trim_end, builtin_trim_start,
+    builtin_int_to_string, builtin_regex_match, builtin_replace, builtin_str_bytes,
+    builtin_str_index_of, builtin_str_length, builtin_str_map_chars, builtin_str_nth_char,
+    builtin_str_slice, builtin_str_to_lower_char, builtin_str_to_upper_char, builtin_string_concat,
+    builtin_trim, builtin_trim_end, builtin_trim_start,
 };
 // Bytes implementations.
 use crate::builtins_bytes::{
@@ -75,6 +75,7 @@ use crate::builtins_io::{
     builtin_copy_file,
     builtin_emit,
     builtin_env,
+    builtin_env_has,
     builtin_exists,
     builtin_file_close,
     builtin_file_flush,
@@ -600,6 +601,7 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
         // ── I/O ──────────────────────────────────────────────────────────────────────
         builtin!("builtin-emit", builtin_emit, [Strictness::Seq]),
         builtin!("builtin-env", builtin_env, [Strictness::Seq]),
+        builtin!("builtin-env-has?", builtin_env_has, [Strictness::Seq]),
         // builtin-open, builtin-string-handle, builtin-read-line, builtin-read-chunk,
         // builtin-cap-data, builtin-write-handle, builtin-flush, builtin-close,
         // builtin-raw-create, builtin-seek, builtin-seek-end, builtin-position
@@ -830,7 +832,12 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
         // Reads ᴍᴀᴄʀᴏ∷env and ᴍᴀᴄʀᴏ∷span from caller_env (injected by @Expr dispatch).
         // pos_strictness[0] = Seq: the Expr.* arg must be materialized before conversion.
         // force_count = 1: force the first positional arg before dispatching to the builtin.
-        builtin!("builtin-eval-macro-ast", builtin_eval_macro_ast, [Strictness::Seq], 1),
+        builtin!(
+            "builtin-eval-macro-ast",
+            builtin_eval_macro_ast,
+            [Strictness::Seq],
+            1
+        ),
         builtin!(
             "builtin-eval-types",
             builtin_eval_types,
@@ -1077,7 +1084,10 @@ pub fn core_type_env(env: &mut TypeEnv) {
                     tail: crate::type_def::RowTail::Empty,
                 }),
             )],
-            ret: Box::new(tycon_app("Seq",Type::normalize_union(vec![Type::Int, Type::Str]))),
+            ret: Box::new(tycon_app(
+                "Seq",
+                Type::normalize_union(vec![Type::Int, Type::Str]),
+            )),
             variadic: false,
             required_count: 1,
         },
@@ -1202,7 +1212,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
         "builtin-split".to_string(),
         Type::Function {
             params: vec![(None, Type::Str), (None, Type::Str)],
-            ret: Box::new(tycon_app("Seq",Type::Str)),
+            ret: Box::new(tycon_app("Seq", Type::Str)),
             variadic: false,
             required_count: 2,
         },
@@ -1516,15 +1526,27 @@ pub fn core_type_env(env: &mut TypeEnv) {
         },
     );
 
-    // ── Environment — builtin-env ─────────────────────────────────────────────
-    // builtin-env: Str → Str | {}
-    // Reads an environment variable by name. Returns null (empty dict) if unset.
-    let env_ret = Type::normalize_union(vec![Type::Str, null_ty]);
+    // ── Environment — builtin-env, builtin-env-has? ──────────────────────────
+    // builtin-env: Str → Str
+    // Reads an environment variable by name. Raises if unset or disallowed.
+    // Prelude wraps this with builtin-env-has? to implement the user-facing `env`.
     env.insert(
         "builtin-env".to_string(),
         Type::Function {
             params: vec![(None, Type::Str)],
-            ret: Box::new(env_ret),
+            ret: Box::new(Type::Str),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+
+    // builtin-env-has?: Str → Int
+    // Returns 1 if the env var is set and allowed, 0 otherwise.
+    env.insert(
+        "builtin-env-has?".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Str)],
+            ret: Box::new(Type::Int),
             variadic: false,
             required_count: 1,
         },
@@ -1588,7 +1610,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
         "builtin-macro-injects".to_string(),
         Type::Function {
             params: vec![(None, Type::Any)],
-            ret: Box::new(tycon_app("Seq",Type::Any)),
+            ret: Box::new(tycon_app("Seq", Type::Any)),
             variadic: false,
             required_count: 1,
         },
@@ -1894,7 +1916,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
         "builtin-list-xattrs".to_string(),
         Type::Function {
             params: vec![(None, Type::DirCap), (None, Type::Str)],
-            ret: Box::new(tycon_app("Seq",Type::Str)),
+            ret: Box::new(tycon_app("Seq", Type::Str)),
             variadic: false,
             required_count: 2,
         },
@@ -1981,9 +2003,9 @@ pub fn core_type_env(env: &mut TypeEnv) {
                             required_count: 1,
                         },
                     ),
-                    (None, tycon_app("Seq",Type::TypeVar("a".to_string(), 0))),
+                    (None, tycon_app("Seq", Type::TypeVar("a".to_string(), 0))),
                 ],
-                ret: Box::new(tycon_app("Seq",Type::TypeVar("b".to_string(), 0))),
+                ret: Box::new(tycon_app("Seq", Type::TypeVar("b".to_string(), 0))),
                 variadic: false,
                 required_count: 2,
             },
@@ -2011,9 +2033,9 @@ pub fn core_type_env(env: &mut TypeEnv) {
                             required_count: 1,
                         },
                     ),
-                    (None, tycon_app("Seq",Type::TypeVar("a".to_string(), 0))),
+                    (None, tycon_app("Seq", Type::TypeVar("a".to_string(), 0))),
                 ],
-                ret: Box::new(tycon_app("Seq",Type::TypeVar("a".to_string(), 0))),
+                ret: Box::new(tycon_app("Seq", Type::TypeVar("a".to_string(), 0))),
                 variadic: false,
                 required_count: 2,
             },
@@ -2033,9 +2055,9 @@ pub fn core_type_env(env: &mut TypeEnv) {
             body: Type::Function {
                 params: vec![
                     (None, Type::Int),
-                    (None, tycon_app("Seq",Type::TypeVar("T".to_string(), 0))),
+                    (None, tycon_app("Seq", Type::TypeVar("T".to_string(), 0))),
                 ],
-                ret: Box::new(tycon_app("Seq",Type::TypeVar("T".to_string(), 0))),
+                ret: Box::new(tycon_app("Seq", Type::TypeVar("T".to_string(), 0))),
                 variadic: false,
                 required_count: 2,
             },
@@ -2055,9 +2077,9 @@ pub fn core_type_env(env: &mut TypeEnv) {
             body: Type::Function {
                 params: vec![
                     (None, Type::Int),
-                    (None, tycon_app("Seq",Type::TypeVar("T".to_string(), 0))),
+                    (None, tycon_app("Seq", Type::TypeVar("T".to_string(), 0))),
                 ],
-                ret: Box::new(tycon_app("Seq",Type::TypeVar("T".to_string(), 0))),
+                ret: Box::new(tycon_app("Seq", Type::TypeVar("T".to_string(), 0))),
                 variadic: false,
                 required_count: 2,
             },
@@ -2092,7 +2114,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                         },
                     ),
                     (None, Type::TypeVar("b".to_string(), 0)),
-                    (None, tycon_app("Seq",Type::TypeVar("a".to_string(), 0))),
+                    (None, tycon_app("Seq", Type::TypeVar("a".to_string(), 0))),
                 ],
                 ret: Box::new(Type::TypeVar("b".to_string(), 0)),
                 variadic: false,
@@ -2111,7 +2133,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![
                 (None, Type::Str),
                 // Top: join stringifies any element type via stringify().
-                (None, tycon_app("Seq",Type::Any)),
+                (None, tycon_app("Seq", Type::Any)),
             ],
             ret: Box::new(Type::Str),
             variadic: false,
@@ -2165,7 +2187,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 params: vec![(
                     None,
                     Type::Union(vec![
-                        tycon_app("Seq",Type::TypeVar("T".to_string(), 0)),
+                        tycon_app("Seq", Type::TypeVar("T".to_string(), 0)),
                         Type::Record(Row {
                             fields: indexmap::IndexMap::new(),
                             tail: crate::type_def::RowTail::Empty,
@@ -2173,7 +2195,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                     ]),
                 )],
                 ret: Box::new(Type::Union(vec![
-                    tycon_app("Seq",Type::TypeVar("T".to_string(), 0)),
+                    tycon_app("Seq", Type::TypeVar("T".to_string(), 0)),
                     Type::Record(Row {
                         fields: indexmap::IndexMap::new(),
                         tail: crate::type_def::RowTail::Empty,
@@ -2222,8 +2244,8 @@ pub fn core_type_env(env: &mut TypeEnv) {
             type_vars: vec!["T".to_string()],
             constraints: vec![],
             body: Type::Function {
-                params: vec![(None, tycon_app("Seq",Type::TypeVar("T".to_string(), 0)))],
-                ret: Box::new(tycon_app("Seq",Type::TypeVar("T".to_string(), 0))),
+                params: vec![(None, tycon_app("Seq", Type::TypeVar("T".to_string(), 0)))],
+                ret: Box::new(tycon_app("Seq", Type::TypeVar("T".to_string(), 0))),
                 variadic: false,
                 required_count: 1,
             },
@@ -2362,7 +2384,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             type_vars: vec!["T".to_string()],
             constraints: vec![],
             body: Type::Function {
-                params: vec![(None, tycon_app("Seq",Type::TypeVar("T".to_string(), 0)))],
+                params: vec![(None, tycon_app("Seq", Type::TypeVar("T".to_string(), 0)))],
                 ret: Box::new(Type::TypeVar("T".to_string(), 0)),
                 variadic: false,
                 required_count: 1,
@@ -2382,7 +2404,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             type_vars: vec!["T".to_string()],
             constraints: vec![],
             body: Type::Function {
-                params: vec![(None, tycon_app("Seq",Type::TypeVar("T".to_string(), 0)))],
+                params: vec![(None, tycon_app("Seq", Type::TypeVar("T".to_string(), 0)))],
                 ret: Box::new(Type::TypeVar("T".to_string(), 0)),
                 variadic: false,
                 required_count: 1,
@@ -2531,9 +2553,9 @@ pub fn core_type_env(env: &mut TypeEnv) {
                             required_count: 1,
                         },
                     ),
-                    (None, tycon_app("Seq",Type::TypeVar("a".to_string(), 0))),
+                    (None, tycon_app("Seq", Type::TypeVar("a".to_string(), 0))),
                 ],
-                ret: Box::new(tycon_app("Seq",Type::TypeVar("b".to_string(), 0))),
+                ret: Box::new(tycon_app("Seq", Type::TypeVar("b".to_string(), 0))),
                 variadic: false,
                 required_count: 2,
             },
@@ -2561,9 +2583,9 @@ pub fn core_type_env(env: &mut TypeEnv) {
                             required_count: 1,
                         },
                     ),
-                    (None, tycon_app("Seq",Type::TypeVar("a".to_string(), 0))),
+                    (None, tycon_app("Seq", Type::TypeVar("a".to_string(), 0))),
                 ],
-                ret: Box::new(tycon_app("Seq",Type::TypeVar("a".to_string(), 0))),
+                ret: Box::new(tycon_app("Seq", Type::TypeVar("a".to_string(), 0))),
                 variadic: false,
                 required_count: 2,
             },
@@ -3442,13 +3464,16 @@ pub fn core_type_env(env: &mut TypeEnv) {
         "builtin-list-dir".to_string(),
         Type::Function {
             params: vec![(None, Type::DirCap), (None, Type::Str)],
-            ret: Box::new(tycon_app("Seq",Type::Record(Row {
-                fields: indexmap::IndexMap::from_iter([
-                    ("name".to_string(), Type::Str),
-                    ("kind".to_string(), Type::Str),
-                ]),
-                tail: crate::type_def::RowTail::Empty,
-            }))),
+            ret: Box::new(tycon_app(
+                "Seq",
+                Type::Record(Row {
+                    fields: indexmap::IndexMap::from_iter([
+                        ("name".to_string(), Type::Str),
+                        ("kind".to_string(), Type::Str),
+                    ]),
+                    tail: crate::type_def::RowTail::Empty,
+                }),
+            )),
             variadic: false,
             required_count: 2,
         },
@@ -3605,7 +3630,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
     );
     expr_fields.insert(
         "params".to_string(),
-        tycon_app("Seq",Type::Any), // Seq[Parameter] — Parameter is Top for now
+        tycon_app("Seq", Type::Any), // Seq[Parameter] — Parameter is Top for now
     );
     expr_fields.insert("span".to_string(), Type::Any); // Span — open row tail covers this too
     let expression_type = Type::Record(Row {
@@ -3620,11 +3645,11 @@ pub fn core_type_env(env: &mut TypeEnv) {
     let mut doc_fields: indexmap::IndexMap<String, Type> = indexmap::IndexMap::new();
     doc_fields.insert(
         "expressions".to_string(),
-        tycon_app("Seq",expression_type.clone()), // Seq[Expression] — Expression open record (T-1272)
+        tycon_app("Seq", expression_type.clone()), // Seq[Expression] — Expression open record (T-1272)
     );
     doc_fields.insert("name".to_string(), Type::Any); // Named/Unnamed variant
     doc_fields.insert("stage".to_string(), Type::Any); // DocStage.Type / DocStage.Runtime
-    doc_fields.insert("uses".to_string(), tycon_app("Seq",Type::Str)); // Seq[String] module names
+    doc_fields.insert("uses".to_string(), tycon_app("Seq", Type::Str)); // Seq[String] module names
     let document_type = Type::Record(Row {
         fields: doc_fields,
         tail: crate::type_def::RowTail::Uniform {
@@ -3635,7 +3660,10 @@ pub fn core_type_env(env: &mut TypeEnv) {
 
     // Program: open record with documents field (Seq[Document])
     let mut prog_fields: indexmap::IndexMap<String, Type> = indexmap::IndexMap::new();
-    prog_fields.insert("documents".to_string(), tycon_app("Seq",document_type.clone()));
+    prog_fields.insert(
+        "documents".to_string(),
+        tycon_app("Seq", document_type.clone()),
+    );
     let program_type = Type::Record(Row {
         fields: prog_fields,
         tail: crate::type_def::RowTail::Uniform {
@@ -3663,7 +3691,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
     env.insert(
         "builtin-program".to_string(),
         Type::Function {
-            params: vec![(None, tycon_app("Seq",document_type))],
+            params: vec![(None, tycon_app("Seq", document_type))],
             ret: Box::new(program_type),
             variadic: false,
             required_count: 1,

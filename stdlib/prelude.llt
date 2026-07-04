@@ -86,11 +86,11 @@
   #   [object-map [a: 1  b: 2] [fn [let k v] [+ v 10]]] => [a: 11  b: 12]
   #
   # Implemented using only core builtins (builtin-merge, builtin-keys,
-  # builtin-get, builtin-length, builtin-dict-nth, builtin-if, builtin-eq,
+  # builtin-get, builtin-length, builtin-dict-nth, builtin-if, builtin-eq-int,
   # builtin-add) so it is available in the type-stage evaluator.
   # Uses [$k: v] dynamic key syntax to preserve string keys.
   object-map-step: [fn [let obj f keys i n acc]
-    [builtin-if [builtin-eq i n]
+    [builtin-if [builtin-eq-int i n]
       acc
       [call [fn [let]
         [k: [builtin-get i keys]]
@@ -223,7 +223,7 @@
   child-fields: [fn [let ctor]
     [ann: [builtin-annotation-of ctor]]
     [fa:  [builtin-get? "field-annotations" ann]]
-    [builtin-if [builtin-eq [builtin-type-of fa] "Absent"]
+    [builtin-if [builtin-eq-string [builtin-type-of fa] "Absent"]
       []
       [builtin-keys fa]]]
 
@@ -238,13 +238,13 @@
         [builtin-get "field-annotations" [builtin-annotation-of ctor]]]]]
 
   # child-field?: return Boolean.True iff field is an @Child field of the constructor.
-  # Uses builtin-eq/builtin-if (core builtins only — `=` and `if` are not in scope here).
+  # Uses builtin-eq-string/builtin-if (core builtins only — `=` and `if` are not in scope here).
   child-field?: [fn [let ctor field]
     [ann: [builtin-annotation-of ctor]]
     [fa:  [builtin-get? "field-annotations" ann]]
-    [builtin-if [builtin-eq [builtin-type-of fa] "Absent"]
+    [builtin-if [builtin-eq-string [builtin-type-of fa] "Absent"]
       Boolean.False
-      [builtin-if [builtin-eq [builtin-type-of [builtin-get? field fa]] "Absent"]
+      [builtin-if [builtin-eq-string [builtin-type-of [builtin-get? field fa]] "Absent"]
         Boolean.False
         Boolean.True]]]
 
@@ -289,7 +289,7 @@
     # builtin-concat(Dict, Dict) reindexes both into a flat integer-keyed Dict.
     # match on string role values — stored as "One"/"MapValues" in field-annotations.
     children-step: [fn [let t ctor fields i n acc]
-      [builtin-if [builtin-eq i n]
+      [builtin-if [builtin-eq-int i n]
         acc
         [call [fn [let]
           [field: [builtin-dict-nth fields i]]
@@ -351,7 +351,7 @@
     as-type: [fn [let t]
       [ann:        [builtin-annotation-of [TypeNode-ctor t]]]
       [as-type-fn: [builtin-get? "as-type" ann]]
-      [builtin-if [builtin-eq [builtin-type-of as-type-fn] "Absent"]
+      [builtin-if [builtin-eq-string [builtin-type-of as-type-fn] "Absent"]
         t
         [as-type-fn t]]]]]
 
@@ -445,7 +445,7 @@
 # in scope via the parent environment chain.
 #
 #   Stable builtin-* aliases (used internally; pre-injected into bootstrap env):
-#     builtin-lt  builtin-eq  builtin-add  builtin-sub  builtin-mul  builtin-div
+#     builtin-lt  builtin-eq-int  builtin-eq-string  builtin-add  builtin-sub  builtin-mul  builtin-div
 #     builtin-if  builtin-get  map  reduce
 #     builtin-filter  builtin-take  builtin-drop
 #     builtin-concat  builtin-join  builtin-rest
@@ -579,9 +579,9 @@ cond-impl: [fn@Any [let pairs@Dict i@Int]
 # bool->int-priv: Boolean.False→0, Int→n (pass-through), anything else→1.
 # Defined in the private dict so bootstrap functions (partition-step, etc.) can use it.
 bool->int-priv: [fn [let b]
-    [builtin-if [builtin-eq b Boolean.False]
+    [builtin-if [builtin-eq-string [builtin-type-of b] "Boolean.False"]
       0
-      [builtin-if [builtin-eq [builtin-type-of b] "Int"]
+      [builtin-if [builtin-eq-string [builtin-type-of b] "Int"]
         b
         1]]]
 
@@ -961,12 +961,11 @@ Note: Errors if xs is a Seq (collect first). Inherently materializing: short-cir
 # Comparison (derived from < and =)
 # ============================================================================
 #
-# = and < are resolver-visible wrappers so the resolver can find these names.
-# Typeclass dispatch overrides these via call_dispatch for well-typed calls.
-# The constraint annotation is required so untyped calls are rejected by the type checker.
-=: [fn@[return: Boolean  constraint: [a: Equatable]  doc: "Equality test. Dispatches via Equatable typeclass."] [let x y] [builtin-if [builtin-eq x y] Boolean.True Boolean.False]]
-
-<: [fn@[return: Boolean  constraint: [a: Comparable]  doc: "Less-than. Dispatches via Comparable typeclass."] [let x y] [builtin-if [builtin-lt x y] Boolean.True Boolean.False]]
+# = and < are class methods (Equatable and Comparable respectively).
+# The resolver finds them via method_to_instance — no global wrapper needed.
+# call_dispatch overrides to the correct instance at each call site.
+#
+# >, <=, >= are derived functions that call <.
 
 >: [fn@[return: Boolean  constraint: [a: Comparable]  doc: """
 Greater than.
@@ -998,15 +997,12 @@ Note: Derived as negation of <.
 """] [let x y] [not [< x y]]]
 
 # ============================================================================
-# Arithmetic (derived from builtin-add, builtin-sub, builtin-mul, builtin-div)
+# Arithmetic
 # ============================================================================
 #
-# +, -, *, / are resolver-visible wrappers so the resolver can find these names.
-# Typeclass dispatch overrides these via call_dispatch for well-typed calls.
-+: [fn@[return: Unknown  constraint: [a b c: Addable]       doc: "Addition. Dispatches via Addable typeclass."]       [let x y] [builtin-add x y]]
--: [fn@[return: Unknown  constraint: [a b c: Subtractable]  doc: "Subtraction. Dispatches via Subtractable typeclass."] [let x y] [builtin-sub x y]]
-*: [fn@[return: Unknown  constraint: [a b c: Multipliable]  doc: "Multiplication. Dispatches via Multipliable typeclass."] [let x y] [builtin-mul x y]]
-/: [fn@[return: Unknown  constraint: [a b c: Divisible]     doc: "Division. Dispatches via Divisible typeclass."]     [let x y] [builtin-div x y]]
+# +, -, *, / are class methods (Addable, Subtractable, Multipliable, Divisible).
+# The resolver finds them via method_to_instance — no global wrapper needed.
+# call_dispatch overrides to the correct instance at each call site.
 
 quot: [fn@[return: Int  doc: """
 Integer quotient (truncate toward zero).
@@ -1069,7 +1065,7 @@ Note: Inherently materializing: derived from comparison and arithmetic.
 """] [let x@Number]
     [cond [
         [[builtin-lt x 0] [builtin-sub 0 1]]
-        [[builtin-eq x 0] 0]
+        [[= x 0] 0]
         [True 1]]]]
 
 clamp: [fn@[return: Number  doc: """
@@ -1088,7 +1084,7 @@ Note: Returns lo if x < lo, hi if x > hi, otherwise x. Inherently materializing:
             x]]]
 
 # ============================================================================
-# Stringing (derived from str, split, builtin-filter, builtin-eq)
+# Stringing (derived from str, split, builtin-filter, builtin-eq-string)
 # ============================================================================
 
 # join: delegates to builtin-join (see wrappers section at bottom of this dict).
@@ -1101,7 +1097,7 @@ Note: Returns lo if x < lo, hi if x > hi, otherwise x. Inherently materializing:
 # Example: [collect [words "  spaces  "]] => ["spaces"]
 # Inherently materializing: splits string content, derived from split.
 words@[doc: "Split string on spaces into words"]: [fn@Seq [let s@String]
-    [filter [fn [let w] [not [builtin-eq w ""]]] [split " " s]]]
+    [filter [fn [let w] [not [builtin-eq-string w ""]]] [split " " s]]]
 
 # Strip common leading indentation from a multi-line string.
 # Algorithm: split into lines; the last line (whitespace-only) determines indent depth;
@@ -1206,7 +1202,7 @@ Example: [get-in ["a" "b" "c"] [a: [b: [c: 42]]]] => 42
 Note: Signature is Path -> Dict -> Any (subject-last for pipeline composition).
 Returns error when any intermediate key is missing. Use get-in-or for a default fallback on missing keys. Inherently materializing: must traverse nested dict path, accessing each level.
 """] [let path@Dict xs]
-    [builtin-if [builtin-eq [length path] 0]
+    [builtin-if [builtin-eq-int [length path] 0]
         xs
         [builtin-if [has? path.0 xs]
             [get-in [builtin-rest path] [get path.0 xs]]
@@ -1221,7 +1217,7 @@ Example: [get-in-or ["a" "c"] 99 [a: [b: 1]]] => 99
 Note: Signature is Path -> Default -> Dict -> Any (subject-last for pipeline composition).
 Returns default when any intermediate key is missing. Inherently materializing: must traverse nested dict path, accessing each level.
 """] [let path@Dict default xs]
-    [builtin-if [builtin-eq [length path] 0]
+    [builtin-if [builtin-eq-int [length path] 0]
         xs
         [builtin-if [has? path.0 xs]
             [get-in-or [builtin-rest path] default [get path.0 xs]]
@@ -1258,7 +1254,7 @@ pick: [fn@Any [let keys@Dict xs@Dict]
 # Inherently materializing: depends on length which counts all entries.
 # assert: [empty? []] => True
 # assert: [empty? [1 2 3]] => False
-empty?@[doc: "Check if collection is empty"]: [fn@Boolean [let xs] [if [seq? xs] Boolean.False [if [builtin-eq [length xs] 0] Boolean.True Boolean.False]]]
+empty?@[doc: "Check if collection is empty"]: [fn@Boolean [let xs] [if [seq? xs] Boolean.False [if [builtin-eq-int [length xs] 0] Boolean.True Boolean.False]]]
 
 # Construct a single-entry dict from a computed key and a value.
 # Used internally by set, from-entries, and domain modules that build dicts programmatically.
@@ -1278,7 +1274,7 @@ Example: [remove "b" [a: 1  b: 2  c: 3]] => [a: 1  c: 3]
 Note: Signature is Key -> Dict -> Dict (subject-last for pipeline composition).
 Preserves remaining keys in insertion order. Returns dict unchanged if key is not present. O(n) via build-dict.
 """] [let k xs@Dict]
-  [build-dict [filter [fn [let e] [not [builtin-eq e.key k]]] [each-kv xs]]]]
+  [build-dict [filter [fn [let e] [not [= e.key k]]] [each-kv xs]]]]
 
 # Update a key by applying a function to its current value.
 # assert: [update "x" [fn [v] [+ v 1]] [x: 5]] => [x: 6]
@@ -1493,7 +1489,7 @@ find-deep-impl@[doc: "Find-deep implementation (internal helper)"]: [fn@Any [let
         [find-deep-check xs target ks i [get i ks]]]]
 
 find-deep-check@[doc: "Find-deep check (internal helper)"]: [fn@Any [let xs@Dict target ks i@Int current-key]
-    [builtin-if [builtin-eq current-key target]
+    [builtin-if [bool->int [= current-key target]]
         [get current-key xs]
         [builtin-if [dict? [get current-key xs]]
             [find-deep-try [get current-key xs] target xs ks i]
@@ -1732,9 +1728,9 @@ count@[doc: "Count elements satisfying predicate"]: [fn@Int [let pred@Fn xs]
 # and Bytes input (uses bytes-find to search for a single-byte needle).
 # Signature is Val -> Collection -> Bool (subject-last for pipeline composition).
 contains?@[doc: "Check if collection contains element"]: [fn@Boolean [let val xs]
-    [builtin-if [builtin-eq [type-of xs] "String"]
+    [builtin-if [builtin-eq-string [type-of xs] "String"]
         [str-contains? val xs]
-        [builtin-if [builtin-eq [type-of xs] "Bytes"]
+        [builtin-if [builtin-eq-string [type-of xs] "Bytes"]
             [builtin-if [int? val]
                 [builtin-if [builtin-gte val 0]
                     [builtin-if [builtin-lt val 256]
@@ -1743,8 +1739,8 @@ contains?@[doc: "Check if collection contains element"]: [fn@Boolean [let val xs
                     [error "contains?: byte value must be in range 0-255"]]
                 [error "contains?: needle must be Int (byte value) when haystack is Bytes"]]
             [builtin-if [seq? xs]
-                [seq? [filter [fn [let e] [builtin-eq e val]] xs]]
-                [any? [fn [let e] [builtin-eq e val]] xs]]]]]
+                [seq? [filter [fn [let e] [= e val]] xs]]
+                [any? [fn [let e] [= e val]] xs]]]]]
 
 uniq@[doc: "Remove duplicates (keep first occurrence). O(n²) due to O(n) contains-seq? per element, but uses reduce (Rust loop) for performance (B-267)."]: [fn@Any [let xs]
     [uniq-impl xs]]
@@ -1783,12 +1779,12 @@ Note: Threads initial value x through each function in sequence. Each function r
 
 # Type predicates — tinct functions returning Boolean.
 # No builtins needed: tinct pattern matching covers all cases.
-# null? uses builtin-eq instead of = — = goes through Equatable which calls null? (cycle).
+# null? uses builtin-eq-int on the length — = would go through Equatable which calls null? (cycle).
 int?@[doc: "Check if value is Int"]:   [fn@Boolean [let x@[is: Int]] [match x [@Int _]:      Boolean.True  _: Boolean.False]]
 float?@[doc: "Check if value is Float"]: [fn@Boolean [let x@[is: Float]] [match x [@Float _]:  Boolean.True  _: Boolean.False]]
 str?@[doc: "Check if value is String"]: [fn@Boolean [let x@[is: String]] [match x [@Str _]:     Boolean.True  _: Boolean.False]]
 bool?@[doc: "Check if value is Bool"]:  [fn@Boolean [let x@[is: Boolean]] [match x Boolean.True: Boolean.True  Boolean.False: Boolean.True  _: Boolean.False]]
-null?@[doc: "Check if value is null (empty dict [])"]: [fn@Boolean [let x@[is: Null]] [if [builtin-eq x []] Boolean.True Boolean.False]]
+null?@[doc: "Check if value is null (empty dict [])"]: [fn@Boolean [let x@[is: Null]] [if [builtin-eq-int [builtin-length x] 0] Boolean.True Boolean.False]]
 dict?@[doc: "Check if value is Dict"]:  [fn@Boolean [let x@[is: Dict]] [match x [@Dict _]:    Boolean.True  _: Boolean.False]]
 fn?@[doc: "Check if value is a function (Function or Builtin)"]: [fn@Boolean [let x] [match x [@Fn _]: Boolean.True  _: Boolean.False]]
 proxy?@[doc: "Check if value is a Proxy"]: [fn@Boolean [let x] [match x [@Proxy _]: Boolean.True  _: Boolean.False]]
@@ -1911,7 +1907,7 @@ zip-dict-seq-step: [fn [let xs@Dict ys@Dict xks yks i@Int xlen@Int ylen@Int xk y
 contains-seq?: [fn@Boolean [let seq val]
     [reduce
         [fn [let found x]
-            [builtin-if [bool->int found] found [builtin-if [builtin-eq x val] Boolean.True Boolean.False]]]
+            [builtin-if [bool->int found] found [builtin-if [bool->int [= x val]] Boolean.True Boolean.False]]]
         Boolean.False
         seq]]
 
@@ -2679,9 +2675,7 @@ Int64LE/BE, UInt64LE/BE, Float32LE/BE, Float64LE/BE.
 # hash must be consistent with =: if [= a b] then [= [hash a] [hash b]].
 # Hashable implies Equatable (dict equality requires value equality checks).
 #
-# Note: builtin-int-eq and builtin-str-eq are not yet separate builtins;
 # Equatable instances use type-specific builtins (builtin-eq-int, builtin-eq-float, builtin-eq-string).
-# Type-specific equality builtins are tracked for a future sprint.
 
 Hashable@[doc: """
 Typeclass for types that can be used as dict keys.
@@ -3046,8 +3040,8 @@ describe-fn-impl@[doc: "Internal helper for describe — builds introspection di
     [ast: [@Any [ast-of val]]]
     [ann: [get-or "return-ann" [] ast]]
     [doc: [if [= ann []] ""
-            [if [builtin-eq [builtin-get "kind" [@Any ann]] "dict"]
-              [doc-entry: [try-or-impl [builtin-try [fn [let] [head [filter [fn [let e] [builtin-eq [builtin-get "key" e] "doc"]] [builtin-get "entries" [@Any ann]]]]]] []]
+            [if [builtin-eq-string [builtin-get "kind" [@Any ann]] "dict"]
+              [doc-entry: [try-or-impl [builtin-try [fn [let] [head [filter [fn [let e] [builtin-eq-string [builtin-get "key" e] "doc"]] [builtin-get "entries" [@Any ann]]]]]] []]
                 [if [= doc-entry []] "" [builtin-get "value" doc-entry]]]
               ""]]]
     [doc:        doc
@@ -3084,7 +3078,11 @@ trim@[doc: "Remove leading and trailing whitespace from a string"]: builtin-trim
 # Core I/O operations
 # NOTE: emit is now injected by loader.llt's eval-program (not exported from prelude)
 # to ensure it closes over the actual emit channel created in eval-programs.
-env@[doc: "Read an environment variable by name; returns null if unset"]: builtin-env
+env@[doc: "Read an environment variable by name. Returns Absent.Absent if not set or not allowed."]:
+  [fn [let name@String]
+    [if [builtin-env-has? name]
+      [builtin-env name]
+      Absent.Absent]]
 list-dir@[doc: "List directory entries under a DirCap. Returns a Seq of {name: String, type: String} dicts."]: builtin-list-dir
 
 # open: Open a file via DirCap, returning a Value::File handle directly.
@@ -4000,7 +3998,7 @@ lines@[doc: "Read all lines from a protocol dict handle (via read-all + split). 
 chunks@[doc: "Lazily read fixed-size byte chunks from a handle. Returns a Seq of Bytes."]:
   [fn [let h n@Int]
     [c: [read-chunk n h]]
-    [builtin-if [builtin-eq c []] Seq.End [Seq.Cons head: c  tail: [chunks h n]]]]
+    [builtin-if [builtin-eq-int [builtin-length c] 0] Seq.End [Seq.Cons head: c  tail: [chunks h n]]]]
 
 # Concatenate a Seq or Dict of Bytes values into a single Bytes value.
 # Uses the variadic `bytes` builtin (via builtin-bytes) after collecting the sequence eagerly.
@@ -5298,7 +5296,7 @@ do-wrap: [fn [let monad-ast step inner]
 # Base case: single step remaining — return it as-is.
 # Recursive case: wrap first step around the desugaring of the rest.
 do-fold: [fn [let monad-ast steps]
-  [if [builtin-eq [builtin-length steps] 1]
+  [if [builtin-eq-int [builtin-length steps] 1]
     [get 0 steps]
     [do-wrap monad-ast [get 0 steps] [do-fold monad-ast [reindex [@Any [builtin-drop 1 steps]]]]]]]
 
@@ -5398,7 +5396,7 @@ block: [fn [let ...body@Expr]
 # [task e1 e2 e3] desugars to [builtin-task [block e1 e2 e3]].
 # Single-arg [task e] passes through to builtin-task directly.
 task: [fn [let first@Expr ...rest@Expr]
-  [ast: [builtin-if [builtin-eq [builtin-tag-of rest] "Seq.End"]
+  [ast: [builtin-if [builtin-eq-string [builtin-tag-of rest] "Seq.End"]
     [quote [builtin-task [unquote first]]]
     [quote [builtin-task [block [unquote first] [unquote-splice rest]]]]]]
   [eval-macro-ast ast]]

@@ -377,11 +377,11 @@ pub(crate) use crate::builtins_dict::{
 #[allow(unused_imports)] // used in test modules via `use super::*`
 pub(crate) use crate::builtins_meta::{
     builtin_annotation_of, builtin_apply, builtin_ast_of, builtin_big_int, builtin_blake3,
-    builtin_cap_identity, builtin_decimal, builtin_eval, builtin_eval_types,
-    builtin_force, builtin_gensym, builtin_include_cache_get, builtin_include_cache_put,
-    builtin_llt_repr, builtin_load, builtin_macro_error, builtin_macro_injects,
-    builtin_make_annotated, builtin_raise, builtin_span_of, builtin_tag_of, builtin_try,
-    builtin_type_of, builtin_until, builtin_validate,
+    builtin_cap_identity, builtin_decimal, builtin_eval, builtin_eval_types, builtin_force,
+    builtin_gensym, builtin_include_cache_get, builtin_include_cache_put, builtin_llt_repr,
+    builtin_load, builtin_macro_error, builtin_macro_injects, builtin_make_annotated,
+    builtin_raise, builtin_span_of, builtin_tag_of, builtin_try, builtin_type_of, builtin_until,
+    builtin_validate,
 };
 
 // String builtins: str, split, replace, trim, trim-start, trim-end,
@@ -394,9 +394,9 @@ pub(crate) use crate::builtins_meta::{
 #[allow(unused_imports)] // used in test modules via `use super::*`
 pub(crate) use crate::builtins_string::{
     builtin_bytes_str, builtin_char_code, builtin_chr, builtin_regex_match, builtin_replace,
-    builtin_str_bytes, builtin_str_index_of, builtin_str_length,
-    builtin_str_map_chars, builtin_str_nth_char, builtin_str_slice, builtin_str_to_lower_char,
-    builtin_str_to_upper_char, builtin_trim, builtin_trim_end, builtin_trim_start,
+    builtin_str_bytes, builtin_str_index_of, builtin_str_length, builtin_str_map_chars,
+    builtin_str_nth_char, builtin_str_slice, builtin_str_to_lower_char, builtin_str_to_upper_char,
+    builtin_trim, builtin_trim_end, builtin_trim_start,
 };
 
 // Bytes builtins: bytes, bytes-find, bytes-of, bytes-equal?, ct-equal?.
@@ -855,18 +855,10 @@ fn compare_values(a: &Value, b: &Value, call_span: Span) -> EvalResult<std::cmp:
                 end: end2,
             },
         ) => s1[*start1..*end1].cmp(&s2[*start2..*end2]),
-        (
-            Value::Variant { tag: a_tag, payload: None },
-            Value::Variant { tag: b_tag, payload: None },
-        ) if (a_tag == "Boolean.True" || a_tag == "Boolean.False")
-            && (b_tag == "Boolean.True" || b_tag == "Boolean.False") =>
-        {
-            a_tag.cmp(b_tag) // "Boolean.False" < "Boolean.True" lexically → false < true ✓
-        }
         _ => {
             return Err(EvalError::type_mismatch_ctx(
                 "sort".to_string(),
-                "Int, Float, String, or Bool (homogeneous collection)",
+                "Int, Float, or String (homogeneous collection)",
                 &format!("{} and {}", a.type_name(), b.type_name()),
                 call_span,
             )
@@ -881,7 +873,7 @@ fn compare_values(a: &Value, b: &Value, call_span: Span) -> EvalResult<std::cmp:
 /// - Takes 1 or 2 args:
 ///   - 1 arg: a Dict (list-like, integer-keyed). Sorts by natural ordering.
 ///   - 2 args: a comparator function and a Dict. The comparator takes two values
-///     and returns a Bool (true if first should come before second).
+///     and returns an Int (nonzero if first should come before second).
 /// - Materializes all values, sorts by natural ordering (same semantics as `<`)
 ///   or by calling the comparator function for each comparison.
 /// - O(n log n) using Rust's `sort_by`.
@@ -1002,7 +994,8 @@ pub(crate) fn builtin_sort(
                     };
 
                     let result_val = materialize(&result_thunk, Some(&call_span), &ctx).await?;
-                    if crate::eval::call_to_match(&result_val, &caller_env, &ctx, &call_span).await {
+                    if crate::eval::call_to_match(&result_val, &caller_env, &ctx, &call_span).await
+                    {
                         // truthy means a > b → swap
                         pairs.swap(j - 1, j);
                         j -= 1;
@@ -1638,9 +1631,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn floor_bool_type_error() {
+    async fn floor_string_type_error() {
         let err = run(builtin_floor(BuiltinArgs {
-            args: vec![thunk(Value::boolean(true))],
+            args: vec![thunk(string_val("x"))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -1981,9 +1974,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn round_bool_type_error() {
+    async fn round_string_type_error() {
         let err = run(builtin_round(BuiltinArgs {
-            args: vec![thunk(Value::boolean(false))],
+            args: vec![thunk(string_val("x"))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -2236,9 +2229,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn to_int_rejects_bool_input() {
+    async fn to_int_rejects_float_input() {
         let err = run(builtin_to_int(BuiltinArgs {
-            args: vec![thunk(Value::boolean(true))],
+            args: vec![thunk(Value::Float(1.0))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -2545,9 +2538,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn to_float_rejects_bool_input() {
+    async fn to_float_rejects_dict_input() {
         let err = run(builtin_to_float(BuiltinArgs {
-            args: vec![thunk(Value::boolean(true))],
+            args: vec![thunk(Value::Dict(IndexMap::new()))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -2870,7 +2863,10 @@ mod tests {
                     mat_id(payload.expect("Result.Error should have payload"), &ctx).await;
                 // builtin-try uses e.to_string() which includes error code and span.
                 let s = format!("{payload_val}");
-                assert!(s.contains("builtin error"), "error payload should contain 'builtin error', got: {s}");
+                assert!(
+                    s.contains("builtin error"),
+                    "error payload should contain 'builtin error', got: {s}"
+                );
             }
             _ => panic!("expected Variant(Result.Error, ...), got: {:?}", result),
         }
@@ -4470,7 +4466,7 @@ mod tests {
         let err = run(builtin_replace(BuiltinArgs {
             args: vec![
                 thunk(string_val("a".into())),
-                thunk(Value::boolean(true)),
+                thunk(Value::Dict(IndexMap::new())),
                 thunk(string_val("abc".into())),
             ],
             named: no_named(),
@@ -4482,11 +4478,6 @@ mod tests {
         .unwrap_err();
         assert!(
             err.kind.to_string().contains("expected String"),
-            "got: {}",
-            err.kind
-        );
-        assert!(
-            err.kind.to_string().contains("got Bool"),
             "got: {}",
             err.kind
         );
@@ -4777,7 +4768,7 @@ mod tests {
         named.insert("extra".into(), thunk(Value::Int(1)));
         let err = run(builtin_if(BuiltinArgs {
             args: vec![
-                thunk(Value::boolean(true)),
+                thunk(Value::Int(1)),
                 thunk(Value::Int(1)),
                 thunk(Value::Int(2)),
             ],
@@ -5705,9 +5696,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn eq_bool_equal() {
+    async fn eq_int_true_equal() {
+        // Int(1) == Int(1) — canonical true == true
         let r = mat(builtin_eq(BuiltinArgs {
-            args: vec![thunk(Value::boolean(true)), thunk(Value::boolean(true))],
+            args: vec![thunk(Value::Int(1)), thunk(Value::Int(1))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -5718,9 +5710,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn eq_bool_not_equal() {
+    async fn eq_int_true_not_equal_false() {
+        // Int(1) != Int(0) — canonical true != false
         let r = mat(builtin_eq(BuiltinArgs {
-            args: vec![thunk(Value::boolean(true)), thunk(Value::boolean(false))],
+            args: vec![thunk(Value::Int(1)), thunk(Value::Int(0))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -5800,16 +5793,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn eq_bool_vs_int_not_equal() {
+    async fn eq_int_one_equal_one() {
+        // Int(1) == Int(1) — canonical true equals true
         let r = mat(builtin_eq(BuiltinArgs {
-            args: vec![thunk(Value::boolean(true)), thunk(Value::Int(1))],
+            args: vec![thunk(Value::Int(1)), thunk(Value::Int(1))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
             caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
-        assert_eq!(r, Value::Int(0));
+        assert_eq!(r, Value::Int(1));
     }
 
     #[tokio::test]
@@ -6026,9 +6020,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lt_bool_false_lt_true() {
+    async fn lt_int_false_lt_true() {
+        // Int(0) < Int(1) — canonical false < true
         let r = mat(builtin_lt(BuiltinArgs {
-            args: vec![thunk(Value::boolean(false)), thunk(Value::boolean(true))],
+            args: vec![thunk(Value::Int(0)), thunk(Value::Int(1))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -6039,9 +6034,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lt_bool_true_lt_false() {
+    async fn lt_int_true_not_lt_false() {
+        // Int(1) < Int(0) is false — canonical true is not less than false
         let r = mat(builtin_lt(BuiltinArgs {
-            args: vec![thunk(Value::boolean(true)), thunk(Value::boolean(false))],
+            args: vec![thunk(Value::Int(1)), thunk(Value::Int(0))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -6052,9 +6048,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lt_bool_false_lt_false() {
+    async fn lt_int_false_not_lt_false() {
+        // Int(0) < Int(0) is false
         let r = mat(builtin_lt(BuiltinArgs {
-            args: vec![thunk(Value::boolean(false)), thunk(Value::boolean(false))],
+            args: vec![thunk(Value::Int(0)), thunk(Value::Int(0))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -6065,9 +6062,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lt_bool_true_lt_true() {
+    async fn lt_int_true_not_lt_true() {
+        // Int(1) < Int(1) is false
         let r = mat(builtin_lt(BuiltinArgs {
-            args: vec![thunk(Value::boolean(true)), thunk(Value::boolean(true))],
+            args: vec![thunk(Value::Int(1)), thunk(Value::Int(1))],
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
@@ -6179,11 +6177,7 @@ mod tests {
         let ctx = test_ctx();
         let error_thunk = make_undef_thunk(&ctx);
 
-        let args = vec![
-            thunk(Value::Int(1)),
-            thunk(Value::Int(42)),
-            error_thunk,
-        ];
+        let args = vec![thunk(Value::Int(1)), thunk(Value::Int(42)), error_thunk];
         let result = mat(builtin_if(BuiltinArgs {
             args,
             named: no_named(),
@@ -6200,11 +6194,7 @@ mod tests {
         let ctx = test_ctx();
         let error_thunk = make_undef_thunk(&ctx);
 
-        let args = vec![
-            thunk(Value::Int(0)),
-            error_thunk,
-            thunk(Value::Int(99)),
-        ];
+        let args = vec![thunk(Value::Int(0)), error_thunk, thunk(Value::Int(99))];
         let result = mat(builtin_if(BuiltinArgs {
             args,
             named: no_named(),
@@ -7130,9 +7120,7 @@ mod tests {
             caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
-        assert!(
-            matches!(result, Value::Variant { ref tag, payload: None } if tag == "Absent.Absent")
-        );
+        assert!(result.is_absent());
     }
 
     #[tokio::test]

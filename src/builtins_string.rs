@@ -328,13 +328,7 @@ pub(crate) fn builtin_str_nth_char(
         };
 
         if idx < 0 {
-            return ok_val(
-                Value::Variant {
-                    tag: "Absent.Absent".into(),
-                    payload: None,
-                },
-                call_span,
-            );
+            return ok_val(Value::absent(), call_span);
         }
 
         let s = &source[str_start..str_end];
@@ -350,13 +344,7 @@ pub(crate) fn builtin_str_nth_char(
                     call_span,
                 )
             }
-            None => ok_val(
-                Value::Variant {
-                    tag: "Absent.Absent".into(),
-                    payload: None,
-                },
-                call_span,
-            ),
+            None => ok_val(Value::absent(), call_span),
         }
     })
 }
@@ -402,7 +390,6 @@ pub(crate) fn builtin_char_code(
         }
     })
 }
-
 
 /// `chr`: Convert a Unicode codepoint to a single-character string.
 ///
@@ -920,7 +907,10 @@ pub(crate) fn builtin_regex_match(
         let haystack = require_string("regex-match?", haystack_val, args[1].span.clone())?;
 
         match regex::Regex::new(&pattern) {
-            Ok(re) => ok_val(Value::Int(if re.is_match(&haystack) { 1 } else { 0 }), call_span),
+            Ok(re) => ok_val(
+                Value::Int(if re.is_match(&haystack) { 1 } else { 0 }),
+                call_span,
+            ),
             Err(e) => Err(EvalError::internal(
                 format!("regex-match?: invalid regex pattern {:?}: {}", pattern, e),
                 call_span,

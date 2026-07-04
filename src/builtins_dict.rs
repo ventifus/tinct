@@ -642,10 +642,9 @@ async fn field_get_on_value(
                     .position(|n| n == field_name.as_ref())
                 {
                     Some(pos) => Ok(Arc::clone(&env_read.slots[pos])),
-                    None => {
-                        Err(EvalError::key_not_found(field_name.as_ref(), vec![], target_span)
-                            .into())
-                    }
+                    None => Err(
+                        EvalError::key_not_found(field_name.as_ref(), vec![], target_span).into(),
+                    ),
                 }
             } else {
                 Err(EvalError::type_mismatch_ctx(
@@ -922,14 +921,8 @@ pub(crate) fn builtin_get_optional(
                 Ok(thunk)
             }
             None => {
-                // Return Absent.Absent on missing key
-                ok_val(
-                    Value::Variant {
-                        tag: "Absent.Absent".into(),
-                        payload: None,
-                    },
-                    call_span,
-                )
+                // Return absent sentinel on missing key
+                ok_val(Value::absent(), call_span)
             }
         }
     })
@@ -977,13 +970,7 @@ pub(crate) fn builtin_dict_nth(
         };
         match usize::try_from(idx).ok().and_then(|i| map.get_index(i)) {
             Some((_, val_id)) => Ok(ctx.get_thunk(*val_id)),
-            None => ok_val(
-                Value::Variant {
-                    tag: "Absent.Absent".into(),
-                    payload: None,
-                },
-                call_span,
-            ),
+            None => ok_val(Value::absent(), call_span),
         }
     })
 }
@@ -1037,13 +1024,7 @@ pub(crate) fn builtin_dict_key_nth(
                 };
                 ok_val(key_val, call_span)
             }
-            None => ok_val(
-                Value::Variant {
-                    tag: "Absent.Absent".into(),
-                    payload: None,
-                },
-                call_span,
-            ),
+            None => ok_val(Value::absent(), call_span),
         }
     })
 }
@@ -1103,13 +1084,7 @@ pub(crate) fn builtin_dict_kv_nth(
                 kv.insert(HashableValue::Str("value".into()), *val_id);
                 ok_val(Value::Dict(kv), call_span)
             }
-            None => ok_val(
-                Value::Variant {
-                    tag: "Absent.Absent".into(),
-                    payload: None,
-                },
-                call_span,
-            ),
+            None => ok_val(Value::absent(), call_span),
         }
     })
 }
@@ -1847,13 +1822,7 @@ pub(crate) fn builtin_get_by_field(
         };
 
         if dict_entries.is_empty() {
-            return ok_val(
-                Value::Variant {
-                    tag: "Absent.Absent".into(),
-                    payload: None,
-                },
-                call_span,
-            );
+            return ok_val(Value::absent(), call_span);
         }
 
         // Infer the type name from the first variant tag in the dict.
@@ -1874,44 +1843,20 @@ pub(crate) fn builtin_get_by_field(
 
         let type_name = match type_name {
             Some(n) => n,
-            None => {
-                // Dict contained no Variant values — return Absent.Absent
-                return ok_val(
-                    Value::Variant {
-                        tag: "Absent.Absent".into(),
-                        payload: None,
-                    },
-                    call_span,
-                );
-            }
+            // Dict contained no Variant values — return absent sentinel
+            None => return ok_val(Value::absent(), call_span),
         };
 
         // Look up TyConDef to scan constructor_constants.
-        // Falls back to Absent.Absent when no type info is available (--no-typecheck).
+        // Falls back to absent sentinel when no type info is available (--no-typecheck).
         let tycon_env = match ctx.tycon_env.get() {
             Some(env) => env,
-            None => {
-                return ok_val(
-                    Value::Variant {
-                        tag: "Absent.Absent".into(),
-                        payload: None,
-                    },
-                    call_span,
-                );
-            }
+            None => return ok_val(Value::absent(), call_span),
         };
 
         let def = match tycon_env.get(type_name.as_str()) {
             Some(d) => d,
-            None => {
-                return ok_val(
-                    Value::Variant {
-                        tag: "Absent.Absent".into(),
-                        payload: None,
-                    },
-                    call_span,
-                );
-            }
+            None => return ok_val(Value::absent(), call_span),
         };
 
         // Scan constructor_constants for the first variant where
@@ -1937,13 +1882,7 @@ pub(crate) fn builtin_get_by_field(
         }
 
         // No match found
-        ok_val(
-            Value::Variant {
-                tag: "Absent.Absent".into(),
-                payload: None,
-            },
-            call_span,
-        )
+        ok_val(Value::absent(), call_span)
     })
 }
 
