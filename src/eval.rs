@@ -2059,28 +2059,21 @@ fn eval_core_expr<'a>(
 /// Mutates the thunk's internal state via `ThunkInner`. On success, transitions to
 /// Convert a tinct value to a match signal by calling the tinct-side `to-match` function.
 ///
-/// **Rust protocol:** Only `Value::Int` is handled directly — nonzero = true, zero = false.
-/// This is the native truth signal and requires no dispatch.
+/// **All values** are dispatched through the tinct-level `to-match` function, which is
+/// backed by the `Matchable` typeclass declared in `prelude.llt`. The `to-match` function
+/// returns `Value::Int(n)` where `n != 0` is truthy and `n == 0` is falsy.
 ///
-/// **All other types** (including `Boolean.True/False` variants) are dispatched through
-/// the tinct-level `to-match` function, which is backed by the `Matchable` typeclass.
-/// The `to-match` function returns `Value::Int(1)` for truthy values and `Value::Int(0)`
-/// for falsy values.
-///
-/// No fast paths for `Boolean.True`/`Boolean.False` tag strings — those go through
-/// tinct dispatch like any other non-Int type.
+/// No Rust-side fast paths exist — no type-specific cases, no Int bypass.
+/// The Matchable typeclass is the sole gate controlling which types are valid match predicates.
+/// Int and Boolean both have Matchable instances in prelude; other types produce conservative
+/// `false` (to-match not found in pre-prelude bootstrap contexts) or a prelude error.
 pub async fn call_to_match(
     val: &Value,
     env: &Arc<RwLock<Environment>>,
     ctx: &Arc<EvalContext>,
     span: &Span,
 ) -> bool {
-    // Int is the Rust-native truth signal — no dispatch needed
-    if let Value::Int(n) = val {
-        return *n != 0;
-    }
-
-    // For all other types, look up `to-match` from the current environment and dispatch.
+    // All types go through to-match dispatch — look it up from the environment.
     // This covers Boolean.True/False (handled by the Matchable Boolean instance),
     // and any user-defined Matchable types.
     //

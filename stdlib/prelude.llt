@@ -2447,16 +2447,36 @@ Equatable@[doc: "Type class for types that support equality comparison"]:
   [let a]: [=: [fn [let x y] Boolean.False]]]
 
 # ============================================================================
-# to-match: Rust-runtime match protocol
+# Type Class Declarations: Matchable
 # ============================================================================
-
-# Convert a tinct value to a match signal (Int 1/0) for the pattern matching engine.
-# The Rust runtime only understands Int as a truth signal — nonzero is truthy, zero is falsy.
-# All other types (including Boolean.True/False) must go through this function.
 #
-# This is the ONE tinct name the Rust runtime knows — eval.rs::call_to_match looks up
-# "to-match" in the current environment and dispatches through it for non-Int values.
-# Uses bool->int which already handles Boolean.True/False→1/0 and Int→passthrough.
+# Matchable: any type whose values can serve as pattern predicates.
+# to-match converts a value to an Int match signal: nonzero = truthy, zero = falsy.
+# This is the typeclass gate — only Matchable types are valid as predicate returns.
+#
+# The Rust runtime (eval.rs::call_to_match) looks up "to-match" in the current
+# environment and dispatches through it for all values. It then checks whether
+# the returned Int is nonzero (truthy) or zero (falsy).
+
+Matchable@[doc: """
+Typeclass for types whose values can serve as pattern predicates.
+to-match converts a value to an Int match signal: nonzero = truthy, zero = falsy.
+The Rust pattern matching engine calls to-match on guard predicate return values.
+"""]:
+  [class [let Matchable a]
+    to-match: [Fn@Int [a]]]
+
+# Boolean is Matchable: True maps to 1, False maps to 0.
+MatchableBoolean@[doc: "Matchable instance for Boolean: True → 1, False → 0"]:
+  [instance Matchable
+    [let a@Boolean]: [to-match: [fn@Int [let x@Boolean]
+      [match x Boolean.True: 1 _: 0]]]]
+
+# Int is Matchable: the value itself is the signal (nonzero = truthy, zero = falsy).
+MatchableInt@[doc: "Matchable instance for Int: the Int value is the match signal directly"]:
+  [instance Matchable
+    [let a@Int]: [to-match: [fn@Int [let x@Int] x]]]
+
 to-match@[doc: "Convert to match signal (1=match, 0=no-match). Used by pattern matching engine."]:
   [fn@Int [let x] [bool->int x]]
 
