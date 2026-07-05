@@ -352,11 +352,11 @@ pub(crate) fn reject_named(
 #[allow(unused_imports)] // used in test modules via `use super::*`
 pub(crate) use crate::builtins_math::{
     builtin_acos, builtin_add, builtin_asin, builtin_atan, builtin_atan2, builtin_band,
-    builtin_bor, builtin_bxor, builtin_cos, builtin_div_float, builtin_eq, builtin_exp,
-    builtin_finite_check, builtin_float, builtin_gt, builtin_gte, builtin_if, builtin_inf_check,
-    builtin_log, builtin_log10, builtin_log2, builtin_lt, builtin_lte, builtin_mul,
-    builtin_nan_check, builtin_pow, builtin_shl, builtin_shr, builtin_sin, builtin_sqrt,
-    builtin_sub, builtin_tan,
+    builtin_bor, builtin_bxor, builtin_cos, builtin_div_float, builtin_eq_float, builtin_eq_int,
+    builtin_eq_string, builtin_exp, builtin_finite_check, builtin_float, builtin_gt, builtin_gte,
+    builtin_if, builtin_inf_check, builtin_log, builtin_log10, builtin_log2, builtin_lt,
+    builtin_lte, builtin_mul, builtin_nan_check, builtin_pow, builtin_shl, builtin_shr,
+    builtin_sin, builtin_sqrt, builtin_sub, builtin_tan,
 };
 
 // Dict/access builtins: keys, length, merge, append, get, each, each-key, each-kv, build-dict.
@@ -367,7 +367,7 @@ pub(crate) use crate::builtins_dict::{
     builtin_append, builtin_build_dict, builtin_builder_delete, builtin_builder_finish,
     builtin_builder_get, builtin_builder_get_or, builtin_builder_has, builtin_builder_set,
     builtin_builder_snapshot, builtin_dict_key_nth, builtin_dict_kv_nth, builtin_dict_nth,
-    builtin_get, builtin_get_optional, builtin_keys, builtin_length, builtin_make_builder,
+    builtin_get, builtin_keys, builtin_length, builtin_make_builder,
     builtin_merge,
 };
 
@@ -1631,7 +1631,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn floor_string_type_error() {
+    async fn floor_string_type_error_non_numeric() {
         let err = run(builtin_floor(BuiltinArgs {
             args: vec![thunk(string_val("x"))],
             named: no_named(),
@@ -1974,7 +1974,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn round_string_type_error() {
+    async fn round_string_type_error_non_numeric() {
         let err = run(builtin_round(BuiltinArgs {
             args: vec![thunk(string_val("x"))],
             named: no_named(),
@@ -2229,7 +2229,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn to_int_rejects_float_input() {
+    async fn to_int_rejects_float_whole_number() {
         let err = run(builtin_to_int(BuiltinArgs {
             args: vec![thunk(Value::Float(1.0))],
             named: no_named(),
@@ -4726,7 +4726,7 @@ mod tests {
     async fn eq_rejects_named_args() {
         let mut named = IndexMap::new();
         named.insert("extra".into(), thunk(Value::Int(1)));
-        let err = run(builtin_eq(BuiltinArgs {
+        let err = run(builtin_eq_int(BuiltinArgs {
             args: vec![thunk(Value::Int(1)), thunk(Value::Int(2))],
             named: Some(named),
             call_span: call_span(),
@@ -5613,7 +5613,7 @@ mod tests {
 
     #[tokio::test]
     async fn eq_int_int_equal() {
-        let r = mat(builtin_eq(BuiltinArgs {
+        let r = mat(builtin_eq_int(BuiltinArgs {
             args: vec![thunk(Value::Int(5)), thunk(Value::Int(5))],
             named: no_named(),
             call_span: call_span(),
@@ -5626,7 +5626,7 @@ mod tests {
 
     #[tokio::test]
     async fn eq_int_int_not_equal() {
-        let r = mat(builtin_eq(BuiltinArgs {
+        let r = mat(builtin_eq_int(BuiltinArgs {
             args: vec![thunk(Value::Int(5)), thunk(Value::Int(6))],
             named: no_named(),
             call_span: call_span(),
@@ -5637,9 +5637,10 @@ mod tests {
         assert_eq!(r, Value::Int(0));
     }
 
+    // ── builtin-eq-float tests ──────────────────────────────────────────────────────────
     #[tokio::test]
     async fn eq_float_float_equal() {
-        let r = mat(builtin_eq(BuiltinArgs {
+        let r = mat(builtin_eq_float(BuiltinArgs {
             args: vec![thunk(Value::Float(3.14)), thunk(Value::Float(3.14))],
             named: no_named(),
             call_span: call_span(),
@@ -5652,7 +5653,7 @@ mod tests {
 
     #[tokio::test]
     async fn eq_float_float_not_equal() {
-        let r = mat(builtin_eq(BuiltinArgs {
+        let r = mat(builtin_eq_float(BuiltinArgs {
             args: vec![thunk(Value::Float(3.14)), thunk(Value::Float(2.71))],
             named: no_named(),
             call_span: call_span(),
@@ -5664,8 +5665,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn eq_nan_not_equal_to_self() {
+        let r = mat(builtin_eq_float(BuiltinArgs {
+            args: vec![thunk(Value::Float(f64::NAN)), thunk(Value::Float(f64::NAN))],
+            named: no_named(),
+            call_span: call_span(),
+            ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
+        }))
+        .await;
+        assert_eq!(r, Value::Int(0));
+    }
+
+    #[tokio::test]
+    async fn eq_negative_zero_float() {
+        let r = mat(builtin_eq_float(BuiltinArgs {
+            args: vec![thunk(Value::Float(-0.0)), thunk(Value::Float(0.0))],
+            named: no_named(),
+            call_span: call_span(),
+            ctx: test_ctx(),
+            caller_env: Arc::new(RwLock::new(Environment::new())),
+        }))
+        .await;
+        assert_eq!(r, Value::Int(1));
+    }
+
+    // ── builtin-eq-string tests ─────────────────────────────────────────────────────────
+    #[tokio::test]
     async fn eq_string_equal() {
-        let r = mat(builtin_eq(BuiltinArgs {
+        let r = mat(builtin_eq_string(BuiltinArgs {
             args: vec![
                 thunk(string_val("hello".into())),
                 thunk(string_val("hello".into())),
@@ -5681,7 +5709,7 @@ mod tests {
 
     #[tokio::test]
     async fn eq_string_not_equal() {
-        let r = mat(builtin_eq(BuiltinArgs {
+        let r = mat(builtin_eq_string(BuiltinArgs {
             args: vec![
                 thunk(string_val("hello".into())),
                 thunk(string_val("world".into())),
@@ -5696,145 +5724,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn eq_int_true_equal() {
-        // Int(1) == Int(1) — canonical true == true
-        let r = mat(builtin_eq(BuiltinArgs {
-            args: vec![thunk(Value::Int(1)), thunk(Value::Int(1))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
-        }))
-        .await;
-        assert_eq!(r, Value::Int(1));
-    }
-
-    #[tokio::test]
-    async fn eq_int_true_not_equal_false() {
-        // Int(1) != Int(0) — canonical true != false
-        let r = mat(builtin_eq(BuiltinArgs {
-            args: vec![thunk(Value::Int(1)), thunk(Value::Int(0))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
-        }))
-        .await;
-        assert_eq!(r, Value::Int(0));
-    }
-
-    #[tokio::test]
-    async fn eq_cross_type_int_float_equal() {
-        let r = mat(builtin_eq(BuiltinArgs {
-            args: vec![thunk(Value::Int(5)), thunk(Value::Float(5.0))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
-        }))
-        .await;
-        assert_eq!(r, Value::Int(1));
-    }
-
-    #[tokio::test]
-    async fn eq_cross_type_float_int_equal() {
-        let r = mat(builtin_eq(BuiltinArgs {
-            args: vec![thunk(Value::Float(5.0)), thunk(Value::Int(5))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
-        }))
-        .await;
-        assert_eq!(r, Value::Int(1));
-    }
-
-    #[tokio::test]
-    async fn eq_cross_type_int_float_not_equal() {
-        let r = mat(builtin_eq(BuiltinArgs {
-            args: vec![thunk(Value::Int(5)), thunk(Value::Float(5.1))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
-        }))
-        .await;
-        assert_eq!(r, Value::Int(0));
-    }
-
-    #[tokio::test]
-    async fn eq_dict_structural_equality() {
-        // Empty dicts are structurally equal
-        let r = mat(builtin_eq(BuiltinArgs {
-            args: vec![
-                thunk(Value::Dict(IndexMap::new())),
-                thunk(Value::Dict(IndexMap::new())),
-            ],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
-        }))
-        .await;
-        assert_eq!(r, Value::Int(1));
-    }
-
-    #[tokio::test]
-    async fn eq_different_types_not_equal() {
-        let r = mat(builtin_eq(BuiltinArgs {
-            args: vec![thunk(Value::Int(1)), thunk(string_val("1".into()))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
-        }))
-        .await;
-        assert_eq!(r, Value::Int(0));
-    }
-
-    #[tokio::test]
-    async fn eq_int_one_equal_one() {
-        // Int(1) == Int(1) — canonical true equals true
-        let r = mat(builtin_eq(BuiltinArgs {
-            args: vec![thunk(Value::Int(1)), thunk(Value::Int(1))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
-        }))
-        .await;
-        assert_eq!(r, Value::Int(1));
-    }
-
-    #[tokio::test]
-    async fn eq_nan_not_equal_to_self() {
-        let r = mat(builtin_eq(BuiltinArgs {
-            args: vec![thunk(Value::Float(f64::NAN)), thunk(Value::Float(f64::NAN))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
-        }))
-        .await;
-        assert_eq!(r, Value::Int(0));
-    }
-
-    #[tokio::test]
-    async fn eq_negative_zero_float() {
-        let r = mat(builtin_eq(BuiltinArgs {
-            args: vec![thunk(Value::Float(-0.0)), thunk(Value::Float(0.0))],
-            named: no_named(),
-            call_span: call_span(),
-            ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
-        }))
-        .await;
-        assert_eq!(r, Value::Int(1));
-    }
-
-    #[tokio::test]
     async fn eq_arity_error() {
-        let e = run(builtin_eq(BuiltinArgs {
+        let e = run(builtin_eq_int(BuiltinArgs {
             args: vec![thunk(Value::Int(1))],
             named: no_named(),
             call_span: call_span(),
@@ -7109,10 +7000,12 @@ mod tests {
 
     #[tokio::test]
     async fn dict_nth_out_of_bounds() {
+        // builtin-dict-nth now errors on out-of-bounds access.
+        // Prelude step functions guard with builtin-dict-has-nth? before calling this.
         let ctx = test_ctx();
         let mut map = IndexMap::new();
         map.insert(HashableValue::Str("a".into()), thunk(Value::Int(10)));
-        let result = mat(builtin_dict_nth(BuiltinArgs {
+        let result = run(builtin_dict_nth(BuiltinArgs {
             args: vec![thunk_dict(map, &ctx), thunk(Value::Int(5))],
             named: no_named(),
             call_span: call_span(),
@@ -7120,7 +7013,7 @@ mod tests {
             caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
-        assert!(result.is_absent());
+        assert!(result.is_err(), "builtin-dict-nth must error on out-of-bounds index");
     }
 
     #[tokio::test]

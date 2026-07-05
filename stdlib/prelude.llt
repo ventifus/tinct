@@ -103,10 +103,11 @@
   # type-stage-each: Convert a Dict to a lazy Seq of values using builtin-dict-nth.
   # Replaces builtin-each (removed — Seq construction must be tinct-side).
   # Uses only core builtins; Seq.Cons/Seq.End are lowered to CoreExpr::Variant by lower.rs.
+  # Guards with builtin-dict-has-nth? (Int 1/0) before calling builtin-dict-nth.
   type-stage-each: [fn [let d i]
-    [match [builtin-dict-nth d i]
-      Absent.Absent: Seq.End
-      [case [let v] _ [Seq.Cons head: v  tail: [type-stage-each d [builtin-add i 1]]]]]]
+    [builtin-if [builtin-dict-has-nth? d i]
+      [Seq.Cons head: [builtin-dict-nth d i]  tail: [type-stage-each d [builtin-add i 1]]]
+      Seq.End]]
 
   # ============================================================================
   # TypeNode: Primary Type Representation (T-1058, equirecursive-types)
@@ -203,8 +204,8 @@
   # populated at desugar time for fields annotated @Child (T-1124).
   #
   # All helpers use only core builtins (builtin-* prefixed names, `if`, `=`, `+`,
-  # and bare `get?`) — `--- uses: ["core"]` makes these available via their aliases.
-  # Unqualified names like `reduce`, `keys`, `get`, `has?` are NOT available
+  # and `builtin-has-key?`) — `--- uses: ["core"]` makes these available.
+  # Unqualified names like `reduce`, `keys`, `get`, `get?`, `has?` are NOT available
   # here — they are defined in the runtime prelude section further below.
 
   # TypeNode-ctor: return the TypeNode constructor function for a TypeNode value.
@@ -220,12 +221,12 @@
   # Reads the "field-annotations" key from annotation-of(ctor) and returns its keys
   # (a Dict of int-indexed field name strings). Returns [] when no @Child fields exist
   # (i.e., leaf constructors) or when T-1124 has not yet populated field-annotations.
+  # Uses builtin-has-key? (returns Int 1/0) to avoid the removed builtin-get?.
   child-fields: [fn [let ctor]
     [ann: [builtin-annotation-of ctor]]
-    [fa:  [builtin-get? "field-annotations" ann]]
-    [builtin-if [builtin-eq-string [builtin-type-of fa] "Absent"]
-      []
-      [builtin-keys fa]]]
+    [builtin-if [builtin-has-key? "field-annotations" ann]
+      [builtin-keys [builtin-get "field-annotations" ann]]
+      []]]
 
   # child-role: return the child role string ("One", "Seq", or "MapValues") for a
   # given @Child field of a constructor.
@@ -238,15 +239,14 @@
         [builtin-get "field-annotations" [builtin-annotation-of ctor]]]]]
 
   # child-field?: return Boolean.True iff field is an @Child field of the constructor.
-  # Uses builtin-eq-string/builtin-if (core builtins only — `=` and `if` are not in scope here).
+  # Uses builtin-has-key? (Int 1/0) — builtin-get? no longer exists as a Rust builtin.
   child-field?: [fn [let ctor field]
     [ann: [builtin-annotation-of ctor]]
-    [fa:  [builtin-get? "field-annotations" ann]]
-    [builtin-if [builtin-eq-string [builtin-type-of fa] "Absent"]
-      Boolean.False
-      [builtin-if [builtin-eq-string [builtin-type-of [builtin-get? field fa]] "Absent"]
-        Boolean.False
-        Boolean.True]]]
+    [builtin-if [builtin-has-key? "field-annotations" ann]
+      [builtin-if [builtin-has-key? field [builtin-get "field-annotations" ann]]
+        Boolean.True
+        Boolean.False]
+      Boolean.False]]
 
 ]
 
@@ -349,11 +349,10 @@
     # User-defined constructors (via open ADT extension, R-12) may carry a custom as-type
     # to reduce to an existing TypeNode form before the type checker processes it.
     as-type: [fn [let t]
-      [ann:        [builtin-annotation-of [TypeNode-ctor t]]]
-      [as-type-fn: [builtin-get? "as-type" ann]]
-      [builtin-if [builtin-eq-string [builtin-type-of as-type-fn] "Absent"]
-        t
-        [as-type-fn t]]]]]
+      [ann: [builtin-annotation-of [TypeNode-ctor t]]]
+      [builtin-if [builtin-has-key? "as-type" ann]
+        [[builtin-get "as-type" ann] t]
+        t]]]]
 
   # ============================================================================
   # TypeNodeResolve: typeclass for as-type dispatch (T-1059)
@@ -1784,7 +1783,7 @@ int?@[doc: "Check if value is Int"]:   [fn@Boolean [let x@[is: Int]] [match x [@
 float?@[doc: "Check if value is Float"]: [fn@Boolean [let x@[is: Float]] [match x [@Float _]:  Boolean.True  _: Boolean.False]]
 str?@[doc: "Check if value is String"]: [fn@Boolean [let x@[is: String]] [match x [@Str _]:     Boolean.True  _: Boolean.False]]
 bool?@[doc: "Check if value is Bool"]:  [fn@Boolean [let x@[is: Boolean]] [match x Boolean.True: Boolean.True  Boolean.False: Boolean.True  _: Boolean.False]]
-null?@[doc: "Check if value is null (empty dict [])"]: [fn@Boolean [let x@[is: Null]] [if [builtin-eq-int [builtin-length x] 0] Boolean.True Boolean.False]]
+null?@[doc: "Check if value is null (empty dict [])"]: [fn@Boolean [let x@[is: Null]] [if [dict? x] [builtin-if [builtin-eq-int [builtin-length x] 0] Boolean.True Boolean.False] Boolean.False]]
 dict?@[doc: "Check if value is Dict"]:  [fn@Boolean [let x@[is: Dict]] [match x [@Dict _]:    Boolean.True  _: Boolean.False]]
 fn?@[doc: "Check if value is a function (Function or Builtin)"]: [fn@Boolean [let x] [match x [@Fn _]: Boolean.True  _: Boolean.False]]
 proxy?@[doc: "Check if value is a Proxy"]: [fn@Boolean [let x] [match x [@Proxy _]: Boolean.True  _: Boolean.False]]
@@ -2028,28 +2027,28 @@ via TCO — stack depth O(1) in the common case.
 
 each-step@[doc: "Internal: step function for each — recurse via Seq.Cons tail thunk."]:
   [fn [let d i]
-    [match [builtin-dict-nth d i]
-      Absent.Absent: Seq.End
-      [case [let v] _ [Seq.Cons head: v  tail: [each-step d [+ i 1]]]]]]
+    [if [builtin-dict-has-nth? d i]
+      [Seq.Cons head: [builtin-dict-nth d i]  tail: [each-step d [+ i 1]]]
+      Seq.End]]
 
 each-key-step@[doc: "Internal: step function for each-key."]:
   [fn [let d i]
-    [match [builtin-dict-key-nth d i]
-      Absent.Absent: Seq.End
-      [case [let k] _ [Seq.Cons head: k  tail: [each-key-step d [+ i 1]]]]]]
+    [if [builtin-dict-has-key-nth? d i]
+      [Seq.Cons head: [builtin-dict-key-nth d i]  tail: [each-key-step d [+ i 1]]]
+      Seq.End]]
 
 each-kv-step@[doc: "Internal: step function for each-kv."]:
   [fn [let d i]
-    [match [builtin-dict-kv-nth d i]
-      Absent.Absent: Seq.End
-      [case [let kv] _ [Seq.Cons head: kv  tail: [each-kv-step d [+ i 1]]]]]]
+    [if [builtin-dict-has-kv-nth? d i]
+      [Seq.Cons head: [builtin-dict-kv-nth d i]  tail: [each-kv-step d [+ i 1]]]
+      Seq.End]]
 
 # str-chars: iterate over Unicode codepoints of a string as single-char strings.
 str-chars-step@[doc: "Internal: step function for str-chars."]:
   [fn [let s i]
-    [match [builtin-str-nth-char s i]
-      Absent.Absent: Seq.End
-      [case [let c] _ [Seq.Cons head: c  tail: [str-chars-step s [+ i 1]]]]]]
+    [if [builtin-str-has-nth? s i]
+      [Seq.Cons head: [builtin-str-nth-char s i]  tail: [str-chars-step s [+ i 1]]]
+      Seq.End]]
 
 # ============================================================================
 # Transport Type (Network Transport Variants)
@@ -2991,8 +2990,16 @@ bytes-of@[doc: "Convert a Seq or Dict of byte Ints to a Bytes value."]: builtin-
 bytes-equal?@[doc: "Constant-time equality check for two Bytes values."]: builtin-bytes-equal?
 ct-equal?@[doc: "Constant-time equality for two Bytes values (alias for bytes-equal? — cryptographic use)."]: builtin-ct-equal?
 
-# Dict lookup with optional return (Absent on miss)
-get?@[doc: "Get a value by key; returns Absent.Absent if missing (unlike get which errors)."]: builtin-get?
+# Dict lookup with optional return (Absent on miss).
+# Composes builtin-has-key? + builtin-get + Absent.Absent — Rust does not know about Absent.
+# Uses builtin-if directly (Int 1/0 from builtin-has-key?) to avoid any potential `if`
+# letrec ordering issue. The @[return: Unknown] annotation lets the Indexable scheme in
+# core_type_env drive return-type inference at call sites.
+get?@[return: Unknown  doc: "Get a value by key; returns Absent.Absent if missing (unlike get which errors)."]:
+  [fn [let k d]
+    [builtin-if [builtin-has-key? k d]
+      [builtin-get k d]
+      Absent.Absent]]
 
 # Type introspection
 type-of@[doc: "Return the type name of a value as a String"]: builtin-type-of
@@ -3094,7 +3101,7 @@ read-all@[doc: "Read all content from a file handle into a String (UTF-8)."]:
   [fn [let h]
     [read-all-loop: [fn [let handle acc]
       [chunk: [read-chunk 65536 handle]]
-      [if [= [length chunk] 0]
+      [if [builtin-eq-int [length chunk] 0]
         acc
         [read-all-loop handle [builtin-bytes-concat acc chunk]]]]]
     [bytes-str [read-all-loop h [builtin-bytes]]]]
@@ -5371,7 +5378,7 @@ tmpl: [fn [let template@Expr ...parts@Expr]
 do: [fn [let first@Expr ...rest@Expr]
   [ast: [if [do-is-inferred-form first]
     [do-desugar-inferred [cons first [collect rest]]]
-    [if [= [length [collect rest]] 0]
+    [if [builtin-eq-int [length [collect rest]] 0]
       [do-call-1
         [do-access-node first "pure"]
         [do-empty-dict-node]]

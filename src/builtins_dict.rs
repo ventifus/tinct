@@ -8,12 +8,16 @@
 //! - `length`: Count dict entries
 //! - `merge`: Lazy overlay of two dicts (O(1), right overrides left)
 //! - `append`: Insert value at next integer key
-//! - `builtin-get`: Primitive dict key lookup
+//! - `builtin-get`: Primitive dict key lookup (errors on missing key)
+//! - `builtin-has-key?`: Returns Int 1 if key exists, Int 0 if not (O(1), no value force)
 //!
 //! **Dict single-step primitives (drive laziness from tinct side):**
-//! - `builtin-dict-nth`: Get value at insertion-order position i, or Absent.Absent
-//! - `builtin-dict-key-nth`: Get key at insertion-order position i, or Absent.Absent
-//! - `builtin-dict-kv-nth`: Get {key,value} pair at position i, or Absent.Absent
+//! - `builtin-dict-has-nth?`: Returns Int 1 if position i is valid, Int 0 if out of bounds
+//! - `builtin-dict-nth`: Get value at insertion-order position i (errors on out of bounds)
+//! - `builtin-dict-has-key-nth?`: Returns Int 1 if position i is valid, Int 0 if out of bounds
+//! - `builtin-dict-key-nth`: Get key at insertion-order position i (errors on out of bounds)
+//! - `builtin-dict-has-kv-nth?`: Returns Int 1 if position i is valid, Int 0 if out of bounds
+//! - `builtin-dict-kv-nth`: Get {key,value} pair at position i (errors on out of bounds)
 //!
 //! **Transient builders:**
 //! - `make-builder`: Create an empty mutable builder
@@ -855,12 +859,13 @@ pub(crate) fn builtin_get(
     })
 }
 
-/// `get?`: Rust primitive for optional dict key lookup.
+/// `builtin-has-key?`: Check whether a key exists in a dict.
 ///
 /// Takes 2 args: a key (Int or String) and a dict.
-/// Returns the value if the key exists, or `Absent.Absent` if missing.
-/// NO error on missing key (unlike `builtin-get` which errors).
-pub(crate) fn builtin_get_optional(
+/// Returns `Int 1` if the key is present, `Int 0` if absent.
+/// Does NOT force the value at the key — O(1) spine-only lookup.
+/// Prelude composes this with `builtin-get` to implement `get?` without Rust knowing Absent.
+pub(crate) fn builtin_has_key(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
     let BuiltinArgs {
@@ -871,7 +876,7 @@ pub(crate) fn builtin_get_optional(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("get?", named.as_ref(), call_span.clone())?;
+        reject_named("builtin-has-key?", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span.clone()).into());
         }
@@ -879,7 +884,7 @@ pub(crate) fn builtin_get_optional(
         // Materialize the key
         let key_val = args[0]
             .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .expect("pre-materialized by pos_strictness");
         let key = match key_val {
             Value::Int(n) => HashableValue::Int(n),
             Value::String {
@@ -892,7 +897,7 @@ pub(crate) fn builtin_get_optional(
             }
             other => {
                 return Err(EvalError::type_mismatch_ctx(
-                    "get?".to_string(),
+                    "builtin-has-key?".to_string(),
                     "Int or String",
                     other.type_name(),
                     args[0].span.clone(),
@@ -904,9 +909,9 @@ pub(crate) fn builtin_get_optional(
         // Materialize the dict (spine only, not values)
         let dict_val = args[1]
             .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
+            .expect("pre-materialized by pos_strictness");
         let map = crate::builtins::require_dict(
-            "get?",
+            "builtin-has-key?",
             dict_val,
             args[1].span.clone(),
             &ctx,
@@ -914,25 +919,72 @@ pub(crate) fn builtin_get_optional(
         )
         .await?;
 
-        // Look up the key
-        match map.get(&key) {
-            Some(thunk_id) => {
-                let thunk = ctx.thunk_arena.lock().unwrap().get(*thunk_id).clone();
-                Ok(thunk)
-            }
-            None => {
-                // Return absent sentinel on missing key
-                ok_val(Value::absent(), call_span)
-            }
+        let exists = if map.contains_key(&key) { 1i64 } else { 0i64 };
+        ok_val(Value::Int(exists), call_span)
+    })
+}
+
+/// `builtin-dict-has-nth?`: Check whether insertion-order position `i` is valid in a Dict.
+///
+/// Takes 2 args: (dict, i: Int). Returns `Int 1` if position `i` exists, `Int 0` if out of bounds.
+/// O(1) — used by prelude step functions to drive laziness without constructing Absent.
+/// `Dict a → Int → Int`
+pub(crate) fn builtin_dict_has_nth(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+        ..
+    } = ctx_arg;
+    Box::pin(async move {
+        reject_named("builtin-dict-has-nth?", named.as_ref(), call_span.clone())?;
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
+        let dict_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by pos_strictness[0]=Spine");
+        let map = crate::builtins::require_dict(
+            "builtin-dict-has-nth?",
+            dict_val,
+            args[0].span.clone(),
+            &ctx,
+            call_span.clone(),
+        )
+        .await?;
+        let idx = match args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by pos_strictness[1]=Seq")
+        {
+            Value::Int(n) => n,
+            other => {
+                return Err(
+                    EvalError::type_mismatch("Int", other.type_name(), call_span).into(),
+                )
+            }
+        };
+        let exists = if usize::try_from(idx)
+            .ok()
+            .and_then(|i| map.get_index(i))
+            .is_some()
+        {
+            1i64
+        } else {
+            0i64
+        };
+        ok_val(Value::Int(exists), call_span)
     })
 }
 
 /// `builtin-dict-nth`: Get the value at insertion-order position `i` in a Dict.
 ///
-/// Takes 2 args: (dict, i: Int). Returns the value at that position, or `Absent.Absent`
-/// if `i` is out of bounds. O(1) — drives laziness from the tinct side.
-/// `Dict a → Int → a | Absent`
+/// Takes 2 args: (dict, i: Int). Errors if `i` is out of bounds.
+/// O(1) — drives laziness from the tinct side via prelude step functions that
+/// guard with `builtin-dict-has-nth?` before calling this.
+/// `Dict a → Int → a`
 pub(crate) fn builtin_dict_nth(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
@@ -944,7 +996,7 @@ pub(crate) fn builtin_dict_nth(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("dict-nth", named.as_ref(), call_span.clone())?;
+        reject_named("builtin-dict-nth", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
@@ -952,7 +1004,7 @@ pub(crate) fn builtin_dict_nth(
             .try_get_materialized()
             .expect("pre-materialized by pos_strictness[0]=Spine");
         let map = crate::builtins::require_dict(
-            "dict-nth",
+            "builtin-dict-nth",
             dict_val,
             args[0].span.clone(),
             &ctx,
@@ -970,16 +1022,79 @@ pub(crate) fn builtin_dict_nth(
         };
         match usize::try_from(idx).ok().and_then(|i| map.get_index(i)) {
             Some((_, val_id)) => Ok(ctx.get_thunk(*val_id)),
-            None => ok_val(Value::absent(), call_span),
+            None => Err(EvalError::user_error(
+                format!("builtin-dict-nth: index {idx} out of bounds (dict has {} entries)", map.len()),
+                call_span,
+            )
+            .into()),
         }
+    })
+}
+
+/// `builtin-dict-has-key-nth?`: Check whether insertion-order position `i` is valid in a Dict.
+///
+/// Takes 2 args: (dict, i: Int). Returns `Int 1` if position `i` exists, `Int 0` if out of bounds.
+/// Identical to `builtin-dict-has-nth?` but paired with `builtin-dict-key-nth`.
+/// `Dict a → Int → Int`
+pub(crate) fn builtin_dict_has_key_nth(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+        ..
+    } = ctx_arg;
+    Box::pin(async move {
+        reject_named(
+            "builtin-dict-has-key-nth?",
+            named.as_ref(),
+            call_span.clone(),
+        )?;
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+        let dict_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by pos_strictness[0]=Spine");
+        let map = crate::builtins::require_dict(
+            "builtin-dict-has-key-nth?",
+            dict_val,
+            args[0].span.clone(),
+            &ctx,
+            call_span.clone(),
+        )
+        .await?;
+        let idx = match args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by pos_strictness[1]=Seq")
+        {
+            Value::Int(n) => n,
+            other => {
+                return Err(
+                    EvalError::type_mismatch("Int", other.type_name(), call_span).into(),
+                )
+            }
+        };
+        let exists = if usize::try_from(idx)
+            .ok()
+            .and_then(|i| map.get_index(i))
+            .is_some()
+        {
+            1i64
+        } else {
+            0i64
+        };
+        ok_val(Value::Int(exists), call_span)
     })
 }
 
 /// `builtin-dict-key-nth`: Get the key at insertion-order position `i` in a Dict.
 ///
-/// Takes 2 args: (dict, i: Int). Returns the key at that position, or `Absent.Absent`
-/// if `i` is out of bounds. O(1) — drives laziness from the tinct side.
-/// `Dict a → Int → Key | Absent`
+/// Takes 2 args: (dict, i: Int). Errors if `i` is out of bounds.
+/// Prelude guards with `builtin-dict-has-key-nth?` before calling this.
+/// `Dict a → Int → Key`
 pub(crate) fn builtin_dict_key_nth(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
@@ -991,7 +1106,7 @@ pub(crate) fn builtin_dict_key_nth(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("dict-key-nth", named.as_ref(), call_span.clone())?;
+        reject_named("builtin-dict-key-nth", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
@@ -999,7 +1114,7 @@ pub(crate) fn builtin_dict_key_nth(
             .try_get_materialized()
             .expect("pre-materialized by pos_strictness[0]=Spine");
         let map = crate::builtins::require_dict(
-            "dict-key-nth",
+            "builtin-dict-key-nth",
             dict_val,
             args[0].span.clone(),
             &ctx,
@@ -1024,16 +1139,82 @@ pub(crate) fn builtin_dict_key_nth(
                 };
                 ok_val(key_val, call_span)
             }
-            None => ok_val(Value::absent(), call_span),
+            None => Err(EvalError::user_error(
+                format!(
+                    "builtin-dict-key-nth: index {idx} out of bounds (dict has {} entries)",
+                    map.len()
+                ),
+                call_span,
+            )
+            .into()),
         }
+    })
+}
+
+/// `builtin-dict-has-kv-nth?`: Check whether insertion-order position `i` is valid in a Dict.
+///
+/// Takes 2 args: (dict, i: Int). Returns `Int 1` if position `i` exists, `Int 0` if out of bounds.
+/// Identical to `builtin-dict-has-nth?` but paired with `builtin-dict-kv-nth`.
+/// `Dict a → Int → Int`
+pub(crate) fn builtin_dict_has_kv_nth(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    let BuiltinArgs {
+        args,
+        named,
+        call_span,
+        ctx,
+        ..
+    } = ctx_arg;
+    Box::pin(async move {
+        reject_named(
+            "builtin-dict-has-kv-nth?",
+            named.as_ref(),
+            call_span.clone(),
+        )?;
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+        let dict_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by pos_strictness[0]=Spine");
+        let map = crate::builtins::require_dict(
+            "builtin-dict-has-kv-nth?",
+            dict_val,
+            args[0].span.clone(),
+            &ctx,
+            call_span.clone(),
+        )
+        .await?;
+        let idx = match args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by pos_strictness[1]=Seq")
+        {
+            Value::Int(n) => n,
+            other => {
+                return Err(
+                    EvalError::type_mismatch("Int", other.type_name(), call_span).into(),
+                )
+            }
+        };
+        let exists = if usize::try_from(idx)
+            .ok()
+            .and_then(|i| map.get_index(i))
+            .is_some()
+        {
+            1i64
+        } else {
+            0i64
+        };
+        ok_val(Value::Int(exists), call_span)
     })
 }
 
 /// `builtin-dict-kv-nth`: Get the key-value pair at insertion-order position `i` in a Dict.
 ///
-/// Takes 2 args: (dict, i: Int). Returns a `[key: K  value: V]` dict at that position,
-/// or `Absent.Absent` if `i` is out of bounds. O(1) — drives laziness from the tinct side.
-/// `Dict a → Int → [key: Key  value: a] | Absent`
+/// Takes 2 args: (dict, i: Int). Returns a `[key: K  value: V]` dict at that position.
+/// Errors if `i` is out of bounds. Prelude guards with `builtin-dict-has-kv-nth?`.
+/// `Dict a → Int → [key: Key  value: a]`
 pub(crate) fn builtin_dict_kv_nth(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
@@ -1045,7 +1226,7 @@ pub(crate) fn builtin_dict_kv_nth(
         ..
     } = ctx_arg;
     Box::pin(async move {
-        reject_named("dict-kv-nth", named.as_ref(), call_span.clone())?;
+        reject_named("builtin-dict-kv-nth", named.as_ref(), call_span.clone())?;
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
@@ -1053,7 +1234,7 @@ pub(crate) fn builtin_dict_kv_nth(
             .try_get_materialized()
             .expect("pre-materialized by pos_strictness[0]=Spine");
         let map = crate::builtins::require_dict(
-            "dict-kv-nth",
+            "builtin-dict-kv-nth",
             dict_val,
             args[0].span.clone(),
             &ctx,
@@ -1084,7 +1265,14 @@ pub(crate) fn builtin_dict_kv_nth(
                 kv.insert(HashableValue::Str("value".into()), *val_id);
                 ok_val(Value::Dict(kv), call_span)
             }
-            None => ok_val(Value::absent(), call_span),
+            None => Err(EvalError::user_error(
+                format!(
+                    "builtin-dict-kv-nth: index {idx} out of bounds (dict has {} entries)",
+                    map.len()
+                ),
+                call_span,
+            )
+            .into()),
         }
     })
 }
@@ -1749,7 +1937,7 @@ pub(crate) fn builtin_builder_get(
 ///
 /// Searches `TyConDef.constructor_constants` for the first variant whose
 /// `field-name` constant equals `field-value`. Returns that variant or
-/// `Absent.Absent` if no match.
+/// errors if no match.
 ///
 /// `[get rcode: 2 DnsRcode]` desugars to `[builtin-get-by-field "rcode" 2 DnsRcode]`
 /// via the `get` wrapper in prelude.
@@ -1822,7 +2010,11 @@ pub(crate) fn builtin_get_by_field(
         };
 
         if dict_entries.is_empty() {
-            return ok_val(Value::absent(), call_span);
+            return Err(EvalError::user_error(
+                "builtin-get-by-field: type dict is empty".to_string(),
+                call_span,
+            )
+            .into());
         }
 
         // Infer the type name from the first variant tag in the dict.
@@ -1843,20 +2035,41 @@ pub(crate) fn builtin_get_by_field(
 
         let type_name = match type_name {
             Some(n) => n,
-            // Dict contained no Variant values — return absent sentinel
-            None => return ok_val(Value::absent(), call_span),
+            None => {
+                return Err(EvalError::user_error(
+                    "builtin-get-by-field: type dict contains no Variant values".to_string(),
+                    call_span,
+                )
+                .into())
+            }
         };
 
         // Look up TyConDef to scan constructor_constants.
-        // Falls back to absent sentinel when no type info is available (--no-typecheck).
         let tycon_env = match ctx.tycon_env.get() {
             Some(env) => env,
-            None => return ok_val(Value::absent(), call_span),
+            None => {
+                return Err(EvalError::user_error(
+                    format!(
+                        "builtin-get-by-field: type info not available for type {type_name} \
+                         (--no-typecheck mode)"
+                    ),
+                    call_span,
+                )
+                .into())
+            }
         };
 
         let def = match tycon_env.get(type_name.as_str()) {
             Some(d) => d,
-            None => return ok_val(Value::absent(), call_span),
+            None => {
+                return Err(EvalError::user_error(
+                    format!(
+                        "builtin-get-by-field: type {type_name} not found in type environment"
+                    ),
+                    call_span,
+                )
+                .into())
+            }
         };
 
         // Scan constructor_constants for the first variant where
@@ -1881,8 +2094,15 @@ pub(crate) fn builtin_get_by_field(
             }
         }
 
-        // No match found
-        ok_val(Value::absent(), call_span)
+        // No match found — error
+        Err(EvalError::user_error(
+            format!(
+                "builtin-get-by-field: no constructor of {type_name} has field \"{field_name}\" \
+                 matching the given value"
+            ),
+            call_span,
+        )
+        .into())
     })
 }
 

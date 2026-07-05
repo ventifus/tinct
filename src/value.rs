@@ -118,13 +118,12 @@ impl fmt::Debug for BuiltinDef {
 /// A fully-materialised tinct value that implements Hash + Eq.
 /// Only these Value variants may appear as dict keys.
 ///
-/// Currently only Int and Str are produced by the evaluator — the Bool, Dict,
+/// Currently only Int and Str are produced by the evaluator — the Dict
 /// and Variant arms exist to accommodate future key types without a breaking
 /// enum change.
 #[derive(Clone, Debug)]
 pub enum HashableValue {
     Int(i64),
-    Bool(bool),
     Str(Rc<str>),
     /// Dict key — pairs in insertion order, compared order-insensitively.
     Dict(Vec<(HashableValue, HashableValue)>),
@@ -149,15 +148,11 @@ impl Hash for HashableValue {
     fn hash<H: Hasher>(&self, state: &mut H) {
         // Use explicit u8 discriminants so that the StrHashableValue wrapper
         // can hash the same way without constructing a full HashableValue.
-        // Discriminants: Int=0, Bool=1, Str=2, Dict=3, Variant=4
+        // Discriminants: Int=0, Str=2, Dict=3, Variant=4
         match self {
             HashableValue::Int(n) => {
                 0u8.hash(state);
                 n.hash(state);
-            }
-            HashableValue::Bool(b) => {
-                1u8.hash(state);
-                b.hash(state);
             }
             HashableValue::Str(s) => {
                 2u8.hash(state);
@@ -198,7 +193,6 @@ impl PartialEq for HashableValue {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (HashableValue::Int(a), HashableValue::Int(b)) => a == b,
-            (HashableValue::Bool(a), HashableValue::Bool(b)) => a == b,
             (HashableValue::Str(a), HashableValue::Str(b)) => a == b,
             (HashableValue::Dict(a), HashableValue::Dict(b)) => {
                 // Order-insensitive comparison.
@@ -252,7 +246,6 @@ impl fmt::Display for HashableValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             HashableValue::Int(n) => write!(f, "{n}"),
-            HashableValue::Bool(b) => write!(f, "{b}"),
             HashableValue::Str(s) => write!(f, "{s}"),
             HashableValue::Dict(pairs) => {
                 write!(f, "[")?;
@@ -976,61 +969,13 @@ impl Value {
         v
     }
 
-    pub fn boolean(b: bool) -> Value {
-        Value::Variant {
-            tag: if b {
-                "Boolean.True".to_string()
-            } else {
-                "Boolean.False".to_string()
-            },
-            payload: None,
-        }
-    }
-
-    /// Construct the canonical absent/missing sentinel value.
-    ///
-    /// This is the ONE place in the entire Rust runtime that knows the "Absent.Absent"
-    /// tag string. All other code must call this function rather than constructing the
-    /// variant inline — Rust must be agnostic to the tag name everywhere else.
-    pub fn absent() -> Value {
-        Value::Variant {
-            tag: "Absent.Absent".to_string(),
-            payload: None,
-        }
-    }
-
-    /// Returns true if this value is the canonical absent sentinel (`Absent.Absent`).
-    ///
-    /// This is the ONE place that checks the "Absent.Absent" tag string. All
-    /// runtime code that needs to detect the absent sentinel must call this method.
-    pub fn is_absent(&self) -> bool {
-        matches!(self, Value::Variant { tag, payload: None } if tag == "Absent.Absent")
-    }
-
     /// Check if this value is truthy using the Rust-native Int protocol ONLY.
     ///
     /// Only `Value::Int(n)` is checked: nonzero = true, zero = false.
-    /// All other types (including `Boolean.True/False` variants) return `false` —
-    /// non-Int types must go through tinct-side `to-match` dispatch via `call_to_match`.
+    /// All other types must go through tinct-side `to-match` dispatch via `call_to_match`.
+    /// AST metadata fields (variadic, implied, etc.) are stored as `Value::Int(1/0)`.
     pub fn is_truthy(&self) -> bool {
         matches!(self, Value::Int(n) if *n != 0)
-    }
-
-    /// Synchronous truth check for compile-time / AST interpretation contexts
-    /// where async dispatch is not available.
-    ///
-    /// Handles both the Rust-native Int protocol (`Int(0)` = false, `Int(nonzero)` = true)
-    /// and the tinct-side Boolean nominal type (`Boolean.True` = true, `Boolean.False` = false).
-    ///
-    /// This is NOT part of the runtime match protocol — it exists only for sync AST
-    /// field interpretation (e.g., `surface_convert.rs`, `typecheck_annot.rs`).
-    pub fn as_bool_sync(&self) -> bool {
-        match self {
-            Value::Int(n) => *n != 0,
-            Value::Variant { tag, payload: None } if tag == "Boolean.True" => true,
-            Value::Variant { tag, payload: None } if tag == "Boolean.False" => false,
-            _ => false,
-        }
     }
 
     /// Returns a human-readable type name for error messages, diagnostics, and dispatch.
@@ -2463,12 +2408,6 @@ mod tests {
         assert_eq!(s1, s2);
         assert_eq!(hash(&s1), hash(&s2));
 
-        // Bool
-        let b1 = HashableValue::Bool(true);
-        let b2 = HashableValue::Bool(true);
-        assert_eq!(b1, b2);
-        assert_eq!(hash(&b1), hash(&b2));
-
         // Dict (order-insensitive)
         let d1 = HashableValue::Dict(vec![
             (HashableValue::Str("a".into()), HashableValue::Int(1)),
@@ -2543,12 +2482,7 @@ mod tests {
     /// cross_type_inequality: distinct types must be unequal.
     #[test]
     fn test_hashable_value_cross_type_inequality() {
-        assert_ne!(HashableValue::Int(42), HashableValue::Bool(false));
         assert_ne!(HashableValue::Int(1), HashableValue::Str("1".into()));
-        assert_ne!(
-            HashableValue::Bool(false),
-            HashableValue::Str("false".into())
-        );
     }
 
     /// Str hash consistency — same string, different Rc, same hash.
@@ -2573,7 +2507,6 @@ mod tests {
     fn test_hashable_value_display() {
         assert_eq!(format!("{}", HashableValue::Int(42)), "42");
         assert_eq!(format!("{}", HashableValue::Str("hello".into())), "hello");
-        assert_eq!(format!("{}", HashableValue::Bool(true)), "true");
     }
 
     #[test]
@@ -2587,14 +2520,13 @@ mod tests {
         }
         assert_eq!(string_val("a"), string_val("a"));
         assert_ne!(string_val("a"), string_val("b"));
-        assert_eq!(Value::boolean(true), Value::boolean(true));
-        assert_ne!(Value::boolean(true), Value::boolean(false));
+        assert_eq!(Value::Int(1), Value::Int(1));
+        assert_ne!(Value::Int(1), Value::Int(0));
     }
 
     #[test]
     fn test_value_partial_eq_cross_variant() {
         assert_ne!(Value::Int(1), Value::Float(1.0));
-        assert_ne!(Value::Int(0), Value::boolean(false));
         assert_ne!(string_val("1"), Value::Int(1));
     }
 
@@ -2864,9 +2796,10 @@ mod tests {
     }
 
     #[test]
-    fn test_value_display_bool() {
-        assert_eq!(format!("{}", Value::boolean(true)), "Boolean.True");
-        assert_eq!(format!("{}", Value::boolean(false)), "Boolean.False");
+    fn test_value_display_int_as_bool() {
+        // Booleans are represented as Int(1) for true, Int(0) for false.
+        assert_eq!(format!("{}", Value::Int(1)), "1");
+        assert_eq!(format!("{}", Value::Int(0)), "0");
     }
 
     #[test]
@@ -2959,15 +2892,10 @@ mod tests {
     }
 
     #[test]
-    fn test_value_debug_bool() {
-        assert_eq!(
-            format!("{:?}", Value::boolean(true)),
-            "Variant(Boolean.True)"
-        );
-        assert_eq!(
-            format!("{:?}", Value::boolean(false)),
-            "Variant(Boolean.False)"
-        );
+    fn test_value_debug_int_as_bool() {
+        // Booleans are Int(1)/Int(0) — no special debug representation.
+        assert_eq!(format!("{:?}", Value::Int(1)), "Int(1)");
+        assert_eq!(format!("{:?}", Value::Int(0)), "Int(0)");
     }
 
     #[test]
@@ -3518,7 +3446,7 @@ mod tests {
     #[test]
     fn test_as_str_on_non_string() {
         assert_eq!(Value::Int(42).as_str(), None);
-        assert_eq!(Value::boolean(true).as_str(), None);
+        assert_eq!(Value::Int(1).as_str(), None);
         assert_eq!(Value::Float(3.14).as_str(), None);
     }
 

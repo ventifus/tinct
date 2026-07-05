@@ -284,13 +284,71 @@ pub(crate) fn builtin_str_slice(
     })
 }
 
+/// `builtin-str-has-nth?`: Check whether Unicode codepoint index `i` is valid in a string.
+///
+/// Takes 2 args: (s: String, i: Int). Returns `Int 1` if position `i` exists, `Int 0` if out of bounds.
+/// O(n) to find the position (Unicode requires sequential scan).
+/// Prelude str-chars-step guards with this before calling `builtin-str-nth-char`.
+/// `String → Int → Int`
+pub(crate) fn builtin_str_has_nth(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx: _ctx,
+            ..
+        } = ctx_arg;
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+        reject_named("builtin-str-has-nth?", named.as_ref(), call_span.clone())?;
+
+        let s_val = args[0]
+            .try_get_materialized()
+            .expect("pre-materialized by pos_strictness[0]=Seq");
+        let (source, str_start, str_end) = match s_val {
+            Value::String { source, start, end } => (source, start, end),
+            other => {
+                return Err(
+                    EvalError::type_mismatch("String", other.type_name(), call_span).into(),
+                )
+            }
+        };
+
+        let idx = match args[1]
+            .try_get_materialized()
+            .expect("pre-materialized by pos_strictness[1]=Seq")
+        {
+            Value::Int(n) => n,
+            other => {
+                return Err(EvalError::type_mismatch("Int", other.type_name(), call_span).into())
+            }
+        };
+
+        if idx < 0 {
+            return ok_val(Value::Int(0), call_span);
+        }
+
+        let s = &source[str_start..str_end];
+        let exists = if s.char_indices().nth(idx as usize).is_some() {
+            1i64
+        } else {
+            0i64
+        };
+        ok_val(Value::Int(exists), call_span)
+    })
+}
+
 /// `builtin-str-nth-char`: Get the character at Unicode codepoint index `i` in a string.
 ///
 /// Takes 2 args: (s: String, i: Int). Returns the character at that position as a
-/// zero-copy String slice, or `Absent.Absent` if `i` is out of bounds.
+/// zero-copy String slice. Errors if `i` is out of bounds.
 /// O(n) to find the position (Unicode requires sequential scan), but drives laziness
-/// from the tinct side — the tinct `str-chars` wrapper calls this step by step.
-/// `String → Int → String | Absent`
+/// from the tinct side — prelude `str-chars-step` guards with `builtin-str-has-nth?` first.
+/// `String → Int → String`
 pub(crate) fn builtin_str_nth_char(
     ctx_arg: BuiltinArgs,
 ) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
@@ -305,7 +363,7 @@ pub(crate) fn builtin_str_nth_char(
         if args.len() != 2 {
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
-        reject_named("str-nth-char", named.as_ref(), call_span.clone())?;
+        reject_named("builtin-str-nth-char", named.as_ref(), call_span.clone())?;
 
         let s_val = args[0]
             .try_get_materialized()
@@ -328,7 +386,11 @@ pub(crate) fn builtin_str_nth_char(
         };
 
         if idx < 0 {
-            return ok_val(Value::absent(), call_span);
+            return Err(EvalError::user_error(
+                format!("builtin-str-nth-char: index {idx} is negative"),
+                call_span,
+            )
+            .into());
         }
 
         let s = &source[str_start..str_end];
@@ -344,7 +406,14 @@ pub(crate) fn builtin_str_nth_char(
                     call_span,
                 )
             }
-            None => ok_val(Value::absent(), call_span),
+            None => Err(EvalError::user_error(
+                format!(
+                    "builtin-str-nth-char: index {idx} out of bounds (string has {} codepoints)",
+                    s.chars().count()
+                ),
+                call_span,
+            )
+            .into()),
         }
     })
 }

@@ -356,11 +356,6 @@ pub trait ValueVisitor {
     ) -> Result<Self::Output, Box<error::EvalError>>;
     fn visit_proxy(&self, span: ast::Span) -> Result<Self::Output, Box<error::EvalError>>;
     fn visit_variant(&self, tag: String, payload: Self::Output) -> Self::Output;
-    /// Called when the value is the canonical absent/missing sentinel.
-    /// Default: delegates to `visit_null()`.
-    fn visit_absent(&self) -> Self::Output {
-        self.visit_null()
-    }
     fn visit_decimal(&self, v: rust_decimal::Decimal) -> Self::Output;
     fn visit_bigint(&self, v: &num_bigint::BigInt) -> Self::Output;
     fn visit_timestamp(
@@ -446,9 +441,6 @@ pub fn visit_value<'a, V: ValueVisitor + 'a>(
                 let map = builtins::flatten_overlay(l, r, "value serialization", ctx, span.clone())
                     .await?;
                 visit_value(&value::Value::Dict(map), ctx, depth, visitor, span).await
-            }
-            v @ value::Value::Variant { payload: None, .. } if v.is_absent() => {
-                Ok(visitor.visit_absent())
             }
             value::Value::Function { params, .. } => visitor.visit_function(params, span),
             value::Value::Builtin(def) => visitor.visit_builtin(def.name, span),
@@ -712,9 +704,6 @@ impl ValueVisitor for DisplayVisitor {
     }
     fn visit_variant(&self, tag: String, payload: String) -> String {
         format!("Variant({tag}, {payload})")
-    }
-    fn visit_absent(&self) -> String {
-        "Absent()".to_string()
     }
     fn visit_decimal(&self, v: rust_decimal::Decimal) -> String {
         format!("Decimal({v})")

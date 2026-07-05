@@ -22,7 +22,7 @@ use crate::builtins::builtin;
 // Arithmetic, comparison, bitwise, type-conversion, and control-flow implementations.
 use crate::builtins_math::{
     builtin_acos, builtin_add, builtin_asin, builtin_atan, builtin_atan2, builtin_band,
-    builtin_bor, builtin_bxor, builtin_cos, builtin_div_float, builtin_eq, builtin_eq_float,
+    builtin_bor, builtin_bxor, builtin_cos, builtin_div_float, builtin_eq_float,
     builtin_eq_int, builtin_eq_string, builtin_exp, builtin_finite_check, builtin_float,
     builtin_gt, builtin_gte, builtin_if, builtin_inf_check, builtin_log, builtin_log10,
     builtin_log2, builtin_lt, builtin_lte, builtin_mul, builtin_nan_check, builtin_pow,
@@ -32,17 +32,19 @@ use crate::builtins_math::{
 use crate::builtins_dict::{
     builtin_append, builtin_build_dict, builtin_builder_delete, builtin_builder_finish,
     builtin_builder_get, builtin_builder_get_or, builtin_builder_has, builtin_builder_set,
-    builtin_builder_snapshot, builtin_dict_key_nth, builtin_dict_kv_nth, builtin_dict_nth,
-    builtin_field_get, builtin_get, builtin_get_by_field, builtin_get_optional, builtin_keys,
+    builtin_builder_snapshot, builtin_dict_has_key_nth, builtin_dict_has_kv_nth,
+    builtin_dict_has_nth, builtin_dict_key_nth, builtin_dict_kv_nth, builtin_dict_nth,
+    builtin_field_get, builtin_get, builtin_get_by_field, builtin_has_key, builtin_keys,
     builtin_length, builtin_make_builder, builtin_merge, builtin_slot_get,
 };
 // String implementations.
 use crate::builtins_string::{
     builtin_bytes_str, builtin_char_code, builtin_chr, builtin_float_to_string,
     builtin_int_to_string, builtin_regex_match, builtin_replace, builtin_str_bytes,
-    builtin_str_index_of, builtin_str_length, builtin_str_map_chars, builtin_str_nth_char,
-    builtin_str_slice, builtin_str_to_lower_char, builtin_str_to_upper_char, builtin_string_concat,
-    builtin_trim, builtin_trim_end, builtin_trim_start,
+    builtin_str_has_nth, builtin_str_index_of, builtin_str_length, builtin_str_map_chars,
+    builtin_str_nth_char, builtin_str_slice, builtin_str_to_lower_char,
+    builtin_str_to_upper_char, builtin_string_concat, builtin_trim, builtin_trim_end,
+    builtin_trim_start,
 };
 // Bytes implementations.
 use crate::builtins_bytes::{
@@ -212,13 +214,6 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
         // Note: =, <, >, <=, >= are NOT registered here — they dispatch via
         // Equatable/Comparable instances in prelude.llt. (S-885)
         // Only builtin-* stable aliases remain as raw Rust primitives.
-        // Stable aliases
-        builtin!(
-            "builtin-eq",
-            builtin_eq,
-            [Strictness::Seq, Strictness::Seq],
-            2
-        ),
         // Type-specific equality primitives — used by Equatable instances.
         // No cross-type comparison; each takes exactly two args of the same type.
         builtin!(
@@ -287,8 +282,8 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             2
         ),
         builtin!(
-            "builtin-get?",
-            builtin_get_optional,
+            "builtin-has-key?",
+            builtin_has_key,
             [Strictness::Seq, Strictness::Spine],
             2
         ),
@@ -299,14 +294,32 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             3
         ),
         builtin!(
+            "builtin-dict-has-nth?",
+            builtin_dict_has_nth,
+            [Strictness::Spine, Strictness::Seq],
+            2
+        ),
+        builtin!(
             "builtin-dict-nth",
             builtin_dict_nth,
             [Strictness::Spine, Strictness::Seq],
             2
         ),
         builtin!(
+            "builtin-dict-has-key-nth?",
+            builtin_dict_has_key_nth,
+            [Strictness::Spine, Strictness::Seq],
+            2
+        ),
+        builtin!(
             "builtin-dict-key-nth",
             builtin_dict_key_nth,
+            [Strictness::Spine, Strictness::Seq],
+            2
+        ),
+        builtin!(
+            "builtin-dict-has-kv-nth?",
+            builtin_dict_has_kv_nth,
             [Strictness::Spine, Strictness::Seq],
             2
         ),
@@ -404,6 +417,12 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             builtin_str_slice,
             [Strictness::Seq, Strictness::Seq, Strictness::Seq],
             3
+        ),
+        builtin!(
+            "builtin-str-has-nth?",
+            builtin_str_has_nth,
+            [Strictness::Seq, Strictness::Seq],
+            2
         ),
         builtin!(
             "builtin-str-nth-char",
@@ -2276,14 +2295,18 @@ pub fn core_type_env(env: &mut TypeEnv) {
     );
 
     // ── builtin-get / get: Indexable c k v => k -> c -> v ────────────────────
-    // T-1104 NOTE: The canonical names `builtin-get?`, `builtin-get`, and their prelude
-    // re-exports `get?`, `get` MUST stay in core_type_env because they are used by the
-    // degraded scheme restoration loop. The prelude wrappers carry the Indexable constraint,
-    // but SCC-interaction issues in the constraint generalization machinery cause the FD to
-    // fail at call sites. The authoritative builtin scheme ensures `get 1 (Seq[String])`
-    // resolves the return type to `String` via Indexable FD machinery. Without these
-    // registrations, the restoration loop would find nothing to restore, breaking Indexable
-    // FD improvement. See B-384 fix.
+    // T-1104 NOTE: The canonical names `builtin-get`, and its prelude re-export `get` MUST
+    // stay in core_type_env because they are used by the degraded scheme restoration loop.
+    // The prelude wrappers carry the Indexable constraint, but SCC-interaction issues in the
+    // constraint generalization machinery cause the FD to fail at call sites. The authoritative
+    // builtin scheme ensures `get 1 (Seq[String])` resolves the return type to `String` via
+    // Indexable FD machinery. Without these registrations, the restoration loop would find
+    // nothing to restore, breaking Indexable FD improvement. See B-384 fix.
+    //
+    // NOTE: `get?` is a tinct-level function in prelude that composes `builtin-has-key?` +
+    // `builtin-get` + `Absent.Absent`. It also needs a dual-registered Indexable scheme so that
+    // the FD machinery resolves the element type from the container type at `get?` call sites
+    // (same pattern as `get`).
     for get_name in ["builtin-get", "get"] {
         env.insert_scheme(
             get_name.to_string(),
@@ -2317,53 +2340,67 @@ pub fn core_type_env(env: &mut TypeEnv) {
         );
     }
 
-    // builtin-get? / get?: Indexable c k v => k -> c -> v | Null
-    // Registered under both builtin-get? (runtime name) and get? (prelude re-export name)
-    // for the same reason builtin-get/get are dual-registered: FD machinery must find
-    // the Indexable constraint scheme for whichever name appears at the call site.
-    for get_opt_name in ["builtin-get?", "get?"] {
-        env.insert_scheme(
-            get_opt_name.to_string(),
-            TypeScheme {
-                type_vars: vec!["c".to_string(), "k".to_string(), "v".to_string()],
-                constraints: vec![Constraint::Class {
-                    class: Arc::clone(&indexable_class),
-                    vars: vec![
-                        ConstraintArg::Var("c".to_string()),
-                        ConstraintArg::Var("k".to_string()),
-                        ConstraintArg::Var("v".to_string()),
-                    ],
-                    origin_name: None,
-                    origin_span: None,
-                }],
-                body: Type::Function {
-                    params: vec![
-                        (None, Type::TypeVar("k".to_string(), 0)),
-                        (None, Type::TypeVar("c".to_string(), 0)),
-                    ],
-                    ret: Box::new(Type::normalize_union(vec![
-                        Type::TypeVar("v".to_string(), 0),
-                        Type::Record(Row {
-                            fields: indexmap::IndexMap::new(),
-                            tail: crate::type_def::RowTail::Empty,
-                        }),
-                    ])),
-                    variadic: false,
-                    required_count: 2,
-                },
-                label_vars: vec![],
-                kind_vars: Vec::new(),
-                doc: None,
-                inner_schemes: None,
-                param_narrowings: Vec::new(),
-            },
-        );
-    }
+    // builtin-has-key?: (Int | Str) → Dict → Int
+    // Returns Int 1 if key exists, Int 0 if absent. O(1) spine-only check.
+    // Used by prelude to implement get? without Rust knowing about the Absent type.
+    env.insert(
+        "builtin-has-key?".to_string(),
+        Type::Function {
+            params: vec![
+                (None, Type::normalize_union(vec![Type::Int, Type::Str])),
+                (None, Type::Any),
+            ],
+            ret: Box::new(Type::Int),
+            variadic: false,
+            required_count: 2,
+        },
+    );
 
-    // builtin-get-by-field: String → Any → Dict → (Any | Absent) (T-1378)
+    // get?: Indexable c k v => k → c → v | Absent
+    // Registered in core_type_env for FD machinery (same pattern as builtin-get/get).
+    // The runtime implementation is a tinct function in prelude that composes
+    // builtin-has-key? + builtin-get + Absent.Absent.
+    env.insert_scheme(
+        "get?".to_string(),
+        TypeScheme {
+            type_vars: vec!["c".to_string(), "k".to_string(), "v".to_string()],
+            constraints: vec![Constraint::Class {
+                class: Arc::clone(&indexable_class),
+                vars: vec![
+                    ConstraintArg::Var("c".to_string()),
+                    ConstraintArg::Var("k".to_string()),
+                    ConstraintArg::Var("v".to_string()),
+                ],
+                origin_name: None,
+                origin_span: None,
+            }],
+            body: Type::Function {
+                params: vec![
+                    (None, Type::TypeVar("k".to_string(), 0)),
+                    (None, Type::TypeVar("c".to_string(), 0)),
+                ],
+                ret: Box::new(Type::normalize_union(vec![
+                    Type::TypeVar("v".to_string(), 0),
+                    Type::Record(Row {
+                        fields: indexmap::IndexMap::new(),
+                        tail: crate::type_def::RowTail::Empty,
+                    }),
+                ])),
+                variadic: false,
+                required_count: 2,
+            },
+            label_vars: vec![],
+            kind_vars: Vec::new(),
+            doc: None,
+            inner_schemes: None,
+            param_narrowings: Vec::new(),
+        },
+    );
+
+    // builtin-get-by-field: String → Any → Dict → Any (T-1378)
     // Reverse lookup on a type-level lookup table: given a field name, a field value,
     // and a type constructor dict, returns the first variant whose compile-time constant
-    // for that field equals the target value, or Absent.Absent if no match.
+    // for that field equals the target value, or errors if no match.
     env.insert(
         "builtin-get-by-field".to_string(),
         Type::Function {
@@ -2999,7 +3036,6 @@ pub fn core_type_env(env: &mut TypeEnv) {
         ("builtin-mul", "*"),
         ("builtin-div", "/"),
         // Comparison operators
-        ("builtin-eq", "="),
         ("builtin-lt", "<"),
         ("builtin-gt", ">"),
         ("builtin-gte", ">="),
@@ -3084,7 +3120,6 @@ pub fn core_type_env(env: &mut TypeEnv) {
     // Using Top inputs: builtin-lt is called with String, Bool args by Comparable instances.
     // Number would incorrectly reject those calls during prelude type-checking.
     for name in [
-        "builtin-eq",
         "builtin-lt",
         "builtin-gt",
         "builtin-lte",
@@ -3224,12 +3259,22 @@ pub fn core_type_env(env: &mut TypeEnv) {
             required_count: 3,
         },
     );
-    // builtin-str-nth-char: Str → Int → Str | Absent  (single char at index i)
+    // builtin-str-has-nth?: Str → Int → Int  (1 if index i exists, 0 if OOB)
+    env.insert(
+        "builtin-str-has-nth?".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Str), (None, Type::Int)],
+            ret: Box::new(Type::Int),
+            variadic: false,
+            required_count: 2,
+        },
+    );
+    // builtin-str-nth-char: Str → Int → Str  (single char at index i; errors on OOB)
     env.insert(
         "builtin-str-nth-char".to_string(),
         Type::Function {
             params: vec![(None, Type::Str), (None, Type::Int)],
-            ret: Box::new(Type::Any),
+            ret: Box::new(Type::Str),
             variadic: false,
             required_count: 2,
         },
