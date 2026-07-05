@@ -625,9 +625,8 @@ async fn improve_functional_dependency_inner(
         // All determining positions are ground - look up the instance.
         // Multiple paths:
         // 1. Indexable + Record: special case for HasField-style resolution
-        // 2. Arithmetic classes: hardcoded lookup_arithmetic_instance
-        // 3. Resolver classes: type-stage function normalization
-        // 4. General MPTC: InstanceEnv lookup
+        // 2. Resolver classes: type-stage function normalization
+        // 3. General MPTC: InstanceEnv lookup (with literal widening on miss)
 
         // Special case: Indexable on Record/Union/Intersection/Top types uses
         // resolve_has_field for field lookup instead of instance registration.
@@ -684,23 +683,8 @@ async fn improve_functional_dependency_inner(
 
         let result_type = if let Some(ty) = indexable_record_result {
             ty
-        } else if matches!(
-            class,
-            "Addable" | "Subtractable" | "Multipliable" | "Divisible"
-        ) {
-            // Hardcoded arithmetic path — propagate errors
-            lookup_arithmetic_instance(
-                class,
-                &det_types
-                    .iter()
-                    .map(|(_, ty)| ty.clone())
-                    .collect::<Vec<_>>(),
-                state,
-                span.clone(),
-            )
-            .await?
         } else if let Some(class_decl) = state.class_env.get(class) {
-            // Not an arithmetic class — check for resolver
+            // Check for resolver or fall back to general MPTC instance lookup
             if let Some(ref resolver_name) = class_decl.resolver.clone() {
                 // Resolver-based path: construct a TypeStageApp and normalize it.
                 // Normalization calls evaluate_resolver() which invokes the type-stage function.
@@ -722,12 +706,33 @@ async fn improve_functional_dependency_inner(
                 }
                 resolved
             } else {
-                // No resolver — fall back to general MPTC instance lookup via InstanceEnv
+                // No resolver — fall back to general MPTC instance lookup via InstanceEnv.
+                // Literal widening: IntLiteral → Int, StringLiteral → Str. These are Rust-internal
+                // types; prelude cannot declare instances for them, but class satisfaction is
+                // covariant: if T <: S and S satisfies C, then T satisfies C. We widen on miss.
                 let det_arg_types: Vec<Type> = det_types.iter().map(|(_, ty)| ty.clone()).collect();
 
                 // Clone instance_env to avoid borrow checker conflict
                 let instance_env = state.instance_env.clone();
-                match Box::pin(instance_env.lookup_mptc(class, &det_arg_types, state)).await {
+                let lookup_result = Box::pin(instance_env.lookup_mptc(class, &det_arg_types, state)).await;
+
+                // On miss, retry with widened literal types (IntLiteral→Int, StringLiteral→Str).
+                let lookup_result = if lookup_result.is_none() {
+                    let widened: Vec<Type> = det_arg_types
+                        .iter()
+                        .map(|ty| crate::typecheck::typecheck_call::widen_literal_types(ty.clone()))
+                        .collect();
+                    if widened != det_arg_types {
+                        let instance_env2 = state.instance_env.clone();
+                        Box::pin(instance_env2.lookup_mptc(class, &widened, state)).await
+                    } else {
+                        None
+                    }
+                } else {
+                    lookup_result
+                };
+
+                match lookup_result {
                     Some(inst) => {
                         // Extract the determined type from the instance.
                         // For a multi-param MPTC instance, instance_type is a Record with
@@ -865,144 +870,6 @@ async fn improve_functional_dependency_inner(
     Ok(())
 }
 
-/// Instance lookup for multi-parameter type classes with functional dependencies.
-///
-/// Given the class name and the ground determining types, returns the determined type.
-///
-/// Two-tier lookup:
-///
-/// 1. FAST PATH — hardcoded table for the builtin Addable/Subtractable/Multipliable/Divisible
-///    instances (all share the FD shape `(a,b) → c`).  This avoids `instance_env` iteration
-///    for the common arithmetic case.
-///
-/// 2. GENERAL PATH — for any MPTC class not in the hardcoded list, delegates to
-///    `instance_env.lookup_mptc(class, det_types, state)`. `lookup_mptc` uses structural
-///    unification to match instances, which correctly handles HKT instance heads with type
-///    variables (e.g., `[Channel t]` can match query types like `[Channel Int]`).
-///    On a successful lookup the determined type is extracted from the numbered-field Record
-///    that encodes the multi-param instance head. On a miss a `no instance for …` error is
-///    returned.
-async fn lookup_arithmetic_instance(
-    class: &str,
-    det_types: &[Type],
-    state: &mut InferState,
-    span: Span,
-) -> Result<Type, TypeError> {
-    if det_types.len() != 2 {
-        return Err(TypeErrorTyped::Generic(GenericTypeError {
-            message: format!(
-                "arithmetic class {} expects 2 determining types, got {}",
-                class,
-                det_types.len()
-            ),
-            span,
-            notes: vec![],
-            call_stack: vec![],
-        }));
-    }
-
-    let a = &det_types[0];
-    let b = &det_types[1];
-
-    // Normalize types for comparison
-    let key = (type_key(a), type_key(b));
-
-    // FAST PATH: hardcoded instances for Addable/Subtractable/Multipliable/Divisible (performance)
-    match class {
-        "Addable" | "Subtractable" | "Multipliable" => match key {
-            ("Int", "Int") => Ok(Type::Int),
-            ("Float", "Float") => Ok(Type::Float),
-            ("Int", "Float") | ("Float", "Int") => Ok(Type::Float),
-            // T1 FIX: Never ∨ τ = Never (⊥ absorbs all operations)
-            ("Never", _) | (_, "Never") => Ok(Type::Never),
-            _ => Err(TypeErrorTyped::Generic(GenericTypeError {
-                message: format!("no instance for {} {} {}", class, a, b),
-                span,
-                notes: vec![],
-                call_stack: vec![],
-            })),
-        },
-        "Divisible" => match key {
-            ("Int", "Int") | ("Float", "Float") | ("Int", "Float") | ("Float", "Int") => {
-                Ok(Type::Float)
-            }
-            // T1 FIX: Never ∨ τ = Never (⊥ absorbs all operations)
-            ("Never", _) | (_, "Never") => Ok(Type::Never),
-            _ => Err(TypeErrorTyped::Generic(GenericTypeError {
-                message: format!("no instance for Divisible {} {}", a, b),
-                span,
-                notes: vec![],
-                call_stack: vec![],
-            })),
-        },
-        _ => {
-            // GENERAL PATH: query InstanceEnv for user-defined MPTC classes.
-            // `lookup_mptc` now uses structural unification instead of string-key lookup,
-            // which correctly handles HKT instance heads with type variables.
-            // Clone instance_env to avoid borrow checker conflict
-            let instance_env = state.instance_env.clone();
-            match Box::pin(instance_env.lookup_mptc(class, det_types, state)).await {
-                Some(inst) => {
-                    // Extract the determined type from the instance.
-                    // For a multi-param MPTC instance, instance_type is a Record with
-                    // numbered fields (0, 1, 2, …).  The determined position is the first
-                    // index not listed in inst.det_positions.
-                    let det_position_set: HashSet<usize> =
-                        inst.det_positions.iter().copied().collect();
-
-                    match &inst.instance_type {
-                        Type::Record(row) => {
-                            // Find the first field index not in the determining set
-                            let total_params = row.fields.len();
-                            let determined_pos =
-                                (0..total_params).find(|i| !det_position_set.contains(i));
-                            match determined_pos {
-                                Some(pos) => row
-                                    .fields
-                                    .get(&pos.to_string())
-                                    .cloned()
-                                    .ok_or_else(|| {
-                                        TypeErrorTyped::Generic(GenericTypeError {
-                                            message: format!(
-                                                "no instance for {} {} {} (determined field {} missing)",
-                                                class, a, b, pos
-                                            ),
-                                            span: span.clone(),
-                                            notes: vec![], call_stack: vec![],
-                                        })
-                                    }),
-                                None => Err(TypeErrorTyped::Generic(GenericTypeError {
-                                    message: format!(
-                                        "no instance for {} {} {} (no determined position found)",
-                                        class, a, b
-                                    ),
-                                    span,
-                                    notes: vec![], call_stack: vec![],
-                                })),
-                            }
-                        }
-                        _ => Err(TypeErrorTyped::Generic(GenericTypeError {
-                            message: format!(
-                                "no instance for {} {} {} (unexpected instance_type shape)",
-                                class, a, b
-                            ),
-                            span,
-                            notes: vec![],
-                            call_stack: vec![],
-                        })),
-                    }
-                }
-                None => Err(TypeErrorTyped::Generic(GenericTypeError {
-                    message: format!("no instance for {} {} {}", class, a, b),
-                    span,
-                    notes: vec![],
-                    call_stack: vec![],
-                })),
-            }
-        }
-    }
-}
-
 /// Returns true when `ty` is definitively not a member of `class` — i.e., we can
 /// statically rule out any runtime instance.  Returns false when we cannot rule
 /// it out, meaning we should defer the constraint rather than error.
@@ -1039,17 +906,6 @@ fn is_definitely_no_instance_for(class: &str, ty: &Type) -> bool {
             // Unknown gets special handling (defer).
             !matches!(ty, Type::Unknown)
         }
-    }
-}
-
-/// Helper to extract a type key for instance lookup.
-fn type_key(ty: &Type) -> &'static str {
-    match ty {
-        Type::Int => "Int",
-        Type::Float => "Float",
-        Type::IntLiteral(_) => "Int", // Promoted
-        Type::Never => "Never",       // T1 FIX: Never gets its own key (not "Unknown")
-        _ => "_other", // F6 FIX: renamed from "Unknown" (clearer sentinel for unhandled types)
     }
 }
 

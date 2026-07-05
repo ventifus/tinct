@@ -1331,7 +1331,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
         "builtin-bytes-equal?".to_string(),
         Type::Function {
             params: vec![(None, Type::Bytes), (None, Type::Bytes)],
-            ret: Box::new(Type::TyCon("Boolean".to_string())),
+            ret: Box::new(Type::Int),
             variadic: false,
             required_count: 2,
         },
@@ -1341,7 +1341,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
         "builtin-ct-equal?".to_string(),
         Type::Function {
             params: vec![(None, Type::Bytes), (None, Type::Bytes)],
-            ret: Box::new(Type::TyCon("Boolean".to_string())),
+            ret: Box::new(Type::Int),
             variadic: false,
             required_count: 2,
         },
@@ -1415,7 +1415,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             name.to_string(),
             Type::Function {
                 params: vec![(None, Type::Float)],
-                ret: Box::new(Type::TyCon("Boolean".to_string())),
+                ret: Box::new(Type::Int),
                 variadic: false,
                 required_count: 1,
             },
@@ -1479,7 +1479,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
         "builtin-if".to_string(),
         Type::Function {
             params: vec![
-                (None, Type::TyCon("Boolean".to_string())),
+                (None, Type::Int),
                 (None, Type::Any),
                 (None, Type::Any),
             ],
@@ -1810,7 +1810,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
         "builtin-exists".to_string(),
         Type::Function {
             params: vec![(None, Type::DirCap), (None, Type::Str)],
-            ret: Box::new(Type::TyCon("Boolean".to_string())),
+            ret: Box::new(Type::Int),
             variadic: false,
             required_count: 2,
         },
@@ -2047,7 +2047,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                         None,
                         Type::Function {
                             params: vec![(None, Type::TypeVar("a".to_string(), 0))],
-                            ret: Box::new(Type::TyCon("Boolean".to_string())),
+                            ret: Box::new(Type::Int),
                             variadic: false,
                             required_count: 1,
                         },
@@ -2615,7 +2615,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                         None,
                         Type::Function {
                             params: vec![(None, Type::TypeVar("a".to_string(), 0))],
-                            ret: Box::new(Type::TyCon("Boolean".to_string())),
+                            ret: Box::new(Type::Int),
                             variadic: false,
                             required_count: 1,
                         },
@@ -2730,7 +2730,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
         "builtin-cancelled-q".to_string(),
         Type::Function {
             params: vec![(None, Type::Any)],
-            ret: Box::new(Type::TyCon("Boolean".to_string())),
+            ret: Box::new(Type::Int),
             variadic: false,
             required_count: 1,
         },
@@ -3080,7 +3080,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
         "builtin-is-contractive".to_string(),
         Type::Function {
             params: vec![(None, Type::Any)],
-            ret: Box::new(Type::TyCon("Boolean".to_string())),
+            ret: Box::new(Type::Int),
             variadic: false,
             required_count: 1,
         },
@@ -3129,7 +3129,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             name.to_string(),
             Type::Function {
                 params: vec![(None, Type::Any), (None, Type::Any)],
-                ret: Box::new(Type::TyCon("Boolean".to_string())),
+                ret: Box::new(Type::Int),
                 variadic: false,
                 required_count: 2,
             },
@@ -3367,7 +3367,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
         "builtin-regex-match?".to_string(),
         Type::Function {
             params: vec![(None, Type::Str), (None, Type::Str)],
-            ret: Box::new(Type::TyCon("Boolean".to_string())),
+            ret: Box::new(Type::Int),
             variadic: false,
             required_count: 2,
         },
@@ -3446,7 +3446,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 (None, Type::Any),
                 (None, Type::normalize_union(vec![Type::Int, Type::Str])),
             ],
-            ret: Box::new(Type::TyCon("Boolean".to_string())),
+            ret: Box::new(Type::Int),
             variadic: false,
             required_count: 2,
         },
@@ -3812,7 +3812,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
         "if".to_string(),
         Type::Function {
             params: vec![
-                (None, Type::TyCon("Boolean".to_string())),
+                (None, Type::Int),
                 (None, Type::Any),
                 (None, Type::Any),
             ],

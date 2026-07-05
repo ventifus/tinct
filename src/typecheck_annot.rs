@@ -488,17 +488,6 @@ pub(crate) async fn resolve_fn_metadata(
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
     type_params_scope: Option<(&HashMap<String, crate::types::Type>, bool)>,
 ) -> Result<(Type, Option<String>), TypeError> {
-    // Valid hardcoded class names (pre-HKT)
-    const VALID_CLASSES: &[&str] = &[
-        "Equatable",
-        "Comparable",
-        "Numeric",
-        "Showable",
-        "Mappable",
-        "Appendable",
-        "HasField",
-    ];
-
     let mut return_type: Option<Type> = None;
     let mut doc_string: Option<String> = None;
 
@@ -832,21 +821,8 @@ pub(crate) async fn resolve_fn_metadata(
                                 match &c_entry.node.value.expr {
                                     SurfaceExpression::VarRef { name, .. } => {
                                         // Single class: [a: Comparable]
-                                        if !VALID_CLASSES.contains(&name.as_str())
-                                            && state.class_env.get(name).is_none()
-                                        {
-                                            return Err(TypeErrorTyped::Generic(
-                                                GenericTypeError {
-                                                    message: format!(
-                                                        "unknown constraint class '{}'",
-                                                        name
-                                                    ),
-                                                    span: c_entry.node.value.span.clone(),
-                                                    notes: vec![],
-                                                    call_stack: vec![],
-                                                },
-                                            ));
-                                        }
+                                        // Unknown class names are deferred — instance resolution
+                                        // will report an error if no instance satisfies the constraint.
                                         state.add_constraint(
                                             constraints,
                                             name.clone(),
@@ -903,25 +879,7 @@ pub(crate) async fn resolve_fn_metadata(
                                             }
                                             match &class_entry.node.value.expr {
                                                 SurfaceExpression::VarRef { name, .. } => {
-                                                    if !VALID_CLASSES.contains(&name.as_str())
-                                                        && state.class_env.get(name).is_none()
-                                                    {
-                                                        return Err(TypeErrorTyped::Generic(
-                                                            GenericTypeError {
-                                                                message: format!(
-                                                                    "unknown constraint class '{}'",
-                                                                    name
-                                                                ),
-                                                                span: class_entry
-                                                                    .node
-                                                                    .value
-                                                                    .span
-                                                                    .clone(),
-                                                                notes: vec![],
-                                                                call_stack: vec![],
-                                                            },
-                                                        ));
-                                                    }
+                                                    // Unknown class names deferred to instance resolution.
                                                     state.add_constraint(
                                                         constraints,
                                                         name.clone(),
@@ -994,22 +952,8 @@ pub(crate) async fn resolve_fn_metadata(
                                                     }))
                                                 }
                                             };
-                                        for (name, name_span) in class_names {
-                                            if !VALID_CLASSES.contains(&name)
-                                                && state.class_env.get(name).is_none()
-                                            {
-                                                return Err(TypeErrorTyped::Generic(
-                                                    GenericTypeError {
-                                                        message: format!(
-                                                            "unknown constraint class '{}'",
-                                                            name
-                                                        ),
-                                                        span: name_span,
-                                                        notes: vec![],
-                                                        call_stack: vec![],
-                                                    },
-                                                ));
-                                            }
+                                        for (name, _name_span) in class_names {
+                                            // Unknown class names deferred to instance resolution.
                                             state.add_constraint(
                                                 constraints,
                                                 name.to_string(),

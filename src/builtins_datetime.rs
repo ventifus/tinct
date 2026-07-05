@@ -1654,7 +1654,7 @@ pub fn datetime_type_env(env: &mut TypeEnv) {
             name.to_string(),
             Type::Function {
                 params: vec![(None, Type::Timestamp), (None, Type::Timestamp)],
-                ret: Box::new(Type::TyCon("Boolean".to_string())),
+                ret: Box::new(Type::Int),
                 variadic: false,
                 required_count: 2,
             },
