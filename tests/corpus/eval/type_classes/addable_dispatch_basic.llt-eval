@@ -9,4 +9,4 @@
   g: [/ 7.0 2.0]
 ]
 === out
-Dict({"a": Int(3), "b": Float(3.0), "c": Float(3.0), "d": Float(7.0), "e": Int(7), "f": Int(20), "g": Float(3.5)})
+Dict({"a": Int(3), "b": Float(3), "c": Float(3), "d": Float(7), "e": Int(7), "f": Int(20), "g": Float(3.5)})
