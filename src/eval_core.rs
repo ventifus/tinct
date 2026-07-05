@@ -641,7 +641,9 @@ pub(crate) fn eval_core_expr<'a>(
             // Coordinates are assigned at resolve time; slot lookup is fatal on miss —
             // there is no name-based fallback. A miss means the resolver failed to assign
             // correct coordinates, which is a compiler bug.
-            CoreExpr::Var { name, level, slot, .. } => {
+            CoreExpr::Var {
+                name, level, slot, ..
+            } => {
                 // Variable lookup with de Bruijn coordinates — O(1) slot-based lookup.
                 // The do-infer sentinel block that previously used get_by_name was removed:
                 // EvalContext.do_infer_resolutions is never populated (set_do_infer_resolutions
@@ -784,7 +786,6 @@ pub(crate) fn eval_core_expr<'a>(
                 Arc::clone(ctx),
                 span.clone(),
             ))),
-
 
             // Rest: error (only valid in type expressions)
             CoreExpr::Rest(_) => Err(EvalError::internal(

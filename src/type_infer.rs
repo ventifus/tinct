@@ -254,21 +254,30 @@ impl InferState {
         // Builtin type constructors — pre-registered in type_vars so resolve_type_dict
         // uses the general kind lookup path instead of string matching.
         let mut type_vars = IndexMap::new();
-        type_vars.insert("Seq".to_string(), TypeVarEntry {
-            level: 0,
-            binding: None,
-            kind: Kind::Operator,
-        });
-        type_vars.insert("Map".to_string(), TypeVarEntry {
-            level: 0,
-            binding: None,
-            kind: Kind::Arrow(Box::new(Kind::Type), Box::new(Kind::Operator)),
-        });
-        type_vars.insert("Handle".to_string(), TypeVarEntry {
-            level: 0,
-            binding: None,
-            kind: Kind::Operator,
-        });
+        type_vars.insert(
+            "Seq".to_string(),
+            TypeVarEntry {
+                level: 0,
+                binding: None,
+                kind: Kind::Operator,
+            },
+        );
+        type_vars.insert(
+            "Map".to_string(),
+            TypeVarEntry {
+                level: 0,
+                binding: None,
+                kind: Kind::Arrow(Box::new(Kind::Type), Box::new(Kind::Operator)),
+            },
+        );
+        type_vars.insert(
+            "Handle".to_string(),
+            TypeVarEntry {
+                level: 0,
+                binding: None,
+                kind: Kind::Operator,
+            },
+        );
 
         // T-1018: Register builtin TyCons in tycon_env with their variance annotations.
         // This allows is_subtype to apply variance-directed subtyping for builtins.
@@ -434,11 +443,14 @@ impl InferState {
         let n = self.name_counter;
         self.name_counter = n.saturating_add(1);
         let name = format!("_t{}", n);
-        self.type_vars.insert(name.clone(), TypeVarEntry {
-            level: self.level,
-            binding: None,
-            kind: Kind::Type,
-        });
+        self.type_vars.insert(
+            name.clone(),
+            TypeVarEntry {
+                level: self.level,
+                binding: None,
+                kind: Kind::Type,
+            },
+        );
         Type::TypeVar(name, self.level)
     }
 
@@ -450,11 +462,14 @@ impl InferState {
         let n = self.name_counter;
         self.name_counter = n.saturating_add(1);
         let internal_name = format!("_t{}", n);
-        self.type_vars.insert(internal_name.clone(), TypeVarEntry {
-            level: self.level,
-            binding: None,
-            kind: Kind::Type,
-        });
+        self.type_vars.insert(
+            internal_name.clone(),
+            TypeVarEntry {
+                level: self.level,
+                binding: None,
+                kind: Kind::Type,
+            },
+        );
         self.type_var_source_names
             .insert(internal_name.clone(), source_name.into());
         Type::TypeVar(internal_name, self.level)
@@ -465,7 +480,8 @@ impl InferState {
     ///
     /// Call this periodically after unification rounds (e.g., at the end of infer_dict).
     pub fn compact_levels(&mut self) {
-        self.type_vars.retain(|_name, entry| entry.binding.is_none());
+        self.type_vars
+            .retain(|_name, entry| entry.binding.is_none());
     }
 
     /// Look up a TypeVar binding, following chains. Equivalent to old Substitution::apply for a single var.
@@ -479,11 +495,14 @@ impl InferState {
             entry.binding = Some(ty);
         } else {
             // TypeVar not yet registered (e.g., from annotation); register at level 0
-            self.type_vars.insert(name, TypeVarEntry {
-                level: 0,
-                binding: Some(ty),
-                kind: Kind::Type,
-            });
+            self.type_vars.insert(
+                name,
+                TypeVarEntry {
+                    level: 0,
+                    binding: Some(ty),
+                    kind: Kind::Type,
+                },
+            );
         }
     }
 
@@ -497,11 +516,14 @@ impl InferState {
         if let Some(entry) = self.type_vars.get_mut(&name) {
             entry.level = level;
         } else {
-            self.type_vars.insert(name, TypeVarEntry {
-                level,
-                binding: None,
-                kind: Kind::Type,
-            });
+            self.type_vars.insert(
+                name,
+                TypeVarEntry {
+                    level,
+                    binding: None,
+                    kind: Kind::Type,
+                },
+            );
         }
     }
 
@@ -515,16 +537,22 @@ impl InferState {
         if let Some(entry) = self.type_vars.get_mut(&name) {
             entry.kind = kind;
         } else {
-            self.type_vars.insert(name, TypeVarEntry {
-                level: self.level,
-                binding: None,
-                kind,
-            });
+            self.type_vars.insert(
+                name,
+                TypeVarEntry {
+                    level: self.level,
+                    binding: None,
+                    kind,
+                },
+            );
         }
     }
 
     /// Check if the type_vars map has exceeded the maximum allowed size.
-    pub fn check_type_vars_size(&self, span: Span) -> Result<(), crate::type_errors::TypeErrorTyped> {
+    pub fn check_type_vars_size(
+        &self,
+        span: Span,
+    ) -> Result<(), crate::type_errors::TypeErrorTyped> {
         let len = self.type_vars.len();
         if len > MAX_TYPE_VARS_SIZE {
             Err(crate::type_errors::TypeErrorTyped::Generic(crate::type_errors::GenericTypeError {
@@ -565,12 +593,7 @@ impl InferState {
     pub fn binding_snapshot(&self) -> HashMap<String, Type> {
         self.type_vars
             .iter()
-            .filter_map(|(name, entry)| {
-                entry
-                    .binding
-                    .as_ref()
-                    .map(|ty| (name.clone(), ty.clone()))
-            })
+            .filter_map(|(name, entry)| entry.binding.as_ref().map(|ty| (name.clone(), ty.clone())))
             .collect()
     }
 

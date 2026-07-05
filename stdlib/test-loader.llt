@@ -56,7 +56,7 @@
     [builtin-if [builtin-gte i len]
       acc
       [_join-loop sep
-        [builtin-if [builtin-eq i 0]
+        [builtin-if [builtin-eq-int i 0]
           [builtin-get 0 xs]
           [builtin-string-concat acc [builtin-string-concat sep [builtin-get i xs]]]]
         xs [builtin-add i 1] len]]]
@@ -75,7 +75,7 @@
             flush:  [fn [let h] h]
             close:  [fn [let h] h]]
 
-  bytes-empty?: [fn [let b] [builtin-eq [builtin-length b] 0]]
+  bytes-empty?: [fn [let b] [builtin-eq-int [builtin-length b] 0]]
 
   read-file: [fn [let handle acc]
     [chunk: [builtin-file-read handle 65536]]
@@ -111,14 +111,14 @@
   # Format a single diagnostic dict as a human-readable error line.
   format-diagnostic: [fn [let d]
     [s: d.span]
-    [file-part: [builtin-if [builtin-eq s.file []] "" [builtin-string-concat s.file ":"]]]
+    [file-part: [builtin-if [builtin-eq-int [builtin-length s.file] 0] "" [builtin-string-concat s.file ":"]]]
     [loc: [builtin-string-concat file-part [builtin-string-concat [builtin-int->string s.start-line] [builtin-string-concat ":" [builtin-int->string s.start-col]]]]]
-    [stack-empty: [builtin-eq [builtin-length d.call-stack] 0]]
-    [label: [builtin-if [builtin-eq d.kind "resolve-error"]
+    [stack-empty: [builtin-eq-int [builtin-length d.call-stack] 0]]
+    [label: [builtin-if [builtin-eq-string d.kind "resolve-error"]
               "resolve"
-              [builtin-if [builtin-eq d.kind "undefined-variable"]
+              [builtin-if [builtin-eq-string d.kind "undefined-variable"]
                 [builtin-if stack-empty "resolve" "runtime"]
-                [builtin-if [builtin-eq d.kind "user-error"]
+                [builtin-if [builtin-eq-string d.kind "user-error"]
                   "error"
                   d.kind]]]]
     [base-line: [builtin-string-concat loc [builtin-string-concat ": " [builtin-string-concat label [builtin-string-concat ": " [builtin-string-concat d.message "\n"]]]]]]
@@ -126,7 +126,7 @@
       base-line
       [reduce
         [fn [let acc frame]
-          [frame-file: [builtin-if [builtin-eq frame.span.file []] "" [builtin-string-concat frame.span.file ":"]]]
+          [frame-file: [builtin-if [builtin-eq-int [builtin-length frame.span.file] 0] "" [builtin-string-concat frame.span.file ":"]]]
           [builtin-string-concat acc [builtin-string-concat "  in " [builtin-string-concat frame.label [builtin-string-concat " at " [builtin-string-concat frame-file [builtin-string-concat [builtin-int->string frame.span.start-line] [builtin-string-concat ":" [builtin-string-concat [builtin-int->string frame.span.start-col] "\n"]]]]]]]]]
         base-line
         d.call-stack]]]
@@ -152,7 +152,7 @@
             [resolve-result: [builtin-resolve parse-result.program]]
             [typed:          [builtin-typecheck resolve-result.resolved [builtin-get-type-context]]]
             typed.warnings]]]
-        [warnings:   [builtin-if [builtin-eq [builtin-tag-of tc-result] "Result.Ok"]
+        [warnings:   [builtin-if [builtin-eq-string [builtin-tag-of tc-result] "Result.Ok"]
             [builtin-variant-payload tc-result]
             []]]
         [builtin-merge [emit-diagnostics warnings] [builtin-merge acc [builtin-module name]]]]
@@ -171,7 +171,7 @@
     # Stop on parse errors. Emit first (data dependency via builtin-add), then raise.
     [n-parse:       [builtin-length parse-result.errors]]
     [_pe:           [builtin-length [emit-diagnostics parse-result.errors]]]
-    [seed-env:      [builtin-if [builtin-eq [builtin-add n-parse _pe] 0]
+    [seed-env:      [builtin-if [builtin-eq-int [builtin-add n-parse _pe] 0]
       [builtin-extend-env [] extras]
       [builtin-raise [join "" [[builtin-int->string n-parse] " parse error(s) in " path]]]]]
     # Per-document: each document gets its own module builtins via uses-scope.
@@ -179,14 +179,14 @@
     [final-env: [reduce
       [fn [let env doc]
         # DEBUG: skip type-stage docs temporarily to isolate error source
-        [builtin-if [builtin-eq [builtin-tag-of doc.stage] "DocStage.Type"]
+        [builtin-if [builtin-eq-string [builtin-tag-of doc.stage] "DocStage.Type"]
           env
           [call [fn [let]
             [doc-env:  [builtin-extend-env env [uses-scope doc.uses]]]
             [resolved: [builtin-resolve doc env: doc-env]]
             [n-re:     [builtin-length resolved.errors]]
             [_re:      [builtin-length [emit-diagnostics resolved.errors]]]
-            [builtin-if [builtin-eq [builtin-add n-re _re] 0]
+            [builtin-if [builtin-eq-int [builtin-add n-re _re] 0]
               [builtin-eval resolved.doc env: doc-env]
               [builtin-raise [join "" [[builtin-int->string n-re] " resolve error(s) in " path]]]]]]]]
       seed-env
@@ -194,7 +194,7 @@
     # builtin-eval returns an env where % = the last document's final value (the exported dict).
     # The exported dict's entries are NOT automatically in the env chain as named bindings.
     # Extend the final-env with the exported dict entries so bare names (flush, =, etc.) resolve.
-    [exported: [builtin-if [builtin-eq [builtin-type-of final-env.%] "Dict"]
+    [exported: [builtin-if [builtin-eq-string [builtin-type-of final-env.%] "Dict"]
       final-env.%
       []]]
     [full-env: [builtin-extend-env final-env exported]]
@@ -204,7 +204,7 @@
     # Emit diagnostics via data dependency (no >> needed).
     [n-tc:        [builtin-length [emit-diagnostics tc-resolved.errors]]]
     [n-warn:      [builtin-length [emit-diagnostics typed.warnings]]]
-    [builtin-if [builtin-eq [builtin-add n-tc n-warn] 0] full-env full-env]]
+    [builtin-if [builtin-eq-int [builtin-add n-tc n-warn] 0] full-env full-env]]
 ]
 
 # ============================================================================
@@ -228,18 +228,18 @@
   # extract-source: given file content, return everything before "\n=== ".
   extract-source: [fn [let content]
     [sep-pos: [builtin-str-index-of "\n=== " content]]
-    [builtin-if [builtin-eq sep-pos -1]
+    [builtin-if [builtin-eq-int sep-pos -1]
       content
       [builtin-str-slice content 0 sep-pos]]]
 
   section-strip-nl: [fn [let sv sl]
-    [builtin-if [builtin-eq sl 0] sv
-      [builtin-if [builtin-eq [builtin-str-slice sv [builtin-add sl -1] sl] "\n"]
+    [builtin-if [builtin-eq-int sl 0] sv
+      [builtin-if [builtin-eq-string [builtin-str-slice sv [builtin-add sl -1] sl] "\n"]
         [builtin-str-slice sv 0 [builtin-add sl -1]]
         sv]]]
 
   section-cut-at: [fn [let sv si]
-    [builtin-if [builtin-eq si -1] sv [builtin-str-slice sv 0 si]]]
+    [builtin-if [builtin-eq-int si -1] sv [builtin-str-slice sv 0 si]]]
 
   section-trim: [fn [let bt]
     [section-strip-nl
@@ -248,7 +248,7 @@
 
   extract-section: [fn [let content label]
     [sep: [join "" ["\n=== " label "\n"]]]
-    [builtin-if [builtin-eq [builtin-str-index-of sep content] -1]
+    [builtin-if [builtin-eq-int [builtin-str-index-of sep content] -1]
       ""
       [section-trim
         [builtin-str-slice
@@ -302,9 +302,9 @@
       [builtin-keys typed.warnings]]]
     # Force warn-box update as a data dependency (no >> needed).
     # builtin-builder-set writes to the builder and returns the builder object.
-    # We force it by using builtin-eq on the builder with itself.
+    # We force it by reading the builder snapshot length (always >= 0).
     [_wb:           [builtin-builder-set 0 all-warnings warn-box]]
-    [_wb-forced:    [builtin-if [builtin-eq _wb _wb] 1 1]]
+    [_wb-forced:    [builtin-if [builtin-gte [builtin-length [builtin-builder-snapshot _wb]] 0] 1 1]]
 
     # Evaluate test source document by document, threading env.
     # The final env has .% = the last expression's result value.
@@ -319,13 +319,13 @@
     [result-val: test-env.%]
     [output: [builtin-string-concat [builtin-llt-repr result-val] "\n"]]
     [wrote: [capture.write output capture]]
-    [builtin-if [builtin-eq [builtin-add _wb-forced [builtin-if [builtin-eq wrote wrote] 1 1]] 2]
+    [builtin-if [builtin-gte [builtin-add _wb-forced [builtin-if [builtin-gte [builtin-length wrote] 0] 1 1]] 2]
       [capture.read]
       [capture.read]]]
 
   # path-has-component: true if path contains "/component/" as a path segment.
   path-has-component: [fn [let path component]
-    [builtin-if [builtin-eq [builtin-str-index-of [join "" ["/" component "/"] ] path] -1]
+    [builtin-if [builtin-eq-int [builtin-str-index-of [join "" ["/" component "/"] ] path] -1]
       Boolean.False
       Boolean.True]]
 
@@ -334,18 +334,18 @@
   check-path-sections: [fn [let path expected-warn expected-error actual-out]
     [in-warnings: [path-has-component path "warnings"]]
     [in-errors:   [path-has-component path "errors"]]
-    [warn-ok: [builtin-if [builtin-eq expected-warn ""]
+    [warn-ok: [builtin-if [builtin-eq-string expected-warn ""]
                 Boolean.True
                 in-warnings]]
-    [error-ok: [builtin-if [builtin-eq expected-error ""]
-                  [builtin-if [builtin-eq [builtin-str-index-of "ERROR:" actual-out] 0]
+    [error-ok: [builtin-if [builtin-eq-string expected-error ""]
+                  [builtin-if [builtin-eq-int [builtin-str-index-of "ERROR:" actual-out] 0]
                     in-errors
                     Boolean.True]
                   in-errors]]
     [builtin-if [bool->int warn-ok]
       [builtin-if [bool->int error-ok]
         ""
-        [builtin-if [builtin-eq expected-error ""]
+        [builtin-if [builtin-eq-string expected-error ""]
           [join "" ["ERROR: output not allowed outside errors/ directory: " path]]
           [join "" ["=== error section not allowed outside errors/ directory: " path]]]]
       [join "" ["=== warn section not allowed outside warnings/ directory: " path]]]]
@@ -354,14 +354,14 @@
   check-warn: [fn [let warnings expected-warn]
     [warn-count: [builtin-length warnings]]
     [warn-text: [reduce
-      [fn [let acc w] [builtin-string-concat acc [builtin-string-concat [builtin-if [builtin-eq acc ""] "" "\n"] w.message]]]
+      [fn [let acc w] [builtin-string-concat acc [builtin-string-concat [builtin-if [builtin-eq-string acc ""] "" "\n"] w.message]]]
       ""
       warnings]]
-    [builtin-if [builtin-eq expected-warn ""]
-      [builtin-if [builtin-eq warn-count 0]
+    [builtin-if [builtin-eq-string expected-warn ""]
+      [builtin-if [builtin-eq-int warn-count 0]
         ""
         [join "" ["expected no warnings, got:\n" warn-text]]]
-      [builtin-if [builtin-eq [builtin-str-index-of expected-warn warn-text] -1]
+      [builtin-if [builtin-eq-int [builtin-str-index-of expected-warn warn-text] -1]
         [join "" ["expected warning not found:\n  " expected-warn "\nactual:\n  " warn-text]]
         ""]]]
 
@@ -399,19 +399,19 @@
     [eval-warnings: [builtin-if try-ok [builtin-get 0 [builtin-builder-snapshot warn-box]] []]]
 
     # === error: substring match; === out: exact match
-    [out-passed: [builtin-if [builtin-eq expected-error ""]
-                   [builtin-eq actual expected-out]
-                   [builtin-if [builtin-eq [builtin-str-index-of expected-error actual] -1]
+    [out-passed: [builtin-if [builtin-eq-string expected-error ""]
+                   [builtin-eq-string actual expected-out]
+                   [builtin-if [builtin-eq-int [builtin-str-index-of expected-error actual] -1]
                      0
                      1]]]
 
     [path-fail: [check-path-sections p.path expected-warn expected-error actual]]
-    [path-passed: [builtin-eq path-fail ""]]
+    [path-passed: [builtin-eq-string path-fail ""]]
 
     [warn-fail: [builtin-if try-ok
       [check-warn eval-warnings expected-warn]
       ""]]
-    [warn-passed: [builtin-eq warn-fail ""]]
+    [warn-passed: [builtin-eq-string warn-fail ""]]
 
     [r-path:    p.path]
     [r-passed:  [builtin-if out-passed [builtin-if warn-passed path-passed 0] 0]]
@@ -423,10 +423,10 @@
     [r-expected: [builtin-if path-passed
                    [join "" [
                      [builtin-if out-passed  "" [join "" ["out: "
-                       [builtin-if [builtin-eq expected-error ""] expected-out expected-error] "\n"]]]
+                       [builtin-if [builtin-eq-string expected-error ""] expected-out expected-error] "\n"]]]
                      [builtin-if warn-passed "" [join "" ["warn: " expected-warn "\n"]]]]]
                    [join "" ["out: "
-                     [builtin-if [builtin-eq expected-error ""] expected-out expected-error]]]]]
+                     [builtin-if [builtin-eq-string expected-error ""] expected-out expected-error]]]]]
     [path: r-path  passed: r-passed  actual: r-actual  expected: r-expected]]
 
   # run-test: run one ProgramItem as a corpus test.
@@ -452,7 +452,7 @@
     [len: [builtin-str-length name]]
     [builtin-if [builtin-lt len 9]
       Boolean.False
-      [builtin-eq [builtin-str-slice name [builtin-sub len 9] len] ".llt-eval"]]]
+      [builtin-eq-string [builtin-str-slice name [builtin-sub len 9] len] ".llt-eval"]]]
 
   # find-corpus-files: recursively walk cap/dir-path, accumulate .llt-eval files.
   find-corpus-files: [fn [let cap dir-path state]
@@ -460,7 +460,7 @@
     [reduce
       [fn [let st entry]
         [full: [join "" [dir-path "/" entry.name]]]
-        [builtin-if [builtin-eq entry.type "dir"]
+        [builtin-if [builtin-eq-string entry.type "dir"]
           [find-corpus-files cap full st]
           [builtin-if [check-llt-eval entry.name]
             [builtin-append
@@ -489,7 +489,7 @@
                       "cli/out/llt.llt"]]
     # Emit parse errors as a data dependency (no >> needed).
     [_pe:           [builtin-length [emit-diagnostics parse-result.errors]]]
-    [builtin-if [builtin-eq _pe _pe]
+    [builtin-if [builtin-gte _pe 0]
       parse-result.program
       parse-result.program]]]
 
@@ -498,12 +498,12 @@
     [Result.Ok _]:    1
     [Result.Error _]:
       # Force the stderr write by calling the helper inline; write returns the handle.
-      [call [fn [let _w] [builtin-if [builtin-eq _w _w] 0 0]]
+      [call [fn [let _w] [builtin-if [builtin-gte [builtin-length _w] 0] 0 0]]
         [%stderr.write "\nbootstrap error: llt.llt formatter failed to load\nCannot run corpus tests.\n" %stderr]]]
 
   # Discover test files (or use the ones given on the command line).
   test-programs: [builtin-if _formatter-ok
-    [builtin-if [builtin-eq [builtin-length %programs] 0]
+    [builtin-if [builtin-eq-int [builtin-length %programs] 0]
       [find-corpus-files
         [builtin-narrow %cwd "tests/corpus"]
         "."
@@ -516,15 +516,15 @@
       [result: [run-test item _prelude _llt-formatter-expanded]]
       # Force the write as a data dependency (no >> needed).
       # %stdout.write returns the handle (%stdout protocol dict).
-      # builtin-eq on the handle with itself always returns Boolean.True.
+      # Force it by reading the handle's key count (always >= 0).
       [wrote: [%stdout.write [format-result result] %stdout]]
-      [builtin-if [builtin-eq wrote wrote]
+      [builtin-if [builtin-gte [builtin-length wrote] 0]
         [idx:    [builtin-add state.idx 1]
          total:  [builtin-add state.total 1]
          passed: [builtin-if [bool->int result.passed]
                     [builtin-add state.passed 1]
                     state.passed]
-         first-fail: [builtin-if [builtin-eq state.first-fail ""]
+         first-fail: [builtin-if [builtin-eq-string state.first-fail ""]
                         [builtin-if [bool->int result.passed]
                           ""
                           [join "" [result.path "\n  expected: " result.expected "\n  actual:   " result.actual]]]
@@ -544,12 +544,12 @@
 [wrote: [%stdout.write [join "" [
     "\n"
     [builtin-int->string final-state.passed] "/" [builtin-int->string final-state.total] " tests passed"
-    [builtin-if [builtin-eq final-state.passed final-state.total]
+    [builtin-if [builtin-eq-int final-state.passed final-state.total]
       "\n"
       [join "" [", " [builtin-int->string [builtin-sub final-state.total final-state.passed]] " failed\n"]]]]]
   %stdout]]
-[builtin-if [builtin-eq wrote wrote]
-  [builtin-if [builtin-eq final-state.passed final-state.total]
+[builtin-if [builtin-gte [builtin-length wrote] 0]
+  [builtin-if [builtin-eq-int final-state.passed final-state.total]
     []
     [builtin-raise [join "" [
       [builtin-int->string [builtin-sub final-state.total final-state.passed]] " test(s) failed\n"

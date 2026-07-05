@@ -237,12 +237,20 @@ pub(crate) async fn typecheck_case_arm(
             for binding in bindings {
                 match &binding.expr {
                     // Wildcard: _ (check first to avoid binding "_" as a variable)
-                    SurfaceExpression::VarRef { name, annotation: None, .. } if name == "_" => {
+                    SurfaceExpression::VarRef {
+                        name,
+                        annotation: None,
+                        ..
+                    } if name == "_" => {
                         // Wildcard - no binding introduced
                     }
 
                     // Plain binding: name (no annotation)
-                    SurfaceExpression::VarRef { name, annotation: None, .. } => {
+                    SurfaceExpression::VarRef {
+                        name,
+                        annotation: None,
+                        ..
+                    } => {
                         // Bind name to scrutinee type
                         arm_env.insert(name.clone(), scrutinee_ty.clone());
                     }
@@ -262,7 +270,11 @@ pub(crate) async fn typecheck_case_arm(
                     // Disambiguation: PropertyDict with "_constructor" sentinel key = structural test.
                     // All other annotation forms = typed binding.
                     // Annotated VarRef: annotation is now on VarRef directly.
-                    SurfaceExpression::VarRef { name, annotation: Some(annotation), .. } => {
+                    SurfaceExpression::VarRef {
+                        name,
+                        annotation: Some(annotation),
+                        ..
+                    } => {
                         let name = name.as_str();
                         // Check if this is a structural test: PropertyDict with "_constructor" sentinel
                         let constructor_name_opt = annotation
@@ -424,7 +436,11 @@ pub(crate) async fn typecheck_case_arm(
                         for (idx, nested) in nested_bindings.iter().enumerate() {
                             match &nested.expr {
                                 // Annotated VarRef (annotation is now on VarRef directly).
-                                SurfaceExpression::VarRef { name, annotation: Some(annotation), .. } => {
+                                SurfaceExpression::VarRef {
+                                    name,
+                                    annotation: Some(annotation),
+                                    ..
+                                } => {
                                     let ann_ty = resolve_annotation(
                                         &annotation.node,
                                         env,
@@ -439,7 +455,11 @@ pub(crate) async fn typecheck_case_arm(
                                     .map_err(|e| vec![e])?;
                                     arm_env.insert(name.clone(), ann_ty);
                                 }
-                                SurfaceExpression::VarRef { name, annotation: None, .. } if name != "_" => {
+                                SurfaceExpression::VarRef {
+                                    name,
+                                    annotation: None,
+                                    ..
+                                } if name != "_" => {
                                     // Use constructor field type if available, otherwise Unknown
                                     let field_ty =
                                         field_types.get(idx).cloned().unwrap_or(Type::Unknown);
@@ -535,9 +555,7 @@ async fn extract_is_narrowing(
                     // Resolve the value as a type annotation.
                     // The value is typically a simple type name like Int, String, etc.
                     let ann_for_value = match &entry.node.value.expr {
-                        SurfaceExpression::VarRef { name, .. } => {
-                            Annotation::Simple(name.clone())
-                        }
+                        SurfaceExpression::VarRef { name, .. } => Annotation::Simple(name.clone()),
                         _ => return None,
                     };
                     return resolve_annotation(
@@ -659,7 +677,15 @@ pub(crate) async fn infer_fn(
     let mut has_any_narrowing = false;
     for p in params.iter() {
         let narrowing = if let Some(ann) = &p.node.annotation {
-            extract_is_narrowing(&ann.node, env, state, constraints, &mut ann_mapping_opt, &mut row_ann_mapping_opt).await
+            extract_is_narrowing(
+                &ann.node,
+                env,
+                state,
+                constraints,
+                &mut ann_mapping_opt,
+                &mut row_ann_mapping_opt,
+            )
+            .await
         } else {
             None
         };
@@ -683,7 +709,10 @@ pub(crate) async fn infer_fn(
             let elem_ty = state.fresh_type_var();
             let variadic_ty = Type::Record(crate::type_def::Row {
                 fields: indexmap::IndexMap::new(),
-                tail: crate::type_def::RowTail::Uniform { key: None, value: Box::new(elem_ty) },
+                tail: crate::type_def::RowTail::Uniform {
+                    key: None,
+                    value: Box::new(elem_ty),
+                },
             });
             param_types[i].1 = variadic_ty.clone();
             fn_env.insert(param.node.name.clone(), variadic_ty);

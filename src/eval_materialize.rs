@@ -16,7 +16,7 @@ use crate::builtins::flatten_overlay;
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{
     as_record_row_merged, format_field_path, format_type_for_assert, match_pattern, materialize,
-    validate_and_wrap_record, value_matches_type, primitive_eq, EvalContext,
+    primitive_eq, validate_and_wrap_record, value_matches_type, EvalContext,
     DEFAULT_ANNOTATION_KEY, IS_ANNOTATION_KEY,
 };
 use crate::eval_call::{invoke_function, invoke_function_tco, CallContext};
@@ -412,7 +412,7 @@ pub(crate) struct MatchPredicateCheckData {
     /// Pre-resolved Matchable instance binding name for `to-match`, set by the type checker.
     /// When `Some`, the evaluator uses this to call the correct instance without dynamic dispatch.
     /// When `None` (type checking skipped), falls back to `call_to_match` for dynamic resolution.
-    pub(crate) to_match_binding: Option<String>,  // extracted from MatchableBinding at eval time
+    pub(crate) to_match_binding: Option<String>, // extracted from MatchableBinding at eval time
 }
 
 /// Payload for Cont::PredicateCheck. Boxed to keep the Cont enum ≤96 bytes.
@@ -871,9 +871,7 @@ pub(crate) async fn force_step(
         // Only check already-materialized (forced) args; lazy args are checked
         // when the builtin materializes them.
         for arg_thunk in args.as_ref().expect("args set above").iter() {
-            if let Some(crate::value::Value::Annotated { .. }) =
-                arg_thunk.try_get_materialized()
-            {
+            if let Some(crate::value::Value::Annotated { .. }) = arg_thunk.try_get_materialized() {
                 let err = crate::error::EvalError::type_mismatch_ctx(
                     def.name.to_string(),
                     "primitive type (Dict, String, Int, Float, Bytes)",
@@ -1554,24 +1552,35 @@ pub(crate) async fn apply_cont(
                             const MACRO_CALL_ENV_NAME: &str = "ᴍᴀᴄʀᴏ∷env";
                             const MACRO_CALL_SPAN_NAME: &str = "ᴍᴀᴄʀᴏ∷span";
 
-                            let has_expr_params = params
-                                .iter()
-                                .any(|p| p.annotation.as_ref().map_or(false, |a| is_expr_annotation(&a.node)));
+                            let has_expr_params = params.iter().any(|p| {
+                                p.annotation
+                                    .as_ref()
+                                    .map_or(false, |a| is_expr_annotation(&a.node))
+                            });
 
                             if has_expr_params {
-                                if let CoreExpr::Call { args: core_args, .. } = &original_call.node {
-                                    let mut args_vec = args.take().expect("args set for @Expr quoting");
+                                if let CoreExpr::Call {
+                                    args: core_args, ..
+                                } = &original_call.node
+                                {
+                                    let mut args_vec =
+                                        args.take().expect("args set for @Expr quoting");
 
                                     // Replace each @Expr-annotated positional arg with the quoted AST
                                     // of the corresponding call-site CoreExpr.  Args at positions
                                     // beyond core_args (e.g. a variadic rest) are left as thunks.
                                     for (i, param) in params.iter().enumerate() {
-                                        if param.annotation.as_ref().map_or(false, |a| is_expr_annotation(&a.node)) {
+                                        if param
+                                            .annotation
+                                            .as_ref()
+                                            .map_or(false, |a| is_expr_annotation(&a.node))
+                                        {
                                             if i < core_args.len() && i < args_vec.len() {
-                                                let expr_value = crate::surface_convert::core_expr_to_expr_value(
-                                                    &core_args[i],
-                                                    &thunk_ctx,
-                                                );
+                                                let expr_value =
+                                                    crate::surface_convert::core_expr_to_expr_value(
+                                                        &core_args[i],
+                                                        &thunk_ctx,
+                                                    );
                                                 args_vec[i] = Arc::new(Thunk::new_materialized(
                                                     expr_value,
                                                     core_args[i].span.clone(),
@@ -1588,7 +1597,8 @@ pub(crate) async fn apply_cont(
                                     // retrieves them from the named arg map of its BuiltinArgs.caller_env
                                     // environment chain.
                                     let inner_named = named.as_mut().expect("named set above");
-                                    let named_map = inner_named.get_or_insert_with(|| Box::new(IndexMap::new()));
+                                    let named_map = inner_named
+                                        .get_or_insert_with(|| Box::new(IndexMap::new()));
                                     named_map.insert(
                                         MACRO_CALL_ENV_NAME.to_string(),
                                         Arc::new(Thunk::new_materialized(
@@ -1596,7 +1606,8 @@ pub(crate) async fn apply_cont(
                                             call_span.clone(),
                                         )),
                                     );
-                                    let span_thunk_id = make_span_dict(&call_span, &thunk_ctx, &call_span);
+                                    let span_thunk_id =
+                                        make_span_dict(&call_span, &thunk_ctx, &call_span);
                                     named_map.insert(
                                         MACRO_CALL_SPAN_NAME.to_string(),
                                         thunk_ctx.get_thunk(span_thunk_id),
@@ -2700,8 +2711,7 @@ pub(crate) async fn apply_cont(
                             while i + 1 < bindings.len() {
                                 match &bindings[i].node {
                                     // lower_let_decl_binding converts declaration names to Str literals.
-                                    CoreExpr::Str(name)
-                                    | CoreExpr::Var { name, .. } => {
+                                    CoreExpr::Str(name) | CoreExpr::Var { name, .. } => {
                                         keys.insert(name.clone());
                                     }
                                     _ => {}
@@ -2944,7 +2954,11 @@ pub(crate) async fn apply_cont(
                         // child env bound to the scrutinee value. A Var(`%pred_subj`)
                         // core expression is appended as the final arg. The % prefix is
                         // reserved and cannot appear in user-written identifiers.
-                        if let crate::ast::Pattern::Predicate { call: pred_node, to_match_binding } = &arm.pattern.node {
+                        if let crate::ast::Pattern::Predicate {
+                            call: pred_node,
+                            to_match_binding,
+                        } = &arm.pattern.node
+                        {
                             let resolved_binding = to_match_binding.get().cloned();
                             let lowered_pred = crate::lower::lower(pred_node);
                             let pred_span = lowered_pred.span.clone();
@@ -3194,8 +3208,13 @@ pub(crate) async fn apply_cont(
                     let guard_passed = if let Some(ref binding_name) = guard_matchable_binding {
                         // Compile-time resolved: use the pre-resolved Matchable instance binding.
                         crate::eval::call_to_match_resolved(
-                            &guard_value, binding_name, &arm_env, &ctx, &match_span,
-                        ).await
+                            &guard_value,
+                            binding_name,
+                            &arm_env,
+                            &ctx,
+                            &match_span,
+                        )
+                        .await
                     } else {
                         // Type checking was skipped — fall back to dynamic dispatch.
                         crate::eval::call_to_match(&guard_value, &arm_env, &ctx, &match_span).await
@@ -3282,8 +3301,13 @@ pub(crate) async fn apply_cont(
                         // Compile-time resolved: look up the pre-resolved Matchable instance
                         // binding directly, avoiding dynamic dispatch.
                         crate::eval::call_to_match_resolved(
-                            &predicate_value, binding_name, &env, &ctx, &match_span,
-                        ).await
+                            &predicate_value,
+                            binding_name,
+                            &env,
+                            &ctx,
+                            &match_span,
+                        )
+                        .await
                     } else {
                         // Type checking was skipped — fall back to dynamic dispatch.
                         crate::eval::call_to_match(&predicate_value, &env, &ctx, &match_span).await
@@ -3380,7 +3404,8 @@ pub(crate) async fn apply_cont(
                         }
                     }
 
-                    let pred_passed = crate::eval::call_to_match(&predicate_value, &env, &ctx, &expr_span).await;
+                    let pred_passed =
+                        crate::eval::call_to_match(&predicate_value, &env, &ctx, &expr_span).await;
 
                     if pred_passed {
                         // Predicate passed — return the original value
@@ -3523,7 +3548,12 @@ fn eval_structural_pattern_inner<'a>(
             // Plain name: bind or pin based on binding_set.
             // level and slot carry de Bruijn coordinates for the pin case.
             // Plain name (no annotation): bind or pin based on binding_set.
-            CoreExpr::Var { name, level, slot, annotation: None } => {
+            CoreExpr::Var {
+                name,
+                level,
+                slot,
+                annotation: None,
+            } => {
                 bind_or_pin_name(
                     name,
                     binding_set,
@@ -3540,7 +3570,12 @@ fn eval_structural_pattern_inner<'a>(
 
             // Annotated name (name@Type): the annotation may contain an "is:" predicate.
             // Bind/pin first, then check the predicate if present.
-            CoreExpr::Var { name, level, slot, annotation: Some(annotation) } => {
+            CoreExpr::Var {
+                name,
+                level,
+                slot,
+                annotation: Some(annotation),
+            } => {
                 // First, perform the bind-or-pin operation
                 let bind_result = bind_or_pin_name(
                     name,
@@ -3578,9 +3613,12 @@ fn eval_structural_pattern_inner<'a>(
                             Arc::clone(&env_read.slots[idx])
                         } else {
                             return Err(EvalError::internal(
-                                format!("pattern name '{name}' not bound after bind_or_pin succeeded"),
+                                format!(
+                                    "pattern name '{name}' not bound after bind_or_pin succeeded"
+                                ),
                                 match_span,
-                            ).into());
+                            )
+                            .into());
                         }
                     };
 
@@ -3596,8 +3634,7 @@ fn eval_structural_pattern_inner<'a>(
                         ctx,
                     );
 
-                    let pred_result =
-                        materialize(&pred_call_thunk, Some(&match_span), ctx).await?;
+                    let pred_result = materialize(&pred_call_thunk, Some(&match_span), ctx).await?;
 
                     if !crate::eval::call_to_match(&pred_result, arm_env, ctx, &match_span).await {
                         return Ok(false);
@@ -3608,15 +3645,9 @@ fn eval_structural_pattern_inner<'a>(
             }
 
             // Literal patterns: compare exact value
-            CoreExpr::Int(n) => {
-                Ok(matches!(scrutinee_value, Value::Int(v) if v == n))
-            }
-            CoreExpr::U64(n) => {
-                Ok(matches!(scrutinee_value, Value::U64(v) if v == n))
-            }
-            CoreExpr::Float(f) => {
-                Ok(matches!(scrutinee_value, Value::Float(v) if v == f))
-            }
+            CoreExpr::Int(n) => Ok(matches!(scrutinee_value, Value::Int(v) if v == n)),
+            CoreExpr::U64(n) => Ok(matches!(scrutinee_value, Value::U64(v) if v == n)),
+            CoreExpr::Float(f) => Ok(matches!(scrutinee_value, Value::Float(v) if v == f)),
             CoreExpr::Str(s) => {
                 // Not a wildcard (handled above): literal string comparison
                 Ok(scrutinee_value.as_str().is_some_and(|v| v == s.as_str()))
@@ -3655,7 +3686,10 @@ fn eval_structural_pattern_inner<'a>(
                 //   (b) a Function with return_ann: Some(Annotation::Simple(tag)) — named-field ctor
                 let ctor_tag_opt: Option<String> = match &func_val {
                     Value::Variant { tag, .. } => Some(tag.clone()),
-                    Value::Function { return_ann: Some(ann), .. } => {
+                    Value::Function {
+                        return_ann: Some(ann),
+                        ..
+                    } => {
                         if let crate::ast::Annotation::Simple(tag) = &ann.node {
                             Some(tag.clone())
                         } else {
@@ -3676,7 +3710,11 @@ fn eval_structural_pattern_inner<'a>(
                         }
                         v
                     };
-                    let Value::Variant { tag: scrutinee_tag, payload } = scrutinee_value else {
+                    let Value::Variant {
+                        tag: scrutinee_tag,
+                        payload,
+                    } = scrutinee_value
+                    else {
                         return Ok(false);
                     };
                     if scrutinee_tag != &ctor_tag {
@@ -3698,8 +3736,7 @@ fn eval_structural_pattern_inner<'a>(
                         };
 
                         for na in named_args.iter() {
-                            let field_key =
-                                HashableValue::Str(na.node.name.clone().into());
+                            let field_key = HashableValue::Str(na.node.name.clone().into());
                             let Some(field_thunk_id) = payload_map.get(&field_key) else {
                                 return Ok(false);
                             };
@@ -3734,8 +3771,7 @@ fn eval_structural_pattern_inner<'a>(
                     };
 
                     let payload_thunk = ctx.get_thunk(*payload_id);
-                    let payload_val =
-                        materialize(&payload_thunk, Some(&match_span), ctx).await?;
+                    let payload_val = materialize(&payload_thunk, Some(&match_span), ctx).await?;
 
                     if args.len() == 1 {
                         return eval_structural_pattern_inner(
@@ -3761,8 +3797,7 @@ fn eval_structural_pattern_inner<'a>(
                             return Ok(false);
                         };
                         let field_thunk = ctx.get_thunk(*field_thunk_id);
-                        let field_val =
-                            materialize(&field_thunk, Some(&match_span), ctx).await?;
+                        let field_val = materialize(&field_thunk, Some(&match_span), ctx).await?;
 
                         if !eval_structural_pattern_inner(
                             &arg.node,
@@ -3781,44 +3816,55 @@ fn eval_structural_pattern_inner<'a>(
                     Ok(true)
                 } else {
                     match func_val {
-                    Value::Function { .. } | Value::Builtin(_) => {
-                        // Guard/predicate: bind all declared names to scrutinee, evaluate
-                        // the full call expression (func + args), check if result is truthy.
-                        for name in binding_set {
-                            let scrutinee_thunk = Arc::new(Thunk::new_materialized(
-                                scrutinee_value.clone(),
+                        Value::Function { .. } | Value::Builtin(_) => {
+                            // Guard/predicate: bind all declared names to scrutinee, evaluate
+                            // the full call expression (func + args), check if result is truthy.
+                            for name in binding_set {
+                                let scrutinee_thunk = Arc::new(Thunk::new_materialized(
+                                    scrutinee_value.clone(),
+                                    match_span.clone(),
+                                ));
+                                arm_env
+                                    .write()
+                                    .unwrap()
+                                    .insert(name.clone(), scrutinee_thunk);
+                            }
+
+                            let guard_expr_spanned = Arc::new(crate::ast::Spanned::new(
+                                CoreExpr::Call {
+                                    func: Arc::clone(func),
+                                    args: args.to_vec(),
+                                    named_args: named_args.to_vec(),
+                                    implied: *implied,
+                                },
                                 match_span.clone(),
                             ));
-                            arm_env.write().unwrap().insert(name.clone(), scrutinee_thunk);
+                            let guard_thunk = Arc::new(Thunk::new_unevaluated_core(
+                                guard_expr_spanned,
+                                Arc::clone(arm_env),
+                                Arc::clone(ctx),
+                                match_span.clone(),
+                            ));
+                            let guard_result =
+                                materialize(&guard_thunk, Some(&match_span), ctx).await?;
+                            Ok(
+                                crate::eval::call_to_match(
+                                    &guard_result,
+                                    arm_env,
+                                    ctx,
+                                    &match_span,
+                                )
+                                .await,
+                            )
                         }
 
-                        let guard_expr_spanned = Arc::new(crate::ast::Spanned::new(
-                            CoreExpr::Call {
-                                func: Arc::clone(func),
-                                args: args.to_vec(),
-                                named_args: named_args.to_vec(),
-                                implied: *implied,
-                            },
-                            match_span.clone(),
-                        ));
-                        let guard_thunk = Arc::new(Thunk::new_unevaluated_core(
-                            guard_expr_spanned,
-                            Arc::clone(arm_env),
-                            Arc::clone(ctx),
-                            match_span.clone(),
-                        ));
-                        let guard_result =
-                            materialize(&guard_thunk, Some(&match_span), ctx).await?;
-                        Ok(crate::eval::call_to_match(&guard_result, arm_env, ctx, &match_span).await)
-                    }
-
-                    other => Err(EvalError::type_mismatch_ctx(
-                        "pattern call".to_string(),
-                        "Variant (constructor) or Function (predicate)",
-                        other.type_name(),
-                        match_span,
-                    )
-                    .into()),
+                        other => Err(EvalError::type_mismatch_ctx(
+                            "pattern call".to_string(),
+                            "Variant (constructor) or Function (predicate)",
+                            other.type_name(),
+                            match_span,
+                        )
+                        .into()),
                     }
                 }
             }
@@ -3832,10 +3878,13 @@ fn eval_structural_pattern_inner<'a>(
                     let key = match entry.node.key.as_ref().map(|k| &k.node) {
                         Some(CoreExpr::Str(s)) => HashableValue::Str(s.clone().into()),
                         Some(CoreExpr::Int(n)) => HashableValue::Int(*n),
-                        _ => return Err(EvalError::internal(
-                            "pattern: dynamic key in dict pattern is not supported".to_string(),
-                            match_span,
-                        ).into()),
+                        _ => {
+                            return Err(EvalError::internal(
+                                "pattern: dynamic key in dict pattern is not supported".to_string(),
+                                match_span,
+                            )
+                            .into())
+                        }
                     };
                     let Some(field_thunk_id) = scrutinee_map.get(&key) else {
                         return Ok(false); // Required field missing — genuine no-match
@@ -4792,12 +4841,7 @@ mod tests {
                 .try_get_materialized()
                 .expect("pre-materialized by force_count/pos_strictness");
             let span = args.call_span;
-            Box::pin(async move {
-                Ok(Arc::new(Thunk::new_materialized(
-                    Value::Int(1),
-                    span,
-                )))
-            })
+            Box::pin(async move { Ok(Arc::new(Thunk::new_materialized(Value::Int(1), span))) })
         };
 
         const DUMMY_STRICTNESS: &[Strictness] = &[];

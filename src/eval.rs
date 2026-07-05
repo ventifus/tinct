@@ -989,11 +989,6 @@ pub fn ground_type_of(v: &Value) -> Type {
         // U64 values have Int ground type — no dedicated Type::U64 yet (see typecheck.rs).
         Value::U64(_) => Type::Int,
         Value::Float(_) => Type::Float,
-        Value::Variant { tag, payload: None }
-            if tag == "Boolean.True" || tag == "Boolean.False" =>
-        {
-            Type::TyCon("Boolean".to_string())
-        }
         Value::String { .. } => Type::Str,
         Value::Bytes { .. } => Type::Bytes,
         Value::Dict(map) => Type::Record(extract_row(map)),
@@ -1110,8 +1105,6 @@ pub(crate) fn value_matches_type(value: &Value, expected: &Type, ctx: &EvalConte
                     match discriminant.as_str() {
                         "Int" => matches!(value, Value::Int(_)),
                         "Str" => matches!(value, Value::String { .. }),
-                        "Bool" => matches!(value, Value::Variant { tag, .. }
-                            if tag == "Boolean.True" || tag == "Boolean.False"),
                         "Float" => matches!(value, Value::Float(_)),
                         "Bytes" => matches!(value, Value::Bytes { .. }),
                         "Dict" => matches!(value, Value::Dict(_)),
@@ -1730,7 +1723,6 @@ fn eval_quote_preprocess<'a>(
     }) // end Box::pin(async move {
 }
 
-
 /// Evaluate a CoreExpr to a thunk (transitional path for runtime-v2).
 ///
 /// This is the new CoreExpr evaluation entry point. It handles:
@@ -1774,7 +1766,9 @@ fn eval_core_expr<'a>(
             // EvalContext.do_infer_resolutions is never populated (set_do_infer_resolutions
             // is defined but never called from any pipeline path), making that block dead code.
             // Sentinels evaluate via the normal get_slot path below.
-            CoreExpr::Var { name, level, slot, .. } => {
+            CoreExpr::Var {
+                name, level, slot, ..
+            } => {
                 if *level == u32::MAX || *slot == u32::MAX {
                     return Err(EvalError::internal(
                         format!("unresolved variable '{name}': resolver failed to assign de Bruijn coordinates (u32::MAX sentinel)"),
@@ -1918,7 +1912,6 @@ fn eval_core_expr<'a>(
                 Arc::clone(ctx),
                 span.clone(),
             ))),
-
 
             // Rest: error (only valid in type expressions)
             CoreExpr::Rest(_) => Err(EvalError::internal(
@@ -2081,7 +2074,7 @@ pub async fn call_to_match(
     let type_name = match val {
         Value::Int(_) | Value::U64(_) => "Int",
         Value::Variant { tag, payload: None } => {
-            // "Boolean.True" → "Boolean" (the type name is the prefix before the first '.')
+            // "Color.Red" → "Color" (the type name is the prefix before the first '.')
             match tag.split_once('.') {
                 Some((type_part, _)) => type_part,
                 None => tag.as_str(),
@@ -3585,7 +3578,7 @@ pub(crate) fn match_pattern<'a>(
 ///
 /// Dict comparison is shallow: same keys and same thunk IDs (no value
 /// materialization). This covers null equality ([] == []) and self-equality
-/// patterns ([builtin-eq x x]) without deep structural comparison.
+/// for Dicts, without deep structural comparison.
 /// No payload-Variant or Seq deep comparison. No cross-type Int/Float
 /// comparison — use type-specific builtins instead.
 ///
@@ -3611,7 +3604,7 @@ pub(crate) fn primitive_eq(a: Value, b: Value) -> bool {
                 end: end2,
             },
         ) => s1[*start1..*end1] == s2[*start2..*end2],
-        // Nullary variants: tag equality (covers Boolean.True/False, unit constructors)
+        // Nullary variants: tag equality (covers unit constructors)
         (
             Value::Variant {
                 tag: tag1,
@@ -3629,9 +3622,8 @@ pub(crate) fn primitive_eq(a: Value, b: Value) -> bool {
             if a.len() != b.len() {
                 return false;
             }
-            a.iter().all(|(k, id_a)| {
-                b.get(k).map_or(false, |id_b| id_a == id_b)
-            })
+            a.iter()
+                .all(|(k, id_a)| b.get(k).map_or(false, |id_b| id_a == id_b))
         }
         _ => false,
     }
@@ -7275,7 +7267,7 @@ mod tests {
             &Type::Int,
             &ctx
         ));
-        assert!(!value_matches_type(&Value::boolean(true), &Type::Int, &ctx));
+        assert!(!value_matches_type(&Value::Float(1.0), &Type::Int, &ctx));
     }
 
     #[tokio::test]
@@ -7287,11 +7279,7 @@ mod tests {
             &ctx
         ));
         assert!(!value_matches_type(&Value::Int(1), &Type::Str, &ctx));
-        assert!(!value_matches_type(
-            &Value::boolean(false),
-            &Type::Str,
-            &ctx
-        ));
+        assert!(!value_matches_type(&Value::Float(0.0), &Type::Str, &ctx));
     }
 
     #[tokio::test]
@@ -7312,7 +7300,7 @@ mod tests {
             &Type::Any,
             &ctx
         ));
-        assert!(value_matches_type(&Value::boolean(true), &Type::Any, &ctx));
+        assert!(value_matches_type(&Value::Float(1.0), &Type::Any, &ctx));
         assert!(value_matches_type(
             &Value::Dict(IndexMap::new()),
             &Type::Any,
@@ -7395,7 +7383,7 @@ mod tests {
             &ctx,
         ));
         assert!(value_matches_type(
-            &Value::boolean(true),
+            &Value::Dict(IndexMap::new()),
             &Type::TypeVar("a".into(), 0),
             &ctx,
         ));
@@ -7465,7 +7453,7 @@ mod tests {
         let tycon = Type::TyCon("MyType".to_string());
         // Int value against unknown TyCon → false (conservative)
         assert!(!value_matches_type(&Value::Int(42), &tycon, &ctx));
-        assert!(!value_matches_type(&Value::boolean(true), &tycon, &ctx));
+        assert!(!value_matches_type(&Value::Float(1.0), &tycon, &ctx));
     }
 
     #[tokio::test]
@@ -7492,7 +7480,7 @@ mod tests {
         ctx.set_tycon_env(env);
         let tycon = Type::TyCon("MyInt".to_string());
         assert!(value_matches_type(&Value::Int(1), &tycon, &ctx));
-        assert!(!value_matches_type(&Value::boolean(true), &tycon, &ctx));
+        assert!(!value_matches_type(&Value::Float(1.0), &tycon, &ctx));
         assert!(!value_matches_type(&string_val("x".into()), &tycon, &ctx));
     }
 
@@ -7527,7 +7515,7 @@ mod tests {
         ));
         // Non-Dict values do not match
         assert!(!value_matches_type(&Value::Int(1), &tycon, &ctx));
-        assert!(!value_matches_type(&Value::boolean(true), &tycon, &ctx));
+        assert!(!value_matches_type(&Value::Float(1.0), &tycon, &ctx));
     }
 
     #[tokio::test]
@@ -7609,7 +7597,7 @@ mod tests {
     async fn test_value_matches_type_tycon_from_typecheck_pass() {
         // Regression test for the production gap where tycon_env was never wired from the
         // typecheck pass into the EvalContext.  Without the fix, value_matches_type returns
-        // false for every user-defined TyCon (including Boolean) because tycon_env is None.
+        // false for every user-defined TyCon because tycon_env is None.
         //
         // This test simulates the full production path:
         //   1. Typecheck a program that declares a nominal type.
@@ -7619,10 +7607,9 @@ mod tests {
         use crate::desugar;
         use crate::parse;
 
-        // A minimal program declaring `Boolean: [type True False]` — identical to what
-        // loader.llt does.  The type checker populates tycon_env["Boolean"] when it processes
-        // the [type ...] declaration.
-        let source = "[Boolean: [type True False]]";
+        // A minimal program declaring a user-defined nominal type `Color: [type Red Green Blue]`.
+        // The type checker populates tycon_env["Color"] when it processes the [type ...] declaration.
+        let source = "[Color: [type Red Green Blue]]";
         let parsed = parse(source).expect("parse must succeed");
         let mut program = parsed.program;
         desugar::desugar_surface_program(&mut program);
@@ -7631,10 +7618,10 @@ mod tests {
         let (_errors, _expects, tycon_env) =
             crate::typecheck::typecheck_surface_program_annotation_table(&program).await;
 
-        // Verify the typecheck pass actually populated the env for "Boolean".
+        // Verify the typecheck pass actually populated the env for "Color".
         assert!(
-            tycon_env.contains_key("Boolean"),
-            "typecheck pass must register 'Boolean' in tycon_env; got keys: {:?}",
+            tycon_env.contains_key("Color"),
+            "typecheck pass must register 'Color' in tycon_env; got keys: {:?}",
             tycon_env.keys().collect::<Vec<_>>()
         );
 
@@ -7642,42 +7629,42 @@ mod tests {
         let ctx = test_ctx();
         ctx.set_tycon_env(tycon_env);
 
-        let tycon = Type::TyCon("Boolean".to_string());
+        let tycon = Type::TyCon("Color".to_string());
 
-        // Boolean.True variant must pass @Boolean check.
-        let bool_true = Value::Variant {
-            tag: "Boolean.True".to_string(),
-            payload: None,
-        };
-        assert!(
-            value_matches_type(&bool_true, &tycon, &ctx),
-            "Boolean.True must match @Boolean when tycon_env is wired from typecheck pass"
-        );
-
-        // Boolean.False variant must also pass.
-        let bool_false = Value::Variant {
-            tag: "Boolean.False".to_string(),
-            payload: None,
-        };
-        assert!(
-            value_matches_type(&bool_false, &tycon, &ctx),
-            "Boolean.False must match @Boolean when tycon_env is wired from typecheck pass"
-        );
-
-        // A value from a different TyCon must not pass — no cross-TyCon confusion.
+        // Color.Red variant must pass @Color check.
         let color_red = Value::Variant {
             tag: "Color.Red".to_string(),
             payload: None,
         };
         assert!(
-            !value_matches_type(&color_red, &tycon, &ctx),
-            "Color.Red must not match @Boolean"
+            value_matches_type(&color_red, &tycon, &ctx),
+            "Color.Red must match @Color when tycon_env is wired from typecheck pass"
+        );
+
+        // Color.Green variant must also pass.
+        let color_green = Value::Variant {
+            tag: "Color.Green".to_string(),
+            payload: None,
+        };
+        assert!(
+            value_matches_type(&color_green, &tycon, &ctx),
+            "Color.Green must match @Color when tycon_env is wired from typecheck pass"
+        );
+
+        // A value from a different TyCon must not pass — no cross-TyCon confusion.
+        let other = Value::Variant {
+            tag: "Shape.Circle".to_string(),
+            payload: None,
+        };
+        assert!(
+            !value_matches_type(&other, &tycon, &ctx),
+            "Shape.Circle must not match @Color"
         );
 
         // A non-variant value must not pass.
         assert!(
             !value_matches_type(&Value::Int(1), &tycon, &ctx),
-            "Int must not match @Boolean"
+            "Int must not match @Color"
         );
     }
 

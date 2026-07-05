@@ -235,7 +235,11 @@ fn hover_at_surface_node(
     }
 
     match &node.expr {
-        SurfaceExpression::VarRef { name, annotation: Some(annotation), .. } => {
+        SurfaceExpression::VarRef {
+            name,
+            annotation: Some(annotation),
+            ..
+        } => {
             // Annotated VarRef: show both name and annotation.
             Some(format!(
                 "Annotated: {}@{}{}",
@@ -511,7 +515,6 @@ fn hover_at_surface_node(
         }
 
         // Annotated VarRef is handled by the first VarRef arm above.
-
         SurfaceExpression::Rest(name, _) => {
             Some(format!("Rest marker: {}", name.as_deref().unwrap_or("...")))
         }
@@ -3267,7 +3270,11 @@ fn collect_definition_key_edits(
                         let range = llt_span_to_lsp_range(&key.span, source);
                         // For annotated VarRef, trim the range to just the name prefix.
                         let range = match &key.expr {
-                            SurfaceExpression::VarRef { name: kname, annotation: Some(_), .. } => {
+                            SurfaceExpression::VarRef {
+                                name: kname,
+                                annotation: Some(_),
+                                ..
+                            } => {
                                 let kname_len = kname.len();
                                 // The name occupies bytes [key.span.start, key.span.start + kname_len)
                                 let name_span = crate::ast::Span {

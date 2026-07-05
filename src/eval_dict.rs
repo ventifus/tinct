@@ -182,7 +182,14 @@ fn eval_annotation_property_dict(
 /// agree exactly.
 pub(crate) fn core_expr_is_static_key(k: &CoreExpr) -> bool {
     // Annotated VarRef (Var { annotation: Some(_) }) is now a static key too.
-    matches!(k, CoreExpr::Str(_) | CoreExpr::Var { annotation: Some(_), .. })
+    matches!(
+        k,
+        CoreExpr::Str(_)
+            | CoreExpr::Var {
+                annotation: Some(_),
+                ..
+            }
+    )
 }
 
 /// Evaluate a dict literal from `CoreExpr::Dict` entries with letrec semantics.
@@ -295,7 +302,11 @@ pub(crate) async fn eval_dict_core(
         // T-1119: If the key is annotated (e.g., Pi@[doc: "..."]), wrap the value in Value::Annotated.
         // The annotation PropertyDict is evaluated to a Value::Dict at dict construction time.
         let thunk = if let Some(key_expr) = &entry.node.key {
-            if let CoreExpr::Var { annotation: Some(annotation), .. } = &key_expr.node {
+            if let CoreExpr::Var {
+                annotation: Some(annotation),
+                ..
+            } = &key_expr.node
+            {
                 // Only PropertyDict annotations produce Value::Annotated at runtime.
                 // Simple annotations (e.g., Pi@Number) are type-level metadata, not runtime values.
                 if let Annotation::PropertyDict(ann_entries) = &annotation.node {
@@ -434,7 +445,11 @@ pub(crate) async fn eval_key_core(
         // Annotated keys (e.g., `name@[doc: "..."]`) always resolve to the bare name.
         // The key is a Var { annotation: Some(_) } — the name field is the bare identifier.
         // Skip the thunk/materialize round-trip to use the name directly.
-        CoreExpr::Var { name, annotation: Some(_), .. } => {
+        CoreExpr::Var {
+            name,
+            annotation: Some(_),
+            ..
+        } => {
             return Ok(HashableValue::Str(Rc::from(name.as_str())));
         }
         _ => {}

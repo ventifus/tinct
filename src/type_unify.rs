@@ -322,7 +322,9 @@ async fn check_constraints_on_var(
                         // No instance found — try widening literal types (IntLiteral → Int,
                         // StringLiteral → Str) and retry. This handles the case where a
                         // literal type doesn't have a direct instance but its parent type does.
-                        let widened = crate::typecheck::typecheck_call::widen_literal_types(concrete_ty.clone());
+                        let widened = crate::typecheck::typecheck_call::widen_literal_types(
+                            concrete_ty.clone(),
+                        );
                         if widened != *concrete_ty {
                             // Widened type differs — retry with widened type
                             if satisfies_constraint(&widened, &class) {
@@ -710,7 +712,8 @@ async fn improve_functional_dependency_inner(
                 let mut norm_ctx =
                     crate::type_normalize::NormCtxt::new(state.type_stage_env.clone());
                 let resolved =
-                    crate::type_normalize::normalize(&stage_app, &state.type_vars, &mut norm_ctx).await;
+                    crate::type_normalize::normalize(&stage_app, &state.type_vars, &mut norm_ctx)
+                        .await;
 
                 // If normalization returned a stuck TypeStageApp, we can't improve yet.
                 // Defer: the deferred_equalities mechanism will retry when more types are ground.
@@ -1282,7 +1285,8 @@ pub fn apply_type_with_visited<'a>(
             match bound_opt {
                 Some(bound) => {
                     visited_types.insert(name.clone());
-                    let result = apply_type_with_visited(&bound, type_vars, 0, visited_types).into_owned();
+                    let result =
+                        apply_type_with_visited(&bound, type_vars, 0, visited_types).into_owned();
                     visited_types.remove(name);
                     Cow::Owned(result)
                 }
@@ -1304,35 +1308,43 @@ pub fn apply_type_with_visited<'a>(
                 .map(|(name, p_ty)| {
                     (
                         name.clone(),
-                        apply_type_with_visited(p_ty, type_vars, depth + 1, visited_types).into_owned(),
+                        apply_type_with_visited(p_ty, type_vars, depth + 1, visited_types)
+                            .into_owned(),
                     )
                 })
                 .collect(),
-            ret: Box::new(apply_type_with_visited(ret, type_vars, depth + 1, visited_types).into_owned()),
+            ret: Box::new(
+                apply_type_with_visited(ret, type_vars, depth + 1, visited_types).into_owned(),
+            ),
             variadic: *variadic,
             required_count: *required_count,
         }),
         Type::Union(members) => {
             let applied_members: Vec<Type> = members
                 .iter()
-                .map(|m| apply_type_with_visited(m, type_vars, depth + 1, visited_types).into_owned())
+                .map(|m| {
+                    apply_type_with_visited(m, type_vars, depth + 1, visited_types).into_owned()
+                })
                 .collect();
             Cow::Owned(Type::normalize_union(applied_members))
         }
         Type::Intersection(members) => {
             let applied_members: Vec<Type> = members
                 .iter()
-                .map(|m| apply_type_with_visited(m, type_vars, depth + 1, visited_types).into_owned())
+                .map(|m| {
+                    apply_type_with_visited(m, type_vars, depth + 1, visited_types).into_owned()
+                })
                 .collect();
             Cow::Owned(Type::normalize_intersection(applied_members))
         }
         Type::Negation(inner) => Cow::Owned(Type::Negation(Box::new(
-            apply_type_with_visited(inner, type_vars, depth + 1, visited_types)
-                .into_owned(),
+            apply_type_with_visited(inner, type_vars, depth + 1, visited_types).into_owned(),
         ))),
         Type::App(f, a) => {
-            let f_applied = apply_type_with_visited(f, type_vars, depth + 1, visited_types).into_owned();
-            let a_applied = apply_type_with_visited(a, type_vars, depth + 1, visited_types).into_owned();
+            let f_applied =
+                apply_type_with_visited(f, type_vars, depth + 1, visited_types).into_owned();
+            let a_applied =
+                apply_type_with_visited(a, type_vars, depth + 1, visited_types).into_owned();
 
             // Operator(Name) applied to arg → App(TyCon(Name), arg).
             // All type constructors follow this uniform pattern.
@@ -1349,11 +1361,14 @@ pub fn apply_type_with_visited<'a>(
             fn_name: fn_name.clone(),
             args: args
                 .iter()
-                .map(|arg| apply_type_with_visited(arg, type_vars, depth + 1, visited_types).into_owned())
+                .map(|arg| {
+                    apply_type_with_visited(arg, type_vars, depth + 1, visited_types).into_owned()
+                })
                 .collect(),
         }),
         Type::NominalVariant { tag, fields } => {
-            let applied_fields = apply_row_with_visited(fields, type_vars, depth + 1, visited_types);
+            let applied_fields =
+                apply_row_with_visited(fields, type_vars, depth + 1, visited_types);
             Cow::Owned(Type::NominalVariant {
                 tag: tag.clone(),
                 fields: applied_fields,
@@ -1378,7 +1393,8 @@ pub fn apply_type_with_visited<'a>(
             match bound_opt {
                 Some(bound) => {
                     visited_types.insert(name.clone());
-                    let result = apply_type_with_visited(&bound, type_vars, 0, visited_types).into_owned();
+                    let result =
+                        apply_type_with_visited(&bound, type_vars, 0, visited_types).into_owned();
                     visited_types.remove(name);
                     Cow::Owned(result)
                 }
@@ -1414,12 +1430,13 @@ pub fn apply_row_with_visited(
     let new_tail = match &row.tail {
         crate::type_def::RowTail::Empty => crate::type_def::RowTail::Empty,
         crate::type_def::RowTail::Uniform { key, value } => {
-            let new_key = key
-                .as_ref()
-                .map(|k| Box::new(apply_type_with_visited(k, type_vars, depth + 1, visited_types).into_owned()));
+            let new_key = key.as_ref().map(|k| {
+                Box::new(
+                    apply_type_with_visited(k, type_vars, depth + 1, visited_types).into_owned(),
+                )
+            });
             let new_value = Box::new(
-                apply_type_with_visited(value, type_vars, depth + 1, visited_types)
-                    .into_owned(),
+                apply_type_with_visited(value, type_vars, depth + 1, visited_types).into_owned(),
             );
             crate::type_def::RowTail::Uniform {
                 key: new_key,
@@ -1984,8 +2001,7 @@ async fn bas_cvar1_rewrite(
                 constraints,
                 state,
             );
-            check_constraints_on_var(var_name, &promoted, state, constraints, span.clone())
-                .await?;
+            check_constraints_on_var(var_name, &promoted, state, constraints, span.clone()).await?;
             state.bind_type_var(var_name.clone(), promoted);
             return state.check_type_vars_size(span);
         } else {
@@ -2081,8 +2097,7 @@ async fn bas_cvar2_rewrite(
                 constraints,
                 state,
             );
-            check_constraints_on_var(var_name, &promoted, state, constraints, span.clone())
-                .await?;
+            check_constraints_on_var(var_name, &promoted, state, constraints, span.clone()).await?;
             state.bind_type_var(var_name.clone(), promoted);
             return state.check_type_vars_size(span);
         } else {
@@ -2200,17 +2215,11 @@ pub async fn unify(
             if level_a >= level_b {
                 // Bind name_a → TypeVar(name_b)
                 transfer_class_constraints(name_a, name_b, constraints);
-                state.bind_type_var(
-                    name_a.clone(),
-                    Type::TypeVar(name_b.clone(), level_b),
-                );
+                state.bind_type_var(name_a.clone(), Type::TypeVar(name_b.clone(), level_b));
             } else {
                 // Bind name_b → TypeVar(name_a)
                 transfer_class_constraints(name_b, name_a, constraints);
-                state.bind_type_var(
-                    name_b.clone(),
-                    Type::TypeVar(name_a.clone(), level_a),
-                );
+                state.bind_type_var(name_b.clone(), Type::TypeVar(name_a.clone(), level_a));
             }
             state.check_type_vars_size(span)?;
             Ok(())
@@ -2752,24 +2761,12 @@ pub async fn unify(
                             let var = def.variance.get(i).copied().unwrap_or(Variance::Invariant);
                             match var {
                                 Variance::Covariant => {
-                                    Box::pin(unify(
-                                        arg_a,
-                                        arg_b,
-                                        state,
-                                        constraints,
-                                        span.clone(),
-                                    ))
-                                    .await?;
+                                    Box::pin(unify(arg_a, arg_b, state, constraints, span.clone()))
+                                        .await?;
                                 }
                                 Variance::Contravariant => {
-                                    Box::pin(unify(
-                                        arg_b,
-                                        arg_a,
-                                        state,
-                                        constraints,
-                                        span.clone(),
-                                    ))
-                                    .await?;
+                                    Box::pin(unify(arg_b, arg_a, state, constraints, span.clone()))
+                                        .await?;
                                 }
                                 Variance::Invariant => {
                                     // Invariant: bind TypeVars, but reject ground-type subsumption.
@@ -2778,14 +2775,8 @@ pub async fn unify(
                                     let ra = state.apply(arg_a);
                                     let rb = state.apply(arg_b);
                                     if ra.has_inference_vars() || rb.has_inference_vars() {
-                                        Box::pin(unify(
-                                            &ra,
-                                            &rb,
-                                            state,
-                                            constraints,
-                                            span.clone(),
-                                        ))
-                                        .await?;
+                                        Box::pin(unify(&ra, &rb, state, constraints, span.clone()))
+                                            .await?;
                                     } else if ra != rb {
                                         return Err(TypeErrorTyped::UnificationFailure(
                                             UnificationFailure {
@@ -3104,8 +3095,10 @@ pub async fn constrain(
     // Normalize both types.
     let mut norm_ctx = crate::type_normalize::NormCtxt::new(state.type_stage_env.clone());
     norm_ctx.allow_eval = false;
-    let sub = crate::type_normalize::normalize(&sub_substituted, &state.type_vars, &mut norm_ctx).await;
-    let sup = crate::type_normalize::normalize(&sup_substituted, &state.type_vars, &mut norm_ctx).await;
+    let sub =
+        crate::type_normalize::normalize(&sub_substituted, &state.type_vars, &mut norm_ctx).await;
+    let sup =
+        crate::type_normalize::normalize(&sup_substituted, &state.type_vars, &mut norm_ctx).await;
     drop(norm_ctx);
 
     if sub == sup {
@@ -3261,21 +3254,15 @@ pub async fn process_deferred_equalities(
         let mut norm_ctx = crate::type_normalize::NormCtxt::new(state.type_stage_env.clone());
         for (a, b) in deferred {
             // Normalize both sides
-            let a_norm = crate::type_normalize::normalize(&a, &state.type_vars, &mut norm_ctx).await;
-            let b_norm = crate::type_normalize::normalize(&b, &state.type_vars, &mut norm_ctx).await;
+            let a_norm =
+                crate::type_normalize::normalize(&a, &state.type_vars, &mut norm_ctx).await;
+            let b_norm =
+                crate::type_normalize::normalize(&b, &state.type_vars, &mut norm_ctx).await;
 
             if !a_norm.has_type_stage_app() && !b_norm.has_type_stage_app() {
                 // Both sides fully reduced — attempt unification.
                 // F10 FIX: Emit diagnostic on unification failure instead of silently dropping.
-                match Box::pin(unify(
-                    &a_norm,
-                    &b_norm,
-                    state,
-                    constraints,
-                    span.clone(),
-                ))
-                .await
-                {
+                match Box::pin(unify(&a_norm, &b_norm, state, constraints, span.clone())).await {
                     Ok(()) => {
                         progress = true;
                     }

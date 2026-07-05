@@ -565,11 +565,7 @@ fn parse_annotation(
                         func,
                         args,
                         ..
-                    } if matches!(
-                        &func.expr,
-                        SurfaceExpression::VarRef { .. }
-                    ) =>
-                    {
+                    } if matches!(&func.expr, SurfaceExpression::VarRef { .. }) => {
                         let base = bracket_start_span.start;
                         let mut entries: Vec<Spanned<SurfaceEntry>> = Vec::new();
                         // func as first auto-indexed entry
@@ -3159,7 +3155,10 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                     escaped: false,
                                     resolution: crate::ast::Resolution::new(),
                                     call_dispatch: crate::ast::CallDispatch::new(),
-                                    annotation: Some(crate::ast::normalize_varref_annotation(annotation, full_span.clone())),
+                                    annotation: Some(crate::ast::normalize_varref_annotation(
+                                        annotation,
+                                        full_span.clone(),
+                                    )),
                                 },
                                 full_span.clone(),
                             );
@@ -5142,7 +5141,11 @@ fn surface_node_to_pattern_with_guard(
         }
         // Handle annotated patterns (e.g., n@Int, n@[is: pred])
         // Now represented as VarRef { name, annotation: Some(ann) }.
-        SurfaceExpression::VarRef { name, annotation: Some(annotation), .. } => {
+        SurfaceExpression::VarRef {
+            name,
+            annotation: Some(annotation),
+            ..
+        } => {
             let name = name.as_str();
             // Extract guard from `is:` annotation
             let guard = extract_guard(annotation);
@@ -5319,7 +5322,13 @@ fn surface_node_to_pattern_with_guard(
                         //   at match time, call it with the scrutinee appended as the last arg.
                         // Keywords (let, fn, type, match, etc.) are not reachable here because
                         // they parse as dedicated StackFrame forms, not as Call nodes.
-                        (Pattern::Predicate { call: Arc::clone(&node), to_match_binding: crate::ast::MatchableBinding::new() }, None)
+                        (
+                            Pattern::Predicate {
+                                call: Arc::clone(&node),
+                                to_match_binding: crate::ast::MatchableBinding::new(),
+                            },
+                            None,
+                        )
                     }
                     _ => {
                         return Err(ParseError {
@@ -5357,7 +5366,13 @@ fn surface_node_to_pattern_with_guard(
             } else {
                 // T-1140: Non-VarRef, non-Field call head — treat as predicate pattern.
                 // Covers lambda-headed patterns: [[fn [let x] [> x 3]] ...] (unusual but valid).
-                (Pattern::Predicate { call: Arc::clone(&node), to_match_binding: crate::ast::MatchableBinding::new() }, None)
+                (
+                    Pattern::Predicate {
+                        call: Arc::clone(&node),
+                        to_match_binding: crate::ast::MatchableBinding::new(),
+                    },
+                    None,
+                )
             }
         }
         // T-963: TypeAssert ([@Type expr]) in pattern position → TypeAssertPending
@@ -5391,7 +5406,13 @@ fn surface_node_to_pattern_with_guard(
         // T-1140: Function literal in pattern position — predicate pattern.
         // [fn [let x] body] as a pattern: the fn expression is evaluated to produce a function,
         // then called with the scrutinee as its argument. Useful for inline predicates.
-        SurfaceExpression::Fn { .. } => (Pattern::Predicate { call: Arc::clone(&node), to_match_binding: crate::ast::MatchableBinding::new() }, None),
+        SurfaceExpression::Fn { .. } => (
+            Pattern::Predicate {
+                call: Arc::clone(&node),
+                to_match_binding: crate::ast::MatchableBinding::new(),
+            },
+            None,
+        ),
         _ => {
             return Err(ParseError {
                 message: "invalid pattern: expected identifier, literal, dict, or _".to_string(),
@@ -5504,7 +5525,11 @@ fn push_expr_to_parent(
                         *params_consumed = true;
                         for binding in bindings {
                             match &binding.expr {
-                                SurfaceExpression::VarRef { name, annotation: Some(annotation), .. } => {
+                                SurfaceExpression::VarRef {
+                                    name,
+                                    annotation: Some(annotation),
+                                    ..
+                                } => {
                                     // Typed parameter (x@Int) — annotated VarRef
                                     params.push(Spanned::new(
                                         SurfaceParam {
@@ -5515,7 +5540,11 @@ fn push_expr_to_parent(
                                         binding.span.clone(),
                                     ));
                                 }
-                                SurfaceExpression::VarRef { name, annotation: None, .. } => {
+                                SurfaceExpression::VarRef {
+                                    name,
+                                    annotation: None,
+                                    ..
+                                } => {
                                     // Untyped parameter
                                     params.push(Spanned::new(
                                         SurfaceParam {
@@ -5587,13 +5616,21 @@ fn push_expr_to_parent(
                         if all_lowercase_params {
                             for binding in bindings {
                                 match &binding.expr {
-                                    SurfaceExpression::VarRef { name, annotation: Some(annotation), .. } => {
+                                    SurfaceExpression::VarRef {
+                                        name,
+                                        annotation: Some(annotation),
+                                        ..
+                                    } => {
                                         // Annotated binding (e.g., `a@Covariant`).
                                         // Store the full Spanned<Annotation> — the type checker extracts
                                         // variance and class constraint info from it.
                                         params.push((name.clone(), Some(annotation.clone())));
                                     }
-                                    SurfaceExpression::VarRef { name, annotation: None, .. } => {
+                                    SurfaceExpression::VarRef {
+                                        name,
+                                        annotation: None,
+                                        ..
+                                    } => {
                                         params.push((name.clone(), None));
                                     }
                                     _ => {}
@@ -6112,7 +6149,10 @@ fn commit_let_pending(
                     escaped: false,
                     resolution: crate::ast::Resolution::new(),
                     call_dispatch: crate::ast::CallDispatch::new(),
-                    annotation: Some(crate::ast::normalize_varref_annotation(ann, combined_span.clone())),
+                    annotation: Some(crate::ast::normalize_varref_annotation(
+                        ann,
+                        combined_span.clone(),
+                    )),
                 },
                 combined_span,
             );
@@ -6509,7 +6549,9 @@ fn stamp_expr(expr: &mut SurfaceExpression, file: &Arc<SourceFile>) {
         | SurfaceExpression::U64(_)
         | SurfaceExpression::Float(_)
         | SurfaceExpression::Str(_)
-        | SurfaceExpression::VarRef { annotation: None, .. }
+        | SurfaceExpression::VarRef {
+            annotation: None, ..
+        }
         | SurfaceExpression::Rest(..)
         | SurfaceExpression::Placeholder => {}
 
@@ -6586,7 +6628,10 @@ fn stamp_expr(expr: &mut SurfaceExpression, file: &Arc<SourceFile>) {
         }
 
         // Annotated VarRef: stamp the annotation stored in the VarRef's annotation field.
-        SurfaceExpression::VarRef { annotation: Some(annotation), .. } => {
+        SurfaceExpression::VarRef {
+            annotation: Some(annotation),
+            ..
+        } => {
             stamp_annotation_spanned(annotation, file);
         }
 
@@ -8488,7 +8533,11 @@ mod tests {
         let expr = parse_surf_node("word@Int");
         match &expr.expr {
             // Annotation is now on VarRef directly (annotation: Some(Spanned<Annotation>)).
-            SurfaceExpression::VarRef { name, annotation: Some(annotation), .. } => {
+            SurfaceExpression::VarRef {
+                name,
+                annotation: Some(annotation),
+                ..
+            } => {
                 assert_eq!(name.as_str(), "word");
                 match &annotation.node {
                     Annotation::PropertyDict(_) => {

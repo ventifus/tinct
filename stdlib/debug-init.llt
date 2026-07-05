@@ -13,6 +13,6 @@
 ]
 
 # Force the write by using its return value as a condition
-[builtin-if [builtin-eq [%stderr.write "debug-init: running\n" %stderr] []]
+[builtin-if [builtin-eq-int [builtin-length [%stderr.write "debug-init: running\n" %stderr]] 0]
   "done"
   "done"]

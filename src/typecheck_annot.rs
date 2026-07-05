@@ -1887,7 +1887,12 @@ fn entries_look_like_type_dict(entries: &[Spanned<SurfaceEntry>]) -> bool {
     if let Some(first) = entries.first() {
         if first.node.key.is_none() {
             // Annotated VarRef (annotation is now on VarRef directly).
-            if let SurfaceExpression::VarRef { name, annotation: Some(_), .. } = &first.node.value.expr {
+            if let SurfaceExpression::VarRef {
+                name,
+                annotation: Some(_),
+                ..
+            } = &first.node.value.expr
+            {
                 if name == "Fn" {
                     return true;
                 }
@@ -2985,7 +2990,11 @@ pub(crate) async fn resolve_type_expr(
         SurfaceExpression::Str(s) => Ok(Type::StringLiteral(s.clone())),
         // Annotated VarRef (name@Type): annotation is now on VarRef directly.
         // Must come before the plain VarRef arm to be reachable.
-        SurfaceExpression::VarRef { name, annotation: Some(annotation), .. } => {
+        SurfaceExpression::VarRef {
+            name,
+            annotation: Some(annotation),
+            ..
+        } => {
             if name == "Fn" {
                 Box::pin(resolve_fn_type(
                     &annotation.node,
@@ -3018,7 +3027,11 @@ pub(crate) async fn resolve_type_expr(
                 .await
             }
         }
-        SurfaceExpression::VarRef { name, annotation: None, .. } => {
+        SurfaceExpression::VarRef {
+            name,
+            annotation: None,
+            ..
+        } => {
             // Primitive type names must be resolved as type names, not nominal variant
             // constructors.  Int, Float, String, Bool, Number etc. all start with an uppercase
             // letter and therefore match `is_constructor_name`, but they are NOT variants —
@@ -3091,7 +3104,12 @@ pub(crate) async fn resolve_type_expr(
             ..
         } => {
             // Annotated VarRef (annotation is now on VarRef directly).
-            if let SurfaceExpression::VarRef { name, annotation: Some(annotation), .. } = &func.expr {
+            if let SurfaceExpression::VarRef {
+                name,
+                annotation: Some(annotation),
+                ..
+            } = &func.expr
+            {
                 if name == "Fn" {
                     // Fn@RetType [Params] in new syntax: resolve return type from annotation,
                     // then resolve each arg as a parameter type. For zero params, args is empty.
@@ -3400,7 +3418,12 @@ pub(crate) async fn resolve_type_expr(
                     let payload_annotated: Vec<_> = args
                         .iter()
                         .filter_map(|arg| {
-                            if let SurfaceExpression::VarRef { name, annotation: Some(annotation), .. } = &arg.expr {
+                            if let SurfaceExpression::VarRef {
+                                name,
+                                annotation: Some(annotation),
+                                ..
+                            } = &arg.expr
+                            {
                                 Some((name.clone(), annotation.clone(), arg.span.clone()))
                             } else {
                                 None
@@ -3411,7 +3434,15 @@ pub(crate) async fn resolve_type_expr(
                     // Collect non-annotated positional args (old-style [Some a] payload).
                     let positional_non_annotated: Vec<_> = args
                         .iter()
-                        .filter(|arg| !matches!(&arg.expr, SurfaceExpression::VarRef { annotation: Some(_), .. }))
+                        .filter(|arg| {
+                            !matches!(
+                                &arg.expr,
+                                SurfaceExpression::VarRef {
+                                    annotation: Some(_),
+                                    ..
+                                }
+                            )
+                        })
                         .collect();
 
                     let has_payload_named = !payload_named.is_empty();
@@ -3952,15 +3983,14 @@ pub(crate) async fn resolve_type_dict(
                                 // If so, this is a union of two unit constructors [type True False],
                                 // not a single-payload constructor [Ok a].
                                 // Extract the second entry's tag name (if it's a VarRef or Annotated).
-                                let second_tag_opt: Option<String> = match &entries[1]
-                                    .node
-                                    .value
-                                    .expr
-                                {
-                                    // Both plain and annotated VarRef use the name field.
-                                    SurfaceExpression::VarRef { name, .. } => Some(name.clone()),
-                                    _ => None,
-                                };
+                                let second_tag_opt: Option<String> =
+                                    match &entries[1].node.value.expr {
+                                        // Both plain and annotated VarRef use the name field.
+                                        SurfaceExpression::VarRef { name, .. } => {
+                                            Some(name.clone())
+                                        }
+                                        _ => None,
+                                    };
                                 let second_is_constructor = second_tag_opt
                                     .as_ref()
                                     .is_some_and(|name| crate::eval::is_constructor_name(name));
@@ -4164,7 +4194,10 @@ pub(crate) async fn resolve_type_dict(
             // Check for typed-key form `_@K` vs plain `_`
             // Check for typed-key form `_@K` (annotated VarRef) vs plain `_`.
             let key_ty = match entry.node.key.as_ref().map(|k| &k.expr) {
-                Some(SurfaceExpression::VarRef { annotation: Some(annotation), .. }) => {
+                Some(SurfaceExpression::VarRef {
+                    annotation: Some(annotation),
+                    ..
+                }) => {
                     // `_@K`: resolve K as the key type constraint.
                     let key_t = resolve_annotation(
                         &annotation.node,
@@ -4535,7 +4568,7 @@ fn typenode_value_to_type<'a>(
                             _ => indexmap::IndexMap::new(), // Empty or unrecognized fields → empty record
                         };
 
-                        let tail = if open_val.as_bool_sync() {
+                        let tail = if open_val.is_truthy() {
                             crate::type_def::RowTail::Uniform {
                                 key: None,
                                 value: Box::new(Type::Unknown),
@@ -4913,8 +4946,7 @@ pub(crate) async fn eval_type_stage_expr(
         if let Some(ref main_env) = state.main_env {
             // Create a new env frame that has type-stage bindings as its own slots
             // and the main env as its parent chain. Type-stage names shadow main env names.
-            let mut combined =
-                crate::value::Environment::with_parent(Arc::clone(main_env));
+            let mut combined = crate::value::Environment::with_parent(Arc::clone(main_env));
             {
                 let ts = type_stage_env.read().unwrap();
                 for (name, thunk) in ts.iter_slots() {
@@ -4959,14 +4991,8 @@ pub(crate) async fn eval_type_stage_expr(
                 crate::value::HashableValue,
                 crate::value::ThunkId,
             > = indexmap::IndexMap::new();
-            payload.insert(
-                crate::value::HashableValue::Str("name".into()),
-                name_tid,
-            );
-            payload.insert(
-                crate::value::HashableValue::Str("level".into()),
-                level_tid,
-            );
+            payload.insert(crate::value::HashableValue::Str("name".into()), name_tid);
+            payload.insert(crate::value::HashableValue::Str("level".into()), level_tid);
             let payload_tid = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
                 crate::value::Value::Dict(payload),
                 node_span.clone(),
@@ -5615,9 +5641,11 @@ async fn try_resolve_fn_type_expr(
 
     // Annotated VarRef: annotation is now on VarRef directly.
     let (ann_node, ann_span) = match &first.node.value.expr {
-        SurfaceExpression::VarRef { name, annotation: Some(annotation), .. } if name == "Fn" => {
-            (&annotation.node, annotation.span.clone())
-        }
+        SurfaceExpression::VarRef {
+            name,
+            annotation: Some(annotation),
+            ..
+        } if name == "Fn" => (&annotation.node, annotation.span.clone()),
         _ => return Ok(None),
     };
 

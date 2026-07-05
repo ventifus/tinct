@@ -314,7 +314,7 @@ pub(crate) async fn build_tls_config(
     {
         let thunk = ctx.get_thunk(*thunk_id);
         let val = crate::eval::materialize(&thunk, Some(&opts_span), ctx).await?;
-        val.as_bool_sync()
+        val.is_truthy()
     } else {
         false
     };
@@ -354,7 +354,7 @@ pub(crate) async fn build_tls_config(
     {
         let thunk = ctx.get_thunk(*thunk_id);
         let val = crate::eval::materialize(&thunk, Some(&opts_span), ctx).await?;
-        val.as_bool_sync()
+        val.is_truthy()
     } else {
         false
     };
@@ -2990,7 +2990,10 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
                 fields: indexmap::IndexMap::from_iter([
                     ("subject".to_string(), Type::Str),
                     ("issuer".to_string(), Type::Str),
-                    ("sans".to_string(), Type::App(Box::new(Type::TyCon("Seq".into())), Box::new(Type::Str))),
+                    (
+                        "sans".to_string(),
+                        Type::App(Box::new(Type::TyCon("Seq".into())), Box::new(Type::Str)),
+                    ),
                     ("not-before".to_string(), Type::Int),
                     ("not-after".to_string(), Type::Int),
                     ("spki-sha256".to_string(), Type::Str),

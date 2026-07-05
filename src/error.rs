@@ -398,9 +398,10 @@ impl PartialEq for ErrorKind {
                 Self::MissingRequiredParam { param: p1, .. },
                 Self::MissingRequiredParam { param: p2, .. },
             ) => p1 == p2,
-            (Self::NamedArgConflict { param: p1, .. }, Self::NamedArgConflict { param: p2, .. }) => {
-                p1 == p2
-            }
+            (
+                Self::NamedArgConflict { param: p1, .. },
+                Self::NamedArgConflict { param: p2, .. },
+            ) => p1 == p2,
             (
                 Self::UnknownNamedArg {
                     name: n1,
@@ -730,21 +731,42 @@ impl fmt::Display for ErrorKind {
             Self::MacroError { message } => {
                 write!(f, "macro expansion error: {message}")
             }
-            Self::ArityMismatch { expected, got, callee, params } => {
+            Self::ArityMismatch {
+                expected,
+                got,
+                callee,
+                params,
+            } => {
                 let params_str = if params.is_empty() {
                     String::new()
                 } else {
-                    format!(" [{}]", params.iter().map(|s| s.as_ref()).collect::<Vec<_>>().join(", "))
+                    format!(
+                        " [{}]",
+                        params
+                            .iter()
+                            .map(|s| s.as_ref())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
                 };
                 if let Some(name) = callee {
-                    write!(f, "arity mismatch: `{name}` expected {expected}{params_str}, got {got}")
+                    write!(
+                        f,
+                        "arity mismatch: `{name}` expected {expected}{params_str}, got {got}"
+                    )
                 } else {
-                    write!(f, "arity mismatch: expected {expected}{params_str}, got {got}")
+                    write!(
+                        f,
+                        "arity mismatch: expected {expected}{params_str}, got {got}"
+                    )
                 }
             }
             Self::MissingRequiredParam { param, callee } => {
                 if let Some(name) = callee {
-                    write!(f, "missing argument for required parameter '{param}' in call to `{name}`")
+                    write!(
+                        f,
+                        "missing argument for required parameter '{param}' in call to `{name}`"
+                    )
                 } else {
                     write!(f, "missing argument for required parameter '{param}'")
                 }
@@ -753,11 +775,21 @@ impl fmt::Display for ErrorKind {
                 if let Some(name) = callee {
                     write!(f, "parameter '{param}' received both positional and named argument in call to `{name}`")
                 } else {
-                    write!(f, "parameter '{param}' received both positional and named argument")
+                    write!(
+                        f,
+                        "parameter '{param}' received both positional and named argument"
+                    )
                 }
             }
-            Self::UnknownNamedArg { name, valid_params, callee } => {
-                let callee_str = callee.as_deref().map(|n| format!(" in call to `{n}`")).unwrap_or_default();
+            Self::UnknownNamedArg {
+                name,
+                valid_params,
+                callee,
+            } => {
+                let callee_str = callee
+                    .as_deref()
+                    .map(|n| format!(" in call to `{n}`"))
+                    .unwrap_or_default();
                 if valid_params.is_empty() {
                     write!(
                         f,
@@ -1066,7 +1098,12 @@ impl EvalError {
 
     pub fn arity_mismatch_bound(expected: ArityBound, got: usize, definition_span: Span) -> Self {
         Self {
-            kind: ErrorKind::ArityMismatch { expected, got, callee: None, params: vec![] },
+            kind: ErrorKind::ArityMismatch {
+                expected,
+                got,
+                callee: None,
+                params: vec![],
+            },
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
@@ -1081,10 +1118,18 @@ impl EvalError {
     /// No-op for other error kinds.
     pub fn set_arity_callee(&mut self, callee: Option<std::sync::Arc<str>>) {
         match self.kind {
-            ErrorKind::ArityMismatch { callee: ref mut c, .. } => *c = callee,
-            ErrorKind::MissingRequiredParam { callee: ref mut c, .. } => *c = callee,
-            ErrorKind::NamedArgConflict { callee: ref mut c, .. } => *c = callee,
-            ErrorKind::UnknownNamedArg { callee: ref mut c, .. } => *c = callee,
+            ErrorKind::ArityMismatch {
+                callee: ref mut c, ..
+            } => *c = callee,
+            ErrorKind::MissingRequiredParam {
+                callee: ref mut c, ..
+            } => *c = callee,
+            ErrorKind::NamedArgConflict {
+                callee: ref mut c, ..
+            } => *c = callee,
+            ErrorKind::UnknownNamedArg {
+                callee: ref mut c, ..
+            } => *c = callee,
             _ => {}
         }
     }
@@ -1092,8 +1137,14 @@ impl EvalError {
     /// Attach parameter names to an arity mismatch error.
     /// No-op for other error kinds.
     pub fn set_arity_params(&mut self, new_params: Vec<String>) {
-        if let ErrorKind::ArityMismatch { params: ref mut p, .. } = self.kind {
-            *p = new_params.into_iter().map(|s| std::sync::Arc::from(s.as_str())).collect();
+        if let ErrorKind::ArityMismatch {
+            params: ref mut p, ..
+        } = self.kind
+        {
+            *p = new_params
+                .into_iter()
+                .map(|s| std::sync::Arc::from(s.as_str()))
+                .collect();
         }
     }
 
@@ -1388,7 +1439,10 @@ impl EvalError {
 
     pub fn named_arg_conflict(param: String, definition_span: Span) -> Self {
         Self {
-            kind: ErrorKind::NamedArgConflict { param, callee: None },
+            kind: ErrorKind::NamedArgConflict {
+                param,
+                callee: None,
+            },
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),
@@ -1405,7 +1459,11 @@ impl EvalError {
         definition_span: Span,
     ) -> Self {
         Self {
-            kind: ErrorKind::UnknownNamedArg { name, valid_params, callee: None },
+            kind: ErrorKind::UnknownNamedArg {
+                name,
+                valid_params,
+                callee: None,
+            },
             definition_span,
             materialization_span: None,
             stack: SmallVec::new(),

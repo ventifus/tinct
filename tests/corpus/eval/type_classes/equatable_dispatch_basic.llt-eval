@@ -1,4 +1,7 @@
-# Basic equality dispatch via Equatable multi-method instances
+# Basic equality dispatch via Equatable multi-method instances.
+# Each call dispatches to the correct type-specific builtin via call_dispatch.
+# Cross-type comparisons (e.g., [= 1 "hello"]) are no longer valid — Equatable
+# instances are type-specific (Int, Float, String, Bool).
 [
   a: [= 1 1]
   b: [= 1 2]
@@ -6,8 +9,7 @@
   d: [= "hello" "world"]
   e: [= True True]
   f: [= 1.0 1.0]
-  g: [= 1 "hello"]
-  h: [= 1 1.0]
+  g: [= 1.0 2.0]
 ]
 === out
-Dict({"a": Variant(Boolean.True, Null), "b": Variant(Boolean.False, Null), "c": Variant(Boolean.True, Null), "d": Variant(Boolean.False, Null), "e": Variant(Boolean.True, Null), "f": Variant(Boolean.True, Null), "g": Variant(Boolean.False, Null), "h": Variant(Boolean.False, Null)})
+Dict({"a": Variant(Boolean.True, Null), "b": Variant(Boolean.False, Null), "c": Variant(Boolean.True, Null), "d": Variant(Boolean.False, Null), "e": Variant(Boolean.True, Null), "f": Variant(Boolean.True, Null), "g": Variant(Boolean.False, Null)})

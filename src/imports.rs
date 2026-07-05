@@ -276,10 +276,12 @@ async fn build_stdlib_module_type_env_inner(module_path: &str) -> Option<Rc<Type
     // resolution_table=None (use fresh resolver output from Step 7).
     let (_errors, _type_map, _doc_map, _scheme_map, _diagnostics, _state, final_env) =
         typecheck_surface_program_with_env(
-            &program, parent_env, false, // enable_scheme_map
-            None,  // resolution_table
+            &program,
+            parent_env,
+            false,              // enable_scheme_map
+            None,               // resolution_table
             Default::default(), // instance_binding_slots
-            None,  // main_env
+            None,               // main_env
         )
         .await;
 
@@ -365,10 +367,12 @@ async fn build_builtin_core_type_env_inner() -> Option<Arc<TypeEnv>> {
     // resolution_table=None (use fresh resolver output).
     let (_errors, _type_map, _doc_map, _scheme_map, _diagnostics, _state, final_env) =
         typecheck_surface_program_with_env(
-            &program, parent_env, false, // enable_scheme_map
-            None,  // resolution_table
+            &program,
+            parent_env,
+            false,              // enable_scheme_map
+            None,               // resolution_table
             Default::default(), // instance_binding_slots
-            None,  // main_env
+            None,               // main_env
         )
         .await;
 
@@ -796,7 +800,15 @@ async fn resolve_includes(
         // typecheck_surface_program_with_env takes Arc<TypeEnv> — convert from Rc.
         let typecheck_env_arc = Arc::new((*typecheck_env).clone());
         let (type_errors, type_map, _doc_map, _scheme_map, _diagnostics, _state, _final_env) =
-            typecheck_surface_program_with_env(&program, typecheck_env_arc, false, None, Default::default(), None).await;
+            typecheck_surface_program_with_env(
+                &program,
+                typecheck_env_arc,
+                false,
+                None,
+                Default::default(),
+                None,
+            )
+            .await;
 
         // Stdlib includes are user code — their type errors are surfaced like any other.
         if !type_errors.is_empty() {

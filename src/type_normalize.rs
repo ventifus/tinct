@@ -525,7 +525,11 @@ mod tests {
         IndexMap::new()
     }
 
-    async fn norm(ty: &Type, type_vars: &IndexMap<String, TypeVarEntry>, ctx: &mut NormCtxt) -> Type {
+    async fn norm(
+        ty: &Type,
+        type_vars: &IndexMap<String, TypeVarEntry>,
+        ctx: &mut NormCtxt,
+    ) -> Type {
         normalize(ty, type_vars, ctx).await
     }
 
@@ -543,11 +547,14 @@ mod tests {
     #[tokio::test]
     async fn test_normalize_substitution() {
         let mut tv = IndexMap::new();
-        tv.insert("a".to_string(), TypeVarEntry {
-            level: 0,
-            binding: Some(Type::Str),
-            kind: Kind::Type,
-        });
+        tv.insert(
+            "a".to_string(),
+            TypeVarEntry {
+                level: 0,
+                binding: Some(Type::Str),
+                kind: Kind::Type,
+            },
+        );
         let mut ctx = NormCtxt::new(None);
         let ty = Type::TypeVar("a".to_string(), 0);
         let result = norm(&ty, &tv, &mut ctx).await;
@@ -659,10 +666,7 @@ mod tests {
     /// Test: has_type_stage_app() returns false for App(TyCon, Int)
     #[tokio::test]
     async fn test_has_type_stage_app_false_for_app_of_concrete() {
-        let ty = Type::App(
-            Box::new(Type::TyCon("Box".into())),
-            Box::new(Type::Int),
-        );
+        let ty = Type::App(Box::new(Type::TyCon("Box".into())), Box::new(Type::Int));
         assert!(!ty.has_type_stage_app());
     }
 
@@ -790,10 +794,7 @@ mod tests {
         assert!(!ctx.cache.contains_key(&ty_with_var));
 
         // Normalize a ground type
-        let ty_ground = Type::App(
-            Box::new(Type::TyCon("Box".into())),
-            Box::new(Type::Int),
-        );
+        let ty_ground = Type::App(Box::new(Type::TyCon("Box".into())), Box::new(Type::Int));
         let _result2 = norm(&ty_ground, &subst, &mut ctx).await;
 
         // Cache SHOULD contain this type (ground)

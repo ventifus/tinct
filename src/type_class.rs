@@ -1014,16 +1014,22 @@ impl Default for InstanceEnv {
 ///
 /// Used by `resolve_instance` to select the most specific matching instance —
 /// the one with the fewest unresolved TypeVars after unification.
-fn count_unresolved_vars(ty: &Type, type_vars: &indexmap::IndexMap<String, crate::type_infer::TypeVarEntry>) -> usize {
+fn count_unresolved_vars(
+    ty: &Type,
+    type_vars: &indexmap::IndexMap<String, crate::type_infer::TypeVarEntry>,
+) -> usize {
     match ty {
         Type::TypeVar(name, level) => {
             // Apply the substitution: if still a TypeVar, it is unresolved.
-            match crate::types::apply_substitution(&Type::TypeVar(name.clone(), *level), type_vars) {
+            match crate::types::apply_substitution(&Type::TypeVar(name.clone(), *level), type_vars)
+            {
                 Type::TypeVar(_, _) => 1,
                 _ => 0,
             }
         }
-        Type::App(f, a) => count_unresolved_vars(f, type_vars) + count_unresolved_vars(a, type_vars),
+        Type::App(f, a) => {
+            count_unresolved_vars(f, type_vars) + count_unresolved_vars(a, type_vars)
+        }
         Type::TyCon(_) => 0, // TyCon has no vars
         Type::Record(row) => row
             .fields
@@ -1051,9 +1057,10 @@ fn count_unresolved_vars(ty: &Type, type_vars: &indexmap::IndexMap<String, crate
             .map(|m| count_unresolved_vars(m, type_vars))
             .sum(),
         Type::Negation(inner) => count_unresolved_vars(inner, type_vars),
-        Type::TypeStageApp { fn_name: _, args } => {
-            args.iter().map(|a| count_unresolved_vars(a, type_vars)).sum()
-        }
+        Type::TypeStageApp { fn_name: _, args } => args
+            .iter()
+            .map(|a| count_unresolved_vars(a, type_vars))
+            .sum(),
         Type::NominalVariant { tag: _, fields } => fields
             .fields
             .values()
@@ -1170,8 +1177,10 @@ mod tests {
         let mut state = InferState::new();
         let mut env = InstanceEnv::new();
 
-        let coll_a_inst = make_appendable_instance(make_tycon_app("Coll", Type::TypeVar("a".to_string(), 0)));
-        let coll_b_inst = make_appendable_instance(make_tycon_app("Coll", Type::TypeVar("b".to_string(), 0)));
+        let coll_a_inst =
+            make_appendable_instance(make_tycon_app("Coll", Type::TypeVar("a".to_string(), 0)));
+        let coll_b_inst =
+            make_appendable_instance(make_tycon_app("Coll", Type::TypeVar("b".to_string(), 0)));
 
         env.insert(coll_a_inst).unwrap();
 
@@ -1216,8 +1225,7 @@ mod tests {
         .await;
 
         assert_eq!(
-            state.name_counter,
-            counter_before,
+            state.name_counter, counter_before,
             "name_counter must be restored after overlap check"
         );
         assert_eq!(
@@ -1279,8 +1287,10 @@ mod tests {
         let mut state = InferState::new();
         let mut env = InstanceEnv::new();
 
-        let coll_a_inst = make_appendable_instance(make_tycon_app("Coll", Type::TypeVar("a".to_string(), 0)));
-        let coll_b_inst = make_appendable_instance(make_tycon_app("Coll", Type::TypeVar("b".to_string(), 0)));
+        let coll_a_inst =
+            make_appendable_instance(make_tycon_app("Coll", Type::TypeVar("a".to_string(), 0)));
+        let coll_b_inst =
+            make_appendable_instance(make_tycon_app("Coll", Type::TypeVar("b".to_string(), 0)));
 
         env.insert(coll_a_inst).unwrap();
         env.insert(coll_b_inst).unwrap();

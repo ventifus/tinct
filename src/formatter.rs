@@ -445,7 +445,12 @@ impl<'a> Formatter<'a> {
                     self.output.push_str(s);
                 }
             }
-            SurfaceExpression::VarRef { name, escaped, annotation, .. } => {
+            SurfaceExpression::VarRef {
+                name,
+                escaped,
+                annotation,
+                ..
+            } => {
                 // Emit `$` prefix if this was written as an escaped ref (`$name`).
                 // Bare identifiers and `%`-prefixed refs do not get a `$` prepended —
                 // the `%` is already part of `name`.
@@ -723,10 +728,17 @@ impl<'a> Formatter<'a> {
                     s.len()
                 }
             }
-            SurfaceExpression::VarRef { name, escaped, annotation, .. } => {
+            SurfaceExpression::VarRef {
+                name,
+                escaped,
+                annotation,
+                ..
+            } => {
                 // Add 1 for `$` if this was an escaped ref.
                 // `%`-prefixed refs already include `%` in the stored name.
-                let ann_width = annotation.as_ref().map_or(0, |ann| 1 + self.measure_annotation_width(&ann.node));
+                let ann_width = annotation
+                    .as_ref()
+                    .map_or(0, |ann| 1 + self.measure_annotation_width(&ann.node));
                 name.len() + if *escaped { 1 } else { 0 } + ann_width
             }
             SurfaceExpression::Field { expr, field, .. } => {

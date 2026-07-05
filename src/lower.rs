@@ -179,7 +179,10 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
         SurfaceExpression::Str(s) => CoreExpr::Str(s.clone()),
 
         SurfaceExpression::VarRef {
-            name, resolution, annotation, ..
+            name,
+            resolution,
+            annotation,
+            ..
         } => {
             match resolution.get() {
                 Some(Some((level, slot))) => CoreExpr::Var {
@@ -300,10 +303,7 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
             for se in entries {
                 if let SurfaceExpression::Decl(decl) = &se.node.value.expr {
                     match decl.as_ref() {
-                        crate::ast::SurfaceDeclaration::InstanceDecl {
-                            class_name,
-                            arms,
-                        } => {
+                        crate::ast::SurfaceDeclaration::InstanceDecl { class_name, arms } => {
                             if se.node.key.is_some() {
                                 // Named instance: emit outer key binding only.
                                 // Binding names are NOT flattened to avoid duplicate key errors
@@ -318,10 +318,8 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
                                 // Matches the synthetic slots surface_dict_static_keys injects.
                                 for (pattern, method_entries) in arms {
                                     let dispatch_tags = extract_dispatch_tags(&pattern.expr);
-                                    let type_args: Vec<&str> = dispatch_tags
-                                        .iter()
-                                        .filter_map(|t| t.as_deref())
-                                        .collect();
+                                    let type_args: Vec<&str> =
+                                        dispatch_tags.iter().filter_map(|t| t.as_deref()).collect();
                                     for me in method_entries {
                                         let method_name = match me.node.key.as_ref() {
                                             Some(key_node) => match &key_node.expr {
@@ -334,12 +332,11 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
                                             },
                                             None => continue,
                                         };
-                                        let binding_name =
-                                            crate::type_def::instance_binding_name(
-                                                class_name,
-                                                &method_name,
-                                                &type_args,
-                                            );
+                                        let binding_name = crate::type_def::instance_binding_name(
+                                            class_name,
+                                            &method_name,
+                                            &type_args,
+                                        );
                                         let key = Some(Arc::new(Spanned::new(
                                             CoreExpr::Str(binding_name),
                                             se.span.clone(),
@@ -371,11 +368,13 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
                             core_entries
                                 .push(Spanned::new(CoreEntry { key, value }, se.span.clone()));
                         }
-                        crate::ast::SurfaceDeclaration::ClassDecl { methods, name, .. } => {
+                        crate::ast::SurfaceDeclaration::ClassDecl { .. } => {
                             // Named ClassDecl: emit an empty-dict runtime value so the outer
                             // key occupies a slot. This allows leading-dot re-exports like
                             // `Indexable: .Indexable` to reference the class across dict
-                            // boundaries.
+                            // boundaries. Class method names are NOT emitted here — the
+                            // resolver's method_to_instance fallback resolves them to instance
+                            // binding coordinates, and call_dispatch overrides at each call site.
                             if se.node.key.is_some() {
                                 let key = se.node.key.as_ref().map(|k| {
                                     let lowered = match &k.expr {
@@ -387,39 +386,10 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
                                     };
                                     Arc::new(Spanned::new(lowered, k.span.clone()))
                                 });
-                                let value = Arc::new(Spanned::new(
-                                    CoreExpr::Dict(vec![]),
-                                    se.span.clone(),
-                                ));
+                                let value =
+                                    Arc::new(Spanned::new(CoreExpr::Dict(vec![]), se.span.clone()));
                                 core_entries
                                     .push(Spanned::new(CoreEntry { key, value }, se.span.clone()));
-                            }
-                            // Emit placeholder entries for each class method name so they
-                            // occupy slots matching what surface_dict_static_keys produces.
-                            // The type checker's call_dispatch rewrites these at every call
-                            // site to the correct instance binding. The placeholder is an
-                            // empty dict: if call_dispatch somehow doesn't fire, the call
-                            // fails at eval time rather than silently using a wrong value.
-                            for method in methods {
-                                if let Some(key_node) = &method.node.key {
-                                    let method_name = match &key_node.expr {
-                                        SurfaceExpression::VarRef { name: n, .. } => n.clone(),
-                                        SurfaceExpression::Str(s) => s.clone(),
-                                        _ => continue,
-                                    };
-                                    let key = Some(Arc::new(Spanned::new(
-                                        CoreExpr::Str(method_name),
-                                        key_node.span.clone(),
-                                    )));
-                                    let value = Arc::new(Spanned::new(
-                                        CoreExpr::Dict(vec![]),
-                                        se.span.clone(),
-                                    ));
-                                    core_entries.push(Spanned::new(
-                                        CoreEntry { key, value },
-                                        se.span.clone(),
-                                    ));
-                                }
                             }
                         }
                         _ => {
@@ -676,7 +646,9 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
         CoreExpr::U64(n) => SurfaceExpression::U64(*n),
         CoreExpr::Float(f) => SurfaceExpression::Float(*f),
         CoreExpr::Str(s) => SurfaceExpression::Str(s.clone()),
-        CoreExpr::Var { name, annotation, .. } => SurfaceExpression::VarRef {
+        CoreExpr::Var {
+            name, annotation, ..
+        } => SurfaceExpression::VarRef {
             name: name.clone(),
             escaped: false,
             resolution: crate::ast::Resolution::new(),
@@ -843,7 +815,10 @@ pub(crate) fn extract_dispatch_tags(arm_pattern: &SurfaceExpression) -> Vec<Opti
         .map(|binding_spanned| {
             // Each binding is VarRef { annotation: Some(_) } or VarRef { annotation: None } or Str(name)
             match &binding_spanned.expr {
-                SurfaceExpression::VarRef { annotation: Some(ann), .. } => {
+                SurfaceExpression::VarRef {
+                    annotation: Some(ann),
+                    ..
+                } => {
                     // Extract the type name from annotations. VarRef annotations are normalized
                     // from Simple("T") to PropertyDict{type: VarRef("T")} at parse time, so we
                     // handle both forms. Only uppercase type names are valid dispatch tags.
@@ -861,7 +836,9 @@ pub(crate) fn extract_dispatch_tags(arm_pattern: &SurfaceExpression) -> Vec<Opti
                                     }
                                 });
                                 if key_str == Some("type") {
-                                    if let SurfaceExpression::VarRef { name, .. } = &e.node.value.expr {
+                                    if let SurfaceExpression::VarRef { name, .. } =
+                                        &e.node.value.expr
+                                    {
                                         Some(name.as_str())
                                     } else {
                                         None
@@ -1140,14 +1117,14 @@ fn extract_constructors_from_body(body: &SurfaceExpression) -> Vec<ConstructorIn
         match expr {
             // Uppercase VarRef → unit constructor.
             // May carry a PropertyDict annotation (`Red@[category: "primary"]`).
-            SurfaceExpression::VarRef { name, annotation, .. } if is_ctor(name) => {
-                let ann_entries = annotation.as_ref().and_then(|ann| {
-                    match &ann.node {
-                        crate::ast::Annotation::PropertyDict(entries) if !entries.is_empty() => {
-                            Some(entries.clone())
-                        }
-                        _ => None,
+            SurfaceExpression::VarRef {
+                name, annotation, ..
+            } if is_ctor(name) => {
+                let ann_entries = annotation.as_ref().and_then(|ann| match &ann.node {
+                    crate::ast::Annotation::PropertyDict(entries) if !entries.is_empty() => {
+                        Some(entries.clone())
                     }
+                    _ => None,
                 });
                 ctors.push(ConstructorInfo {
                     name: name.clone(),
@@ -1196,7 +1173,12 @@ fn extract_constructors_from_body(body: &SurfaceExpression) -> Vec<ConstructorIn
                         let payload_annotated_fields: Vec<String> = args
                             .iter()
                             .filter_map(|arg| {
-                                if let SurfaceExpression::VarRef { name, annotation: Some(_), .. } = &arg.expr {
+                                if let SurfaceExpression::VarRef {
+                                    name,
+                                    annotation: Some(_),
+                                    ..
+                                } = &arg.expr
+                                {
                                     Some(name.clone())
                                 } else {
                                     None
@@ -1204,8 +1186,8 @@ fn extract_constructors_from_body(body: &SurfaceExpression) -> Vec<ConstructorIn
                             })
                             .collect();
 
-                        let is_unit = payload_named_fields.is_empty()
-                            && payload_annotated_fields.is_empty();
+                        let is_unit =
+                            payload_named_fields.is_empty() && payload_annotated_fields.is_empty();
                         let fields = if is_unit {
                             vec![]
                         } else {
@@ -1233,23 +1215,23 @@ fn extract_constructors_from_body(body: &SurfaceExpression) -> Vec<ConstructorIn
                 // Extract constructor name and annotation from the first (positional) entry.
                 // Both plain and annotated VarRef are now VarRef { name, annotation }.
                 let (ctor_name, ctor_annotation) = match &first.node.value.expr {
-                    SurfaceExpression::VarRef { name, annotation, .. } if is_ctor(name) => {
-                        let ann = annotation.as_ref().and_then(|ann| {
-                            match &ann.node {
-                                crate::ast::Annotation::PropertyDict(entries)
-                                    if !entries.is_empty() =>
-                                {
-                                    Some(entries.clone())
-                                }
-                                _ => None,
+                    SurfaceExpression::VarRef {
+                        name, annotation, ..
+                    } if is_ctor(name) => {
+                        let ann = annotation.as_ref().and_then(|ann| match &ann.node {
+                            crate::ast::Annotation::PropertyDict(entries)
+                                if !entries.is_empty() =>
+                            {
+                                Some(entries.clone())
                             }
+                            _ => None,
                         });
                         (name.clone(), ann)
                     }
                     _ => return,
                 };
-                let is_unit = entries[1..].is_empty()
-                    || entries[1..].iter().all(|e| e.node.key.is_none());
+                let is_unit =
+                    entries[1..].is_empty() || entries[1..].iter().all(|e| e.node.key.is_none());
                 // Collect field names from keyed entries for named-field constructors.
                 let fields: Vec<String> = if is_unit {
                     vec![]
@@ -1356,7 +1338,9 @@ mod tests {
         let lowered = lower(&node);
 
         match lowered.node {
-            CoreExpr::Var { name, level, slot, .. } => {
+            CoreExpr::Var {
+                name, level, slot, ..
+            } => {
                 assert_eq!(name, "x");
                 assert_eq!(level, 0);
                 assert_eq!(slot, 3);

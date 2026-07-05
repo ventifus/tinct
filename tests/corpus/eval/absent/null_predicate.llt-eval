@@ -1,6 +1,6 @@
 # null? returns true only for [] (the empty dict sentinel), false for everything else.
 # This tests that null? correctly distinguishes [] from non-empty dicts, integers, and strings.
-# S-911: null? is implemented via builtin-eq (not =) to avoid Equatable typeclass dispatch.
+# S-911: null? is implemented via builtin-eq-int on length (not =) to avoid Equatable typeclass dispatch.
 [
   on-empty-dict:  [null? []]
   on-non-empty:   [null? [a: 1]]

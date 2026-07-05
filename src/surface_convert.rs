@@ -215,7 +215,10 @@ pub fn core_expr_to_expr_value(
     // Helper to recursively convert child CoreExpr nodes
     let recurse = |child: &Spanned<CoreExpr>| -> ThunkId {
         let child_val = core_expr_to_expr_value(child, ctx);
-        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(child_val, child.span.clone())))
+        ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+            child_val,
+            child.span.clone(),
+        )))
     };
 
     // Helper to convert a Vec of CoreExpr to a Dict (auto-indexed)
@@ -584,7 +587,6 @@ pub fn core_expr_to_expr_value(
             make_variant("TypeAssert", payload)
         }
 
-
         // ── Rest ─────────────────────────────────────────────────────────────────
         CoreExpr::Rest(name_opt) => {
             let mut payload = IndexMap::new();
@@ -600,7 +602,10 @@ pub fn core_expr_to_expr_value(
             let mut payload = IndexMap::new();
             let arc_bindings: Vec<Arc<Spanned<CoreExpr>>> =
                 bindings.iter().map(|b| Arc::new(b.clone())).collect();
-            payload.insert(HashableValue::Str("bindings".into()), recurse_vec(&arc_bindings));
+            payload.insert(
+                HashableValue::Str("bindings".into()),
+                recurse_vec(&arc_bindings),
+            );
             make_variant("LetDecl", payload)
         }
 
@@ -608,7 +613,10 @@ pub fn core_expr_to_expr_value(
             let mut payload = IndexMap::new();
             let arc_bindings: Vec<Arc<Spanned<CoreExpr>>> =
                 bindings.iter().map(|b| Arc::new(b.clone())).collect();
-            payload.insert(HashableValue::Str("bindings".into()), recurse_vec(&arc_bindings));
+            payload.insert(
+                HashableValue::Str("bindings".into()),
+                recurse_vec(&arc_bindings),
+            );
             make_variant("PatternDecl", payload)
         }
 
@@ -792,7 +800,8 @@ fn dict_to_annotation(
                 let i_str = i.to_string();
                 entry_path.push(i_str.clone());
                 let entry_path_refs: Vec<&str> = entry_path.iter().map(|s| s.as_str()).collect();
-                let entry = dict_to_surface_entry(&entry_val, &fallback_span, &entry_path_refs, ctx)?;
+                let entry =
+                    dict_to_surface_entry(&entry_val, &fallback_span, &entry_path_refs, ctx)?;
                 entries.push(entry);
             }
             Annotation::PropertyDict(entries)
@@ -1613,12 +1622,12 @@ pub(crate) fn get_child_opt_field_with_aliases(
 ) -> Result<Option<Arc<SurfaceNode>>, AstError> {
     let fallback_span = extract_span(dict, ctx).unwrap_or_else(|| rust_span!());
     match get_field_with_aliases(dict, key, aliases, ctx) {
-        Ok(val) if !is_empty_dict(&val) => {
-            dict_to_surface_node(&val, &fallback_span, ctx).map(Some).map_err(|mut e| {
+        Ok(val) if !is_empty_dict(&val) => dict_to_surface_node(&val, &fallback_span, ctx)
+            .map(Some)
+            .map_err(|mut e| {
                 e.field_path.insert(0, key.to_string());
                 e
-            })
-        }
+            }),
         Ok(_) => Ok(None),
         Err(_) => Ok(None),
     }
@@ -1677,12 +1686,14 @@ pub(crate) fn get_entry_list_field_with_aliases(
             })?;
         let key_node = match &key_val {
             Value::Dict(d) if d.is_empty() => None,
-            _ => Some(dict_to_surface_node(&key_val, &fallback_span, ctx).map_err(|mut e| {
-                e.field_path.insert(0, "key".to_string());
-                e.field_path.insert(0, i_str.clone());
-                e.field_path.insert(0, key.to_string());
-                e
-            })?),
+            _ => Some(
+                dict_to_surface_node(&key_val, &fallback_span, ctx).map_err(|mut e| {
+                    e.field_path.insert(0, "key".to_string());
+                    e.field_path.insert(0, i_str.clone());
+                    e.field_path.insert(0, key.to_string());
+                    e
+                })?,
+            ),
         };
         // value field: Expr.*
         let value_thunk_id = payload_dict
@@ -1698,12 +1709,13 @@ pub(crate) fn get_entry_list_field_with_aliases(
                 message: "Expr.Entry value not materialized".into(),
                 field_path: vec![key.to_string(), i_str.clone(), "value".to_string()],
             })?;
-        let value_node = dict_to_surface_node(&value_val, &fallback_span, ctx).map_err(|mut e| {
-            e.field_path.insert(0, "value".to_string());
-            e.field_path.insert(0, i_str.clone());
-            e.field_path.insert(0, key.to_string());
-            e
-        })?;
+        let value_node =
+            dict_to_surface_node(&value_val, &fallback_span, ctx).map_err(|mut e| {
+                e.field_path.insert(0, "value".to_string());
+                e.field_path.insert(0, i_str.clone());
+                e.field_path.insert(0, key.to_string());
+                e
+            })?;
         entries.push(Spanned::new(
             SurfaceEntry {
                 key: key_node,
@@ -1754,12 +1766,13 @@ pub(crate) fn get_named_arg_list_field_with_aliases(
                 field_path: vec![key.to_string(), i_str.clone(), "value".to_string()],
             })?;
         let fallback_span = extract_span(&payload_dict, ctx).unwrap_or_else(|| rust_span!());
-        let value_node = dict_to_surface_node(&value_val, &fallback_span, ctx).map_err(|mut e| {
-            e.field_path.insert(0, "value".to_string());
-            e.field_path.insert(0, i_str.clone());
-            e.field_path.insert(0, key.to_string());
-            e
-        })?;
+        let value_node =
+            dict_to_surface_node(&value_val, &fallback_span, ctx).map_err(|mut e| {
+                e.field_path.insert(0, "value".to_string());
+                e.field_path.insert(0, i_str.clone());
+                e.field_path.insert(0, key.to_string());
+                e
+            })?;
         named_args.push(Spanned::new(
             SurfaceNamedArg {
                 name,

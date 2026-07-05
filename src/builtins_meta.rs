@@ -57,7 +57,6 @@ use crate::value::{string_val, BuiltinArgs, Environment, HashableValue, Strictne
 
 // ── Unified error dict helpers ────────────────────────────────────────────────
 
-
 /// Build a unified error dict from a `ParseError` for return from `builtin-parse`.
 ///
 /// Schema: `{kind, message, span, notes, call-stack, macro-expand, blame}`
@@ -2115,9 +2114,9 @@ pub(crate) fn builtin_typecheck(
                         let env_guard = env_arc.read().unwrap();
                         for (i, key) in env_guard.slot_names.iter().enumerate() {
                             if key.starts_with('ɪ') {
-                                slots.entry(key.clone()).or_insert(
-                                    u32::try_from(i).expect("slot overflow"),
-                                );
+                                slots
+                                    .entry(key.clone())
+                                    .or_insert(u32::try_from(i).expect("slot overflow"));
                             }
                         }
                         current = env_guard.parent.as_ref().map(Arc::clone);
@@ -2598,13 +2597,15 @@ pub(crate) fn builtin_eval(
                     let val = materialize(&ctx.get_thunk(val_id), Some(&call_span), &ctx).await?;
                     match val {
                         Value::Variant { ref tag, .. } if tag.starts_with("Expr.") => {
-                            let node = crate::surface_convert::dict_to_surface_node(&val, &call_span, &ctx)
-                                .map_err(|e| {
-                                    EvalError::internal(
-                                        format!("eval: Expr.* conversion failed: {}", e),
-                                        call_span.clone(),
-                                    )
-                                })?;
+                            let node = crate::surface_convert::dict_to_surface_node(
+                                &val, &call_span, &ctx,
+                            )
+                            .map_err(|e| {
+                                EvalError::internal(
+                                    format!("eval: Expr.* conversion failed: {}", e),
+                                    call_span.clone(),
+                                )
+                            })?;
                             nodes.push(node);
                         }
                         other => {
@@ -2884,9 +2885,20 @@ pub(crate) fn builtin_extend_env(
         let bindings_raw = materialize(&args[1], Some(&call_span), &ctx).await?;
         let bindings_val = {
             let mut v = bindings_raw;
-            while let Value::Annotated { inner, .. } = v { v = *inner; }
+            while let Value::Annotated { inner, .. } = v {
+                v = *inner;
+            }
             if let Value::Overlay(ref left, ref right) = v {
-                v = Value::Dict(crate::builtins::flatten_overlay(left, right, "extend-env", &ctx, call_span.clone()).await?);
+                v = Value::Dict(
+                    crate::builtins::flatten_overlay(
+                        left,
+                        right,
+                        "extend-env",
+                        &ctx,
+                        call_span.clone(),
+                    )
+                    .await?,
+                );
             }
             v
         };
@@ -3033,13 +3045,14 @@ pub(crate) fn builtin_eval_macro_ast(
 
         let expr_node = match expr_val {
             Value::Variant { ref tag, .. } if tag.starts_with("Expr.") => {
-                crate::surface_convert::dict_to_surface_node(&expr_val, &call_span, &ctx)
-                    .map_err(|e| {
+                crate::surface_convert::dict_to_surface_node(&expr_val, &call_span, &ctx).map_err(
+                    |e| {
                         EvalError::internal(
                             format!("eval-macro-ast: Expr.* conversion failed: {}", e),
                             call_span.clone(),
                         )
-                    })?
+                    },
+                )?
             }
             other => {
                 return Err(EvalError::type_mismatch_ctx(
@@ -3070,10 +3083,8 @@ pub(crate) fn builtin_eval_macro_ast(
         crate::desugar::desugar_surface_program(&mut program);
         // Resolve errors (undefined variables) are non-fatal at this stage —
         // they produce FreeVar references that will error lazily if accessed.
-        let _resolve_errors = crate::resolve::resolve_surface_program_for_builtin_eval(
-            &program,
-            &call_site_env,
-        );
+        let _resolve_errors =
+            crate::resolve::resolve_surface_program_for_builtin_eval(&program, &call_site_env);
 
         // ── Step 5: Extract the single expression node ────────────────────────
         let expression_nodes: Vec<Arc<crate::ast::SurfaceNode>> = program
@@ -3202,9 +3213,12 @@ pub(crate) fn builtin_eval_types(
                     }
                 })
                 .collect();
-            let (result_thunk, _) =
-                crate::eval::eval_document_exprs_with_env(&expr_nodes, Arc::clone(&final_env), &ctx)
-                    .await?;
+            let (result_thunk, _) = crate::eval::eval_document_exprs_with_env(
+                &expr_nodes,
+                Arc::clone(&final_env),
+                &ctx,
+            )
+            .await?;
             return Ok(result_thunk);
         }
 
@@ -3227,8 +3241,8 @@ pub(crate) fn builtin_eval_types(
             let val = materialize(&ctx.get_thunk(*val_id), Some(&call_span), &ctx).await?;
             match val {
                 Value::Variant { ref tag, .. } if tag.starts_with("Expr.") => {
-                    let node =
-                        crate::surface_convert::dict_to_surface_node(&val, &call_span, &ctx).map_err(|e| {
+                    let node = crate::surface_convert::dict_to_surface_node(&val, &call_span, &ctx)
+                        .map_err(|e| {
                             EvalError::internal(
                                 format!("eval-types: Expr.* conversion failed: {}", e),
                                 call_span.clone(),
@@ -3751,7 +3765,7 @@ fn validate_value(
                             {
                                 let req_thunk = ctx.get_thunk(req_thunk_id);
                                 let req_val = materialize(&req_thunk, Some(&span), &ctx).await?;
-                                req_val.as_bool_sync()
+                                req_val.is_truthy()
                             } else {
                                 false
                             };
@@ -4014,8 +4028,8 @@ pub(crate) fn builtin_sequential(
             let val = materialize(&thunk, Some(&call_span), &ctx).await?;
             match val {
                 Value::Variant { ref tag, .. } if tag.starts_with("Expr.") => {
-                    let node =
-                        crate::surface_convert::dict_to_surface_node(&val, &call_span, &ctx).map_err(|e| {
+                    let node = crate::surface_convert::dict_to_surface_node(&val, &call_span, &ctx)
+                        .map_err(|e| {
                             EvalError::internal(
                                 format!("builtin-sequential: Expr.* conversion failed: {}", e),
                                 call_span.clone(),
@@ -4071,10 +4085,11 @@ pub(crate) fn builtin_ast_to_program(
         let call_site_span_thunk = if let Some(ref named_map) = named {
             for key in named_map.keys() {
                 if key != "call-site-span" {
-                    return Err(
-                        EvalError::named_arg_rejected("ast-to-program".to_string(), call_span)
-                            .into(),
-                    );
+                    return Err(EvalError::named_arg_rejected(
+                        "ast-to-program".to_string(),
+                        call_span,
+                    )
+                    .into());
                 }
             }
             match named_map.get("call-site-span") {

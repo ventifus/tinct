@@ -244,9 +244,7 @@ fn apply_renaming_in_row(row: &Row, map: &HashMap<String, Type>) -> Row {
     let new_tail = match &row.tail {
         crate::type_def::RowTail::Empty => crate::type_def::RowTail::Empty,
         crate::type_def::RowTail::Uniform { key, value } => crate::type_def::RowTail::Uniform {
-            key: key
-                .as_ref()
-                .map(|k| Box::new(apply_renaming(k, map))),
+            key: key.as_ref().map(|k| Box::new(apply_renaming(k, map))),
             value: Box::new(apply_renaming(value, map)),
         },
     };
@@ -2181,10 +2179,7 @@ mod help_suggestion_tests {
                 match f.as_ref() {
                     Type::Operator(fresh_name) => {
                         // Check that the fresh name was registered in kind_env with Kind::Operator
-                        assert_eq!(
-                            state.get_kind(fresh_name.as_str()),
-                            Some(&Kind::Operator)
-                        );
+                        assert_eq!(state.get_kind(fresh_name.as_str()), Some(&Kind::Operator));
                     }
                     other => panic!("Expected Operator after instantiation, got {:?}", other),
                 }
@@ -2571,8 +2566,7 @@ mod help_suggestion_tests {
             "monomorphic scheme must return body unchanged"
         );
         assert_eq!(
-            state.name_counter,
-            0,
+            state.name_counter, 0,
             "monomorphic instantiation must not increment name counter"
         );
     }

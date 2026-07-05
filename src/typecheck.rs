@@ -168,7 +168,11 @@ pub(crate) fn extract_field_annotations_from_body(
                         // Extract field name and annotation from annotated keys
                         match &key_node.expr {
                             // Annotated VarRef (annotation is now on VarRef directly).
-                            SurfaceExpression::VarRef { name, annotation: Some(annotation), .. } => {
+                            SurfaceExpression::VarRef {
+                                name,
+                                annotation: Some(annotation),
+                                ..
+                            } => {
                                 // Evaluate the annotation PropertyDict to literal values
                                 if let Some(annotation_map) =
                                     eval_type_annotation_property_dict(&annotation.node)
@@ -440,7 +444,15 @@ pub async fn typecheck_surface_program(
     Vec<crate::error::TypeDiagnostic>,
 ) {
     let (errors, type_map, doc_map, scheme_map, diagnostics, _state, _env) =
-        typecheck_surface_program_with_env(program, parent_env, true, None, Default::default(), None).await;
+        typecheck_surface_program_with_env(
+            program,
+            parent_env,
+            true,
+            None,
+            Default::default(),
+            None,
+        )
+        .await;
     // type_map is now populated during inference (enable_scheme_map=true path).
     (errors, type_map, doc_map, scheme_map, diagnostics)
 }
@@ -702,10 +714,7 @@ async fn typecheck_surface_document(
                 let (pipeline_type_resolved, expected_type_resolved) = if state.subst_is_empty() {
                     (pipeline_type.clone(), expected_type.clone())
                 } else {
-                    (
-                        state.apply(pipeline_type),
-                        state.apply(&expected_type),
-                    )
+                    (state.apply(pipeline_type), state.apply(&expected_type))
                 };
                 let passes = Type::is_subtype(
                     &pipeline_type_resolved,
@@ -906,10 +915,7 @@ async fn typecheck_surface_document(
                     {
                         (result_type.clone(), expected_output.clone())
                     } else {
-                        (
-                            state.apply(&result_type),
-                            state.apply(&expected_output),
-                        )
+                        (state.apply(&result_type), state.apply(&expected_output))
                     };
                     let passes = Type::is_subtype(
                         &result_type_resolved,
@@ -1069,10 +1075,7 @@ async fn typecheck_surface_document(
                 let (result_type_resolved, expected_output_resolved) = if state.subst_is_empty() {
                     (result_type.clone(), expected_output.clone())
                 } else {
-                    (
-                        state.apply(&result_type),
-                        state.apply(&expected_output),
-                    )
+                    (state.apply(&result_type), state.apply(&expected_output))
                 };
                 let passes = Type::is_subtype(
                     &result_type_resolved,
@@ -1201,7 +1204,11 @@ fn extract_doc_from_surface_node(
                 let key_name: Option<String> =
                     entry.node.key.as_ref().and_then(|k| match &k.expr {
                         // Annotated VarRef: annotation is now on VarRef directly.
-                        SurfaceExpression::VarRef { name, annotation: Some(annotation), .. } => {
+                        SurfaceExpression::VarRef {
+                            name,
+                            annotation: Some(annotation),
+                            ..
+                        } => {
                             if let Some(doc_node) = annotation.node.get_property("doc") {
                                 if let SurfaceExpression::Str(doc_string) = &doc_node.expr {
                                     doc_map.insert(name.clone(), doc_string.clone());
@@ -1414,9 +1421,11 @@ async fn register_type_aliases(
                     SurfaceExpression::Str(name) => (Some(name.clone()), None),
                     // T-1052: `TypeName@[doc: "..." ...]` — annotated alias declaration key.
                     // Annotation is now on VarRef directly.
-                    SurfaceExpression::VarRef { name, annotation: Some(annotation), .. } => {
-                        (Some(name.clone()), Some(annotation.node.clone()))
-                    }
+                    SurfaceExpression::VarRef {
+                        name,
+                        annotation: Some(annotation),
+                        ..
+                    } => (Some(name.clone()), Some(annotation.node.clone())),
                     // Plain VarRef key (no annotation).
                     SurfaceExpression::VarRef { name, .. } => (Some(name.clone()), None),
                     _ => (None, None),
@@ -1918,11 +1927,8 @@ async fn resolve_predicate_matchable(
 
     // Map the inferred return type to the type name used in instance binding lookup.
     if let Some(type_name) = type_to_matchable_key(&pred_ty) {
-        let binding_name = crate::type_def::instance_binding_name(
-            "Matchable",
-            "to-match",
-            &[type_name.as_str()],
-        );
+        let binding_name =
+            crate::type_def::instance_binding_name("Matchable", "to-match", &[type_name.as_str()]);
         to_match_binding.set(Some(binding_name));
     }
 }
@@ -1931,7 +1937,7 @@ async fn resolve_predicate_matchable(
 ///
 /// The key must match the type argument used when the Matchable instance was declared
 /// in prelude.llt. Currently, Matchable instances exist for:
-/// - `Boolean` (unit constructors `Boolean.True` / `Boolean.False`)
+/// - User-defined nominal types (any TyCon — e.g. `Color`, `Option`, etc.)
 /// - `Int` (integers are directly truthy: nonzero = match)
 fn type_to_matchable_key(ty: &Type) -> Option<String> {
     match ty {
@@ -1941,7 +1947,7 @@ fn type_to_matchable_key(ty: &Type) -> Option<String> {
             Some(name.clone())
         }
         Type::NominalVariant { tag, .. } => {
-            // "Boolean.True" → "Boolean"
+            // "Color.Red" → "Color" (extract the type name prefix before the first '.')
             tag.split('.').next().map(|s| s.to_string())
         }
         Type::Unknown => {
@@ -2056,7 +2062,10 @@ pub(crate) fn infer_surface_expr<'a>(
             // The annotated arm below handles VarRef { annotation: Some(_) }.
             // Since Rust matches arms in order, we must use annotation: None here.
             SurfaceExpression::VarRef {
-                name, resolution, annotation: None, ..
+                name,
+                resolution,
+                annotation: None,
+                ..
             } => {
                 // Fast path: if the resolver wrote de Bruijn coordinates into the VarRef,
                 // use slot-indexed lookup (O(1)) rather than the HashMap-based `get()`.
@@ -2084,6 +2093,23 @@ pub(crate) fn infer_surface_expr<'a>(
                     }
                     Ok(instantiate_scheme(
                         scheme,
+                        state.level,
+                        state,
+                        constraints,
+                        Some(name.as_str()),
+                        Some(node.span.clone()),
+                    ))
+                } else if let Some(class_method_scheme) =
+                    lookup_class_method_scheme(name, state)
+                {
+                    // Class method fallback: `name` is a method declared in a type class
+                    // (e.g., `=` in Equatable). The resolver already resolved the VarRef to
+                    // an instance binding's coordinates; now we synthesize the method's
+                    // polymorphic type scheme so the type checker can infer the call correctly.
+                    // The scheme has the class's type params as quantified vars and a Class
+                    // constraint, exactly as infer_class_decl_from_surface produces.
+                    Ok(instantiate_scheme(
+                        &class_method_scheme,
                         state.level,
                         state,
                         constraints,
@@ -2602,9 +2628,12 @@ pub(crate) fn infer_surface_expr<'a>(
                                                     // NominalVariant: tag is "TypeName.CtorName";
                                                     // extract "TypeName" to match instance annotation
                                                     // patterns like [let a@Point].
-                                                    Type::NominalVariant { tag, .. } => {
-                                                        Some(tag.split('.').next().unwrap_or(tag).to_string())
-                                                    }
+                                                    Type::NominalVariant { tag, .. } => Some(
+                                                        tag.split('.')
+                                                            .next()
+                                                            .unwrap_or(tag)
+                                                            .to_string(),
+                                                    ),
                                                     // Union of NominalVariants: the TyCon name is the
                                                     // common prefix of all tags. For a type like
                                                     // Result (= Ok | Err), all tags share "Result".
@@ -2614,12 +2643,23 @@ pub(crate) fn infer_surface_expr<'a>(
                                                         let mut tycon_name: Option<&str> = None;
                                                         let mut all_nominal = true;
                                                         for m in members {
-                                                            if let Type::NominalVariant { tag, .. } = m {
-                                                                let name = tag.split('.').next().unwrap_or(tag);
+                                                            if let Type::NominalVariant {
+                                                                tag,
+                                                                ..
+                                                            } = m
+                                                            {
+                                                                let name = tag
+                                                                    .split('.')
+                                                                    .next()
+                                                                    .unwrap_or(tag);
                                                                 match tycon_name {
                                                                     None => tycon_name = Some(name),
-                                                                    Some(existing) if existing == name => {}
-                                                                    _ => { all_nominal = false; break; }
+                                                                    Some(existing)
+                                                                        if existing == name => {}
+                                                                    _ => {
+                                                                        all_nominal = false;
+                                                                        break;
+                                                                    }
                                                                 }
                                                             } else {
                                                                 all_nominal = false;
@@ -2662,8 +2702,7 @@ pub(crate) fn infer_surface_expr<'a>(
                                                 if let Some(&slot) =
                                                     state.instance_binding_slots.get(&binding_name)
                                                 {
-                                                    if let Some(Some((level, _))) =
-                                                        resolution.get()
+                                                    if let Some(Some((level, _))) = resolution.get()
                                                     {
                                                         call_dispatch.set(level, slot);
                                                     }
@@ -2860,7 +2899,11 @@ pub(crate) fn infer_surface_expr<'a>(
             }
 
             // Annotated VarRef (name@Type): annotation is now on VarRef directly.
-            SurfaceExpression::VarRef { name, annotation: Some(annotation), .. } => {
+            SurfaceExpression::VarRef {
+                name,
+                annotation: Some(annotation),
+                ..
+            } => {
                 // Create per-annotation-scope mappings for type and row variables.
                 let mut ann_mapping: Option<HashMap<String, String>> = Some(HashMap::new());
                 let mut row_ann_mapping: Option<HashMap<String, String>> = Some(HashMap::new());
@@ -3020,8 +3063,20 @@ pub(crate) fn infer_surface_expr<'a>(
                     // resolves the Matchable instance for that type. The binding name is written
                     // to the pattern's MatchableBinding OnceLock so the lowerer carries it to
                     // CoreMatchArm and the evaluator uses it for direct dispatch.
-                    if let Pattern::Predicate { call, to_match_binding } = &arm.pattern.node {
-                        resolve_predicate_matchable(call, to_match_binding, env, state, constraints, type_map).await;
+                    if let Pattern::Predicate {
+                        call,
+                        to_match_binding,
+                    } = &arm.pattern.node
+                    {
+                        resolve_predicate_matchable(
+                            call,
+                            to_match_binding,
+                            env,
+                            state,
+                            constraints,
+                            type_map,
+                        )
+                        .await;
                     }
 
                     let mut pat_bindings: Vec<(String, Type)> = Vec::new();
@@ -3471,21 +3526,61 @@ fn check_in_quote_context<'a>(
             // This means unquote args are not type-checked — a known limitation.
             // TODO: use a cloned/forked state to safely infer unquote args.
             SurfaceExpression::Unquote(inner) => {
-                Box::pin(check_in_quote_context(inner, env, state, constraints, type_map)).await;
+                Box::pin(check_in_quote_context(
+                    inner,
+                    env,
+                    state,
+                    constraints,
+                    type_map,
+                ))
+                .await;
             }
             SurfaceExpression::UnquoteSplice(inner) => {
-                Box::pin(check_in_quote_context(inner, env, state, constraints, type_map)).await;
+                Box::pin(check_in_quote_context(
+                    inner,
+                    env,
+                    state,
+                    constraints,
+                    type_map,
+                ))
+                .await;
             }
 
             // Call in quote context: func and args are AST template positions.
             // Recurse into all children in quote context (they are not evaluated).
-            SurfaceExpression::Call { func, args, named_args, .. } => {
-                Box::pin(check_in_quote_context(func, env, state, constraints, type_map)).await;
+            SurfaceExpression::Call {
+                func,
+                args,
+                named_args,
+                ..
+            } => {
+                Box::pin(check_in_quote_context(
+                    func,
+                    env,
+                    state,
+                    constraints,
+                    type_map,
+                ))
+                .await;
                 for arg in args.iter() {
-                    Box::pin(check_in_quote_context(arg, env, state, constraints, type_map)).await;
+                    Box::pin(check_in_quote_context(
+                        arg,
+                        env,
+                        state,
+                        constraints,
+                        type_map,
+                    ))
+                    .await;
                 }
                 for na in named_args.iter() {
-                    Box::pin(check_in_quote_context(&na.node.value, env, state, constraints, type_map)).await;
+                    Box::pin(check_in_quote_context(
+                        &na.node.value,
+                        env,
+                        state,
+                        constraints,
+                        type_map,
+                    ))
+                    .await;
                 }
             }
 
@@ -3493,15 +3588,36 @@ fn check_in_quote_context<'a>(
             SurfaceExpression::Dict(entries) => {
                 for entry in entries.iter() {
                     if let Some(ref key) = entry.node.key {
-                        Box::pin(check_in_quote_context(key, env, state, constraints, type_map)).await;
+                        Box::pin(check_in_quote_context(
+                            key,
+                            env,
+                            state,
+                            constraints,
+                            type_map,
+                        ))
+                        .await;
                     }
-                    Box::pin(check_in_quote_context(&entry.node.value, env, state, constraints, type_map)).await;
+                    Box::pin(check_in_quote_context(
+                        &entry.node.value,
+                        env,
+                        state,
+                        constraints,
+                        type_map,
+                    ))
+                    .await;
                 }
             }
 
             // Fn body may contain unquote forms — recurse into body.
             SurfaceExpression::Fn { body, .. } => {
-                Box::pin(check_in_quote_context(body, env, state, constraints, type_map)).await;
+                Box::pin(check_in_quote_context(
+                    body,
+                    env,
+                    state,
+                    constraints,
+                    type_map,
+                ))
+                .await;
             }
 
             SurfaceExpression::Sequential(exprs) => {
@@ -3512,19 +3628,49 @@ fn check_in_quote_context<'a>(
 
             // Nested quote: recurse in quote context (double-quoting is still quoted).
             SurfaceExpression::Quote(inner) => {
-                Box::pin(check_in_quote_context(inner, env, state, constraints, type_map)).await;
+                Box::pin(check_in_quote_context(
+                    inner,
+                    env,
+                    state,
+                    constraints,
+                    type_map,
+                ))
+                .await;
             }
 
             // Field access in quote context: recurse into the target expression.
-            SurfaceExpression::Field { expr: Some(target), .. } => {
-                Box::pin(check_in_quote_context(target, env, state, constraints, type_map)).await;
+            SurfaceExpression::Field {
+                expr: Some(target), ..
+            } => {
+                Box::pin(check_in_quote_context(
+                    target,
+                    env,
+                    state,
+                    constraints,
+                    type_map,
+                ))
+                .await;
             }
 
             // Match in quote context: recurse into scrutinee and arm bodies.
             SurfaceExpression::Match { scrutinee, arms } => {
-                Box::pin(check_in_quote_context(scrutinee, env, state, constraints, type_map)).await;
+                Box::pin(check_in_quote_context(
+                    scrutinee,
+                    env,
+                    state,
+                    constraints,
+                    type_map,
+                ))
+                .await;
                 for arm in arms.iter() {
-                    Box::pin(check_in_quote_context(&arm.body, env, state, constraints, type_map)).await;
+                    Box::pin(check_in_quote_context(
+                        &arm.body,
+                        env,
+                        state,
+                        constraints,
+                        type_map,
+                    ))
+                    .await;
                 }
             }
 
@@ -3748,6 +3894,51 @@ async fn infer_class_decl_from_surface(
 
 /// Type alias for match arm type data (Surface version): (param_types, span, entries).
 type SurfaceMatchArmData<'a> = (Vec<Type>, Span, &'a Vec<Spanned<crate::ast::SurfaceEntry>>);
+
+/// Look up a class method by name in the class environment.
+///
+/// When the type checker encounters a VarRef whose name is not in the regular TypeEnv,
+/// this function checks whether the name is a method declared in any type class. If found,
+/// it constructs the method's polymorphic TypeScheme with the class's type parameters as
+/// quantified vars and a Class constraint — exactly as `infer_class_decl_from_surface`
+/// produces when processing a `[class ...]` declaration.
+///
+/// This enables class method names (e.g., `=`, `+`, `<`) to be used in user code without
+/// global wrapper functions: the resolver maps the name to an instance binding's coordinates,
+/// the type checker synthesizes the polymorphic type here, and `call_dispatch` selects the
+/// correct instance at each call site.
+fn lookup_class_method_scheme(name: &str, state: &InferState) -> Option<TypeScheme> {
+    for class_decl in state.class_env.iter_classes() {
+        for (method_name, method_type) in &class_decl.method_signatures {
+            if method_name == name {
+                let type_vars: Vec<String> = class_decl
+                    .params
+                    .iter()
+                    .map(|(n, _)| n.clone())
+                    .collect();
+                return Some(TypeScheme {
+                    type_vars: type_vars.clone(),
+                    constraints: vec![Constraint::Class {
+                        class: Arc::clone(&Arc::new(class_decl.clone())),
+                        vars: type_vars
+                            .iter()
+                            .map(|n| crate::types::ConstraintArg::Var(n.clone()))
+                            .collect(),
+                        origin_name: Some(Arc::from(method_name.as_str())),
+                        origin_span: None,
+                    }],
+                    body: method_type.clone(),
+                    label_vars: vec![],
+                    kind_vars: vec![],
+                    doc: None,
+                    inner_schemes: None,
+                    param_narrowings: Vec::new(),
+                });
+            }
+        }
+    }
+    None
+}
 
 /// Type-check an [instance ...] declaration from SurfaceDeclaration::InstanceDecl fields.
 /// Called from infer_surface_expr (Decl arm) and typecheck_surface_document — no Expr bridge needed.
@@ -4196,10 +4387,7 @@ pub(super) async fn check_surface_expr(
                                         if state.subst_is_empty() {
                                             (expected_ty.clone(), resolved.clone())
                                         } else {
-                                            (
-                                                state.apply(expected_ty),
-                                                state.apply(&resolved),
-                                            )
+                                            (state.apply(expected_ty), state.apply(&resolved))
                                         };
                                     let sub_passes =
                                         Type::is_subtype(
@@ -4236,7 +4424,10 @@ pub(super) async fn check_surface_expr(
                                 param.node.name.clone(),
                                 Type::Record(crate::type_def::Row {
                                     fields: indexmap::IndexMap::new(),
-                                    tail: crate::type_def::RowTail::Uniform { key: None, value: Box::new(elem_var) },
+                                    tail: crate::type_def::RowTail::Uniform {
+                                        key: None,
+                                        value: Box::new(elem_var),
+                                    },
                                 }),
                             );
                         } else {
@@ -4290,10 +4481,7 @@ pub(super) async fn check_surface_expr(
                                     if state.subst_is_empty() {
                                         (declared.clone(), (**expected_ret).clone())
                                     } else {
-                                        (
-                                            state.apply(&declared),
-                                            state.apply(expected_ret),
-                                        )
+                                        (state.apply(&declared), state.apply(expected_ret))
                                     };
                                 let sub_passes =
                                     Type::is_subtype(
@@ -4422,10 +4610,7 @@ pub(super) async fn check_surface_expr(
         let (actual_resolved, expected_final) = if state.subst_is_empty() {
             (actual.clone(), expected_resolved.clone())
         } else {
-            (
-                state.apply(&actual),
-                state.apply(&expected_resolved),
-            )
+            (state.apply(&actual), state.apply(&expected_resolved))
         };
 
         let passes = Type::is_subtype(&actual_resolved, &expected_final, Some(&state.tycon_env))

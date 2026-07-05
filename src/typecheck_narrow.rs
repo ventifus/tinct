@@ -91,9 +91,7 @@ pub(crate) fn extract_narrowings(cond: &Arc<SurfaceNode>, env: &Rc<TypeEnv>) -> 
                     _ if args.len() == 1 => {
                         if let SurfaceExpression::VarRef { name: var_name, .. } = &args[0].expr {
                             if let Some(scheme) = env.get(name) {
-                                if let Some(Some(narrowing_ty)) =
-                                    scheme.param_narrowings.first()
-                                {
+                                if let Some(Some(narrowing_ty)) = scheme.param_narrowings.first() {
                                     return vec![Narrowing::TypeOf {
                                         var: var_name.clone(),
                                         ty: narrowing_ty.clone(),
@@ -657,7 +655,10 @@ pub(crate) async fn extract_binding_types(
             types.push(Type::Unknown);
         }
         // a@Type form (annotated VarRef — annotation is now on VarRef directly).
-        SurfaceExpression::VarRef { annotation: Some(annotation), .. } => {
+        SurfaceExpression::VarRef {
+            annotation: Some(annotation),
+            ..
+        } => {
             let mut ann_constraints: Vec<Constraint> = Vec::new();
             let ty = resolve_annotation(
                 &annotation.node,
@@ -675,7 +676,11 @@ pub(crate) async fn extract_binding_types(
         }
         // Bare identifier in pattern position (no annotation): try to resolve as a type name.
         // Handles `Int` in [pattern [Int]] where the inner dict entry is VarRef("Int").
-        SurfaceExpression::VarRef { name, annotation: None, .. } => {
+        SurfaceExpression::VarRef {
+            name,
+            annotation: None,
+            ..
+        } => {
             let ann = Annotation::Simple(name.clone());
             let mut vref_constraints: Vec<Constraint> = Vec::new();
             match resolve_annotation(

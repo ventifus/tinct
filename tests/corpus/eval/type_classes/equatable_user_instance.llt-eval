@@ -1,7 +1,7 @@
 # User-defined Equatable instance for a custom type.
 # NOTE: User instances defined outside the prelude do not dispatch via call_dispatch
 # because the type checker's InstanceEnv only contains prelude-declared instances.
-# The runtime falls back to the generic = wrapper (builtin-eq / primitive_eq),
+# The runtime falls back to the generic = wrapper (Boolean.False fallback / primitive_eq),
 # which returns Boolean.False for payload Variants. Pattern matching should be used
 # instead for comparing user-defined variant types.
 [Point: [type [Point x: Int y: Int]]]

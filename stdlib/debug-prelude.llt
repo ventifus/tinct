@@ -14,7 +14,7 @@
             flush:  [fn [let h] h]
             close:  [fn [let h] h]]
 
-  bytes-empty?: [fn [let b] [builtin-eq [builtin-length b] 0]]
+  bytes-empty?: [fn [let b] [builtin-eq-int [builtin-length b] 0]]
   read-file: [fn [let f acc]
     [chunk: [builtin-file-read f 65536]]
     [builtin-if [bytes-empty? chunk]
@@ -25,7 +25,7 @@
     [builtin-reduce
       [fn [let _ d]
         [s: d.span]
-        [file-part: [builtin-if [builtin-eq s.file []] "" [builtin-str s.file ":"]]]
+        [file-part: [builtin-if [builtin-eq-int [builtin-length s.file] 0] "" [builtin-str s.file ":"]]]
         [msg: [builtin-str file-part s.start-line ":" s.start-col ": " d.kind " — " d.message "\n"]]
         [%stderr.write msg %stderr]]
       []
@@ -43,7 +43,7 @@
             [decl-resolved:  resolve-result.resolved]
             [typed:          [builtin-typecheck decl-resolved [builtin-get-type-context]]]
             typed.warnings]]]
-        [warnings:   [builtin-if [builtin-eq [builtin-tag-of tc-result] "Result.Ok"]
+        [warnings:   [builtin-if [builtin-eq-string [builtin-tag-of tc-result] "Result.Ok"]
             [builtin-variant-payload tc-result]
             []]]
         [builtin-merge [emit-diagnostics warnings] [builtin-merge acc [builtin-module name]]]]
@@ -60,20 +60,20 @@
     [parse-result:  [builtin-parse bytes "prelude.llt"]]
     [n-parse:       [builtin-length parse-result.errors]]
     [_pe:           [builtin-length [emit-diagnostics parse-result.errors]]]
-    [seed-env:      [builtin-if [builtin-eq [builtin-add n-parse _pe] 0]
+    [seed-env:      [builtin-if [builtin-eq-int [builtin-add n-parse _pe] 0]
       [builtin-extend-env [] [%prelude: _prelude-result  Boolean: Boolean  True: True  False: False]]
       [builtin-raise [builtin-str n-parse " parse error(s)"]]]]
     [resolve-result: [builtin-resolve parse-result.program]]
     [n-resolve:      [builtin-length resolve-result.errors]]
     [_re:            [builtin-length [emit-diagnostics resolve-result.errors]]]
-    [resolved:      [builtin-if [builtin-eq [builtin-add n-resolve _re] 0]
+    [resolved:      [builtin-if [builtin-eq-int [builtin-add n-resolve _re] 0]
       resolve-result.resolved
       [builtin-raise [builtin-str n-resolve " resolve error(s)"]]]]
     [final-env: [builtin-reduce
       [fn [let env doc]
         [doc-env:  [builtin-extend-env env [uses-scope doc.uses]]]
         [r:        [builtin-resolve doc env: doc-env]]
-        [builtin-if [builtin-eq [builtin-length r.errors] 0]
+        [builtin-if [builtin-eq-int [builtin-length r.errors] 0]
           [builtin-eval r.doc env: doc-env]
           [builtin-raise [builtin-str [builtin-length r.errors] " resolve error(s)"]]]]
       seed-env
@@ -84,7 +84,7 @@
 # Final expression — forced by Rust. Handle-threading I/O, no >> needed.
 # Inner write runs first (as argument), outer write runs after.
 [%stderr.write
-  [builtin-if [builtin-eq [builtin-tag-of _prelude-result] "Result.Ok"]
+  [builtin-if [builtin-eq-string [builtin-tag-of _prelude-result] "Result.Ok"]
     "prelude loaded OK\n"
     [builtin-str "prelude FAILED: " [builtin-variant-payload _prelude-result] "\n"]]
   [%stderr.write "debug-prelude: load attempted\n" %stderr]]

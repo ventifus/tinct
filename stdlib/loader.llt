@@ -87,7 +87,7 @@
 [
   # bytes-empty? is a runtime function (not a macro): macro bodies receive AST
   # nodes, not byte values, so builtin-length on an AST node would fail.
-  bytes-empty?: [fn [let b] [builtin-eq [builtin-length b] 0]]
+  bytes-empty?: [fn [let b] [builtin-eq-int [builtin-length b] 0]]
 
   read-file: [fn [let f acc]
     [chunk: [builtin-file-read f 65536]]
@@ -106,7 +106,7 @@
     [builtin-if [builtin-gte i len]
       acc
       [_join-loop sep
-        [builtin-if [builtin-eq i 0]
+        [builtin-if [builtin-eq-int i 0]
           [builtin-get 0 xs]
           [builtin-string-concat acc [builtin-string-concat sep [builtin-get i xs]]]]
         xs [builtin-add i 1] len]]]
@@ -181,7 +181,7 @@
             [resolve-result: [builtin-resolve parse-result.program]]
             [typed:          [builtin-typecheck resolve-result.resolved [builtin-get-type-context]]]
             typed.warnings]]]
-        [warnings:   [builtin-if [builtin-eq [builtin-tag-of tc-result] "Result.Ok"]
+        [warnings:   [builtin-if [builtin-eq-string [builtin-tag-of tc-result] "Result.Ok"]
             [builtin-variant-payload tc-result]
             []]]
         [builtin-merge [emit-diagnostics warnings] [builtin-merge acc [builtin-module name]]]]
@@ -205,7 +205,7 @@
   # Uses only core builtins — safe to call before prelude is loaded.
   format-diagnostic: [fn [let d]
     [s: d.span]
-    [file-part: [builtin-if [builtin-eq s.file []] "" [builtin-string-concat s.file ":"]]]
+    [file-part: [builtin-if [builtin-eq-int [builtin-length s.file] 0] "" [builtin-string-concat s.file ":"]]]
     [join "" [0: file-part  1: [builtin-int->string s.start-line]  2: ":"  3: [builtin-int->string s.start-col]  4: ": "  5: d.kind  6: " — "  7: d.message  8: "\n"]]]
 
   emit-diagnostics: [fn [let diagnostics]
@@ -233,7 +233,7 @@
     # Stop on parse errors. Emit first (data dependency via builtin-add), then raise.
     [n-parse:       [builtin-length parse-result.errors]]
     [_pe:           [builtin-length [emit-diagnostics parse-result.errors]]]
-    [seed-env:      [builtin-if [builtin-eq [builtin-add n-parse _pe] 0]
+    [seed-env:      [builtin-if [builtin-eq-int [builtin-add n-parse _pe] 0]
       [builtin-extend-env [] extras]
       [builtin-raise [join "" [[builtin-int->string n-parse] " parse error(s) in " path]]]]]
     # Per-document: each document gets its own module builtins via uses-scope.
@@ -247,7 +247,7 @@
           [resolved: [builtin-resolve doc env: doc-env]]
           [n-re:     [builtin-length resolved.errors]]
           [_re:      [builtin-length [emit-diagnostics resolved.errors]]]
-          [builtin-if [builtin-eq [builtin-add n-re _re] 0]
+          [builtin-if [builtin-eq-int [builtin-add n-re _re] 0]
             [builtin-eval resolved.doc env: doc-env]
             [builtin-raise [join "" [[builtin-int->string n-re] " resolve error(s) in " path]]]]]]]
       seed-env
@@ -258,7 +258,7 @@
     # Emit diagnostics via data dependency (no >> needed).
     [n-tc:        [builtin-length [emit-diagnostics tc-resolved.errors]]]
     [n-warn:      [builtin-length [emit-diagnostics typed.warnings]]]
-    [builtin-if [builtin-eq [builtin-add n-tc n-warn] 0] final-env final-env]]
+    [builtin-if [builtin-eq-int [builtin-add n-tc n-warn] 0] final-env final-env]]
 
   # ── Document-level evaluation ─────────────────────────────────────────────
   # Builds the env for one user document via builtin-extend-env layers.
@@ -311,7 +311,7 @@
       # Seed with prelude (the base environment for included files).
       # No mod-scope from uses-scope — ctx-include is for nested user includes
       # where the base env already has prelude's bindings available.
-      [builtin-if [builtin-eq _pe _pe]
+      [builtin-if [builtin-eq-int _pe _pe]
         [reduce
           [fn [let env sub-doc]
             [sub-resolved: [builtin-resolve sub-doc env: env]]
@@ -355,7 +355,7 @@
     # Force emission of all diagnostics before evaluating documents.
     # builtin-if with identical branches always returns the reduce result
     # while ensuring _pe, _re, _te are forced (their sum is the condition).
-    [builtin-if [builtin-eq [builtin-add _pe [builtin-add _re _te]] 0]
+    [builtin-if [builtin-eq-int [builtin-add _pe [builtin-add _re _te]] 0]
       [reduce
         [fn [let state doc]
           [eval-document-runtime state mod-scope doc file-include-dir prelude emit-ch]]
@@ -379,7 +379,7 @@
     [mod-scope: [uses-scope resolved-prog.uses]]
     [typed: [builtin-typecheck resolved-prog [builtin-get-type-context prelude]]]
     [_te:    [builtin-length [emit-diagnostics typed.warnings]]]
-    [builtin-if [builtin-eq [builtin-add _pe [builtin-add _re _te]] 0]
+    [builtin-if [builtin-eq-int [builtin-add _pe [builtin-add _re _te]] 0]
       [reduce
         [fn [let state doc]
           [eval-document-runtime state mod-scope doc include-dir prelude emit-ch]]
@@ -432,6 +432,6 @@
 # builtin-if dispatches on the programs count: raises on empty, runs pipeline otherwise.
 # No >> needed — the error branch raises, the success branch returns the pipeline result.
 
-[builtin-if [builtin-eq [builtin-length %programs] 0]
+[builtin-if [builtin-eq-int [builtin-length %programs] 0]
   [builtin-raise "no input files or expressions specified"]
   [cli-pipeline %programs formatter [] %cwd _prelude emit-ch]]

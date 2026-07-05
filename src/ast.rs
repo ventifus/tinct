@@ -246,7 +246,7 @@ pub enum Pattern {
     /// Predicate pattern — a call expression whose head is a lowercase name or operator.
     ///
     /// At runtime, the full call expression is evaluated as a function, then called with
-    /// the match scrutinee as its last positional argument. If the result is `Value::boolean(true)`,
+    /// the match scrutinee as its last positional argument. If the result is truthy (Int nonzero),
     /// the arm matches; otherwise the arm is skipped.
     ///
     /// `[contains? "ob"]` in pattern position → `Predicate { call: SurfaceNode for [contains? "ob"], .. }`.
@@ -347,8 +347,16 @@ impl fmt::Display for SurfaceExpression {
             // Emit name as-is. `%`-prefixed refs already include `%` in the name.
             // Plain identifiers and (indistinguishable) EscapedRefs both display without `$` —
             // Display is used for error messages, not source roundtripping.
-            SurfaceExpression::VarRef { name, annotation: None, .. } => write!(f, "{name}"),
-            SurfaceExpression::VarRef { name, annotation: Some(ann), .. } => write!(f, "{name}@{}", ann.node),
+            SurfaceExpression::VarRef {
+                name,
+                annotation: None,
+                ..
+            } => write!(f, "{name}"),
+            SurfaceExpression::VarRef {
+                name,
+                annotation: Some(ann),
+                ..
+            } => write!(f, "{name}@{}", ann.node),
             SurfaceExpression::Placeholder => write!(f, "..."),
             SurfaceExpression::Rest(None, _) => write!(f, "..."),
             SurfaceExpression::Rest(Some(name), Some(ann)) => write!(f, "...{name}@{}", ann.node),
@@ -703,7 +711,11 @@ pub fn is_expr_annotation(ann: &Annotation) -> bool {
         Annotation::Simple(s) => s == "Expr",
         Annotation::PropertyDict(entries) => entries.iter().any(|e| {
             let key_is_type = e.node.key.as_ref().and_then(|k| {
-                if let SurfaceExpression::Str(s) = &k.expr { Some(s.as_str()) } else { None }
+                if let SurfaceExpression::Str(s) = &k.expr {
+                    Some(s.as_str())
+                } else {
+                    None
+                }
             }) == Some("type");
             let val_is_expr = matches!(&e.node.value.expr,
                 SurfaceExpression::VarRef { name, .. } if name == "Expr");
@@ -722,8 +734,16 @@ pub fn annotated_inner_default() -> Arc<SurfaceNode> {
     Arc::new(SurfaceNode::new(
         SurfaceExpression::Placeholder,
         Span {
-            start: Position { offset: 0, line: 0, column: 0 },
-            end: Position { offset: 0, line: 0, column: 0 },
+            start: Position {
+                offset: 0,
+                line: 0,
+                column: 0,
+            },
+            end: Position {
+                offset: 0,
+                line: 0,
+                column: 0,
+            },
             file: None,
         },
     ))

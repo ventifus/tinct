@@ -517,9 +517,15 @@ impl TypeErrorTyped {
                     format!("{} [{}]", e.got, e.got_types.join(", "))
                 };
                 if let Some(ref name) = e.callee {
-                    format!("`{}` expected {} arguments{}, got {}", name, e.expected, params_str, got_str)
+                    format!(
+                        "`{}` expected {} arguments{}, got {}",
+                        name, e.expected, params_str, got_str
+                    )
                 } else {
-                    format!("expected {} arguments{}, got {}", e.expected, params_str, got_str)
+                    format!(
+                        "expected {} arguments{}, got {}",
+                        e.expected, params_str, got_str
+                    )
                 }
             }
             Self::UndefinedVariable(e) => format!("undefined variable: {}", e.name),

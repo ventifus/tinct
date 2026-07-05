@@ -235,48 +235,6 @@ pub(crate) fn builtin_div_float(
     })
 }
 
-/// `=`: Equality comparison.
-///
-/// Delegates to `eval::primitive_eq` which handles only primitive types:
-/// Int, Float, String, and unit Variant (including Bool). No cross-type
-/// Int/Float comparison. No Dict/Seq/payload-Variant deep structural comparison.
-///
-/// Inherently materializing: must inspect values to determine equality.
-pub(crate) fn builtin_eq(
-    ctx_arg: BuiltinArgs,
-) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
-    let BuiltinArgs {
-        args,
-        named,
-        call_span,
-        ctx: _,
-        ..
-    } = ctx_arg;
-    Box::pin(async move {
-        reject_named("=", named.as_ref(), call_span.clone())?;
-        if args.len() != 2 {
-            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
-        }
-
-        // Both args are pre-materialized by force_count/pos_strictness.
-        // primitive_eq handles only primitive types: Int, Float, String, unit Variant,
-        // and Dict (shallow: same keys + same thunk IDs). No cross-type comparison,
-        // no deep structural comparison.
-        // This prevents infinite recursion when Equatable instances call [builtin-eq a b]:
-        // primitive_eq dispatches on the value type directly, not through typeclass dispatch.
-        let left = args[0]
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
-        let right = args[1]
-            .try_get_materialized()
-            .expect("pre-materialized by force_count/pos_strictness");
-
-        let result =
-            crate::eval::primitive_eq(left, right);
-        ok_val(Value::Int(if result { 1 } else { 0 }), call_span)
-    })
-}
-
 /// `builtin-eq-int`: Type-specific integer equality.
 ///
 /// Takes exactly two Int arguments, returns Int (1 if equal, 0 if not).
@@ -404,8 +362,8 @@ pub(crate) fn builtin_eq_string(
 }
 
 /// `<`: Less-than comparison.
-/// Works on Int, Float, String, Bool. Cross-type Int/Float comparison promotes
-/// Int to Float. String comparison is lexicographic. Bool: false < true.
+/// Works on Int, Float, String. Cross-type Int/Float comparison promotes
+/// Int to Float. String comparison is lexicographic.
 /// Incompatible types (e.g. Int vs String) produce a type error.
 /// Inherently materializing: must inspect values to determine ordering.
 pub(crate) fn builtin_lt(
@@ -424,7 +382,7 @@ pub(crate) fn builtin_lt(
             return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
         }
 
-        // Int/Float/String/Bool fast paths are handled directly. Other types fall through
+        // Int/Float/String fast paths are handled directly. Other types fall through
         // to Comparable instance dispatch. ComparableInt.lt calls [builtin-lt a b] which hits
         // the (Int,Int) fast path — no infinite recursion.
         let left = args[0]
@@ -449,14 +407,6 @@ pub(crate) fn builtin_lt(
                     end: end_b,
                 },
             ) => source_a[*start_a..*end_a] < source_b[*start_b..*end_b],
-            (
-                Value::Variant { tag: a_tag, payload: None },
-                Value::Variant { tag: b_tag, payload: None },
-            ) if (a_tag == "Boolean.True" || a_tag == "Boolean.False")
-                && (b_tag == "Boolean.True" || b_tag == "Boolean.False") =>
-            {
-                a_tag == "Boolean.False" && b_tag == "Boolean.True" // false < true
-            }
             // Cross-type: Int/Float promotion via `as f64` cast.
             // Precision guard: integers with |n| > 2^53 trigger an error, suggesting
             // explicit [float n] cast (doc/11-stdlib.md §Equality P3, P6).
@@ -472,7 +422,7 @@ pub(crate) fn builtin_lt(
             _ => {
                 return Err(EvalError::type_mismatch_ctx(
                     "<".to_string(),
-                    "Int, Float, String, or Bool (same or compatible types)",
+                    "Int, Float, or String (same or compatible types)",
                     &format!("{} and {}", left.type_name(), right.type_name()),
                     args[0].span.clone(),
                 )
@@ -551,7 +501,14 @@ pub(crate) fn builtin_lte(
         let val = gt_result
             .try_get_materialized()
             .expect("builtin_lt returns materialized");
-        ok_val(Value::Int(if matches!(val, Value::Int(n) if n != 0) { 0 } else { 1 }), call_span)
+        ok_val(
+            Value::Int(if matches!(val, Value::Int(n) if n != 0) {
+                0
+            } else {
+                1
+            }),
+            call_span,
+        )
     })
 }
 
@@ -589,7 +546,14 @@ pub(crate) fn builtin_gte(
         let val = lt_result
             .try_get_materialized()
             .expect("builtin_lt returns materialized");
-        ok_val(Value::Int(if matches!(val, Value::Int(n) if n != 0) { 0 } else { 1 }), call_span)
+        ok_val(
+            Value::Int(if matches!(val, Value::Int(n) if n != 0) {
+                0
+            } else {
+                1
+            }),
+            call_span,
+        )
     })
 }
 
@@ -1230,7 +1194,6 @@ pub fn math_builtin_types(env: &mut crate::types::TypeEnv) {
         ("builtin-gt", ">"),
         ("builtin-gte", ">="),
         ("builtin-lte", "<="),
-        ("builtin-eq", "="),
         ("builtin-add", "+"),
         ("builtin-sub", "-"),
         ("builtin-mul", "*"),

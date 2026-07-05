@@ -1102,11 +1102,11 @@ mod tests {
         sig(&[(dict_key("ok"), 1), (dict_key("err"), 1)])
     }
 
-    // Helper: Bool-like signature: Boolean.True | Boolean.False
+    // Helper: two-constructor signature (e.g. Coin.Heads | Coin.Tails)
     fn bool_sig() -> ConstructorSignature {
         sig(&[
-            (ConstructorTag::Variant("Boolean.True".into()), 0),
-            (ConstructorTag::Variant("Boolean.False".into()), 0),
+            (ConstructorTag::Variant("Coin.Heads".into()), 0),
+            (ConstructorTag::Variant("Coin.Tails".into()), 0),
         ])
     }
 
@@ -1319,11 +1319,11 @@ mod tests {
     }
 
     #[test]
-    fn test_coverage_bool_exhaustive() {
+    fn test_coverage_two_ctor_exhaustive() {
         let sig = bool_sig();
         let patterns = vec![
-            con(ConstructorTag::Variant("Boolean.True".into()), vec![]),
-            con(ConstructorTag::Variant("Boolean.False".into()), vec![]),
+            con(ConstructorTag::Variant("Coin.Heads".into()), vec![]),
+            con(ConstructorTag::Variant("Coin.Tails".into()), vec![]),
         ];
         let guards = vec![false, false];
         let result = check_coverage(&patterns, &sig, &guards);
@@ -1331,9 +1331,9 @@ mod tests {
     }
 
     #[test]
-    fn test_coverage_bool_missing() {
+    fn test_coverage_two_ctor_missing_one() {
         let sig = bool_sig();
-        let patterns = vec![con(ConstructorTag::Variant("Boolean.True".into()), vec![])];
+        let patterns = vec![con(ConstructorTag::Variant("Coin.Heads".into()), vec![])];
         let guards = vec![false];
         let result = check_coverage(&patterns, &sig, &guards);
         assert!(!result.exhaustive);

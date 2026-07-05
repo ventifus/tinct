@@ -697,14 +697,7 @@ async fn test_apply_type_recursive_does_not_bind_var_name() {
     // Create a TypeVar _t0 and bind it to Int
     state.set_level("_t0".to_string(), 0);
     let tv = Type::TypeVar("_t0".to_string(), 0);
-    let _ = unify_sync(
-        &tv,
-        &Type::Int,
-        &mut state,
-        &mut Vec::new(),
-        span,
-    )
-    .await;
+    let _ = unify_sync(&tv, &Type::Int, &mut state, &mut Vec::new(), span).await;
 
     // Recursive type: μμ_var.{head: _t0, tail: TypeVar(μ_var, 0)}
     // The body contains _t0 which should be substituted to Int
@@ -780,14 +773,7 @@ async fn test_unify_recursive_recursive_isomorphic() {
         })),
     };
 
-    let result = unify_sync(
-        &rec_a,
-        &rec_b,
-        &mut state,
-        &mut Vec::new(),
-        span,
-    )
-    .await;
+    let result = unify_sync(&rec_a, &rec_b, &mut state, &mut Vec::new(), span).await;
 
     assert!(
         result.is_ok(),
@@ -831,14 +817,7 @@ async fn test_unify_recursive_recursive_incompatible_fields() {
         })),
     };
 
-    let result = unify_sync(
-        &rec_int,
-        &rec_str,
-        &mut state,
-        &mut Vec::new(),
-        span,
-    )
-    .await;
+    let result = unify_sync(&rec_int, &rec_str, &mut state, &mut Vec::new(), span).await;
 
     assert!(
         result.is_err(),
@@ -924,14 +903,7 @@ async fn test_unify_recursive_left_with_typevar_right() {
         tail: crate::type_def::RowTail::Empty,
     });
 
-    let result = unify_sync(
-        &rec_ty,
-        &record_ty,
-        &mut state,
-        &mut Vec::new(),
-        span,
-    )
-    .await;
+    let result = unify_sync(&rec_ty, &record_ty, &mut state, &mut Vec::new(), span).await;
 
     assert!(
         result.is_ok(),
@@ -968,14 +940,7 @@ async fn test_unify_concrete_left_with_recursive_right() {
         })),
     };
 
-    let result = unify_sync(
-        &record_ty,
-        &rec_ty,
-        &mut state,
-        &mut Vec::new(),
-        span,
-    )
-    .await;
+    let result = unify_sync(&record_ty, &rec_ty, &mut state, &mut Vec::new(), span).await;
 
     assert!(
         result.is_ok(),
@@ -1066,7 +1031,6 @@ async fn test_handle_capability_partialeq_limitation() {
 
     // However, they should unify successfully
     let mut state = InferState::new();
-
 
     let result = unify_sync(
         &handle_a,
@@ -1160,14 +1124,7 @@ async fn test_reverse_fd_back_propagates_determining_type() {
     // This should trigger the reverse FD and back-propagate t0 = Int.
 
     let t1 = Type::TypeVar("t1".to_string(), 0);
-    let result = unify_sync(
-        &t1,
-        &Type::Str,
-        &mut state,
-        &mut constraints,
-        rust_span!(),
-    )
-    .await;
+    let result = unify_sync(&t1, &Type::Str, &mut state, &mut constraints, rust_span!()).await;
 
     assert!(
         result.is_ok(),
@@ -1248,14 +1205,7 @@ async fn test_reverse_fd_does_not_fire_when_not_injective() {
     // Unify t1 with Str — should NOT back-propagate t0.
 
     let t1 = Type::TypeVar("t1".to_string(), 0);
-    let result = unify_sync(
-        &t1,
-        &Type::Str,
-        &mut state,
-        &mut constraints,
-        rust_span!(),
-    )
-    .await;
+    let result = unify_sync(&t1, &Type::Str, &mut state, &mut constraints, rust_span!()).await;
 
     assert!(
         result.is_ok(),
@@ -1346,7 +1296,10 @@ async fn test_kind_env_view() {
     state.set_kind("c".to_string(), Kind::Label);
 
     let ke = state.kind_env();
-    assert!(!ke.contains_key("a"), "Kind::Type should not appear in kind_env()");
+    assert!(
+        !ke.contains_key("a"),
+        "Kind::Type should not appear in kind_env()"
+    );
     assert_eq!(ke.get("b"), Some(&Kind::Operator));
     assert_eq!(ke.get("c"), Some(&Kind::Label));
 }
@@ -1474,14 +1427,7 @@ async fn test_fd_in_progress_terminates_mutual_recursion() {
     // Result: terminates successfully without infinite loop.
 
     let t0 = Type::TypeVar("t0".to_string(), 0);
-    let result = unify_sync(
-        &t0,
-        &Type::Int,
-        &mut state,
-        &mut constraints,
-        rust_span!(),
-    )
-    .await;
+    let result = unify_sync(&t0, &Type::Int, &mut state, &mut constraints, rust_span!()).await;
 
     assert!(
         result.is_ok(),
@@ -1778,14 +1724,7 @@ async fn test_unify_empty_uniform_typevar_join() {
     let rec_lhs = Type::Record(row_lhs);
     let rec_rhs = Type::Record(row_rhs);
 
-    let result = unify_sync(
-        &rec_lhs,
-        &rec_rhs,
-        &mut state,
-        &mut Vec::new(),
-        span,
-    )
-    .await;
+    let result = unify_sync(&rec_lhs, &rec_rhs, &mut state, &mut Vec::new(), span).await;
     assert!(
         result.is_ok(),
         "Empty+Uniform TypeVar join should succeed: {:?}",
@@ -1830,14 +1769,7 @@ async fn test_unify_empty_uniform_concrete_subtype_fail() {
     let rec_lhs = Type::Record(row_lhs);
     let rec_rhs = Type::Record(row_rhs);
 
-    let result = unify_sync(
-        &rec_lhs,
-        &rec_rhs,
-        &mut state,
-        &mut Vec::new(),
-        span,
-    )
-    .await;
+    let result = unify_sync(&rec_lhs, &rec_rhs, &mut state, &mut Vec::new(), span).await;
     assert!(
         result.is_err(),
         "Empty+Uniform with non-conforming concrete type should fail"
@@ -2000,14 +1932,7 @@ async fn test_unify_tycon_expand_nominal_variant_member_ok() {
     let tycon = Type::TyCon("Color".to_string());
 
     // Unify @Color with NominalVariant(Red) — should succeed via UNIFY-TYCON-EXPAND
-    let result = unify_sync(
-        &tycon,
-        &red,
-        &mut state,
-        &mut Vec::new(),
-        span.clone(),
-    )
-    .await;
+    let result = unify_sync(&tycon, &red, &mut state, &mut Vec::new(), span.clone()).await;
     assert!(
         result.is_ok(),
         "TyCon(@Color) should unify with NominalVariant(Red) via body expansion, got: {:?}",
@@ -2091,14 +2016,7 @@ async fn test_unify_tycon_expand_no_registered_body_fails() {
         },
     };
 
-    let result = unify_sync(
-        &tycon,
-        &variant,
-        &mut state,
-        &mut Vec::new(),
-        span,
-    )
-    .await;
+    let result = unify_sync(&tycon, &variant, &mut state, &mut Vec::new(), span).await;
     assert!(
         result.is_err(),
         "TyCon with no registered body should not unify with NominalVariant"
@@ -2144,14 +2062,7 @@ async fn test_unify_tycon_expand_symmetric() {
     let tycon = Type::TyCon("Color".to_string());
 
     // (TyCon, NominalVariant) direction
-    let r1 = unify_sync(
-        &tycon,
-        &red,
-        &mut state,
-        &mut Vec::new(),
-        span.clone(),
-    )
-    .await;
+    let r1 = unify_sync(&tycon, &red, &mut state, &mut Vec::new(), span.clone()).await;
     // (NominalVariant, TyCon) direction
     let r2 = unify_sync(&red, &tycon, &mut state, &mut Vec::new(), span).await;
 
@@ -2228,14 +2139,7 @@ async fn test_constrain_cvar1_multi_typevar_in_union_adds_bounds() {
     // Two TypeVars in the union: C-Var1 multi-TypeVar path → adds to bounds, not subst.
     let sup = Type::Union(vec![Type::Str, alpha.clone(), beta.clone()]);
 
-    let result = constrain(
-        &Type::Int,
-        &sup,
-        &mut state,
-        &mut Vec::new(),
-        span,
-    )
-    .await;
+    let result = constrain(&Type::Int, &sup, &mut state, &mut Vec::new(), span).await;
 
     assert!(
         result.is_ok(),
@@ -2291,14 +2195,7 @@ async fn test_constrain_cvar1_single_typevar_binds_subst() {
     let alpha = Type::TypeVar("α".to_string(), 0);
     let sup = Type::Union(vec![Type::Str, alpha.clone()]);
 
-    let result = constrain(
-        &Type::Int,
-        &sup,
-        &mut state,
-        &mut Vec::new(),
-        span,
-    )
-    .await;
+    let result = constrain(&Type::Int, &sup, &mut state, &mut Vec::new(), span).await;
 
     assert!(
         result.is_ok(),
@@ -2336,14 +2233,7 @@ async fn test_constrain_typevar_lower_bound_added() {
 
     let beta = Type::TypeVar("β".to_string(), 0);
 
-    let result = constrain(
-        &Type::Int,
-        &beta,
-        &mut state,
-        &mut Vec::new(),
-        span,
-    )
-    .await;
+    let result = constrain(&Type::Int, &beta, &mut state, &mut Vec::new(), span).await;
 
     assert!(
         result.is_ok(),

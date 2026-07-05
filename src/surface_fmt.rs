@@ -285,13 +285,14 @@ fn collect_free_vars(
 
         // Variable references — the decision point
         CoreExpr::Var { name, .. } => {
-            if !param_scope.contains(name.as_str()) && stdlib_env.get_by_name(name.as_str()).is_none() {
+            if !param_scope.contains(name.as_str())
+                && stdlib_env.get_by_name(name.as_str()).is_none()
+            {
                 out.insert(name.clone());
             }
         }
 
         // Annotated Var (Var { annotation: Some(_) }) is handled by the Var arm above.
-
         CoreExpr::Sequential(exprs) => {
             // Mirror the resolver's sequential scope injection (resolve.rs:118-134):
             // after each intermediate expression, collect any static dict keys it introduces
@@ -308,7 +309,12 @@ fn collect_free_vars(
                                     if let CoreExpr::Str(name) = &key.node {
                                         seq_scope.insert(name.clone());
                                     // Annotated Var (Var { annotation: Some(_) }) is a static key.
-                                    } else if let CoreExpr::Var { name, annotation: Some(_), .. } = &key.node {
+                                    } else if let CoreExpr::Var {
+                                        name,
+                                        annotation: Some(_),
+                                        ..
+                                    } = &key.node
+                                    {
                                         seq_scope.insert(name.clone());
                                     }
                                 }
@@ -332,7 +338,12 @@ fn collect_free_vars(
                         if let CoreExpr::Str(name) = &key.node {
                             dict_scope.insert(name.clone());
                         // Annotated Var (Var { annotation: Some(_) }) is a static key.
-                        } else if let CoreExpr::Var { name, annotation: Some(_), .. } = &key.node {
+                        } else if let CoreExpr::Var {
+                            name,
+                            annotation: Some(_),
+                            ..
+                        } = &key.node
+                        {
                             dict_scope.insert(name.clone());
                         }
                     }
@@ -669,7 +680,12 @@ fn core_expr_to_tinct(
                                     if let CoreExpr::Str(name) = &key.node {
                                         seq_scope.insert(name.clone());
                                     // Annotated Var (Var { annotation: Some(_) }) is a static key.
-                                    } else if let CoreExpr::Var { name, annotation: Some(_), .. } = &key.node {
+                                    } else if let CoreExpr::Var {
+                                        name,
+                                        annotation: Some(_),
+                                        ..
+                                    } = &key.node
+                                    {
                                         seq_scope.insert(name.clone());
                                     }
                                 }
@@ -696,7 +712,12 @@ fn core_expr_to_tinct(
                         if let CoreExpr::Str(name) = &key.node {
                             dict_scope.insert(name.clone());
                         // Annotated Var (Var { annotation: Some(_) }) is a static key.
-                        } else if let CoreExpr::Var { name, annotation: Some(_), .. } = &key.node {
+                        } else if let CoreExpr::Var {
+                            name,
+                            annotation: Some(_),
+                            ..
+                        } = &key.node
+                        {
                             dict_scope.insert(name.clone());
                         }
                     }

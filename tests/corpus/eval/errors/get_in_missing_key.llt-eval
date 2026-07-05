@@ -15,7 +15,7 @@ key not found: c (defined at stdlib/prelude.llt:2471:28-2471:47)
        |                            ^^^^^^^^^^^^^^^^^^^
   in materialized at stdlib/prelude.llt:1233:5-1237:53
    |
-  1233 |     [builtin-if [builtin-eq [length path] 0]
+  1233 |     [builtin-if [builtin-eq-int [length path] 0]
   1234 |         xs
   1235 |         [builtin-if [has? path.0 xs]
   1236 |             [get-in [builtin-rest path] [get path.0 xs]]
@@ -29,7 +29,7 @@ key not found: c (defined at stdlib/prelude.llt:2471:28-2471:47)
        | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   in [builtin-if ...] at stdlib/prelude.llt:1233:5-1237:53
    |
-  1233 |     [builtin-if [builtin-eq [length path] 0]
+  1233 |     [builtin-if [builtin-eq-int [length path] 0]
   1234 |         xs
   1235 |         [builtin-if [has? path.0 xs]
   1236 |             [get-in [builtin-rest path] [get path.0 xs]]

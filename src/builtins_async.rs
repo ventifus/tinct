@@ -1445,7 +1445,14 @@ pub(crate) fn builtin_par_filter(
                 };
 
                 // Check if result is truthy via Matchable dispatch
-                if crate::eval::call_to_match(&result, &caller_env_clone, &ctx_clone, &call_span_clone).await {
+                if crate::eval::call_to_match(
+                    &result,
+                    &caller_env_clone,
+                    &ctx_clone,
+                    &call_span_clone,
+                )
+                .await
+                {
                     Ok(Some((idx, item_id_copy)))
                 } else {
                     Ok(None)
@@ -2204,7 +2211,10 @@ pub(crate) fn builtin_cancelled_q(
         let ctx_val = materialize(&ctx_thunk, Some(&call_span), &ctx).await?;
 
         match ctx_val {
-            Value::Context(token) => ok_val(Value::Int(if token.is_cancelled() { 1 } else { 0 }), call_span),
+            Value::Context(token) => ok_val(
+                Value::Int(if token.is_cancelled() { 1 } else { 0 }),
+                call_span,
+            ),
             _ => Err(EvalError::type_mismatch("Context", ctx_val.type_name(), call_span).into()),
         }
     })

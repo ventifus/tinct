@@ -151,14 +151,7 @@ pub(crate) async fn check_dot_access(
 
             // Unify TypeVar(α) with Record({field: β})
             let alpha_ty = Type::TypeVar(alpha.clone(), alpha_level);
-            let result = Box::pin(unify(
-                &alpha_ty,
-                &record_ty,
-                state,
-                constraints,
-                span,
-            ))
-            .await;
+            let result = Box::pin(unify(&alpha_ty, &record_ty, state, constraints, span)).await;
             result.map_err(|e| vec![e])?;
 
             Ok(beta)
@@ -268,14 +261,7 @@ pub(crate) async fn check_dot_access_int(
             });
 
             let alpha_ty = Type::TypeVar(alpha.clone(), *alpha_level);
-            let result = Box::pin(unify(
-                &alpha_ty,
-                &record_ty,
-                state,
-                constraints,
-                span,
-            ))
-            .await;
+            let result = Box::pin(unify(&alpha_ty, &record_ty, state, constraints, span)).await;
             result.map_err(|e| vec![e])?;
             Ok(beta)
         }
@@ -606,15 +592,9 @@ async fn check_call_args(
                     match &arg.expr {
                         SurfaceExpression::Fn { .. } => {
                             // Lambda: use check_surface_expr for bidirectional lambda checking.
-                            if let Err(mut errs) = check_surface_expr(
-                                arg,
-                                param_ty,
-                                env,
-                                state,
-                                constraints,
-                                type_map,
-                            )
-                            .await
+                            if let Err(mut errs) =
+                                check_surface_expr(arg, param_ty, env, state, constraints, type_map)
+                                    .await
                             {
                                 arg_errors.get_or_insert_with(Vec::new).append(&mut errs);
                             }
@@ -642,22 +622,28 @@ async fn check_call_args(
                                     } else {
                                         state.apply(param_ty)
                                     };
-                                    let sub_passes = Type::is_subtype(
-                                        &arg_ty_resolved,
-                                        &param_ty_resolved,
-                                        Some(&state.tycon_env),
-                                    ) || ((contains_unknown_or_top(&arg_ty_resolved)
-                                        || contains_unknown_or_top(&param_ty_resolved))
-                                        && Type::is_consistent(&arg_ty_resolved, &param_ty_resolved));
+                                    let sub_passes =
+                                        Type::is_subtype(
+                                            &arg_ty_resolved,
+                                            &param_ty_resolved,
+                                            Some(&state.tycon_env),
+                                        ) || ((contains_unknown_or_top(&arg_ty_resolved)
+                                            || contains_unknown_or_top(&param_ty_resolved))
+                                            && Type::is_consistent(
+                                                &arg_ty_resolved,
+                                                &param_ty_resolved,
+                                            ));
                                     if !sub_passes {
                                         arg_errors.get_or_insert_with(Vec::new).push(
-                                            TypeErrorTyped::UnificationFailure(UnificationFailure {
-                                                expected: param_ty_resolved,
-                                                got: arg_ty_resolved.clone(),
-                                                span: arg.span.clone(),
-                                                notes: vec![],
-                                                call_stack: vec![],
-                                            }),
+                                            TypeErrorTyped::UnificationFailure(
+                                                UnificationFailure {
+                                                    expected: param_ty_resolved,
+                                                    got: arg_ty_resolved.clone(),
+                                                    span: arg.span.clone(),
+                                                    notes: vec![],
+                                                    call_stack: vec![],
+                                                },
+                                            ),
                                         );
                                     }
                                     arg_types.push(arg_ty_resolved);
@@ -783,14 +769,8 @@ async fn check_call_args(
             }
 
             // Error-typed args absorb silently (unify(Error, T) = Ok(())).
-            if let Err(e) = Box::pin(unify(
-                param_ty,
-                arg_ty,
-                state,
-                constraints,
-                span.clone(),
-            ))
-            .await
+            if let Err(e) =
+                Box::pin(unify(param_ty, arg_ty, state, constraints, span.clone())).await
             {
                 arg_errors.get_or_insert_with(Vec::new).push(e);
             }
@@ -910,14 +890,8 @@ async fn check_call_args(
                         continue;
                     }
                     consumed_params.insert(param_idx);
-                    match infer_surface_expr(
-                        &na.node.value,
-                        env,
-                        state,
-                        constraints,
-                        type_map,
-                    )
-                    .await
+                    match infer_surface_expr(&na.node.value, env, state, constraints, type_map)
+                        .await
                     {
                         Ok(arg_ty) => {
                             if let Err(e) = Box::pin(unify(
@@ -951,8 +925,9 @@ async fn check_call_args(
                 None => {
                     // B-310: Variadic functions accept arbitrary named args.
                     if !variadic {
-                        arg_errors.get_or_insert_with(Vec::new).push(
-                            TypeErrorTyped::Generic(GenericTypeError {
+                        arg_errors
+                            .get_or_insert_with(Vec::new)
+                            .push(TypeErrorTyped::Generic(GenericTypeError {
                                 message: format!(
                                     "unknown named argument: function has no parameter named '{}'",
                                     arg_name
@@ -960,17 +935,11 @@ async fn check_call_args(
                                 span: na.span.clone(),
                                 notes: vec![],
                                 call_stack: vec![],
-                            }),
-                        );
+                            }));
                     } else {
-                        if let Err(mut errs) = infer_surface_expr(
-                            &na.node.value,
-                            env,
-                            state,
-                            constraints,
-                            type_map,
-                        )
-                        .await
+                        if let Err(mut errs) =
+                            infer_surface_expr(&na.node.value, env, state, constraints, type_map)
+                                .await
                         {
                             arg_errors.get_or_insert_with(Vec::new).append(&mut errs);
                         }
@@ -1036,7 +1005,8 @@ async fn check_call_args(
         }
 
         // Track consumed param indices.
-        let mut consumed_params: HashSet<usize> = (0..args.len().min(non_variadic_param_count)).collect();
+        let mut consumed_params: HashSet<usize> =
+            (0..args.len().min(non_variadic_param_count)).collect();
 
         // Check named args by matching them to params by name.
         for na in named_args {
@@ -1067,14 +1037,8 @@ async fn check_call_args(
                     }
                     consumed_params.insert(param_idx);
 
-                    match infer_surface_expr(
-                        &na.node.value,
-                        env,
-                        state,
-                        constraints,
-                        type_map,
-                    )
-                    .await
+                    match infer_surface_expr(&na.node.value, env, state, constraints, type_map)
+                        .await
                     {
                         Ok(arg_ty) => {
                             // Boundary guard check.
@@ -1119,8 +1083,9 @@ async fn check_call_args(
                 None => {
                     // B-310: Variadic functions accept arbitrary named args.
                     if !variadic {
-                        arg_errors.get_or_insert_with(Vec::new).push(
-                            TypeErrorTyped::Generic(GenericTypeError {
+                        arg_errors
+                            .get_or_insert_with(Vec::new)
+                            .push(TypeErrorTyped::Generic(GenericTypeError {
                                 message: format!(
                                     "unknown named argument: function has no parameter named '{}'",
                                     arg_name
@@ -1128,17 +1093,11 @@ async fn check_call_args(
                                 span: na.span.clone(),
                                 notes: vec![],
                                 call_stack: vec![],
-                            }),
-                        );
+                            }));
                     } else {
-                        if let Err(mut errs) = infer_surface_expr(
-                            &na.node.value,
-                            env,
-                            state,
-                            constraints,
-                            type_map,
-                        )
-                        .await
+                        if let Err(mut errs) =
+                            infer_surface_expr(&na.node.value, env, state, constraints, type_map)
+                                .await
                         {
                             arg_errors.get_or_insert_with(Vec::new).append(&mut errs);
                         }
@@ -1190,9 +1149,10 @@ pub(crate) async fn check_call(
     // Derive callee name from the function expression for error messages.
     let func_callee: Option<String> = match &func.expr {
         crate::ast::SurfaceExpression::VarRef { name, .. } => Some(name.clone()),
-        crate::ast::SurfaceExpression::Field { field: crate::ast::DotKey::Ident(name), .. } => {
-            Some(name.clone())
-        }
+        crate::ast::SurfaceExpression::Field {
+            field: crate::ast::DotKey::Ident(name),
+            ..
+        } => Some(name.clone()),
         _ => None,
     };
 
@@ -1247,7 +1207,7 @@ pub(crate) async fn check_call(
                     state,
                     constraints,
                     type_map,
-                    0, // constraints_start unused on CALL-MONO path (no TypeVar constraints)
+                    0,     // constraints_start unused on CALL-MONO path (no TypeVar constraints)
                     false, // is_poly = false → CALL-MONO subsumption path
                 ))
                 .await;

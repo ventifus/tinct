@@ -1394,8 +1394,7 @@ async fn test_resolve_type_name_outside_function_scope_monotonicity() {
     // inside function scope where mapping reuses the same fresh var. That path is tested
     // by test_annotation_level_monotonicity (within-function scope).
     assert_eq!(
-        state.name_counter,
-        2,
+        state.name_counter, 2,
         "counter must advance once per fresh var"
     );
 }
@@ -5550,8 +5549,8 @@ async fn test_union_type_assert_success() {
 }
 
 #[tokio::test]
-async fn test_union_type_assert_failure() {
-    // value_matches_type: Bool does NOT match Union(Int, Str)
+async fn test_union_type_assert_failure_float() {
+    // value_matches_type: Float does NOT match Union(Int, Str)
     let union = Type::normalize_union(vec![Type::Int, Type::Str]);
     let env = std::sync::Arc::new(std::sync::RwLock::new(crate::value::Environment::new()));
     let ctx = crate::eval::EvalContext::new(
@@ -5561,7 +5560,7 @@ async fn test_union_type_assert_failure() {
         false,
     );
     assert!(!crate::eval::value_matches_type(
-        &crate::value::Value::boolean(true),
+        &crate::value::Value::Float(1.0),
         &union,
         &ctx,
     ));
@@ -6695,14 +6694,7 @@ async fn test_c_var1_binds_typevar_in_union() {
     let a = Type::Int;
     let b = Type::Union(vec![Type::Str, Type::TypeVar(var_name.clone(), 1)]);
     let mut constraints = Vec::new();
-    let result = unify(
-        &a,
-        &b,
-        &mut state,
-        &mut constraints,
-        rust_span!(),
-    )
-    .await;
+    let result = unify(&a, &b, &mut state, &mut constraints, rust_span!()).await;
     assert!(result.is_ok(), "C-Var1 should succeed: {result:?}");
     // a is bound to Int
     assert_eq!(
@@ -6721,14 +6713,7 @@ async fn test_c_var1_already_covered_no_binding() {
     let a = Type::Int;
     let b = Type::Union(vec![Type::Int, Type::TypeVar(var_name.clone(), 1)]);
     let mut constraints = Vec::new();
-    let result = unify(
-        &a,
-        &b,
-        &mut state,
-        &mut constraints,
-        rust_span!(),
-    )
-    .await;
+    let result = unify(&a, &b, &mut state, &mut constraints, rust_span!()).await;
     assert!(
         result.is_ok(),
         "C-Var1 already covered should succeed: {result:?}"
@@ -6749,14 +6734,7 @@ async fn test_c_var1_symmetric_union_on_left() {
     let a = Type::Union(vec![Type::Str, Type::TypeVar(var_name.clone(), 1)]);
     let b = Type::Int;
     let mut constraints = Vec::new();
-    let result = unify(
-        &a,
-        &b,
-        &mut state,
-        &mut constraints,
-        rust_span!(),
-    )
-    .await;
+    let result = unify(&a, &b, &mut state, &mut constraints, rust_span!()).await;
     assert!(
         result.is_ok(),
         "C-Var1 symmetric should succeed: {result:?}"
@@ -6779,14 +6757,7 @@ async fn test_c_var2_binds_typevar_in_intersection() {
     let a = Type::Intersection(vec![Type::Str, Type::TypeVar(var_name.clone(), 1)]);
     let b = Type::Int;
     let mut constraints = Vec::new();
-    let result = unify(
-        &a,
-        &b,
-        &mut state,
-        &mut constraints,
-        rust_span!(),
-    )
-    .await;
+    let result = unify(&a, &b, &mut state, &mut constraints, rust_span!()).await;
     assert!(result.is_ok(), "C-Var2 should succeed: {result:?}");
     assert_eq!(
         state.lookup_binding(&var_name),

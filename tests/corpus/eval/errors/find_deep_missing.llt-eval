@@ -33,7 +33,7 @@ key not found: missing (defined at stdlib/prelude.llt:2471:28-2471:47)
        | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   in materialized at stdlib/prelude.llt:1522:5-1526:62
    |
-  1522 |     [builtin-if [builtin-eq current-key target]
+  1522 |     [builtin-if [bool->int [= current-key target]]
   1523 |         [get current-key xs]
   1524 |         [builtin-if [dict? [get current-key xs]]
   1525 |             [find-deep-try [get current-key xs] target xs ks i]
@@ -47,7 +47,7 @@ key not found: missing (defined at stdlib/prelude.llt:2471:28-2471:47)
        | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   in [builtin-if ...] at stdlib/prelude.llt:1522:5-1526:62
    |
-  1522 |     [builtin-if [builtin-eq current-key target]
+  1522 |     [builtin-if [bool->int [= current-key target]]
   1523 |         [get current-key xs]
   1524 |         [builtin-if [dict? [get current-key xs]]
   1525 |             [find-deep-try [get current-key xs] target xs ks i]

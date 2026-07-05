@@ -96,7 +96,9 @@ pub fn surface_node_get_field(
 
         // --- Var ---
         (SurfaceExpression::VarRef { name, .. }, "name") => string_val(name),
-        (SurfaceExpression::VarRef { escaped, .. }, "escaped") => Value::boolean(*escaped),
+        (SurfaceExpression::VarRef { escaped, .. }, "escaped") => {
+            Value::Int(if *escaped { 1 } else { 0 })
+        }
 
         // --- DotAccess ---
         (
@@ -129,7 +131,9 @@ pub fn surface_node_get_field(
         (SurfaceExpression::Call { named_args, .. }, "named") => {
             named_args_to_list_dict(named_args, ctx)
         }
-        (SurfaceExpression::Call { implied, .. }, "implied") => Value::boolean(*implied),
+        (SurfaceExpression::Call { implied, .. }, "implied") => {
+            Value::Int(if *implied { 1 } else { 0 })
+        }
 
         // --- Fn ---
         (SurfaceExpression::Fn { params, .. }, "params") => params_to_list_dict(params, ctx),
@@ -137,7 +141,9 @@ pub fn surface_node_get_field(
         (SurfaceExpression::Fn { return_ann, .. }, "return-ann") => {
             annotation_opt_to_value(return_ann.as_ref(), ctx)
         }
-        (SurfaceExpression::Fn { desugared, .. }, "desugared") => Value::boolean(*desugared),
+        (SurfaceExpression::Fn { desugared, .. }, "desugared") => {
+            Value::Int(if *desugared { 1 } else { 0 })
+        }
 
         // --- TypeAssert ---
         (SurfaceExpression::TypeAssert { annotation, .. }, "annotation") => {
@@ -147,9 +153,13 @@ pub fn surface_node_get_field(
 
         // --- Annotated VarRef (annotation is now on VarRef directly) ---
         // Note: "name" for annotated VarRef is already handled by the VarRef arm above (line 98).
-        (SurfaceExpression::VarRef { annotation: Some(annotation), .. }, "annotation") => {
-            annotation_to_value(annotation, ctx)
-        }
+        (
+            SurfaceExpression::VarRef {
+                annotation: Some(annotation),
+                ..
+            },
+            "annotation",
+        ) => annotation_to_value(annotation, ctx),
 
         // --- Rest ---
         (SurfaceExpression::Rest(Some(n), _), "name") => string_val(n),
@@ -328,7 +338,7 @@ fn params_to_list_dict(
         payload.insert(
             HashableValue::Str("variadic".into()),
             ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                Value::boolean(p.node.variadic),
+                Value::Int(if p.node.variadic { 1 } else { 0 }),
                 p.span.clone(),
             ))),
         );
@@ -426,7 +436,7 @@ fn pattern_to_value(
             );
             d.insert(
                 crate::value::HashableValue::Str("rest".into()),
-                alloc(Value::boolean(*rest)),
+                alloc(Value::Int(if *rest { 1 } else { 0 })),
             );
         }
         Pattern::Constructor { tag, binding } => {
@@ -624,7 +634,11 @@ fn annotation_inner_to_value(
                 // For simple names (VarRef), expose as Simple. Otherwise expose text.
                 let part_val = match &pos_entry.node.value.expr {
                     // Annotated VarRef arm must come BEFORE plain VarRef arm (more specific).
-                    SurfaceExpression::VarRef { name, annotation: Some(annotation), .. } => {
+                    SurfaceExpression::VarRef {
+                        name,
+                        annotation: Some(annotation),
+                        ..
+                    } => {
                         // e.g. Fn@a → annotated VarRef (annotation is now on VarRef directly)
                         let name = name.as_str();
                         let inner_text = annotation.node.to_string();
@@ -659,7 +673,11 @@ fn annotation_inner_to_value(
                             )))),
                         }
                     }
-                    SurfaceExpression::VarRef { name, annotation: None, .. } => {
+                    SurfaceExpression::VarRef {
+                        name,
+                        annotation: None,
+                        ..
+                    } => {
                         // Simple name like "Seq", "k", "union" — no annotation.
                         let mut p = indexmap::IndexMap::new();
                         p.insert(

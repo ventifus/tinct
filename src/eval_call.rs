@@ -141,7 +141,10 @@ pub async fn invoke_function(ctx: &CallContext<'_>) -> EvalResult<Arc<Thunk>> {
         &ctx.call_span,
     )
     .await
-    .map_err(|mut e| { e.set_arity_callee(ctx.origin.clone()); e })?;
+    .map_err(|mut e| {
+        e.set_arity_callee(ctx.origin.clone());
+        e
+    })?;
     let mut thunk = Thunk::new_unevaluated_core(
         Arc::clone(ctx.body),
         call_env,
@@ -172,7 +175,10 @@ pub(crate) async fn invoke_function_tco(
         &ctx.call_span,
     )
     .await
-    .map_err(|mut e| { e.set_arity_callee(ctx.origin.clone()); e })?;
+    .map_err(|mut e| {
+        e.set_arity_callee(ctx.origin.clone());
+        e
+    })?;
 
     Ok((Arc::clone(ctx.body), call_env))
 }
@@ -226,7 +232,8 @@ pub(crate) async fn bind_args_thunks(
             ArityBound::Exact(max_positional)
         };
         let param_names: Vec<String> = regular_params.iter().map(|p| p.name.clone()).collect();
-        let mut err = EvalError::arity_mismatch_bound(expected, positional.len(), call_span.clone());
+        let mut err =
+            EvalError::arity_mismatch_bound(expected, positional.len(), call_span.clone());
         err.set_arity_params(param_names);
         return Err(err.into());
     }

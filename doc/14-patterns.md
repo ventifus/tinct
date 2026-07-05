@@ -232,9 +232,11 @@ Pattern::TypeAssert { resolved_type, inner } => {
 
 ### `primitive_eq` — Primitive Equality
 
-Tinct has one `primitive_eq` function in `src/eval.rs` (synchronous). Pattern matching and `builtin-eq` go through it:
+Tinct has one `primitive_eq` function in `src/eval.rs` (synchronous). Pattern matching and type-specific equality builtins go through it:
 
-- `builtin_eq` (`builtin-eq`) — calls `eval::primitive_eq`
+- `builtin_eq_int` (`builtin-eq-int`) — calls `eval::primitive_eq`
+- `builtin_eq_float` (`builtin-eq-float`) — calls `eval::primitive_eq`
+- `builtin_eq_string` (`builtin-eq-string`) — calls `eval::primitive_eq`
 - Pin patterns — calls `eval::primitive_eq`
 - `builtins_meta.rs` enum constraint handler — calls `eval::primitive_eq`
 

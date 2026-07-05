@@ -999,15 +999,16 @@ pub(crate) async fn infer_dict(
                     let key_doc = if let Some(ref key_node) = entry.node.key {
                         match &key_node.expr {
                             // Annotated VarRef: annotation is now on VarRef directly.
-                            SurfaceExpression::VarRef { annotation: Some(annotation), .. } => {
-                                annotation.node.get_property("doc").and_then(|doc_node| {
-                                    if let SurfaceExpression::Str(doc_string) = &doc_node.expr {
-                                        Some(doc_string.clone())
-                                    } else {
-                                        None
-                                    }
-                                })
-                            }
+                            SurfaceExpression::VarRef {
+                                annotation: Some(annotation),
+                                ..
+                            } => annotation.node.get_property("doc").and_then(|doc_node| {
+                                if let SurfaceExpression::Str(doc_string) = &doc_node.expr {
+                                    Some(doc_string.clone())
+                                } else {
+                                    None
+                                }
+                            }),
                             _ => None,
                         }
                     } else {
