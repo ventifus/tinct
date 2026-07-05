@@ -377,11 +377,11 @@ pub(crate) use crate::builtins_dict::{
 #[allow(unused_imports)] // used in test modules via `use super::*`
 pub(crate) use crate::builtins_meta::{
     builtin_annotation_of, builtin_apply, builtin_ast_of, builtin_big_int, builtin_blake3,
-    builtin_cap_identity, builtin_decimal, builtin_eval, builtin_eval_types, builtin_force,
-    builtin_gensym, builtin_include_cache_get, builtin_include_cache_put, builtin_llt_repr,
-    builtin_load, builtin_macro_error, builtin_macro_injects, builtin_make_annotated,
-    builtin_raise, builtin_span_of, builtin_tag_of, builtin_try, builtin_type_of, builtin_until,
-    builtin_validate,
+    builtin_cap_identity, builtin_class_dispatch, builtin_decimal, builtin_eval,
+    builtin_eval_types, builtin_force, builtin_gensym, builtin_include_cache_get,
+    builtin_include_cache_put, builtin_llt_repr, builtin_load, builtin_macro_error,
+    builtin_macro_injects, builtin_make_annotated, builtin_raise, builtin_span_of, builtin_tag_of,
+    builtin_try, builtin_type_of, builtin_until, builtin_validate,
 };
 
 // String builtins: str, split, replace, trim, trim-start, trim-end,
@@ -939,6 +939,12 @@ pub(crate) fn builtin_sort(
 
         // Sort using comparator or natural ordering.
         if let Some((cmp_val, cmp_span)) = comparator_opt {
+            // Pre-resolve the Matchable binding name from the comparator's return annotation.
+            // This avoids re-deriving the binding name from the runtime value on every comparison.
+            // Falls back to dynamic dispatch if the comparator has no simple return annotation.
+            let cmp_matchable_binding =
+                crate::eval::resolve_matchable_binding_from_fn(&cmp_val);
+
             // Use custom comparator function — async insertion sort (stable, correct).
             // pairs.sort_by cannot .await inside the closure, so we use an explicit loop.
             for i in 1..pairs.len() {
@@ -994,7 +1000,14 @@ pub(crate) fn builtin_sort(
                     };
 
                     let result_val = materialize(&result_thunk, Some(&call_span), &ctx).await?;
-                    if crate::eval::call_to_match(&result_val, &caller_env, &ctx, &call_span).await
+                    if crate::eval::call_to_match_opt_resolved(
+                        &result_val,
+                        cmp_matchable_binding.as_deref(),
+                        &caller_env,
+                        &ctx,
+                        &call_span,
+                    )
+                    .await
                     {
                         // truthy means a > b → swap
                         pairs.swap(j - 1, j);

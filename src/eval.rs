@@ -2051,48 +2051,29 @@ fn eval_core_expr<'a>(
 /// # Side effects
 ///
 /// Mutates the thunk's internal state via `ThunkInner`. On success, transitions to
-/// Convert a tinct value to a match signal via direct Matchable instance binding lookup.
+/// Convert a tinct value to a match signal via the `to-match` dispatch function.
 ///
-/// Looks up the instance binding `ɪɴꜱᴛᴀɴᴄᴇ⧼Matchable∷to-match⟨TypeName⟩⧽` in the
-/// environment, where `TypeName` is derived from the value's runtime type. This is the
-/// same mechanism the type checker's `call_dispatch` uses at compile time — direct binding
-/// lookup by instance name, no global `to-match` wrapper needed.
+/// Looks up the `to-match` class method dispatch function in the environment (injected
+/// by ClassDecl lowering) and calls it with the value. The dispatch function internally
+/// resolves the correct Matchable instance binding based on the value's runtime type.
 ///
-/// The Matchable typeclass instances in `prelude.llt` are anonymous multi-arm instances so
-/// that `lower.rs` emits them as instance_binding_name-keyed dict entries. The Rust runtime
-/// and the type checker both use `instance_binding_name("Matchable", "to-match", [type])`.
-///
-/// Returns `false` in bootstrap/pre-prelude contexts (before the Matchable instances are
-/// loaded) or for types with no Matchable instance.
+/// Returns `false` in bootstrap/pre-prelude contexts (before the Matchable class
+/// declaration and its instances are loaded) or for types with no Matchable instance.
 pub async fn call_to_match(
     val: &Value,
     env: &Arc<RwLock<Environment>>,
     ctx: &Arc<EvalContext>,
     span: &Span,
 ) -> bool {
-    // Derive the type name from the value for instance binding lookup.
-    let type_name = match val {
-        Value::Int(_) | Value::U64(_) => "Int",
-        Value::Variant { tag, payload: None } => {
-            // "Color.Red" → "Color" (the type name is the prefix before the first '.')
-            match tag.split_once('.') {
-                Some((type_part, _)) => type_part,
-                None => tag.as_str(),
-            }
-        }
-        // No Matchable instance for other types — return false (type error caught by type checker)
-        _ => return false,
-    };
-
-    // Compute the instance binding name and look it up in the environment.
-    let binding_name = crate::type_def::to_match_binding_for_type(type_name);
-
+    // Look up the `to-match` dispatch function in the environment.
+    // This function is injected by the ClassDecl lowering for Matchable and dispatches
+    // through instances based on the value's runtime type.
     let to_match_thunk = {
         let env_read = env.read().unwrap();
-        env_read.get_by_name(&binding_name)
+        env_read.get_by_name("to-match")
     };
     let Some(to_match_fn) = to_match_thunk else {
-        // Matchable instance not loaded yet (bootstrap / pre-prelude context): conservative false
+        // to-match not in scope yet (bootstrap / pre-prelude context): conservative false
         return false;
     };
 
@@ -2104,7 +2085,7 @@ pub async fn call_to_match(
         span.clone(),
         Arc::clone(env),
         span.clone(),
-        Some(Arc::from(binding_name.as_str())),
+        Some(Arc::from("to-match")),
         Arc::clone(ctx),
         crate::builtins::synthetic_call_expr(span.clone()),
     ));
@@ -2117,11 +2098,14 @@ pub async fn call_to_match(
 
 /// Convert a tinct value to a match signal using a pre-resolved Matchable instance binding name.
 ///
-/// This is the compile-time-resolved variant of `call_to_match`. The type checker resolves
-/// the Matchable instance at type-checking time and stores the binding name (e.g.,
-/// `"ɪɴꜱᴛᴀɴᴄᴇ⧼Matchable∷to-match⟨Boolean⟩⧽"`) on the pattern. The evaluator uses this
-/// to look up the `to-match` method directly, avoiding the dynamic type-name derivation
-/// that `call_to_match` performs.
+/// This is the direct-dispatch variant of `call_to_match`. Where `call_to_match` calls the
+/// top-level `to-match` dispatch function (which then resolves the correct instance at runtime),
+/// this function skips that indirection and calls the specific Matchable instance binding
+/// (e.g., `"ɪɴꜱᴛᴀɴᴄᴇ⧼Matchable∷to-match⟨Boolean⟩⧽"`) directly.
+///
+/// The type checker resolves the Matchable instance at type-checking time and stores the
+/// binding name on the pattern or call site. The evaluator uses this pre-resolved name
+/// to avoid the `to-match` dispatch overhead.
 ///
 /// Returns `false` if the binding is not found in the environment (pre-prelude bootstrap).
 pub async fn call_to_match_resolved(
@@ -2159,6 +2143,65 @@ pub async fn call_to_match_resolved(
     match materialize(&call_thunk, Some(span), ctx).await {
         Ok(Value::Int(n)) => n != 0,
         _ => false,
+    }
+}
+
+/// Pre-resolve the Matchable instance binding name from a predicate function's return annotation.
+///
+/// HOF builtins (sort, until, par-filter) call a predicate function on each element and then
+/// need to convert the result to a match signal. The standard approach calls `call_to_match`
+/// on every result, which routes through the top-level `to-match` dispatch function on each
+/// iteration (two-hop call: `call_to_match` → `to-match` → specific instance).
+///
+/// This function extracts the return type name from the predicate's `return_ann` annotation
+/// (e.g., `fn@Boolean` → "Boolean") and pre-computes the specific Matchable instance binding
+/// name (e.g., `"ɪɴꜱᴛᴀɴᴄᴇ⧼Matchable∷to-match⟨Boolean⟩⧽"`) ONCE before the loop.
+/// The builtin then passes this to `call_to_match_resolved` on each iteration, bypassing the
+/// `to-match` dispatch indirection and calling the instance binding directly (one-hop call).
+///
+/// Returns `None` if the predicate has no return annotation or the annotation is not a simple
+/// type name (e.g., a PropertyDict annotation). In that case, callers should fall back to
+/// `call_to_match` for the standard two-hop dispatch.
+///
+/// This does NOT look up the binding in the environment — it only extracts and formats the
+/// name. The environment lookup happens inside `call_to_match_resolved` at call time.
+pub fn resolve_matchable_binding_from_fn(pred: &Value) -> Option<String> {
+    let return_ann = match pred {
+        Value::Function { return_ann, .. } => return_ann.as_ref()?,
+        // Builtins don't carry return annotations — fall back to dynamic dispatch.
+        _ => return None,
+    };
+    // Extract a simple type name from the annotation.
+    // `fn@Boolean` → Annotation::Simple("Boolean") → "Boolean"
+    // `fn@[return: Boolean  doc: "..."]` → Annotation::PropertyDict → not handled here;
+    // callers fall back to dynamic call_to_match for these forms.
+    // Annotated forms (e.g. fn@[Seq@Int]) are not Matchable targets — also fall back.
+    let type_name = match &return_ann.node {
+        crate::ast::Annotation::Simple(name) => name.as_str(),
+        _ => return None,
+    };
+    Some(crate::type_def::instance_binding_name("Matchable", "to-match", &[type_name]))
+}
+
+/// Call `call_to_match_resolved` if a pre-resolved binding name is available, otherwise
+/// fall back to `call_to_match` (standard `to-match` dispatch).
+///
+/// HOF builtins use this inside their predicate-calling loops. The binding name is
+/// pre-resolved once before the loop via `resolve_matchable_binding_from_fn`
+/// (extracted from the predicate function's return annotation) and reused on every
+/// iteration. When the predicate has no annotation, `binding_name` is `None` and this
+/// falls back to `call_to_match`.
+pub async fn call_to_match_opt_resolved(
+    val: &Value,
+    binding_name: Option<&str>,
+    env: &Arc<RwLock<Environment>>,
+    ctx: &Arc<EvalContext>,
+    span: &Span,
+) -> bool {
+    if let Some(name) = binding_name {
+        call_to_match_resolved(val, name, env, ctx, span).await
+    } else {
+        call_to_match(val, env, ctx, span).await
     }
 }
 

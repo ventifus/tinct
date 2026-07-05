@@ -1357,6 +1357,15 @@ pub(crate) fn builtin_par_filter(
         let (pred_thunk, seq_thunk) =
             take_two_thunks("par-filter", &args, named.as_ref(), call_span.clone())?;
 
+        // Pre-materialize the predicate to extract its return type annotation once.
+        // This lets us pre-resolve the Matchable binding name before spawning tasks,
+        // avoiding repeated runtime type derivation on every predicate invocation.
+        let pred_fn_val = materialize(&pred_thunk, Some(&call_span), &ctx).await?;
+        let pred_matchable_binding =
+            crate::eval::resolve_matchable_binding_from_fn(&pred_fn_val);
+        // Re-wrap as a materialized thunk so tasks can still use the standard call path.
+        let pred_thunk = Arc::new(Thunk::new_materialized(pred_fn_val, call_span.clone()));
+
         // Materialize the sequence
         let seq_val = materialize(&seq_thunk, Some(&call_span), &ctx).await?;
 
@@ -1372,9 +1381,10 @@ pub(crate) fn builtin_par_filter(
             let call_span_clone = call_span.clone();
             let item_id_copy = *item_id;
             let caller_env_clone = Arc::clone(&caller_env);
+            let matchable_binding_clone = pred_matchable_binding.clone();
 
             let handle = crate::async_rt::spawn_local(async move {
-                // Materialize the predicate
+                // Materialize the predicate (already cached from pre-materialization above)
                 let pred_val =
                     materialize(&pred_thunk_clone, Some(&call_span_clone), &ctx_clone).await?;
 
@@ -1444,9 +1454,11 @@ pub(crate) fn builtin_par_filter(
                     }
                 };
 
-                // Check if result is truthy via Matchable dispatch
-                if crate::eval::call_to_match(
+                // Check if result is truthy via Matchable dispatch.
+                // Use pre-resolved binding name if available (avoids runtime type derivation).
+                if crate::eval::call_to_match_opt_resolved(
                     &result,
+                    matchable_binding_clone.as_deref(),
                     &caller_env_clone,
                     &ctx_clone,
                     &call_span_clone,
