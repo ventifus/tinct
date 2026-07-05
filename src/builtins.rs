@@ -943,7 +943,7 @@ pub(crate) fn builtin_sort(
             // This avoids re-deriving the binding name from the runtime value on every comparison.
             // Falls back to dynamic dispatch if the comparator has no simple return annotation.
             let cmp_matchable_binding =
-                crate::eval::resolve_matchable_binding_from_fn(&cmp_val);
+                crate::eval::resolve_matchable_binding_from_fn(&cmp_val, &ctx);
 
             // Use custom comparator function — async insertion sort (stable, correct).
             // pairs.sort_by cannot .await inside the closure, so we use an explicit loop.

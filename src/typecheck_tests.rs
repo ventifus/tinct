@@ -24,7 +24,7 @@ fn surf_ann_entry_tc(
 async fn check(input: &str) -> Result<(), Vec<TypeError>> {
     let mut program = crate::parse(input).unwrap().program;
     crate::desugar::desugar_surface_program(&mut program);
-    let (errors, _table, _tycon_env) = typecheck_surface_program_annotation_table(&program).await;
+    let (errors, _table, _tycon_env, _match_signal) = typecheck_surface_program_annotation_table(&program).await;
     if errors.is_empty() {
         Ok(())
     } else {
@@ -5297,7 +5297,7 @@ async fn test_typecheck_returns_diagnostics() {
     let mut program = crate::parse(input).unwrap().program;
     crate::desugar::desugar_surface_program(&mut program);
 
-    let (errors, _table, _tycon_env) = typecheck_surface_program_annotation_table(&program).await;
+    let (errors, _table, _tycon_env, _match_signal) = typecheck_surface_program_annotation_table(&program).await;
     assert!(
         errors.is_empty(),
         "simple dict should typecheck without errors"

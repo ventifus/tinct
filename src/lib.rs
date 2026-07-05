@@ -223,9 +223,10 @@ pub async fn run_loader_pipeline(
     // eval_ctx ensures that runtime TypeAssert checks against user-defined nominal types
     // (e.g. @Boolean on builtin-if's condition arg) resolve correctly instead of failing
     // conservatively because tycon_env is None.
-    let (_loader_type_errors, _loader_expects_resolved, loader_tycon_env) =
+    let (_loader_type_errors, _loader_expects_resolved, loader_tycon_env, loader_match_signal) =
         typecheck::typecheck_surface_program_annotation_table(&loader_program).await;
     eval_ctx.set_tycon_env(loader_tycon_env);
+    eval_ctx.set_match_signal_class(loader_match_signal);
 
     // Evaluate loader.llt. env already contains all stdlib builtins, %programs, %args,
     // %cwd, %libdir, and any other caps injected by the caller.
@@ -926,7 +927,7 @@ mod tests {
         let mut program = parsed.program.clone();
         desugar::desugar_surface_program(&mut program);
         let _resolve_errors = resolve::resolve_surface_program(&program);
-        let (_type_errors, _inferred, _tycon_env) =
+        let (_type_errors, _inferred, _tycon_env, _match_signal) =
             typecheck::typecheck_surface_program_annotation_table(&program).await;
         let env = builtins::build_core_env();
         let ctx = test_ctx().await;

@@ -90,7 +90,7 @@ pub async fn format_source_tinct_with_dir(
         return Err(msgs.join("\n"));
     }
     // Typecheck the desugared formatter (writes inline type annotations).
-    let _ = typecheck::typecheck_surface_program_annotation_table(&formatter_program).await; // tycon_env discarded: formatter ctx has no runtime TypeAsserts on user-defined ADTs
+    let _ = typecheck::typecheck_surface_program_annotation_table(&formatter_program).await; // tycon_env + match_signal discarded: formatter ctx has no runtime TypeAsserts on user-defined ADTs
 
     // Build a fresh core env for evaluation context.
     let env = crate::builtins::build_core_env();

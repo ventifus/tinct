@@ -238,6 +238,19 @@ pub struct InferState {
     /// Coexists with type_vars bindings — type_vars handles equational bindings (α = T),
     /// bounds handle inequality constraints (L ≤ α ≤ U).
     pub bounds: std::collections::HashMap<String, crate::bas::TypeVarBounds>,
+    /// Match-signal class info: (class_name, method_name) for the typeclass whose method
+    /// converts values to match signals (Int: nonzero = match, zero = no-match).
+    ///
+    /// Discovered structurally during class registration: when a class has exactly one type
+    /// parameter and a method whose return type is `Int`, it is recorded here. The pattern
+    /// matching engine uses this to resolve Matchable instance bindings without hardcoding
+    /// class or method names in Rust.
+    ///
+    /// Populated by `infer_class_decl_from_surface` (typecheck.rs). Read by
+    /// `resolve_predicate_matchable` and guard matchable binding resolution.
+    /// Threaded to `EvalContext` via the typecheck return value so `call_to_match` and
+    /// `resolve_matchable_binding_from_fn` can also use it.
+    pub match_signal_class: Option<(String, String)>,
 }
 
 impl InferState {
@@ -412,6 +425,7 @@ impl InferState {
             expansion_stack: Vec::new(),
             pending_param_narrowings: Vec::new(),
             bounds: HashMap::new(),
+            match_signal_class: None,
         }
     }
 

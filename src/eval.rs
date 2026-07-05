@@ -609,6 +609,13 @@ pub struct EvalContext {
     /// Propagated to child contexts (with_base_dir, with_cancel_token, with_explicit_cancel,
     /// with_timeout_ms) so nested includes and scoped cancellation see the same TyConEnv.
     pub tycon_env: std::sync::OnceLock<std::sync::Arc<crate::type_def::TyConEnv>>,
+    /// Match-signal class info: (class_name, method_name) discovered during type checking.
+    /// Set once after typechecking via `set_match_signal_class`; read-only thereafter.
+    /// Used by `call_to_match` (looks up the method name in the environment) and
+    /// `resolve_matchable_binding_from_fn` (constructs instance binding names).
+    /// `None` before typechecking or when no match-signal class was discovered.
+    /// Propagated to child contexts so nested includes see the same info.
+    pub match_signal_class: std::sync::OnceLock<Option<(String, String)>>,
     /// Optional sink for method arms registered during `eval_dict_core` pre-scan.
     ///
     /// Unified type environment handle for this evaluation scope.
@@ -675,6 +682,7 @@ impl EvalContext {
             task_registry: Arc::new(Mutex::new(Vec::new())),
             profiling: None,
             tycon_env: std::sync::OnceLock::new(),
+            match_signal_class: std::sync::OnceLock::new(),
             type_context: Arc::new(Mutex::new(None)),
         })
     }
@@ -716,6 +724,7 @@ impl EvalContext {
             task_registry: Arc::new(Mutex::new(Vec::new())),
             profiling: None,
             tycon_env: std::sync::OnceLock::new(),
+            match_signal_class: std::sync::OnceLock::new(),
             type_context: Arc::new(Mutex::new(None)),
         })
     }
@@ -756,6 +765,13 @@ impl EvalContext {
                 let child_lock = std::sync::OnceLock::new();
                 if let Some(env) = self.tycon_env.get() {
                     child_lock.set(std::sync::Arc::clone(env)).ok();
+                }
+                child_lock
+            },
+            match_signal_class: {
+                let child_lock = std::sync::OnceLock::new();
+                if let Some(info) = self.match_signal_class.get() {
+                    child_lock.set(info.clone()).ok();
                 }
                 child_lock
             },
@@ -803,6 +819,13 @@ impl EvalContext {
                 }
                 child_lock
             },
+            match_signal_class: {
+                let child_lock = std::sync::OnceLock::new();
+                if let Some(info) = self.match_signal_class.get() {
+                    child_lock.set(info.clone()).ok();
+                }
+                child_lock
+            },
             type_context: Arc::clone(&self.type_context),
         });
         (child_ctx, child_token)
@@ -836,6 +859,13 @@ impl EvalContext {
                 let child_lock = std::sync::OnceLock::new();
                 if let Some(env) = self.tycon_env.get() {
                     child_lock.set(std::sync::Arc::clone(env)).ok();
+                }
+                child_lock
+            },
+            match_signal_class: {
+                let child_lock = std::sync::OnceLock::new();
+                if let Some(info) = self.match_signal_class.get() {
+                    child_lock.set(info.clone()).ok();
                 }
                 child_lock
             },
@@ -874,6 +904,13 @@ impl EvalContext {
                 let child_lock = std::sync::OnceLock::new();
                 if let Some(env) = self.tycon_env.get() {
                     child_lock.set(std::sync::Arc::clone(env)).ok();
+                }
+                child_lock
+            },
+            match_signal_class: {
+                let child_lock = std::sync::OnceLock::new();
+                if let Some(info) = self.match_signal_class.get() {
+                    child_lock.set(info.clone()).ok();
                 }
                 child_lock
             },
@@ -920,6 +957,14 @@ impl EvalContext {
     ///    TyConEnv frozen after first input).
     pub fn set_tycon_env(&self, env: crate::type_def::TyConEnv) {
         self.tycon_env.set(std::sync::Arc::new(env)).ok();
+    }
+
+    /// Set the match-signal class info discovered during type checking.
+    /// When `Some((class_name, method_name))`, `call_to_match` looks up `method_name`
+    /// in the environment and `resolve_matchable_binding_from_fn` constructs instance
+    /// binding names using `class_name` and `method_name`. Silently no-ops if already set.
+    pub fn set_match_signal_class(&self, info: Option<(String, String)>) {
+        self.match_signal_class.set(info).ok();
     }
 
     /// Get the type constructor environment, if available.
@@ -2051,29 +2096,36 @@ fn eval_core_expr<'a>(
 /// # Side effects
 ///
 /// Mutates the thunk's internal state via `ThunkInner`. On success, transitions to
-/// Convert a tinct value to a match signal via the `to-match` dispatch function.
+/// Convert a tinct value to a match signal via the match-signal class dispatch function.
 ///
-/// Looks up the `to-match` class method dispatch function in the environment (injected
+/// Looks up the match-signal class method dispatch function in the environment (injected
 /// by ClassDecl lowering) and calls it with the value. The dispatch function internally
-/// resolves the correct Matchable instance binding based on the value's runtime type.
+/// resolves the correct instance binding based on the value's runtime type.
 ///
-/// Returns `false` in bootstrap/pre-prelude contexts (before the Matchable class
-/// declaration and its instances are loaded) or for types with no Matchable instance.
+/// The method name is discovered from `ctx.match_signal_class` (populated during type
+/// checking). Returns `false` in bootstrap/pre-prelude contexts (before the match-signal
+/// class declaration and its instances are loaded) or for types with no instance.
 pub async fn call_to_match(
     val: &Value,
     env: &Arc<RwLock<Environment>>,
     ctx: &Arc<EvalContext>,
     span: &Span,
 ) -> bool {
-    // Look up the `to-match` dispatch function in the environment.
-    // This function is injected by the ClassDecl lowering for Matchable and dispatches
+    // Get the match-signal method name from the EvalContext (discovered during type checking).
+    let method_name = match ctx.match_signal_class.get() {
+        Some(Some((_, method_name))) => method_name.as_str(),
+        _ => return false, // No match-signal class discovered — conservative false
+    };
+
+    // Look up the dispatch function in the environment.
+    // This function is injected by the ClassDecl lowering and dispatches
     // through instances based on the value's runtime type.
     let to_match_thunk = {
         let env_read = env.read().unwrap();
-        env_read.get_by_name("to-match")
+        env_read.get_by_name(method_name)
     };
     let Some(to_match_fn) = to_match_thunk else {
-        // to-match not in scope yet (bootstrap / pre-prelude context): conservative false
+        // Method not in scope yet (bootstrap / pre-prelude context): conservative false
         return false;
     };
 
@@ -2085,7 +2137,7 @@ pub async fn call_to_match(
         span.clone(),
         Arc::clone(env),
         span.clone(),
-        Some(Arc::from("to-match")),
+        Some(Arc::from(method_name)),
         Arc::clone(ctx),
         crate::builtins::synthetic_call_expr(span.clone()),
     ));
@@ -2146,41 +2198,48 @@ pub async fn call_to_match_resolved(
     }
 }
 
-/// Pre-resolve the Matchable instance binding name from a predicate function's return annotation.
+/// Pre-resolve the match-signal class instance binding name from a predicate function's
+/// return annotation.
 ///
 /// HOF builtins (sort, until, par-filter) call a predicate function on each element and then
 /// need to convert the result to a match signal. The standard approach calls `call_to_match`
-/// on every result, which routes through the top-level `to-match` dispatch function on each
-/// iteration (two-hop call: `call_to_match` → `to-match` → specific instance).
+/// on every result, which routes through the dispatch function on each iteration (two-hop
+/// call: `call_to_match` -> dispatch function -> specific instance).
 ///
 /// This function extracts the return type name from the predicate's `return_ann` annotation
-/// (e.g., `fn@Boolean` → "Boolean") and pre-computes the specific Matchable instance binding
-/// name (e.g., `"ɪɴꜱᴛᴀɴᴄᴇ⧼Matchable∷to-match⟨Boolean⟩⧽"`) ONCE before the loop.
-/// The builtin then passes this to `call_to_match_resolved` on each iteration, bypassing the
-/// `to-match` dispatch indirection and calling the instance binding directly (one-hop call).
+/// (e.g., `fn@Boolean` -> "Boolean") and pre-computes the specific instance binding name
+/// ONCE before the loop. The builtin then passes this to `call_to_match_resolved` on each
+/// iteration, bypassing the dispatch indirection and calling the instance binding directly
+/// (one-hop call).
 ///
-/// Returns `None` if the predicate has no return annotation or the annotation is not a simple
-/// type name (e.g., a PropertyDict annotation). In that case, callers should fall back to
-/// `call_to_match` for the standard two-hop dispatch.
+/// Returns `None` if the predicate has no return annotation, the annotation is not a simple
+/// type name, or no match-signal class has been discovered. In that case, callers should
+/// fall back to `call_to_match` for the standard two-hop dispatch.
 ///
-/// This does NOT look up the binding in the environment — it only extracts and formats the
+/// This does NOT look up the binding in the environment -- it only extracts and formats the
 /// name. The environment lookup happens inside `call_to_match_resolved` at call time.
-pub fn resolve_matchable_binding_from_fn(pred: &Value) -> Option<String> {
+pub fn resolve_matchable_binding_from_fn(pred: &Value, ctx: &EvalContext) -> Option<String> {
+    // Get match-signal class info from the context.
+    let (class_name, method_name) = match ctx.match_signal_class.get() {
+        Some(Some((cn, mn))) => (cn.as_str(), mn.as_str()),
+        _ => return None,
+    };
+
     let return_ann = match pred {
         Value::Function { return_ann, .. } => return_ann.as_ref()?,
-        // Builtins don't carry return annotations — fall back to dynamic dispatch.
+        // Builtins don't carry return annotations -- fall back to dynamic dispatch.
         _ => return None,
     };
     // Extract a simple type name from the annotation.
-    // `fn@Boolean` → Annotation::Simple("Boolean") → "Boolean"
-    // `fn@[return: Boolean  doc: "..."]` → Annotation::PropertyDict → not handled here;
+    // `fn@Boolean` -> Annotation::Simple("Boolean") -> "Boolean"
+    // `fn@[return: Boolean  doc: "..."]` -> Annotation::PropertyDict -> not handled here;
     // callers fall back to dynamic call_to_match for these forms.
-    // Annotated forms (e.g. fn@[Seq@Int]) are not Matchable targets — also fall back.
+    // Annotated forms (e.g. fn@[Seq@Int]) are not match-signal targets -- also fall back.
     let type_name = match &return_ann.node {
         crate::ast::Annotation::Simple(name) => name.as_str(),
         _ => return None,
     };
-    Some(crate::type_def::instance_binding_name("Matchable", "to-match", &[type_name]))
+    Some(crate::type_def::instance_binding_name(class_name, method_name, &[type_name]))
 }
 
 /// Call `call_to_match_resolved` if a pre-resolved binding name is available, otherwise
@@ -7659,7 +7718,7 @@ mod tests {
         desugar::desugar_surface_program(&mut program);
 
         // Production path: typecheck returns the tycon_env.
-        let (_errors, _expects, tycon_env) =
+        let (_errors, _expects, tycon_env, _match_signal) =
             crate::typecheck::typecheck_surface_program_annotation_table(&program).await;
 
         // Verify the typecheck pass actually populated the env for "Color".
@@ -8701,7 +8760,7 @@ mod tests {
         // Typecheck: writes type annotations inline on AST nodes and populates `expects_resolved`
         // with the span of the `expects: @String` annotation mapped to `Type::Str`.
         // Without this map the TypeAssert falls back to `Type::Unknown` (accepts everything).
-        let (_type_errors, expects_resolved, _tycon_env) =
+        let (_type_errors, expects_resolved, _tycon_env, _match_signal) =
             crate::typecheck::typecheck_surface_program_annotation_table(&program).await;
         assert!(
             !expects_resolved.is_empty(),

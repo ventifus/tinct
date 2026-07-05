@@ -358,6 +358,7 @@ pub async fn typecheck_surface_program_annotation_table(
     Vec<TypeError>,
     HashMap<crate::ast::Span, Type>,
     crate::type_def::TyConEnv,
+    Option<(String, String)>, // match_signal_class: (class_name, method_name)
 ) {
     let mut errors = Vec::new();
     // get_builtin_core_type_env returns Arc<TypeEnv>; convert to Rc<TypeEnv> for the internal
@@ -416,7 +417,7 @@ pub async fn typecheck_surface_program_annotation_table(
         pipeline_type = doc_output_type;
     }
 
-    (errors, state.expects_resolved, state.tycon_env)
+    (errors, state.expects_resolved, state.tycon_env, state.match_signal_class)
 }
 
 /// Type-check a `SurfaceProgram` with a given initial type environment.
@@ -1898,18 +1899,19 @@ fn record_pattern_elaborations(elaborated: &Pattern, original: &Pattern) {
     }
 }
 
-/// Resolve the Matchable instance `to-match` binding for a predicate pattern at compile time.
+/// Resolve the match-signal class instance binding for a predicate pattern at compile time.
 ///
 /// Type-checks the predicate call expression to infer its return type, then looks up the
-/// Matchable instance for that type in the instance environment. If found, the instance
-/// binding name (e.g., `"ɪɴꜱᴛᴀɴᴄᴇ⧼Matchable∷to-match⟨Boolean⟩⧽"`) is written to the
-/// pattern's `MatchableBinding` OnceLock for the evaluator to use directly.
+/// match-signal class instance for that type in the instance environment. If found, the
+/// instance binding name (e.g., `"ɪɴꜱᴛᴀɴᴄᴇ⧼Matchable∷to-match⟨Boolean⟩⧽"`) is written to
+/// the pattern's `MatchableBinding` OnceLock for the evaluator to use directly.
 ///
 /// This avoids dynamic dispatch at runtime: the evaluator no longer needs to derive the
 /// type name from the value and look up the binding dynamically via `call_to_match`.
 ///
-/// If type inference fails or no Matchable instance exists for the inferred return type,
-/// the MatchableBinding is left empty and the evaluator falls back to dynamic dispatch.
+/// If type inference fails, no match-signal class is registered, or no instance exists for
+/// the inferred return type, the MatchableBinding is left empty and the evaluator falls back
+/// to dynamic dispatch.
 async fn resolve_predicate_matchable(
     call: &std::sync::Arc<crate::ast::SurfaceNode>,
     to_match_binding: &crate::ast::MatchableBinding,
@@ -1918,6 +1920,12 @@ async fn resolve_predicate_matchable(
     constraints: &mut Vec<Constraint>,
     type_map: &mut Option<&mut TypeMap>,
 ) {
+    // Read match-signal class info from state (discovered during class registration).
+    let (class_name, method_name) = match &state.match_signal_class {
+        Some((cn, mn)) => (cn.clone(), mn.clone()),
+        None => return, // No match-signal class registered yet — leave binding unresolved
+    };
+
     // Type-check the predicate call expression to infer its return type.
     // Use a temporary constraints/type_map to avoid polluting the outer context.
     let pred_ty = match infer_surface_expr(call, env, state, constraints, type_map).await {
@@ -1927,7 +1935,8 @@ async fn resolve_predicate_matchable(
 
     // Map the inferred return type to the type name used in instance binding lookup.
     if let Some(type_name) = type_to_matchable_key(&pred_ty) {
-        let binding_name = crate::type_def::to_match_binding_for_type(&type_name);
+        let binding_name =
+            crate::type_def::instance_binding_name(&class_name, &method_name, &[&type_name]);
         to_match_binding.set(Some(binding_name));
     }
 }
@@ -3234,13 +3243,18 @@ pub(crate) fn infer_surface_expr<'a>(
                         let guard_ty =
                             infer_surface_expr(guard, &arm_env, state, constraints, type_map)
                                 .await?;
-                        // Resolve Matchable instance binding for the guard's return type.
+                        // Resolve match-signal class instance binding for the guard's return type.
                         // Writes the binding name to arm.guard_matchable_binding so the lowerer
                         // carries it through to CoreMatchArm and the evaluator uses it directly.
-                        if let Some(type_name) = type_to_matchable_key(&guard_ty) {
-                            let binding_name =
-                                crate::type_def::to_match_binding_for_type(&type_name);
-                            arm.guard_matchable_binding.set(Some(binding_name));
+                        if let Some((ref class_name, ref method_name)) = state.match_signal_class {
+                            if let Some(type_name) = type_to_matchable_key(&guard_ty) {
+                                let binding_name = crate::type_def::instance_binding_name(
+                                    class_name,
+                                    method_name,
+                                    &[&type_name],
+                                );
+                                arm.guard_matchable_binding.set(Some(binding_name));
+                            }
                         }
                         // extract_narrowings walks SurfaceExpression natively — pass guard directly.
                         // Uses arm_env to look up param_narrowings on called functions.
@@ -3984,6 +3998,22 @@ async fn infer_class_decl_from_surface(
     for (param_name, kind) in &class_decl_arc.params {
         if *kind == Kind::Operator {
             state.set_kind(param_name.clone(), Kind::Operator);
+        }
+    }
+
+    // Discover match-signal class: if this class has exactly 1 type parameter and a method
+    // whose return type is Int, it serves as the match-signal dispatch class for pattern
+    // matching. Record (class_name, method_name) so the pattern matching engine can resolve
+    // Matchable instance bindings without hardcoding class or method names.
+    if class_decl_arc.params.len() == 1 && state.match_signal_class.is_none() {
+        for (method_name, method_type) in &class_decl_arc.method_signatures {
+            if let crate::type_def::Type::Function { ret, .. } = method_type {
+                if **ret == crate::type_def::Type::Int {
+                    state.match_signal_class =
+                        Some((class_decl_arc.name.clone(), method_name.clone()));
+                    break;
+                }
+            }
         }
     }
 
