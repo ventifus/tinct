@@ -1,4 +1,6 @@
-# No Addable instance for String+String — should error
+# No Addable instance for String+String — should error with type mismatch.
+# The + operator dispatches through the Addable Int instance, then builtin-add
+# rejects non-numeric operands with a type mismatch error.
 [+ "hello" "world"]
 === error
-no instance for Addable (String, String)
+type mismatch: expected Int or Float, got String and String

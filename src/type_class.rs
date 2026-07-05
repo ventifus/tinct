@@ -89,32 +89,22 @@ impl Constraint {
     /// Create a single-parameter Class constraint from a class name string.
     /// Constructs a minimal `ClassDecl` with just the name (no params, superclasses, or FDs).
     ///
-    /// **WARNING: This method is ONLY safe for non-FD classes.**
+    /// **WARNING: This method is ONLY safe for classes that have no functional dependencies.**
     ///
     /// Used in built-in environment construction where the full `ClassDecl` is not yet available.
     /// Because `new_by_name` creates a `ClassDecl` with `determines: vec![]`, using it for
-    /// FD-bearing classes (Addable, Subtractable, Multipliable, Divisible, Indexable, Concatable)
-    /// causes functional dependency improvement to silently skip: `improve_functional_dependency`
-    /// finds no FDs in the minimal ClassDecl and cannot resolve determined types from determining types.
+    /// FD-bearing classes causes functional dependency improvement to silently skip:
+    /// `improve_functional_dependency` finds no FDs in the minimal ClassDecl and cannot resolve
+    /// determined types from determining types.
     ///
-    /// For FD-bearing classes, use `state.class_env.get(class_name)` to retrieve the full `ClassDecl`
-    /// with functional dependencies, then construct `Constraint::Class { class, vars, .. }` directly.
-    ///
-    /// Safe for non-FD classes: Equatable, Comparable, Showable, Mappable, Appendable.
+    /// For classes with functional dependencies, use `state.class_env.get(class_name)` to
+    /// retrieve the full `ClassDecl`, then construct `Constraint::Class { class, vars, .. }` directly.
     ///
     /// **Audit findings (B-315):**
-    /// - `src/builtins_core.rs:1402` — safe (Showable)
-    /// - `src/type_env.rs:2067` — safe (Showable, test code)
+    /// - `src/builtins_core.rs:1402` — safe (Showable, no FDs)
+    /// - `src/type_env.rs:2067` — safe (Showable, no FDs, test code)
     pub fn new_by_name(name: impl Into<String>, var: impl Into<String>) -> Self {
         let name = name.into();
-        debug_assert!(
-            !matches!(
-                name.as_str(),
-                "Addable" | "Subtractable" | "Multipliable" | "Divisible" | "Indexable" | "Concatable"
-            ),
-            "Constraint::new_by_name used for FD-bearing class '{}' — use state.class_env lookup instead",
-            name
-        );
         let class = Arc::new(ClassDecl {
             name,
             params: vec![],

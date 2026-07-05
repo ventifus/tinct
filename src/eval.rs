@@ -2085,8 +2085,7 @@ pub async fn call_to_match(
     };
 
     // Compute the instance binding name and look it up in the environment.
-    let binding_name =
-        crate::type_def::instance_binding_name("Matchable", "to-match", &[type_name]);
+    let binding_name = crate::type_def::to_match_binding_for_type(type_name);
 
     let to_match_thunk = {
         let env_read = env.read().unwrap();
@@ -2105,7 +2104,7 @@ pub async fn call_to_match(
         span.clone(),
         Arc::clone(env),
         span.clone(),
-        Some(Arc::from("to-match")),
+        Some(Arc::from(binding_name.as_str())),
         Arc::clone(ctx),
         crate::builtins::synthetic_call_expr(span.clone()),
     ));
@@ -2138,8 +2137,10 @@ pub async fn call_to_match_resolved(
     };
     let Some(to_match_fn) = to_match_thunk else {
         // Binding not found — instance not loaded yet (bootstrap / pre-prelude context).
-        // Fall back to dynamic dispatch as a safety net.
-        return call_to_match(val, env, ctx, span).await;
+        // Return false conservatively: the type checker guarantees this binding is set
+        // for any pattern that can reach here. If prelude is not loaded yet, the pattern
+        // cannot validly fire anyway.
+        return false;
     };
 
     let val_thunk = Arc::new(Thunk::new_materialized(val.clone(), span.clone()));
@@ -2150,7 +2151,7 @@ pub async fn call_to_match_resolved(
         span.clone(),
         Arc::clone(env),
         span.clone(),
-        Some(Arc::from("to-match")),
+        Some(Arc::from(binding_name)),
         Arc::clone(ctx),
         crate::builtins::synthetic_call_expr(span.clone()),
     ));

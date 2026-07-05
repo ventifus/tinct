@@ -2400,6 +2400,19 @@ pub fn instance_binding_name(class: &str, method: &str, type_args: &[&str]) -> S
     }
 }
 
+/// Compute the environment binding name for the `Matchable` class's `to-match` method
+/// for the given type argument.
+///
+/// This is equivalent to `instance_binding_name("Matchable", "to-match", &[type_name])`
+/// but avoids scattering the class and method names as separate string literals throughout
+/// the codebase. All Rust code that needs to resolve or generate Matchable to-match
+/// bindings should call this function rather than constructing the name ad hoc.
+///
+/// The returned name has the form: `ɪɴꜱᴛᴀɴᴄᴇ⧼Matchable∷to-match⟨TypeName⟩⧽`
+pub fn to_match_binding_for_type(type_name: &str) -> String {
+    format!("ɪɴꜱᴛᴀɴᴄᴇ⧼Matchable∷to-match⟨{type_name}⟩⧽")
+}
+
 pub fn check_kind_wellformed(
     ty: &Type,
     kind_env: &HashMap<String, Kind>,

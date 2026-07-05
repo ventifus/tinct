@@ -84,10 +84,12 @@ pub(crate) fn builtin_add(
                 check_int_to_float_precision(*b, args[1].span.clone())?;
                 check_float_result(a + (*b as f64), "+", call_span)
             }
-            _ => {
-                let type_tags = vec![left.type_name().to_string(), right.type_name().to_string()];
-                Err(EvalError::no_instance("Addable", type_tags, call_span).into())
-            }
+            _ => Err(EvalError::type_mismatch(
+                "Int or Float",
+                &format!("{} and {}", left.type_name(), right.type_name()),
+                call_span,
+            )
+            .into()),
         }
     })
 }
@@ -130,10 +132,12 @@ pub(crate) fn builtin_sub(
                 check_int_to_float_precision(*b, args[1].span.clone())?;
                 check_float_result(a - (*b as f64), "-", call_span)
             }
-            _ => {
-                let type_tags = vec![left.type_name().to_string(), right.type_name().to_string()];
-                Err(EvalError::no_instance("Subtractable", type_tags, call_span).into())
-            }
+            _ => Err(EvalError::type_mismatch(
+                "Int or Float",
+                &format!("{} and {}", left.type_name(), right.type_name()),
+                call_span,
+            )
+            .into()),
         }
     })
 }
@@ -176,10 +180,12 @@ pub(crate) fn builtin_mul(
                 check_int_to_float_precision(*b, args[1].span.clone())?;
                 check_float_result(a * (*b as f64), "*", call_span)
             }
-            _ => {
-                let type_tags = vec![left.type_name().to_string(), right.type_name().to_string()];
-                Err(EvalError::no_instance("Multipliable", type_tags, call_span).into())
-            }
+            _ => Err(EvalError::type_mismatch(
+                "Int or Float",
+                &format!("{} and {}", left.type_name(), right.type_name()),
+                call_span,
+            )
+            .into()),
         }
     })
 }
@@ -227,10 +233,12 @@ pub(crate) fn builtin_div_float(
                 check_int_to_float_precision(*b, args[1].span.clone())?;
                 check_float_result(a / (*b as f64), "/", call_span)
             }
-            _ => {
-                let type_tags = vec![left.type_name().to_string(), right.type_name().to_string()];
-                Err(EvalError::no_instance("Divisible", type_tags, call_span).into())
-            }
+            _ => Err(EvalError::type_mismatch(
+                "Int or Float",
+                &format!("{} and {}", left.type_name(), right.type_name()),
+                call_span,
+            )
+            .into()),
         }
     })
 }
@@ -1326,9 +1334,9 @@ mod tests {
         assert_eq!(t.try_get_materialized(), Some(Value::Int(42)));
     }
 
-    /// Non-numeric types with no Addable instance → NoInstance error.
+    /// Non-numeric types produce a TypeMismatch error for builtin-add.
     #[test]
-    fn test_add_non_numeric_no_instance_error() {
+    fn test_add_non_numeric_type_mismatch_error() {
         use crate::value::string_val;
         let result = run(builtin_add(BuiltinArgs {
             args: vec![thunk(string_val("a")), thunk(string_val("b"))],
@@ -1337,15 +1345,15 @@ mod tests {
             ctx: test_ctx(),
             caller_env: Arc::new(RwLock::new(Environment::new())),
         }));
-        // With dispatch restored: String+String → no Addable instance → NoInstance error.
+        // Non-Int/Float operands produce a TypeMismatch error.
         assert!(
             result.is_err(),
-            "expected NoInstance error for String + String"
+            "expected TypeMismatch error for String + String"
         );
         let err = result.unwrap_err();
         assert!(
-            matches!(&err.kind, ErrorKind::NoInstance { .. }),
-            "expected NoInstance, got: {:?}",
+            matches!(&err.kind, ErrorKind::TypeMismatch { .. }),
+            "expected TypeMismatch, got: {:?}",
             err.kind
         );
     }

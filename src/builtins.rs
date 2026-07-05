@@ -5042,10 +5042,10 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        // Non-Int/Float operands produce a NoInstance error for the Addable class.
+        // Non-Int/Float operands produce a TypeMismatch error.
         assert!(
-            e.kind.to_string().contains("no instance") || e.kind.to_string().contains("Addable"),
-            "expected NoInstance error for Int + String, got: {}",
+            matches!(&e.kind, crate::error::ErrorKind::TypeMismatch { .. }),
+            "expected TypeMismatch error for Int + String, got: {}",
             e.kind
         );
     }
@@ -5265,11 +5265,10 @@ mod tests {
         }))
         .await
         .unwrap_err();
-        // Non-Int/Float operands produce a NoInstance error for the Subtractable class.
+        // Non-Int/Float operands produce a TypeMismatch error.
         assert!(
-            e.kind.to_string().contains("no instance")
-                || e.kind.to_string().contains("Subtractable"),
-            "expected NoInstance error for Int - String, got: {}",
+            matches!(&e.kind, crate::error::ErrorKind::TypeMismatch { .. }),
+            "expected TypeMismatch error for Int - String, got: {}",
             e.kind
         );
     }

@@ -1927,8 +1927,7 @@ async fn resolve_predicate_matchable(
 
     // Map the inferred return type to the type name used in instance binding lookup.
     if let Some(type_name) = type_to_matchable_key(&pred_ty) {
-        let binding_name =
-            crate::type_def::instance_binding_name("Matchable", "to-match", &[type_name.as_str()]);
+        let binding_name = crate::type_def::to_match_binding_for_type(&type_name);
         to_match_binding.set(Some(binding_name));
     }
 }
@@ -3239,11 +3238,8 @@ pub(crate) fn infer_surface_expr<'a>(
                         // Writes the binding name to arm.guard_matchable_binding so the lowerer
                         // carries it through to CoreMatchArm and the evaluator uses it directly.
                         if let Some(type_name) = type_to_matchable_key(&guard_ty) {
-                            let binding_name = crate::type_def::instance_binding_name(
-                                "Matchable",
-                                "to-match",
-                                &[type_name.as_str()],
-                            );
+                            let binding_name =
+                                crate::type_def::to_match_binding_for_type(&type_name);
                             arm.guard_matchable_binding.set(Some(binding_name));
                         }
                         // extract_narrowings walks SurfaceExpression natively — pass guard directly.
