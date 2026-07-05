@@ -58,9 +58,9 @@ use crate::stream::builtin_to_tinct;
 // Meta/eval implementations.
 use crate::builtins_meta::{
     builtin_annotation_of, builtin_apply, builtin_ast_of, builtin_ast_to_program, builtin_big_int,
-    builtin_blake3, builtin_builtin_module, builtin_cap_identity, builtin_current_env,
-    builtin_decimal, builtin_eval, builtin_eval_macro_ast, builtin_eval_repr, builtin_eval_types,
-    builtin_extend_env, builtin_force, builtin_fork_type_ctx, builtin_gensym,
+    builtin_blake3, builtin_builtin_module, builtin_cap_identity, builtin_class_dispatch,
+    builtin_current_env, builtin_decimal, builtin_eval, builtin_eval_macro_ast, builtin_eval_repr,
+    builtin_eval_types, builtin_extend_env, builtin_force, builtin_fork_type_ctx, builtin_gensym,
     builtin_get_type_context, builtin_include_cache_get, builtin_include_cache_put,
     builtin_is_contractive, builtin_llt_repr, builtin_load, builtin_macro_error,
     builtin_macro_injects, builtin_make_annotated, builtin_make_type_ctx, builtin_parse,
@@ -607,6 +607,17 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             2
         ),
         builtin!("builtin-until", builtin_until),
+        // ── Typeclass dispatch ──────────────────────────────────────────────────────
+        // Generic runtime dispatch for class methods. Emitted by ClassDecl lowering.
+        // First two args (class_name, method_name) are eagerly materialized; the rest
+        // are the method's actual arguments and are materialized for dispatch tag
+        // extraction then passed through as lazy thunks.
+        builtin!(
+            "builtin-class-dispatch",
+            builtin_class_dispatch,
+            [Strictness::Seq, Strictness::Seq],
+            2
+        ),
         // ── Type introspection ───────────────────────────────────────────────────────
         builtin!("builtin-type-of", builtin_type_of, [Strictness::Seq]),
         builtin!("builtin-ast-of", builtin_ast_of, [Strictness::Id]),

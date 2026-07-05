@@ -1032,6 +1032,35 @@ impl Value {
         }
     }
 
+    /// Extract the dispatch type tag from a value for typeclass instance binding lookup.
+    ///
+    /// For variants (e.g., `Boolean.True`), returns the type prefix before the first '.'
+    /// (e.g., `"Boolean"`). For primitive types, returns the type name directly
+    /// (e.g., `"Int"`, `"Float"`, `"String"`). For types without typeclass dispatch
+    /// support, returns `None`.
+    ///
+    /// The returned string matches the annotation tags used in instance arm patterns
+    /// (e.g., `@Boolean` in `[let a@Boolean]`), so that
+    /// `instance_binding_name(class, method, &[dispatch_type_name])` produces the
+    /// correct binding name for environment lookup.
+    pub fn dispatch_type_name(&self) -> Option<&str> {
+        match self {
+            Value::Int(_) | Value::U64(_) => Some("Int"),
+            Value::Float(_) => Some("Float"),
+            Value::String { .. } => Some("String"),
+            Value::Decimal(_) => Some("Decimal"),
+            Value::BigInt(_) => Some("BigInt"),
+            Value::Bytes { .. } => Some("Bytes"),
+            Value::Dict(_) | Value::Overlay(..) => Some("Dict"),
+            Value::Variant { tag, .. } => {
+                // "Color.Red" → "Color", "Boolean.True" → "Boolean"
+                Some(tag.split('.').next().unwrap_or(tag.as_str()))
+            }
+            Value::Annotated { inner, .. } => inner.dispatch_type_name(),
+            _ => None,
+        }
+    }
+
     /// Extract a string slice from a `Value::String`, or `None` if not a string.
     pub fn as_str(&self) -> Option<&str> {
         match self {

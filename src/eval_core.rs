@@ -645,14 +645,20 @@ pub(crate) fn eval_core_expr<'a>(
                 name, level, slot, ..
             } => {
                 // Variable lookup with de Bruijn coordinates — O(1) slot-based lookup.
-                // The do-infer sentinel block that previously used get_by_name was removed:
-                // EvalContext.do_infer_resolutions is never populated (set_do_infer_resolutions
-                // is defined but never called from any pipeline path), making the block dead code.
-                // The sentinel evaluates via the normal get_slot path below.
                 let env_lock = env.read().unwrap();
                 match env_lock.get_slot(*level, *slot) {
                     Some(thunk) => Ok(thunk),
                     None => {
+                        // Slot lookup failed. For lowerer-synthesized references (e.g.,
+                        // class method dispatch functions that reference builtin-class-dispatch),
+                        // the de Bruijn coordinates are unavailable at lowering time. These use
+                        // the sentinel (level=u32::MAX, slot=u32::MAX) and fall back to name-based
+                        // lookup through the environment chain.
+                        if *level == u32::MAX && *slot == u32::MAX {
+                            if let Some(thunk) = env_lock.get_by_name(name) {
+                                return Ok(thunk);
+                            }
+                        }
                         drop(env_lock);
                         Err(EvalError::undefined_variable(name.clone(), span.clone()).into())
                     }

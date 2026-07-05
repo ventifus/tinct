@@ -890,14 +890,24 @@ fn surface_dict_static_keys(entries: &[Spanned<SurfaceEntry>]) -> Vec<String> {
     for entry in entries {
         if let SurfaceExpression::Decl(decl) = &entry.node.value.expr {
             match decl.as_ref() {
-                SurfaceDeclaration::ClassDecl { .. } => {
+                SurfaceDeclaration::ClassDecl { methods, .. } => {
                     // Named ClassDecl (outer key present): the outer key gets a slot so that
                     // leading-dot re-exports (`Indexable: .Indexable`) work across dict
                     // boundaries. The runtime value is an empty dict (lowerer emits one).
-                    // Class methods are NOT static keys — they are dispatched via call_dispatch.
                     if let Some(key_node) = &entry.node.key {
                         if let Some(name) = static_entry_key(key_node) {
                             keys.push(name);
+                        }
+                    }
+                    // Inject class method names as static keys so the lowerer's
+                    // dispatch function entries get proper letrec slots. Each class
+                    // method becomes a top-level callable that dispatches through
+                    // instances at runtime.
+                    for method in methods {
+                        if let Some(key_node) = &method.node.key {
+                            if let Some(method_name) = static_entry_key(key_node) {
+                                keys.push(method_name);
+                            }
                         }
                     }
                 }
