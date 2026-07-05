@@ -1951,10 +1951,9 @@ fn type_to_matchable_key(ty: &Type) -> Option<String> {
             tag.split('.').next().map(|s| s.to_string())
         }
         Type::Unknown => {
-            // Gradual typing: Unknown is consistent with any type. Default to Boolean
-            // since most predicates return Boolean values. The evaluator's fallback
-            // (call_to_match) handles the case where this guess is wrong.
-            Some("Boolean".to_string())
+            // Gradual typing: Unknown — can't resolve Matchable instance at compile time.
+            // Return None; the evaluator falls back to dynamic to-match dispatch.
+            None
         }
         _ => None,
     }

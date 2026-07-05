@@ -656,46 +656,18 @@ pub(crate) async fn check_do_infer(
 /// Note: If type-level resolution fails, see `resolve_monad_from_expr` for AST-level fallback.
 pub(crate) fn resolve_monad_from_type(ty: &Type, _state: &InferState) -> Option<String> {
     match ty {
-        // App(Result, _) — nominal Result type constructor applied to a type argument
-        Type::App(f, _) => {
-            if let Type::Operator(name) = f.as_ref() {
-                if name == "Result" {
-                    return Some("result".to_string());
-                }
-            }
-            None
-        }
-        // Operator("Result") — bare Result type constructor (not yet applied to a type arg).
-        //
-        // Reachability: this arm is reached when the inferred type of a [do] binding's RHS
-        // is the bare type constructor `Result` rather than `App(Result, a)`. In the current
-        // type system, this can occur if a variable is annotated as `@Result` (the operator
-        // itself, without a type argument) or if a future typed-expr-constructors pass emits
-        // Operator("Result") before application. With the current untyped variant constructors
-        // (Ok/Error infer as Unknown), Rule 2 type-level never reaches this arm in practice —
-        // the AST fallback (Rule 2b / resolve_monad_from_expr) handles those cases instead.
-        //
-        // TODO: verify reachability once constructor types are tracked (typed-expr-constructors
-        // sprint). If App(Result, _) always subsumes bare Operator("Result") after that sprint,
-        // this arm can be removed.
-        Type::Operator(name) => {
-            if name == "Result" {
-                Some("result".to_string())
-            } else {
-                None
-            }
-        }
+        // Parameterized type constructors: monad identity must come from a Monad typeclass
+        // declaration, not from the type constructor name. Hardcoding "Result" would tie
+        // [do] to a specific prelude type name. Return None — monad resolution must use
+        // the AST-level fallback (resolve_monad_from_expr) or explicit return annotation.
+        Type::App(_, _) => None,
+        Type::Operator(_) => None,
         // NominalVariant types do not map to monad names directly.
         // Monad resolution for nominal variants happens via the qualified tag in resolve_monad_from_surface.
         Type::NominalVariant { .. } => None,
-        // Record with ok and/or err fields — structural Result-like type
-        Type::Record(row) => {
-            if row.fields.contains_key("ok") || row.fields.contains_key("err") {
-                Some("result".to_string())
-            } else {
-                None
-            }
-        }
+        // Record fields cannot be used to identify monads — field name heuristics
+        // (e.g. "ok"/"err") would hardcode prelude field conventions in Rust.
+        Type::Record(_) => None,
         // Union — check if all members that resolve to a monad agree on the same one
         Type::Union(members) => {
             let mut resolved = None;
