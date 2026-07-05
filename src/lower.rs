@@ -423,7 +423,6 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
             // reference to the instance binding name.
             let lowered_func = if let SurfaceExpression::VarRef {
                 name,
-                resolution: _,
                 call_dispatch,
                 ..
             } = &func.expr

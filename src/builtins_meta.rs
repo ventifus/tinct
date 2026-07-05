@@ -2052,7 +2052,48 @@ pub(crate) fn builtin_typecheck(
             caller_env,
             ..
         } = ctx_arg;
-        crate::builtins::reject_named("builtin-typecheck", named.as_ref(), call_span.clone())?;
+        // Extract optional env: named argument (the runtime env the program was resolved
+        // against). Used to scan for instance binding slots for typeclass dispatch.
+        // Reject any other named arguments.
+        let opt_env_thunk = if let Some(ref named_map) = named {
+            let unknown: Vec<&str> = named_map
+                .keys()
+                .filter(|k| k.as_str() != "env")
+                .map(|k| k.as_str())
+                .collect();
+            if !unknown.is_empty() {
+                return Err(EvalError::user_error(
+                    format!(
+                        "builtin-typecheck: unknown named arguments: {}",
+                        unknown.join(", ")
+                    ),
+                    call_span.clone(),
+                )
+                .into());
+            }
+            named_map.get("env").cloned()
+        } else {
+            None
+        };
+        // Materialize the env: argument if present.
+        let env_for_slots: Option<Arc<std::sync::RwLock<crate::value::Environment>>> =
+            if let Some(env_thunk) = opt_env_thunk {
+                let env_val = materialize(&env_thunk, Some(&call_span), &ctx).await?;
+                match env_val {
+                    Value::Environment(arc) => Some(arc),
+                    other => {
+                        return Err(EvalError::type_mismatch_ctx(
+                            "builtin-typecheck env:".to_string(),
+                            "Environment",
+                            other.type_name(),
+                            call_span,
+                        )
+                        .into());
+                    }
+                }
+            } else {
+                None
+            };
         // Accept 1 or 2 args: program, [type-ctx]
         if args.is_empty() || args.len() > 2 {
             return Err(EvalError::arity_mismatch(1, args.len(), call_span).into());
@@ -2107,9 +2148,17 @@ pub(crate) fn builtin_typecheck(
                 // These are populated by the lowerer when it flattens InstanceDecl entries.
                 // The type checker uses them to write call_dispatch coordinates for typeclass
                 // method calls (level from the class method stub VarRef resolution, slot here).
+                //
+                // Use the explicit env: argument if provided (the env the program was resolved
+                // against, which contains instance bindings from prelude). Fall back to
+                // caller_env if env: was not provided.
+                let scan_env = env_for_slots
+                    .as_ref()
+                    .map(Arc::clone)
+                    .unwrap_or_else(|| Arc::clone(&caller_env));
                 let instance_binding_slots = {
                     let mut slots = std::collections::HashMap::new();
-                    let mut current = Some(Arc::clone(&caller_env));
+                    let mut current = Some(Arc::clone(&scan_env));
                     while let Some(env_arc) = current {
                         let env_guard = env_arc.read().unwrap();
                         for (i, key) in env_guard.slot_names.iter().enumerate() {
@@ -2127,6 +2176,8 @@ pub(crate) fn builtin_typecheck(
                 // Run the full typecheck pass seeded from the accumulated env.
                 // All type annotations are written inline on AST nodes.
                 // enable_scheme_map=false, resolution_table=None (program already resolved).
+                // main_env: pass the scan_env (program's runtime env) so type-stage
+                // evaluations can find runtime type constructors (Boolean, Seq, etc.).
                 let (errors, _type_map, _doc_map, _scheme_map, _diagnostics, state, final_env) =
                     crate::typecheck::typecheck_surface_program_with_env(
                         &surface_program,
@@ -2134,7 +2185,7 @@ pub(crate) fn builtin_typecheck(
                         false, // enable_scheme_map
                         None,  // resolution_table
                         instance_binding_slots,
-                        Some(Arc::clone(&caller_env)),
+                        Some(scan_env),
                     )
                     .await;
 

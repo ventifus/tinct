@@ -254,7 +254,7 @@
       parse-result.program.documents]]
     # Typecheck with the fully-built final-env so TypeContext gets correct type info.
     [tc-resolved: [builtin-resolve parse-result.program env: final-env]]
-    [typed:       [builtin-typecheck tc-resolved.resolved [builtin-get-type-context]]]
+    [typed:       [builtin-typecheck tc-resolved.resolved [builtin-get-type-context] env: final-env]]
     # Emit diagnostics via data dependency (no >> needed).
     [n-tc:        [builtin-length [emit-diagnostics tc-resolved.errors]]]
     [n-warn:      [builtin-length [emit-diagnostics typed.warnings]]]
@@ -349,23 +349,25 @@
     [resolved-prog: resolve-result.resolved]
     [mod-scope: [uses-scope resolved-prog.uses]]
     # Typecheck: accumulates inference_env and collects diagnostics.
-    [typed: [builtin-typecheck resolved-prog [builtin-get-type-context prelude]]]
+    [typed: [builtin-typecheck resolved-prog [builtin-get-type-context prelude] env: prelude]]
     # Emit all typecheck diagnostics as a data dependency (no >> needed).
     [_te:    [builtin-length [emit-diagnostics typed.warnings]]]
     # Force emission of all diagnostics before evaluating documents.
     # builtin-if with identical branches always returns the reduce result
     # while ensuring _pe, _re, _te are forced (their sum is the condition).
+    # Use typed.documents to ensure typecheck call_dispatch annotations are
+    # written before the lowerer reads them during builtin-eval.
     [builtin-if [builtin-eq-int [builtin-add _pe [builtin-add _re _te]] 0]
       [reduce
         [fn [let state doc]
           [eval-document-runtime state mod-scope doc file-include-dir prelude emit-ch]]
         [percent: prev  named: []]
-        parse-result.program.documents].percent
+        typed.documents].percent
       [reduce
         [fn [let state doc]
           [eval-document-runtime state mod-scope doc file-include-dir prelude emit-ch]]
         [percent: prev  named: []]
-        parse-result.program.documents].percent]]
+        typed.documents].percent]]
 
   eval-expr: [fn [let src prev include-dir prelude emit-ch]
     [bytes:        [builtin-str-bytes src]]
@@ -377,19 +379,19 @@
     [_re:          [builtin-length [emit-diagnostics resolve-result.errors]]]
     [resolved-prog: resolve-result.resolved]
     [mod-scope: [uses-scope resolved-prog.uses]]
-    [typed: [builtin-typecheck resolved-prog [builtin-get-type-context prelude]]]
+    [typed: [builtin-typecheck resolved-prog [builtin-get-type-context prelude] env: prelude]]
     [_te:    [builtin-length [emit-diagnostics typed.warnings]]]
     [builtin-if [builtin-eq-int [builtin-add _pe [builtin-add _re _te]] 0]
       [reduce
         [fn [let state doc]
           [eval-document-runtime state mod-scope doc include-dir prelude emit-ch]]
         [percent: prev  named: []]
-        parse-result.program.documents].percent
+        typed.documents].percent
       [reduce
         [fn [let state doc]
           [eval-document-runtime state mod-scope doc include-dir prelude emit-ch]]
         [percent: prev  named: []]
-        parse-result.program.documents].percent]]
+        typed.documents].percent]]
 
   # ── CLI pipeline ──────────────────────────────────────────────────────────
   # Threads include-dir, prelude, and emit-ch — the only things that vary.

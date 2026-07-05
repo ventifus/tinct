@@ -200,7 +200,7 @@
     [full-env: [builtin-extend-env final-env exported]]
     # Typecheck with the fully-built final-env so TypeContext gets correct prelude type info.
     [tc-resolved: [builtin-resolve parse-result.program env: full-env]]
-    [typed:       [builtin-typecheck tc-resolved.resolved [builtin-get-type-context]]]
+    [typed:       [builtin-typecheck tc-resolved.resolved [builtin-get-type-context] env: full-env]]
     # Emit diagnostics via data dependency (no >> needed).
     [n-tc:        [builtin-length [emit-diagnostics tc-resolved.errors]]]
     [n-warn:      [builtin-length [emit-diagnostics typed.warnings]]]
@@ -291,7 +291,7 @@
     # Resolve and typecheck the test source to collect diagnostics (for === warn).
     [resolve-result: [builtin-resolve parse-result.program env: base-env]]
     [resolved-prog:  resolve-result.resolved]
-    [typed:          [builtin-typecheck resolved-prog [builtin-get-type-context prelude]]]
+    [typed:          [builtin-typecheck resolved-prog [builtin-get-type-context prelude] env: base-env]]
 
     # Accumulate resolve errors + typecheck warnings into warn-box.
     [resolve-count: [builtin-length resolve-result.errors]]
@@ -308,11 +308,14 @@
 
     # Evaluate test source document by document, threading env.
     # The final env has .% = the last expression's result value.
+    # Use typed.documents (not resolved-prog.documents) to create an explicit data
+    # dependency on the typecheck pass. This ensures call_dispatch annotations are
+    # written to AST nodes before the lowerer reads them during builtin-eval.
     [test-env: [reduce
       [fn [let env doc]
         [builtin-eval doc env: env]]
       base-env
-      resolved-prog.documents]]
+      typed.documents]]
 
     # Format the test result directly using builtin-llt-repr (core builtin, always available).
     # Avoids llt.llt formatter which needs prelude functions not available in bare-eval scope.
@@ -451,7 +454,7 @@
   check-llt-eval: [fn [let name]
     [len: [builtin-str-length name]]
     [builtin-if [builtin-lt len 9]
-      Boolean.False
+      0
       [builtin-eq-string [builtin-str-slice name [builtin-sub len 9] len] ".llt-eval"]]]
 
   # find-corpus-files: recursively walk cap/dir-path, accumulate .llt-eval files.
@@ -459,7 +462,7 @@
     [entries: [builtin-list-dir cap dir-path]]
     [reduce
       [fn [let st entry]
-        [full: [join "" [dir-path "/" entry.name]]]
+        [full: [join "" [$dir-path "/" entry.name]]]
         [builtin-if [builtin-eq-string entry.type "dir"]
           [find-corpus-files cap full st]
           [builtin-if [check-llt-eval entry.name]

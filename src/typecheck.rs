@@ -2790,6 +2790,146 @@ pub(crate) fn infer_surface_expr<'a>(
                                     .await?;
                                 }
                                 Ok(Type::Proxy)
+                            } else if let Some(class_scheme) =
+                                lookup_class_method_scheme(name, state)
+                            {
+                                // Class method fallback for Call: `name` is a typeclass method
+                                // (e.g., `=`, `+`, `<`). Infer argument types to determine
+                                // which instance to dispatch to, then write call_dispatch.
+                                //
+                                // The type checker's instance_env may not have all prelude
+                                // instances (prelude typechecking is best-effort), so we
+                                // compute call_dispatch from argument types directly rather
+                                // than relying on constraint satisfaction.
+
+                                // Infer argument types for call_dispatch computation.
+                                let mut arg_types: Vec<Type> = Vec::new();
+                                for arg in args.iter() {
+                                    match infer_surface_expr(arg, env, state, constraints, type_map).await {
+                                        Ok(ty) => arg_types.push(state.apply(&ty)),
+                                        Err(_) => arg_types.push(Type::Unknown),
+                                    }
+                                }
+
+                                // Extract the class declaration from the scheme's constraint.
+                                let class_decl = class_scheme.constraints.iter().find_map(|c| {
+                                    if let Constraint::Class { class, .. } = c {
+                                        Some(class)
+                                    } else {
+                                        None
+                                    }
+                                });
+
+                                // Write call_dispatch from inferred arg types.
+                                if let Some(class) = class_decl {
+                                    let type_args: Vec<String> = arg_types.iter().map(|ty| {
+                                        match ty {
+                                            Type::Int | Type::IntLiteral(_) => "Int".to_string(),
+                                            Type::Float => "Float".to_string(),
+                                            Type::Str | Type::StringLiteral(_) => "String".to_string(),
+                                            Type::Bytes => "Bytes".to_string(),
+                                            Type::TyCon(n) => {
+                                                if n == "Boolean" { "Bool".to_string() } else { n.clone() }
+                                            }
+                                            Type::NominalVariant { tag, .. } => {
+                                                tag.split('.').next().unwrap_or(tag).to_string()
+                                            }
+                                            Type::Union(members) => {
+                                                let mut tycon_name: Option<&str> = None;
+                                                let mut all_nominal = true;
+                                                for m in members {
+                                                    if let Type::NominalVariant { tag, .. } = m {
+                                                        let n = tag.split('.').next().unwrap_or(tag);
+                                                        match tycon_name {
+                                                            None => tycon_name = Some(n),
+                                                            Some(existing) if existing == n => {}
+                                                            _ => { all_nominal = false; break; }
+                                                        }
+                                                    } else { all_nominal = false; break; }
+                                                }
+                                                if all_nominal {
+                                                    tycon_name.map(|n| n.to_string()).unwrap_or_else(|| format!("{ty}"))
+                                                } else { format!("{ty}") }
+                                            }
+                                            other => format!("{other}"),
+                                        }
+                                    }).collect();
+
+                                    // For single-param classes (e.g. Equatable), all args
+                                    // should be the same type. Use the first arg's type.
+                                    // For multi-param classes (e.g. Addable), use all arg types.
+                                    let dispatch_args: Vec<&str> = if class.params.len() == 1 {
+                                        // Single-param class: use first arg type for all class params
+                                        if let Some(first) = type_args.first() {
+                                            vec![first.as_str()]
+                                        } else {
+                                            vec![]
+                                        }
+                                    } else {
+                                        type_args.iter().map(|s| s.as_str()).collect()
+                                    };
+
+                                    if !dispatch_args.is_empty() && !dispatch_args.iter().any(|a| a.contains("TypeVar") || a.contains("Unknown")) {
+                                        let binding_name =
+                                            crate::type_def::instance_binding_name(
+                                                &class.name,
+                                                name,
+                                                &dispatch_args,
+                                            );
+                                        if let crate::ast::SurfaceExpression::VarRef {
+                                            resolution,
+                                            call_dispatch,
+                                            ..
+                                        } = &func.expr
+                                        {
+                                            if let Some(&slot) = state
+                                                .instance_binding_slots
+                                                .get(&binding_name)
+                                            {
+                                                if let Some(Some((level, _))) =
+                                                    resolution.get()
+                                                {
+                                                    call_dispatch.set(level, slot);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Determine return type from the class method signature.
+                                // For class methods, we know the return type from the scheme body.
+                                let ret_type = match &class_scheme.body {
+                                    Type::Function { ret, .. } => {
+                                        // Apply substitutions from arg inference.
+                                        // For simple cases (e.g. Equatable: Fn(a,a) -> Bool),
+                                        // the return type is concrete. For FD classes
+                                        // (e.g. Addable: Fn(a,b) -> c), use Any as fallback.
+                                        let applied = state.apply(ret);
+                                        if matches!(applied, Type::TypeVar(_, _)) {
+                                            Type::Any
+                                        } else {
+                                            applied
+                                        }
+                                    }
+                                    _ => Type::Any,
+                                };
+
+                                Ok(ret_type).map_err(|errs: Vec<TypeError>| {
+                                    let frame = TypeSpanFrame::call(name, node.span.clone());
+                                    let mut errs = errs;
+                                    for err in &mut errs {
+                                        let err_span = err.span();
+                                        let same_pos =
+                                            err_span.start.offset == node.span.start.offset
+                                                && err_span.end.offset == node.span.end.offset;
+                                        let same_file =
+                                            err_span.file.is_none() && node.span.file.is_none();
+                                        if !same_pos || !same_file {
+                                            err.push_frame(frame.clone());
+                                        }
+                                    }
+                                    errs
+                                })
                             } else {
                                 let mut err =
                                     TypeErrorTyped::UndefinedVariable(UndefinedVariable {
