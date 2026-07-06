@@ -2441,6 +2441,10 @@ Equatable@[doc: "Type class for types that support equality comparison"]:
 [instance Equatable
   [let a]: [=: [fn [let x y] Boolean.False]]]
 
+# Eval-env fallback for =: called when the type checker cannot resolve the Equatable
+# instance (e.g., Unknown type). Not a dispatch function — just a named function in scope.
+=: [fn [let x y] Boolean.False]
+
 # ============================================================================
 # Type Class Declarations: Matchable
 # ============================================================================

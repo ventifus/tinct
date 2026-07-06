@@ -386,7 +386,7 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
                                 .push(Spanned::new(CoreEntry { key, value }, se.span.clone()));
                         }
                         crate::ast::SurfaceDeclaration::ClassDecl {
-                            name: class_name,
+                            name: _class_name,
                             methods,
                             ..
                         } => {
@@ -411,104 +411,14 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
                                     .push(Spanned::new(CoreEntry { key, value }, se.span.clone()));
                             }
 
-                            // Emit a runtime dispatch function for each class method.
-                            // Each dispatch function calls `builtin-class-dispatch` with
-                            // the class name, method name, and the method's arguments as
-                            // tinct string literals. This makes class methods available as
-                            // top-level callables that dispatch through instances at runtime.
-                            for method in methods {
-                                let method_name = match &method.node.key {
-                                    Some(key_node) => match &key_node.expr {
-                                        SurfaceExpression::Str(s) => s.clone(),
-                                        SurfaceExpression::VarRef { name, .. } => name.clone(),
-                                        _ => continue,
-                                    },
-                                    None => continue,
-                                };
-
-                                let arity = match extract_method_arity(&method.node.value.expr) {
-                                    Some(n) => n,
-                                    None => continue, // Can't determine arity; skip
-                                };
-
-                                // Build CoreExpr::Fn with N params that calls
-                                // builtin-class-dispatch(class_name, method_name, arg0, ..., argN-1)
-                                let span = se.span.clone();
-                                let params: Vec<Spanned<CoreParam>> = (0..arity)
-                                    .map(|i| {
-                                        Spanned::new(
-                                            CoreParam {
-                                                name: format!("__dispatch_arg_{i}"),
-                                                annotation: None,
-                                                variadic: false,
-                                            },
-                                            span.clone(),
-                                        )
-                                    })
-                                    .collect();
-
-                                // Build call args: [class_name_str, method_name_str, arg0, ..., argN-1]
-                                let mut call_args: Vec<Arc<Spanned<CoreExpr>>> =
-                                    Vec::with_capacity(2 + arity);
-                                call_args.push(Arc::new(Spanned::new(
-                                    CoreExpr::Str(class_name.clone()),
-                                    span.clone(),
-                                )));
-                                call_args.push(Arc::new(Spanned::new(
-                                    CoreExpr::Str(method_name.clone()),
-                                    span.clone(),
-                                )));
-                                for i in 0..arity {
-                                    call_args.push(Arc::new(Spanned::new(
-                                        CoreExpr::Var {
-                                            name: format!("__dispatch_arg_{i}"),
-                                            level: 0,
-                                            slot: i as u32,
-                                            annotation: None,
-                                        },
-                                        span.clone(),
-                                    )));
-                                }
-
-                                let body = Arc::new(Spanned::new(
-                                    CoreExpr::Call {
-                                        func: Arc::new(Spanned::new(
-                                            CoreExpr::Var {
-                                                name: "builtin-class-dispatch".to_string(),
-                                                level: u32::MAX,
-                                                slot: u32::MAX,
-                                                annotation: None,
-                                            },
-                                            span.clone(),
-                                        )),
-                                        args: call_args,
-                                        named_args: vec![],
-                                        implied: true,
-                                    },
-                                    span.clone(),
-                                ));
-
-                                let dispatch_fn = CoreExpr::Fn {
-                                    return_ann: None,
-                                    params,
-                                    body,
-                                    desugared: true,
-                                };
-
-                                let method_key = Some(Arc::new(Spanned::new(
-                                    CoreExpr::Str(method_name),
-                                    span.clone(),
-                                )));
-                                let method_value =
-                                    Arc::new(Spanned::new(dispatch_fn, span.clone()));
-                                core_entries.push(Spanned::new(
-                                    CoreEntry {
-                                        key: method_key,
-                                        value: method_value,
-                                    },
-                                    span,
-                                ));
-                            }
+                            // Class methods contribute nothing to the eval env.
+                            // Dispatch is resolved statically by the type checker (call_dispatch
+                            // annotation on the call-site VarRef). If the type checker can't
+                            // resolve the instance, the call falls through to whatever function
+                            // is in scope under that name — or becomes an undefined-variable error.
+                            // The only method with a deliberate eval-env fallback is `=` (returns
+                            // Boolean.False for unknown types), defined explicitly in prelude.llt.
+                            let _ = methods; // suppress unused warning
                         }
                         _ => {
                             continue;
@@ -987,26 +897,6 @@ pub(crate) fn extract_dispatch_tags(arm_pattern: &SurfaceExpression) -> Vec<Opti
 /// Class method types follow the pattern `[Fn@RetType [ParamType1 ParamType2 ...]]`.
 /// In the surface AST, this is a `Call { func: VarRef("Fn"), args: [Dict([...])] }`.
 /// The arity is the number of entries in the parameter list dict.
-///
-/// Returns `None` if the signature does not follow the expected pattern, in which
-/// case the lowerer skips dispatch function emission for that method (the method
-/// will still work via compile-time `call_dispatch`).
-fn extract_method_arity(method_type: &SurfaceExpression) -> Option<usize> {
-    match method_type {
-        SurfaceExpression::Call { args, .. } => {
-            // The first positional arg is the parameter list: [ParamType1 ParamType2 ...]
-            if let Some(param_list) = args.first() {
-                match &param_list.expr {
-                    SurfaceExpression::Dict(entries) => Some(entries.len()),
-                    _ => None,
-                }
-            } else {
-                Some(0) // No param list means zero-arity method
-            }
-        }
-        _ => None,
-    }
-}
 
 /// Extract the type name from a dict entry key for TypeAlias qualified tags.
 ///

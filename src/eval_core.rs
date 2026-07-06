@@ -649,16 +649,10 @@ pub(crate) fn eval_core_expr<'a>(
                 match env_lock.get_slot(*level, *slot) {
                     Some(thunk) => Ok(thunk),
                     None => {
-                        // Slot lookup failed. The only legitimate MAX/MAX use is
-                        // `builtin-class-dispatch`, which is synthesized by the lowerer after
-                        // the resolver runs (so no de Bruijn coordinates can be assigned).
-                        // field-get and slot-get now resolve statically via the Field handler
-                        // in the resolver — they should never reach MAX/MAX.
-                        if *level == u32::MAX && *slot == u32::MAX && name == "builtin-class-dispatch" {
-                            if let Some(thunk) = env_lock.get_by_name(name) {
-                                return Ok(thunk);
-                            }
-                        }
+                        // Slot lookup failed. No MAX/MAX name-based fallback exists.
+                        // field-get/slot-get resolve statically via the resolver's Field handler.
+                        // builtin-class-dispatch and its synthesized dispatch functions are deleted.
+                        // Any MAX/MAX reference reaching here is a compiler bug.
                         drop(env_lock);
                         Err(EvalError::undefined_variable(name.clone(), span.clone()).into())
                     }

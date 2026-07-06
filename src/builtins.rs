@@ -391,7 +391,7 @@ pub(crate) use crate::builtins_dict::{
 #[allow(unused_imports)] // used in test modules via `use super::*`
 pub(crate) use crate::builtins_meta::{
     builtin_annotation_of, builtin_apply, builtin_ast_of, builtin_big_int, builtin_blake3,
-    builtin_cap_identity, builtin_class_dispatch, builtin_decimal, builtin_eval,
+    builtin_cap_identity, builtin_decimal, builtin_eval,
     builtin_eval_types, builtin_force, builtin_gensym, builtin_include_cache_get,
     builtin_include_cache_put, builtin_llt_repr, builtin_load, builtin_macro_error,
     builtin_macro_injects, builtin_make_annotated, builtin_raise, builtin_span_of, builtin_tag_of,
