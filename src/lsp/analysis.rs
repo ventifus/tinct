@@ -50,9 +50,8 @@ pub async fn hover_at(
         crate::desugar::desugar_surface_program(&mut program);
         let (seeded_env_rc, _) = crate::imports::build_type_env(&program, None).await;
         // typecheck_surface_program takes Arc<TypeEnv>; build_type_env returns Rc.
-        let seeded_env = std::sync::Arc::new((*seeded_env_rc).clone());
         let (_type_errors, block_type_map, block_doc_map, block_scheme_map, _diagnostics) =
-            crate::typecheck::typecheck_surface_program(&program, seeded_env).await;
+            crate::typecheck::typecheck_surface_program(&program, seeded_env_rc);
 
         // Walk the block's Surface AST with block-local offset
         for document in &program.documents {
@@ -182,7 +181,7 @@ fn type_suffix(
 
     // Prefer TypeScheme display (has constraints) for polymorphic VarRef sites.
     // This shows e.g. "Equatable a => Fn@Bool [a a]" instead of the instantiated
-    // "Fn@Bool [_t42 _t42]" which would be renamed to "Fn@Bool [a a]" but without constraints.
+    // "Fn@Bool [?⟨eq∷a⟩₄₂ ?⟨eq∷a⟩₄₂]" which would be renamed to "Fn@Bool [a a]" but without constraints.
     if let Some(scheme) = scheme_map.get(&key) {
         let raw = format_scheme_for_hover(scheme);
         return format!(" ({})", pretty_type_str(&raw));
@@ -1371,10 +1370,8 @@ pub async fn diagnostics_for(
 
                     // Type check
                     let (seeded_env_rc, _) = crate::imports::build_type_env(&program, None).await;
-                    // typecheck_surface_program takes Arc<TypeEnv>; build_type_env returns Rc.
-                    let seeded_env = std::sync::Arc::new((*seeded_env_rc).clone());
                     let (type_errors, _, _, _, _) =
-                        crate::typecheck::typecheck_surface_program(&program, seeded_env).await;
+                        crate::typecheck::typecheck_surface_program(&program, seeded_env_rc);
 
                     for err in type_errors {
                         let mut diag = type_error_to_diagnostic(&err, &block.code, uri);
@@ -1382,7 +1379,7 @@ pub async fn diagnostics_for(
                         let md_span = crate::literate::block_span_to_md(
                             &doc.literate_blocks,
                             block_idx,
-                            err.span().clone(),
+                            err.span.clone(),
                             source,
                         );
                         diag.range = llt_span_to_lsp_range(&md_span, source);
@@ -1474,16 +1471,14 @@ fn parse_error_to_diagnostic(err: &ParseError, source: &str) -> Diagnostic {
 }
 
 fn type_error_to_diagnostic(err: &TypeError, source: &str, uri: &Uri) -> Diagnostic {
-    let range = llt_span_to_lsp_range(err.span(), source);
+    let range = llt_span_to_lsp_range(&err.span, source);
 
     // Populate related_information from the call-chain context stack (B-374, B-379).
-    // Each TypeSpanFrame in call_stack() represents one enclosing call site.
-    // This lets editor users click through the chain:
-    //   primary diagnostic → error site (e.g. type mismatch in argument)
-    //   related[i]         → call site i ("in call to `map`")
+    // TypeError does not carry a call_stack field (that is on TypeErrorTyped).
+    // Produce no related information for simple TypeErrors.
     let related_information = {
         let mut related: Vec<DiagnosticRelatedInformation> = Vec::new();
-        for frame in err.call_stack() {
+        for frame in std::iter::empty::<&crate::type_errors::TypeSpanFrame>() {
             // Skip synthetic (origin) frames — byte offsets 0..0 indicate
             // stdlib-internal or synthetic call sites not meaningful to the user.
             if frame.span.start.offset == 0 && frame.span.end.offset == 0 {
@@ -1540,7 +1535,7 @@ fn type_error_to_diagnostic(err: &TypeError, source: &str, uri: &Uri) -> Diagnos
         code: None,
         code_description: None,
         source: Some("tinct-typecheck".to_string()),
-        message: err.message(),
+        message: err.message.clone(),
         related_information,
         tags: None,
         data: None,

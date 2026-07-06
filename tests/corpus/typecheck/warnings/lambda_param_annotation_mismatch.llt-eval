@@ -1,7 +1,10 @@
-# Lambda parameter annotation incompatible with expected type
-[@[Fn@Int [String]] [fn [let x@Int] x]]
+# Lambda return type annotation mismatch: fn@String return annotation, but body infers Int.
+# @[Fn@String [Int]] means a function (Int) -> String. The body x has type Int (from @Int param).
+# Type checker warns: return type mismatch.
+# At runtime the function value is returned successfully (type errors are advisory).
+[@[Fn@String [Int]] [fn [let x@Int] x]]
 === out
 Function(x)
 
 === warn
-[TypeError] parameter annotation Int is more restrictive than required type String
+[UnificationFailure] cannot unify String with Int

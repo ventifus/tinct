@@ -1267,20 +1267,25 @@ async fn test_bind_type_var_writes_to_type_vars() {
     assert!(state.lookup_binding("nonexistent").is_none());
 }
 
-/// name_counter is a simple u32 field on InferState (no longer in Substitution).
+/// per_origin_counter advances per (origin, param) key via fresh_type_var.
 #[tokio::test]
-async fn test_name_counter_increments() {
+async fn test_per_origin_counter_increments() {
     let mut state = InferState::new();
-    assert_eq!(state.name_counter, 0);
+    // Initially empty: no TypeVars have been allocated.
+    assert!(state.per_origin_counter.is_empty());
 
-    state.name_counter = 5;
-    assert_eq!(state.name_counter, 5);
+    // Allocate two ad-hoc TypeVars — increments the ("", "") key.
+    let _tv0 = state.fresh_type_var();
+    let _tv1 = state.fresh_type_var();
+    let key = ("".to_string(), "".to_string());
+    assert_eq!(state.per_origin_counter.get(&key).copied().unwrap_or(0), 2);
 
-    // Snapshot/restore preserves name_counter
-    let saved = state.name_counter;
-    state.name_counter = 10;
-    state.name_counter = saved;
-    assert_eq!(state.name_counter, 5);
+    // Snapshot/restore preserves per_origin_counter.
+    let saved = state.per_origin_counter.clone();
+    let _tv2 = state.fresh_type_var();
+    assert_eq!(state.per_origin_counter.get(&key).copied().unwrap_or(0), 3);
+    state.per_origin_counter = saved;
+    assert_eq!(state.per_origin_counter.get(&key).copied().unwrap_or(0), 2);
 }
 
 /// kind_env() builds a HashMap view of non-Type kinds.
@@ -1315,8 +1320,8 @@ async fn test_type_vars_snapshot_restore_pattern() {
     state.bind_type_var("original_var".to_string(), Type::Int);
 
     // Snapshot state.type_vars before a probe.
+    // per_origin_counter is intentionally NOT saved/restored — it advances monotonically.
     let saved_type_vars = state.type_vars.clone();
-    let saved_name_counter = state.name_counter;
 
     // Simulate a probe that adds a new binding.
     state.set_level("probe_var".to_string(), 0);
@@ -1331,7 +1336,6 @@ async fn test_type_vars_snapshot_restore_pattern() {
 
     // Restore state.type_vars (discarding probe bindings).
     state.type_vars = saved_type_vars;
-    state.name_counter = saved_name_counter;
 
     // Verify original binding is preserved and probe binding is gone.
     assert_eq!(

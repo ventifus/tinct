@@ -1,0 +1,8 @@
+# E030: Same escaped VarRef key used twice — caught at eval time, not parse time.
+# The parser does not detect this; key_to_string returns None for $k (computed key).
+[
+  k: "hello"
+  result: [$k: 1  $k: 2]
+]
+=== error
+duplicate key

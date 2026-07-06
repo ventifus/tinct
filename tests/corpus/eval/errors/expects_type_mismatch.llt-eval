@@ -1,0 +1,6 @@
+# --- expects: validation rejects pipeline input of wrong type
+"hello"
+--- expects: @Dict
+%.x
+=== error
+expects validation: expected Dict, got String

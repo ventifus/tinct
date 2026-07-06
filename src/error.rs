@@ -67,14 +67,13 @@ pub struct BlameLabel {
 /// Identifies the producing stage (positive party) and consuming stage (negative party)
 /// per Findler & Felleisen (2002) contract blame semantics.
 ///
-/// Constructed by `eval_surface_file_with_input` (eval.rs) when a document has an
-/// `expects:` annotation (`--- expects: @Type`). The blame is carried through
-/// `CoreExpr::TypeAssert::pipeline_blame` → `TypeAssertCheckData::pipeline_blame` →
-/// `Cont::TypeAssertCheck` error paths → `EvalError::with_pipeline_blame`.
+/// Attached by the evaluator when a `CoreExpr::TypeAssert` fails at a pipeline boundary.
+/// Carried through `TypeAssertCheckData::pipeline_blame` → `Cont::TypeAssertCheck` →
+/// `EvalError::with_pipeline_blame`. Set to `None` for inline type assertions (`[@Type expr]`);
+/// `Some` only when the TypeAssert was synthesized for a pipeline type-check call site.
 ///
-/// Stage labels use document names when available (`--- %name`), falling back to
+/// Stage labels use document names when available (`--- name: %foo`), falling back to
 /// `"document N"` for unnamed runtime documents (stage-skipped docs excluded).
-/// The initial `%` input (before any document) is labelled `"initial input"`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PipelineBlame {
     /// The producing stage label (positive party — blamed for wrong output shape).
@@ -793,13 +792,13 @@ impl fmt::Display for ErrorKind {
                 if valid_params.is_empty() {
                     write!(
                         f,
-                        "unexpected named argument: {name} (function has no parameters){callee_str}"
+                        "unexpected named argument: \"{name}\" (function has no parameters){callee_str}"
                     )
                 } else {
                     let valid = valid_params.join(", ");
                     write!(
                         f,
-                        "unexpected named argument: {name} (valid parameter names: {valid}){callee_str}"
+                        "unexpected named argument: \"{name}\" (valid parameter names: {valid}){callee_str}"
                     )
                 }
             }
@@ -2756,7 +2755,7 @@ mod tests {
                     callee: None,
                 }
             ),
-            "unexpected named argument: foo (valid parameter names: x, y)"
+            "unexpected named argument: \"foo\" (valid parameter names: x, y)"
         );
         assert_eq!(
             format!(
@@ -2767,7 +2766,7 @@ mod tests {
                     callee: None,
                 }
             ),
-            "unexpected named argument: foo (function has no parameters)"
+            "unexpected named argument: \"foo\" (function has no parameters)"
         );
         assert_eq!(
             format!(
@@ -3679,7 +3678,7 @@ mod tests {
         assert!(err
             .kind
             .to_string()
-            .contains("unexpected named argument: typo"));
+            .contains("unexpected named argument: \"typo\""));
         assert!(err.kind.to_string().contains("sep"));
         assert!(err.kind.to_string().contains("limit"));
         assert!(err.kind.is_catchable());

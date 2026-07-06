@@ -1,0 +1,8 @@
+# Computed dict key via $k syntax (dollar-prefix VarRef in key position)
+[
+  make-entry: [fn [let k v] [$k: v]]
+  k: "hello"
+  result: [make-entry k 42]
+]
+=== out
+Dict({"make-entry": Function(k, v), "k": String("hello"), "result": Dict({"hello": Int(42)})})

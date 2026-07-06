@@ -94,6 +94,8 @@ pub struct BuiltinDef {
     /// Number of positional args to pre-materialize unconditionally before dispatch.
     /// Independent of pos_strictness W1 scanning. Default 0 (no forced args).
     pub force_count: usize,
+    /// Parameter names for arity mismatch error messages. Empty slice means no names shown.
+    pub params: &'static [&'static str],
 }
 
 impl PartialEq for BuiltinDef {
@@ -2340,6 +2342,30 @@ impl Environment {
             .zip(self.slots.iter())
     }
 
+    /// Search the full environment chain for the first key that ends with `suffix`.
+    ///
+    /// Walks the parent chain the same way `get_by_name` does. Returns the matching
+    /// key string, or `None` if no key in scope ends with `suffix`.
+    ///
+    /// Used by `resolve_matchable_binding_from_fn` to discover the Matchable class
+    /// instance binding for a given type name without knowing the class name ahead of time.
+    pub fn find_key_with_suffix(&self, suffix: &str) -> Option<String> {
+        // Check current frame
+        if let Some(name) = self.slot_names.iter().find(|n| n.ends_with(suffix)) {
+            return Some(name.clone());
+        }
+        // Walk parent chain
+        let mut current = self.parent.as_ref().map(Arc::clone);
+        while let Some(env_rc) = current {
+            let env = env_rc.read().unwrap();
+            if let Some(name) = env.slot_names.iter().find(|n| n.ends_with(suffix)) {
+                return Some(name.clone());
+            }
+            current = env.parent.as_ref().map(Arc::clone);
+        }
+        None
+    }
+
     /// O(1) slot-based lookup with De Bruijn level-based parent chain walking.
     ///
     /// `level` is a De Bruijn index: 0 = current environment, 1 = parent, N = Nth ancestor.
@@ -2599,6 +2625,7 @@ mod tests {
             name: "test",
             pos_strictness: &[],
             force_count: 0,
+            params: &[],
         });
         assert_ne!(b.clone(), b);
     }
@@ -2630,18 +2657,21 @@ mod tests {
             name: "my-builtin",
             pos_strictness: &[],
             force_count: 0,
+            params: &[],
         };
         let same_name_b = BuiltinDef {
             func: func_b, // different function pointer, same name
             name: "my-builtin",
             pos_strictness: &[Strictness::Seq],
             force_count: 0,
+            params: &[],
         };
         let different_name = BuiltinDef {
             func: func_a,
             name: "other-builtin",
             pos_strictness: &[],
             force_count: 0,
+            params: &[],
         };
 
         assert_eq!(
@@ -2901,6 +2931,7 @@ mod tests {
             name: "test_fn",
             pos_strictness: &[],
             force_count: 0,
+            params: &[],
         });
         assert_eq!(format!("{builtin}"), "<builtin test_fn>");
     }
@@ -2995,6 +3026,7 @@ mod tests {
             name: "test_builtin",
             pos_strictness: &[],
             force_count: 0,
+            params: &[],
         });
         assert_eq!(format!("{builtin:?}"), "Builtin(test_builtin)");
     }
@@ -3072,6 +3104,7 @@ mod tests {
             name: "test-builtin",
             pos_strictness: &[],
             force_count: 0,
+            params: &[],
         };
         let thunk = Thunk::new_pending_builtin(
             dummy_def,
@@ -3365,6 +3398,7 @@ mod tests {
             name: "dummy",
             pos_strictness: &[],
             force_count: 0,
+            params: &[],
         };
         let thunk = Thunk::new_pending_builtin(
             dummy_def,
@@ -3421,6 +3455,7 @@ mod tests {
             name: "error_builtin",
             pos_strictness: &[],
             force_count: 0,
+            params: &[],
         };
         let thunk = Thunk::new_pending_builtin(
             error_def,

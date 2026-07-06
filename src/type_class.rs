@@ -453,10 +453,10 @@ impl InstanceEnv {
                 }
 
                 // Save ALL fields BEFORE freshening — instantiate_at_level advances
-                // name_counter and extends state.type_vars with fresh entries. Saving before
-                // means both freshening and the unification probe are fully rolled back.
+                // per_origin_counter and extends state.type_vars with fresh entries. Saving before
+                // means both freshening and the unification probe (type_vars/deferred) are rolled
+                // back. per_origin_counter is NOT saved/restored: it advances monotonically.
                 let saved_type_vars = state.type_vars.clone();
-                let saved_name_counter = state.name_counter;
                 let saved_deferred = state.deferred_equalities.clone();
                 let saved_bounds = state.bounds.clone();
 
@@ -478,8 +478,8 @@ impl InstanceEnv {
                 .is_ok();
 
                 // Always restore state — this is a pure probe.
+                // per_origin_counter is NOT restored (monotonically advancing).
                 state.type_vars = saved_type_vars;
-                state.name_counter = saved_name_counter;
                 state.deferred_equalities = saved_deferred;
                 state.bounds = saved_bounds;
 
@@ -528,8 +528,8 @@ impl InstanceEnv {
             // F1 FIX: Save state before candidate probe to prevent leakage from failed matches.
             // unify() mutates state.type_vars and state.deferred_equalities.
             // Failed candidates must not leak these mutations.
+            // per_origin_counter is intentionally NOT saved/restored (monotonically advancing).
             let saved_type_vars = state.type_vars.clone();
-            let saved_name_counter = state.name_counter;
             let saved_deferred = state.deferred_equalities.clone();
             let saved_bounds = state.bounds.clone();
 
@@ -553,9 +553,8 @@ impl InstanceEnv {
                         .filter_map(|&pos| row.fields.get(&pos.to_string()).cloned())
                         .collect(),
                     _ => {
-                        // Malformed instance, skip — restore state first
+                        // Malformed instance, skip — restore state first (not per_origin_counter).
                         state.type_vars = saved_type_vars.clone();
-                        state.name_counter = saved_name_counter;
                         state.deferred_equalities = saved_deferred;
                         state.bounds = saved_bounds;
                         continue;
@@ -566,7 +565,6 @@ impl InstanceEnv {
             // Check arity
             if instance_det_types.len() != determining_types.len() {
                 state.type_vars = saved_type_vars.clone();
-                state.name_counter = saved_name_counter;
                 state.deferred_equalities = saved_deferred;
                 state.bounds = saved_bounds;
                 continue;
@@ -597,9 +595,8 @@ impl InstanceEnv {
                 // Capture resolved instance type BEFORE restoring state (bindings are in state.type_vars).
                 let resolved_instance_type = state.apply(&freshened_instance_type);
 
-                // Restore state: discard probe mutations.
+                // Restore state: discard probe mutations (not per_origin_counter).
                 state.type_vars = saved_type_vars.clone();
-                state.name_counter = saved_name_counter;
                 state.deferred_equalities = saved_deferred;
                 state.bounds = saved_bounds;
 
@@ -610,9 +607,8 @@ impl InstanceEnv {
                     method_types: inst.method_types.clone(),
                 });
             } else {
-                // Restore state after failed probe (discard leaked mutations).
+                // Restore state after failed probe (not per_origin_counter).
                 state.type_vars = saved_type_vars.clone();
-                state.name_counter = saved_name_counter;
                 state.deferred_equalities = saved_deferred;
                 state.bounds = saved_bounds;
             }
@@ -654,9 +650,8 @@ impl InstanceEnv {
                 continue;
             }
 
-            // Save state before probe — restore on failure.
+            // Save state before probe — restore on failure. per_origin_counter NOT saved.
             let saved_type_vars = state.type_vars.clone();
-            let saved_name_counter = state.name_counter;
             let saved_deferred = state.deferred_equalities.clone();
             let saved_bounds = state.bounds.clone();
             // type_vars snapshot captures levels, bindings, and kinds in one clone
@@ -674,12 +669,10 @@ impl InstanceEnv {
                     .collect(),
                 _ => {
                     // Single-parameter class or malformed: no determined positions to match.
-                    // Restore and skip.
+                    // Restore and skip. per_origin_counter NOT restored.
                     state.type_vars = saved_type_vars.clone();
-                    state.name_counter = saved_name_counter;
                     state.deferred_equalities = saved_deferred;
                     state.bounds = saved_bounds;
-                    // type_vars restored above (includes levels, bindings, kinds)
                     continue;
                 }
             };
@@ -687,10 +680,8 @@ impl InstanceEnv {
             // Arity check: must have the same number of determined types.
             if instance_ded_types.len() != ded_types.len() {
                 state.type_vars = saved_type_vars.clone();
-                state.name_counter = saved_name_counter;
                 state.deferred_equalities = saved_deferred;
                 state.bounds = saved_bounds;
-                // type_vars restored above (includes levels, bindings, kinds)
                 continue;
             }
 
@@ -729,30 +720,26 @@ impl InstanceEnv {
                         .collect(),
                     _ => {
                         // No determining positions to back-propagate for single-param classes.
+                        // per_origin_counter NOT restored.
                         state.type_vars = saved_type_vars.clone();
-                        state.name_counter = saved_name_counter;
                         state.deferred_equalities = saved_deferred;
                         state.bounds = saved_bounds;
-                        // type_vars restored above (includes levels, bindings, kinds)
                         continue;
                     }
                 };
 
                 // Restore state — the caller handles the actual unification of determining vars.
+                // per_origin_counter NOT restored.
                 state.type_vars = saved_type_vars.clone();
-                state.name_counter = saved_name_counter;
                 state.deferred_equalities = saved_deferred;
                 state.bounds = saved_bounds;
-                // type_vars restored above (includes levels, bindings, kinds)
 
                 return Some((determining_types, det_position_indices));
             } else {
-                // Restore state after failed probe.
+                // Restore state after failed probe. per_origin_counter NOT restored.
                 state.type_vars = saved_type_vars.clone();
-                state.name_counter = saved_name_counter;
                 state.deferred_equalities = saved_deferred;
                 state.bounds = saved_bounds;
-                // type_vars restored above (includes levels, bindings, kinds)
             }
         }
 
@@ -863,17 +850,16 @@ impl InstanceEnv {
         // the count of declared type variables in the instance head, correctly ranking
         // `[F Int]` (0) above `[F a]` (1).
         //
-        // All state mutations from each probe are discarded; only the peak name_counter is kept
-        // to prevent _tN name reuse across candidates (F1 fix).
+        // All state mutations from each probe are discarded; per_origin_counter is NOT saved/
+        // restored — it advances monotonically to prevent TypeVar name reuse across candidates.
         let mut matches: Vec<(usize, &InstanceDecl)> = Vec::new();
 
         for inst in &candidates {
             // F1 FIX: Save state before candidate probe to prevent leakage from failed matches.
             // unify() mutates state.type_vars and state.deferred_equalities. Failed candidates
-            // must not leak bindings/levels/kinds, but the name_counter must be preserved at
-            // its peak value (not rolled back) to prevent _tN name reuse across candidates.
+            // must not leak bindings/levels/kinds. per_origin_counter is NOT saved — it advances
+            // monotonically to prevent TypeVar name reuse across probe candidates.
             let saved_type_vars = state.type_vars.clone();
-            let saved_name_counter = state.name_counter;
             let saved_deferred = state.deferred_equalities.clone();
             let saved_bounds = state.bounds.clone();
 
@@ -899,10 +885,8 @@ impl InstanceEnv {
                 None
             };
 
-            // Always restore state after the probe; preserve peak name_counter.
-            let peak_counter = state.name_counter;
+            // Always restore state after the probe. per_origin_counter NOT restored.
             state.type_vars = saved_type_vars.clone();
-            state.name_counter = saved_name_counter.max(peak_counter);
             state.deferred_equalities = saved_deferred;
             state.bounds = saved_bounds;
 
@@ -945,8 +929,8 @@ impl InstanceEnv {
         // instance to apply to method types, so we unify once more.
         let winner = winners[0];
 
+        // per_origin_counter is NOT saved/restored here — it advances monotonically.
         let saved_type_vars = state.type_vars.clone();
-        let saved_name_counter = state.name_counter;
         let saved_deferred = state.deferred_equalities.clone();
         let saved_bounds = state.bounds.clone();
 
@@ -973,10 +957,8 @@ impl InstanceEnv {
             })
             .collect();
 
-        // Restore state after resolution; preserve peak name_counter.
-        let peak_counter = state.name_counter;
+        // Restore state after resolution. per_origin_counter NOT restored.
         state.type_vars = saved_type_vars.clone();
-        state.name_counter = saved_name_counter.max(peak_counter);
         state.deferred_equalities = saved_deferred;
         state.bounds = saved_bounds;
 
@@ -1065,16 +1047,16 @@ fn count_unresolved_vars(
 
 /// Normalize a type to a canonical string for use as an instance lookup key.
 ///
-/// Promotes `IntLiteral` to `"Int"` and `StringLiteral` to `"Str"` so that
+/// Promotes `IntLiteral` to `"Int"` and `StringLiteral` to `"String"` so that
 /// literal types resolve to the same instance as their parent types.  All other
-/// types use their `Display` representation unchanged.
+/// types use their `Display` representation unchanged (Type::Str displays as "String").
 ///
 /// This function mirrors the normalization performed by `type_key` in `type_unify.rs`
 /// for the hardcoded arithmetic instances.
 pub fn type_to_string_key(ty: &Type) -> String {
     match ty {
         Type::IntLiteral(_) => "Int".to_string(),
-        Type::StringLiteral(_) => "Str".to_string(),
+        Type::StringLiteral(_) => "String".to_string(),
         _ => ty.to_string(),
     }
 }
@@ -1203,10 +1185,10 @@ mod tests {
 
         env.insert(make_appendable_instance(make_coll_a())).unwrap();
 
-        let counter_before = state.name_counter;
         let type_vars_before = state.type_vars.clone();
 
-        // This will detect overlap and return Err — but state must be restored.
+        // This will detect overlap and return Err — but type_vars must be restored.
+        // per_origin_counter advances monotonically and is NOT restored (by design).
         let _ = check_structural_overlap_sync(
             &env,
             &make_appendable_instance(make_coll_int()),
@@ -1214,10 +1196,6 @@ mod tests {
         )
         .await;
 
-        assert_eq!(
-            state.name_counter, counter_before,
-            "name_counter must be restored after overlap check"
-        );
         assert_eq!(
             state.type_vars, type_vars_before,
             "type_vars must be restored after overlap check"

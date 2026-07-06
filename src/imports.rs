@@ -99,8 +99,9 @@ async fn build_prelude_type_stage_env_inner(
     // Expansion would require prelude already loaded (circular), so we skip it.
 
     // Desugar and resolve (writes inline to AST nodes).
+    // Seeded from bootstrap_env so that core builtin names resolve to de Bruijn coords.
     crate::desugar::desugar_surface_program(&mut program);
-    let _resolve_errors = crate::resolve::resolve_surface_program(&program);
+    let _resolve_errors = crate::resolve::resolve_surface_program(&program, Some(&bootstrap_env));
 
     // Build EvalContext backed by bootstrap_env.
     #[allow(clippy::disallowed_methods)]
@@ -203,7 +204,7 @@ async fn build_prelude_type_stage_env_inner(
 /// - The file cannot be read or parsed.
 /// - A re-entrant call is detected (recursion guard).
 // AMBIENT-OK: type-checker include resolution fallback — reads libdir files without cap; type-only, no runtime I/O
-#[allow(clippy::disallowed_methods)]
+#[allow(clippy::disallowed_methods, dead_code)]
 pub async fn get_stdlib_module_type_env(module_path: &str) -> Option<Rc<TypeEnv>> {
     // Recursion guard: prevent re-entrant calls (e.g., from modules that include other modules
     // during type-checking). The guard is per-thread so parallel test threads are independent.
@@ -241,7 +242,7 @@ pub async fn get_stdlib_module_type_env(module_path: &str) -> Option<Rc<TypeEnv>
 ///
 /// Finds the libdir, reads the module file, type-checks it, and extracts bindings.
 // AMBIENT-OK: type-checker include resolution — reads libdir files; type-only, no runtime I/O
-#[allow(clippy::disallowed_methods)]
+#[allow(clippy::disallowed_methods, dead_code)]
 async fn build_stdlib_module_type_env_inner(module_path: &str) -> Option<Rc<TypeEnv>> {
     // Step 1: Locate the stdlib directory.
     let libdir = crate::find_libdir_path()?;
@@ -266,28 +267,22 @@ async fn build_stdlib_module_type_env_inner(module_path: &str) -> Option<Rc<Type
     crate::desugar::desugar_surface_program(&mut program);
 
     // Step 6: Resolve (writes inline to AST nodes).
-    let _resolve_errors = crate::resolve::resolve_surface_program(&program);
+    // No runtime env available at this type-checker bootstrap path; pass None.
+    let _resolve_errors = crate::resolve::resolve_surface_program(&program, None);
 
     // Step 8: Build parent env — builtin_core TypeEnv contains Boolean, Handle, builtin-* names.
-    let parent_env = get_builtin_core_type_env().await?;
+    let parent_env_arc = get_builtin_core_type_env().await?;
+    let parent_env: Rc<TypeEnv> = Rc::new((*parent_env_arc).clone());
 
     // Step 9: Type-check the module with the builtin_core env as parent.
-    // enable_scheme_map=false (no LSP hover needed for bootstrap),
-    // resolution_table=None (use fresh resolver output from Step 7).
-    let (_errors, _type_map, _doc_map, _scheme_map, _diagnostics, _state, final_env) =
+    // enable_scheme_map=false (no LSP hover needed for bootstrap).
+    let (_errors, _type_map, _doc_map, _scheme_map, _diagnostics, _state, final_env, _annot) =
         typecheck_surface_program_with_env(
-            &program,
-            parent_env,
-            false,              // enable_scheme_map
-            None,               // resolution_table
-            Default::default(), // instance_binding_slots
-            None,               // main_env
-        )
-        .await;
+            &program, parent_env, false, // enable_scheme_map
+            false, // in_prelude_load
+        );
 
     // `final_env` contains the parent bindings plus all new declarations from the module.
-    // Convert Arc<TypeEnv> → Rc<TypeEnv> for the STDLIB_MODULE_CACHE (which uses Rc for the
-    // internal parent chain that TypeEnv::with_parent requires).
     Some(Rc::new((*final_env).clone()))
 }
 
@@ -356,29 +351,25 @@ async fn build_builtin_core_type_env_inner() -> Option<Arc<TypeEnv>> {
     crate::desugar::desugar_surface_program(&mut program);
 
     // Resolve (writes inline to AST nodes).
-    let _resolve_errors = crate::resolve::resolve_surface_program(&program);
+    // No runtime env at this type-checker bootstrap path; pass None.
+    let _resolve_errors = crate::resolve::resolve_surface_program(&program, None);
 
     // Build parent env: builtins type env (Rust-native type signatures).
     let builtins_env = crate::builtins::build_builtins_type_env();
-    let parent_env = Arc::new(builtins_env);
+    let parent_env = Rc::new(builtins_env);
 
     // Typecheck with builtins env as parent.
     // enable_scheme_map=false (no LSP hover needed for bootstrap),
     // resolution_table=None (use fresh resolver output).
-    let (_errors, _type_map, _doc_map, _scheme_map, _diagnostics, _state, final_env) =
+    let (_errors, _type_map, _doc_map, _scheme_map, _diagnostics, _state, final_env, _annot) =
         typecheck_surface_program_with_env(
-            &program,
-            parent_env,
-            false,              // enable_scheme_map
-            None,               // resolution_table
-            Default::default(), // instance_binding_slots
-            None,               // main_env
-        )
-        .await;
+            &program, parent_env, false, // enable_scheme_map
+            false, // in_prelude_load
+        );
 
     // `final_env` contains the parent bindings plus all new type declarations from
     // builtin_core.llt. Return it as the bootstrapped TypeEnv.
-    Some(final_env)
+    Some(Arc::new((*final_env).clone()))
 }
 
 /// Replace all TypeVar occurrences in a type with Top.
@@ -797,18 +788,16 @@ async fn resolve_includes(
         } else {
             Rc::clone(&env)
         };
-        // typecheck_surface_program_with_env takes Arc<TypeEnv> — convert from Rc.
-        let typecheck_env_arc = Arc::new((*typecheck_env).clone());
-        let (type_errors, type_map, _doc_map, _scheme_map, _diagnostics, _state, _final_env) =
-            typecheck_surface_program_with_env(
-                &program,
-                typecheck_env_arc,
-                false,
-                None,
-                Default::default(),
-                None,
-            )
-            .await;
+        let (
+            type_errors,
+            type_map,
+            _doc_map,
+            _scheme_map,
+            _diagnostics,
+            _state,
+            _final_env,
+            _annot,
+        ) = typecheck_surface_program_with_env(&program, typecheck_env, false, false);
 
         // Stdlib includes are user code — their type errors are surfaced like any other.
         if !type_errors.is_empty() {

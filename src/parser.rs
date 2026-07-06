@@ -1193,7 +1193,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
     let mut current_document_items: Vec<SurfaceItem> = Vec::new();
 
     // All documents in the file
-    let mut documents: Vec<Spanned<SurfaceDocument>> = Vec::new();
+    let mut documents: Vec<Spanned<Arc<SurfaceDocument>>> = Vec::new();
 
     // Comment maps
     let mut leading_comments: BTreeMap<usize, Vec<String>> = BTreeMap::new();
@@ -3508,7 +3508,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                     }
                 };
                 documents.push(Spanned::new(
-                    SurfaceDocument {
+                    Arc::new(SurfaceDocument {
                         items,
                         name: next_doc_name.take(),
                         output_type: next_doc_output_type.take(),
@@ -3516,7 +3516,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                         caps: next_doc_caps.take(),
                         stage: next_doc_stage.take(),
                         uses: next_doc_uses.take(),
-                    },
+                    }),
                     doc_span,
                 ));
 
@@ -4673,7 +4673,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
             },
             file: None,
         };
-        documents.push(Spanned::new(doc, doc_span));
+        documents.push(Spanned::new(Arc::new(doc), doc_span));
     } else if !current_document_items.is_empty() {
         // Finalize current document
         let doc = SurfaceDocument {
@@ -4698,7 +4698,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
             },
             file: None,
         };
-        documents.push(Spanned::new(doc, doc_span));
+        documents.push(Spanned::new(Arc::new(doc), doc_span));
     }
 
     let program = SurfaceProgram { documents };
@@ -6799,20 +6799,22 @@ fn stamp_pattern(pat: &mut Pattern, file: &Arc<SourceFile>) {
 pub fn stamp_spans_with_file(program: &mut SurfaceProgram, file: &Arc<SourceFile>) {
     for doc in &mut program.documents {
         doc.span.file = Some(Arc::clone(file));
+        let doc_node = Arc::get_mut(&mut doc.node)
+            .expect("stamp_spans_with_file runs immediately after parse, before any Arc sharing");
         // Stamp document-level annotation spans
-        if let Some(ann) = &mut doc.node.output_type {
+        if let Some(ann) = &mut doc_node.output_type {
             stamp_annotation_spanned(ann, file);
         }
-        if let Some(ann) = &mut doc.node.expects {
+        if let Some(ann) = &mut doc_node.expects {
             stamp_annotation_spanned(ann, file);
         }
-        if let Some(caps) = &mut doc.node.caps {
+        if let Some(caps) = &mut doc_node.caps {
             caps.span.file = Some(Arc::clone(file));
             for (_, ann) in &mut caps.node {
                 stamp_annotation(ann, file);
             }
         }
-        for item in &mut doc.node.items {
+        for item in &mut doc_node.items {
             match item {
                 SurfaceItem::Expr(node) => {
                     stamp_node(node, file);

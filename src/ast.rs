@@ -1135,7 +1135,7 @@ impl SurfaceDocument {
 /// A complete tinct program — one or more documents separated by ---.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SurfaceProgram {
-    pub documents: Vec<Spanned<SurfaceDocument>>,
+    pub documents: Vec<Spanned<Arc<SurfaceDocument>>>,
 }
 
 /// Inline type annotation — written once by the type checker, read by the lowerer/evaluator.
@@ -1326,6 +1326,14 @@ impl std::fmt::Debug for Resolution {
     }
 }
 
+/// Table mapping each VarRef's NodeId to its resolved (level, slot) de Bruijn coordinates.
+/// Produced by the resolver pass; consumed by the lowerer and type checker.
+pub type ResolutionTable = std::collections::HashMap<NodeId, (u32, u32)>;
+
+/// Table mapping each TypeAssert SurfaceNode's NodeId to its resolved Type.
+/// Produced by the type checker; consumed by the lowerer to generate CoreExpr::TypeAssert.
+pub type TypeAnnotationTable = std::collections::HashMap<NodeId, crate::types::Type>;
+
 /// Inline annotation for a predicate pattern's resolved Matchable `to-match` instance
 /// binding name. Written once by the type checker during match arm elaboration; read by
 /// the lowerer to carry the binding name into `CoreMatchArm::Pattern::Predicate`.
@@ -1434,7 +1442,7 @@ pub enum CoreExpr {
         expr: Arc<Spanned<CoreExpr>>,
         resolved_type: Type,
         /// Pipeline blame for `--- expects: @Type` contract assertions.
-        /// Set by `wrap_with_nominal_validation` when a document has an `expects:` annotation.
+        /// Set when a document's `--- expects:` annotation is resolved for pipeline type validation.
         /// None for all other TypeAssert sites (user-written `[@Type expr]` annotations).
         pipeline_blame: Option<crate::error::PipelineBlame>,
     },

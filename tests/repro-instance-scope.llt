@@ -1,0 +1,14 @@
+--- uses: ["core"]
+# Minimal reproduction: can instance method bodies see enclosing dict names?
+[
+  # A regular function defined in this dict
+  my-helper: [fn [let x] x]
+
+  # A class
+  MyClass: [class [let a]]
+
+  # Instance whose method body references my-helper from the same dict
+  MyInstance: [instance MyClass
+    [let a@Int]: [method: my-helper]]
+]
+[my-helper 42]

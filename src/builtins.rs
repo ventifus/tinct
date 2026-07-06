@@ -45,7 +45,7 @@ use crate::value::{BuiltinArgs, HashableValue, Thunk, Value};
 /// For operator names (`+`, `-`, `*`, `/`) and hyphenated names (`to-int`) the
 /// string literal must be written explicitly because they are not valid Rust identifiers.
 macro_rules! builtin {
-    // 2-arg form: all-lazy (empty strictness array, force_count=0)
+    // 2-arg form: all-lazy (empty strictness array, force_count=0, no params)
     ($name:literal, $func:expr) => {{
         const S: &[crate::value::Strictness] = &[];
         crate::value::BuiltinDef {
@@ -53,9 +53,10 @@ macro_rules! builtin {
             name: $name,
             pos_strictness: S,
             force_count: 0,
+            params: &[],
         }
     }};
-    // 3-arg form: with strictness array (force_count=0)
+    // 3-arg form: with strictness array (force_count=0, no params)
     ($name:literal, $func:expr, [$($strictness:expr),* $(,)?]) => {{
         const S: &[crate::value::Strictness] = &[$($strictness),*];
         crate::value::BuiltinDef {
@@ -63,9 +64,10 @@ macro_rules! builtin {
             name: $name,
             pos_strictness: S,
             force_count: 0,
+            params: &[],
         }
     }};
-    // 4-arg form: with strictness array and force_count
+    // 4-arg form: with strictness array and force_count (no params)
     ($name:literal, $func:expr, [$($strictness:expr),* $(,)?], $force_count:expr) => {{
         const S: &[crate::value::Strictness] = &[$($strictness),*];
         crate::value::BuiltinDef {
@@ -73,6 +75,19 @@ macro_rules! builtin {
             name: $name,
             pos_strictness: S,
             force_count: $force_count,
+            params: &[],
+        }
+    }};
+    // 5-arg form: with strictness array, force_count, and param names
+    ($name:literal, $func:expr, [$($strictness:expr),* $(,)?], $force_count:expr, [$($param:literal),* $(,)?]) => {{
+        const S: &[crate::value::Strictness] = &[$($strictness),*];
+        const P: &[&str] = &[$($param),*];
+        crate::value::BuiltinDef {
+            func: $func as crate::value::BuiltinFn,
+            name: $name,
+            pos_strictness: S,
+            force_count: $force_count,
+            params: P,
         }
     }};
 }
@@ -367,8 +382,7 @@ pub(crate) use crate::builtins_dict::{
     builtin_append, builtin_build_dict, builtin_builder_delete, builtin_builder_finish,
     builtin_builder_get, builtin_builder_get_or, builtin_builder_has, builtin_builder_set,
     builtin_builder_snapshot, builtin_dict_key_nth, builtin_dict_kv_nth, builtin_dict_nth,
-    builtin_get, builtin_keys, builtin_length, builtin_make_builder,
-    builtin_merge,
+    builtin_get, builtin_keys, builtin_length, builtin_make_builder, builtin_merge,
 };
 
 // Type/eval/meta builtins: type-of, include, error, try, apply, validate.
@@ -943,7 +957,7 @@ pub(crate) fn builtin_sort(
             // This avoids re-deriving the binding name from the runtime value on every comparison.
             // Falls back to dynamic dispatch if the comparator has no simple return annotation.
             let cmp_matchable_binding =
-                crate::eval::resolve_matchable_binding_from_fn(&cmp_val, &ctx);
+                crate::eval::resolve_matchable_binding_from_fn(&cmp_val, &caller_env);
 
             // Use custom comparator function — async insertion sort (stable, correct).
             // pairs.sort_by cannot .await inside the closure, so we use an explicit loop.
@@ -1400,14 +1414,9 @@ mod tests {
             .unwrap_or_else(|e| panic!("parse_eval: parse failed for {:?}: {}", llt_src, e));
         let mut program = parsed.program;
         crate::desugar::desugar_surface_program(&mut program);
-        let resolve_errors = crate::resolve::resolve_surface_program(&program);
-        if !resolve_errors.is_empty() {
-            panic!(
-                "parse_eval: resolve errors in {:?}: {:?}",
-                llt_src, resolve_errors
-            );
-        }
         let env = Arc::clone(&ctx.config.stdlib_env);
+        // Seed resolver from stdlib_env so builtin names resolve to de Bruijn coords.
+        crate::resolve::resolve_surface_program(&program, Some(&env));
         let thunk = crate::eval::eval_surface_file(&program, env, ctx)
             .await
             .unwrap_or_else(|e| {
@@ -2825,6 +2834,7 @@ mod tests {
             name: "ok",
             pos_strictness: &[],
             force_count: 0,
+            params: &[],
         });
         let result = mat(builtin_try(BuiltinArgs {
             args: vec![thunk(b)],
@@ -2860,6 +2870,7 @@ mod tests {
             name: "fail",
             pos_strictness: &[],
             force_count: 0,
+            params: &[],
         });
         let result = mat(builtin_try(BuiltinArgs {
             args: vec![thunk(b)],
@@ -2905,6 +2916,7 @@ mod tests {
             name: "resource_fail",
             pos_strictness: &[],
             force_count: 0,
+            params: &[],
         });
         let err = run(builtin_try(BuiltinArgs {
             args: vec![thunk(b)],
@@ -3028,6 +3040,7 @@ mod tests {
             name: "add",
             pos_strictness: &[],
             force_count: 0,
+            params: &[],
         });
         let args_val = thunk_dict(
             {
@@ -3238,6 +3251,7 @@ mod tests {
             name: "dummy",
             pos_strictness: &[],
             force_count: 0,
+            params: &[],
         });
         let result = mat(builtin_type_of(BuiltinArgs {
             args: vec![thunk(builtin)],
@@ -7025,7 +7039,10 @@ mod tests {
             caller_env: Arc::new(RwLock::new(Environment::new())),
         }))
         .await;
-        assert!(result.is_err(), "builtin-dict-nth must error on out-of-bounds index");
+        assert!(
+            result.is_err(),
+            "builtin-dict-nth must error on out-of-bounds index"
+        );
     }
 
     #[tokio::test]

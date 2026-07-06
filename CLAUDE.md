@@ -2,11 +2,12 @@
 
 Tinct is a structured-data-first general purpose programming language with lazy evaluation and type inference. 
 
-Axioms::
-- Do things the right way, never the easy way. Don't be lazy.
-- Correct and rigorous is better than fast. 
-- The Rust runtime must be genuinely agnostic to what prelude does. Prelude must work for the same reasons user code works — by being correct tinct, not by being hardwired.
-- Avoid multiple execution paths, fast paths, or special cases. Clean these up when you find them.
+Axioms:
+- **Prelude speaks the Rust protocol**: Rust defines the protocol; prelude implements it. Rust never embeds prelude-specific behavior. Prelude works because it is correct tinct, not because Rust accommodates it.
+- **No fast paths, no fallbacks, no backwards compatibility**: one correct path. Fast paths, fallback branches, and legacy shims create parallel implementations that diverge. Old behavior is replaced, not preserved.
+- **Correctness, not performance**: performance is not a design concern. Write the provably correct implementation. Never add complexity to skip a check or avoid an allocation.
+- **Loader/prelude agnosticism**: users can replace the loader and prelude with their own stack. Language features must be agnostic to what is in the loader and prelude — a feature that only works with the default prelude is not a language feature.
+- **General case, not specific**: we build blocks, not solutions. Solve the general problem; do not implement special cases that happen to work for the current caller.
 
 Documentation:
 

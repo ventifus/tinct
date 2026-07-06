@@ -185,16 +185,22 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
             ..
         } => {
             match resolution.get() {
+                Some(None) => {
+                    // Explicitly marked unresolvable by the resolver — compile error.
+                    CoreExpr::Error(arc.span.clone())
+                }
                 Some(Some((level, slot))) => CoreExpr::Var {
                     name: name.clone(),
                     level,
                     slot,
                     annotation: annotation.clone(),
                 },
-                _ => {
-                    // Some(None) = unresolvable; None = resolver never ran.
-                    // Both are genuine compile errors — produce Error so the evaluator
-                    // surfaces it at force time.
+                None => {
+                    // Resolver ran but this name was not found in any lexical scope.
+                    // Every user-written variable reference must have de Bruijn coordinates
+                    // assigned by the resolver (seeded from the env). A None here means the
+                    // name is genuinely undefined — emit a compile-time error node so the
+                    // evaluator surfaces it when (and only when) the thunk is forced.
                     CoreExpr::Error(arc.span.clone())
                 }
             }
@@ -206,18 +212,17 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
             field_slot,
             resolution,
         } => {
-            // Get the root scope level from the resolver-written resolution field.
-            // The resolver writes the (level, slot) of "field-get" (slot 0 in root scope).
-            // slot-get lives at slot 1 in the same root scope (same level, slot 1).
-            let root_level = match resolution.get() {
-                Some(Some((level, _slot))) => level,
-                _ => {
-                    // Resolver did not find "field-get" in scope — emit Error.
-                    return CoreExpr::Error(arc.span.clone());
-                }
+            // Build the getter function Var and the key argument.
+            // When the resolver has written a root_level to this Field's resolution, use
+            // slot-based lookup (O(1)). When the resolution is unset (resolver never ran
+            // or Field is in a cross-document position), use the sentinel (MAX, MAX).
+            // The evaluator whitelists exactly field-get, slot-get, and builtin-class-dispatch
+            // for name-based lookup at (MAX, MAX); all other names become undefined_variable.
+            let maybe_root_level: Option<u32> = match resolution.get() {
+                Some(Some((level, _slot))) => Some(level),
+                _ => None, // unset or explicitly unresolvable — use name-based fallback
             };
 
-            // Build the getter function Var and the key argument.
             let (getter_root_slot, key_arg) = if let Some(slot) = field_slot.get() {
                 // Typed: use slot-get (positional O(1) access) at root scope slot 1.
                 (
@@ -239,11 +244,17 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
                 "slot-get"
             };
 
+            let (getter_level, getter_slot) = if let Some(root_level) = maybe_root_level {
+                (root_level, getter_root_slot)
+            } else {
+                (u32::MAX, u32::MAX)
+            };
+
             let getter_var = Arc::new(crate::ast::Spanned::new(
                 CoreExpr::Var {
                     name: getter_name.to_string(),
-                    level: root_level,
-                    slot: getter_root_slot,
+                    level: getter_level,
+                    slot: getter_slot,
                     annotation: None,
                 },
                 arc.span.clone(),
@@ -274,7 +285,13 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
                 slot,
                 annotation: None,
             },
-            _ => CoreExpr::Error(arc.span.clone()),
+            Some(None) => CoreExpr::Error(arc.span.clone()),
+            None => CoreExpr::Var {
+                name: name.clone(),
+                level: u32::MAX,
+                slot: u32::MAX,
+                annotation: None,
+            },
         },
 
         // Leading-dot with integer key: `.0` — no parent-scope numeric lookup. The parser
@@ -500,8 +517,13 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
                 } else {
                     let key = se.node.key.as_ref().map(|k| {
                         let lowered = match &k.expr {
-                            // Both plain and annotated VarRef use the name field.
-                            SurfaceExpression::VarRef { name, .. } => CoreExpr::Str(name.clone()),
+                            // Non-escaped VarRef (bare identifier key) → static string key.
+                            // Escaped VarRef ($k:) → computed key, lower as variable lookup.
+                            SurfaceExpression::VarRef {
+                                name,
+                                escaped: false,
+                                ..
+                            } => CoreExpr::Str(name.clone()),
                             _ => lower_expr(k, &k.expr),
                         };
                         Arc::new(Spanned::new(lowered, k.span.clone()))

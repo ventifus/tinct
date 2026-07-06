@@ -1,10 +1,8 @@
-# Test E044: CapabilityRequired
-# Document requires a capability that is not provided
+# Test: capability declared but not provided — tinct-side enforcement (T-1507)
+# Capability check fires in loader.llt's eval-document-runtime via builtin-cap-env-has?
 # no_fs
 --- caps: [%net: @NetCap]
 [result: "should not execute"]
 
 === error
-%net@NetCap is required but not provided
-  inject it with:  tinct run --cap-net net=HOST:PORT ...
-  or unrestricted: tinct run --cap-net net=any ... (defined at 3:5-3:26)
+%net is required but not provided

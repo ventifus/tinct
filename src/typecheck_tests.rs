@@ -24,7 +24,7 @@ fn surf_ann_entry_tc(
 async fn check(input: &str) -> Result<(), Vec<TypeError>> {
     let mut program = crate::parse(input).unwrap().program;
     crate::desugar::desugar_surface_program(&mut program);
-    let (errors, _table, _tycon_env, _match_signal) = typecheck_surface_program_annotation_table(&program).await;
+    let (errors, _table, _tycon_env) = typecheck_surface_program_annotation_table(&program).await;
     if errors.is_empty() {
         Ok(())
     } else {
@@ -1281,9 +1281,16 @@ async fn test_annotation_type_var() {
     .await
     .unwrap();
     // Should be a fresh TypeVar (not literally "a"), at level 0
-    matches!(ty, Type::TypeVar(ref s, 0) if s.starts_with("_t"));
-    // Counter should have advanced
-    assert_eq!(state.name_counter, 1);
+    matches!(ty, Type::TypeVar(ref s, 0) if s.starts_with('?'));
+    // Counter for (origin="", param="") should have advanced to 1
+    assert_eq!(
+        state
+            .per_origin_counter
+            .get(&("".to_string(), "".to_string()))
+            .copied()
+            .unwrap_or(0),
+        1
+    );
 }
 
 #[tokio::test]
@@ -1330,19 +1337,26 @@ async fn test_resolve_type_name_outside_function_scope() {
                 "outside function scope, same annotation name must yield distinct fresh vars"
             );
             assert!(
-                n1.starts_with("_t"),
-                "fresh var should start with _t, got {n1}"
+                n1.starts_with('?'),
+                "fresh var should start with '?', got {n1}"
             );
             assert!(
-                n2.starts_with("_t"),
-                "fresh var should start with _t, got {n2}"
+                n2.starts_with('?'),
+                "fresh var should start with '?', got {n2}"
             );
         }
         other => panic!("expected two TypeVars at level 0, got: {other:?}"),
     }
 
-    // Counter should have advanced twice
-    assert_eq!(state.name_counter, 2);
+    // Counter for (origin="", param="") should have advanced to 2
+    assert_eq!(
+        state
+            .per_origin_counter
+            .get(&("".to_string(), "".to_string()))
+            .copied()
+            .unwrap_or(0),
+        2
+    );
 }
 
 #[tokio::test]
@@ -1393,9 +1407,15 @@ async fn test_resolve_type_name_outside_function_scope_monotonicity() {
     // The old monotonicity test (second reference to same var) is now only relevant
     // inside function scope where mapping reuses the same fresh var. That path is tested
     // by test_annotation_level_monotonicity (within-function scope).
+    // Both calls share the same (origin="", param="") key — counter advanced twice total.
     assert_eq!(
-        state.name_counter, 2,
-        "counter must advance once per fresh var"
+        state
+            .per_origin_counter
+            .get(&("".to_string(), "".to_string()))
+            .copied()
+            .unwrap_or(0),
+        2,
+        "counter for (origin='', param='') must have advanced twice (once per fresh var)"
     );
 }
 
@@ -5297,7 +5317,7 @@ async fn test_typecheck_returns_diagnostics() {
     let mut program = crate::parse(input).unwrap().program;
     crate::desugar::desugar_surface_program(&mut program);
 
-    let (errors, _table, _tycon_env, _match_signal) = typecheck_surface_program_annotation_table(&program).await;
+    let (errors, _table, _tycon_env) = typecheck_surface_program_annotation_table(&program).await;
     assert!(
         errors.is_empty(),
         "simple dict should typecheck without errors"

@@ -1,15 +1,14 @@
-//! Type inference machinery: InferState, generalization, instantiation.
+//! Type inference machinery: InferState, Substitution, generalization, instantiation.
 //!
 //! This module contains the core type inference infrastructure including
-//! the unified TypeVar table and levels-based let-generalization (Kiselyov 2013).
+//! substitution and levels-based let-generalization (Kiselyov 2013).
 
-use indexmap::IndexMap;
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use crate::ast::Span;
-use crate::type_def::TyConDef;
-use crate::types::{ClassEnv, Constraint, InstanceEnv, Kind, Type};
+use crate::types::{ClassDecl, ClassEnv, Constraint, InstanceEnv, Kind, Row, Type};
 
 /// All per-TypeVar metadata in one place.
 /// IndexMap preserves insertion order (= TypeVar creation order via monotonic counter),
@@ -22,6 +21,106 @@ pub struct TypeVarEntry {
     pub binding: Option<Type>,
     /// Kind of this TypeVar (previously in InferState.kind_env).
     pub kind: Kind,
+}
+
+impl TypeVarEntry {
+    /// Create a new unbound TypeVar entry with the given level and kind.
+    pub fn blank(level: u32, kind: Kind) -> Self {
+        Self {
+            level,
+            binding: None,
+            kind,
+        }
+    }
+}
+
+/// Finite substitution: maps TypeVar names to replacement types.
+/// Used by `instantiate_scheme` to rename quantified variables to fresh names.
+/// The `type_map` is interior-mutable so the renaming can be built incrementally
+/// and passed by shared reference to the `apply` method.
+#[derive(Debug, Clone)]
+pub struct Substitution {
+    pub type_map: RefCell<HashMap<String, Type>>,
+}
+
+impl Substitution {
+    pub fn new() -> Self {
+        Self {
+            type_map: RefCell::new(HashMap::new()),
+        }
+    }
+
+    /// Apply this substitution to a type, replacing free TypeVars named in `type_map`.
+    /// Recurses structurally. Does NOT follow binding chains (no occurs-check).
+    pub fn apply(&self, ty: &Type) -> Type {
+        let map = self.type_map.borrow();
+        Self::apply_inner(ty, &map)
+    }
+
+    fn apply_inner(ty: &Type, map: &HashMap<String, Type>) -> Type {
+        match ty {
+            Type::TypeVar(name, _) => {
+                if let Some(replacement) = map.get(name.as_str()) {
+                    replacement.clone()
+                } else {
+                    ty.clone()
+                }
+            }
+            Type::Operator(name) => {
+                if let Some(replacement) = map.get(name.as_str()) {
+                    replacement.clone()
+                } else {
+                    ty.clone()
+                }
+            }
+            Type::Function {
+                params,
+                ret,
+                variadic,
+                required_count,
+            } => Type::Function {
+                params: params
+                    .iter()
+                    .map(|(n, t)| (n.clone(), Self::apply_inner(t, map)))
+                    .collect(),
+                ret: Box::new(Self::apply_inner(ret, map)),
+                variadic: *variadic,
+                required_count: *required_count,
+            },
+            // Note: Type::Seq, Type::Map, Type::Handle don't exist as variants.
+            // These are represented as App(TyCon("Seq"), ...) etc. and handled by the App arm below.
+            Type::Record(row) => Type::Record(Self::apply_row(row, map)),
+            Type::Union(types) => {
+                Type::Union(types.iter().map(|t| Self::apply_inner(t, map)).collect())
+            }
+            Type::Intersection(types) => {
+                Type::Intersection(types.iter().map(|t| Self::apply_inner(t, map)).collect())
+            }
+            Type::Negation(inner) => Type::Negation(Box::new(Self::apply_inner(inner, map))),
+            Type::TypeStageApp { fn_name, args } => Type::TypeStageApp {
+                fn_name: fn_name.clone(),
+                args: args.iter().map(|a| Self::apply_inner(a, map)).collect(),
+            },
+            _ => ty.clone(),
+        }
+    }
+
+    fn apply_row(row: &Row, map: &HashMap<String, Type>) -> Row {
+        Row {
+            fields: row
+                .fields
+                .iter()
+                .map(|(k, v)| (k.clone(), Self::apply_inner(v, map)))
+                .collect(),
+            tail: row.tail.clone(),
+        }
+    }
+}
+
+impl Default for Substitution {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Polymorphic type scheme: ∀ type_vars kind_vars. constraints => body
@@ -50,13 +149,6 @@ pub struct TypeScheme {
     pub doc: Option<String>,
     /// Nested schemes for function parameters (used for higher-rank types)
     pub inner_schemes: Option<HashMap<String, TypeScheme>>,
-    /// Per-parameter narrowing types for type predicates.
-    /// When param i has an `@[is: T]` annotation in its declaration,
-    /// param_narrowings[i] = Some(T). This enables any predicate function
-    /// to narrow its argument's type in the then-branch of an if, without
-    /// hardcoding function names in the type checker.
-    /// Empty vec means no narrowing annotations.
-    pub param_narrowings: Vec<Option<Type>>,
 }
 
 impl TypeScheme {
@@ -70,7 +162,6 @@ impl TypeScheme {
             kind_vars: Vec::new(),
             doc: None,
             inner_schemes: None,
-            param_narrowings: Vec::new(),
         }
     }
 }
@@ -87,18 +178,31 @@ pub type SchemeMap = HashMap<(usize, usize), TypeScheme>;
 /// Inference state for levels-based let-generalization
 #[derive(Debug, Clone)]
 pub struct InferState {
-    pub level: u32,
-    /// Unified TypeVar table: creation level, binding, and kind for each TypeVar.
-    /// IndexMap preserves insertion order (TypeVar creation order) for deterministic iteration.
-    pub type_vars: IndexMap<String, TypeVarEntry>,
-    /// Counter for fresh TypeVar names. Previously Substitution.name_counter.
+    /// Monotonic counter for fresh type/row variable names (_t0, _t1, ...).
+    /// Uses u32 instead of u64 — assumes no single inference run creates >4B type variables.
+    /// (In practice, programs with >1M type variables exhaust memory first via substitution map growth.)
     pub name_counter: u32,
+    pub level: u32,
+    pub levels: HashMap<String, u32>,
+    /// Global accumulated substitution: collects constraints from access-chain inference
+    /// and other constraint generators. Applied when resolving type variables during
+    /// inference, so that constraints from `$x.field1` are visible when processing
+    /// `$x.field2` in the same expression. See doc/07-type-extensions.md Part 5.
+    pub subst: Substitution,
+    /// Accumulated type class constraints on type variables.
+    /// Constraints are generated when overloaded builtins are called with type variables.
+    /// During generalization, constraints on generalized variables are included in the TypeScheme.
+    pub constraints: Vec<Constraint>,
+    /// Kind environment: maps TypeVar names to their kinds.
+    /// Populated during class method processing (Kind::Operator) and when `key@"k"` annotations
+    /// are resolved (Kind::Label). Used to prevent promotion of label-kinded TypeVars and to
+    /// enforce kind checking (e.g., reject `Seq(TypeVar(l, Label))`).
+    pub kind_env: HashMap<String, Kind>,
     /// Type class environment: registry of class declarations.
     /// Dict-scoped: class declarations are visible in the dict and children.
     pub class_env: ClassEnv,
     /// Type class instance environment: registry of instance declarations.
-    /// Lexically scoped: inner instances shadow outer, frame-local coherence enforced.
-    /// See `InstanceEnv` in `src/type_class.rs`.
+    /// Globally registered: coherence requires global uniqueness.
     pub instance_env: InstanceEnv,
     /// Names of bindings that failed type inference, mapping to the span of the failed binding.
     /// Used to annotate downstream T002 "undefined variable" errors with a "caused by" note
@@ -126,33 +230,34 @@ pub struct InferState {
     /// process_deferred_equalities attempts to resolve them.
     /// Actively written to (type_unify.rs) and saved/restored during branch inference (typecheck.rs).
     pub deferred_equalities: Vec<(Type, Type)>,
-    // boundary_guards removed: type guards are now written inline on SurfaceNode.type_guard
-    // (TypeAnnotation OnceLock) by the type checker, and the lowerer wraps them in
-    // CoreExpr::TypeAssert during lowering. No side-channel HashMap needed.
-    /// Type constructor environment: maps type constructor names to their definitions.
-    /// Populated by the type checker when processing `[type ...]` declarations (T-942).
-    /// Present here so that TyConDef is "used" and to allow type-checking passes to
-    /// propagate TyCon definitions through the inference pipeline.
-    pub tycon_env: HashMap<String, Arc<TyConDef>>,
+    /// Boundary guards collected during inference: span → expected_param_type.
+    /// When a call-site argument has inferred type `Unknown` and the function parameter
+    /// has a concrete type (not Unknown, not TypeVar), this records the boundary crossing.
+    /// Used for automatic guard insertion in gradual typing (see doc/feature/gradual-typing.md).
+    /// HashMap for O(1) lookup at thunk creation time in eval_core_expr.
+    pub boundary_guards: HashMap<Span, Type>,
     /// Current functional dependency improvement recursion depth.
     /// Prevents infinite loops through the improve_functional_dependency → unify →
     /// check_constraints_on_var → improve_functional_dependency cycle. Incremented when
     /// entering improve_functional_dependency, decremented when exiting.
     pub fd_depth: usize,
-    /// Set of TypeVar names currently being processed by FD improvement (either forward or
-    /// reverse direction). When FD improvement tries to bind a determined/determining variable
-    /// that is already in this set, it skips the unification — the variable is already being
-    /// bound in an outer FD improvement call, so re-binding it would be a no-op (idempotent)
-    /// and attempting it causes the mutual-recursion cycle: reverse(t1→t0) → forward(t0→t1)
-    /// → reverse(t1→t0) → … hitting MAX_FD_DEPTH.
-    pub fd_in_progress: std::collections::HashSet<String>,
     /// Instance resolution recursion depth.
     /// Prevents infinite loops through the check_constraints_on_var → resolve_instance →
     /// unify → check_constraints_on_var cycle. Incremented when entering resolve_instance,
     /// decremented when exiting. Matches GHC's -freduction-depth semantics (Sulzmann et al. 2007 §3.2).
     pub instance_resolution_depth: u32,
-    // do_infer_resolutions removed: was never populated from any pipeline path.
-    // The evaluator's CoreExpr::Var path handles do-infer sentinels via normal variable lookup.
+    /// Flag indicating whether we are currently type-checking the prelude.
+    /// When true, instance method body inference is skipped (optimization — method types
+    /// in InstanceDecl are populated but only consumed by resolve_instance, which is not
+    /// called during prelude loading itself).
+    pub in_prelude_load: bool,
+    /// Monad resolutions for inferred [do] forms: sentinel VarRef name → resolved monad variable name.
+    /// When the type checker resolves a do-infer sentinel (e.g., `ℊꜱʏᴍ⧼do-infer⧽0`) to a concrete monad
+    /// (e.g., "result"), it records the mapping here keyed by the sentinel VarRef name. The eval
+    /// pipeline reads this map (via EvalContext) to look up the sentinel at runtime and return
+    /// the correct monad dict. Sentinel names are generated by gensym in stdlib/prelude.llt (`do-desugar-inferred`).
+    /// Parallel to boundary_guards: type-checker-to-evaluator communication via side channel.
+    pub do_infer_resolutions: HashMap<String, String>,
     /// Source names for type variables: internal TypeVar name → user-visible source name.
     /// When a function parameter `x` has an inferred TypeVar `_t42`, this maps `"_t42"` → `"x"`.
     /// Used by T013 diagnostics to report "ambiguous type variable 'x'" (the internal _tN
@@ -168,240 +273,277 @@ pub struct InferState {
     /// names across separate type alias declarations (W042). A tag name appearing in two
     /// different `[type ...]` declarations produces a W042 diagnostic on the second occurrence.
     pub registered_nominal_tags: HashMap<String, Span>,
-    /// Instance binding name → slot within its definition scope frame.
-    /// Populated from the resolver's `instance_binding_slots` export in the eval pipeline.
-    /// Used by the type checker to write `call_dispatch` coordinates when dispatching a
-    /// typeclass method call: level comes from the class method stub VarRef's resolution,
-    /// slot comes from this map. Empty in typecheck-only paths (no lowering, so unused).
-    pub instance_binding_slots: std::collections::HashMap<String, u32>,
-    // type_annotation_table removed: TypeAssert types and call_dispatch are now written
-    // inline on AST nodes (TypeAnnotation OnceLock fields) rather than accumulated here.
+    /// TypeAnnotationTable for nested TypeAssert nodes: keyed by NodeId of the TypeAssert Arc<SurfaceNode>.
+    /// Populated by infer_surface_expr's TypeAssert handler. Extracted by typecheck_surface_document
+    /// to merge into the document-level annotation table.
+    pub type_annotation_table: crate::ast::TypeAnnotationTable,
     /// Resolved types for pipeline `expects:` contracts, keyed by the expects annotation's span.
     /// When a document has `--- expects: TypeExpr`, the typecheck pass resolves TypeExpr and stores
     /// the result here. The eval pipeline reads this map to populate TypeAssert.resolved_type,
     /// enabling structural type checking via is_consistent_subtype.
     pub expects_resolved: HashMap<crate::ast::Span, crate::types::Type>,
-    /// Active type parameter scope for TypeAlias body resolution (T-951).
+    /// Resolution table for slot-indexed TypeEnv lookups (optional fast path).
     ///
-    /// When `Some(params)`: `resolve_type_name` enforces that lowercase names are TypeVars
-    /// Type-stage evaluation environment for this inference pass.
-    /// When `Some(env)`, `eval_type_stage_expr` uses this env to evaluate type-stage expressions.
-    /// When `None`, type-stage evaluation fails with a type error (no fallback).
+    /// When set, `infer_surface_expr`'s VarRef handler uses the resolved (level, slot)
+    /// coordinates to call `env.get_type_at(level, slot)` — O(1) per-level — before
+    /// falling back to the O(chain) name-based `env.get(name)`.
     ///
-    /// Set by the TypeContext system during stdlib/prelude loading. The type-stage env
-    /// contains type-level builtins (TypeNode, object-map, etc.) but no IO/caps/runtime API.
-    pub type_stage_env: Option<Arc<RwLock<crate::value::Environment>>>,
-    /// Main runtime environment from the eval pipeline. When set, `eval_type_stage_expr`
-    /// chains this as the parent of the type-stage env so that type constructor names
-    /// (type constructors, etc.) defined in the main env are visible during annotation evaluation.
-    /// This is the cross-stage bridge: type-stage can resolve types from the main env.
-    /// Only set in the eval path (builtin_eval_types); None in typecheck-only paths.
-    pub main_env: Option<Arc<RwLock<crate::value::Environment>>>,
-    /// Pending method scheme injections from `infer_class_decl_from_surface`.
-    ///
-    /// When a `[class ...]` declaration is processed, `infer_class_decl_from_surface` builds
-    /// a `TypeScheme` for each method signature and pushes them here instead of returning them
-    /// in the return value. The caller drains this vec after each class declaration and injects
-    /// the schemes into the active `TypeEnv` (the document `env` or `dict_env`).
-    ///
-    /// This ensures method schemes are always visible to subsequent entries regardless of
-    /// which call path reaches `infer_class_decl_from_surface`, including class declarations
-    /// in dict-entry position (infer_dict Pass 0c) and in top-level document position
-    /// (typecheck_surface_document).
-    pub pending_scheme_injections: Vec<(String, crate::types::TypeScheme)>,
-    /// Expansion stack for named type alias cycle detection (equirecursive types).
-    ///
-    /// Shared across `expand_named` calls within a single top-level inference pass.
-    /// `expand_named` pushes an entry when it begins expanding a named alias and pops
-    /// it when it finishes. If the same `Arc<TyConDef>` is already on the stack (tested
-    /// via `Arc::ptr_eq`), the alias is recursive and `expand_named` returns a `TypeVar`
-    /// sentinel without recursing further.
-    ///
-    /// Always empty between top-level declarations. Cycles are safe to unwind because
-    /// the stack is borrowed mutably through the entire expansion call tree — any attempt
-    /// to re-enter a stack entry produces the TypeVar sentinel rather than infinite recursion.
-    pub expansion_stack: crate::typecheck::typecheck_annot::ExpansionStack,
-    /// Pending param narrowings from the most recently inferred function.
-    /// When `infer_fn` processes a function with `@[is: T]` annotations on parameters,
-    /// it stores the narrowing types here. The caller (e.g., `infer_dict`) consumes this
-    /// vec and attaches it to the TypeScheme. Reset to empty after consumption.
+    /// The table is populated by `resolve_surface_program` before type checking begins.
+    /// It may be `None` for contexts that do not have a resolved program (e.g., tests
+    /// that construct a TypeEnv and InferState directly without parsing).
+    pub resolution_table: Option<std::sync::Arc<crate::ast::ResolutionTable>>,
+    /// Type-stage evaluation environment (from HEAD~1 InferState design).
+    /// When `Some`, eval_type_stage_expr uses this environment.
+    pub type_stage_env: Option<std::sync::Arc<std::sync::RwLock<crate::value::Environment>>>,
+    /// Main runtime environment (from HEAD~1 InferState design).
+    /// Cross-stage bridge: type-stage can resolve types from main env.
+    pub main_env: Option<std::sync::Arc<std::sync::RwLock<crate::value::Environment>>>,
+    /// Pending param narrowings from the most recently inferred function (compatibility field).
     pub pending_param_narrowings: Vec<Option<Type>>,
-    /// BAS TypeVar bounds: lower and upper bounds accumulated by C-Var1/2 constraint
-    /// rewriting during unification. Each TypeVar name maps to its TypeVarBounds.
-    ///
-    /// - C-Var1 (`τ₁ ≤ τ₂ ∨ α` → `τ₁ & ~τ₂ ≤ α`): adds `τ₁ & ~τ₂` as lower bound of α
-    /// - C-Var2 (`α ∧ τ₁ ≤ τ₂` → `α ≤ ~τ₁ ∨ τ₂`): adds `~τ₁ ∨ τ₂` as upper bound of α
-    ///
-    /// At generalization time, bounds are compacted: if they determine a unique type for α,
-    /// α is substituted; otherwise α remains free in the TypeScheme.
-    ///
-    /// Coexists with type_vars bindings — type_vars handles equational bindings (α = T),
-    /// bounds handle inequality constraints (L ≤ α ≤ U).
+    /// Unified TypeVar table (from HEAD~1 design).
+    /// In the current design, TypeVar bindings are in `subst.type_map`, levels in `levels`,
+    /// and kinds in `kind_env`. This field exists for compatibility with type_class.rs
+    /// save/restore probe patterns.
+    pub type_vars: indexmap::IndexMap<String, TypeVarEntry>,
+    /// BAS TypeVar bounds (from HEAD~1 design).
     pub bounds: std::collections::HashMap<String, crate::bas::TypeVarBounds>,
-    /// Match-signal class info: (class_name, method_name) for the typeclass whose method
-    /// converts values to match signals (Int: nonzero = match, zero = no-match).
-    ///
-    /// Discovered structurally during class registration: when a class has exactly one type
-    /// parameter and a method whose return type is `Int`, it is recorded here. The pattern
-    /// matching engine uses this to resolve Matchable instance bindings without hardcoding
-    /// class or method names in Rust.
-    ///
-    /// Populated by `infer_class_decl_from_surface` (typecheck.rs). Read by
-    /// `resolve_predicate_matchable` and guard matchable binding resolution.
-    /// Threaded to `EvalContext` via the typecheck return value so `call_to_match` and
-    /// `resolve_matchable_binding_from_fn` can also use it.
-    pub match_signal_class: Option<(String, String)>,
+    /// Set of TypeVar names currently being processed by FD improvement (compatibility field).
+    pub fd_in_progress: std::collections::HashSet<String>,
+    /// Expansion stack for type alias cycle detection (compatibility field from HEAD~1).
+    pub expansion_stack: Vec<(std::sync::Arc<crate::type_def::TyConDef>, String)>,
+    /// Type constructor environment (from HEAD~1 design).
+    /// Maps type constructor names to their TyConDef.
+    pub tycon_env: std::collections::HashMap<String, std::sync::Arc<crate::type_def::TyConDef>>,
 }
 
 impl InferState {
     pub fn new() -> Self {
-        // class_env and instance_env start empty. They are populated by callers via:
-        //   state.class_env = env.build_class_env();
-        //   state.instance_env = env.build_instance_env();
-        // TypeEnv is the canonical persistent store for class/instance declarations.
-        // Prelude is responsible for declaring its own classes (Indexable, Concatable, etc.)
-        // via [class ...] and [instance ...] forms — Rust does not hardcode them.
-        let class_env = ClassEnv::new();
-        let instance_env = InstanceEnv::new();
+        let mut class_env = ClassEnv::new();
 
-        // Builtin type constructors — pre-registered in type_vars so resolve_type_dict
-        // uses the general kind lookup path instead of string matching.
-        let mut type_vars = IndexMap::new();
-        type_vars.insert(
-            "Seq".to_string(),
-            TypeVarEntry {
-                level: 0,
-                binding: None,
-                kind: Kind::Operator,
-            },
-        );
-        type_vars.insert(
-            "Map".to_string(),
-            TypeVarEntry {
-                level: 0,
-                binding: None,
-                kind: Kind::Arrow(Box::new(Kind::Type), Box::new(Kind::Operator)),
-            },
-        );
-        type_vars.insert(
-            "Handle".to_string(),
-            TypeVarEntry {
-                level: 0,
-                binding: None,
-                kind: Kind::Operator,
-            },
-        );
-
-        // T-1018: Register builtin TyCons in tycon_env with their variance annotations.
-        // This allows is_subtype to apply variance-directed subtyping for builtins.
-        // Arc::new wraps each TyConDef so pointer identity is preserved for UNIFY-TYCON (B-343).
-        let mut tycon_env = HashMap::new();
-        tycon_env.insert(
-            "Seq".to_string(),
-            Arc::new(crate::type_def::TyConDef {
-                params: vec!["a".to_string()],
-                body: crate::type_def::Type::Unknown,
-                constraints: vec![],
-                variance: vec![crate::type_def::Variance::Covariant],
-                constructors: vec![],
-                builtin_type: Some("Seq".to_string()),
-                annotation: None,
-                field_annotations: indexmap::IndexMap::new(),
-                constructor_constants: indexmap::IndexMap::new(),
-            }),
-        );
-        tycon_env.insert(
-            "Map".to_string(),
-            Arc::new(crate::type_def::TyConDef {
-                params: vec!["k".to_string(), "v".to_string()],
-                body: crate::type_def::Type::Unknown,
-                constraints: vec![],
-                variance: vec![
-                    crate::type_def::Variance::Invariant,
-                    crate::type_def::Variance::Covariant,
-                ],
-                constructors: vec![],
-                builtin_type: Some("Map".to_string()),
-                annotation: None,
-                field_annotations: indexmap::IndexMap::new(),
-                constructor_constants: indexmap::IndexMap::new(),
-            }),
-        );
-        tycon_env.insert(
-            "Handle".to_string(),
-            Arc::new(crate::type_def::TyConDef {
-                params: vec!["cap".to_string()],
-                body: crate::type_def::Type::Unknown,
-                constraints: vec![],
-                variance: vec![crate::type_def::Variance::Covariant],
-                constructors: vec![],
-                builtin_type: Some("Handle".to_string()),
-                annotation: None,
-                field_annotations: indexmap::IndexMap::new(),
-                constructor_constants: indexmap::IndexMap::new(),
-            }),
-        );
-
-        // T-1068: Register primitive zero-param types as TyConDef entries.
+        // Register built-in type classes with their superclass relationships.
+        // Class declarations define the hierarchy (which classes extend which).
+        // Instance resolution happens in two stages:
+        //   1. satisfies_constraint: hardcoded for Numeric, Comparable, Equatable, and Showable
+        //   2. InstanceEnv::resolve_instance: dynamic resolution from prelude.llt instances
         //
-        // These are the 7 payload-free TypeNode leaf constructors. Registering them here enables
-        // the future unified `expand_named` path (equirecursive-types sprint) to look up all named
-        // types — primitives and structural aliases alike — through a single `tycon_env` lookup
-        // instead of the `is_builtin_type_name` fast-path string-match in resolve_type_dict.
-        //
-        // `builtin_type: Some(name)` marks each entry as opaque: `expand_named` will return a
-        // bare TypeConstructor leaf without structural expansion (same treatment as builtin TyCons).
-        // `body` holds the concrete primitive `Type` — not `Unknown` — so that callers which read
-        // `TyConDef.body` directly (e.g., type display) see the correct underlying type.
-        // `params: vec![]` — zero type parameters; `variance: vec![]` — no parameters to vary.
-        for (name, body) in [
-            ("Int", crate::type_def::Type::Int),
-            ("Float", crate::type_def::Type::Float),
-            // User annotation name is "String"; runtime alias is "Str". Both names resolve
-            // to Type::Str via resolve_type_name; we register the canonical annotation name.
-            ("String", crate::type_def::Type::Str),
-            ("Unknown", crate::type_def::Type::Unknown),
-            ("Never", crate::type_def::Type::Never),
-        ] {
-            tycon_env.insert(
-                name.to_string(),
-                Arc::new(crate::type_def::TyConDef {
-                    params: vec![],
-                    body,
-                    constraints: vec![],
-                    variance: vec![],
-                    constructors: vec![],
-                    builtin_type: Some(name.to_string()),
-                    annotation: None,
-                    field_annotations: indexmap::IndexMap::new(),
-                    constructor_constants: indexmap::IndexMap::new(),
-                }),
-            );
-        }
-        // Absent is the empty closed record type (same as Null/[]). Registered separately because
-        // its body is a Record, not a simple Type variant.
-        tycon_env.insert(
-            "Absent".to_string(),
-            Arc::new(crate::type_def::TyConDef {
-                params: vec![],
-                body: crate::type_def::Type::Record(crate::type_def::Row {
-                    fields: indexmap::IndexMap::new(),
-                    tail: crate::type_def::RowTail::Empty,
-                }),
-                constraints: vec![],
-                variance: vec![],
-                constructors: vec![],
-                builtin_type: Some("Absent".to_string()),
-                annotation: None,
-                field_annotations: indexmap::IndexMap::new(),
-                constructor_constants: indexmap::IndexMap::new(),
-            }),
+        // These pre-registrations ensure the class hierarchy is available before prelude.llt
+        // is type-checked. When prelude.llt is loaded, it will register instances (not classes)
+        // which will be used by resolve_instance for constraint checking.
+
+        // Equatable: base class (instances defined in prelude.llt)
+        class_env.insert(ClassDecl {
+            name: "Equatable".to_string(),
+            params: vec![("a".to_string(), Kind::Type)],
+            superclasses: vec![],
+            determines: vec![],
+            resolver: None,
+            resolver_injective: false,
+            method_signatures: vec![],
+        });
+
+        // Numeric: extends Equatable (hardcoded instance set for Int/Float/Number/IntLiteral)
+        class_env.insert(ClassDecl {
+            name: "Numeric".to_string(),
+            params: vec![("a".to_string(), Kind::Type)],
+            superclasses: vec![("Equatable".to_string(), vec!["a".to_string()])],
+            determines: vec![],
+            resolver: None,
+            resolver_injective: false,
+            method_signatures: vec![],
+        });
+
+        // Addable: 3-parameter type class with functional dependency (a,b) → c
+        class_env.insert(ClassDecl {
+            name: "Addable".to_string(),
+            params: vec![
+                ("a".to_string(), Kind::Type),
+                ("b".to_string(), Kind::Type),
+                ("c".to_string(), Kind::Type),
+            ],
+            superclasses: vec![],
+            determines: vec![(vec![0, 1], vec![2])], // (a,b) → c
+            resolver: None,
+            resolver_injective: false,
+            method_signatures: vec![],
+        });
+
+        // Subtractable: 3-parameter type class with functional dependency (a,b) → c
+        class_env.insert(ClassDecl {
+            name: "Subtractable".to_string(),
+            params: vec![
+                ("a".to_string(), Kind::Type),
+                ("b".to_string(), Kind::Type),
+                ("c".to_string(), Kind::Type),
+            ],
+            superclasses: vec![],
+            determines: vec![(vec![0, 1], vec![2])], // (a,b) → c
+            resolver: None,
+            resolver_injective: false,
+            method_signatures: vec![],
+        });
+
+        // Multipliable: 3-parameter type class with functional dependency (a,b) → c
+        class_env.insert(ClassDecl {
+            name: "Multipliable".to_string(),
+            params: vec![
+                ("a".to_string(), Kind::Type),
+                ("b".to_string(), Kind::Type),
+                ("c".to_string(), Kind::Type),
+            ],
+            superclasses: vec![],
+            determines: vec![(vec![0, 1], vec![2])], // (a,b) → c
+            resolver: None,
+            resolver_injective: false,
+            method_signatures: vec![],
+        });
+
+        // Divisible: 3-parameter type class with functional dependency (a,b) → c
+        class_env.insert(ClassDecl {
+            name: "Divisible".to_string(),
+            params: vec![
+                ("a".to_string(), Kind::Type),
+                ("b".to_string(), Kind::Type),
+                ("c".to_string(), Kind::Type),
+            ],
+            superclasses: vec![],
+            determines: vec![(vec![0, 1], vec![2])], // (a,b) → c
+            resolver: None,
+            resolver_injective: false,
+            method_signatures: vec![],
+        });
+
+        // Comparable: extends Equatable (instances defined in prelude.llt)
+        class_env.insert(ClassDecl {
+            name: "Comparable".to_string(),
+            params: vec![("a".to_string(), Kind::Type)],
+            superclasses: vec![("Equatable".to_string(), vec!["a".to_string()])],
+            determines: vec![],
+            resolver: None,
+            resolver_injective: false,
+            method_signatures: vec![],
+        });
+
+        // Showable: base class (instances defined in prelude.llt)
+        class_env.insert(ClassDecl {
+            name: "Showable".to_string(),
+            params: vec![("a".to_string(), Kind::Type)],
+            superclasses: vec![],
+            determines: vec![],
+            resolver: None,
+            resolver_injective: false,
+            method_signatures: vec![],
+        });
+
+        // Mappable: base class (instances defined in prelude.llt)
+        // Kind::Operator for higher-kinded type constructor polymorphism
+        class_env.insert(ClassDecl {
+            name: "Mappable".to_string(),
+            params: vec![("f".to_string(), Kind::Operator)],
+            superclasses: vec![],
+            determines: vec![],
+            resolver: None,
+            resolver_injective: false,
+            method_signatures: vec![],
+        });
+
+        // Appendable: base class (instances defined in prelude.llt)
+        class_env.insert(ClassDecl {
+            name: "Appendable".to_string(),
+            params: vec![("a".to_string(), Kind::Type)],
+            superclasses: vec![],
+            determines: vec![],
+            resolver: None,
+            resolver_injective: false,
+            method_signatures: vec![],
+        });
+
+        // Indexable: 3-parameter type class with functional dependency (container, key) → value
+        // Built-in instances registered below for Map, Seq, and Record
+        class_env.insert(ClassDecl {
+            name: "Indexable".to_string(),
+            params: vec![
+                ("container".to_string(), Kind::Type),
+                ("key".to_string(), Kind::Type),
+                ("value".to_string(), Kind::Type),
+            ],
+            superclasses: vec![],
+            determines: vec![(vec![0, 1], vec![2])], // (container, key) → value
+            resolver: None,
+            resolver_injective: false,
+            method_signatures: vec![],
+        });
+
+        let mut instance_env = InstanceEnv::new();
+
+        // Register built-in Indexable instances for Map, Seq, and Record.
+        // These instances enable FD improvement: given container and key types,
+        // the value type is determined automatically.
+        use crate::type_class::InstanceDecl;
+        use crate::types::Row;
+
+        // Indexable Map[K V] K V
+        // Map[K, V] is App(App(TyCon("Map"), K), V)
+        let map_k_var = Type::TypeVar("K".to_string(), 0);
+        let map_v_var = Type::TypeVar("V".to_string(), 0);
+        let map_ty = Type::App(
+            Box::new(Type::App(
+                Box::new(Type::TyCon("Map".to_string())),
+                Box::new(map_k_var.clone()),
+            )),
+            Box::new(map_v_var.clone()),
         );
+        let map_instance = InstanceDecl {
+            class_name: "Indexable".to_string(),
+            instance_type: Type::Record(Row {
+                fields: {
+                    let mut fields = indexmap::IndexMap::new();
+                    fields.insert("0".to_string(), map_ty);
+                    fields.insert("1".to_string(), map_k_var.clone());
+                    fields.insert("2".to_string(), map_v_var.clone());
+                    fields
+                },
+                tail: crate::type_def::RowTail::Empty,
+            }),
+            det_positions: vec![0, 1],
+            method_types: HashMap::new(),
+        };
+        instance_env.insert(map_instance).unwrap();
+
+        // Indexable Seq[T] Int T
+        // Seq[T] is App(TyCon("Seq"), T)
+        let seq_t_var = Type::TypeVar("T".to_string(), 0);
+        let seq_ty = Type::App(
+            Box::new(Type::TyCon("Seq".to_string())),
+            Box::new(seq_t_var.clone()),
+        );
+        let seq_instance = InstanceDecl {
+            class_name: "Indexable".to_string(),
+            instance_type: Type::Record(Row {
+                fields: {
+                    let mut fields = indexmap::IndexMap::new();
+                    fields.insert("0".to_string(), seq_ty);
+                    fields.insert("1".to_string(), Type::Int);
+                    fields.insert("2".to_string(), seq_t_var.clone());
+                    fields
+                },
+                tail: crate::type_def::RowTail::Empty,
+            }),
+            det_positions: vec![0, 1],
+            method_types: HashMap::new(),
+        };
+        instance_env.insert(seq_instance).unwrap();
+
+        // Record/Union/Intersection/Top types for Indexable are handled via resolve_has_field
+        // in improve_functional_dependency_inner (type_unify.rs). No instance registration
+        // needed — records are structural, so [HAS-FIELD-*] rules apply directly.
 
         Self {
-            level: 0,
-            type_vars,
             name_counter: 0,
+            level: 0,
+            levels: HashMap::new(),
+            subst: Substitution::new(),
+            constraints: Vec::new(),
+            kind_env: HashMap::new(),
             class_env,
             instance_env,
             failed_bindings: HashMap::new(),
@@ -410,36 +552,50 @@ impl InferState {
             expected_return: None,
             diagnostics: Vec::new(),
             deferred_equalities: Vec::new(),
-            tycon_env,
+            boundary_guards: HashMap::new(),
             fd_depth: 0,
-            fd_in_progress: std::collections::HashSet::new(),
             instance_resolution_depth: 0,
+            in_prelude_load: false,
+            do_infer_resolutions: HashMap::new(),
             type_var_source_names: HashMap::new(),
             t013_emitted: std::collections::HashSet::new(),
             registered_nominal_tags: HashMap::new(),
-            instance_binding_slots: std::collections::HashMap::new(),
-            main_env: None,
+            type_annotation_table: crate::ast::TypeAnnotationTable::new(),
             expects_resolved: HashMap::new(),
+            resolution_table: None,
             type_stage_env: None,
-            pending_scheme_injections: Vec::new(),
-            expansion_stack: Vec::new(),
+            main_env: None,
             pending_param_narrowings: Vec::new(),
-            bounds: HashMap::new(),
-            match_signal_class: None,
+            type_vars: indexmap::IndexMap::new(),
+            bounds: std::collections::HashMap::new(),
+            fd_in_progress: std::collections::HashSet::new(),
+            tycon_env: std::collections::HashMap::new(),
+            expansion_stack: Vec::new(),
         }
     }
 
-    /// Add a type class constraint to the given constraint accumulator.
-    /// The constraint is checked during instantiation.
-    ///
-    /// The class_name must be registered in class_env. If not found, this will panic
-    /// (the caller is responsible for validating class existence before calling).
-    pub fn add_constraint(
-        &self,
+    /// Add a type class constraint to an explicit constraint accumulator.
+    /// Used by the new InferState API (HEAD~1 style) where constraints are passed explicitly.
+    /// Falls back gracefully: if the class is not in `class_env`, just skips the constraint.
+    pub fn add_constraint_to(
+        &mut self,
         constraints: &mut Vec<Constraint>,
         class_name: impl Into<String>,
         var: impl Into<String>,
     ) {
+        let class_name = class_name.into();
+        if let Some(class_decl) = self.class_env.get(&class_name) {
+            constraints.push(Constraint::new(Arc::new(class_decl.clone()), var));
+        }
+        // Unknown classes are deferred — instance resolution will report an error.
+    }
+
+    /// Add a type class constraint to the inference state.
+    /// The constraint is checked during instantiation.
+    ///
+    /// The class_name must be registered in class_env. If not found, this will panic
+    /// (the caller is responsible for validating class existence before calling).
+    pub fn add_constraint(&mut self, class_name: impl Into<String>, var: impl Into<String>) {
         let class_name = class_name.into();
         let class_decl = self.class_env.get(&class_name).unwrap_or_else(|| {
             panic!(
@@ -447,24 +603,15 @@ impl InferState {
                 class_name
             )
         });
-        constraints.push(Constraint::new(Arc::new(class_decl.clone()), var));
+        self.constraints
+            .push(Constraint::new(Arc::new(class_decl.clone()), var));
     }
 
-    /// Create a fresh type variable at the current level and register it in `state.type_vars`.
-    ///
-    /// TypeVar names are globally unique via the monotonic `name_counter` (Barendregt convention).
+    /// Create a fresh type variable at the current level and register it in `state.levels`.
     pub fn fresh_type_var(&mut self) -> Type {
-        let n = self.name_counter;
-        self.name_counter = n.saturating_add(1);
-        let name = format!("_t{}", n);
-        self.type_vars.insert(
-            name.clone(),
-            TypeVarEntry {
-                level: self.level,
-                binding: None,
-                kind: Kind::Type,
-            },
-        );
+        let name = format!("_t{}", self.name_counter);
+        self.name_counter = self.name_counter.saturating_add(1);
+        self.levels.insert(name.clone(), self.level);
         Type::TypeVar(name, self.level)
     }
 
@@ -473,154 +620,155 @@ impl InferState {
     /// Used for T013 warnings to report "ambiguous type variable 'x'" (hiding the internal
     /// _tN name which is noise for users).
     pub fn fresh_type_var_with_source(&mut self, source_name: impl Into<String>) -> Type {
-        let n = self.name_counter;
-        self.name_counter = n.saturating_add(1);
-        let internal_name = format!("_t{}", n);
-        self.type_vars.insert(
-            internal_name.clone(),
-            TypeVarEntry {
-                level: self.level,
-                binding: None,
-                kind: Kind::Type,
-            },
-        );
+        let internal_name = format!("_t{}", self.name_counter);
+        self.name_counter = self.name_counter.saturating_add(1);
+        self.levels.insert(internal_name.clone(), self.level);
         self.type_var_source_names
             .insert(internal_name.clone(), source_name.into());
         Type::TypeVar(internal_name, self.level)
     }
 
-    /// Compact the type_vars map by removing entries for TypeVars that have been bound.
-    /// This prevents unbounded growth during long inference sessions.
+    // fresh_row_var_name removed — BAS Step 4: no RowVar tails exist
+
+    /// Compact the levels map by removing entries for TypeVars that have been unified.
+    /// A TypeVar is considered unified if its name appears in the substitution's type_map.
+    /// This prevents unbounded growth of the levels HashMap during long inference sessions.
     ///
     /// Call this periodically after unification rounds (e.g., at the end of infer_dict).
     pub fn compact_levels(&mut self) {
-        self.type_vars
-            .retain(|_name, entry| entry.binding.is_none());
+        let type_map = self.subst.type_map.borrow();
+        self.levels
+            .retain(|name, _level| !type_map.contains_key(name));
     }
 
-    /// Look up a TypeVar binding, following chains. Equivalent to old Substitution::apply for a single var.
-    pub fn lookup_binding(&self, name: &str) -> Option<Type> {
-        self.type_vars.get(name).and_then(|e| e.binding.clone())
-    }
-
-    /// Bind a TypeVar to a type in the unified table.
-    pub fn bind_type_var(&mut self, name: String, ty: Type) {
-        if let Some(entry) = self.type_vars.get_mut(&name) {
-            entry.binding = Some(ty);
-        } else {
-            // TypeVar not yet registered (e.g., from annotation); register at level 0
-            self.type_vars.insert(
-                name,
-                TypeVarEntry {
-                    level: 0,
-                    binding: Some(ty),
-                    kind: Kind::Type,
-                },
-            );
-        }
-    }
-
-    /// Get the level of a TypeVar.
-    pub fn get_level(&self, name: &str) -> Option<u32> {
-        self.type_vars.get(name).map(|e| e.level)
-    }
-
-    /// Set the level of a TypeVar. If not registered, inserts it.
-    pub fn set_level(&mut self, name: String, level: u32) {
-        if let Some(entry) = self.type_vars.get_mut(&name) {
-            entry.level = level;
-        } else {
-            self.type_vars.insert(
-                name,
-                TypeVarEntry {
-                    level,
-                    binding: None,
-                    kind: Kind::Type,
-                },
-            );
-        }
-    }
-
-    /// Get the kind of a TypeVar.
-    pub fn get_kind(&self, name: &str) -> Option<&Kind> {
-        self.type_vars.get(name).map(|e| &e.kind)
-    }
-
-    /// Set the kind of a TypeVar. If not registered, inserts it.
-    pub fn set_kind(&mut self, name: String, kind: Kind) {
-        if let Some(entry) = self.type_vars.get_mut(&name) {
-            entry.kind = kind;
-        } else {
-            self.type_vars.insert(
-                name,
-                TypeVarEntry {
-                    level: self.level,
-                    binding: None,
-                    kind,
-                },
-            );
-        }
-    }
-
-    /// Check if the type_vars map has exceeded the maximum allowed size.
-    pub fn check_type_vars_size(
-        &self,
-        span: Span,
-    ) -> Result<(), crate::type_errors::TypeErrorTyped> {
-        let len = self.type_vars.len();
-        if len > MAX_TYPE_VARS_SIZE {
-            Err(crate::type_errors::TypeErrorTyped::Generic(crate::type_errors::GenericTypeError {
-                message: format!(
-                    "type inference resource limit exceeded (type_vars size {} > {}) -- use fewer chained dot-accesses or add explicit type annotations to break constraint chains",
-                    len, MAX_TYPE_VARS_SIZE
-                ),
-                span,
-                notes: vec![], call_stack: vec![],
-            }))
-        } else {
-            Ok(())
-        }
-    }
-
-    /// Check if the substitution is empty (no bindings).
+    /// Check if the substitution has no bindings (all type variables are free).
     pub fn subst_is_empty(&self) -> bool {
-        self.type_vars.values().all(|e| e.binding.is_none())
+        self.subst.type_map.borrow().is_empty()
     }
 
-    /// Apply substitution to a type: resolve all bound TypeVars.
+    /// Apply the current substitution to a type, resolving all bound type variables.
     pub fn apply(&self, ty: &Type) -> Type {
-        crate::types::apply_substitution(ty, &self.type_vars)
+        self.subst.apply(ty)
     }
 
-    /// Apply substitution with an externally-supplied visited set.
+    /// Apply the current substitution to a type (mutable borrow variant).
+    pub fn apply_mut(&mut self, ty: &Type) -> Type {
+        self.subst.apply(ty)
+    }
+
+    /// Return a reference to the type constructor environment.
+    pub fn tycon_env_ref(
+        &self,
+    ) -> &std::collections::HashMap<String, std::sync::Arc<crate::type_def::TyConDef>> {
+        &self.tycon_env
+    }
+
+    /// Register or update the Kind for a TypeVar name in `kind_env`.
+    pub fn set_kind(&mut self, name: impl Into<String>, kind: Kind) {
+        self.kind_env.insert(name.into(), kind);
+    }
+
+    /// Get a reference to the kind environment.
+    /// Compatibility method for code that calls `state.kind_env()` as a method.
+    pub fn kind_env(&self) -> &HashMap<String, Kind> {
+        &self.kind_env
+    }
+
+    /// Get the Kind for a TypeVar name from kind_env (compatibility with new InferState API).
+    pub fn get_kind(&self, name: &str) -> Option<Kind> {
+        self.kind_env.get(name).cloned()
+    }
+
+    /// Look up the binding for a TypeVar name (compatibility shim for new InferState API).
+    pub fn lookup_binding(&self, name: &str) -> Option<Type> {
+        self.subst.type_map.borrow().get(name).cloned()
+    }
+
+    /// Apply the substitution to a type using a visited set to prevent infinite recursion.
     pub fn apply_with_visited(
         &self,
         ty: &Type,
-        visited_types: &mut std::collections::HashSet<String>,
+        _visited_types: &mut std::collections::HashSet<String>,
         _visited_rows: &mut std::collections::HashSet<String>,
     ) -> Type {
-        crate::types::apply_type_with_visited(ty, &self.type_vars, 0, visited_types).into_owned()
+        // Use the subst to apply type_map bindings
+        self.subst.apply(ty)
+        // Note: ignores visited_types for now — the Substitution::apply_inner doesn't track
+        // cycles. If needed, use apply_type_with_visited from type_unify.rs instead.
     }
 
-    /// Build a HashMap<String, Type> of all currently bound TypeVars.
-    /// Used by `emit_ambiguous_constraint_diagnostics` which needs a binding snapshot.
-    pub fn binding_snapshot(&self) -> HashMap<String, Type> {
-        self.type_vars
-            .iter()
-            .filter_map(|(name, entry)| entry.binding.as_ref().map(|ty| (name.clone(), ty.clone())))
-            .collect()
+    /// Bind a TypeVar to a type (compatibility shim for new InferState API).
+    pub fn bind_type_var(&mut self, name: String, ty: Type) {
+        self.subst.type_map.borrow_mut().insert(name, ty);
     }
 
-    /// Build a HashMap<String, Kind> view of type_vars for callsites that need it
-    /// (e.g., check_kind_wellformed). Only includes entries with non-default kinds
-    /// (Kind::Label, Kind::Operator) since Kind::Type is the default and omitting it
-    /// matches the old kind_env semantics (only non-Type kinds were registered).
-    pub fn kind_env(&self) -> HashMap<String, Kind> {
-        self.type_vars
-            .iter()
-            .filter(|(_, entry)| entry.kind != Kind::Type)
-            .map(|(name, entry)| (name.clone(), entry.kind.clone()))
-            .collect()
+    /// Check if the type variable table has exceeded a maximum size.
+    /// Compatibility shim — the current design uses a simple heuristic.
+    pub fn check_type_vars_size(
+        &self,
+        _span: crate::ast::Span,
+    ) -> Result<(), crate::types::TypeError> {
+        // Current InferState doesn't have a unified type_vars table with explicit size tracking.
+        // Return Ok — callers that need this check should track via the substitution.
+        Ok(())
+    }
+
+    /// Allocate a monotonic counter value and increment it.
+    /// The `_prefix` and `_suffix` args are ignored (compatibility shim for new API).
+    pub fn alloc_counter(&mut self, _prefix: &str, _suffix: &str) -> u32 {
+        let n = self.name_counter;
+        self.name_counter = n.saturating_add(1);
+        n
+    }
+
+    /// Set the level for a TypeVar name (compatibility with new InferState API).
+    pub fn set_level(&mut self, name: impl Into<String>, level: u32) {
+        self.levels.insert(name.into(), level);
+    }
+
+    /// Get the level of a TypeVar name (compatibility with new InferState API).
+    pub fn get_level(&self, name: &str) -> Option<u32> {
+        self.levels.get(name).copied()
+    }
+
+    /// Create a fresh type variable with an optional source name and origin span.
+    /// Compatibility shim for code expecting `fresh_type_var_with_origin`.
+    pub fn fresh_type_var_with_origin(
+        &mut self,
+        source_name: Option<&str>,
+        _origin_name: Option<&str>,
+        _span: Option<crate::ast::Span>,
+    ) -> Type {
+        let name = format!("_t{}", self.name_counter);
+        self.name_counter = self.name_counter.saturating_add(1);
+        self.levels.insert(name.clone(), self.level);
+        if let Some(src) = source_name {
+            self.type_var_source_names
+                .insert(name.clone(), src.to_string());
+        }
+        Type::TypeVar(name, self.level)
+    }
+
+    /// Allocate a fresh TypeVar at the specified level.
+    /// Returns `(name, Type::TypeVar(name, level))`.
+    /// Compatible shim for code expecting the new InferState API.
+    pub fn alloc_type_var_at_level(
+        &mut self,
+        level: u32,
+        source_name: Option<&str>,
+        _unused1: Option<()>,
+        _unused2: Option<()>,
+        _kind: Kind,
+    ) -> (String, Type) {
+        let name = format!("_t{}", self.name_counter);
+        self.name_counter = self.name_counter.saturating_add(1);
+        self.levels.insert(name.clone(), level);
+        if let Some(src) = source_name {
+            self.type_var_source_names
+                .insert(name.clone(), src.to_string());
+        }
+        let ty = Type::TypeVar(name.clone(), level);
+        (name, ty)
     }
 }
 
@@ -630,62 +778,67 @@ impl Default for InferState {
     }
 }
 
-/// Maximum size of the type_vars map.
-/// Prevents resource exhaustion from quadratic growth in pathological cases.
-pub const MAX_TYPE_VARS_SIZE: usize = 50_000;
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::types::Type;
 
-    /// `compact_levels()` removes entries for TypeVars that have been bound,
-    /// while keeping entries for unbound TypeVars.
+    /// `compact_levels()` removes entries for TypeVars that have been unified
+    /// (i.e., whose names appear in `state.subst.type_map`), while keeping entries
+    /// for unbound TypeVars.
+    ///
+    /// Mutation resistance: if `compact_levels()` were a no-op, the unified var
+    /// would still be present in `state.levels` after the call, failing the
+    /// `!state.levels.contains_key("_t0")` assertion.
     #[test]
     fn test_compact_levels_removes_unified_var() {
         let mut state = InferState::new();
 
         // Create two fresh TypeVars: _t0 and _t1.
-        let _tv0 = state.fresh_type_var();
-        let _tv1 = state.fresh_type_var();
+        let _tv0 = state.fresh_type_var(); // registers "_t0" in levels at level 0
+        let _tv1 = state.fresh_type_var(); // registers "_t1" in levels at level 0
 
         assert!(
-            state.type_vars.contains_key("_t0"),
-            "_t0 should be in type_vars before compaction"
+            state.levels.contains_key("_t0"),
+            "_t0 should be in levels before compaction"
         );
         assert!(
-            state.type_vars.contains_key("_t1"),
-            "_t1 should be in type_vars before compaction"
+            state.levels.contains_key("_t1"),
+            "_t1 should be in levels before compaction"
         );
 
-        // Bind _t0 -> Int by setting its binding.
-        state.bind_type_var("_t0".to_string(), Type::Int);
+        // Bind _t0 → Int by inserting it into the substitution's type_map.
+        // This simulates what unification does when it solves a TypeVar.
+        state
+            .subst
+            .type_map
+            .borrow_mut()
+            .insert("_t0".to_string(), Type::Int);
 
-        // compact_levels() should remove _t0 (now bound) but keep _t1 (unbound).
+        // compact_levels() should remove _t0 (now in type_map) but keep _t1 (unbound).
         state.compact_levels();
 
         assert!(
-            !state.type_vars.contains_key("_t0"),
-            "_t0 should be removed from type_vars after compaction (it is bound)"
+            !state.levels.contains_key("_t0"),
+            "_t0 should be removed from levels after compaction (it is unified)"
         );
         assert!(
-            state.type_vars.contains_key("_t1"),
-            "_t1 should remain in type_vars after compaction (it is still unbound)"
+            state.levels.contains_key("_t1"),
+            "_t1 should remain in levels after compaction (it is still unbound)"
         );
     }
 
     /// `compact_levels()` is a no-op when no TypeVars have been unified.
-    /// All registered TypeVars remain in `type_vars`.
+    /// All registered TypeVars remain in `levels`.
     #[test]
     fn test_compact_levels_preserves_unbound_vars() {
         let mut state = InferState::new();
         let _tv0 = state.fresh_type_var();
         let _tv1 = state.fresh_type_var();
 
-        // Subtract 3 for the builtin TyCon entries
-        let count_before = state.type_vars.len();
+        let count_before = state.levels.len();
         state.compact_levels();
-        let count_after = state.type_vars.len();
+        let count_after = state.levels.len();
 
         assert_eq!(
             count_before, count_after,

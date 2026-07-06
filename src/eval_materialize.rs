@@ -306,7 +306,7 @@ pub(crate) struct TypeAssertCheckData {
     pub(crate) env: Arc<RwLock<Environment>>,
     pub(crate) ctx: Arc<EvalContext>,
     /// Pipeline blame for `--- expects: @Type` contract assertions.
-    /// Carried from `CoreExpr::TypeAssert::pipeline_blame` (set by `wrap_with_nominal_validation`).
+    /// Carried from `CoreExpr::TypeAssert::pipeline_blame` (set during expects annotation resolution).
     /// None for user-written `[@Type expr]` annotations.
     pub(crate) pipeline_blame: Option<crate::error::PipelineBlame>,
 }
@@ -626,12 +626,20 @@ pub(crate) fn make_span_dict(
         alloc(Value::Int(span.start.column as i64)),
     );
     w.insert(
+        HashableValue::Str("start-offset".into()),
+        alloc(Value::Int(span.start.offset as i64)),
+    );
+    w.insert(
         HashableValue::Str("end-line".into()),
         alloc(Value::Int(span.end.line as i64)),
     );
     w.insert(
         HashableValue::Str("end-col".into()),
         alloc(Value::Int(span.end.column as i64)),
+    );
+    w.insert(
+        HashableValue::Str("end-offset".into()),
+        alloc(Value::Int(span.end.offset as i64)),
     );
     alloc(Value::Dict(w))
 }
@@ -891,7 +899,13 @@ pub(crate) async fn force_step(
             ctx: Arc::clone(&thunk_ctx),
         };
 
-        match (def.func)(builtin_args).await {
+        match (def.func)(builtin_args).await.map_err(|mut e| {
+            e.set_arity_callee(Some(def.name.into()));
+            if !def.params.is_empty() {
+                e.set_arity_params(def.params.iter().map(|s| s.to_string()).collect());
+            }
+            e
+        }) {
             Ok(result_thunk) => {
                 // Fast path: if the builtin already materialized its result, skip recursion.
                 // Originals in args/named are dropped here — no restore clone needed.
@@ -1800,7 +1814,15 @@ pub(crate) async fn apply_cont(
                                     caller_env: Arc::clone(&caller_env),
                                     ctx: Arc::clone(&thunk_ctx),
                                 };
-                                (def.func)(builtin_args).await
+                                (def.func)(builtin_args).await.map_err(|mut e| {
+                                    e.set_arity_callee(Some(def.name.into()));
+                                    if !def.params.is_empty() {
+                                        e.set_arity_params(
+                                            def.params.iter().map(|s| s.to_string()).collect(),
+                                        );
+                                    }
+                                    e
+                                })
                             };
                             match builtin_result.map_err(&decorate) {
                                 Ok(result_thunk) => {
@@ -2406,7 +2428,19 @@ pub(crate) async fn apply_cont(
                         caller_env: Arc::clone(&builtin_caller_env),
                         ctx: Arc::clone(&thunk_ctx),
                     };
-                    match (def.func)(builtin_args).await.map_err(&decorate) {
+                    match (def.func)(builtin_args)
+                        .await
+                        .map_err(|mut e| {
+                            e.set_arity_callee(Some(def.name.into()));
+                            if !def.params.is_empty() {
+                                e.set_arity_params(
+                                    def.params.iter().map(|s| s.to_string()).collect(),
+                                );
+                            }
+                            e
+                        })
+                        .map_err(&decorate)
+                    {
                         Ok(result_thunk) => {
                             // Fast path: originals dropped here — no restore clone needed.
                             if let Some(value) = result_thunk.try_get_materialized() {
@@ -4090,6 +4124,7 @@ mod tests {
             name: "dummy",
             pos_strictness: &[],
             force_count: 0,
+            params: &[],
         };
 
         let args = vec![Arc::clone(&thunk)];
@@ -4739,6 +4774,7 @@ mod tests {
             name: "keys",
             pos_strictness: KEYS_STRICTNESS,
             force_count: 1,
+            params: &[],
         };
 
         // Create a PendingBuiltin thunk for the CEK machine to force.
@@ -4850,6 +4886,7 @@ mod tests {
             name: "dummy-force2",
             pos_strictness: DUMMY_STRICTNESS,
             force_count: 2,
+            params: &[],
         };
 
         let outer_thunk = Arc::new(Thunk::new_pending_builtin(

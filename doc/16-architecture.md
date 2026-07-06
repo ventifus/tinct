@@ -58,6 +58,18 @@
 - Elaboration write-once: type annotations are resolved from `TypeAnnotationTable` (a side-table keyed by `NodeId`) during lowering. `CoreExpr::TypeAssert.resolved_type` is a plain field set once at lower time — no `RefCell`, no re-typecheck panic. Parse a fresh `SurfaceProgram` for each typecheck run (side tables are separate).
 - Include cache: `EvalContext.state.string_include_cache` (`HashMap<String, IncludeCacheEntry>`, content-addressed, keyed by `blake3(cap-identity + "|" + source_text)`) memoizes `$include` results — the old inode-keyed `include_guard` and `include_cache` fields are deleted.
 
+### Rust-Tinct Protocol Names
+
+These are tinct-side names that Rust is built to call or inject — the opposite direction from builtins (which are Rust implementations that tinct calls). Each name is part of the Rust-tinct protocol boundary: Rust defines the name as a protocol element, prelude implements it.
+
+| Name | Where used | Purpose |
+|------|-----------|---------|
+| `to-match` | `typecheck.rs` discovery, `eval.rs` `call_to_match` | Identifies the match-signal class. Any class declaring a `to-match` method becomes the match-signal dispatcher for predicate patterns. The evaluator calls this method to convert a predicate value to an `Int` match signal. |
+| `ᴍᴀᴄʀᴏ∷env` | `eval_materialize.rs` injection, `builtins_meta.rs` `builtin_eval_macro_ast` | Call-site environment for `@Expr` macros. Injected as an implicit named arg by the `@Expr` dispatch handler; read by `builtin-eval-macro-ast` to evaluate macro-produced AST in the correct scope. |
+| `ᴍᴀᴄʀᴏ∷span` | `eval_materialize.rs` injection | Call-site span for `@Expr` macros. Injected alongside `ᴍᴀᴄʀᴏ∷env`; used for precise error location in macro-generated code. |
+
+The Unicode gensym convention for macro names (`∷`) ensures these names cannot collide with user-defined tinct identifiers. `to-match` uses ordinary ASCII because it is user-visible — it appears in the `Matchable` class declaration that prelude authors write.
+
 ### Type Checker
 
 The type checker (advisory only — type errors are warnings, evaluation proceeds regardless) operates on the `Type` Rust enum defined in `src/type_def.rs`. All types are represented as `Type` values — there is no `CheckerType` newtype wrapper in the current implementation.

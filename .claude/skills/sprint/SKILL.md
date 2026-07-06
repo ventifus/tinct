@@ -75,7 +75,7 @@ loop:
 - `mkdir -p .tmp` then dispatch `sprint-reviewer` with the sprint slug → writes `.tmp/sprint-review-{slug}.md`
 - **APPROVE** → exit the inner loop, proceed to Step 3
 - **REQUEST_CHANGES** → dispatch `fix-reviewer` (reads `.tmp/sprint-review-{slug}.md`), delete the review file, then go back to **2b** (not 2a — only new fixes are needed, not a full re-implementation)
-- Stuck (same finding 3×): create unassigned bug, treat as APPROVE → proceed to Step 3
+- Stuck (same finding 3×): escalate to full specialist panel to research root cause and determine the correct solution. Implement their recommendation. Only proceed past the gate once it is genuinely resolved — do not create a tracker item and move on.
 
 ### Step 3: Specialist Panel
 
@@ -96,9 +96,8 @@ Run `git diff HEAD --name-only` to determine which agents to dispatch:
 Brief each agent: read `.tmp/sprint-review-{slug}.md`, run `git diff HEAD`, assess the sprint, flag workarounds/special-cases.
 
 **Triage findings** from all agents before proceeding:
-- fix-now (sprint-scope) → add as context note on the sprint
-- fix-later (genuine future work) → `item_create(type="bug"/"task", sprint_id=..., source_dialog="Sprint [slug] panel: [agent] — [finding]")`
-- Nit-level → always fix-now in this sprint
+- All findings are fix-now in this sprint. Pre-existing issues found during review are in-scope — if nobody takes ownership they never get fixed. Add to sprint context notes and implement before completing.
+- Nit-level → fix-now in this sprint
 
 If ALL agents issued APPROVE and no fix-now findings remain → proceed directly to Step 5.
 If ANY agent issued REQUEST_CHANGES → proceed to Step 4.
@@ -112,12 +111,12 @@ If ANY agent issued REQUEST_CHANGES → proceed to Step 4.
 5. Re-dispatch the same agent set from Step 3 — each agent reviews the current diff and the `## Review Findings` note
 6. If all APPROVE → proceed to Step 5
 7. If any REQUEST_CHANGES → repeat from step 2
-8. Stuck (same finding 3×): create unassigned bug, proceed to Step 5
+8. Stuck (same finding 3×): escalate to full specialist panel to research root cause and determine the correct solution — do not proceed until resolved. Creating a tracker item and moving on is not acceptable.
 
 ### Step 5: Complete
 
-1. **Only call `sprint_complete` when every item is genuinely implemented.** If items remain unfinished, either finish them or move them to a follow-on sprint via `item_move`. Do not use `sprint_complete` to auto-close items you haven't implemented.
-2. Backlog hygiene: create unassigned items for any pre-existing bugs found, workarounds not fixed, or deferred work. Deferred work that isn't tracked is lost.
+1. **Only call `sprint_complete` when every item is genuinely implemented.** If items remain unfinished, keep working until they are done. Do not use `sprint_complete` to auto-close items you haven't implemented.
+2. Backlog hygiene: create unassigned items for any workarounds not fixed or deferred work. Pre-existing issues found during review are already in-scope and must be fixed before completing. Deferred work that isn't tracked is lost.
 3. Add a completion context note summarizing what was done.
 4. Log sprint summary to mempalace-tinct.
 5. Report: `"Sprint complete: [slug] — [description]. All changes are uncommitted."`
@@ -134,7 +133,7 @@ The following are NOT completion:
 - Documenting that the work needs to be done
 - Writing a comment explaining what future code should do
 
-If an item is blocked, use `item_block`. If genuinely out of scope, move it to a follow-on sprint — do not mark it done.
+If an item is genuinely blocked by an external dependency (another sprint not yet done, a human decision required), use `item_block` and document the exact blocker. There is no "out of scope" — if an item is in the sprint, it must be implemented.
 
 ## Docs-Only Sprints
 
@@ -145,7 +144,7 @@ If every task only touches `.md` files, comments, mempalace, or non-code metadat
 - **Build gate first**: `just fmt` + `just ci` before any reviewer. Fix all failures — you own the codebase, not just what this sprint touched.
 - **Inner loop gates panel**: sprint-reviewer APPROVE required before specialist panel.
 - **Fix root causes**: when you find a bug, fix the cause — not the symptom. No special cases, no workarounds.
-- **Two-bucket triage**: fix-now or tracker item. Nits are always fix-now.
+- **Everything is fix-now**: all findings — sprint tasks, nits, and pre-existing issues found during review — are fixed in this sprint. If nobody takes ownership of pre-existing issues they never get fixed. There is no "fix-later" bucket.
 - **Never halt, never give up**: stuck on an intractable problem? Dispatch the specialist panel to research the root cause and determine the correct solution. Never apply workarounds to pass the gate — fix the actual problem.
 - **"Too large" is not a reason to defer**: There is no such thing as "too large to attempt." Every item has a smallest possible first step — reading the code and writing the first agent brief. If context pressure feels high, dispatch background agents to do the heavy lifting while you coordinate. Claiming items are "out of scope for this session" based on their description (without reading the code) is a violation of this principle.
 - **Tests are mandatory**: no implementation without tests.

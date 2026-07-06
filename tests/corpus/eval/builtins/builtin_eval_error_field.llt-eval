@@ -1,0 +1,12 @@
+# builtin-eval error path: failing document populates result.error with String
+# Parses a document containing [raise "oops"], evaluates it, checks error field type.
+[
+  src:      [builtin-str-bytes "[raise \"oops\"]"]
+  parsed:   [builtin-parse src "test.llt"]
+  doc:      [builtin-get 0 parsed.program.documents]
+  env:      [builtin-extend-env [] []]
+  result:   [builtin-eval doc env: env]
+  is-error: [builtin-eq-string [builtin-type-of result.error] "String"]
+]
+=== out
+Dict({"src": Bytes, "parsed": Dict({"program": Program, "errors": Dict({})}), "doc": Document, "env": Environment, "result": Dict({"env": Environment, "error": String("oops")}), "is-error": Boolean.True})

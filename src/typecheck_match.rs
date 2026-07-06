@@ -1,4 +1,5 @@
 //! Case arm and function literal type inference.
+#![allow(dead_code)]
 //!
 //! Extracted from `typecheck.rs` — contains the subsystem that infers types for:
 //! - `[case pattern body]` arms (`typecheck_case_arm`): pattern binding, constructor resolution,
@@ -12,7 +13,6 @@ use std::sync::Arc;
 
 use super::{check_surface_expr, infer_surface_expr, TypeMap};
 use crate::ast::{Annotation, Param, Pattern, Span, Spanned, SurfaceExpression, SurfaceNode};
-use crate::type_errors::{GenericTypeError, TypeErrorTyped};
 use crate::types::{instantiate_scheme, unify, Constraint, InferState, Type, TypeEnv, TypeError};
 
 // resolve_annotation and resolve_fn_metadata come from typecheck_annot via the
@@ -134,15 +134,10 @@ pub(crate) fn elaborate_pattern<'a>(
                             let qualified = env
                                 .resolve_constructor_tag(tag)
                                 .unwrap_or_else(|| tag.clone());
-                            return Err(vec![crate::type_errors::TypeErrorTyped::Generic(
-                            crate::type_errors::GenericTypeError {
-                                message: format!(
-                                    "unqualified constructor pattern tag '{tag}' — use qualified form '{qualified}'"
-                                ),
-                                span: span.clone(),
-                                notes: vec![], call_stack: vec![],
-                            },
-                        )]);
+                            return Err(vec![TypeError::new(
+                                format!("unqualified constructor pattern tag '{tag}' — use qualified form '{qualified}'"),
+                                span.clone(),
+                            )]);
                         }
                         return Ok(Pattern::Constructor {
                             tag: tag.clone(),
@@ -307,8 +302,7 @@ pub(crate) async fn typecheck_case_arm(
                                     scheme,
                                     state.level,
                                     state,
-                                    constraints,
-                                    Some(&constructor_name),
+                                    Some(constructor_name.as_str()),
                                     Some(binding.span.clone()),
                                 );
                                 // If the constructor is a single-param function, extract the param type
@@ -474,25 +468,23 @@ pub(crate) async fn typecheck_case_arm(
 
                     _ => {
                         // Other binding forms not yet supported
-                        return Err(vec![TypeErrorTyped::Generic(GenericTypeError {
-                            message: "unsupported binding pattern in case arm".to_string(),
-                            span: binding.span.clone(),
-                            notes: vec![],
-                            call_stack: vec![],
-                        })]);
+                        return Err(vec![TypeError::new(
+                            "unsupported binding pattern in case arm",
+                            binding.span.clone(),
+                        )]);
                     }
                 }
             }
 
             // Type-check body with extended environment (body is already Arc<SurfaceNode>)
             let arm_env = Rc::new(arm_env);
-            infer_surface_expr(body, &arm_env, state, constraints, type_map).await
+            infer_surface_expr(body, &arm_env, state, type_map)
         }
 
         _ => {
             // Exact-value match: infer pattern expression type, then infer body.
             // Both pattern and body are already Arc<SurfaceNode> — no conversion needed.
-            let pattern_ty = infer_surface_expr(pattern, env, state, constraints, type_map).await?;
+            let pattern_ty = infer_surface_expr(pattern, env, state, type_map)?;
 
             // T020: Dead-arm warning — check if pattern type is disjoint from scrutinee type.
             // If types_are_disjoint(scrutinee_ty, pattern_ty) is true, the arm can never match
@@ -526,7 +518,7 @@ pub(crate) async fn typecheck_case_arm(
             }
 
             // Body is checked in the enclosing environment (no new bindings from exact-value match)
-            infer_surface_expr(body, env, state, constraints, type_map).await
+            infer_surface_expr(body, env, state, type_map)
         }
     }
 }
@@ -744,11 +736,10 @@ pub(crate) async fn infer_fn(
                     if has_fn_key || all_keyed {
                         // B-355: all-keyed dicts (including custom-only keys) are fn metadata.
                         if !all_keyed {
-                            return Err(vec![TypeErrorTyped::Generic(GenericTypeError {
-                                message: "fn annotation must use either named keys (return:, constraint:, doc:, bind:, kinds:) or positional entries (union return type), not both".to_string(),
-                                span: ann.span.clone(),
-                                notes: vec![], call_stack: vec![],
-                            })]);
+                            return Err(vec![TypeError::new(
+                                "fn annotation must use either named keys (return:, constraint:, doc:, bind:, kinds:) or positional entries (union return type), not both",
+                                ann.span.clone(),
+                            )]);
                         }
                         // Function metadata dict: extract return type from return: key.
                         let (ret, _doc) = resolve_fn_metadata(
@@ -762,7 +753,7 @@ pub(crate) async fn infer_fn(
                             None,
                         )
                         .await
-                        .map_err(|e| vec![e])?;
+                        .map_err(|e| vec![TypeError::from(e)])?;
                         ret
                     } else {
                         // Structural/union type dict: @[Int Null], @[x: Type], etc.
@@ -810,8 +801,7 @@ pub(crate) async fn infer_fn(
             // mode to actually BIND the TypeVars via constraint solving. See is_subtype_bas
             // docstring and B-446 for the full explanation.
             let result = if actual_ann.has_inference_vars() {
-                let body_ty =
-                    infer_surface_expr(body, &fn_env, state, constraints, type_map).await?;
+                let body_ty = infer_surface_expr(body, &fn_env, state, type_map)?;
                 let result = Box::pin(unify(
                     &body_ty,
                     &actual_ann,
@@ -828,8 +818,7 @@ pub(crate) async fn infer_fn(
                 state.apply(&actual_ann)
             } else {
                 // Use checking mode for concrete return types (no type variables)
-                check_surface_expr(body, &actual_ann, &fn_env, state, constraints, type_map)
-                    .await?;
+                check_surface_expr(body, &actual_ann, &fn_env, state, type_map)?;
                 actual_ann
             };
 
@@ -837,7 +826,7 @@ pub(crate) async fn infer_fn(
             state.expected_return = prev_expected_return;
             result
         }
-        None => infer_surface_expr(body, &fn_env, state, constraints, type_map).await?,
+        None => infer_surface_expr(body, &fn_env, state, type_map)?,
     };
 
     // Check if any parameter is variadic

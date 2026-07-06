@@ -1,5 +1,5 @@
-# Duplicate key: same k appears twice as a dict key.
-# Parse-time duplicate key detection covers escaped-ref keys (stored as bare name "k").
+# Duplicate key: same bare identifier appears twice as a dict key.
+# Parse-time duplicate key detection covers bare identifier keys (normalized to Str before the check).
 [k: a  k: b]
 === out
 2:8: duplicate key "k"

@@ -417,10 +417,11 @@ The formal rules map directly to the implementation:
 |------------|----------------|--------|
 | DICT-SCOPE | `eval_dict()` | `eval.rs:309-352` |
 | SEQ-SCOPE | `eval_document_exprs()` (canonical loop) | `eval.rs` |
-| SEQ-SCOPE (document) | `eval_surface_document()` (caps validation + delegate to `eval_document_exprs`) | `eval.rs` |
-| SEQ-SCOPE (eval builtin) | `builtin_eval()` (extracts nodes from Seq, delegates to `eval_document_exprs`) | `builtins_meta.rs` |
-| DOC-PIPELINE | `eval_surface_file_with_input()` (binds `%` + `%name`) | `eval.rs` |
-| DOC-PIPELINE Σ accumulation | Named-section map `named: IndexMap<String, Rc<Thunk>>` | `eval.rs:830, 842-846, 851-853` |
+| SEQ-SCOPE (document) | `eval_surface_document()` (delegates to `eval_document_exprs`) | `eval.rs` |
+| SEQ-SCOPE (eval builtin) | `builtin_eval()` (extracts nodes from Document, delegates to `eval_document_exprs_with_env`) | `builtins_meta.rs` |
+| DOC-PIPELINE | tinct-side loop in `loader.llt` via `builtin-eval` + `builtin-extend-env` (returns `{env, result, doc-name, error}`) | `stdlib/loader.llt` |
+| DOC-PIPELINE caps enforcement | tinct-side `builtin-cap-env-has?` in `eval-document-runtime` | `stdlib/loader.llt` |
+| DOC-PIPELINE expects validation | tinct-side `builtin-check-type` in `eval-document-runtime` | `stdlib/loader.llt` |
 | LOOKUP | `Environment::get()` | `value.rs:445-460` |
 | Key isolation | `eval_key(key_expr, parent_env, d)` | `eval.rs:327` |
 | String-key filter | `if let Key::String(name) = key` | `eval.rs:234, 347` |
@@ -996,7 +997,7 @@ This matches the document isolation property of DOC-PIPELINE (§Scope Chain Sema
 | Guard push | `builtins.rs:1300-1303` (`include_guard.insert`) |
 | Guard pop + base_dir restore | `builtins.rs:1323` (`cleanup` closure) |
 | Cache store | `builtins.rs:1345-1348` |
-| DOC-PIPELINE (cross-ref) | `eval_surface_file_with_input` (`eval.rs`) |
+| DOC-PIPELINE (cross-ref) | tinct-side loop in `stdlib/loader.llt:eval-document-runtime` via `builtin-eval` + `builtin-extend-env` |
 | SEQ-SCOPE (cross-ref) | `eval_document_exprs` (canonical loop, `eval.rs`); `eval_surface_document` delegates to it |
 
 ## Side Effects and I/O

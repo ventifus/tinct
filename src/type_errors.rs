@@ -175,6 +175,7 @@ pub struct CoverageViolation {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct InstanceContainsUnknown {
+    pub message: String,
     pub span: Span,
     pub notes: Vec<String>,
     pub call_stack: Vec<TypeSpanFrame>,
@@ -261,7 +262,7 @@ impl TypeErrorTyped {
     }
 
     pub fn not_a_record(ty: &Type, span: Span) -> Self {
-        Self::new(format!("expected record type, got {ty}"), span)
+        Self::new(format!("expected Dict, got {ty}"), span)
     }
 
     pub fn not_a_function(ty: &Type, span: Span) -> Self {
@@ -486,7 +487,7 @@ impl TypeErrorTyped {
             Self::UndefinedType(_) => "undefined-type",
             Self::UnificationFailure(_) => "unification-failure",
             Self::FieldNotFound(_) => "field-not-found",
-            Self::NotARecord(_) => "not-a-record",
+            Self::NotARecord(_) => "not-a-dict",
             Self::NotAFunction(_) => "not-a-function",
             Self::TypeAssertFailed(_) => "type-assert-failed",
             Self::NonExhaustiveMatch(_) => "non-exhaustive-match",
@@ -534,7 +535,7 @@ impl TypeErrorTyped {
             Self::FieldNotFound(e) => {
                 format!("field '{}' not found in {}", e.field, e.record_type)
             }
-            Self::NotARecord(e) => format!("expected record type, got {}", e.actual),
+            Self::NotARecord(e) => format!("expected Dict, got {}", e.actual),
             Self::NotAFunction(e) => {
                 if let Some(ref name) = e.callee {
                     format!("expected `{}` to be a function, got {}", name, e.actual)
@@ -554,9 +555,7 @@ impl TypeErrorTyped {
             Self::OverlappingInstancePatterns(_) => "overlapping instance patterns".to_string(),
             Self::ConsistencyViolation(_) => "consistency violation".to_string(),
             Self::CoverageViolation(_) => "coverage violation".to_string(),
-            Self::InstanceContainsUnknown(_) => {
-                "instance pattern contains Unknown types".to_string()
-            }
+            Self::InstanceContainsUnknown(e) => e.message.clone(),
             Self::KindMismatch(e) => {
                 format!("kind mismatch: expected `{}`, got {}", e.expected, e.actual)
             }
@@ -600,7 +599,7 @@ impl fmt::Display for TypeErrorTyped {
                 )
             }
             Self::NotARecord(e) => {
-                write!(f, "[NotARecord] expected record type, got {}", e.actual)
+                write!(f, "[NotARecord] expected Dict, got {}", e.actual)
             }
             Self::NotAFunction(e) => {
                 write!(f, "[NotAFunction] expected function type, got {}", e.actual)
@@ -631,11 +630,8 @@ impl fmt::Display for TypeErrorTyped {
             Self::CoverageViolation(_) => {
                 write!(f, "[CoverageViolation] coverage violation")
             }
-            Self::InstanceContainsUnknown(_) => {
-                write!(
-                    f,
-                    "[InstanceContainsUnknown] instance pattern contains Unknown types"
-                )
+            Self::InstanceContainsUnknown(e) => {
+                write!(f, "[InstanceContainsUnknown] {}", e.message)
             }
             Self::KindMismatch(e) => {
                 write!(

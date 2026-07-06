@@ -499,11 +499,11 @@ Non-binding arms (no `[let ...]` needed) remain keyed:
 
 ## Type Classes
 
-`[class ...]` declares an interface; `[instance ...]` provides an implementation for a specific type. The class header always uses the `[let ClassName params...]` form. Both appear as entries inside a dict — classes as named values, instances as named single-arm entries or positional multi-arm entries:
+`[class ...]` declares an interface; `[instance ...]` provides an implementation for a specific type. The class name comes from the outer dict key; the `[let params...]` form lists only the type parameters. Both appear as entries inside a dict — classes as named values, instances as named single-arm entries or positional multi-arm entries:
 
 ```tinct
 [
-  Printable:    [class [let Printable a]]
+  Printable:    [class [let a]]
 
   PrintableStr: [instance Printable [let a@String]: [print: [fn [let x] [str "str:" x]]]]
   PrintableInt: [instance Printable [let a@Int]:    [print: [fn [let x] [str "int:" [str x]]]]]
@@ -532,7 +532,7 @@ Named single-arm instances evaluate to their method dict at runtime, so `Printab
 
 ```tinct
 [
-  Addable: [class [let Addable a b c] [determines: [[[a b] c]] resolver: AddResult]]
+  Addable: [class [let a b c] [determines: [[[a b] c]] resolver: AddResult]]
 
   # Extend + to work on strings via concatenation
   [instance Addable

@@ -297,7 +297,7 @@ async fn check_constraints_on_var(
                     // The recursion cycle is: check_constraints_on_var → resolve_instance →
                     // unify → check_constraints_on_var. This matches GHC's -freduction-depth
                     // semantics (Sulzmann et al. 2007 §3.2).
-                    return Err(TypeErrorTyped::Generic(GenericTypeError {
+                    return Err(TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
                         message: format!(
                             "instance resolution depth limit exceeded (max {}) — possible recursive instance definitions for constraint {}",
                             MAX_INSTANCE_RESOLUTION_DEPTH,
@@ -305,7 +305,7 @@ async fn check_constraints_on_var(
                         ),
                         span: span.clone(),
                         notes: vec![], call_stack: vec![],
-                    }));
+                    })));
                 }
                 state.instance_resolution_depth += 1;
                 let inst_env = state.instance_env.clone();
@@ -341,7 +341,7 @@ async fn check_constraints_on_var(
                             }
                         }
                         // No instance found even after widening - constraint violated
-                        return Err(TypeErrorTyped::Generic(GenericTypeError {
+                        return Err(TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
                             message: format!(
                                 "type {} does not satisfy constraint {}",
                                 concrete_ty, class
@@ -349,16 +349,16 @@ async fn check_constraints_on_var(
                             span: span.clone(),
                             notes: vec![],
                             call_stack: vec![],
-                        }));
+                        })));
                     }
                     Err(ambig_msg) => {
                         // Ambiguous instances — equally specific matches, coherence violation
-                        return Err(TypeErrorTyped::Generic(GenericTypeError {
+                        return Err(TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
                             message: ambig_msg,
                             span: span.clone(),
                             notes: vec![],
                             call_stack: vec![],
-                        }));
+                        })));
                     }
                 }
             }
@@ -428,14 +428,14 @@ async fn improve_functional_dependency(
     // Depth guard: prevent infinite recursion through the FD improvement cycle.
     if state.fd_depth >= MAX_FD_DEPTH {
         // F7 FIX: Return error instead of silently succeeding when depth limit is reached
-        return Err(TypeErrorTyped::Generic(GenericTypeError {
+        return Err(TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
             message: format!(
                 "functional dependency improvement depth limit exceeded (max {}) — possible recursive FD chain for class {}",
                 MAX_FD_DEPTH, class
             ),
             span,
             notes: vec![], call_stack: vec![],
-        }));
+        })));
     }
     state.fd_depth += 1;
     let result = improve_functional_dependency_inner(
@@ -714,7 +714,8 @@ async fn improve_functional_dependency_inner(
 
                 // Clone instance_env to avoid borrow checker conflict
                 let instance_env = state.instance_env.clone();
-                let lookup_result = Box::pin(instance_env.lookup_mptc(class, &det_arg_types, state)).await;
+                let lookup_result =
+                    Box::pin(instance_env.lookup_mptc(class, &det_arg_types, state)).await;
 
                 // On miss, retry with widened literal types (IntLiteral→Int, StringLiteral→Str).
                 let lookup_result = if lookup_result.is_none() {
@@ -764,27 +765,29 @@ async fn improve_functional_dependency_inner(
                                             )
                                         })?,
                                     None => {
-                                        return Err(TypeErrorTyped::Generic(GenericTypeError {
+                                        return Err(TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
                                             message: format!(
                                                 "no instance for {} (no determined position found)",
                                                 class
                                             ),
                                             span: span.clone(),
                                             notes: vec![], call_stack: vec![],
-                                        }));
+                                        })));
                                     }
                                 }
                             }
                             _ => {
-                                return Err(TypeErrorTyped::Generic(GenericTypeError {
-                                    message: format!(
-                                        "no instance for {} (unexpected instance_type shape)",
-                                        class
-                                    ),
-                                    span: span.clone(),
-                                    notes: vec![],
-                                    call_stack: vec![],
-                                }));
+                                return Err(TypeError::from(TypeErrorTyped::Generic(
+                                    GenericTypeError {
+                                        message: format!(
+                                            "no instance for {} (unexpected instance_type shape)",
+                                            class
+                                        ),
+                                        span: span.clone(),
+                                        notes: vec![],
+                                        call_stack: vec![],
+                                    },
+                                )));
                             }
                         }
                     }
@@ -807,23 +810,23 @@ async fn improve_functional_dependency_inner(
                         if should_defer {
                             continue;
                         }
-                        return Err(TypeErrorTyped::Generic(GenericTypeError {
+                        return Err(TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
                             message: format!("no instance for {}", class),
                             span: span.clone(),
                             notes: vec![],
                             call_stack: vec![],
-                        }));
+                        })));
                     }
                 }
             }
         } else {
             // Class not found in class_env — should not happen
-            return Err(TypeErrorTyped::Generic(GenericTypeError {
+            return Err(TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
                 message: format!("unknown class {}", class),
                 span: span.clone(),
                 notes: vec![],
                 call_stack: vec![],
-            }));
+            })));
         };
 
         // Unify each determined position with the result type.
@@ -933,7 +936,7 @@ fn promote_literal_for_constrained_var(
 ) -> Type {
     // Label-kinded TypeVars must not be promoted regardless of constraint presence
     // (preserves StringLiteral identity for field access)
-    if state.get_kind(var_name) == Some(&Kind::Label) {
+    if state.get_kind(var_name) == Some(Kind::Label) {
         return ty;
     }
 
@@ -974,12 +977,12 @@ pub fn resolve_has_field(
 ) -> Result<Type, TypeError> {
     // Check recursion depth to prevent infinite loops on cyclic types
     if depth > MAX_RESOLVE_HAS_FIELD_DEPTH {
-        return Err(TypeErrorTyped::Generic(GenericTypeError {
+        return Err(TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
             message: "HasField recursion depth exceeded".to_string(),
             span,
             notes: vec![],
             call_stack: vec![],
-        }));
+        })));
     }
 
     // Resolve label to concrete string
@@ -990,7 +993,7 @@ pub fn resolve_has_field(
             match state.lookup_binding(var_name) {
                 Some(Type::StringLiteral(s)) => s,
                 _ => {
-                    return Err(TypeErrorTyped::Generic(GenericTypeError {
+                    return Err(TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
                         message: format!(
                             "label variable {} not bound to a string literal",
                             var_name
@@ -998,7 +1001,7 @@ pub fn resolve_has_field(
                         span,
                         notes: vec![],
                         call_stack: vec![],
-                    }))
+                    })))
                 }
             }
         }
@@ -1013,11 +1016,11 @@ pub fn resolve_has_field(
             if let Some(field_ty) = row.fields.get(&label_str) {
                 Ok(field_ty.clone())
             } else {
-                Err(TypeErrorTyped::Generic(GenericTypeError {
+                Err(TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
                     message: format!("record has no field '{}'", label_str),
                     span,
                     notes: vec![], call_stack: vec![],
-                }))
+                })))
             }
         }
 
@@ -1051,18 +1054,18 @@ pub fn resolve_has_field(
         Type::Never => Ok(Type::Never),
 
         // TypeVar: defer constraint (handled by caller)
-        Type::TypeVar(_, _) => Err(TypeErrorTyped::Generic(GenericTypeError {
+        Type::TypeVar(_, _) => Err(TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
             message: "cannot resolve HasField constraint on unbound type variable (expected caller to defer)".to_string(),
             span,
             notes: vec![], call_stack: vec![],
-        })),
+        }))),
 
         // All other types don't support field access
-        _ => Err(TypeErrorTyped::Generic(GenericTypeError {
+        _ => Err(TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
             message: format!("type {} does not support field access", dict_type),
             span,
             notes: vec![], call_stack: vec![],
-        })),
+        }))),
     }
 }
 
@@ -1388,13 +1391,15 @@ async fn unify_rows(
                 }
             } else {
                 // Both rows have concrete field types and no shared fields: structurally incompatible.
-                return Err(TypeErrorTyped::UnificationFailure(UnificationFailure {
-                    expected: Type::Record(row1.clone()),
-                    got: Type::Record(row2.clone()),
-                    span,
-                    notes: vec![],
-                    call_stack: vec![],
-                }));
+                return Err(TypeError::from(TypeErrorTyped::UnificationFailure(
+                    UnificationFailure {
+                        expected: Type::Record(row1.clone()),
+                        got: Type::Record(row2.clone()),
+                        span,
+                        notes: vec![],
+                        call_stack: vec![],
+                    },
+                )));
             }
         }
     }
@@ -1452,14 +1457,14 @@ async fn unify_rows(
                     // Step 3: V is concrete — each named field Ti must be a subtype of V.
                     for field_ty in &all_fields {
                         let field_fixed = state.apply(field_ty);
-                        if !Type::is_subtype(&field_fixed, &v_fixed, Some(&state.tycon_env)) {
-                            return Err(TypeErrorTyped::Generic(GenericTypeError {
+                        if !Type::is_subtype(&field_fixed, &v_fixed, None) {
+                            return Err(TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
                                 message: format!(
                                     "field type {field_fixed} does not conform to Uniform constraint {v_fixed}"
                                 ),
                                 span: span.clone(),
                                 notes: vec![], call_stack: vec![],
-                            }));
+                            })));
                         }
                     }
                 }
@@ -1516,13 +1521,13 @@ async fn unify_rows(
                 for field_ty in &field_types {
                     let field_fixed = state.apply(field_ty);
                     if !Type::is_subtype(&field_fixed, &v_fixed, Some(&state.tycon_env)) {
-                        return Err(TypeErrorTyped::Generic(GenericTypeError {
+                        return Err(TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
                             message: format!(
                                 "field type {field_fixed} does not conform to Uniform constraint {v_fixed}"
                             ),
                             span: span.clone(),
                             notes: vec![], call_stack: vec![],
-                        }));
+                        })));
                     }
                 }
             }
@@ -1773,13 +1778,15 @@ async fn bas_cvar1_rewrite(
         ) {
             return Ok(());
         }
-        return Err(TypeErrorTyped::UnificationFailure(UnificationFailure {
-            expected: concrete.clone(),
-            got: Type::Union(compound_members.to_vec()),
-            span,
-            notes: vec![],
-            call_stack: vec![],
-        }));
+        return Err(TypeError::from(TypeErrorTyped::UnificationFailure(
+            UnificationFailure {
+                expected: concrete.clone(),
+                got: Type::Union(compound_members.to_vec()),
+                span,
+                notes: vec![],
+                call_stack: vec![],
+            },
+        )));
     }
 
     // Check if concrete is already covered by the non-var union members.
@@ -1841,12 +1848,12 @@ async fn bas_cvar1_rewrite(
 
         let alpha_level = state.get_level(var_name).unwrap_or(0);
         if lower_levels_check_occurs(&bound_type, var_name, alpha_level, state) {
-            return Err(TypeErrorTyped::Generic(GenericTypeError {
+            return Err(TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
                 message: format!("infinite type: {var_name} occurs in {bound_type}"),
                 span,
                 notes: vec![],
                 call_stack: vec![],
-            }));
+            })));
         }
 
         if type_vars.len() == 1 {
@@ -1906,13 +1913,15 @@ async fn bas_cvar2_rewrite(
         ) {
             return Ok(());
         }
-        return Err(TypeErrorTyped::UnificationFailure(UnificationFailure {
-            expected: concrete.clone(),
-            got: Type::Intersection(compound_members.to_vec()),
-            span,
-            notes: vec![],
-            call_stack: vec![],
-        }));
+        return Err(TypeError::from(TypeErrorTyped::UnificationFailure(
+            UnificationFailure {
+                expected: concrete.clone(),
+                got: Type::Intersection(compound_members.to_vec()),
+                span,
+                notes: vec![],
+                call_stack: vec![],
+            },
+        )));
     }
 
     // Check if a concrete member already implies the target.
@@ -1937,12 +1946,12 @@ async fn bas_cvar2_rewrite(
 
         let alpha_level = state.get_level(var_name).unwrap_or(0);
         if lower_levels_check_occurs(&bound_type, var_name, alpha_level, state) {
-            return Err(TypeErrorTyped::Generic(GenericTypeError {
+            return Err(TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
                 message: format!("infinite type: {var_name} occurs in {bound_type}"),
                 span,
                 notes: vec![],
                 call_stack: vec![],
-            }));
+            })));
         }
 
         if type_vars.len() == 1 {
@@ -2088,12 +2097,12 @@ pub async fn unify(
             // (infinite-type guard), and simultaneously lowers all var levels to cap_level.
             let alpha_level = state.get_level(name).unwrap_or(0);
             if lower_levels_check_occurs(&b, name, alpha_level, state) {
-                return Err(TypeErrorTyped::Generic(GenericTypeError {
+                return Err(TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
                     message: format!("infinite type: {name} occurs in {b}"),
                     span,
                     notes: vec![],
                     call_stack: vec![],
-                }));
+                })));
             }
             // Promote literal types when binding a constrained type variable.
             // Without this, `[+ 1 2]` would bind _t0 to IntLiteral(1) and then fail
@@ -2126,12 +2135,12 @@ pub async fn unify(
             // Fused occurs check + level lowering: one tree walk, zero HashSet allocations.
             let alpha_level = state.get_level(name).unwrap_or(0);
             if lower_levels_check_occurs(&a, name, alpha_level, state) {
-                return Err(TypeErrorTyped::Generic(GenericTypeError {
+                return Err(TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
                     message: format!("infinite type: {name} occurs in {a}"),
                     span,
                     notes: vec![],
                     call_stack: vec![],
-                }));
+                })));
             }
             // Promote literal types when binding a constrained type variable.
             let a = promote_literal_for_constrained_var(name, a, constraints, state);
@@ -2288,7 +2297,7 @@ pub async fn unify(
             }
 
             if p1.len() != p2.len() {
-                return Err(TypeErrorTyped::Generic(GenericTypeError {
+                return Err(TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
                     message: format!(
                         "arity mismatch: expected {} arguments, got {}",
                         p1.len(),
@@ -2297,10 +2306,10 @@ pub async fn unify(
                     span,
                     notes: vec![],
                     call_stack: vec![],
-                }));
+                })));
             }
             if v1 != v2 {
-                return Err(TypeErrorTyped::Generic(GenericTypeError {
+                return Err(TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
                     message: format!(
                         "variadic mismatch: {} vs {}",
                         if *v1 { "variadic" } else { "non-variadic" },
@@ -2309,7 +2318,7 @@ pub async fn unify(
                     span,
                     notes: vec![],
                     call_stack: vec![],
-                }));
+                })));
             }
             // Robinson invariant: sub-terms are passed without explicit apply() because
             // every recursive unify() call re-applies the accumulated substitution at its
@@ -2354,14 +2363,14 @@ pub async fn unify(
             if !matches!(concrete, Type::TypeVar(..) | Type::Unknown) =>
         {
             if Type::is_subtype(concrete, inner, Some(&state.tycon_env)) {
-                Err(TypeErrorTyped::Generic(GenericTypeError {
+                Err(TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
                     message: format!(
                         "cannot unify {} with ~{}: intersection is Never (T <: A implies T & ~A = \u{2205})",
                         concrete, inner
                     ),
                     span,
                     notes: vec![], call_stack: vec![],
-                }))
+                })))
             } else {
                 Ok(()) // conservative: may still be empty but can't prove it statically
             }
@@ -2370,14 +2379,14 @@ pub async fn unify(
             if !matches!(concrete, Type::TypeVar(..) | Type::Unknown) =>
         {
             if Type::is_subtype(concrete, inner, Some(&state.tycon_env)) {
-                Err(TypeErrorTyped::Generic(GenericTypeError {
+                Err(TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
                     message: format!(
                         "cannot unify ~{} with {}: intersection is Never (T <: A implies T & ~A = \u{2205})",
                         inner, concrete
                     ),
                     span,
                     notes: vec![], call_stack: vec![],
-                }))
+                })))
             } else {
                 Ok(()) // conservative: may still be empty but can't prove it statically
             }
@@ -2407,28 +2416,22 @@ pub async fn unify(
         // directly (e.g., `Type::TyCon(Arc<TyConDef>)`), eliminating name-based lookup ambiguity.
         (Type::TyCon(n1), Type::TyCon(n2)) => {
             if n1 != n2 {
-                return Err(TypeErrorTyped::UnificationFailure(UnificationFailure {
-                    expected: a.clone(),
-                    got: b.clone(),
-                    span,
-                    notes: vec![],
-                    call_stack: vec![],
-                }));
+                return Err(TypeError::from(TypeErrorTyped::UnificationFailure(
+                    UnificationFailure {
+                        expected: a.clone(),
+                        got: b.clone(),
+                        span,
+                        notes: vec![],
+                        call_stack: vec![],
+                    },
+                )));
             }
-            // Names are equal. Verify Arc identity. NOTE: In the current architecture,
-            // Type::TyCon carries a name string, so both lookups (n1 == n2) access the same
-            // HashMap slot and always return the same Arc — the error branch below is currently
-            // dead code. It becomes meaningful when Type::TyCon is changed to carry Arc<TyConDef>
-            // directly (future migration), at which point two same-name TyCons from different
-            // scope registrations (i.e., distinct TypeEnv frames once TyConEnv is threaded via
-            // TypeEnv's parent chain) could have distinct Arcs. The check is scaffolding for
-            // that migration (B-343 groundwork).
             let def1 = state.tycon_env.get(n1.as_str());
             let def2 = state.tycon_env.get(n2.as_str());
             match (def1, def2) {
                 (Some(d1), Some(d2)) if !Arc::ptr_eq(d1, d2) => {
                     // Same name but different TyConDef objects — cross-scope shadowing.
-                    Err(TypeErrorTyped::Generic(GenericTypeError {
+                    Err(TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
                         message: format!(
                             "type constructor '{n1}' refers to two distinct definitions \
                              (cross-scope shadowing): cannot unify {a} with {b}"
@@ -2436,7 +2439,7 @@ pub async fn unify(
                         span,
                         notes: vec![],
                         call_stack: vec![],
-                    }))
+                    })))
                 }
                 _ => {
                     // Both None (unknown TyCon), or same Arc (same definition) — unify.
@@ -2471,7 +2474,7 @@ pub async fn unify(
                 if Type::is_subtype(&b, &body, tycon_env) {
                     Ok(())
                 } else {
-                    Err(TypeErrorTyped::Generic(GenericTypeError {
+                    Err(TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
                         message: format!(
                             "cannot unify nominal variant with type '{}': variant is not a member of '{}'",
                             n, n
@@ -2479,16 +2482,18 @@ pub async fn unify(
                         span,
                         notes: vec![],
                         call_stack: vec![],
-                    }))
+                    })))
                 }
             } else {
-                Err(TypeErrorTyped::UnificationFailure(UnificationFailure {
-                    expected: a.clone(),
-                    got: b.clone(),
-                    span,
-                    notes: vec![],
-                    call_stack: vec![],
-                }))
+                Err(TypeError::from(TypeErrorTyped::UnificationFailure(
+                    UnificationFailure {
+                        expected: a.clone(),
+                        got: b.clone(),
+                        span,
+                        notes: vec![],
+                        call_stack: vec![],
+                    },
+                )))
             }
         }
         (Type::NominalVariant { .. }, Type::TyCon(n)) => {
@@ -2498,7 +2503,7 @@ pub async fn unify(
                 if Type::is_subtype(&a, &body, tycon_env) {
                     Ok(())
                 } else {
-                    Err(TypeErrorTyped::Generic(GenericTypeError {
+                    Err(TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
                         message: format!(
                             "cannot unify nominal variant with type '{}': variant is not a member of '{}'",
                             n, n
@@ -2506,16 +2511,18 @@ pub async fn unify(
                         span,
                         notes: vec![],
                         call_stack: vec![],
-                    }))
+                    })))
                 }
             } else {
-                Err(TypeErrorTyped::UnificationFailure(UnificationFailure {
-                    expected: a.clone(),
-                    got: b.clone(),
-                    span,
-                    notes: vec![],
-                    call_stack: vec![],
-                }))
+                Err(TypeError::from(TypeErrorTyped::UnificationFailure(
+                    UnificationFailure {
+                        expected: a.clone(),
+                        got: b.clone(),
+                        span,
+                        notes: vec![],
+                        call_stack: vec![],
+                    },
+                )))
             }
         }
 
@@ -2547,12 +2554,12 @@ pub async fn unify(
             // Fused occurs check + level lowering (Kiselyov L3 invariant for Operator variables)
             let alpha_level = state.get_level(m).unwrap_or(0);
             if lower_levels_check_occurs(&b, m, alpha_level, state) {
-                return Err(TypeErrorTyped::Generic(GenericTypeError {
+                return Err(TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
                     message: format!("infinite type: operator variable {} occurs in {}", m, b),
                     span,
                     notes: vec![],
                     call_stack: vec![],
-                }));
+                })));
             }
             // CONSTRAINT TRANSFER: when binding m to TypeVar, transfer constraints
             // instead of checking. When binding to a concrete type, check constraints normally.
@@ -2573,12 +2580,12 @@ pub async fn unify(
             // Fused occurs check + level lowering (Kiselyov L3 invariant for Operator variables)
             let alpha_level = state.get_level(m).unwrap_or(0);
             if lower_levels_check_occurs(&a, m, alpha_level, state) {
-                return Err(TypeErrorTyped::Generic(GenericTypeError {
+                return Err(TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
                     message: format!("infinite type: operator variable {} occurs in {}", m, a),
                     span,
                     notes: vec![],
                     call_stack: vec![],
-                }));
+                })));
             }
             // CONSTRAINT TRANSFER: when binding m to TypeVar, transfer constraints
             // instead of checking. When binding to a concrete type, check constraints normally.
@@ -2634,19 +2641,21 @@ pub async fn unify(
                                         Box::pin(unify(&ra, &rb, state, constraints, span.clone()))
                                             .await?;
                                     } else if ra != rb {
-                                        return Err(TypeErrorTyped::UnificationFailure(
-                                            UnificationFailure {
-                                                expected: ra,
-                                                got: rb,
-                                                span: span.clone(),
-                                                notes: vec![format!(
+                                        return Err(TypeError::from(
+                                            TypeErrorTyped::UnificationFailure(
+                                                UnificationFailure {
+                                                    expected: ra,
+                                                    got: rb,
+                                                    span: span.clone(),
+                                                    notes: vec![format!(
                                                     "type argument {} of {} must match exactly \
                                                      (invariant position)",
                                                     i + 1,
                                                     name1
                                                 )],
-                                                call_stack: vec![],
-                                            },
+                                                    call_stack: vec![],
+                                                },
+                                            ),
                                         ));
                                     }
                                 }
@@ -2679,7 +2688,7 @@ pub async fn unify(
             },
         ) => {
             if tag1 != tag2 {
-                return Err(TypeErrorTyped::Generic(GenericTypeError {
+                return Err(TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
                     message: format!(
                         "cannot unify nominal variants with different tags: {} and {}",
                         tag1, tag2
@@ -2687,7 +2696,7 @@ pub async fn unify(
                     span,
                     notes: vec![],
                     call_stack: vec![],
-                }));
+                })));
             }
             // Tags match — unify fields structurally
             unify_rows(fields1, fields2, state, constraints, span).await
@@ -2695,7 +2704,7 @@ pub async fn unify(
 
         // NominalVariant vs Record: never unifiable (nominal vs structural distinction)
         (Type::NominalVariant { tag, .. }, Type::Record(_)) => {
-            Err(TypeErrorTyped::Generic(GenericTypeError {
+            Err(TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
                 message: format!(
                     "cannot unify nominal variant {} with structural record",
                     tag
@@ -2703,10 +2712,10 @@ pub async fn unify(
                 span,
                 notes: vec![],
                 call_stack: vec![],
-            }))
+            })))
         }
         (Type::Record(_), Type::NominalVariant { tag, .. }) => {
-            Err(TypeErrorTyped::Generic(GenericTypeError {
+            Err(TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
                 message: format!(
                     "cannot unify structural record with nominal variant {}",
                     tag
@@ -2714,7 +2723,7 @@ pub async fn unify(
                 span,
                 notes: vec![],
                 call_stack: vec![],
-            }))
+            })))
         }
 
         // Record ↔ Intersection-of-Records unification.
@@ -2834,7 +2843,7 @@ pub async fn unify(
             },
         ) if f1 == f2 => {
             if a1.len() != a2.len() {
-                return Err(TypeErrorTyped::Generic(GenericTypeError {
+                return Err(TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
                     message: format!(
                         "TypeStageApp arity mismatch: {} expects {} args, got {}",
                         f1,
@@ -2844,7 +2853,7 @@ pub async fn unify(
                     span,
                     notes: vec![],
                     call_stack: vec![],
-                }));
+                })));
             }
             for (arg1, arg2) in a1.iter().zip(a2.iter()) {
                 Box::pin(unify(arg1, arg2, state, constraints, span.clone())).await?;
@@ -2853,7 +2862,7 @@ pub async fn unify(
         }
         // Case 2: different function names -> error
         (Type::TypeStageApp { fn_name: f1, .. }, Type::TypeStageApp { fn_name: f2, .. }) => {
-            Err(TypeErrorTyped::Generic(GenericTypeError {
+            Err(TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
                 message: format!(
                     "cannot unify TypeStageApp with different resolvers: {} vs {}",
                     f1, f2
@@ -2861,7 +2870,7 @@ pub async fn unify(
                 span,
                 notes: vec![],
                 call_stack: vec![],
-            }))
+            })))
         }
         // Case 3: TypeStageApp vs concrete (non-TypeVar, non-Unknown, non-Top)
         // Defer to process_deferred_equalities (no resolvers available yet in chr-normalization)
@@ -2884,23 +2893,27 @@ pub async fn unify(
             {
                 Ok(())
             } else {
-                Err(TypeErrorTyped::UnificationFailure(UnificationFailure {
-                    expected: a.clone(),
-                    got: b.clone(),
-                    span,
-                    notes: vec![],
-                    call_stack: vec![],
-                }))
+                Err(TypeError::from(TypeErrorTyped::UnificationFailure(
+                    UnificationFailure {
+                        expected: a.clone(),
+                        got: b.clone(),
+                        span,
+                        notes: vec![],
+                        call_stack: vec![],
+                    },
+                )))
             }
         }
 
-        _ => Err(TypeErrorTyped::UnificationFailure(UnificationFailure {
-            expected: a.clone(),
-            got: b.clone(),
-            span,
-            notes: vec![],
-            call_stack: vec![],
-        })),
+        _ => Err(TypeError::from(TypeErrorTyped::UnificationFailure(
+            UnificationFailure {
+                expected: a.clone(),
+                got: b.clone(),
+                span,
+                notes: vec![],
+                call_stack: vec![],
+            },
+        ))),
     }
 }
 
@@ -2934,6 +2947,7 @@ pub async fn unify(
 /// principal type inference (Parreaux & Chau 2022, §3.2.1).
 ///
 /// Parreaux & Chau (2022), OOPSLA '22, §3.2.1 — C-Var1/2 in constrain(), not unify().
+#[allow(dead_code)]
 pub async fn constrain(
     sub: &Type,
     sup: &Type,
@@ -3018,12 +3032,12 @@ pub async fn constrain(
         (_, Type::TypeVar(var_name, _)) if !sub.has_inference_vars() => {
             let alpha_level = state.get_level(var_name).unwrap_or(0);
             if lower_levels_check_occurs(&sub, var_name, alpha_level, state) {
-                return Err(TypeErrorTyped::Generic(GenericTypeError {
+                return Err(TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
                     message: format!("infinite type: {var_name} occurs in {sub}"),
                     span,
                     notes: vec![],
                     call_stack: vec![],
-                }));
+                })));
             }
             let normalized = crate::bas::to_rdnf(&sub);
             let flat = crate::bas::flatten_rdnf_to_type(normalized);
@@ -3044,12 +3058,12 @@ pub async fn constrain(
         (Type::TypeVar(var_name, _), _) if !sup.has_inference_vars() => {
             let alpha_level = state.get_level(var_name).unwrap_or(0);
             if lower_levels_check_occurs(&sup, var_name, alpha_level, state) {
-                return Err(TypeErrorTyped::Generic(GenericTypeError {
+                return Err(TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
                     message: format!("infinite type: {var_name} occurs in {sup}"),
                     span,
                     notes: vec![],
                     call_stack: vec![],
-                }));
+                })));
             }
             let normalized = crate::bas::to_rdnf(&sup);
             let flat = crate::bas::flatten_rdnf_to_type(normalized);
@@ -3090,6 +3104,7 @@ pub async fn constrain(
 /// Called after each SCC's substitution merge in `infer_dict` (typecheck_dict.rs).
 /// Union-vs-Union deferred equalities (from the arm above) also land here.
 /// See doc/06-type-inference.md:884.
+#[allow(dead_code)]
 pub async fn process_deferred_equalities(
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
@@ -3127,9 +3142,7 @@ pub async fn process_deferred_equalities(
                         state.diagnostics.push(crate::error::TypeDiagnostic {
                             message: format!(
                                 "deferred type equality failed: cannot unify {} with {} — {}",
-                                a_norm,
-                                b_norm,
-                                err.message()
+                                a_norm, b_norm, err.message
                             ),
                             span: span.clone(),
                             code: crate::typecheck::typecheck_diag::T013_AMBIGUOUS_CONSTRAINT,

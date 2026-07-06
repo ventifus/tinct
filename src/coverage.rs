@@ -193,6 +193,7 @@ pub(crate) fn qualify_nominal_tag(tag: &str, tycon_env: &TyConEnv) -> String {
 /// the arm as not covering `Option.None`.
 ///
 /// Already-qualified tags (containing `.`) are left unchanged.
+#[allow(dead_code)]
 pub(crate) fn qualify_coverage_pattern(
     pat: CoveragePattern,
     tycon_env: &TyConEnv,

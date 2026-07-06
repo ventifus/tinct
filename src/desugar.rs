@@ -36,7 +36,9 @@ use std::sync::Arc;
 /// Mutates the SurfaceProgram in place by replacing SurfaceItem::Expr nodes.
 pub fn desugar_surface_program(program: &mut SurfaceProgram) {
     for doc_spanned in &mut program.documents {
-        desugar_surface_document(&mut doc_spanned.node);
+        desugar_surface_document(
+            Arc::get_mut(&mut doc_spanned.node).expect("desugar runs before any Arc sharing"),
+        );
     }
 }
 
@@ -59,7 +61,9 @@ pub fn desugar_surface_program(program: &mut SurfaceProgram) {
 /// Runs BEFORE `desugar_surface_program` (`$_` desugaring and pipe lowering).
 pub fn desugar_instance_decls_surface_program(program: &mut SurfaceProgram) {
     for doc_spanned in &mut program.documents {
-        desugar_instance_decls_document(&mut doc_spanned.node);
+        desugar_instance_decls_document(
+            Arc::get_mut(&mut doc_spanned.node).expect("desugar runs before any Arc sharing"),
+        );
     }
 }
 

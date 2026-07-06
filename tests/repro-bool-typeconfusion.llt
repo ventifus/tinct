@@ -1,0 +1,14 @@
+--- uses: ["core"]
+# Reproducer: does Boolean.True in an instance body cause type confusion
+# when a payload-variant constructor is defined in the same dict?
+[
+  MyError: [type [ErrVariant span: Any]]
+
+  MyBool: [type MyTrue MyFalse]
+
+  MyClass: [class [let a]]
+
+  [instance MyClass
+    [let a@Int]: [method: [fn [let x] MyBool.MyTrue]]]
+]
+[MyBool.MyTrue]

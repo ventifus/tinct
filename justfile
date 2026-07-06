@@ -70,7 +70,7 @@ build-release:
 # --test-threads=1 serializes deep-eval tests (each 128MB unnamed thread) so only one runs at a time.
 test:
     {{container}} run {{test_run_flags}} -e RUST_MIN_STACK=67108864 -e RUSTFLAGS="-D warnings" {{rust_image}} cargo test --lib -- --test-threads=1 --quiet
-    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo run --bin tinct -- run --init stdlib/test-loader.llt tests/corpus/eval/*.llt-eval
+    {{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo run --bin tinct -- run --init stdlib/test-loader.llt $(find tests/corpus/eval -name '*.llt-eval' | sort)
     {{container}} run {{run_flags}} -e RUSTFLAGS="-D warnings" {{rust_image}} cargo test --test cli_tests -- --quiet
 
 # Run a specific test (same flags as CI: -D warnings, test-threads=1)
@@ -86,7 +86,7 @@ test-lib:
 
 # Run corpus tests and show output (tinct runner reports failures inline)
 test-corpus-summary:
-    -{{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo run --bin tinct -- run --init stdlib/test-loader.llt tests/corpus/eval/*.llt-eval
+    -{{container}} run {{run_flags}} -e RUST_MIN_STACK=67108864 {{rust_image}} cargo run --bin tinct -- run --init stdlib/test-loader.llt $(find tests/corpus/eval -name '*.llt-eval' | sort)
 
 # Run CLI tests and show only failures + summary lines
 test-cli-summary:

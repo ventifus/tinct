@@ -22,11 +22,11 @@ use crate::builtins::builtin;
 // Arithmetic, comparison, bitwise, type-conversion, and control-flow implementations.
 use crate::builtins_math::{
     builtin_acos, builtin_add, builtin_asin, builtin_atan, builtin_atan2, builtin_band,
-    builtin_bor, builtin_bxor, builtin_cos, builtin_div_float, builtin_eq_float,
-    builtin_eq_int, builtin_eq_string, builtin_exp, builtin_finite_check, builtin_float,
-    builtin_gt, builtin_gte, builtin_if, builtin_inf_check, builtin_log, builtin_log10,
-    builtin_log2, builtin_lt, builtin_lte, builtin_mul, builtin_nan_check, builtin_pow,
-    builtin_shl, builtin_shr, builtin_sin, builtin_sqrt, builtin_sub, builtin_tan,
+    builtin_bor, builtin_bxor, builtin_cos, builtin_div_float, builtin_eq_float, builtin_eq_int,
+    builtin_eq_string, builtin_exp, builtin_finite_check, builtin_float, builtin_gt, builtin_gte,
+    builtin_if, builtin_inf_check, builtin_log, builtin_log10, builtin_log2, builtin_lt,
+    builtin_lte, builtin_mul, builtin_nan_check, builtin_pow, builtin_shl, builtin_shr,
+    builtin_sin, builtin_sqrt, builtin_sub, builtin_tan,
 };
 // Dict/access implementations.
 use crate::builtins_dict::{
@@ -42,9 +42,8 @@ use crate::builtins_string::{
     builtin_bytes_str, builtin_char_code, builtin_chr, builtin_float_to_string,
     builtin_int_to_string, builtin_regex_match, builtin_replace, builtin_str_bytes,
     builtin_str_has_nth, builtin_str_index_of, builtin_str_length, builtin_str_map_chars,
-    builtin_str_nth_char, builtin_str_slice, builtin_str_to_lower_char,
-    builtin_str_to_upper_char, builtin_string_concat, builtin_trim, builtin_trim_end,
-    builtin_trim_start,
+    builtin_str_nth_char, builtin_str_slice, builtin_str_to_lower_char, builtin_str_to_upper_char,
+    builtin_string_concat, builtin_trim, builtin_trim_end, builtin_trim_start,
 };
 // Bytes implementations.
 use crate::builtins_bytes::{
@@ -58,15 +57,16 @@ use crate::stream::builtin_to_tinct;
 // Meta/eval implementations.
 use crate::builtins_meta::{
     builtin_annotation_of, builtin_apply, builtin_ast_of, builtin_ast_to_program, builtin_big_int,
-    builtin_blake3, builtin_builtin_module, builtin_cap_identity, builtin_class_dispatch,
-    builtin_current_env, builtin_decimal, builtin_eval, builtin_eval_macro_ast, builtin_eval_repr,
-    builtin_eval_types, builtin_extend_env, builtin_force, builtin_fork_type_ctx, builtin_gensym,
-    builtin_get_type_context, builtin_include_cache_get, builtin_include_cache_put,
-    builtin_is_contractive, builtin_llt_repr, builtin_load, builtin_macro_error,
-    builtin_macro_injects, builtin_make_annotated, builtin_make_type_ctx, builtin_parse,
-    builtin_program, builtin_raise, builtin_resolve, builtin_sequential, builtin_span_of,
-    builtin_tag_of, builtin_try, builtin_type_of, builtin_typecheck, builtin_until,
-    builtin_validate, builtin_variant_payload,
+    builtin_blake3, builtin_builtin_module, builtin_cap_env_has, builtin_cap_identity,
+    builtin_check_type, builtin_class_dispatch, builtin_current_env, builtin_decimal, builtin_eval,
+    builtin_eval_macro_ast, builtin_eval_repr, builtin_eval_types, builtin_extend_env,
+    builtin_force, builtin_fork_type_ctx, builtin_gensym, builtin_get_type_context,
+    builtin_include_cache_get, builtin_include_cache_put, builtin_is_contractive, builtin_llt_repr,
+    builtin_load, builtin_macro_error, builtin_macro_injects, builtin_make_annotated,
+    builtin_make_type_ctx, builtin_parse, builtin_program, builtin_raise, builtin_resolve,
+    builtin_sequential, builtin_span_of, builtin_tag_of, builtin_try, builtin_type_of,
+    builtin_typecheck, builtin_until, builtin_validate, builtin_var_resolution,
+    builtin_variant_payload,
 };
 // I/O implementations.
 use crate::builtins_dict::{builtin_concat, builtin_drop, builtin_take};
@@ -172,13 +172,15 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             "field-get",
             builtin_field_get,
             [Strictness::Seq, Strictness::Seq],
-            2
+            2,
+            ["key", "dict"]
         ),
         builtin!(
             "slot-get",
             builtin_slot_get,
             [Strictness::Seq, Strictness::Seq],
-            2
+            2,
+            ["slot", "dict"]
         ),
         // ── Arithmetic ────────────────────────────────────────────────────────────────
         // Note: +, -, *, / are NOT registered here — they are multi-method dispatch
@@ -190,25 +192,29 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             "builtin-add",
             builtin_add,
             [Strictness::Seq, Strictness::Seq],
-            2
+            2,
+            ["a", "b"]
         ),
         builtin!(
             "builtin-sub",
             builtin_sub,
             [Strictness::Seq, Strictness::Seq],
-            2
+            2,
+            ["a", "b"]
         ),
         builtin!(
             "builtin-mul",
             builtin_mul,
             [Strictness::Seq, Strictness::Seq],
-            2
+            2,
+            ["a", "b"]
         ),
         builtin!(
             "builtin-div",
             builtin_div_float,
             [Strictness::Seq, Strictness::Seq],
-            2
+            2,
+            ["a", "b"]
         ),
         // ── Comparison ───────────────────────────────────────────────────────────────
         // Note: =, <, >, <=, >= are NOT registered here — they dispatch via
@@ -220,120 +226,145 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             "builtin-eq-int",
             builtin_eq_int,
             [Strictness::Seq, Strictness::Seq],
-            2
+            2,
+            ["a", "b"]
         ),
         builtin!(
             "builtin-eq-float",
             builtin_eq_float,
             [Strictness::Seq, Strictness::Seq],
-            2
+            2,
+            ["a", "b"]
         ),
         builtin!(
             "builtin-eq-string",
             builtin_eq_string,
             [Strictness::Seq, Strictness::Seq],
-            2
+            2,
+            ["a", "b"]
         ),
         builtin!(
             "builtin-lt",
             builtin_lt,
             [Strictness::Seq, Strictness::Seq],
-            2
+            2,
+            ["a", "b"]
         ),
         builtin!(
             "builtin-gt",
             builtin_gt,
             [Strictness::Seq, Strictness::Seq],
-            2
+            2,
+            ["a", "b"]
         ),
         builtin!(
             "builtin-lte",
             builtin_lte,
             [Strictness::Seq, Strictness::Seq],
-            2
+            2,
+            ["a", "b"]
         ),
         builtin!(
             "builtin-gte",
             builtin_gte,
             [Strictness::Seq, Strictness::Seq],
-            2
+            2,
+            ["a", "b"]
         ),
         // ── Control flow ─────────────────────────────────────────────────────────────
         builtin!(
             "builtin-if",
             builtin_if,
             [Strictness::Seq, Strictness::Id, Strictness::Id],
-            1
+            1,
+            ["cond", "then", "else"]
         ),
         // ── Dict primitives ──────────────────────────────────────────────────────────
-        builtin!("builtin-keys", builtin_keys, [Strictness::Spine], 1),
-        builtin!("builtin-length", builtin_length, [Strictness::Spine], 1),
-        builtin!("builtin-merge", builtin_merge),
+        builtin!("builtin-keys", builtin_keys, [Strictness::Spine], 1, ["xs"]),
+        builtin!(
+            "builtin-length",
+            builtin_length,
+            [Strictness::Spine],
+            1,
+            ["xs"]
+        ),
+        builtin!("builtin-merge", builtin_merge, [], 0, ["a", "b"]),
         builtin!(
             "builtin-append",
             builtin_append,
             [Strictness::Id, Strictness::Seq],
-            0
+            0,
+            ["x", "xs"]
         ),
         builtin!(
             "builtin-get",
             builtin_get,
             [Strictness::Seq, Strictness::Spine],
-            2
+            2,
+            ["key", "dict"]
         ),
         builtin!(
             "builtin-has-key?",
             builtin_has_key,
             [Strictness::Seq, Strictness::Spine],
-            2
+            2,
+            ["key", "dict"]
         ),
         builtin!(
             "builtin-get-by-field",
             builtin_get_by_field,
             [Strictness::Seq, Strictness::Seq, Strictness::Spine],
-            3
+            3,
+            ["field", "key", "dict"]
         ),
         builtin!(
             "builtin-dict-has-nth?",
             builtin_dict_has_nth,
             [Strictness::Spine, Strictness::Seq],
-            2
+            2,
+            ["dict", "n"]
         ),
         builtin!(
             "builtin-dict-nth",
             builtin_dict_nth,
             [Strictness::Spine, Strictness::Seq],
-            2
+            2,
+            ["dict", "n"]
         ),
         builtin!(
             "builtin-dict-has-key-nth?",
             builtin_dict_has_key_nth,
             [Strictness::Spine, Strictness::Seq],
-            2
+            2,
+            ["dict", "n"]
         ),
         builtin!(
             "builtin-dict-key-nth",
             builtin_dict_key_nth,
             [Strictness::Spine, Strictness::Seq],
-            2
+            2,
+            ["dict", "n"]
         ),
         builtin!(
             "builtin-dict-has-kv-nth?",
             builtin_dict_has_kv_nth,
             [Strictness::Spine, Strictness::Seq],
-            2
+            2,
+            ["dict", "n"]
         ),
         builtin!(
             "builtin-dict-kv-nth",
             builtin_dict_kv_nth,
             [Strictness::Spine, Strictness::Seq],
-            2
+            2,
+            ["dict", "n"]
         ),
         builtin!(
             "builtin-build-dict",
             builtin_build_dict,
             [Strictness::Spine],
-            1
+            1,
+            ["entries"]
         ),
         // ── Builder ops ──────────────────────────────────────────────────────────────
         builtin!("builtin-make-builder", builtin_make_builder),
@@ -341,141 +372,187 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             "builtin-builder-set",
             builtin_builder_set,
             [Strictness::Seq, Strictness::Id, Strictness::Seq],
-            0
+            0,
+            ["builder", "value", "key"]
         ),
         builtin!(
             "builtin-builder-delete",
             builtin_builder_delete,
             [Strictness::Seq, Strictness::Seq],
-            2
+            2,
+            ["builder", "key"]
         ),
         builtin!(
             "builtin-builder-finish",
             builtin_builder_finish,
             [Strictness::Seq],
-            1
+            1,
+            ["builder"]
         ),
         builtin!(
             "builtin-builder-snapshot",
             builtin_builder_snapshot,
             [Strictness::Seq],
-            1
+            1,
+            ["builder"]
         ),
         builtin!(
             "builtin-builder-has?",
             builtin_builder_has,
             [Strictness::Seq, Strictness::Seq],
-            2
+            2,
+            ["builder", "key"]
         ),
         builtin!(
             "builtin-builder-get",
             builtin_builder_get,
             [Strictness::Seq, Strictness::Seq],
-            2
+            2,
+            ["builder", "key"]
         ),
         builtin!(
             "builtin-builder-get-or",
             builtin_builder_get_or,
             [Strictness::Seq, Strictness::Id, Strictness::Seq],
-            0
+            0,
+            ["builder", "default", "key"]
         ),
         // ── String ops ───────────────────────────────────────────────────────────────
         builtin!(
             "builtin-int->string",
             builtin_int_to_string,
             [Strictness::Seq],
-            1
+            1,
+            ["n"]
         ),
         builtin!(
             "builtin-float->string",
             builtin_float_to_string,
             [Strictness::Seq],
-            1
+            1,
+            ["n"]
         ),
         builtin!(
             // Hyphenated alias for builtin-float->string (used by type-foundations loader).
             "builtin-float-to-string",
             builtin_float_to_string,
             [Strictness::Seq],
-            1
+            1,
+            ["n"]
         ),
         builtin!(
             "builtin-replace",
             builtin_replace,
             [Strictness::Seq, Strictness::Seq, Strictness::Seq],
-            3
+            3,
+            ["pattern", "replacement", "str"]
         ),
-        builtin!("builtin-trim", builtin_trim, [Strictness::Seq], 1),
+        builtin!("builtin-trim", builtin_trim, [Strictness::Seq], 1, ["str"]),
         builtin!(
             "builtin-str-length",
             builtin_str_length,
             [Strictness::Seq],
-            1
+            1,
+            ["str"]
         ),
         builtin!(
             "builtin-str-slice",
             builtin_str_slice,
             [Strictness::Seq, Strictness::Seq, Strictness::Seq],
-            3
+            3,
+            ["str", "start", "end"]
         ),
         builtin!(
             "builtin-str-has-nth?",
             builtin_str_has_nth,
             [Strictness::Seq, Strictness::Seq],
-            2
+            2,
+            ["str", "n"]
         ),
         builtin!(
             "builtin-str-nth-char",
             builtin_str_nth_char,
             [Strictness::Seq, Strictness::Seq],
-            2
+            2,
+            ["str", "n"]
         ),
-        builtin!("builtin-char-code", builtin_char_code, [Strictness::Seq], 1),
-        builtin!("builtin-chr", builtin_chr, [Strictness::Seq], 1),
-        builtin!("builtin-str-bytes", builtin_str_bytes, [Strictness::Seq], 1),
-        builtin!("builtin-bytes-str", builtin_bytes_str, [Strictness::Seq], 1),
+        builtin!(
+            "builtin-char-code",
+            builtin_char_code,
+            [Strictness::Seq],
+            1,
+            ["char"]
+        ),
+        builtin!("builtin-chr", builtin_chr, [Strictness::Seq], 1, ["n"]),
+        builtin!(
+            "builtin-str-bytes",
+            builtin_str_bytes,
+            [Strictness::Seq],
+            1,
+            ["str"]
+        ),
+        builtin!(
+            "builtin-bytes-str",
+            builtin_bytes_str,
+            [Strictness::Seq],
+            1,
+            ["bytes"]
+        ),
         builtin!(
             "builtin-str-index-of",
             builtin_str_index_of,
             [Strictness::Seq, Strictness::Seq],
-            2
+            2,
+            ["str", "needle"]
         ),
         builtin!(
             "builtin-trim-start",
             builtin_trim_start,
             [Strictness::Seq],
-            1
+            1,
+            ["str"]
         ),
-        builtin!("builtin-trim-end", builtin_trim_end, [Strictness::Seq], 1),
+        builtin!(
+            "builtin-trim-end",
+            builtin_trim_end,
+            [Strictness::Seq],
+            1,
+            ["str"]
+        ),
         builtin!(
             "builtin-str-to-upper-char",
             builtin_str_to_upper_char,
             [Strictness::Seq],
-            1
+            1,
+            ["str"]
         ),
         builtin!(
             "builtin-str-to-lower-char",
             builtin_str_to_lower_char,
             [Strictness::Seq],
-            1
+            1,
+            ["str"]
         ),
         builtin!(
             "builtin-str-map-chars",
             builtin_str_map_chars,
             [Strictness::Seq, Strictness::Seq],
-            2
+            2,
+            ["f", "str"]
         ),
         builtin!(
             "builtin-regex-match?",
             builtin_regex_match,
             [Strictness::Seq, Strictness::Seq],
-            2
+            2,
+            ["pattern", "str"]
         ),
         builtin!(
             "builtin-string-concat",
             builtin_string_concat,
             [Strictness::Seq, Strictness::Seq],
-            2
+            2,
+            ["a", "b"]
         ),
         // ── Bytes ────────────────────────────────────────────────────────────────────
         builtin!("builtin-bytes", builtin_bytes, []),
@@ -483,128 +560,168 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             "builtin-bytes-concat",
             builtin_bytes_concat,
             [Strictness::Seq, Strictness::Seq],
-            2
+            2,
+            ["a", "b"]
         ),
         builtin!(
             "builtin-bytes-find",
             builtin_bytes_find,
             [Strictness::Seq, Strictness::Seq],
-            2
+            2,
+            ["needle", "bytes"]
         ),
         builtin!("builtin-bytes-of", builtin_bytes_of, [Strictness::Seq]),
         builtin!(
             "builtin-bytes-equal?",
             builtin_bytes_equal,
             [Strictness::Seq, Strictness::Seq],
-            2
+            2,
+            ["a", "b"]
         ),
         builtin!(
             "builtin-ct-equal?",
             builtin_ct_equal,
             [Strictness::Seq, Strictness::Seq],
-            2
+            2,
+            ["a", "b"]
         ),
         builtin!(
             "builtin-encode",
             builtin_encode,
             [Strictness::Seq, Strictness::Seq],
-            2
+            2,
+            ["encoding", "bytes"]
         ),
         builtin!(
             "builtin-bytes-get",
             builtin_bytes_get,
             [Strictness::Seq, Strictness::Seq],
-            2
+            2,
+            ["bytes", "n"]
         ),
         builtin!(
             "builtin-bytes-slice",
             builtin_bytes_slice,
             [Strictness::Seq, Strictness::Seq, Strictness::Seq],
-            3
+            3,
+            ["bytes", "start", "end"]
         ),
         // ── Math ─────────────────────────────────────────────────────────────────────
-        builtin!("builtin-floor", builtin_floor, [Strictness::Seq], 1),
-        builtin!("builtin-round", builtin_round, [Strictness::Seq], 1),
+        builtin!("builtin-floor", builtin_floor, [Strictness::Seq], 1, ["n"]),
+        builtin!("builtin-round", builtin_round, [Strictness::Seq], 1, ["n"]),
         builtin!(
             "builtin-pow",
             builtin_pow,
             [Strictness::Seq, Strictness::Seq],
-            2
+            2,
+            ["base", "exp"]
         ),
-        builtin!("builtin-sqrt", builtin_sqrt, [Strictness::Seq], 1),
-        builtin!("builtin-log", builtin_log, [Strictness::Seq], 1),
-        builtin!("builtin-log2", builtin_log2, [Strictness::Seq], 1),
-        builtin!("builtin-log10", builtin_log10, [Strictness::Seq], 1),
-        builtin!("builtin-exp", builtin_exp, [Strictness::Seq], 1),
-        builtin!("builtin-sin", builtin_sin, [Strictness::Seq], 1),
-        builtin!("builtin-cos", builtin_cos, [Strictness::Seq], 1),
-        builtin!("builtin-tan", builtin_tan, [Strictness::Seq], 1),
-        builtin!("builtin-asin", builtin_asin, [Strictness::Seq], 1),
-        builtin!("builtin-acos", builtin_acos, [Strictness::Seq], 1),
-        builtin!("builtin-atan", builtin_atan, [Strictness::Seq], 1),
+        builtin!("builtin-sqrt", builtin_sqrt, [Strictness::Seq], 1, ["n"]),
+        builtin!("builtin-log", builtin_log, [Strictness::Seq], 1, ["n"]),
+        builtin!("builtin-log2", builtin_log2, [Strictness::Seq], 1, ["n"]),
+        builtin!("builtin-log10", builtin_log10, [Strictness::Seq], 1, ["n"]),
+        builtin!("builtin-exp", builtin_exp, [Strictness::Seq], 1, ["n"]),
+        builtin!("builtin-sin", builtin_sin, [Strictness::Seq], 1, ["n"]),
+        builtin!("builtin-cos", builtin_cos, [Strictness::Seq], 1, ["n"]),
+        builtin!("builtin-tan", builtin_tan, [Strictness::Seq], 1, ["n"]),
+        builtin!("builtin-asin", builtin_asin, [Strictness::Seq], 1, ["n"]),
+        builtin!("builtin-acos", builtin_acos, [Strictness::Seq], 1, ["n"]),
+        builtin!("builtin-atan", builtin_atan, [Strictness::Seq], 1, ["n"]),
         builtin!(
             "builtin-atan2",
             builtin_atan2,
             [Strictness::Seq, Strictness::Seq],
-            2
+            2,
+            ["y", "x"]
         ),
-        builtin!("builtin-nan?", builtin_nan_check, [Strictness::Seq], 1),
-        builtin!("builtin-inf?", builtin_inf_check, [Strictness::Seq], 1),
+        builtin!(
+            "builtin-nan?",
+            builtin_nan_check,
+            [Strictness::Seq],
+            1,
+            ["n"]
+        ),
+        builtin!(
+            "builtin-inf?",
+            builtin_inf_check,
+            [Strictness::Seq],
+            1,
+            ["n"]
+        ),
         builtin!(
             "builtin-finite?",
             builtin_finite_check,
             [Strictness::Seq],
-            1
+            1,
+            ["n"]
         ),
         // ── Bitwise ──────────────────────────────────────────────────────────────────
         builtin!(
             "builtin-band",
             builtin_band,
             [Strictness::Seq, Strictness::Seq],
-            2
+            2,
+            ["a", "b"]
         ),
         builtin!(
             "builtin-bor",
             builtin_bor,
             [Strictness::Seq, Strictness::Seq],
-            2
+            2,
+            ["a", "b"]
         ),
         builtin!(
             "builtin-bxor",
             builtin_bxor,
             [Strictness::Seq, Strictness::Seq],
-            2
+            2,
+            ["a", "b"]
         ),
         builtin!(
             "builtin-shl",
             builtin_shl,
             [Strictness::Seq, Strictness::Seq],
-            2
+            2,
+            ["n", "bits"]
         ),
         builtin!(
             "builtin-shr",
             builtin_shr,
             [Strictness::Seq, Strictness::Seq],
-            2
+            2,
+            ["n", "bits"]
         ),
         // ── Type conversion ──────────────────────────────────────────────────────────
-        builtin!("builtin-float", builtin_float, [Strictness::Seq], 1),
+        builtin!("builtin-float", builtin_float, [Strictness::Seq], 1, ["n"]),
         builtin!("builtin-to-int", builtin_to_int, [Strictness::Seq]),
         builtin!("builtin-to-float", builtin_to_float, [Strictness::Seq]),
         // ── Evaluation control ───────────────────────────────────────────────────────
-        builtin!("builtin-materialize", builtin_force, [Strictness::Seq]),
-        builtin!("builtin-raise", builtin_raise, [Strictness::Seq]),
+        builtin!(
+            "builtin-materialize",
+            builtin_force,
+            [Strictness::Seq],
+            0,
+            ["x"]
+        ),
+        builtin!(
+            "builtin-raise",
+            builtin_raise,
+            [Strictness::Seq],
+            0,
+            ["msg"]
+        ),
         builtin!(
             "builtin-macro-error",
             builtin_macro_error,
             [Strictness::Seq, Strictness::Id]
         ),
-        builtin!("builtin-try", builtin_try, [Strictness::Id], 1),
+        builtin!("builtin-try", builtin_try, [Strictness::Id], 1, ["f"]),
         builtin!(
             "builtin-apply",
             builtin_apply,
             [Strictness::Seq, Strictness::Seq],
-            2
+            2,
+            ["f", "args"]
         ),
         builtin!("builtin-until", builtin_until),
         // ── Typeclass dispatch ──────────────────────────────────────────────────────
@@ -616,22 +733,51 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             "builtin-class-dispatch",
             builtin_class_dispatch,
             [Strictness::Seq, Strictness::Seq],
-            2
+            2,
+            ["class", "method", "...args"]
         ),
         // ── Type introspection ───────────────────────────────────────────────────────
-        builtin!("builtin-type-of", builtin_type_of, [Strictness::Seq]),
-        builtin!("builtin-ast-of", builtin_ast_of, [Strictness::Id]),
+        builtin!(
+            "builtin-type-of",
+            builtin_type_of,
+            [Strictness::Seq],
+            0,
+            ["x"]
+        ),
+        builtin!("builtin-ast-of", builtin_ast_of, [Strictness::Id], 0, ["x"]),
+        builtin!(
+            "builtin-check-type",
+            builtin_check_type,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["type-name", "x"]
+        ),
+        // ── Caps/environment introspection ───────────────────────────────────────────
+        builtin!(
+            "builtin-cap-env-has?",
+            builtin_cap_env_has,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["name", "env"]
+        ),
         // ── Schema validation ────────────────────────────────────────────────────────
         builtin!(
             "builtin-validate",
             builtin_validate,
             [Strictness::Seq, Strictness::Seq],
-            2
+            2,
+            ["schema", "x"]
         ),
         // ── I/O ──────────────────────────────────────────────────────────────────────
-        builtin!("builtin-emit", builtin_emit, [Strictness::Seq]),
-        builtin!("builtin-env", builtin_env, [Strictness::Seq]),
-        builtin!("builtin-env-has?", builtin_env_has, [Strictness::Seq]),
+        builtin!("builtin-emit", builtin_emit, [Strictness::Seq], 0, ["x"]),
+        builtin!("builtin-env", builtin_env, [Strictness::Seq], 0, ["name"]),
+        builtin!(
+            "builtin-env-has?",
+            builtin_env_has,
+            [Strictness::Seq],
+            0,
+            ["name"]
+        ),
         // builtin-open, builtin-string-handle, builtin-read-line, builtin-read-chunk,
         // builtin-cap-data, builtin-write-handle, builtin-flush, builtin-close,
         // builtin-raw-create, builtin-seek, builtin-seek-end, builtin-position
@@ -639,45 +785,65 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
         builtin!(
             "builtin-narrow",
             builtin_narrow,
-            [Strictness::Seq, Strictness::Seq]
+            [Strictness::Seq, Strictness::Seq],
+            0,
+            ["cap", "path"]
         ),
-        builtin!("builtin-revocable", builtin_revocable, [Strictness::Seq]),
-        builtin!("builtin-revoke-cap", builtin_revoke_cap, [Strictness::Seq]),
+        builtin!(
+            "builtin-revocable",
+            builtin_revocable,
+            [Strictness::Seq],
+            0,
+            ["cap"]
+        ),
+        builtin!(
+            "builtin-revoke-cap",
+            builtin_revoke_cap,
+            [Strictness::Seq],
+            0,
+            ["cap"]
+        ),
         builtin!(
             "builtin-write",
             builtin_write,
             [Strictness::Seq, Strictness::Seq, Strictness::Seq],
-            3
+            3,
+            ["cap", "path", "content"]
         ),
         builtin!(
             "builtin-write-atomic",
             builtin_write_atomic,
             [Strictness::Seq, Strictness::Seq, Strictness::Seq],
-            3
+            3,
+            ["cap", "path", "content"]
         ),
         builtin!(
             "builtin-list-dir",
             builtin_list_dir,
             [Strictness::Seq, Strictness::Seq],
-            2
+            2,
+            ["cap", "path"]
         ),
         builtin!(
             "builtin-stat",
             builtin_stat,
             [Strictness::Seq, Strictness::Seq],
-            2
+            2,
+            ["cap", "path"]
         ),
         builtin!(
             "builtin-exists",
             builtin_exists,
             [Strictness::Seq, Strictness::Seq],
-            2
+            2,
+            ["cap", "path"]
         ),
         builtin!(
             "builtin-stat-symlink",
             builtin_stat_symlink,
             [Strictness::Seq, Strictness::Seq],
-            2
+            2,
+            ["cap", "path"]
         ),
         builtin!(
             "builtin-copy-file",
@@ -688,25 +854,29 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
                 Strictness::Seq,
                 Strictness::Seq
             ],
-            4
+            4,
+            ["src-cap", "src-path", "dst-cap", "dst-path"]
         ),
         builtin!(
             "builtin-symlink",
             builtin_symlink,
             [Strictness::Seq, Strictness::Seq, Strictness::Seq],
-            3
+            3,
+            ["cap", "path", "target"]
         ),
         builtin!(
             "builtin-set-permissions",
             builtin_set_permissions,
             [Strictness::Seq, Strictness::Seq, Strictness::Seq],
-            3
+            3,
+            ["cap", "path", "mode"]
         ),
         builtin!(
             "builtin-get-xattr",
             builtin_get_xattr,
             [Strictness::Seq, Strictness::Seq, Strictness::Seq],
-            3
+            3,
+            ["cap", "path", "name"]
         ),
         builtin!(
             "builtin-set-xattr",
@@ -717,114 +887,167 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
                 Strictness::Seq,
                 Strictness::Seq
             ],
-            4
+            4,
+            ["cap", "path", "name", "value"]
         ),
         builtin!(
             "builtin-remove-xattr",
             builtin_remove_xattr,
             [Strictness::Seq, Strictness::Seq, Strictness::Seq],
-            3
+            3,
+            ["cap", "path", "name"]
         ),
         builtin!(
             "builtin-list-xattrs",
             builtin_list_xattrs,
             [Strictness::Seq, Strictness::Seq],
-            2
+            2,
+            ["cap", "path"]
         ),
         builtin!(
             "builtin-make-dir",
             builtin_make_dir,
             [Strictness::Seq, Strictness::Seq],
-            2
+            2,
+            ["cap", "path"]
         ),
         builtin!(
             "builtin-remove",
             builtin_remove,
             [Strictness::Seq, Strictness::Seq],
-            2
+            2,
+            ["cap", "path"]
         ),
         builtin!(
             "builtin-rename",
             builtin_rename,
             [Strictness::Seq, Strictness::Seq, Strictness::Seq],
-            3
+            3,
+            ["cap", "from", "to"]
         ),
         builtin!(
             "builtin-link",
             builtin_link,
             [Strictness::Seq, Strictness::Seq, Strictness::Seq],
-            3
+            3,
+            ["cap", "path", "target"]
         ),
         builtin!(
             "builtin-read-link",
             builtin_read_link,
             [Strictness::Seq, Strictness::Seq],
-            2
+            2,
+            ["cap", "path"]
         ),
         // builtin-read-all removed: operated on Value::Handle which no longer exists.
-        builtin!("builtin-path-dir", builtin_path_dir, [Strictness::Seq], 1),
+        builtin!(
+            "builtin-path-dir",
+            builtin_path_dir,
+            [Strictness::Seq],
+            1,
+            ["path"]
+        ),
         // ── File primitives (Value::File — thin OS wrappers, no buffering) ───────────
         builtin!(
             "builtin-file-open",
             builtin_file_open,
             [Strictness::Seq, Strictness::Seq, Strictness::Seq],
-            3
+            3,
+            ["cap", "path", "mode"]
         ),
         builtin!(
             "builtin-file-read",
             builtin_file_read,
             [Strictness::Seq, Strictness::Seq],
-            2
+            2,
+            ["file", "n"]
         ),
         builtin!(
             "builtin-file-write",
             builtin_file_write,
             [Strictness::Seq, Strictness::Seq],
-            2
+            2,
+            ["file", "bytes"]
         ),
-        builtin!("builtin-file-flush", builtin_file_flush, [Strictness::Seq]),
-        builtin!("builtin-file-close", builtin_file_close, [Strictness::Seq]),
+        builtin!(
+            "builtin-file-flush",
+            builtin_file_flush,
+            [Strictness::Seq],
+            0,
+            ["file"]
+        ),
+        builtin!(
+            "builtin-file-close",
+            builtin_file_close,
+            [Strictness::Seq],
+            0,
+            ["file"]
+        ),
         builtin!(
             "builtin-file-seek",
             builtin_file_seek,
             [Strictness::Seq, Strictness::Seq],
-            2
+            2,
+            ["file", "pos"]
         ),
         // ── Stateless stdio primitives ────────────────────────────────────────────────
         builtin!(
             "builtin-write-stdout",
             builtin_write_stdout,
             [Strictness::Seq, Strictness::Id],
-            2
+            2,
+            ["sep", "x"]
         ),
         builtin!(
             "builtin-write-stderr",
             builtin_write_stderr,
             [Strictness::Seq, Strictness::Id],
-            2
+            2,
+            ["sep", "x"]
         ),
         builtin!("builtin-read-stdin", builtin_read_stdin, [Strictness::Seq]),
         // ── Decomposed include primitives ─────────────────────────────────────────────
-        builtin!("builtin-blake3", builtin_blake3, [Strictness::Seq]),
+        builtin!(
+            "builtin-blake3",
+            builtin_blake3,
+            [Strictness::Seq],
+            0,
+            ["bytes"]
+        ),
         builtin!(
             "builtin-cap-identity",
             builtin_cap_identity,
-            [Strictness::Seq]
+            [Strictness::Seq],
+            0,
+            ["cap"]
         ),
-        builtin!("builtin-load", builtin_load, [Strictness::Seq], 1),
+        builtin!("builtin-load", builtin_load, [Strictness::Seq], 1, ["path"]),
         // ── 4-stage pipeline primitives ───────────────────────────────────────────────
         // Stage 1: builtin-parse  — Bytes + path → raw Program (parse only)
         builtin!(
             "builtin-parse",
             builtin_parse,
             [Strictness::Seq, Strictness::Seq],
-            2
+            2,
+            ["bytes", "path"]
         ),
         // Stage 3: builtin-resolve — expand + desugar + resolve (no typecheck)
-        builtin!("builtin-resolve", builtin_resolve, [Strictness::Seq], 1),
+        builtin!(
+            "builtin-resolve",
+            builtin_resolve,
+            [Strictness::Seq],
+            1,
+            ["doc"]
+        ),
         // Stage 4: builtin-typecheck — typecheck a resolved Program, update TypeContext
         // Accepts 1 or 2 args: program, [type-ctx]. Marked variadic; arity checked inside.
-        builtin!("builtin-typecheck", builtin_typecheck, [Strictness::Seq], 1),
+        builtin!(
+            "builtin-typecheck",
+            builtin_typecheck,
+            [Strictness::Seq],
+            1,
+            ["program"]
+        ),
         // TypeContext primitives
         builtin!("builtin-get-type-context", builtin_get_type_context, [], 0),
         builtin!("builtin-make-type-ctx", builtin_make_type_ctx, [], 0),
@@ -832,28 +1055,44 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             "builtin-fork-type-ctx",
             builtin_fork_type_ctx,
             [Strictness::Seq],
-            1
+            1,
+            ["type-ctx"]
         ),
-        builtin!("builtin-program", builtin_program, [Strictness::Spine], 1),
+        builtin!(
+            "builtin-program",
+            builtin_program,
+            [Strictness::Spine],
+            1,
+            ["docs"]
+        ),
         builtin!(
             "builtin-module",
             builtin_builtin_module,
             [Strictness::Seq],
-            1
+            1,
+            ["name"]
         ),
-        builtin!("builtin-eval", builtin_eval, [Strictness::Seq], 1),
-        builtin!("builtin-eval-repr", builtin_eval_repr, [Strictness::Seq], 1),
+        builtin!("builtin-eval", builtin_eval, [Strictness::Seq], 1, ["doc"]),
+        builtin!(
+            "builtin-eval-repr",
+            builtin_eval_repr,
+            [Strictness::Seq],
+            1,
+            ["x"]
+        ),
         builtin!(
             "builtin-variant-payload",
             builtin_variant_payload,
             [Strictness::Seq],
-            1
+            1,
+            ["variant"]
         ),
         builtin!(
             "builtin-extend-env",
             builtin_extend_env,
             [Strictness::Seq, Strictness::Seq],
-            2
+            2,
+            ["parent", "entries"]
         ),
         // builtin-current-env: zero-arg; returns the calling lexical environment.
         // No force_count or pos_strictness — it inspects no arguments.
@@ -866,54 +1105,75 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             "builtin-eval-macro-ast",
             builtin_eval_macro_ast,
             [Strictness::Seq],
-            1
+            1,
+            ["ast"]
         ),
         builtin!(
             "builtin-eval-types",
             builtin_eval_types,
             [Strictness::Seq],
-            1
+            1,
+            ["program"]
         ),
         builtin!(
             "builtin-include-cache-get",
             builtin_include_cache_get,
             [Strictness::Seq],
-            1
+            1,
+            ["key"]
         ),
         builtin!(
             "builtin-include-cache-put",
             builtin_include_cache_put,
             [],
-            2
+            2,
+            ["key", "value"]
         ),
         // ── Sequences — transforms ─────────────────────────────────────────────────────
         builtin!(
             "builtin-take",
             builtin_take,
             [Strictness::Seq, Strictness::Spine],
-            2
+            2,
+            ["n", "xs"]
         ),
         builtin!(
             "builtin-drop",
             builtin_drop,
             [Strictness::Seq, Strictness::Spine],
-            2
+            2,
+            ["n", "xs"]
         ),
         builtin!(
             "builtin-concat",
             builtin_concat,
             [Strictness::Spine, Strictness::Seq],
-            1
+            1,
+            ["a", "b"]
         ),
         // ── Sequences — list operations ───────────────────────────────────────────────
-        builtin!("builtin-first", builtin_first, [Strictness::Spine]),
-        builtin!("builtin-last", builtin_last, [Strictness::Spine]),
-        builtin!("builtin-rest", builtin_rest, [Strictness::Spine]),
-        builtin!("builtin-reverse", builtin_reverse, [Strictness::Spine]),
+        builtin!(
+            "builtin-first",
+            builtin_first,
+            [Strictness::Spine],
+            0,
+            ["xs"]
+        ),
+        builtin!("builtin-last", builtin_last, [Strictness::Spine], 0, ["xs"]),
+        builtin!("builtin-rest", builtin_rest, [Strictness::Spine], 0, ["xs"]),
+        builtin!(
+            "builtin-reverse",
+            builtin_reverse,
+            [Strictness::Spine],
+            0,
+            ["xs"]
+        ),
         builtin!(
             "builtin-sort",
             builtin_sort,
-            [Strictness::Spine, Strictness::Spine]
+            [Strictness::Spine, Strictness::Spine],
+            0,
+            ["cmp", "xs"]
         ),
         // ── Async concurrency ─────────────────────────────────────────────────────────
         builtin!("builtin-task", builtin_task),
@@ -933,47 +1193,63 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             "builtin-timer-channel",
             builtin_timer_channel,
             [Strictness::Seq],
-            1
+            1,
+            ["duration"]
         ),
         builtin!("builtin-watch-channel", builtin_watch_channel),
         builtin!("builtin-context", builtin_context),
         builtin!(
             "builtin-with-cancel",
             builtin_with_cancel,
-            [Strictness::Seq]
+            [Strictness::Seq],
+            0,
+            ["ctx"]
         ),
         builtin!(
             "builtin-with-timeout",
             builtin_with_timeout,
             [Strictness::Seq, Strictness::Seq, Strictness::Seq],
-            1
+            1,
+            ["ctx", "duration", "f"]
         ),
         builtin!(
             "builtin-with-deadline",
             builtin_with_deadline,
             [Strictness::Seq, Strictness::Seq, Strictness::Seq],
-            1
+            1,
+            ["ctx", "deadline", "f"]
         ),
         builtin!(
             "builtin-cancelled-q",
             builtin_cancelled_q,
-            [Strictness::Seq]
+            [Strictness::Seq],
+            0,
+            ["ctx"]
         ),
         builtin!(
             "builtin-cancel-task",
             builtin_cancel_task,
-            [Strictness::Seq]
+            [Strictness::Seq],
+            0,
+            ["task"]
         ),
         builtin!("builtin-non-cancellable", builtin_non_cancellable),
         builtin!(
             "builtin-with-context",
             builtin_with_context,
             [Strictness::Seq, Strictness::Id],
-            1
+            1,
+            ["ctx", "f"]
         ),
         builtin!("builtin-cancel-root", builtin_cancel_root),
         builtin!("builtin-drain", builtin_drain),
-        builtin!("builtin-exit-now", builtin_exit_now, [Strictness::Seq]),
+        builtin!(
+            "builtin-exit-now",
+            builtin_exit_now,
+            [Strictness::Seq],
+            0,
+            ["code"]
+        ),
         // ── Reactive cells (T-831) ────────────────────────────────────────────────────
         builtin!("builtin-reactive-cell", builtin_reactive_cell),
         builtin!("builtin-cell-get", builtin_cell_get),
@@ -982,21 +1258,58 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
         builtin!(
             "builtin-gensym",
             builtin_gensym,
-            [Strictness::Seq, Strictness::Seq]
+            [Strictness::Seq, Strictness::Seq],
+            0,
+            ["prefix", "n"]
         ),
-        builtin!("builtin-llt-repr", builtin_llt_repr, [Strictness::Seq]),
-        builtin!("builtin-to-tinct", builtin_to_tinct, [Strictness::Seq], 1),
-        builtin!("builtin-tag-of", builtin_tag_of, [Strictness::Seq]),
-        builtin!("builtin-span-of", builtin_span_of, [Strictness::Seq]),
+        builtin!(
+            "builtin-llt-repr",
+            builtin_llt_repr,
+            [Strictness::Seq],
+            0,
+            ["x"]
+        ),
+        builtin!(
+            "builtin-to-tinct",
+            builtin_to_tinct,
+            [Strictness::Seq],
+            1,
+            ["x"]
+        ),
+        builtin!(
+            "builtin-tag-of",
+            builtin_tag_of,
+            [Strictness::Seq],
+            0,
+            ["x"]
+        ),
+        builtin!(
+            "builtin-span-of",
+            builtin_span_of,
+            [Strictness::Seq],
+            0,
+            ["x"]
+        ),
+        builtin!(
+            "builtin-var-resolution",
+            builtin_var_resolution,
+            [Strictness::Seq, Strictness::Seq],
+            0,
+            ["offset", "env"]
+        ),
         builtin!(
             "builtin-annotation-of",
             builtin_annotation_of,
-            [Strictness::Seq]
+            [Strictness::Seq],
+            0,
+            ["x"]
         ),
         builtin!(
             "builtin-make-annotated",
             builtin_make_annotated,
-            [Strictness::Seq, Strictness::Seq]
+            [Strictness::Seq, Strictness::Seq],
+            0,
+            ["value", "annotation"]
         ),
         // S-861: equirecursive-checker — contractiveness check for mu combinator.
         // Used by stdlib/prelude.llt type-stage `mu` to validate TypeNode.Recursive bodies.
@@ -1005,26 +1318,49 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
         builtin!(
             "builtin-is-contractive",
             builtin_is_contractive,
-            [Strictness::Seq]
+            [Strictness::Seq],
+            0,
+            ["type-node"]
         ),
-        builtin!("builtin-decimal", builtin_decimal, [Strictness::Seq]),
-        builtin!("builtin-big-int", builtin_big_int, [Strictness::Seq]),
+        builtin!(
+            "builtin-decimal",
+            builtin_decimal,
+            [Strictness::Seq],
+            0,
+            ["x"]
+        ),
+        builtin!(
+            "builtin-big-int",
+            builtin_big_int,
+            [Strictness::Seq],
+            0,
+            ["x"]
+        ),
         builtin!("builtin-proxy", builtin_proxy),
         builtin!(
             "builtin-macro-injects",
             builtin_macro_injects,
-            [Strictness::Seq]
+            [Strictness::Seq],
+            0,
+            ["macro-env"]
         ),
         // ── Boot-level AST construction ───────────────────────────────────────────────
         // builtin-sequential: used by boot-level macros (>>, loader.llt) to construct
         // a Sequential AST node before the prelude's Expr type is in scope.
-        builtin!("builtin-sequential", builtin_sequential, [Strictness::Seq]),
+        builtin!(
+            "builtin-sequential",
+            builtin_sequential,
+            [Strictness::Seq],
+            0,
+            ["exprs"]
+        ),
         // builtin-ast-to-program: convert Expr.* AST node to Value::Program
         builtin!(
             "builtin-ast-to-program",
             builtin_ast_to_program,
             [Strictness::Seq],
-            1
+            1,
+            ["ast"]
         ),
     ]
 }
@@ -1489,11 +1825,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
     env.insert(
         "builtin-if".to_string(),
         Type::Function {
-            params: vec![
-                (None, Type::Int),
-                (None, Type::Any),
-                (None, Type::Any),
-            ],
+            params: vec![(None, Type::Int), (None, Type::Any), (None, Type::Any)],
             ret: Box::new(Type::Any),
             variadic: false,
             required_count: 3,
@@ -1579,6 +1911,35 @@ pub fn core_type_env(env: &mut TypeEnv) {
             ret: Box::new(Type::Int),
             variadic: false,
             required_count: 1,
+        },
+    );
+
+    // ── Type checking — builtin-check-type ───────────────────────────────────
+    // builtin-check-type: Str → Any → Any
+    // Validates that the second argument matches the named type; returns the value on success,
+    // raises on mismatch. Used by tinct-side expects validation (T-1506).
+    env.insert(
+        "builtin-check-type".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Str), (None, Type::Any)],
+            ret: Box::new(Type::Any),
+            variadic: false,
+            required_count: 2,
+        },
+    );
+
+    // ── Caps/environment introspection — builtin-cap-env-has? ─────────────────
+    // builtin-cap-env-has?: Str → Environment → Bool
+    // Returns Boolean.True if the named capability is present in the given tinct
+    // runtime environment, Boolean.False otherwise. Used by tinct-side caps enforcement
+    // (T-1507).
+    env.insert(
+        "builtin-cap-env-has?".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Str), (None, Type::Any)],
+            ret: Box::new(Type::Any),
+            variadic: false,
+            required_count: 2,
         },
     );
 
@@ -2043,7 +2404,6 @@ pub fn core_type_env(env: &mut TypeEnv) {
             kind_vars: Vec::new(),
             doc: None,
             inner_schemes: None,
-            param_narrowings: Vec::new(),
         },
     );
     // builtin-filter: ∀a. (a → Bool) → Seq(a) → Seq(a)
@@ -2073,7 +2433,6 @@ pub fn core_type_env(env: &mut TypeEnv) {
             kind_vars: Vec::new(),
             doc: None,
             inner_schemes: None,
-            param_narrowings: Vec::new(),
         },
     );
     // builtin-take: ∀T. Int → Seq(T) → Seq(T)
@@ -2095,7 +2454,6 @@ pub fn core_type_env(env: &mut TypeEnv) {
             kind_vars: Vec::new(),
             doc: None,
             inner_schemes: None,
-            param_narrowings: Vec::new(),
         },
     );
     // builtin-drop: ∀T. Int → Seq(T) → Seq(T)
@@ -2117,7 +2475,6 @@ pub fn core_type_env(env: &mut TypeEnv) {
             kind_vars: Vec::new(),
             doc: None,
             inner_schemes: None,
-            param_narrowings: Vec::new(),
         },
     );
 
@@ -2154,7 +2511,6 @@ pub fn core_type_env(env: &mut TypeEnv) {
             kind_vars: Vec::new(),
             doc: None,
             inner_schemes: None,
-            param_narrowings: Vec::new(),
         },
     );
     env.insert(
@@ -2200,7 +2556,6 @@ pub fn core_type_env(env: &mut TypeEnv) {
             kind_vars: Vec::new(),
             doc: None,
             inner_schemes: None,
-            param_narrowings: Vec::new(),
         },
     );
 
@@ -2238,7 +2593,6 @@ pub fn core_type_env(env: &mut TypeEnv) {
             kind_vars: Vec::new(),
             doc: None,
             inner_schemes: None,
-            param_narrowings: Vec::new(),
         },
     );
     // builtin-reverse: {} -> {}
@@ -2283,7 +2637,6 @@ pub fn core_type_env(env: &mut TypeEnv) {
             kind_vars: Vec::new(),
             doc: None,
             inner_schemes: None,
-            param_narrowings: Vec::new(),
         },
     );
     // proxy: (Str → Top) → Proxy
@@ -2346,7 +2699,6 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 kind_vars: Vec::new(),
                 doc: None,
                 inner_schemes: None,
-                param_narrowings: Vec::new(),
             },
         );
     }
@@ -2404,7 +2756,6 @@ pub fn core_type_env(env: &mut TypeEnv) {
             kind_vars: Vec::new(),
             doc: None,
             inner_schemes: None,
-            param_narrowings: Vec::new(),
         },
     );
 
@@ -2441,7 +2792,6 @@ pub fn core_type_env(env: &mut TypeEnv) {
             kind_vars: Vec::new(),
             doc: None,
             inner_schemes: None,
-            param_narrowings: Vec::new(),
         },
     );
     // builtin-last: ∀T. Seq(T) → T
@@ -2461,7 +2811,6 @@ pub fn core_type_env(env: &mut TypeEnv) {
             kind_vars: Vec::new(),
             doc: None,
             inner_schemes: None,
-            param_narrowings: Vec::new(),
         },
     );
 
@@ -2611,7 +2960,6 @@ pub fn core_type_env(env: &mut TypeEnv) {
             kind_vars: Vec::new(),
             doc: None,
             inner_schemes: None,
-            param_narrowings: Vec::new(),
         },
     );
     // builtin-par-filter: ∀a. (a → Bool) → Seq(a) → Seq(a)
@@ -2641,7 +2989,6 @@ pub fn core_type_env(env: &mut TypeEnv) {
             kind_vars: Vec::new(),
             doc: None,
             inner_schemes: None,
-            param_narrowings: Vec::new(),
         },
     );
     // builtin-signal-channel: Top → Top
@@ -3130,12 +3477,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
     // All comparison builtins: Top → Top → Bool
     // Using Top inputs: builtin-lt is called with String, Bool args by Comparable instances.
     // Number would incorrectly reject those calls during prelude type-checking.
-    for name in [
-        "builtin-lt",
-        "builtin-gt",
-        "builtin-lte",
-        "builtin-gte",
-    ] {
+    for name in ["builtin-lt", "builtin-gt", "builtin-lte", "builtin-gte"] {
         env.insert(
             name.to_string(),
             Type::Function {
@@ -3822,11 +4164,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
     env.insert(
         "if".to_string(),
         Type::Function {
-            params: vec![
-                (None, Type::Int),
-                (None, Type::Any),
-                (None, Type::Any),
-            ],
+            params: vec![(None, Type::Int), (None, Type::Any), (None, Type::Any)],
             ret: Box::new(Type::Any),
             variadic: false,
             required_count: 3,
@@ -3843,6 +4181,56 @@ pub fn core_type_env(env: &mut TypeEnv) {
             required_count: 1,
         },
     );
+
+    // ── Capability stubs — injected by the loader at runtime ───────────────────
+    // %prelude is the prelude environment injected by the loader before prelude loads.
+    // The type checker must see it as a valid name to avoid "undefined variable" warnings
+    // in prelude code that references it.
+    env.insert("%prelude".to_string(), Type::Any);
+
+    // ── Missing builtins — registered in core_builtins but not previously in type env ──
+    // These all use Any for gradual typing; they exist at runtime and the type checker
+    // must be able to see them as callable names.
+    for name in [
+        "builtin-dict-has-nth?",
+        "builtin-dict-has-key-nth?",
+        "builtin-dict-has-kv-nth?",
+        "builtin-file-open",
+        "builtin-file-close",
+        "builtin-file-read",
+        "builtin-file-write",
+        "builtin-file-seek",
+        "builtin-file-flush",
+        "builtin-extend-env",
+        "builtin-eval-macro-ast",
+    ] {
+        env.insert(
+            name.to_string(),
+            Type::Function {
+                params: vec![(None, Type::Any)],
+                ret: Box::new(Type::Any),
+                variadic: true,
+                required_count: 0,
+            },
+        );
+    }
+
+    // ── Operator stubs — used in prelude but dispatched via typeclass instances ───
+    // The type checker processes prelude dicts sequentially and cannot see typeclass-
+    // dispatched operators (=, <, etc.) that are defined in later dicts. Adding stubs
+    // here lets the type checker see them as callable without false "undefined variable"
+    // errors. The runtime always uses the correct typeclass-dispatched implementations.
+    for name in ["=", "!=", "<", ">", "<=", ">="] {
+        env.insert(
+            name.to_string(),
+            Type::Function {
+                params: vec![(None, Type::Any), (None, Type::Any)],
+                ret: Box::new(Type::Any),
+                variadic: false,
+                required_count: 2,
+            },
+        );
+    }
 
     // ── builtin-proxy ─────────────────────────────────────────────────────────
     // builtin-proxy: (Str → Top) → Proxy

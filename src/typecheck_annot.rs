@@ -1,4 +1,5 @@
 //! Type annotation resolution and type expression parsing.
+#![allow(dead_code)]
 
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -10,7 +11,7 @@ use crate::rust_span;
 use crate::type_class::ConstraintArg;
 use crate::type_def::TyConDef;
 use crate::type_def::Variance;
-use crate::type_errors::{GenericTypeError, TypeErrorTyped, UndefinedType};
+use crate::type_errors::{GenericTypeError, TypeErrorTyped};
 use crate::types::{Constraint, InferState, Kind, Row, Type, TypeEnv, TypeError};
 use crate::value::{HashableValue, Thunk, Value};
 
@@ -22,6 +23,7 @@ use crate::value::{HashableValue, Thunk, Value};
 ///
 /// Returns `Some(v)` for known variance names, `None` for everything else
 /// (which is then checked against ClassEnv as a typeclass constraint).
+#[allow(dead_code)]
 pub(crate) fn annotation_to_variance(name: &str) -> Option<Variance> {
     match name {
         "Covariant" => Some(Variance::Covariant),
@@ -33,6 +35,7 @@ pub(crate) fn annotation_to_variance(name: &str) -> Option<Variance> {
 }
 
 /// Polarity context for variance analysis (T-952, Dolan 2017 §4).
+#[allow(dead_code)]
 #[derive(Clone, Copy)]
 enum Polarity {
     Positive,
@@ -57,8 +60,9 @@ impl Polarity {
 /// - Appears in both → Invariant
 /// - Never appears → Phantom
 ///
-/// `params` are the FRESH TypeVar names (e.g., `_t0`, `_t1`) that params were remapped to.
+/// `params` are the FRESH TypeVar names (e.g., `?a₀`, `?b₁`) that params were remapped to.
 /// Called after alias body resolution so we operate on real `Type` values.
+#[allow(dead_code)]
 pub(crate) fn infer_variance(body: &Type, params: &[String], type_env: &TypeEnv) -> Vec<Variance> {
     let n = params.len();
     let mut pos_seen = vec![false; n];
@@ -304,8 +308,7 @@ pub(crate) async fn resolve_type_assert(
     .map_err(|e| vec![e])?;
 
     // Use checking mode for TypeAssert inner expression (doc/06 §Bidirectional Typing).
-    let check_result =
-        check_surface_expr(inner, &expected, env, state, constraints, type_map).await;
+    let check_result = check_surface_expr(inner, &expected, env, state, type_map);
 
     // If checking fails, propagate errors (TypeAssert failures are hard type errors).
     if let Err(type_errors) = check_result {
@@ -317,7 +320,7 @@ pub(crate) async fn resolve_type_assert(
 
     // Validate the default value type — hard error if the default cannot satisfy the asserted type.
     if let Some(default_node) = annotation.node.get_property("default") {
-        match infer_surface_expr(default_node, env, state, constraints, type_map).await {
+        match infer_surface_expr(default_node, env, state, type_map) {
             Ok(default_ty) => {
                 // Apply type_vars bindings to both types before comparison — access-chain constraints
                 // may have bound TypeVars (e.g., $data.name generates row-variable
@@ -328,21 +331,18 @@ pub(crate) async fn resolve_type_assert(
                 } else {
                     (state.apply(&default_ty), state.apply(&expected))
                 };
-                let passes =
-                    Type::is_subtype(&default_ty, &expected_resolved, Some(&state.tycon_env))
-                        || ((contains_unknown_or_top(&default_ty)
-                            || contains_unknown_or_top(&expected_resolved))
-                            && Type::is_consistent(&default_ty, &expected_resolved));
+                let passes = Type::is_subtype(&default_ty, &expected_resolved, None)
+                    || ((contains_unknown_or_top(&default_ty)
+                        || contains_unknown_or_top(&expected_resolved))
+                        && Type::is_consistent(&default_ty, &expected_resolved));
                 if !passes {
-                    return Err(vec![TypeErrorTyped::Generic(GenericTypeError {
-                        message: format!(
+                    return Err(vec![TypeError::new(
+                        format!(
                             "default value type mismatch: default has type {default_ty}, \
                              but assertion expects {expected_resolved}"
                         ),
-                        span: default_node.span.clone(),
-                        notes: vec![],
-                        call_stack: vec![],
-                    })]);
+                        default_node.span.clone(),
+                    )]);
                 }
             }
             Err(errs) => {
@@ -359,28 +359,24 @@ pub(crate) async fn resolve_type_assert(
         if let SurfaceExpression::Str(ref repr_val) = repr_node.expr {
             const VALID_REPRS: &[&str] = &["u8", "i8", "u16", "i16", "u32", "i32", "u64", "i64"];
             if !VALID_REPRS.contains(&repr_val.as_str()) {
-                return Err(vec![TypeErrorTyped::Generic(GenericTypeError {
-                    message: format!(
+                return Err(vec![TypeError::new(
+                    format!(
                         "invalid repr: \"{repr_val}\" — must be one of: {}",
                         VALID_REPRS.join(", ")
                     ),
-                    span: repr_node.span.clone(),
-                    notes: vec![],
-                    call_stack: vec![],
-                })]);
+                    repr_node.span.clone(),
+                )]);
             }
             // Check consistency: repr requires a numeric type (Int or Float)
             let is_numeric = matches!(&expected, Type::Int | Type::Float);
             if !is_numeric {
-                return Err(vec![TypeErrorTyped::Generic(GenericTypeError {
-                    message: format!(
+                return Err(vec![TypeError::new(
+                    format!(
                         "repr: \"{repr_val}\" requires a numeric type, but annotation declares {}",
                         expected
                     ),
-                    span: repr_node.span.clone(),
-                    notes: vec![],
-                    call_stack: vec![],
-                })]);
+                    repr_node.span.clone(),
+                )]);
             }
         }
     }
@@ -487,7 +483,7 @@ pub(crate) async fn resolve_fn_metadata(
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
     type_params_scope: Option<(&HashMap<String, crate::types::Type>, bool)>,
-) -> Result<(Type, Option<String>), TypeError> {
+) -> Result<(Type, Option<String>), TypeErrorTyped> {
     let mut return_type: Option<Type> = None;
     let mut doc_string: Option<String> = None;
 
@@ -529,10 +525,14 @@ pub(crate) async fn resolve_fn_metadata(
                                             }));
                                         }
                                         // Create fresh TypeVar and register in ann_mapping
-                                        let n = state.name_counter;
-                                        let fresh = format!("_t{}", n);
-                                        state.name_counter = n.saturating_add(1);
-                                        state.set_level(fresh.clone(), state.level);
+                                        let level = state.level;
+                                        let (fresh, _) = state.alloc_type_var_at_level(
+                                            level,
+                                            Some(name.as_str()),
+                                            None,
+                                            None,
+                                            crate::types::Kind::Type,
+                                        );
                                         // Register source name for better T013 diagnostics
                                         state
                                             .type_var_source_names
@@ -620,10 +620,14 @@ pub(crate) async fn resolve_fn_metadata(
                                         notes: vec![], call_stack: vec![],
                                     }));
                                 }
-                                let n = state.name_counter;
-                                let fresh = format!("_t{}", n);
-                                state.name_counter = n.saturating_add(1);
-                                state.set_level(fresh.clone(), state.level);
+                                let level = state.level;
+                                let (fresh, _) = state.alloc_type_var_at_level(
+                                    level,
+                                    Some(name),
+                                    None,
+                                    None,
+                                    crate::types::Kind::Type,
+                                );
                                 // Register source name for better T013 diagnostics
                                 state
                                     .type_var_source_names
@@ -794,10 +798,14 @@ pub(crate) async fn resolve_fn_metadata(
                                     if let Some(existing_var) = mapping.get(&typevar_name) {
                                         existing_var.clone()
                                     } else {
-                                        let n = state.name_counter;
-                                        let fresh = format!("_t{}", n);
-                                        state.name_counter = n.saturating_add(1);
-                                        state.set_level(fresh.clone(), state.level);
+                                        let level = state.level;
+                                        let (fresh, _) = state.alloc_type_var_at_level(
+                                            level,
+                                            Some(typevar_name.as_str()),
+                                            None,
+                                            None,
+                                            crate::types::Kind::Type,
+                                        );
                                         // Register source name for better T013 diagnostics
                                         state
                                             .type_var_source_names
@@ -823,7 +831,7 @@ pub(crate) async fn resolve_fn_metadata(
                                         // Single class: [a: Comparable]
                                         // Unknown class names are deferred — instance resolution
                                         // will report an error if no instance satisfies the constraint.
-                                        state.add_constraint(
+                                        state.add_constraint_to(
                                             constraints,
                                             name.clone(),
                                             type_var.clone(),
@@ -880,7 +888,7 @@ pub(crate) async fn resolve_fn_metadata(
                                             match &class_entry.node.value.expr {
                                                 SurfaceExpression::VarRef { name, .. } => {
                                                     // Unknown class names deferred to instance resolution.
-                                                    state.add_constraint(
+                                                    state.add_constraint_to(
                                                         constraints,
                                                         name.clone(),
                                                         type_var.clone(),
@@ -954,7 +962,7 @@ pub(crate) async fn resolve_fn_metadata(
                                             };
                                         for (name, _name_span) in class_names {
                                             // Unknown class names deferred to instance resolution.
-                                            state.add_constraint(
+                                            state.add_constraint_to(
                                                 constraints,
                                                 name.to_string(),
                                                 type_var.clone(),
@@ -1249,11 +1257,10 @@ async fn resolve_fn_type(
                 // B-355: fn@[only-custom-keys: val] was previously misinterpreted as a
                 // return type because has_fn_key was false; now all_keyed triggers this path.
                 if !all_keyed {
-                    return Err(TypeErrorTyped::Generic(GenericTypeError {
-                        message: "fn annotation must use either named keys (return:, constraint:, doc:, bind:, kinds:) or positional entries (union return type), not both".to_string(),
+                    return Err(TypeError::new(
+                        "fn annotation must use either named keys (return:, constraint:, doc:, bind:, kinds:) or positional entries (union return type), not both",
                         span,
-                        notes: vec![], call_stack: vec![],
-                    }));
+                    ));
                 }
                 let (ret, _doc) = resolve_fn_metadata(
                     surface_entries,
@@ -1525,14 +1532,10 @@ pub(crate) async fn resolve_annotation(
                             ))
                             .await
                         }
-                        _ => Err(TypeErrorTyped::Generic(GenericTypeError {
-                            message:
-                                "Record parameterization requires a dict: @Record@[field: Type ...]"
-                                    .to_string(),
+                        _ => Err(TypeError::new(
+                            "Record parameterization requires a dict: @Record@[field: Type ...]",
                             span,
-                            notes: vec![],
-                            call_stack: vec![],
-                        })),
+                        )),
                     }
                 }
                 "Handle" => {
@@ -1588,12 +1591,10 @@ pub(crate) async fn resolve_annotation(
                         }
                     }
                     // Unknown parameterized type — no TyConDef found
-                    Err(TypeErrorTyped::Generic(GenericTypeError {
-                        message: format!("unknown parameterized type: {}", name),
+                    Err(TypeError::new(
+                        format!("unknown parameterized type: {}", name),
                         span,
-                        notes: vec![],
-                        call_stack: vec![],
-                    }))
+                    ))
                 }
             }
         }
@@ -1684,21 +1685,19 @@ pub(crate) async fn resolve_annotation(
                 // 2. The identifier must start with a lowercase letter (label TypeVars are
                 //    lowercase by convention, mirroring type-kind TypeVars).
                 match &label_value_node.expr {
-                    SurfaceExpression::Str(_) => Err(TypeErrorTyped::Generic(GenericTypeError {
-                        message: "label: value must be a bare name (e.g. `label: l`), not a string literal".to_string(),
+                    SurfaceExpression::Str(_) => Err(TypeError::new(
+                        "label: value must be a bare name (e.g. `label: l`), not a string literal",
                         span,
-                        notes: vec![], call_stack: vec![],
-                    })),
+                    )),
                     SurfaceExpression::VarRef { name, .. } => {
                         if name.starts_with(|c: char| c.is_uppercase()) {
-                            Err(TypeErrorTyped::Generic(GenericTypeError {
-                                message: format!(
+                            Err(TypeError::new(
+                                format!(
                                     "label: value must be a lowercase type variable name (e.g. `label: l`), got '{}'",
                                     name
                                 ),
                                 span,
-                                notes: vec![], call_stack: vec![],
-                            }))
+                            ))
                         } else {
                             // Valid lowercase label name: create a Label-kinded TypeVar.
                             // If we're inside a function scope (ann_mapping is Some), reuse the
@@ -1708,20 +1707,20 @@ pub(crate) async fn resolve_annotation(
                                 if let Some(existing_var) = mapping.get(name.as_str()) {
                                     existing_var.clone()
                                 } else {
-                                    let n = state.name_counter;
+                                    let level = state.level;
+                                    let n = state.alloc_counter("", "label");
                                     let v = format!("_label_{}", n);
-                                    state.name_counter = n.saturating_add(1);
-                                    state.set_level(v.clone(), state.level);
+                                    state.set_level(v.clone(), level);
                                     state.set_kind(v.clone(), Kind::Label);
                                     state.type_var_source_names.insert(v.clone(), name.clone());
                                     mapping.insert(name.clone(), v.clone());
                                     v
                                 }
                             } else {
-                                let n = state.name_counter;
+                                let level = state.level;
+                                let n = state.alloc_counter("", "label");
                                 let v = format!("_label_{}", n);
-                                state.name_counter = n.saturating_add(1);
-                                state.set_level(v.clone(), state.level);
+                                state.set_level(v.clone(), level);
                                 state.set_kind(v.clone(), Kind::Label);
                                 v
                             };
@@ -1731,11 +1730,10 @@ pub(crate) async fn resolve_annotation(
                             Ok(Type::TypeVar(fresh, current_level))
                         }
                     }
-                    _ => Err(TypeErrorTyped::Generic(GenericTypeError {
-                        message: "label: value must be a bare name (e.g. `label: l`)".to_string(),
+                    _ => Err(TypeError::new(
+                        "label: value must be a bare name (e.g. `label: l`)",
                         span,
-                        notes: vec![], call_stack: vec![],
-                    })),
+                    )),
                 }
             } else {
                 // No "type:" key (or has non-metadata keys) — treat as structural type or metadata.
@@ -1910,28 +1908,24 @@ async fn instantiate_tycon_def(
                         }
                         Ok(None) => {
                             let constraint_label = origin_name.as_deref().unwrap_or(&class.name);
-                            return Err(TypeErrorTyped::Generic(GenericTypeError {
-                                message: format!(
+                            return Err(TypeError::new(
+                                format!(
                                     "type argument `{arg_type}` does not satisfy constraint \
                                      `{constraint_label}` — no instance found for class `{}`",
                                     class.name
                                 ),
-                                span: error_span,
-                                notes: vec![],
-                                call_stack: vec![],
-                            }));
+                                error_span,
+                            ));
                         }
                         Err(ambiguity_msg) => {
-                            return Err(TypeErrorTyped::Generic(GenericTypeError {
-                                message: format!(
+                            return Err(TypeError::new(
+                                format!(
                                     "ambiguous instances for constraint `{}` with type \
                                      argument `{arg_type}`: {ambiguity_msg}",
                                     class.name
                                 ),
-                                span: error_span,
-                                notes: vec![],
-                                call_stack: vec![],
-                            }));
+                                error_span,
+                            ));
                         }
                     }
                 }
@@ -2126,16 +2120,14 @@ pub(crate) fn resolve_type_name_with_guard(
 
         // Check arity
         if !alias.params.is_empty() {
-            return Err(TypeErrorTyped::Generic(GenericTypeError {
-                message: format!(
+            return Err(TypeError::new(
+                format!(
                     "type alias '{}' expects {} type parameter(s), got 0",
                     name,
                     alias.params.len()
                 ),
                 span,
-                notes: vec![],
-                call_stack: vec![],
-            }));
+            ));
         }
 
         // Add to recursion guard
@@ -2162,10 +2154,9 @@ pub(crate) fn resolve_type_name_with_guard(
         // T-1197: Class name used in annotation position in a recursive/guarded context.
         // Mirrors the same logic in resolve_type_name so both lookup paths handle class
         // names consistently. See resolve_type_name for the full rationale.
-        let n = state.name_counter;
-        let fresh = format!("_t{}", n);
-        state.name_counter = n.saturating_add(1);
-        state.set_level(fresh.clone(), state.level);
+        let level = state.level;
+        let (fresh, _) =
+            state.alloc_type_var_at_level(level, Some(name), None, None, crate::types::Kind::Type);
         // Construct the Constraint::Class that @C should produce in this guarded path.
         // resolve_type_name_with_guard does not carry a constraints parameter (unlike
         // resolve_type_name), so we cannot push it to the caller's constraint vec. A local
@@ -2184,12 +2175,7 @@ pub(crate) fn resolve_type_name_with_guard(
         // TODO(T-1206): thread _local_constraints into caller via constraints parameter
         Ok(Type::TypeVar(fresh, state.level))
     } else {
-        Err(TypeErrorTyped::UndefinedType(UndefinedType {
-            name: name.to_string(),
-            span,
-            notes: vec![],
-            call_stack: vec![],
-        }))
+        Err(TypeError::new(format!("undefined type: {}", name), span))
     }
 }
 
@@ -2207,28 +2193,27 @@ pub(crate) fn resolve_type_name(
     match name {
         "Int" => Ok(Type::Int),
         "Float" => Ok(Type::Float),
-        "String" | "Str" => Ok(Type::Str),
+        "String" => Ok(Type::Str),
         "Bytes" => Ok(Type::Bytes),
         "Any" => Ok(Type::Any),
         "Proxy" => Ok(Type::Proxy),
         // BAS type names
         "Never" => Ok(Type::Never),
         "Unknown" => Ok(Type::Unknown),
-        "Operator" => Err(TypeErrorTyped::Generic(GenericTypeError {
-            message: "Operator is a kind, not a type — annotate a class type parameter as `f@Operator`, not a value expression".to_string(),
+        "Operator" => Err(TypeError::new(
+            "Operator is a kind, not a type — annotate a class type parameter as `f@Operator`, not a value expression",
             span,
-            notes: vec![], call_stack: vec![],
-        })),
+        )),
         "Label" => {
             // Anonymous Label-kinded TypeVar (parallel to `@Operator` error above).
             // Create a fresh system-generated name like `_label_0`.
             // This is for when the label TypeVar is not referenced elsewhere (e.g., `get`/`get-or`).
-            let n = state.name_counter;
+            let level = state.level;
+            let n = state.alloc_counter("", "label");
             let fresh = format!("_label_{}", n);
-            state.name_counter = n.saturating_add(1);
-            state.set_level(fresh.clone(), state.level);
+            state.set_level(fresh.clone(), level);
             state.set_kind(fresh.clone(), crate::types::Kind::Label);
-            Ok(Type::TypeVar(fresh, state.level))
+            Ok(Type::TypeVar(fresh, level))
         }
         // Bare @Handle — no capability row argument. Resolves to Handle(Unknown),
         // which is the gradual "any handle" type. This is correct for unannotated
@@ -2303,15 +2288,14 @@ pub(crate) fn resolve_type_name(
                     if strict && !in_params && !params.contains_key(name) {
                         // Name not declared as a type parameter — check if it's a scope reference.
                         if env.lookup_tycon_def(name).is_none() {
-                            return Err(TypeErrorTyped::Generic(GenericTypeError {
-                                message: format!(
+                            return Err(TypeError::new(
+                                format!(
                                     "undefined name '{name}' in type alias body — \
                                      lowercase names must be declared as type parameters \
                                      with [let ...] or must refer to a type in scope"
                                 ),
                                 span,
-                                notes: vec![], call_stack: vec![],
-                            }));
+                            ));
                         }
                         // It's a scope reference — fall through to normal resolution.
                     }
@@ -2330,14 +2314,13 @@ pub(crate) fn resolve_type_name(
                     .is_some_and(|m| m.contains_key(name));
                 let in_ann = ann_mapping.as_ref().is_some_and(|m| m.contains_key(name));
                 if in_row && !in_ann {
-                    return Err(TypeErrorTyped::Generic(GenericTypeError {
-                        message: format!(
+                    return Err(TypeError::new(
+                        format!(
                             "annotation name '{name}' is already used as a row variable in this function; \
                              it cannot also be used as a type variable"
                         ),
                         span,
-                        notes: vec![], call_stack: vec![],
-                    }));
+                    ));
                 }
 
                 // If we have an annotation mapping (within a function), check if this
@@ -2354,14 +2337,18 @@ pub(crate) fn resolve_type_name(
                         Ok(Type::TypeVar(existing_var.clone(), current_level))
                     } else {
                         // First time seeing this annotation: create fresh var and register level
-                        let n = state.name_counter;
-                        let fresh = format!("_t{}", n);
-                        state.name_counter = n.saturating_add(1);
-                        state.set_level(fresh.clone(), state.level);
+                        let level = state.level;
+                        let (fresh, fresh_ty) = state.alloc_type_var_at_level(
+                            level,
+                            Some(name),
+                            None,
+                            None,
+                            crate::types::Kind::Type,
+                        );
                         // Register source name for better T013 diagnostics
                         state.type_var_source_names.insert(fresh.clone(), name.to_string());
-                        mapping.insert(name.to_string(), fresh.clone());
-                        Ok(Type::TypeVar(fresh, state.level))
+                        mapping.insert(name.to_string(), fresh);
+                        Ok(fresh_ty)
                     }
                 } else {
                     // Outside of function scope: create a genuinely fresh type variable so
@@ -2388,15 +2375,10 @@ pub(crate) fn resolve_type_name(
 
                     // Check arity — bare alias name must have zero parameters for non-ADT aliases.
                     if !alias.params.is_empty() {
-                        return Err(TypeErrorTyped::Generic(GenericTypeError {
-                            message: format!(
-                                "type alias '{}' expects {} type parameter(s), got 0",
-                                name,
-                                alias.params.len()
-                            ),
+                        return Err(TypeError::new(
+                            format!("type alias '{}' expects {} type parameter(s), got 0", name, alias.params.len()),
                             span,
-                            notes: vec![], call_stack: vec![],
-                        }));
+                        ));
                     }
 
                     // Non-nominal zero-parameter alias: return the body directly.
@@ -2414,24 +2396,24 @@ pub(crate) fn resolve_type_name(
                     // Each occurrence of @C creates an independent fresh TypeVar — class names are
                     // not in the type variable namespace (unlike lowercase annotation names such as
                     // @a which are deduplicated via ann_mapping). Two parameters x@Comparable and
-                    // y@Comparable get distinct TypeVars _tN and _tM, each independently constrained.
-                    let n = state.name_counter;
-                    let fresh = format!("_t{}", n);
-                    state.name_counter = n.saturating_add(1);
-                    state.set_level(fresh.clone(), state.level);
+                    // y@Comparable get distinct TypeVars ?N and ?M, each independently constrained.
+                    let level = state.level;
+                    let (fresh, fresh_ty) = state.alloc_type_var_at_level(
+                        level,
+                        Some(name),
+                        None,
+                        None,
+                        crate::types::Kind::Type,
+                    );
                     constraints.push(Constraint::Class {
                         class: Arc::new(class_decl),
-                        vars: vec![ConstraintArg::Var(fresh.clone())],
+                        vars: vec![ConstraintArg::Var(fresh)],
                         origin_name: None,
                         origin_span: Some(span),
                     });
-                    Ok(Type::TypeVar(fresh, state.level))
+                    Ok(fresh_ty)
                 } else {
-                    Err(TypeErrorTyped::UndefinedType(UndefinedType {
-                        name: name.to_string(),
-                        span,
-                        notes: vec![], call_stack: vec![],
-                    }))
+                    Err(TypeError::new(format!("undefined type: {}", name), span))
                 }
             }
         }
@@ -2457,15 +2439,13 @@ fn expand_alias_body_guarded(
     // Depth guard (Amadio & Cardelli 1993)
     const MAX_ALIAS_DEPTH: usize = 256;
     if depth >= MAX_ALIAS_DEPTH {
-        return Err(TypeErrorTyped::Generic(GenericTypeError {
-            message: format!(
+        return Err(TypeError::new(
+            format!(
                 "recursive type alias '{}' exceeds maximum unfolding depth ({})",
                 current_alias, MAX_ALIAS_DEPTH
             ),
             span,
-            notes: vec![],
-            call_stack: vec![],
-        }));
+        ));
     }
 
     // Add current alias to guard
@@ -2629,15 +2609,13 @@ pub(crate) async fn resolve_type_expr_with_guard(
 ) -> Result<Type, TypeError> {
     const MAX_ALIAS_DEPTH: usize = 256;
     if depth >= MAX_ALIAS_DEPTH {
-        return Err(TypeErrorTyped::Generic(GenericTypeError {
-            message: format!(
+        return Err(TypeError::new(
+            format!(
                 "recursive type alias '{}' exceeds maximum unfolding depth ({})",
                 current_alias, MAX_ALIAS_DEPTH
             ),
-            span: node.span.clone(),
-            notes: vec![],
-            call_stack: vec![],
-        }));
+            node.span.clone(),
+        ));
     }
 
     match &node.expr {
@@ -2714,12 +2692,10 @@ async fn resolve_type_dict_with_guard(
             if kw == "or" {
                 // [or T1 T2 ...] → Union([T1, T2, ...])
                 if entries.len() < 2 {
-                    return Err(TypeErrorTyped::Generic(GenericTypeError {
-                        message: "[or ...] requires at least one type argument".to_string(),
+                    return Err(TypeError::new(
+                        "[or ...] requires at least one type argument",
                         span,
-                        notes: vec![],
-                        call_stack: vec![],
-                    }));
+                    ));
                 }
                 let mut members = Vec::new();
                 for entry in &entries[1..] {
@@ -2742,12 +2718,10 @@ async fn resolve_type_dict_with_guard(
             } else if kw == "all" {
                 // [all T1 T2 ...] → Intersection([T1, T2, ...])
                 if entries.len() < 2 {
-                    return Err(TypeErrorTyped::Generic(GenericTypeError {
-                        message: "[all ...] requires at least one type argument".to_string(),
+                    return Err(TypeError::new(
+                        "[all ...] requires at least one type argument",
                         span,
-                        notes: vec![],
-                        call_stack: vec![],
-                    }));
+                    ));
                 }
                 let mut members = Vec::new();
                 for entry in &entries[1..] {
@@ -2770,12 +2744,10 @@ async fn resolve_type_dict_with_guard(
             } else if kw == "without" {
                 // [without A] → Negation(A)
                 if entries.len() != 2 {
-                    return Err(TypeErrorTyped::Generic(GenericTypeError {
-                        message: "[without A] requires exactly one type argument".to_string(),
+                    return Err(TypeError::new(
+                        "[without A] requires exactly one type argument",
                         span,
-                        notes: vec![],
-                        call_stack: vec![],
-                    }));
+                    ));
                 }
                 let inner = Box::pin(resolve_type_expr_with_guard(
                     &entries[1].node.value,
@@ -2821,12 +2793,10 @@ async fn resolve_type_dict_with_guard(
                     // Annotation is now on VarRef directly; use the name field.
                     SurfaceExpression::VarRef { name, .. } => name.clone(),
                     _ => {
-                        return Err(TypeErrorTyped::Generic(GenericTypeError {
-                            message: "type record keys must be bare words".to_string(),
-                            span: k.span.clone(),
-                            notes: vec![],
-                            call_stack: vec![],
-                        }))
+                        return Err(TypeError::new(
+                            "type record keys must be bare words",
+                            k.span.clone(),
+                        ))
                     }
                 },
                 None => {
@@ -3148,14 +3118,13 @@ pub(crate) async fn resolve_type_expr(
                         }
                     }
                     if args.len() > 1 {
-                        return Err(TypeErrorTyped::Generic(GenericTypeError {
-                            message: format!(
+                        return Err(TypeError::new(
+                            format!(
                                 "function type [Fn@Return [Params]] requires exactly 2 entries, got {}",
                                 1 + args.len()
                             ),
-                            span: node.span.clone(),
-                            notes: vec![], call_stack: vec![],
-                        }));
+                            node.span.clone(),
+                        ));
                     }
                     let required_count = params.len();
                     return Ok(Type::Function {
@@ -3179,12 +3148,10 @@ pub(crate) async fn resolve_type_expr(
                 if kw == "or" {
                     // args contains the type arguments; func ("or") is the head, not a type.
                     if args.is_empty() {
-                        return Err(TypeErrorTyped::Generic(GenericTypeError {
-                            message: "[or ...] requires at least one type argument".to_string(),
-                            span: node.span.clone(),
-                            notes: vec![],
-                            call_stack: vec![],
-                        }));
+                        return Err(TypeError::new(
+                            "[or ...] requires at least one type argument",
+                            node.span.clone(),
+                        ));
                     }
                     let mut members = Vec::new();
                     for arg in args.iter() {
@@ -3204,12 +3171,10 @@ pub(crate) async fn resolve_type_expr(
                 } else if kw == "all" {
                     // args contains the type arguments; func ("all") is the head, not a type.
                     if args.is_empty() {
-                        return Err(TypeErrorTyped::Generic(GenericTypeError {
-                            message: "[all ...] requires at least one type argument".to_string(),
-                            span: node.span.clone(),
-                            notes: vec![],
-                            call_stack: vec![],
-                        }));
+                        return Err(TypeError::new(
+                            "[all ...] requires at least one type argument",
+                            node.span.clone(),
+                        ));
                     }
                     let mut members = Vec::new();
                     for arg in args.iter() {
@@ -3228,12 +3193,10 @@ pub(crate) async fn resolve_type_expr(
                     return Ok(Type::normalize_intersection(members));
                 } else if kw == "without" {
                     if args.len() != 1 {
-                        return Err(TypeErrorTyped::Generic(GenericTypeError {
-                            message: "[without A] requires exactly one type argument".to_string(),
-                            span: node.span.clone(),
-                            notes: vec![],
-                            call_stack: vec![],
-                        }));
+                        return Err(TypeError::new(
+                            "[without A] requires exactly one type argument",
+                            node.span.clone(),
+                        ));
                     }
                     let inner = Box::pin(resolve_type_expr(
                         &args[0],
@@ -3299,21 +3262,20 @@ pub(crate) async fn resolve_type_expr(
 
                     // Check arity
                     if type_args.len() != alias.params.len() {
-                        return Err(TypeErrorTyped::Generic(GenericTypeError {
-                            message: format!(
+                        return Err(TypeError::new(
+                            format!(
                                 "type alias '{}' expects {} type parameter(s), got {}",
                                 name,
                                 alias.params.len(),
                                 type_args.len()
                             ),
-                            span: node.span.clone(),
-                            notes: vec![],
-                            call_stack: vec![],
-                        }));
+                            node.span.clone(),
+                        ));
                     }
 
                     // Build substitution and apply to body
-                    return Box::pin(instantiate_tycon_def(alias, &type_args, state)).await;
+                    return Box::pin(instantiate_tycon_def(alias.as_ref(), &type_args, state))
+                        .await;
                 }
             }
 
@@ -3321,8 +3283,8 @@ pub(crate) async fn resolve_type_expr(
             // Check if func is an uppercase VarRef (nominal constructor name).
             // Builtin type names (Int, Float, etc.) must NOT be treated as NominalVariant.
             if let SurfaceExpression::VarRef { name, .. } = &func.expr {
-                let is_builtin = state
-                    .tycon_env
+                let _tycon_env_ref = state.tycon_env_ref();
+                let is_builtin = _tycon_env_ref
                     .get(name)
                     .is_some_and(|def| def.builtin_type.is_some());
                 if crate::eval::is_constructor_name(name) && !is_builtin {
@@ -3461,14 +3423,13 @@ pub(crate) async fn resolve_type_expr(
                                 },
                             });
                         } else {
-                            return Err(TypeErrorTyped::Generic(GenericTypeError {
-                                message: format!(
+                            return Err(TypeError::new(
+                                format!(
                                     "nominal constructor {} requires either 0 args, 1 positional arg, or named/annotated payload fields",
                                     name
                                 ),
-                                span: node.span.clone(),
-                                notes: vec![], call_stack: vec![],
-                            }));
+                                node.span.clone(),
+                            ));
                         }
                     } else {
                         // No payload: all named_args are constants, no annotated positionals.
@@ -3533,19 +3494,15 @@ pub(crate) async fn resolve_type_expr(
                 }
             }
 
-            Err(TypeErrorTyped::Generic(GenericTypeError {
-                message: format!("invalid type expression in annotation: {:?}", node.expr),
-                span: node.span.clone(),
-                notes: vec![],
-                call_stack: vec![],
-            }))
+            Err(TypeError::new(
+                format!("invalid type expression in annotation: {:?}", node.expr),
+                node.span.clone(),
+            ))
         }
-        _ => Err(TypeErrorTyped::Generic(GenericTypeError {
-            message: format!("invalid type expression in annotation: {:?}", node.expr),
-            span: node.span.clone(),
-            notes: vec![],
-            call_stack: vec![],
-        })),
+        _ => Err(TypeError::new(
+            format!("invalid type expression in annotation: {:?}", node.expr),
+            node.span.clone(),
+        )),
     }
 }
 
@@ -3597,17 +3554,15 @@ pub(crate) async fn resolve_type_dict(
                         } else if arity > 0 {
                             // Collect argument types from subsequent positional entries.
                             if entries.len() < 1 + arity {
-                                return Err(TypeErrorTyped::Generic(GenericTypeError {
-                                    message: format!(
+                                return Err(TypeError::new(
+                                    format!(
                                         "type constructor '{}' requires {} argument(s), got {}",
                                         name,
                                         arity,
                                         entries.len() - 1
                                     ),
                                     span,
-                                    notes: vec![],
-                                    call_stack: vec![],
-                                }));
+                                ));
                             }
                             let mut args = Vec::with_capacity(arity);
                             for entry in entries.iter().take(arity + 1).skip(1) {
@@ -3675,27 +3630,24 @@ pub(crate) async fn resolve_type_dict(
                             // Note: Seq/Map/Handle are caught by the TyConDef path above and
                             // never reach here (T-1021/T-1018).
                             if args.len() != 1 {
-                                return Err(TypeErrorTyped::Generic(GenericTypeError {
-                                    message: format!(
+                                return Err(TypeError::new(
+                                    format!(
                                         "type constructor `{name}` requires 1 type argument, got {}",
                                         args.len()
                                     ),
                                     span,
-                                    notes: vec![], call_stack: vec![],
-                                }));
+                                ));
                             }
                             let a_type = args.into_iter().next().unwrap();
                             if let Type::Operator(op_name) = &a_type {
-                                return Err(TypeErrorTyped::Generic(GenericTypeError {
-                                    message: format!(
+                                return Err(TypeError::new(
+                                    format!(
                                         "kind mismatch: type constructor `{name}` cannot be \
                                          applied to another type constructor `{op_name}`; \
                                          use a concrete type instead"
                                     ),
                                     span,
-                                    notes: vec![],
-                                    call_stack: vec![],
-                                }));
+                                ));
                             }
                             return Ok(Type::App(
                                 Box::new(Type::Operator(name.clone())),
@@ -3722,15 +3674,13 @@ pub(crate) async fn resolve_type_dict(
                             let mut type_args = Vec::new();
                             for entry in &entries[1..] {
                                 if entry.node.key.is_some() {
-                                    return Err(TypeErrorTyped::Generic(GenericTypeError {
-                                        message: format!(
+                                    return Err(TypeError::new(
+                                        format!(
                                             "unexpected keyed entry in type alias application '{}'",
                                             name
                                         ),
-                                        span: entry.span.clone(),
-                                        notes: vec![],
-                                        call_stack: vec![],
-                                    }));
+                                        entry.span.clone(),
+                                    ));
                                 }
                                 type_args.push(
                                     resolve_type_expr(
@@ -3746,19 +3696,22 @@ pub(crate) async fn resolve_type_dict(
                                 );
                             }
                             if type_args.len() != alias.params.len() {
-                                return Err(TypeErrorTyped::Generic(GenericTypeError {
-                                    message: format!(
+                                return Err(TypeError::new(
+                                    format!(
                                         "type alias '{}' expects {} type parameter(s), got {}",
                                         name,
                                         alias.params.len(),
                                         type_args.len()
                                     ),
                                     span,
-                                    notes: vec![],
-                                    call_stack: vec![],
-                                }));
+                                ));
                             }
-                            return Box::pin(instantiate_tycon_def(alias, &type_args, state)).await;
+                            return Box::pin(instantiate_tycon_def(
+                                alias.as_ref(),
+                                &type_args,
+                                state,
+                            ))
+                            .await;
                         }
                     }
                 }
@@ -3784,12 +3737,10 @@ pub(crate) async fn resolve_type_dict(
             if kw == "or" {
                 // [or T1 T2 ...] → Union([T1, T2, ...])
                 if entries.len() < 2 {
-                    return Err(TypeErrorTyped::Generic(GenericTypeError {
-                        message: "[or ...] requires at least one type argument".to_string(),
+                    return Err(TypeError::new(
+                        "[or ...] requires at least one type argument",
                         span,
-                        notes: vec![],
-                        call_stack: vec![],
-                    }));
+                    ));
                 }
                 let mut members = Vec::new();
                 for entry in &entries[1..] {
@@ -3809,12 +3760,10 @@ pub(crate) async fn resolve_type_dict(
             } else if kw == "all" {
                 // [all T1 T2 ...] → Intersection([T1, T2, ...])
                 if entries.len() < 2 {
-                    return Err(TypeErrorTyped::Generic(GenericTypeError {
-                        message: "[all ...] requires at least one type argument".to_string(),
+                    return Err(TypeError::new(
+                        "[all ...] requires at least one type argument",
                         span,
-                        notes: vec![],
-                        call_stack: vec![],
-                    }));
+                    ));
                 }
                 let mut members = Vec::new();
                 for entry in &entries[1..] {
@@ -3834,12 +3783,10 @@ pub(crate) async fn resolve_type_dict(
             } else if kw == "without" {
                 // [without A] → Negation(A)
                 if entries.len() != 2 {
-                    return Err(TypeErrorTyped::Generic(GenericTypeError {
-                        message: "[without A] requires exactly one type argument".to_string(),
+                    return Err(TypeError::new(
+                        "[without A] requires exactly one type argument",
                         span,
-                        notes: vec![],
-                        call_stack: vec![],
-                    }));
+                    ));
                 }
                 let inner = resolve_type_expr(
                     &entries[1].node.value,
@@ -3887,8 +3834,8 @@ pub(crate) async fn resolve_type_dict(
                     // BUT: builtin type names (Int, Float, String, Bool, Number, etc.) also
                     // start with uppercase and must NOT be treated as NominalVariant.
                     // Resolve builtin type names through resolve_type_name first.
-                    let is_builtin_type = state
-                        .tycon_env
+                    let _tycon_env_ref2 = state.tycon_env_ref();
+                    let is_builtin_type = _tycon_env_ref2
                         .get(&tag)
                         .is_some_and(|def| def.builtin_type.is_some());
                     if is_builtin_type && entries.len() == 1 && first.node.key.is_none() {
@@ -3989,11 +3936,10 @@ pub(crate) async fn resolve_type_dict(
                                             SurfaceExpression::Str(s) => s.clone(),
                                             // Both plain and annotated VarRef use the name field.
                                             SurfaceExpression::VarRef { name, .. } => name.clone(),
-                                            _ => return Err(TypeErrorTyped::Generic(GenericTypeError {
-                                                message: "nominal variant field names must be bare words".to_string(),
-                                                span: k.span.clone(),
-                                                notes: vec![], call_stack: vec![],
-                                            })),
+                                            _ => return Err(TypeError::new(
+                                                "nominal variant field names must be bare words",
+                                                k.span.clone(),
+                                            )),
                                         };
                                         let field_ty = resolve_type_expr(
                                             &field_entry.node.value,
@@ -4008,11 +3954,10 @@ pub(crate) async fn resolve_type_dict(
                                         variant_fields.insert(field_name, field_ty);
                                     }
                                     None => {
-                                        return Err(TypeErrorTyped::Generic(GenericTypeError {
-                                            message: "nominal variant constructor with named fields requires all fields after the constructor tag to be keyed (field: Type)".to_string(),
-                                            span: field_entry.span.clone(),
-                                            notes: vec![], call_stack: vec![],
-                                        }));
+                                        return Err(TypeError::new(
+                                            "nominal variant constructor with named fields requires all fields after the constructor tag to be keyed (field: Type)",
+                                            field_entry.span.clone(),
+                                        ));
                                     }
                                 }
                             }
@@ -4119,11 +4064,10 @@ pub(crate) async fn resolve_type_dict(
 
         if is_wildcard_key {
             if uniform_tail.is_some() {
-                return Err(TypeErrorTyped::Generic(GenericTypeError {
-                    message: "duplicate uniform-field sentinel `_` in row type annotation — at most one `_` allowed per row".to_string(),
-                    span: entry.span.clone(),
-                    notes: vec![], call_stack: vec![],
-                }));
+                return Err(TypeError::new(
+                    "duplicate uniform-field sentinel `_` in row type annotation — at most one `_` allowed per row",
+                    entry.span.clone(),
+                ));
             }
             let value_ty = resolve_type_expr(
                 &entry.node.value,
@@ -4172,21 +4116,17 @@ pub(crate) async fn resolve_type_dict(
                 // Annotated field key: `field@Child: Type` (T-1052) — annotation is on VarRef.
                 SurfaceExpression::VarRef { name, .. } => name.clone(),
                 _ => {
-                    return Err(TypeErrorTyped::Generic(GenericTypeError {
-                        message: "type record keys must be bare words".to_string(),
-                        span: k.span.clone(),
-                        notes: vec![],
-                        call_stack: vec![],
-                    }))
+                    return Err(TypeError::new(
+                        "type record keys must be bare words",
+                        k.span.clone(),
+                    ))
                 }
             },
             None => {
-                return Err(TypeErrorTyped::Generic(GenericTypeError {
-                    message: "auto-indexed entries not supported in type expressions".to_string(),
-                    span: entry.span.clone(),
-                    notes: vec![],
-                    call_stack: vec![],
-                }))
+                return Err(TypeError::new(
+                    "auto-indexed entries not supported in type expressions",
+                    entry.span.clone(),
+                ))
             }
         };
         let ty = resolve_type_expr(
@@ -4564,7 +4504,7 @@ fn typenode_value_to_type<'a>(
                         match name.as_str() {
                             "Int" => Some(Type::Int),
                             "Float" => Some(Type::Float),
-                            "String" | "Str" => Some(Type::Str),
+                            "String" => Some(Type::Str),
                             "Unknown" => Some(Type::Unknown),
                             "Never" => Some(Type::Never),
                             "Absent" => Some(Type::Record(Row {
@@ -4700,20 +4640,17 @@ pub(crate) async fn eval_type_stage_value(
     // Prefer state.type_stage_env (set when the source file has --- stage: type sections).
     // Fall back to the prelude type-stage env when state.type_stage_env is None (e.g., for
     // files that use built-in type annotations but declare no type-stage sections of their own).
-    let type_stage_env = match state.type_stage_env.clone() {
-        Some(env) => env,
-        None => match crate::imports::get_prelude_type_stage_env().await {
+    let type_stage_env =
+        match state.type_stage_env.clone() {
             Some(env) => env,
-            None => return Err(TypeErrorTyped::Generic(GenericTypeError {
-                message:
-                    "type-stage environment unavailable: prelude type-stage env could not be built"
-                        .to_string(),
-                span: origin_span.clone(),
-                notes: vec![],
-                call_stack: vec![],
-            })),
-        },
-    };
+            None => match crate::imports::get_prelude_type_stage_env().await {
+                Some(env) => env,
+                None => return Err(TypeError::new(
+                    "type-stage environment unavailable: prelude type-stage env could not be built",
+                    origin_span.clone(),
+                )),
+            },
+        };
 
     // Build a minimal EvalContext backed by the type-stage environment.
     // AMBIENT-OK: type-stage evaluation performs no file I/O.
@@ -4775,12 +4712,10 @@ pub(crate) async fn eval_type_stage_value(
         }
         // Not a function — as-type dispatch requires a callable value.
         _ => {
-            return Err(TypeErrorTyped::Generic(GenericTypeError {
-                message: "eval_type_stage_value: argument is not a function value".to_string(),
-                span: origin_span,
-                notes: vec![],
-                call_stack: vec![],
-            }))
+            return Err(TypeError::new(
+                "eval_type_stage_value: argument is not a function value",
+                origin_span,
+            ))
         }
     };
 
@@ -4800,12 +4735,10 @@ pub(crate) async fn eval_type_stage_value(
     typenode_value_to_type(&result_val, &ctx)
         .await
         .ok_or_else(|| {
-            TypeErrorTyped::Generic(GenericTypeError {
-                message: format!("type-stage result cannot be converted to Type: {result_val}"),
-                span: origin_span,
-                notes: vec![],
-                call_stack: vec![],
-            })
+            TypeError::new(
+                format!("type-stage result cannot be converted to Type: {result_val}"),
+                origin_span,
+            )
         })
 }
 
@@ -4863,20 +4796,17 @@ pub(crate) async fn eval_type_stage_expr(
     // Prefer state.type_stage_env (set when the source file has --- stage: type sections).
     // Fall back to the prelude type-stage env when state.type_stage_env is None (e.g., for
     // files that use built-in type annotations but declare no type-stage sections of their own).
-    let type_stage_env = match state.type_stage_env.clone() {
-        Some(env) => env,
-        None => match crate::imports::get_prelude_type_stage_env().await {
+    let type_stage_env =
+        match state.type_stage_env.clone() {
             Some(env) => env,
-            None => return Err(TypeErrorTyped::Generic(GenericTypeError {
-                message:
-                    "type-stage environment unavailable: prelude type-stage env could not be built"
-                        .to_string(),
-                span: node_span.clone(),
-                notes: vec![],
-                call_stack: vec![],
-            })),
-        },
-    };
+            None => match crate::imports::get_prelude_type_stage_env().await {
+                Some(env) => env,
+                None => return Err(TypeError::new(
+                    "type-stage environment unavailable: prelude type-stage env could not be built",
+                    node_span.clone(),
+                )),
+            },
+        };
 
     // Build the evaluation environment: type-stage env on top of main env (when available).
     //
@@ -5045,14 +4975,10 @@ pub(crate) async fn eval_type_stage_expr(
     typenode_value_to_type(&typenode_val, &ctx)
         .await
         .ok_or_else(|| {
-            TypeErrorTyped::Generic(GenericTypeError {
-                message: format!(
-                    "type-stage expression produced an unrecognized value: {typenode_val}"
-                ),
-                span: node_span,
-                notes: vec![],
-                call_stack: vec![],
-            })
+            TypeError::new(
+                format!("type-stage expression produced an unrecognized value: {typenode_val}"),
+                node_span,
+            )
         })
 }
 
@@ -5270,7 +5196,7 @@ pub(crate) fn expand_named(
 ) -> Option<Type> {
     // Step 1: look up the TyConDef.
     let def_arc = env.lookup_tycon_def(name)?;
-    let def = Arc::clone(def_arc);
+    let def = Arc::clone(&def_arc);
 
     // Arity check: number of args must match declared params.
     if args.len() != def.params.len() {
@@ -5594,25 +5520,21 @@ async fn try_resolve_fn_type_expr(
     };
 
     if entries.len() != 2 {
-        return Err(TypeErrorTyped::Generic(GenericTypeError {
-            message: format!(
+        return Err(TypeError::new(
+            format!(
                 "function type [Fn@Return [Params]] requires exactly 2 entries, got {}",
                 entries.len()
             ),
             span,
-            notes: vec![],
-            call_stack: vec![],
-        }));
+        ));
     }
 
     let second = &entries[1];
     if second.node.key.is_some() {
-        return Err(TypeErrorTyped::Generic(GenericTypeError {
-            message: "function type parameter list must be auto-indexed".to_string(),
-            span: second.span.clone(),
-            notes: vec![],
-            call_stack: vec![],
-        }));
+        return Err(TypeError::new(
+            "function type parameter list must be auto-indexed",
+            second.span.clone(),
+        ));
     }
 
     let ret = resolve_annotation_as_type(
@@ -5693,12 +5615,10 @@ async fn try_resolve_fn_type_expr(
             }
         }
         _ => {
-            return Err(TypeErrorTyped::Generic(GenericTypeError {
-                message: "function type parameter list must be a bracket expression".to_string(),
-                span: second.node.value.span.clone(),
-                notes: vec![],
-                call_stack: vec![],
-            }))
+            return Err(TypeError::new(
+                "function type parameter list must be a bracket expression",
+                second.node.value.span.clone(),
+            ))
         }
     }
 

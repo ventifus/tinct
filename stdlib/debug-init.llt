@@ -1,18 +1,103 @@
 --- uses: ["core"]
 
-# Minimal init: just proves our code changes are running.
-# No prelude loading, no test runner. No >> (not in scope here).
+# Investigate: de Bruijn coordinate check for Boolean and ExprError in prelude.
+# For each not-a-dict warning, print its span offset and the de Bruijn coords
+# at that position to see if the resolver assigned wrong coordinates.
+# Runs as: just run-init stdlib/debug-init.llt
 
 [
-  %stdout: [write: [fn [let s h] [builtin-write-stdout s h]]
-            flush:  [fn [let h] h]
-            close:  [fn [let h] h]]
   %stderr: [write: [fn [let s h] [builtin-write-stderr s h]]
             flush:  [fn [let h] h]
             close:  [fn [let h] h]]
+
+  _reduce-loop: [fn [let f acc xs i len]
+    [builtin-if [builtin-gte i len]
+      acc
+      [_reduce-loop f [f acc [builtin-get i xs]] xs [builtin-add i 1] len]]]
+  reduce: [fn [let f init xs] [_reduce-loop f init xs 0 [builtin-length xs]]]
+
+  bytes-empty?: [fn [let b] [builtin-eq-int [builtin-length b] 0]]
+  read-file: [fn [let f acc]
+    [chunk: [builtin-file-read f 65536]]
+    [builtin-if [bytes-empty? chunk]
+      acc
+      [read-file f [builtin-bytes-concat acc chunk]]]]
+
+  uses-scope: [fn [let module-names]
+    [reduce [fn [let acc name] [builtin-merge acc [builtin-module name]]] [] module-names]]
+
+  # make-entry: construct single-entry dict from key and value.
+  # Defined here because this runs before prelude is loaded.
+  make-entry: [fn [let k v] [$k: v]]
 ]
 
-# Force the write by using its return value as a condition
-[builtin-if [builtin-eq-int [builtin-length [%stderr.write "debug-init: running\n" %stderr]] 0]
-  "done"
-  "done"]
+[
+  handle:       [builtin-file-open %libdir "prelude.llt" "read"]
+  bytes:        [read-file handle [builtin-bytes]]
+  parse-result: [builtin-parse bytes "prelude.llt"]
+  n-parse:      [builtin-length parse-result.errors]
+
+  seed-env: [builtin-if [builtin-eq-int n-parse 0]
+    [builtin-extend-env []
+      [%prelude: final-env  Boolean: Boolean  True: True  False: False]]
+    [builtin-raise [builtin-string-concat [builtin-int->string n-parse] " parse error(s)"]]]
+
+  final-env: [reduce
+    [fn [let env doc]
+      [doc-env:     [builtin-extend-env env [uses-scope doc.uses]]
+       resolved:    [builtin-resolve doc env: doc-env]
+       eval-result: [builtin-if [builtin-eq-int [builtin-length resolved.errors] 0]
+         [builtin-eval resolved.doc env: doc-env]
+         [builtin-raise [builtin-string-concat [builtin-int->string [builtin-length resolved.errors]] " resolve error(s)"]]]]
+      [builtin-if [builtin-eq-string [builtin-type-of eval-result.error] "String"]
+        [builtin-raise eval-result.error]
+        [builtin-extend-env eval-result.env
+          [make-entry
+            [builtin-if [builtin-eq-string eval-result.doc-name ""] "%" eval-result.doc-name]
+            eval-result.result]]]]
+    seed-env
+    parse-result.program.documents]
+
+  # Second resolve pass writes inline de Bruijn coords for typecheck.
+  _tc-resolve: [reduce
+    [fn [let total doc]
+      [r: [builtin-resolve doc env: final-env]]
+      [builtin-add total [builtin-length r.errors]]]
+    0
+    parse-result.program.documents]
+
+  typed:  [builtin-typecheck parse-result.program [builtin-get-type-context] env: final-env]
+  n-warn: [builtin-length typed.warnings]
+
+  # For each not-a-dict warning, print the span and query de Bruijn coords at that offset.
+  _loop: [fn [let i h]
+    [done: [builtin-gte i n-warn]
+     w:    [builtin-get i typed.warnings]
+     s:    w.span
+     is-nat: [builtin-eq-string w.kind "not-a-dict"]
+     coords: [builtin-var-resolution s.start-offset parse-result.program]
+     loc:    [builtin-string-concat s.file
+                [builtin-string-concat ":"
+                [builtin-string-concat [builtin-int->string s.start-line]
+                [builtin-string-concat ":" [builtin-int->string s.start-col]]]]]
+     # coord display: {level: N, slot: M} or []
+     coord-str: [builtin-if [builtin-eq-int [builtin-length coords] 0]
+       "unresolved"
+       [builtin-string-concat "level="
+         [builtin-string-concat [builtin-int->string coords.level]
+         [builtin-string-concat " slot="
+         [builtin-int->string coords.slot]]]]]
+     line: [builtin-string-concat loc
+              [builtin-string-concat " | offset=" [builtin-string-concat [builtin-int->string s.start-offset]
+              [builtin-string-concat " | coords: " [builtin-string-concat coord-str
+              [builtin-string-concat " | " [builtin-string-concat w.message "\n"]]]]]]]
+     h2:   [builtin-if is-nat [%stderr.write line h] h]]
+    [builtin-if done h [_loop [builtin-add i 1] h2]]]
+]
+
+[
+  h1: [_loop 0 %stderr]
+  h2: [%stderr.write [builtin-string-concat [builtin-int->string n-warn] " total warnings\n"] h1]
+]
+
+[builtin-if [builtin-gte [builtin-length h2] 0] n-warn 0]

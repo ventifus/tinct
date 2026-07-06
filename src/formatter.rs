@@ -74,26 +74,18 @@ pub async fn format_source_tinct_with_dir(
     // PIPELINE INVARIANT: parse -> desugar -> resolve -> typecheck.
     let mut formatter_program = formatter_parsed.program;
     desugar::desugar_surface_program(&mut formatter_program);
-    // Variable resolution pass — writes de Bruijn coordinates inline to AST nodes.
-    let resolve_errors = resolve::resolve_surface_program(&formatter_program);
-    if !resolve_errors.is_empty() {
-        let msgs: Vec<String> = resolve_errors
-            .iter()
-            .map(|(name, span)| {
-                let loc = match &span.file {
-                    Some(f) => format!("{}:{}:{}", f.path, span.start.line, span.start.column),
-                    None => format!("<formatter>:{}:{}", span.start.line, span.start.column),
-                };
-                format!("[E002] undefined variable: {} (at {})", name, loc)
-            })
-            .collect();
-        return Err(msgs.join("\n"));
-    }
-    // Typecheck the desugared formatter (writes inline type annotations).
-    let _ = typecheck::typecheck_surface_program_annotation_table(&formatter_program).await; // tycon_env + match_signal discarded: formatter ctx has no runtime TypeAsserts on user-defined ADTs
 
-    // Build a fresh core env for evaluation context.
+    // Build a fresh core env BEFORE resolving so the resolver can be seeded from it.
+    // This ensures builtin names (builtin-if, builtin-str, etc.) in the formatter script
+    // resolve to de Bruijn coordinates instead of falling back to name-based lookup.
     let env = crate::builtins::build_core_env();
+
+    // Variable resolution pass — builds ResolutionTable (NodeId → de Bruijn coordinates).
+    // Seeded from the core env so formatter builtins resolve correctly.
+    let _resolve_table = resolve::resolve_surface_program(&formatter_program, Some(&env));
+    // Typecheck the desugared formatter (writes inline type annotations).
+    let _ = typecheck::typecheck_surface_program_annotation_table(&formatter_program); // tycon_env discarded: formatter ctx has no runtime TypeAsserts on user-defined ADTs
+
     let ctx = EvalContext::new_empty(base_dir, Arc::clone(&env), false);
 
     // Convert input AST to dict using the now-stable ctx.
@@ -118,7 +110,6 @@ pub async fn format_source_tinct_with_dir(
         &formatter_program,
         Arc::clone(&env),
         &ctx,
-        &std::collections::HashMap::new(),
         Some(ast_thunk),
     )
     .await

@@ -547,14 +547,11 @@ mod tests {
     #[tokio::test]
     async fn test_normalize_substitution() {
         let mut tv = IndexMap::new();
-        tv.insert(
-            "a".to_string(),
-            TypeVarEntry {
-                level: 0,
-                binding: Some(Type::Str),
-                kind: Kind::Type,
-            },
-        );
+        {
+            let mut entry = TypeVarEntry::blank(0, Kind::Type);
+            entry.binding = Some(Type::Str);
+            tv.insert("a".to_string(), entry);
+        }
         let mut ctx = NormCtxt::new(None);
         let ty = Type::TypeVar("a".to_string(), 0);
         let result = norm(&ty, &tv, &mut ctx).await;

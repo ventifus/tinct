@@ -200,22 +200,10 @@ pub async fn run_loader_pipeline(
 
     desugar::desugar_surface_program(&mut loader_program);
 
-    // Seed the resolver with the initial env so all core builtins (builtin-sequential,
-    // builtin-if, etc.) get proper de Bruijn coordinates written inline to AST nodes.
-    let resolve_errors = resolve::resolve_surface_program_with_env(&loader_program, &env);
-    if !resolve_errors.is_empty() {
-        let msgs: Vec<String> = resolve_errors
-            .iter()
-            .map(|(name, span)| {
-                let loc = match &span.file {
-                    Some(f) => format!("{}:{}:{}", f.path, span.start.line, span.start.column),
-                    None => format!("{}:{}:{}", init_path, span.start.line, span.start.column),
-                };
-                format!("[E002] undefined variable: {} (at {})", name, loc)
-            })
-            .collect();
-        return Err(msgs.join("\n"));
-    }
+    // Resolve the loader program. Seeded from the runtime env so that builtin names
+    // (builtin-if, builtin-parse, etc.) resolve to de Bruijn coordinates instead of
+    // falling back to name-based lookup via the MAX/MAX sentinel.
+    let _loader_resolve_table = resolve::resolve_surface_program(&loader_program, Some(&env));
 
     // Typecheck writes type annotations inline on AST nodes. Errors are advisory only.
     // The returned tycon_env maps type constructor names (e.g. "Boolean", "Seq") to their
@@ -223,10 +211,8 @@ pub async fn run_loader_pipeline(
     // eval_ctx ensures that runtime TypeAssert checks against user-defined nominal types
     // (e.g. @Boolean on builtin-if's condition arg) resolve correctly instead of failing
     // conservatively because tycon_env is None.
-    let (_loader_type_errors, _loader_expects_resolved, loader_tycon_env, loader_match_signal) =
-        typecheck::typecheck_surface_program_annotation_table(&loader_program).await;
-    eval_ctx.set_tycon_env(loader_tycon_env);
-    eval_ctx.set_match_signal_class(loader_match_signal);
+    let (_loader_type_errors, _loader_annotation_table, _loader_expects_resolved) =
+        typecheck::typecheck_surface_program_annotation_table(&loader_program);
 
     // Evaluate loader.llt. env already contains all stdlib builtins, %programs, %args,
     // %cwd, %libdir, and any other caps injected by the caller.
@@ -265,11 +251,12 @@ pub async fn typecheck_source(input: &str) -> Result<(), String> {
     // PIPELINE INVARIANT: parse -> desugar -> typecheck.
     let mut program = parsed.program;
     desugar::desugar_surface_program(&mut program);
-    let env = imports::get_builtin_core_type_env()
+    let env_arc = imports::get_builtin_core_type_env()
         .await
         .expect("builtin core type env not available — bootstrap error");
+    let env_rc = std::rc::Rc::new((*env_arc).clone());
     let (type_errors, _type_map, _doc_map, _scheme_map, diagnostics) =
-        typecheck::typecheck_surface_program(&program, env).await;
+        typecheck::typecheck_surface_program(&program, env_rc);
     if type_errors.is_empty() && diagnostics.is_empty() {
         Ok(())
     } else {
@@ -299,11 +286,12 @@ pub async fn typecheck_source_errors_only(input: &str) -> Result<(), String> {
     let mut program = parsed.program;
     desugar::desugar_surface_program(&mut program);
     // Type check the surface program.
-    let env = imports::get_builtin_core_type_env()
+    let env_arc2 = imports::get_builtin_core_type_env()
         .await
         .expect("builtin core type env not available — bootstrap error");
+    let env_rc2 = std::rc::Rc::new((*env_arc2).clone());
     let (type_errors, _type_map, _doc_map, _scheme_map, _diagnostics) =
-        typecheck::typecheck_surface_program(&program, env).await;
+        typecheck::typecheck_surface_program(&program, env_rc2);
     if type_errors.is_empty() {
         Ok(())
     } else {
@@ -926,10 +914,10 @@ mod tests {
         let parsed = parse(source).expect("parse should succeed");
         let mut program = parsed.program.clone();
         desugar::desugar_surface_program(&mut program);
-        let _resolve_errors = resolve::resolve_surface_program(&program);
-        let (_type_errors, _inferred, _tycon_env, _match_signal) =
-            typecheck::typecheck_surface_program_annotation_table(&program).await;
         let env = builtins::build_core_env();
+        let _resolve_errors = resolve::resolve_surface_program(&program, Some(&env));
+        let (_type_errors, _inferred, _tycon_env) =
+            typecheck::typecheck_surface_program_annotation_table(&program).await;
         let ctx = test_ctx().await;
 
         // Evaluate: this should fail because $undefined_var is not defined.

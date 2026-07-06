@@ -1,4 +1,5 @@
 //! Call and dot-access type checking.
+#![allow(dead_code)]
 //!
 //! Contains:
 //! - `check_dot_access` — field access type inference (string and integer keys)
@@ -13,9 +14,7 @@ use std::sync::Arc;
 
 use super::{check_surface_expr, contains_unknown_or_top, infer_surface_expr, TypeMap};
 use crate::ast::{DotKey, Span, Spanned, SurfaceExpression, SurfaceNamedArg, SurfaceNode};
-use crate::type_errors::{
-    ArityMismatch, GenericTypeError, NotAFunction, NotARecord, TypeErrorTyped, UnificationFailure,
-};
+use crate::type_errors::{ArityMismatch, TypeErrorTyped, UnificationFailure};
 use crate::types::{
     instantiate_at_level, instantiate_scheme, unify, Constraint, InferState, Row, Type, TypeEnv,
     TypeError, TypeScheme,
@@ -31,7 +30,7 @@ use crate::types::{
 /// unify against a different literal value for the next argument.  Classic example:
 /// `[> x 10]` where `x = 5` infers `IntLiteral(5)` and the literal `10` infers
 /// `IntLiteral(10)`.  Without widening, the `>` builtin's `∀a. Fn(a a → Bool)`
-/// instantiates `_t0` to `IntLiteral(5)` on the first argument, then
+/// instantiates `?₀` to `IntLiteral(5)` on the first argument, then
 /// `unify(IntLiteral(5), IntLiteral(10))` fails on the second.  Widening both
 /// to `Int` before unification lets them unify correctly. (B-384)
 ///
@@ -91,7 +90,6 @@ pub(crate) async fn check_dot_access(
                         field_scheme,
                         state.level,
                         state,
-                        constraints,
                         Some(origin_name.as_str()),
                         Some(span.clone()),
                     );
@@ -101,7 +99,7 @@ pub(crate) async fn check_dot_access(
         }
     }
 
-    let target_ty = infer_surface_expr(target, env, state, constraints, type_map).await?;
+    let target_ty = infer_surface_expr(target, env, state, type_map)?;
     // Apply the global accumulated substitution so that constraints from prior accesses
     // on the same target are visible (doc/07-type-extensions.md Part 5).
     let target_ty = state.apply(&target_ty);
@@ -119,10 +117,8 @@ pub(crate) async fn check_dot_access(
     let target_ty = {
         // TyCon expansion: look up body before consuming target_ty.
         let expanded = if let Type::TyCon(name) = &target_ty {
-            state
-                .tycon_env
-                .get(name.as_str())
-                .map(|def| def.body.clone())
+            let _tycon = state.tycon_env_ref();
+            _tycon.get(name.as_str()).map(|def| def.body.clone())
         } else {
             None
         };
@@ -138,8 +134,8 @@ pub(crate) async fn check_dot_access(
         // TypeVar α: generate constraint α = Record({field: β}).
         // Under BAS, no row variable needed — empty record type covers the requirement.
         Type::TypeVar(ref alpha, alpha_level) => {
-            // Create fresh β for the field type
-            let beta = state.fresh_type_var();
+            // Create fresh β for the field type — named after the field for diagnostics
+            let beta = state.fresh_type_var_with_origin(Some(field_str), None, Some(span.clone()));
 
             // Build the record type to unify α with (BAS: no RowVar tail)
             let mut fields = indexmap::IndexMap::new();
@@ -217,12 +213,10 @@ pub(crate) async fn check_dot_access(
                 Ok(Type::normalize_union(field_types))
             }
         }
-        _ => Err(vec![TypeErrorTyped::NotARecord(NotARecord {
-            actual: target_ty,
+        _ => Err(vec![TypeError::new(
+            format!("expected record type, got {}", target_ty),
             span,
-            notes: vec![],
-            call_stack: vec![],
-        })]),
+        )]),
     }
 }
 
@@ -236,7 +230,7 @@ pub(crate) async fn check_dot_access_int(
     constraints: &mut Vec<Constraint>,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
-    let target_ty = infer_surface_expr(target, env, state, constraints, type_map).await?;
+    let target_ty = infer_surface_expr(target, env, state, type_map)?;
     let target_ty = state.apply(&target_ty);
 
     let field_name = index.to_string();
@@ -251,7 +245,12 @@ pub(crate) async fn check_dot_access_int(
             Ok(Type::Unknown)
         }
         Type::TypeVar(ref alpha, alpha_level) => {
-            let beta = state.fresh_type_var();
+            // Create fresh β named after the numeric field index for diagnostics
+            let beta = state.fresh_type_var_with_origin(
+                Some(field_name.as_str()),
+                None,
+                Some(span.clone()),
+            );
 
             let mut fields = indexmap::IndexMap::new();
             fields.insert(field_name, beta.clone());
@@ -283,12 +282,10 @@ pub(crate) async fn check_dot_access_int(
         }
         // Gradual: Negation type — fall back to Unknown for integer field access
         Type::Negation(_) => Ok(Type::Unknown),
-        _ => Err(vec![TypeErrorTyped::NotARecord(NotARecord {
-            actual: target_ty.clone(),
+        _ => Err(vec![TypeError::new(
+            format!("expected record type, got {}", target_ty),
             span,
-            notes: vec![],
-            call_stack: vec![],
-        })]),
+        )]),
     }
 }
 
@@ -346,7 +343,6 @@ pub(crate) async fn check_call_with_scheme(
         scheme,
         state.level,
         state,
-        constraints,
         func_name,
         Some(func_span.clone()),
     );
@@ -363,19 +359,32 @@ pub(crate) async fn check_call_with_scheme(
 
     // Error cascade suppression: if the instantiated type is Error (e.g., a scheme with
     // Type::Error body — unlikely but possible if a prelude binding was recorded as Error),
-    // infer arguments for side effects and return Error to cascade the failure.
+    // infer arguments for side effects and return the Error (with its payload) to cascade.
     // This prevents spurious "expected function type, got <error>" on call sites when the
     // function definition itself failed type-checking. The root cause has already been reported.
+    // We return `func_ty` (not error_cascade()) so that any payload in the Error propagates
+    // to containing call sites — that way `got_types` can show `<error: reason>` not bare `<error>`.
     if matches!(func_ty, Type::Error(_)) {
         // Infer positional args for type map population and error propagation.
         for arg in args {
-            let _ = infer_surface_expr(arg, env, state, constraints, type_map).await;
+            let _ = infer_surface_expr(arg, env, state, type_map);
         }
         // Infer named args for type map population and error propagation.
         for na in named_args {
-            let _ = infer_surface_expr(&na.node.value, env, state, constraints, type_map).await;
+            let _ = infer_surface_expr(&na.node.value, env, state, type_map);
         }
-        return Ok(Type::error_cascade());
+        // Propagate the Error payload. If it's a bare cascade, name the callee for provenance.
+        return Ok(if func_ty.error_payload().is_empty() {
+            if let Some(name) = func_name {
+                Type::error_note(format!(
+                    "callee `{name}` has type Error (error reported at its definition site)"
+                ))
+            } else {
+                func_ty
+            }
+        } else {
+            func_ty
+        });
     }
 
     match &func_ty {
@@ -422,7 +431,7 @@ pub(crate) async fn check_call_with_scheme(
             // state.subst.name_counter and state.subst a second time in violation of single-pass Algorithm W.
             // Cascade prevention: ignore arg errors (already recorded as Error in type_map).
             for arg in args {
-                let _ = infer_surface_expr(arg, env, state, constraints, type_map).await;
+                let _ = infer_surface_expr(arg, env, state, type_map);
             }
             // Infer named arg values exactly once here for type map population and error propagation.
             // Previously these were inferred in a pre-dispatch loop before `match &func_ty`, which
@@ -430,9 +439,7 @@ pub(crate) async fn check_call_with_scheme(
             // args again). Moving inference to each arm ensures single-pass Algorithm W.
             let mut named_arg_errors: Vec<TypeError> = Vec::new();
             for na in named_args {
-                if let Err(mut errs) =
-                    infer_surface_expr(&na.node.value, env, state, constraints, type_map).await
-                {
+                if let Err(mut errs) = infer_surface_expr(&na.node.value, env, state, type_map) {
                     named_arg_errors.append(&mut errs);
                 }
             }
@@ -450,28 +457,23 @@ pub(crate) async fn check_call_with_scheme(
         Type::NominalVariant { tag, fields } if fields.fields.is_empty() => {
             // Only allow exactly 1 positional arg, no named args (matches runtime validation)
             if args.len() != 1 {
-                return Err(vec![TypeErrorTyped::ArityMismatch(ArityMismatch {
-                    expected: 1,
-                    got: args.len(),
+                return Err(vec![TypeError::new(
+                    format!(
+                        "unit variant constructor takes exactly 1 argument, got {}",
+                        args.len()
+                    ),
                     span,
-                    notes: vec!["unit variant constructor takes exactly 1 argument".to_string()],
-                    call_stack: vec![],
-                    callee: Some(tag.clone()),
-                    params: vec![],
-                    got_types: vec![],
-                })]);
+                )]);
             }
             if !named_args.is_empty() {
-                return Err(vec![TypeErrorTyped::Generic(GenericTypeError {
-                    message: "unit variant constructor does not accept named arguments".to_string(),
+                return Err(vec![TypeError::new(
+                    "unit variant constructor does not accept named arguments",
                     span,
-                    notes: vec![],
-                    call_stack: vec![],
-                })]);
+                )]);
             }
 
             // Infer the argument type
-            let arg_ty = infer_surface_expr(&args[0], env, state, constraints, type_map).await?;
+            let arg_ty = infer_surface_expr(&args[0], env, state, type_map)?;
 
             // Result type: NominalVariant with the arg type as payload.
             // Runtime stores payload as Some(payload_id), so we model it as a single-field
@@ -488,20 +490,14 @@ pub(crate) async fn check_call_with_scheme(
         }
         // Non-unit variant constructor: already has payload, cannot be called.
         // Example: [Ok 42] where Ok already constructed → type error.
-        Type::NominalVariant { .. } => Err(vec![TypeErrorTyped::NotAFunction(NotAFunction {
-            actual: func_ty.clone(),
-            span: func_span,
-            notes: vec![],
-            call_stack: vec![],
-            callee: func_name.map(|s| s.to_string()),
-        })]),
-        _ => Err(vec![TypeErrorTyped::NotAFunction(NotAFunction {
-            actual: func_ty.clone(),
-            span: func_span,
-            notes: vec![],
-            call_stack: vec![],
-            callee: func_name.map(|s| s.to_string()),
-        })]),
+        Type::NominalVariant { .. } => Err(vec![TypeError::new(
+            format!("expected function type, got {}", func_ty),
+            func_span,
+        )]),
+        _ => Err(vec![TypeError::new(
+            format!("expected function type, got {}", func_ty),
+            func_span,
+        )]),
     }
 }
 
@@ -566,10 +562,14 @@ async fn check_call_args(
         // CALL-POLY: infer every arg, collect errors (don't stop on first failure).
         // Errors are stored inside the Error(errs) node for later extraction.
         for a in args {
-            match infer_surface_expr(a, env, state, constraints, type_map).await {
+            match infer_surface_expr(a, env, state, type_map) {
                 Ok(ty) => arg_types.push(ty),
                 Err(errs) => {
-                    arg_types.push(Type::error_with(errs));
+                    arg_types.push(Type::error_with(
+                        errs.into_iter()
+                            .map(|e| crate::type_errors::TypeErrorTyped::from(e))
+                            .collect(),
+                    ));
                 }
             }
         }
@@ -593,8 +593,7 @@ async fn check_call_args(
                         SurfaceExpression::Fn { .. } => {
                             // Lambda: use check_surface_expr for bidirectional lambda checking.
                             if let Err(mut errs) =
-                                check_surface_expr(arg, param_ty, env, state, constraints, type_map)
-                                    .await
+                                check_surface_expr(arg, param_ty, env, state, type_map)
                             {
                                 arg_errors.get_or_insert_with(Vec::new).append(&mut errs);
                             }
@@ -604,7 +603,7 @@ async fn check_call_args(
                         }
                         _ => {
                             // Non-lambda: infer once, apply subst, boundary-guard, subsume.
-                            match infer_surface_expr(arg, env, state, constraints, type_map).await {
+                            match infer_surface_expr(arg, env, state, type_map) {
                                 Ok(arg_ty) => {
                                     let arg_ty_resolved = if state.subst_is_empty() {
                                         arg_ty.clone()
@@ -626,7 +625,7 @@ async fn check_call_args(
                                         Type::is_subtype(
                                             &arg_ty_resolved,
                                             &param_ty_resolved,
-                                            Some(&state.tycon_env),
+                                            None,
                                         ) || ((contains_unknown_or_top(&arg_ty_resolved)
                                             || contains_unknown_or_top(&param_ty_resolved))
                                             && Type::is_consistent(
@@ -635,7 +634,7 @@ async fn check_call_args(
                                             ));
                                     if !sub_passes {
                                         arg_errors.get_or_insert_with(Vec::new).push(
-                                            TypeErrorTyped::UnificationFailure(
+                                            TypeError::from(TypeErrorTyped::UnificationFailure(
                                                 UnificationFailure {
                                                     expected: param_ty_resolved,
                                                     got: arg_ty_resolved.clone(),
@@ -643,13 +642,17 @@ async fn check_call_args(
                                                     notes: vec![],
                                                     call_stack: vec![],
                                                 },
-                                            ),
+                                            )),
                                         );
                                     }
                                     arg_types.push(arg_ty_resolved);
                                 }
                                 Err(errs) => {
-                                    arg_types.push(Type::error_with(errs));
+                                    arg_types.push(Type::error_with(
+                                        errs.into_iter()
+                                            .map(crate::type_errors::TypeErrorTyped::from)
+                                            .collect(),
+                                    ));
                                 }
                             }
                         }
@@ -657,10 +660,14 @@ async fn check_call_args(
                 }
                 None => {
                     // Extra arg beyond param range (or variadic handled below): just infer.
-                    match infer_surface_expr(arg, env, state, constraints, type_map).await {
+                    match infer_surface_expr(arg, env, state, type_map) {
                         Ok(ty) => arg_types.push(ty),
                         Err(errs) => {
-                            arg_types.push(Type::error_with(errs));
+                            arg_types.push(Type::error_with(
+                                errs.into_iter()
+                                    .map(crate::type_errors::TypeErrorTyped::from)
+                                    .collect(),
+                            ));
                         }
                     }
                 }
@@ -679,7 +686,7 @@ async fn check_call_args(
         if !payload.is_empty() {
             arg_errors
                 .get_or_insert_with(Vec::new)
-                .extend(payload.to_vec());
+                .extend(payload.iter().map(|e| TypeError::from(e.clone())));
         }
     }
 
@@ -697,24 +704,26 @@ async fn check_call_args(
                 }
             })
             .collect();
-        return Err(vec![TypeErrorTyped::ArityMismatch(ArityMismatch {
-            expected: min_required,
-            got: total_supplied,
-            span,
-            notes: if variadic || !named_args.is_empty() {
-                vec![format!(
-                    "{} positional, {} named",
-                    args.len(),
-                    named_args.len()
-                )]
-            } else {
-                vec![]
+        return Err(vec![TypeError::from(TypeErrorTyped::ArityMismatch(
+            ArityMismatch {
+                expected: min_required,
+                got: total_supplied,
+                span,
+                notes: if variadic || !named_args.is_empty() {
+                    vec![format!(
+                        "{} positional, {} named",
+                        args.len(),
+                        named_args.len()
+                    )]
+                } else {
+                    vec![]
+                },
+                call_stack: vec![],
+                callee: func_name.map(|s| s.to_string()),
+                params: param_descriptions,
+                got_types: got_type_strs,
             },
-            call_stack: vec![],
-            callee: func_name.map(|s| s.to_string()),
-            params: param_descriptions,
-            got_types: got_type_strs,
-        })]);
+        ))]);
     }
 
     if params.is_empty() {
@@ -851,14 +860,10 @@ async fn check_call_args(
         let mut seen_names: HashSet<&str> = HashSet::new();
         for na in named_args {
             if !seen_names.insert(&na.node.name) {
-                arg_errors
-                    .get_or_insert_with(Vec::new)
-                    .push(TypeErrorTyped::Generic(GenericTypeError {
-                        message: format!("duplicate named argument: '{}'", na.node.name),
-                        span: na.span.clone(),
-                        notes: vec![],
-                        call_stack: vec![],
-                    }));
+                arg_errors.get_or_insert_with(Vec::new).push(TypeError::new(
+                    format!("duplicate named argument: '{}'", na.node.name),
+                    na.span.clone(),
+                ));
             }
         }
 
@@ -876,23 +881,14 @@ async fn check_call_args(
             match param_match {
                 Some((param_idx, param_ty)) => {
                     if consumed_params.contains(&param_idx) {
-                        arg_errors.get_or_insert_with(Vec::new).push(
-                            TypeErrorTyped::Generic(GenericTypeError {
-                                message: format!(
-                                    "named argument '{}' conflicts with positional argument at position {}",
-                                    arg_name, param_idx
-                                ),
-                                span: na.span.clone(),
-                                notes: vec![],
-                                call_stack: vec![],
-                            }),
-                        );
+                        arg_errors.get_or_insert_with(Vec::new).push(TypeError::new(
+                            format!("named argument '{}' conflicts with positional argument at position {}", arg_name, param_idx),
+                            na.span.clone(),
+                        ));
                         continue;
                     }
                     consumed_params.insert(param_idx);
-                    match infer_surface_expr(&na.node.value, env, state, constraints, type_map)
-                        .await
-                    {
+                    match infer_surface_expr(&na.node.value, env, state, type_map) {
                         Ok(arg_ty) => {
                             if let Err(e) = Box::pin(unify(
                                 &arg_ty,
@@ -903,18 +899,13 @@ async fn check_call_args(
                             ))
                             .await
                             {
-                                arg_errors.get_or_insert_with(Vec::new).push(
-                                    TypeErrorTyped::Generic(GenericTypeError {
-                                        message: format!(
-                                            "named argument '{}' type mismatch: {}",
-                                            arg_name,
-                                            e.message()
-                                        ),
-                                        span: na.span.clone(),
-                                        notes: vec![],
-                                        call_stack: vec![],
-                                    }),
-                                );
+                                arg_errors.get_or_insert_with(Vec::new).push(TypeError::new(
+                                    format!(
+                                        "named argument '{}' type mismatch: {}",
+                                        arg_name, e.message
+                                    ),
+                                    na.span.clone(),
+                                ));
                             }
                         }
                         Err(mut errs) => {
@@ -925,21 +916,16 @@ async fn check_call_args(
                 None => {
                     // B-310: Variadic functions accept arbitrary named args.
                     if !variadic {
-                        arg_errors
-                            .get_or_insert_with(Vec::new)
-                            .push(TypeErrorTyped::Generic(GenericTypeError {
-                                message: format!(
-                                    "unknown named argument: function has no parameter named '{}'",
-                                    arg_name
-                                ),
-                                span: na.span.clone(),
-                                notes: vec![],
-                                call_stack: vec![],
-                            }));
+                        arg_errors.get_or_insert_with(Vec::new).push(TypeError::new(
+                            format!(
+                                "unknown named argument: function has no parameter named '{}'",
+                                arg_name
+                            ),
+                            na.span.clone(),
+                        ));
                     } else {
                         if let Err(mut errs) =
-                            infer_surface_expr(&na.node.value, env, state, constraints, type_map)
-                                .await
+                            infer_surface_expr(&na.node.value, env, state, type_map)
                         {
                             arg_errors.get_or_insert_with(Vec::new).append(&mut errs);
                         }
@@ -993,14 +979,10 @@ async fn check_call_args(
         let mut seen_names: HashSet<&str> = HashSet::new();
         for na in named_args {
             if !seen_names.insert(&na.node.name) {
-                arg_errors
-                    .get_or_insert_with(Vec::new)
-                    .push(TypeErrorTyped::Generic(GenericTypeError {
-                        message: format!("duplicate named argument: '{}'", na.node.name),
-                        span: na.span.clone(),
-                        notes: vec![],
-                        call_stack: vec![],
-                    }));
+                arg_errors.get_or_insert_with(Vec::new).push(TypeError::new(
+                    format!("duplicate named argument: '{}'", na.node.name),
+                    na.span.clone(),
+                ));
             }
         }
 
@@ -1022,24 +1004,15 @@ async fn check_call_args(
             match param_match {
                 Some((param_idx, param_ty)) => {
                     if consumed_params.contains(&param_idx) {
-                        arg_errors.get_or_insert_with(Vec::new).push(
-                            TypeErrorTyped::Generic(GenericTypeError {
-                                message: format!(
-                                    "named argument '{}' conflicts with positional argument at position {}",
-                                    arg_name, param_idx
-                                ),
-                                span: na.span.clone(),
-                                notes: vec![],
-                                call_stack: vec![],
-                            }),
-                        );
+                        arg_errors.get_or_insert_with(Vec::new).push(TypeError::new(
+                            format!("named argument '{}' conflicts with positional argument at position {}", arg_name, param_idx),
+                            na.span.clone(),
+                        ));
                         continue;
                     }
                     consumed_params.insert(param_idx);
 
-                    match infer_surface_expr(&na.node.value, env, state, constraints, type_map)
-                        .await
-                    {
+                    match infer_surface_expr(&na.node.value, env, state, type_map) {
                         Ok(arg_ty) => {
                             // Boundary guard check.
                             if is_concrete_type(param_ty) {
@@ -1061,18 +1034,13 @@ async fn check_call_args(
                             ))
                             .await;
                             if let Err(e) = result {
-                                arg_errors.get_or_insert_with(Vec::new).push(
-                                    TypeErrorTyped::Generic(GenericTypeError {
-                                        message: format!(
-                                            "named argument '{}' type mismatch: {}",
-                                            arg_name,
-                                            e.message()
-                                        ),
-                                        span: na.span.clone(),
-                                        notes: vec![],
-                                        call_stack: vec![],
-                                    }),
-                                );
+                                arg_errors.get_or_insert_with(Vec::new).push(TypeError::new(
+                                    format!(
+                                        "named argument '{}' type mismatch: {}",
+                                        arg_name, e.message
+                                    ),
+                                    na.span.clone(),
+                                ));
                             }
                         }
                         Err(mut errs) => {
@@ -1083,21 +1051,16 @@ async fn check_call_args(
                 None => {
                     // B-310: Variadic functions accept arbitrary named args.
                     if !variadic {
-                        arg_errors
-                            .get_or_insert_with(Vec::new)
-                            .push(TypeErrorTyped::Generic(GenericTypeError {
-                                message: format!(
-                                    "unknown named argument: function has no parameter named '{}'",
-                                    arg_name
-                                ),
-                                span: na.span.clone(),
-                                notes: vec![],
-                                call_stack: vec![],
-                            }));
+                        arg_errors.get_or_insert_with(Vec::new).push(TypeError::new(
+                            format!(
+                                "unknown named argument: function has no parameter named '{}'",
+                                arg_name
+                            ),
+                            na.span.clone(),
+                        ));
                     } else {
                         if let Err(mut errs) =
-                            infer_surface_expr(&na.node.value, env, state, constraints, type_map)
-                                .await
+                            infer_surface_expr(&na.node.value, env, state, type_map)
                         {
                             arg_errors.get_or_insert_with(Vec::new).append(&mut errs);
                         }
@@ -1156,7 +1119,7 @@ pub(crate) async fn check_call(
         _ => None,
     };
 
-    let func_ty = infer_surface_expr(func, env, state, constraints, type_map).await?;
+    let func_ty = infer_surface_expr(func, env, state, type_map)?;
     // Apply state.subst to resolve any TypeVars bound during infer_expr (e.g., from infer_fn
     // with polymorphic return annotations). Without this, has_inference_vars() incorrectly returns
     // true for already-bound TypeVars, causing CALL-POLY to fire and double-instantiate.
@@ -1168,20 +1131,32 @@ pub(crate) async fn check_call(
 
     // Error cascade suppression: if the function type is Error (e.g., `include` failed prelude
     // type-checking and was recorded as Type::Error in TypeEnv), infer arguments for side effects
-    // and return Unknown rather than propagating "expected function type, got <error>" (T003).
+    // and return the Error (with its payload) rather than a bare cascade sentinel.
     // This prevents spurious T003 errors on every [include %libdir "..."] call when the prelude's
-    // self-type-check encounters errors. The underlying cause (prelude type error) has already
-    // been reported; return Error to cascade the failure rather than going gradual.
+    // self-type-check encounters errors. The underlying cause has already been reported.
+    // We return `func_ty` (not error_cascade()) so that any payload in the Error propagates
+    // to containing call sites — that way `got_types` can show `<error: reason>` not bare `<error>`.
     if matches!(func_ty, Type::Error(_)) {
         // Infer positional args for type map population and error propagation.
         for arg in args {
-            let _ = infer_surface_expr(arg, env, state, constraints, type_map).await;
+            let _ = infer_surface_expr(arg, env, state, type_map);
         }
         // Infer named args for type map population and error propagation.
         for na in named_args {
-            let _ = infer_surface_expr(&na.node.value, env, state, constraints, type_map).await;
+            let _ = infer_surface_expr(&na.node.value, env, state, type_map);
         }
-        return Ok(Type::error_cascade());
+        // Propagate the Error payload. If it's a bare cascade, name the callee for provenance.
+        return Ok(if func_ty.error_payload().is_empty() {
+            if let Some(ref name) = func_callee {
+                Type::error_note(format!(
+                    "callee `{name}` has type Error (error reported at its definition site)"
+                ))
+            } else {
+                func_ty
+            }
+        } else {
+            func_ty
+        });
     }
 
     match &func_ty {
@@ -1253,7 +1228,7 @@ pub(crate) async fn check_call(
             // infer args for side effects and return Unknown.
             // Cascade prevention: ignore arg errors (already recorded as Error in type_map).
             for arg in args {
-                let _ = infer_surface_expr(arg, env, state, constraints, type_map).await;
+                let _ = infer_surface_expr(arg, env, state, type_map);
             }
             // Infer named arg values exactly once here for type map population and error propagation.
             // Previously these were inferred in a pre-dispatch loop before `match &func_ty`, which
@@ -1261,9 +1236,7 @@ pub(crate) async fn check_call(
             // infer named args again). Moving inference to each arm ensures single-pass Algorithm W.
             let mut named_arg_errors: Vec<TypeError> = Vec::new();
             for na in named_args {
-                if let Err(mut errs) =
-                    infer_surface_expr(&na.node.value, env, state, constraints, type_map).await
-                {
+                if let Err(mut errs) = infer_surface_expr(&na.node.value, env, state, type_map) {
                     named_arg_errors.append(&mut errs);
                 }
             }
@@ -1273,11 +1246,7 @@ pub(crate) async fn check_call(
             // TypeVar callee — create a fresh TypeVar for the return type to preserve inference.
             // This allows `[f x]` to unify later when `f`'s type becomes known, rather than
             // immediately going gradual with Unknown.
-            let n = state.name_counter;
-            let fresh_name = format!("_t{}", n);
-            state.name_counter = n.saturating_add(1);
-            state.set_level(fresh_name.clone(), state.level);
-            let ret_var = Type::TypeVar(fresh_name, state.level);
+            let ret_var = state.fresh_type_var_with_origin(Some("ret"), None, Some(span.clone()));
             Ok(ret_var)
         }
         // Gradual: callee type is Unknown — infer args for LSP hover, return Unknown (check_call path)
@@ -1289,14 +1258,12 @@ pub(crate) async fn check_call(
             // state.subst.name_counter and state.subst a second time in violation of single-pass Algorithm W.
             // Cascade prevention: ignore arg errors (already recorded as Error in type_map).
             for arg in args {
-                let _ = infer_surface_expr(arg, env, state, constraints, type_map).await;
+                let _ = infer_surface_expr(arg, env, state, type_map);
             }
             // Infer named arg values exactly once here for type map population and error propagation.
             let mut named_arg_errors: Vec<TypeError> = Vec::new();
             for na in named_args {
-                if let Err(mut errs) =
-                    infer_surface_expr(&na.node.value, env, state, constraints, type_map).await
-                {
+                if let Err(mut errs) = infer_surface_expr(&na.node.value, env, state, type_map) {
                     named_arg_errors.append(&mut errs);
                 }
             }
@@ -1314,28 +1281,23 @@ pub(crate) async fn check_call(
         Type::NominalVariant { tag, fields } if fields.fields.is_empty() => {
             // Only allow exactly 1 positional arg, no named args (matches runtime validation)
             if args.len() != 1 {
-                return Err(vec![TypeErrorTyped::ArityMismatch(ArityMismatch {
-                    expected: 1,
-                    got: args.len(),
+                return Err(vec![TypeError::new(
+                    format!(
+                        "unit variant constructor takes exactly 1 argument, got {}",
+                        args.len()
+                    ),
                     span,
-                    notes: vec!["unit variant constructor takes exactly 1 argument".to_string()],
-                    call_stack: vec![],
-                    callee: Some(tag.clone()),
-                    params: vec![],
-                    got_types: vec![],
-                })]);
+                )]);
             }
             if !named_args.is_empty() {
-                return Err(vec![TypeErrorTyped::Generic(GenericTypeError {
-                    message: "unit variant constructor does not accept named arguments".to_string(),
+                return Err(vec![TypeError::new(
+                    "unit variant constructor does not accept named arguments",
                     span,
-                    notes: vec![],
-                    call_stack: vec![],
-                })]);
+                )]);
             }
 
             // Infer the argument type
-            let arg_ty = infer_surface_expr(&args[0], env, state, constraints, type_map).await?;
+            let arg_ty = infer_surface_expr(&args[0], env, state, type_map)?;
 
             // Result type: NominalVariant with the arg type as payload.
             // Runtime stores payload as Some(payload_id), so we model it as a single-field
@@ -1353,13 +1315,10 @@ pub(crate) async fn check_call(
         // Non-unit variant constructor: already has payload, cannot be called.
         // Example: [Ok 42] where Ok already constructed → type error.
         // Use func.span (points to the callee) rather than the whole-call span for a more informative error.
-        Type::NominalVariant { .. } => Err(vec![TypeErrorTyped::NotAFunction(NotAFunction {
-            actual: func_ty.clone(),
-            span: func.span.clone(),
-            notes: vec![],
-            call_stack: vec![],
-            callee: func_callee.clone(),
-        })]),
+        Type::NominalVariant { .. } => Err(vec![TypeError::new(
+            format!("expected function type, got {}", func_ty),
+            func.span.clone(),
+        )]),
         _ => {
             // T003: func_ty is a concrete non-callable type (e.g., Str, Int, Bool).
             //
@@ -1385,13 +1344,10 @@ pub(crate) async fn check_call(
             // found AND the current binding came from a same-dict level (detectable via
             // TypeScheme level metadata or a "letrec_placeholder" flag), use the parent
             // binding instead. See typecheck_tests.rs::test_b275_letrec_typevar_does_not_shadow_prelude_function.
-            Err(vec![TypeErrorTyped::NotAFunction(NotAFunction {
-                actual: func_ty.clone(),
-                span: func.span.clone(),
-                notes: vec![],
-                call_stack: vec![],
-                callee: func_callee.clone(),
-            })])
+            Err(vec![TypeError::new(
+                format!("expected function type, got {}", func_ty),
+                func.span.clone(),
+            )])
         }
     }
 }

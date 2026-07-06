@@ -77,6 +77,10 @@
 
   bytes-empty?: [fn [let b] [builtin-eq-int [builtin-length b] 0]]
 
+  # make-entry: construct single-entry dict from key and value.
+  # Defined here for Dict 1 because it runs before prelude is loaded.
+  make-entry: [fn [let k v] [$k: v]]
+
   read-file: [fn [let handle acc]
     [chunk: [builtin-file-read handle 65536]]
     [builtin-if [bytes-empty? chunk]
@@ -131,11 +135,24 @@
         base-line
         d.call-stack]]]
 
+  # _emit-loop: index-based recursion that writes each diagnostic and returns the
+  # count of items written. The count is USED by callers (in n-total) so it is on
+  # the materialization path — this is what forces all the writes.
+  # Each iteration: write d_i, use the write result's length (always >= 0) as proof
+  # the write happened, add 1 to the running count.
+  _emit-loop: [fn [let diags i len acc]
+    [builtin-if [builtin-gte i len]
+      acc
+      [_emit-loop diags [builtin-add i 1] len
+        [builtin-add acc
+          [builtin-gte
+            [builtin-length [%stderr.write [format-diagnostic [builtin-get i diags]] %stderr]]
+            0]]]]]
+
+  # emit-diagnostics: write all diagnostics to stderr, return the count written.
+  # Returns 0 for empty (so bare-eval's [n-parse + _pe = 0] check still works).
   emit-diagnostics: [fn [let diagnostics]
-    [reduce
-      [fn [let _ d] [%stderr.write [format-diagnostic d] %stderr]]
-      []
-      diagnostics]]
+    [_emit-loop diagnostics 0 [builtin-length diagnostics] 0]]
 
   # uses-scope: for each module name, parse+typecheck its declaration file and
   # accumulate a flat Dict of runtime builtin implementations.
@@ -144,18 +161,30 @@
   uses-scope: [fn [let module-names]
     [reduce
       [fn [let acc name]
-        [decl-path:  [builtin-string-concat "builtin_" [builtin-string-concat name ".llt"]]]
-        [tc-result:  [builtin-try [fn []
-            [decl-handle:    [builtin-file-open %libdir decl-path "read"]]
-            [decl-bytes:     [read-file decl-handle [builtin-bytes]]]
-            [parse-result:   [builtin-parse decl-bytes decl-path]]
-            [resolve-result: [builtin-resolve parse-result.program]]
-            [typed:          [builtin-typecheck resolve-result.resolved [builtin-get-type-context]]]
-            typed.warnings]]]
-        [warnings:   [builtin-if [builtin-eq-string [builtin-tag-of tc-result] "Result.Ok"]
-            [builtin-variant-payload tc-result]
-            []]]
-        [builtin-merge [emit-diagnostics warnings] [builtin-merge acc [builtin-module name]]]]
+        [decl-path:   [builtin-string-concat "builtin_" [builtin-string-concat name ".llt"]]
+         tc-result:   [builtin-try [fn []
+             [decl-handle:    [builtin-file-open %libdir decl-path "read"]]
+             [decl-bytes:     [read-file decl-handle [builtin-bytes]]]
+             [parse-result:   [builtin-parse decl-bytes decl-path]]
+             # builtin-resolve requires Value::Environment for env: — use empty root env.
+             [decl-env:       [builtin-extend-env [] []]]
+             [resolve-errors: [reduce
+               [fn [let acc doc]
+                 [r: [builtin-resolve doc env: decl-env]]
+                 [builtin-add acc [builtin-length r.errors]]]
+               0
+               parse-result.program.documents]]
+             [typed:          [builtin-typecheck parse-result.program [builtin-get-type-context]]]
+             [builtin-if [builtin-eq-int resolve-errors 0] typed.warnings typed.warnings]]]
+         warnings:    [builtin-if [builtin-eq-string [builtin-tag-of tc-result] "Result.Ok"]
+             [builtin-variant-payload tc-result]
+             []]
+         n-w:         [emit-diagnostics warnings]
+         module-impl: [builtin-module name]]
+        # n-w (count of warnings written) is the condition — forces all writes before merge.
+        [builtin-if [builtin-gte n-w 0]
+          [builtin-merge acc module-impl]
+          [builtin-merge acc module-impl]]]
       []
       module-names]]
 
@@ -168,43 +197,65 @@
     [handle:        [builtin-file-open cap path "read"]]
     [bytes:         [read-file handle [builtin-bytes]]]
     [parse-result:  [builtin-parse bytes path]]
-    # Stop on parse errors. Emit first (data dependency via builtin-add), then raise.
-    [n-parse:       [builtin-length parse-result.errors]]
-    [_pe:           [builtin-length [emit-diagnostics parse-result.errors]]]
-    [seed-env:      [builtin-if [builtin-eq-int [builtin-add n-parse _pe] 0]
-      [builtin-extend-env [] extras]
-      [builtin-raise [join "" [[builtin-int->string n-parse] " parse error(s) in " path]]]]]
+    # Stop on parse errors. n-parse + _pe = 0 iff no errors (both are counts from emit-diagnostics).
+    [n-parse:  [builtin-length parse-result.errors]
+     _pe:      [emit-diagnostics parse-result.errors]
+     seed-env: [builtin-if [builtin-eq-int [builtin-add n-parse _pe] 0]
+       [builtin-extend-env [] extras]
+       [builtin-raise [join "" [[builtin-int->string n-parse] " parse error(s) in " path]]]]]
     # Per-document: each document gets its own module builtins via uses-scope.
-    # Stops on any resolve error rather than continuing with unresolved CoreExpr::Error nodes.
-    [final-env: [reduce
-      [fn [let env doc]
-        # DEBUG: skip type-stage docs temporarily to isolate error source
-        [builtin-if [builtin-eq-string [builtin-tag-of doc.stage] "DocStage.Type"]
-          env
-          [call [fn [let]
-            [doc-env:  [builtin-extend-env env [uses-scope doc.uses]]]
-            [resolved: [builtin-resolve doc env: doc-env]]
-            [n-re:     [builtin-length resolved.errors]]
-            [_re:      [builtin-length [emit-diagnostics resolved.errors]]]
-            [builtin-if [builtin-eq-int [builtin-add n-re _re] 0]
-              [builtin-eval resolved.doc env: doc-env]
-              [builtin-raise [join "" [[builtin-int->string n-re] " resolve error(s) in " path]]]]]]]]
-      seed-env
+    # Accumulator is {env, last-result} so we have direct access to the last document's
+    # exported value without hardcoding any output variable name.
+    [final-state: [reduce
+      [fn [let state doc]
+        [done:       [builtin-eq-string [builtin-tag-of doc.stage] "DocStage.Type"]
+         env:        state.env
+         doc-env:    [builtin-extend-env env [uses-scope doc.uses]]
+         resolved:   [builtin-resolve doc env: doc-env]
+         n-re:       [builtin-length resolved.errors]
+         _re:        [emit-diagnostics resolved.errors]
+         eval-result:[builtin-if [builtin-eq-int [builtin-add n-re _re] 0]
+           [builtin-eval resolved.doc env: doc-env]
+           [builtin-raise [join "" [[builtin-int->string n-re] " resolve error(s) in " path]]]]]
+        [builtin-if done
+          state
+          [builtin-if [builtin-eq-string [builtin-type-of eval-result.error] "String"]
+            [builtin-raise eval-result.error]
+            [new-env: [builtin-extend-env eval-result.env
+              [make-entry
+                [builtin-if [builtin-eq-string eval-result.doc-name ""] "%" eval-result.doc-name]
+                eval-result.result]]]
+            [env: new-env  last-result: eval-result.result]]]]
+      [env: seed-env  last-result: []]
       parse-result.program.documents]]
-    # builtin-eval returns an env where % = the last document's final value (the exported dict).
-    # The exported dict's entries are NOT automatically in the env chain as named bindings.
-    # Extend the final-env with the exported dict entries so bare names (flush, =, etc.) resolve.
-    [exported: [builtin-if [builtin-eq-string [builtin-type-of final-env.%] "Dict"]
-      final-env.%
+    # Promote last document's exported dict entries into the env so bare names resolve.
+    [final-env: final-state.env]
+    [exported: [builtin-if [builtin-eq-string [builtin-type-of final-state.last-result] "Dict"]
+      final-state.last-result
       []]]
     [full-env: [builtin-extend-env final-env exported]]
-    # Typecheck with the fully-built final-env so TypeContext gets correct prelude type info.
-    [tc-resolved: [builtin-resolve parse-result.program env: full-env]]
-    [typed:       [builtin-typecheck tc-resolved.resolved [builtin-get-type-context] env: full-env]]
-    # Emit diagnostics via data dependency (no >> needed).
-    [n-tc:        [builtin-length [emit-diagnostics tc-resolved.errors]]]
-    [n-warn:      [builtin-length [emit-diagnostics typed.warnings]]]
-    [builtin-if [builtin-eq-int [builtin-add n-tc n-warn] 0] full-env full-env]]
+    # Resolve each document individually with full-env (document path, not program path).
+    # builtin-resolve now only accepts Document — the program path was removed.
+    # Errors are emitted immediately and counted. AST nodes are mutated in-place with
+    # de Bruijn coords so the typecheck pass can read them from parse-result.program.
+    [tc-error-count: [reduce
+      [fn [let total doc]
+        [r:        [builtin-resolve doc env: full-env]
+         n-e:      [builtin-length r.errors]
+         _emitted: [emit-diagnostics r.errors]]
+        # Force _emitted (writes errors) then add n-e to the running total.
+        [builtin-if [builtin-gte [builtin-add n-e _emitted] 0]
+          [builtin-add total n-e]
+          [builtin-add total n-e]]]
+      0
+      parse-result.program.documents]]
+    # Typecheck the now-resolved program (documents have inline coords from above).
+    [typed: [builtin-typecheck parse-result.program [builtin-get-type-context] env: full-env]]
+    # Return errors and warnings as data. tc-errors is a count (Int): resolve errors
+    # were already emitted during the per-document resolve loop above.
+    [env:          full-env
+     tc-errors:    tc-error-count
+     tc-warnings:  typed.warnings]]
 ]
 
 # ============================================================================
@@ -224,6 +275,26 @@
   Result: [type [let a] [Ok a] [Error String]]
 
   write-str: [fn [let h s] [h.write s]]
+
+  # validate-prelude-result: check bare-eval result for type errors.
+  # Emits all diagnostics and raises if any errors/warnings found.
+  # Returns the env on success. Use this as a named function instead of
+  # [call [fn [] ...]] — cleaner and testable independently.
+  validate-prelude-result: [fn [let result]
+    # tc-errors is now an Int (count of resolve errors, already emitted during resolution).
+    # n-warn is from builtin-typecheck warnings (a dict — emit-diagnostics returns count).
+    # n-total forces both emit calls and is non-zero when any errors exist.
+    [n-tc:          result.tc-errors
+     n-warn:        [builtin-length result.tc-warnings]
+     n-tc-emitted:  result.tc-errors
+     n-warn-emitted: [emit-diagnostics result.tc-warnings]
+     n-total:       [builtin-add [builtin-add n-tc n-warn]
+                      [builtin-add n-tc-emitted n-warn-emitted]]]
+    [builtin-if [builtin-eq-int n-total 0]
+      result.env
+      [builtin-raise [join "" ["prelude has "
+        [builtin-int->string [builtin-add n-tc n-warn]]
+        " type error(s) — see above"]]]]]
 
   # extract-source: given file content, return everything before "\n=== ".
   extract-source: [fn [let content]
@@ -288,17 +359,24 @@
     # Parse the test source (no expand step).
     [parse-result:  [builtin-parse [builtin-str-bytes source] path]]
 
-    # Resolve and typecheck the test source to collect diagnostics (for === warn).
-    [resolve-result: [builtin-resolve parse-result.program env: base-env]]
-    [resolved-prog:  resolve-result.resolved]
-    [typed:          [builtin-typecheck resolved-prog [builtin-get-type-context prelude] env: base-env]]
+    # Resolve per-document to write de Bruijn coords inline on AST nodes.
+    # builtin-resolve only accepts Document — accumulate resolve errors across all docs.
+    [resolve-errors: [reduce
+      [fn [let acc doc]
+        [r: [builtin-resolve doc env: base-env]]
+        [builtin-merge acc [reduce [fn [let a i] [builtin-merge a [[builtin-add [builtin-length acc] i]: [builtin-get i r.errors]]]] [] [builtin-keys r.errors]]]]
+      []
+      parse-result.program.documents]]
+
+    # Typecheck the now-resolved program (OnceLocks set above).
+    [typed: [builtin-typecheck parse-result.program [builtin-get-type-context prelude] env: base-env]]
 
     # Accumulate resolve errors + typecheck warnings into warn-box.
-    [resolve-count: [builtin-length resolve-result.errors]]
+    [resolve-count: [builtin-length resolve-errors]]
     [all-warnings:  [reduce
       [fn [let acc i]
         [builtin-merge acc [[builtin-add resolve-count i]: [builtin-get i typed.warnings]]]]
-      resolve-result.errors
+      resolve-errors
       [builtin-keys typed.warnings]]]
     # Force warn-box update as a data dependency (no >> needed).
     # builtin-builder-set writes to the builder and returns the builder object.
@@ -311,15 +389,43 @@
     # Use typed.documents (not resolved-prog.documents) to create an explicit data
     # dependency on the typecheck pass. This ensures call_dispatch annotations are
     # written to AST nodes before the lowerer reads them during builtin-eval.
-    [test-env: [reduce
-      [fn [let env doc]
-        [builtin-eval doc env: env]]
-      base-env
+    [test-state: [reduce
+      [fn [let state doc]
+        [eval-result: [builtin-eval doc env: state.env]]
+        [builtin-if [builtin-eq-string [builtin-type-of eval-result.error] "String"]
+          [builtin-raise eval-result.error]
+          [call [fn [let]
+            # T-1507: caps check against current eval env.
+            [_caps-ok: [reduce
+              [fn [let ok cap-name]
+                [full-name: [builtin-string-concat "%" cap-name]]
+                [builtin-if [builtin-cap-env-has? full-name state.env]
+                  ok
+                  [builtin-raise [join "" [full-name " is required but not provided"]]]]]
+              Boolean.True
+              [builtin-keys doc.caps]]
+             # T-1506: expects check against incoming value. Identical branches are intentional —
+             # builtin-check-type is forced for its raise side-effect; result always Boolean.True.
+             _expects-ok: [builtin-if [builtin-eq-string [builtin-type-of doc.expects] "String"]
+               [builtin-if [builtin-gte [builtin-length [builtin-type-of [builtin-check-type doc.expects state.last-result]]] 0]
+                 Boolean.True
+                 Boolean.True]
+               Boolean.True]]
+            [builtin-if [builtin-eq-string [builtin-tag-of _caps-ok] "Boolean.True"]
+              [builtin-if [builtin-eq-string [builtin-tag-of _expects-ok] "Boolean.True"]
+                [new-env: [builtin-extend-env eval-result.env
+                  [make-entry
+                    [builtin-if [builtin-eq-string eval-result.doc-name ""] "%" eval-result.doc-name]
+                    eval-result.result]]]
+                [env: new-env  last-result: eval-result.result]
+                [builtin-raise "unreachable"]]
+              [builtin-raise "unreachable"]]]]]]
+      [env: base-env  last-result: []]
       typed.documents]]
 
     # Format the test result directly using builtin-llt-repr (core builtin, always available).
     # Avoids llt.llt formatter which needs prelude functions not available in bare-eval scope.
-    [result-val: test-env.%]
+    [result-val: test-state.last-result]
     [output: [builtin-string-concat [builtin-llt-repr result-val] "\n"]]
     [wrote: [capture.write output capture]]
     [builtin-if [builtin-gte [builtin-add _wb-forced [builtin-if [builtin-gte [builtin-length wrote] 0] 1 1]] 2]
@@ -480,8 +586,25 @@
 [
   # Thread Boolean/True/False from loader scope so prelude can use them unqualified.
   # %prelude is a lazy forward reference — safe because prelude only forces it at call time.
-  _prelude: [bare-eval %libdir "prelude.llt"
+  # IMPORTANT: _prelude must remain a simple field access (_prelude-result.env) so that
+  # the forward reference %prelude: _prelude in the extras dict is safe. If _prelude were
+  # an IIFE ([call [fn [] ...]]), prelude code that accesses %prelude during loading would
+  # force _prelude → force _prelude-result (pending) → cycle. Keep it simple.
+  _prelude-result: [bare-eval %libdir "prelude.llt"
     [%prelude: _prelude  Boolean: Boolean  True: True  False: False]]
+
+  _prelude: _prelude-result.env
+
+  # _prelude-validated: the env to use for test runs.
+  # validate-prelude-result is defined in Dict 2 as a named function — cleaner than
+  # [call [fn [] ...]] (IIFE). Memoized: check runs once, then result is reused.
+  _prelude-validated: [validate-prelude-result _prelude-result]
+
+  # _prelude-ok: forces prelude validation BEFORE the test reduce starts, outside
+  # any builtin-try. builtin-type-of forces _prelude-validated; builtin-gte makes
+  # an Int for use as a data dependency in test-programs.
+  # If _prelude-validated raises, it propagates HERE (Dict 3 level, no try catches it).
+  _prelude-ok: [builtin-gte [builtin-length [builtin-type-of _prelude-validated]] 0]
 
   # Pre-parse cli/out/llt.llt once (parse only — NOT resolved).
   # Resolution happens per-test inside run-test-pipeline with fmt-env
@@ -491,7 +614,7 @@
                       [read-file [builtin-file-open %libdir "cli/out/llt.llt" "read"] [builtin-bytes]]
                       "cli/out/llt.llt"]]
     # Emit parse errors as a data dependency (no >> needed).
-    [_pe:           [builtin-length [emit-diagnostics parse-result.errors]]]
+    [_pe:           [emit-diagnostics parse-result.errors]]
     [builtin-if [builtin-gte _pe 0]
       parse-result.program
       parse-result.program]]]
@@ -505,7 +628,10 @@
         [%stderr.write "\nbootstrap error: llt.llt formatter failed to load\nCannot run corpus tests.\n" %stderr]]]
 
   # Discover test files (or use the ones given on the command line).
-  test-programs: [builtin-if _formatter-ok
+  # _prelude-ok is a data dependency: forces prelude validation BEFORE the reduce
+  # starts, outside any builtin-try. If prelude has errors, the raise propagates
+  # here (Dict 3 level) and the test run aborts with full error details visible.
+  test-programs: [builtin-if [builtin-eq-int [builtin-add _formatter-ok _prelude-ok] 2]
     [builtin-if [builtin-eq-int [builtin-length %programs] 0]
       [find-corpus-files
         [builtin-narrow %cwd "tests/corpus"]
@@ -516,7 +642,7 @@
 
   final-state: [reduce
     [fn [let state item]
-      [result: [run-test item _prelude _llt-formatter-expanded]]
+      [result: [run-test item _prelude-validated _llt-formatter-expanded]]
       # Force the write as a data dependency (no >> needed).
       # %stdout.write returns the handle (%stdout protocol dict).
       # Force it by reading the handle's key count (always >= 0).
@@ -530,7 +656,7 @@
          first-fail: [builtin-if [builtin-eq-string state.first-fail ""]
                         [builtin-if [bool->int result.passed]
                           ""
-                          [join "" [result.path "\n  expected: " result.expected "\n  actual:   " result.actual]]]
+                          [builtin-string-concat result.path [builtin-string-concat "\n  expected: " [builtin-string-concat result.expected [builtin-string-concat "\n  actual:   " result.actual]]]]]
                         state.first-fail]]
         [idx:    [builtin-add state.idx 1]
          total:  [builtin-add state.total 1]

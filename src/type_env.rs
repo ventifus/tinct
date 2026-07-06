@@ -2,11 +2,13 @@
 //! class/instance environments, and type errors.
 
 use std::collections::{HashMap, HashSet};
+use std::fmt;
+
+use indexmap::IndexMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::ast::Span;
-use crate::rust_span;
 
 use super::*;
 
@@ -14,7 +16,7 @@ use super::*;
 /// Used for CALL-POLY: when calling a polymorphic function, instantiate its type
 /// at the current level to enable proper generalization (Kiselyov 2013).
 ///
-/// This function registers fresh variables in `state.type_vars` so they participate in
+/// This function registers fresh variables in `state.levels` so they participate in
 /// level-based generalization. Without this, fresh variables would default to level 0
 /// and be permanently excluded from generalization by [U-VAR-LEVEL].
 ///
@@ -25,7 +27,7 @@ use super::*;
 /// - Fresh variables from the function's own inference (e.g., from type annotations)
 /// - Unbound inference variables that need fresh instances for this call site
 ///
-/// Free variables from the enclosing scope would already be bound in `state.type_vars` and would
+/// Free variables from the enclosing scope would already be bound in `state.subst` and would
 /// not appear as TypeVars in the input type. Per Algorithm W, instantiation only applies to
 /// the syntactic type variables present in the type expression, which are all treated uniformly here.
 pub fn instantiate_at_level(ty: &Type, state: &mut InferState) -> Type {
@@ -48,36 +50,43 @@ pub fn instantiate_at_level(ty: &Type, state: &mut InferState) -> Type {
     // avoiding a resize when the type var count is known upfront (CALL-POLY hot path).
     // Note: capacity hint may be larger than actual unique count if there are duplicates,
     // but this wastes at most a few slots and is cheaper than deduplicating first.
-    let mut renaming: HashMap<String, Type> = HashMap::with_capacity(type_vars.len());
+    let renaming = Substitution {
+        type_map: std::cell::RefCell::new(HashMap::with_capacity(type_vars.len())),
+    };
     for var in type_vars {
         // First-write-wins: skip if this var was already mapped (handles duplicates from the Vec).
-        if !renaming.contains_key(&var) {
-            let n = state.name_counter;
-            let fresh_name = format!("_t{}", n);
-            state.name_counter = n.saturating_add(1);
-            state.set_level(fresh_name.clone(), state.level);
+        if !renaming.type_map.borrow().contains_key(&var) {
+            let fresh_name = format!("_t{}", state.name_counter);
+            state.name_counter = state.name_counter.saturating_add(1);
+            state.levels.insert(fresh_name.clone(), state.level);
 
             // If this var appears as Type::Operator in the original type, preserve the Operator kind
             if operator_names.contains(&var) {
                 // Register the fresh name in kind_env as Kind::Operator
-                state.set_kind(fresh_name.clone(), Kind::Operator);
-                renaming.insert(var, Type::Operator(fresh_name));
+                state.kind_env.insert(fresh_name.clone(), Kind::Operator);
+                renaming
+                    .type_map
+                    .borrow_mut()
+                    .insert(var, Type::Operator(fresh_name));
             } else {
-                renaming.insert(var, Type::TypeVar(fresh_name, state.level));
+                renaming
+                    .type_map
+                    .borrow_mut()
+                    .insert(var, Type::TypeVar(fresh_name, state.level));
             }
         }
     }
 
-    apply_renaming(ty, &renaming)
+    renaming.apply(ty)
 }
 
 /// Rename a single type variable `old_name -> Type::TypeVar(fresh_name, level)` inline.
 ///
-/// This is equivalent to `apply_renaming(ty, {old_name -> TypeVar(fresh,level)})` but
-/// avoids allocating a HashMap. Safe to use without cycle detection because scheme bodies
-/// from `generalize` are acyclic with respect to quantified type variables (no
-/// self-referential TypeVar bindings can appear in a scheme body -- TypeVars in a scheme
-/// are free variables, not bound ones).
+/// This is equivalent to `Substitution { type_map: {old_name -> TypeVar(fresh,level)},
+/// row_map: {} }.apply(ty)` but avoids allocating 2 HashMaps and 2 HashSets.
+/// Safe to use without cycle detection because scheme bodies from `generalize` are
+/// acyclic with respect to quantified type variables (no self-referential TypeVar bindings
+/// can appear in a scheme body -- TypeVars in a scheme are free variables, not bound ones).
 fn rename_single_type_var(ty: &Type, old_name: &str, fresh_name: &str, level: u32) -> Type {
     match ty {
         Type::TypeVar(name, _) if name == old_name => Type::TypeVar(fresh_name.to_owned(), level),
@@ -104,11 +113,9 @@ fn rename_single_type_var(ty: &Type, old_name: &str, fresh_name: &str, level: u3
             variadic: *variadic,
             required_count: *required_count,
         },
-        Type::App(f, a) => Type::App(
-            Box::new(rename_single_type_var(f, old_name, fresh_name, level)),
-            Box::new(rename_single_type_var(a, old_name, fresh_name, level)),
-        ),
-        Type::TyCon(_) => ty.clone(), // TyCon has no type variables to rename
+        // Type::Seq and Type::Map don't exist as variants; they are represented as
+        // Type::App(TyCon("Seq"), elem) and Type::App(App(TyCon("Map"), key), val).
+        // The App arm below handles these recursively.
         Type::Union(members) => Type::Union(
             members
                 .iter()
@@ -120,6 +127,10 @@ fn rename_single_type_var(ty: &Type, old_name: &str, fresh_name: &str, level: u3
                 .iter()
                 .map(|m| rename_single_type_var(m, old_name, fresh_name, level))
                 .collect(),
+        ),
+        Type::App(f, a) => Type::App(
+            Box::new(rename_single_type_var(f, old_name, fresh_name, level)),
+            Box::new(rename_single_type_var(a, old_name, fresh_name, level)),
         ),
         Type::Operator(name) if name == old_name => Type::Operator(fresh_name.to_owned()),
         Type::Operator(_) => ty.clone(),
@@ -137,29 +148,12 @@ fn rename_single_type_var(ty: &Type, old_name: &str, fresh_name: &str, level: u3
             tag: tag.clone(),
             fields: rename_single_type_var_in_row(fields, old_name, fresh_name, level),
         },
-        // S-860: equirecursive-types-core — recurse into the body.
-        // The `var` μ-binder name uses a distinct gensym namespace (𝜇ꜱʏᴍ⧼...⧽N) from TypeVar
-        // names (_tN), so renaming old_name within the body is always safe.
-        Type::Recursive { var, body } => Type::Recursive {
-            var: var.clone(),
-            body: Box::new(rename_single_type_var(body, old_name, fresh_name, level)),
-        },
         // Primitives, Any, Error, Number, Proxy: no type variables inside.
         _ => ty.clone(),
     }
 }
 
 fn rename_single_type_var_in_row(row: &Row, old_name: &str, fresh_name: &str, level: u32) -> Row {
-    // Preserve the tail: rename type vars in Uniform key/value types too
-    let new_tail = match &row.tail {
-        crate::type_def::RowTail::Empty => crate::type_def::RowTail::Empty,
-        crate::type_def::RowTail::Uniform { key, value } => crate::type_def::RowTail::Uniform {
-            key: key
-                .as_ref()
-                .map(|k| Box::new(rename_single_type_var(k, old_name, fresh_name, level))),
-            value: Box::new(rename_single_type_var(value, old_name, fresh_name, level)),
-        },
-    };
     Row {
         fields: row
             .fields
@@ -171,90 +165,7 @@ fn rename_single_type_var_in_row(row: &Row, old_name: &str, fresh_name: &str, le
                 )
             })
             .collect(),
-        tail: new_tail,
-    }
-}
-
-/// Apply a renaming map to a type, replacing TypeVars and Operators whose names
-/// appear as keys in the map with the corresponding replacement types.
-///
-/// This is the multi-variable generalization of `rename_single_type_var`. Used during
-/// `instantiate_at_level` and `instantiate_scheme` to apply freshened variable mappings
-/// without requiring a Substitution struct.
-fn apply_renaming(ty: &Type, map: &HashMap<String, Type>) -> Type {
-    match ty {
-        Type::TypeVar(name, _) => {
-            if let Some(replacement) = map.get(name.as_str()) {
-                replacement.clone()
-            } else {
-                ty.clone()
-            }
-        }
-        Type::Operator(name) => {
-            if let Some(replacement) = map.get(name.as_str()) {
-                replacement.clone()
-            } else {
-                ty.clone()
-            }
-        }
-        Type::Record(row) => Type::Record(apply_renaming_in_row(row, map)),
-        Type::Function {
-            params,
-            ret,
-            variadic,
-            required_count,
-        } => Type::Function {
-            params: params
-                .iter()
-                .map(|(name, p_ty)| (name.clone(), apply_renaming(p_ty, map)))
-                .collect(),
-            ret: Box::new(apply_renaming(ret, map)),
-            variadic: *variadic,
-            required_count: *required_count,
-        },
-        Type::App(f, a) => Type::App(
-            Box::new(apply_renaming(f, map)),
-            Box::new(apply_renaming(a, map)),
-        ),
-        Type::TyCon(_) => ty.clone(),
-        Type::Union(members) => {
-            Type::Union(members.iter().map(|m| apply_renaming(m, map)).collect())
-        }
-        Type::Intersection(members) => {
-            Type::Intersection(members.iter().map(|m| apply_renaming(m, map)).collect())
-        }
-        Type::Negation(inner) => Type::Negation(Box::new(apply_renaming(inner, map))),
-        Type::TypeStageApp { fn_name, args } => Type::TypeStageApp {
-            fn_name: fn_name.clone(),
-            args: args.iter().map(|arg| apply_renaming(arg, map)).collect(),
-        },
-        Type::NominalVariant { tag, fields } => Type::NominalVariant {
-            tag: tag.clone(),
-            fields: apply_renaming_in_row(fields, map),
-        },
-        Type::Recursive { var, body } => Type::Recursive {
-            var: var.clone(),
-            body: Box::new(apply_renaming(body, map)),
-        },
-        _ => ty.clone(),
-    }
-}
-
-fn apply_renaming_in_row(row: &Row, map: &HashMap<String, Type>) -> Row {
-    let new_tail = match &row.tail {
-        crate::type_def::RowTail::Empty => crate::type_def::RowTail::Empty,
-        crate::type_def::RowTail::Uniform { key, value } => crate::type_def::RowTail::Uniform {
-            key: key.as_ref().map(|k| Box::new(apply_renaming(k, map))),
-            value: Box::new(apply_renaming(value, map)),
-        },
-    };
-    Row {
-        fields: row
-            .fields
-            .iter()
-            .map(|(k, v)| (k.clone(), apply_renaming(v, map)))
-            .collect(),
-        tail: new_tail,
+        tail: row.tail.clone(),
     }
 }
 
@@ -263,15 +174,14 @@ fn apply_renaming_in_row(row: &Row, map: &HashMap<String, Type>) -> Row {
 ///
 /// Variables in `scheme.type_vars` are instantiated as `Type::TypeVar(fresh, level)`.
 /// Variables in `scheme.kind_vars` with `Kind::Operator` are instantiated as
-/// `Type::Operator(fresh)` and registered with `Kind::Operator` in `state.type_vars`,
+/// `Type::Operator(fresh)` and registered in `state.kind_env` with `Kind::Operator`,
 /// enabling them to unify with type constructor applications via UNIFY-OPERATOR.
 /// Variables in `scheme.kind_vars` with `Kind::Label` are treated identically to
-/// label_vars (registered with `Kind::Label` in `state.type_vars`).
+/// label_vars (registered in `state.kind_env` with `Kind::Label`).
 pub fn instantiate_scheme(
     scheme: &TypeScheme,
     level: u32,
     state: &mut InferState,
-    constraints: &mut Vec<Constraint>,
     origin_name: Option<&str>,
     origin_span: Option<Span>,
 ) -> Type {
@@ -284,18 +194,15 @@ pub fn instantiate_scheme(
     let mut var_renaming: HashMap<String, String> = HashMap::new();
 
     // Fast path: single regular type variable with no kind_vars --
-    // avoid building a renaming HashMap.
+    // avoid building Substitution (HashMap + apply HashSet).
     // Inline rename is allocation-free aside from the string format for the fresh name.
     if scheme.type_vars.len() == 1 && scheme.kind_vars.is_empty() {
-        let n = state.name_counter;
-        let fresh_name = format!("_t{}", n);
-        state.name_counter = n.saturating_add(1);
-        state.set_level(fresh_name.clone(), level);
+        let fresh_name = format!("_t{}", state.name_counter);
+        state.name_counter = state.name_counter.saturating_add(1);
+        state.levels.insert(fresh_name.clone(), level);
         var_renaming.insert(scheme.type_vars[0].clone(), fresh_name.clone());
 
-        // Copy constraints with renamed variables.
-        // For Var positions, rename using var_renaming (as before).
-        // For Ground positions, pass through unchanged — the type is already concrete.
+        // Copy constraints with renamed variables
         for constraint in &scheme.constraints {
             match constraint {
                 Constraint::Class {
@@ -304,41 +211,32 @@ pub fn instantiate_scheme(
                     origin_name: constraint_origin_name,
                     origin_span: constraint_origin_span,
                 } => {
-                    // Rename Var positions; pass Ground positions through unchanged.
-                    // A constraint is dropped only if a Var position has no entry in var_renaming
-                    // (meaning the variable was not generalized in this scheme — should not occur
-                    // for well-formed schemes, but guard defensively).
-                    let mut all_vars_renamed = true;
-                    let fresh_args: Vec<ConstraintArg> = vars
+                    // Rename Var positions in the constraint; pass Ground positions through.
+                    let fresh_vars: Vec<crate::type_class::ConstraintArg> = vars
                         .iter()
-                        .map(|arg| match arg {
-                            ConstraintArg::Var(v) => {
-                                if let Some(fresh) = var_renaming.get(v) {
-                                    ConstraintArg::Var(fresh.clone())
+                        .map(|v| match v {
+                            crate::type_class::ConstraintArg::Var(name) => {
+                                if let Some(fresh) = var_renaming.get(name.as_str()) {
+                                    crate::type_class::ConstraintArg::Var(fresh.clone())
                                 } else {
-                                    all_vars_renamed = false;
-                                    ConstraintArg::Var(v.clone()) // placeholder; will be dropped
+                                    v.clone()
                                 }
                             }
-                            ConstraintArg::Ground(t) => ConstraintArg::Ground(t.clone()),
+                            crate::type_class::ConstraintArg::Ground(_) => v.clone(),
                         })
                         .collect();
+                    // Use constraint's origin info if present, otherwise use call-site origin
+                    let final_origin_name = constraint_origin_name
+                        .clone()
+                        .or_else(|| origin_name.map(Arc::from));
+                    let final_origin_span = constraint_origin_span.clone().or(origin_span.clone());
 
-                    if all_vars_renamed {
-                        // Use constraint's origin info if present, otherwise use call-site origin
-                        let final_origin_name = constraint_origin_name
-                            .clone()
-                            .or_else(|| origin_name.map(Arc::from));
-                        let final_origin_span =
-                            constraint_origin_span.clone().or(origin_span.clone());
-
-                        constraints.push(Constraint::Class {
-                            class: Arc::clone(class),
-                            vars: fresh_args,
-                            origin_name: final_origin_name,
-                            origin_span: final_origin_span,
-                        });
-                    }
+                    state.constraints.push(Constraint::Class {
+                        class: Arc::clone(class),
+                        vars: fresh_vars,
+                        origin_name: final_origin_name,
+                        origin_span: final_origin_span,
+                    });
                 }
                 Constraint::HasField {
                     label,
@@ -363,7 +261,7 @@ pub fn instantiate_scheme(
                             }
                         };
 
-                        constraints.push(Constraint::HasField {
+                        state.constraints.push(Constraint::HasField {
                             label: fresh_label,
                             dict_var: fresh_dict_var.clone(),
                             field_var: fresh_field_var.clone(),
@@ -375,29 +273,33 @@ pub fn instantiate_scheme(
 
         // Re-register label vars in kind_env with Kind::Label
         if scheme.label_vars.contains(&scheme.type_vars[0]) {
-            state.set_kind(fresh_name.clone(), Kind::Label);
+            state.kind_env.insert(fresh_name.clone(), Kind::Label);
         }
 
         return rename_single_type_var(&scheme.body, &scheme.type_vars[0], &fresh_name, level);
     }
 
-    // General path: multiple type variables and/or kind_vars -- build a renaming map.
+    // General path: multiple type variables and/or kind_vars -- build a full Substitution.
     // Total capacity is type_vars + kind_vars (each kind_var also gets a renaming entry).
     let total_vars = scheme.type_vars.len() + scheme.kind_vars.len();
-    let mut renaming: HashMap<String, Type> = HashMap::with_capacity(total_vars);
+    let renaming = Substitution {
+        type_map: std::cell::RefCell::new(HashMap::with_capacity(total_vars)),
+    };
 
     // Instantiate regular type variables as Type::TypeVar.
     for var in &scheme.type_vars {
-        let n = state.name_counter;
-        let fresh_name = format!("_t{}", n);
-        state.name_counter = n.saturating_add(1);
-        state.set_level(fresh_name.clone(), level);
+        let fresh_name = format!("_t{}", state.name_counter);
+        state.name_counter = state.name_counter.saturating_add(1);
+        state.levels.insert(fresh_name.clone(), level);
         var_renaming.insert(var.clone(), fresh_name.clone());
-        renaming.insert(var.clone(), Type::TypeVar(fresh_name.clone(), level));
+        renaming
+            .type_map
+            .borrow_mut()
+            .insert(var.clone(), Type::TypeVar(fresh_name.clone(), level));
 
         // Re-register label vars in kind_env with Kind::Label
         if scheme.label_vars.contains(var) {
-            state.set_kind(fresh_name, Kind::Label);
+            state.kind_env.insert(fresh_name, Kind::Label);
         }
     }
 
@@ -406,37 +308,37 @@ pub fn instantiate_scheme(
     // Kind::Label    → Type::TypeVar(fresh_name, level), registered in kind_env as Label.
     // Kind::Type     → Type::TypeVar(fresh_name, level) (same as a regular type_var).
     for (var, kind) in &scheme.kind_vars {
-        let n = state.name_counter;
-        let fresh_name = format!("_t{}", n);
-        state.name_counter = n.saturating_add(1);
-        state.set_level(fresh_name.clone(), level);
+        let fresh_name = format!("_t{}", state.name_counter);
+        state.name_counter = state.name_counter.saturating_add(1);
+        state.levels.insert(fresh_name.clone(), level);
         var_renaming.insert(var.clone(), fresh_name.clone());
 
         let instantiated_type = match kind {
             Kind::Operator => {
                 // Register in kind_env so that resolve_type_expr and UNIFY-OPERATOR
                 // recognise the fresh variable as a type constructor, not a type.
-                state.set_kind(fresh_name.clone(), Kind::Operator);
+                state.kind_env.insert(fresh_name.clone(), Kind::Operator);
                 Type::Operator(fresh_name.clone())
             }
             Kind::Label => {
-                state.set_kind(fresh_name.clone(), Kind::Label);
+                state.kind_env.insert(fresh_name.clone(), Kind::Label);
                 Type::TypeVar(fresh_name.clone(), level)
             }
             Kind::Type => Type::TypeVar(fresh_name.clone(), level),
-            Kind::Arrow(..) => unreachable!(
-                "Arrow kinds are for builtin type constructors only; \
-                 builtins are pre-registered directly in kind_env and \
-                 never appear in TypeScheme.kind_vars"
-            ),
+            Kind::Arrow(_, _) => {
+                // Higher-kinded type constructors: treated as Operator for instantiation purposes.
+                state.kind_env.insert(fresh_name.clone(), kind.clone());
+                Type::Operator(fresh_name.clone())
+            }
         };
 
-        renaming.insert(var.clone(), instantiated_type);
+        renaming
+            .type_map
+            .borrow_mut()
+            .insert(var.clone(), instantiated_type);
     }
 
-    // Copy constraints with renamed variables (from both type_vars and kind_vars).
-    // For Var positions, rename using var_renaming.
-    // For Ground positions, pass through unchanged.
+    // Copy constraints with renamed variables (from both type_vars and kind_vars)
     for constraint in &scheme.constraints {
         match constraint {
             Constraint::Class {
@@ -445,36 +347,31 @@ pub fn instantiate_scheme(
                 origin_name: constraint_origin_name,
                 origin_span: constraint_origin_span,
             } => {
-                let mut all_vars_renamed = true;
-                let fresh_args: Vec<ConstraintArg> = vars
+                let fresh_vars: Vec<crate::type_class::ConstraintArg> = vars
                     .iter()
-                    .map(|arg| match arg {
-                        ConstraintArg::Var(v) => {
-                            if let Some(fresh) = var_renaming.get(v) {
-                                ConstraintArg::Var(fresh.clone())
+                    .map(|v| match v {
+                        crate::type_class::ConstraintArg::Var(name) => {
+                            if let Some(fresh) = var_renaming.get(name.as_str()) {
+                                crate::type_class::ConstraintArg::Var(fresh.clone())
                             } else {
-                                all_vars_renamed = false;
-                                ConstraintArg::Var(v.clone()) // placeholder; will be dropped
+                                v.clone()
                             }
                         }
-                        ConstraintArg::Ground(t) => ConstraintArg::Ground(t.clone()),
+                        crate::type_class::ConstraintArg::Ground(_) => v.clone(),
                     })
                     .collect();
+                // Use constraint's origin info if present, otherwise use call-site origin
+                let final_origin_name = constraint_origin_name
+                    .clone()
+                    .or_else(|| origin_name.map(Arc::from));
+                let final_origin_span = constraint_origin_span.clone().or(origin_span.clone());
 
-                if all_vars_renamed {
-                    // Use constraint's origin info if present, otherwise use call-site origin
-                    let final_origin_name = constraint_origin_name
-                        .clone()
-                        .or_else(|| origin_name.map(Arc::from));
-                    let final_origin_span = constraint_origin_span.clone().or(origin_span.clone());
-
-                    constraints.push(Constraint::Class {
-                        class: Arc::clone(class),
-                        vars: fresh_args,
-                        origin_name: final_origin_name,
-                        origin_span: final_origin_span,
-                    });
-                }
+                state.constraints.push(Constraint::Class {
+                    class: Arc::clone(class),
+                    vars: fresh_vars,
+                    origin_name: final_origin_name,
+                    origin_span: final_origin_span,
+                });
             }
             Constraint::HasField {
                 label,
@@ -499,7 +396,7 @@ pub fn instantiate_scheme(
                         }
                     };
 
-                    constraints.push(Constraint::HasField {
+                    state.constraints.push(Constraint::HasField {
                         label: fresh_label,
                         dict_var: fresh_dict_var.clone(),
                         field_var: fresh_field_var.clone(),
@@ -509,7 +406,7 @@ pub fn instantiate_scheme(
         }
     }
 
-    apply_renaming(&scheme.body, &renaming)
+    renaming.apply(&scheme.body)
 }
 
 /// Simplify a set of constraints by removing redundant constraints.
@@ -541,13 +438,14 @@ pub(crate) fn simplify_constraints(class_env: &ClassEnv, constraints: &mut Vec<C
 ///
 /// Diagnostics are pushed to `state.diagnostics`. Uses a synthetic span (0:0) for warnings.
 /// Prefer `generalize_with_doc` when a real span is available.
-pub fn generalize(
-    level: u32,
-    ty: &Type,
-    state: &mut InferState,
-    constraints: &[Constraint],
-) -> TypeScheme {
-    generalize_with_doc(level, ty, state, constraints, None, rust_span!())
+pub fn generalize(level: u32, ty: &Type, state: &mut InferState) -> TypeScheme {
+    generalize_with_doc(
+        level,
+        ty,
+        state,
+        None,
+        crate::ast::Span::rust_source(file!(), line!()),
+    )
 }
 
 /// Emit T013 diagnostics for constraints whose type variables are ambiguous (appear in
@@ -615,12 +513,11 @@ fn emit_ambiguous_constraint_diagnostics(
                 origin_name,
                 origin_span,
             } => {
-                for arg in vars {
-                    // Ground positions are not ambiguous — they're already resolved types.
-                    // Only Var positions can be ambiguous (undischarged free variables).
-                    let var = match arg {
-                        ConstraintArg::Var(v) => v.as_str(),
-                        ConstraintArg::Ground(_) => continue,
+                for var_arg in vars {
+                    // Only process Var positions — Ground types are concrete and never ambiguous.
+                    let var = match var_arg {
+                        crate::type_class::ConstraintArg::Var(name) => name.as_str(),
+                        crate::type_class::ConstraintArg::Ground(_) => continue,
                     };
                     if !is_discharged(var) {
                         // Use argument-level span when available (Task 4: origin_span set during
@@ -628,7 +525,7 @@ fn emit_ambiguous_constraint_diagnostics(
                         // call-site span passed to this function.
                         let diag_span = origin_span.clone().unwrap_or_else(|| span.clone());
                         // Deduplicate: only emit if this (var, diag_span) pair hasn't been seen
-                        if emitted.insert((var.to_string(), diag_span.clone())) {
+                        if emitted.insert((var.to_owned(), diag_span.clone())) {
                             let message = if let Some(name) = origin_name {
                                 // Better message: cite the origin function and constraint class.
                                 // Drops the internal TypeVar name — user doesn't know/care about _tN.
@@ -645,7 +542,7 @@ fn emit_ambiguous_constraint_diagnostics(
                             diagnostics.push(crate::error::TypeDiagnostic {
                                 message,
                                 span: diag_span,
-                                code: crate::typecheck::typecheck_diag::T013_AMBIGUOUS_CONSTRAINT,
+                                code: "T013",
                                 level: crate::error::DiagnosticLevel::Warn,
                             });
                         }
@@ -666,7 +563,7 @@ fn emit_ambiguous_constraint_diagnostics(
                                 format_var_name(dict_var)
                             ),
                             span: span.clone(),
-                            code: crate::typecheck::typecheck_diag::T013_AMBIGUOUS_CONSTRAINT,
+                            code: "T013",
                             level: crate::error::DiagnosticLevel::Warn,
                         });
                     }
@@ -685,7 +582,7 @@ fn emit_ambiguous_constraint_diagnostics(
                                     format_var_name(label_var)
                                 ),
                                 span: span.clone(),
-                                code: crate::typecheck::typecheck_diag::T013_AMBIGUOUS_CONSTRAINT,
+                                code: "T013",
                                 level: crate::error::DiagnosticLevel::Warn,
                             });
                         }
@@ -700,7 +597,7 @@ fn emit_ambiguous_constraint_diagnostics(
                                 format_var_name(field_var)
                             ),
                             span: span.clone(),
-                            code: crate::typecheck::typecheck_diag::T013_AMBIGUOUS_CONSTRAINT,
+                            code: "T013",
                             level: crate::error::DiagnosticLevel::Warn,
                         });
                     }
@@ -720,94 +617,24 @@ fn emit_ambiguous_constraint_diagnostics(
 /// diagnostic warnings pushed to `state.diagnostics`. The `span` parameter provides
 /// source location for these warnings.
 ///
-/// The `constraints` parameter carries the type class constraints accumulated during inference
-/// of the binding being generalized. Callers on the `infer_dict` path collect these constraints
-/// via `std::mem::take(&mut state.constraints)` after entry inference and pass them explicitly
-/// here — the constraint queue is scoped to each dict entry by the caller, not by this function.
-/// Callers outside the `infer_dict` path (e.g., the `generalize` wrapper) pass
-/// `&state.constraints` directly.
+/// **Constraint scoping contract**: Callers must manually save and restore `state.constraints`
+/// around generalize calls when constraint scoping is required. This function does NOT manage
+/// constraint scoping itself — it filters constraints by TypeVar membership but does not
+/// preserve or restore the original constraint set. If the caller needs to isolate constraints
+/// for a nested scope (e.g., a let-binding that should not leak constraints to the outer scope),
+/// the caller must use `std::mem::take(&mut state.constraints)` before generalize and restore
+/// afterward. See dict inference passes 1-4 for the canonical pattern.
 pub fn generalize_with_doc(
     level: u32,
     ty: &Type,
     state: &mut InferState,
-    constraints: &[Constraint],
     doc: Option<String>,
     span: crate::ast::Span,
 ) -> TypeScheme {
     // Apply substitution first -- defense-in-depth per Damas & Milner (1982).
     // Generalization must operate over the image of the substitution.
     // Without this, a bound TypeVar would be generalized incorrectly.
-    let ty = &state.apply(ty);
-
-    // BAS bounds compaction (T-1213): compact TypeVar bounds into substitutions.
-    //
-    // For each TypeVar with accumulated bounds (from C-Var1/2 rewriting during unification),
-    // attempt to compact the bounds into a concrete type binding. If successful, add the
-    // binding to the substitution and re-apply. Bounds that cannot be compacted (multiple
-    // inconsistent bounds) leave the TypeVar free — it will be generalized normally.
-    //
-    // This step MUST happen after substitution application (bounds reference pre-subst TypeVars)
-    // and BEFORE the monomorphic check (compaction may make the type monomorphic).
-    if !state.bounds.is_empty() {
-        let bounds_snapshot: Vec<(String, crate::bas::TypeVarBounds)> =
-            state.bounds.drain().collect();
-        for (var_name, var_bounds) in bounds_snapshot {
-            // Skip TypeVars already bound in type_vars
-            if state.lookup_binding(&var_name).is_some() {
-                continue;
-            }
-            if let Some(compacted) = var_bounds.compact(Some(&state.tycon_env)) {
-                state.bind_type_var(var_name, compacted);
-            } else if !var_bounds.lower.is_empty() && !var_bounds.upper.is_empty() {
-                // compact() returns None when both lower and upper bounds are non-empty
-                // and cannot be reconciled to a single type. We must verify that the
-                // bounds are at least consistent: join(lower) <: meet(upper).
-                // If they are not, no type can satisfy both constraints — emit an error.
-                //
-                // join(lower) = Union(lower_bounds)
-                // meet(upper) = Intersection(upper_bounds)
-                //
-                // T-1213 spec: "check_bounds_satisfiable(lower, upper) // error if lower ≰ upper"
-                let join_lower = if var_bounds.lower.len() == 1 {
-                    var_bounds.lower[0].clone()
-                } else {
-                    Type::normalize_union(var_bounds.lower.clone())
-                };
-                let meet_upper = if var_bounds.upper.len() == 1 {
-                    var_bounds.upper[0].clone()
-                } else {
-                    Type::normalize_intersection(var_bounds.upper.clone())
-                };
-                let mut sigma = HashSet::new();
-                if !Type::is_subtype_bas(
-                    &join_lower,
-                    &meet_upper,
-                    Some(&state.tycon_env),
-                    &mut sigma,
-                ) {
-                    // Bounds are inconsistent: no type T satisfies join(lower) <: T <: meet(upper).
-                    state.diagnostics.push(crate::error::TypeDiagnostic {
-                        level: crate::error::DiagnosticLevel::Err,
-                        code: crate::typecheck::typecheck_diag::T022_INCONSISTENT_BOUNDS,
-                        message: format!(
-                            "type variable {var_name} has inconsistent bounds: \
-                             lower bound {} is not a subtype of upper bound {} — \
-                             no type can satisfy both constraints",
-                            join_lower, meet_upper,
-                        ),
-                        span: span.clone(),
-                    });
-                }
-                // Leave the TypeVar free (it will be generalized in step 3) — whether or not
-                // bounds are consistent, leaving free is the correct posture. If bounds are
-                // inconsistent the error above surfaces it; if consistent the TypeVar is
-                // polymorphic in the scheme body.
-            }
-        }
-    }
-
-    // Re-apply substitution after bounds compaction (new bindings may have been added)
-    let ty = &state.apply(ty);
+    let ty = &state.subst.apply(ty);
 
     // Early exit for monomorphic types (common case: all-concrete config dicts)
     if !ty.has_inference_vars() {
@@ -815,11 +642,11 @@ pub fn generalize_with_doc(
         // Any constraint when there are no TypeVars is ambiguous (constraint variable
         // appears in constraint but not in the type).
         // Guard: skip constraints already discharged (bound to concrete type) during unification.
-        if !constraints.is_empty() {
-            let binding_snapshot = state.binding_snapshot();
+        if !state.constraints.is_empty() {
+            let subst_snapshot: HashMap<String, Type> = state.subst.type_map.borrow().clone();
             emit_ambiguous_constraint_diagnostics(
-                constraints,
-                &binding_snapshot,
+                &state.constraints,
+                &subst_snapshot,
                 &state.type_var_source_names,
                 &mut state.diagnostics,
                 span,
@@ -834,7 +661,6 @@ pub fn generalize_with_doc(
             kind_vars: Vec::new(),
             doc,
             inner_schemes: None,
-            param_narrowings: Vec::new(),
         };
     }
 
@@ -847,7 +673,7 @@ pub fn generalize_with_doc(
     let generalizable_type_vars: Vec<String> = all_type_vars
         .into_iter()
         .filter(|var| {
-            let var_level = state.get_level(var).unwrap_or(0);
+            let var_level = state.levels.get(var).copied().unwrap_or(0);
             let is_generalizable = var_level > level;
             // Deduplicate: only include var if we haven't seen it and it's generalizable
             is_generalizable && seen.insert(var.clone())
@@ -859,11 +685,11 @@ pub fn generalize_with_doc(
         // Any constraint on a TypeVar when there are no generalizable TypeVars is ambiguous
         // (the TypeVar appears in the constraint but not in the type).
         // Guard: skip constraints already discharged (bound to concrete type) during unification.
-        if !constraints.is_empty() {
-            let binding_snapshot = state.binding_snapshot();
+        if !state.constraints.is_empty() {
+            let subst_snapshot: HashMap<String, Type> = state.subst.type_map.borrow().clone();
             emit_ambiguous_constraint_diagnostics(
-                constraints,
-                &binding_snapshot,
+                &state.constraints,
+                &subst_snapshot,
                 &state.type_var_source_names,
                 &mut state.diagnostics,
                 span,
@@ -879,21 +705,20 @@ pub fn generalize_with_doc(
             kind_vars: Vec::new(),
             doc,
             inner_schemes: None,
-            param_narrowings: Vec::new(),
         }
     } else {
         // Filter constraints: keep only those on generalized variables
         let generalizable_vars: HashSet<String> = generalizable_type_vars.iter().cloned().collect();
 
-        // Snapshot the binding map so the filter closure can look up TypeVar→TypeVar
-        // bindings without borrowing `state` during `constraints.iter()`.
+        // Snapshot the substitution map so the filter closure can look up TypeVar→TypeVar
+        // bindings without borrowing `state` during `state.constraints.iter()`.
         //
         // When a fresh var "_bt0" from `instantiate_scheme` is bound to "_label_0"
-        // (the actual label TypeVar from the function param) in `state.type_vars`, the HasField
+        // (the actual label TypeVar from the function param) in `state.subst`, the HasField
         // constraint records "_bt0" as the label var. But "_bt0" is not in `generalizable_vars`
         // (it's a bound intermediate). We must resolve through one substitution level to find
         // the effective free variable "_label_0" before checking generalizable membership.
-        let subst_snapshot: HashMap<String, Type> = state.binding_snapshot();
+        let subst_snapshot: HashMap<String, Type> = state.subst.type_map.borrow().clone();
 
         // Helper: resolve a type variable name through the full substitution chain.
         // T5 FIX: Follow chains like α→β→γ to the end (was only doing one hop).
@@ -943,7 +768,7 @@ pub fn generalize_with_doc(
         // the raw constraint names "_bt0" would not match generalizable_vars, and would not be
         // correctly renamed by instantiate_scheme at future call sites.
         let mut generalizable_constraints: Vec<Constraint> = Vec::new();
-        for c in constraints {
+        for c in &state.constraints {
             match c {
                 Constraint::Class {
                     class,
@@ -951,139 +776,51 @@ pub fn generalize_with_doc(
                     origin_name,
                     origin_span,
                 } => {
-                    // Resolve Var positions through the full substitution chain.
-                    // Ground positions pass through unchanged — they are already concrete types.
-                    let resolved_args: Vec<ConstraintArg> = vars
+                    // Resolve Var positions through substitution; keep Ground positions as-is.
+                    let resolved_args: Vec<crate::type_class::ConstraintArg> = vars
                         .iter()
-                        .map(|arg| match arg {
-                            ConstraintArg::Var(name) => ConstraintArg::Var(resolve_var_name(name)),
-                            ConstraintArg::Ground(t) => ConstraintArg::Ground(t.clone()),
+                        .map(|v| match v {
+                            crate::type_class::ConstraintArg::Var(name) => {
+                                crate::type_class::ConstraintArg::Var(resolve_var_name(name))
+                            }
+                            crate::type_class::ConstraintArg::Ground(_) => v.clone(),
                         })
                         .collect();
-
-                    // Var positions need the generalizable/discharged analysis.
-                    // Ground positions are always kept as-is — they're already concrete.
-                    // Keeping Ground out of the predicates prevents pre-ground positions from
-                    // falsely inflating `some_discharged` and triggering the FD branch when
-                    // no Var position was actually substitution-discharged.
-                    // Use owned Strings so resolved_args can be moved into whichever branch fires.
-                    let var_positions: Vec<(usize, String)> = resolved_args
+                    // For generalizable check, extract resolved Var names only
+                    let resolved_vars: Vec<String> = resolved_args
                         .iter()
-                        .enumerate()
-                        .filter_map(|(i, arg)| match arg {
-                            ConstraintArg::Var(v) => Some((i, v.clone())),
-                            ConstraintArg::Ground(_) => None,
+                        .filter_map(|a| match a {
+                            crate::type_class::ConstraintArg::Var(name) => Some(name.clone()),
+                            crate::type_class::ConstraintArg::Ground(_) => None,
                         })
                         .collect();
-
-                    // Determine which Var positions are generalizable vs discharged.
-                    // "Discharged" means the Var was bound to a concrete type during unification.
-                    // "Generalizable" means it is a free type variable at a higher level.
-                    let some_generalizable = var_positions
-                        .iter()
-                        .any(|(_, v)| generalizable_vars.contains(v.as_str()));
-                    let all_generalizable = var_positions
-                        .iter()
-                        .all(|(_, v)| generalizable_vars.contains(v.as_str()));
-                    // `some_discharged` and `all_non_generalizable_are_discharged` apply only to
-                    // Var positions — Ground positions are excluded (they're pre-resolved, not
-                    // substitution-discharged Var positions and must not affect the FD predicate).
-                    let _some_discharged = var_positions.iter().any(|(_, v)| is_discharged(v));
-                    // A non-generalizable Var position is "OK to keep" if it is:
-                    // (a) generalizable, OR (b) discharged to a concrete type, OR
-                    // (c) FD-covered: in a determined position of some FD whose determining
-                    //     positions are ALL generalizable. FD improvement at call sites will
-                    //     resolve the determined TypeVar from the generalizable determining vars.
-                    let is_fd_covered = |var_idx: usize| -> bool {
-                        class
-                            .determines
-                            .iter()
-                            .any(|(det_positions, ded_positions)| {
-                                ded_positions.contains(&var_idx)
-                                    && det_positions.iter().all(|&det_idx| {
-                                        var_positions
-                                            .iter()
-                                            .find(|(i, _)| *i == det_idx)
-                                            .map(|(_, dv)| generalizable_vars.contains(dv.as_str()))
-                                            .unwrap_or(false)
-                                    })
-                            })
-                    };
-                    let all_non_generalizable_ok = var_positions.iter().all(|(var_idx, v)| {
-                        generalizable_vars.contains(v.as_str())
-                            || is_discharged(v)
-                            || is_fd_covered(*var_idx)
-                    });
-
-                    // Keep the constraint if:
-                    // (a) ALL vars are generalizable (fully polymorphic constraint), or
-                    // (b) SOME vars are generalizable AND all non-generalizable vars are
-                    //     discharged OR FD-covered (B-398 fix: handles both Ground positions
-                    //     and FD-determined Var positions like the result TypeVar of `+`).
-                    if all_generalizable {
-                        // Standard case: all Var positions are generalizable.
-                        // Ground positions pass through unchanged.
+                    // Keep constraint if ALL resolved Var positions are generalizable
+                    if resolved_vars.iter().all(|v| generalizable_vars.contains(v)) {
                         generalizable_constraints.push(Constraint::Class {
                             class: Arc::clone(class),
                             vars: resolved_args,
                             origin_name: origin_name.clone(),
                             origin_span: origin_span.clone(),
                         });
-                    } else if some_generalizable && all_non_generalizable_ok {
-                        // FD case: some Var positions generalizable; non-generalizable positions
-                        // are discharged or FD-covered. Store discharged positions as Ground(type);
-                        // FD-covered Var positions stay as Var — FD improvement resolves them
-                        // at call sites. instantiate_scheme freshens Var positions as usual.
-                        let constraint_args: Vec<ConstraintArg> = resolved_args
-                            .into_iter()
-                            .enumerate()
-                            .map(|(idx, arg)| match arg {
-                                ConstraintArg::Ground(t) => ConstraintArg::Ground(t),
-                                ConstraintArg::Var(resolved) => {
-                                    if generalizable_vars.contains(resolved.as_str())
-                                        || is_fd_covered(idx)
-                                    {
-                                        // Generalizable or FD-covered — keep as Var for freshening.
-                                        ConstraintArg::Var(resolved)
-                                    } else {
-                                        // Discharged via substitution — store concrete type.
-                                        let concrete = subst_snapshot
-                                            .get(resolved.as_str())
-                                            .cloned()
-                                            .unwrap_or_else(Type::error_cascade);
-                                        ConstraintArg::Ground(concrete)
-                                    }
-                                }
-                            })
-                            .collect();
-                        generalizable_constraints.push(Constraint::Class {
-                            class: Arc::clone(class),
-                            vars: constraint_args,
-                            origin_name: origin_name.clone(),
-                            origin_span: origin_span.clone(),
-                        });
                     } else {
-                        // Constraint cannot be kept: either no generalizable vars or some
-                        // non-generalizable non-discharged Var positions (ambiguous).
-                        // Emit T013 diagnostics for genuinely ambiguous Var positions only.
-                        // Ground positions are excluded — they are already resolved, not ambiguous.
-                        for (var_idx, var) in &var_positions {
-                            if !generalizable_vars.contains(var.as_str()) && !is_discharged(var) {
+                        // Diagnostic: ambiguous type variable in constraint
+                        // (appears in constraint but not in the type — constraint will be silently dropped)
+                        // T2 FIX: For MPTC constraints with FDs, only flag vars that are non-generalizable
+                        // AND not covered by a FD whose determining positions are all generalizable.
+                        for (var_idx, var) in resolved_vars.iter().enumerate() {
+                            if !generalizable_vars.contains(var) && !is_discharged(var) {
                                 // Check if this var is covered by a FD with all determining positions generalizable
                                 let is_fd_covered = class.determines.iter().any(
                                     |(det_positions, ded_positions)| {
                                         // Is this var in a determined position?
-                                        if !ded_positions.contains(var_idx) {
+                                        if !ded_positions.contains(&var_idx) {
                                             return false;
                                         }
                                         // Are ALL determining positions generalizable?
                                         det_positions.iter().all(|&det_idx| {
-                                            var_positions
-                                                .iter()
-                                                .find(|(i, _)| *i == det_idx)
-                                                .map(|(_, v)| {
-                                                    generalizable_vars.contains(v.as_str())
-                                                })
+                                            resolved_vars
+                                                .get(det_idx)
+                                                .map(|v| generalizable_vars.contains(v))
                                                 .unwrap_or(false)
                                         })
                                     },
@@ -1099,7 +836,7 @@ pub fn generalize_with_doc(
                                                 class.name
                                             ),
                                             span: span.clone(),
-                                            code: crate::typecheck::typecheck_diag::T013_AMBIGUOUS_CONSTRAINT,
+                                            code: "T013",
                                             level: crate::error::DiagnosticLevel::Warn,
                                         });
                                     }
@@ -1132,7 +869,7 @@ pub fn generalize_with_doc(
                                                 format_var_name(&resolved)
                                             ),
                                             span: span.clone(),
-                                            code: crate::typecheck::typecheck_diag::T013_AMBIGUOUS_CONSTRAINT,
+                                            code: "T013",
                                             level: crate::error::DiagnosticLevel::Warn,
                                         });
                                     }
@@ -1173,7 +910,7 @@ pub fn generalize_with_doc(
                                                 format_var_name(&effective_field)
                                             ),
                                             span: span.clone(),
-                                            code: crate::typecheck::typecheck_diag::T013_AMBIGUOUS_CONSTRAINT,
+                                            code: "T013",
                                             level: crate::error::DiagnosticLevel::Warn,
                                         });
                                     }
@@ -1190,7 +927,7 @@ pub fn generalize_with_doc(
                                             format_var_name(&effective_dict)
                                         ),
                                         span: span.clone(),
-                                        code: crate::typecheck::typecheck_diag::T013_AMBIGUOUS_CONSTRAINT,
+                                        code: "T013",
                                         level: crate::error::DiagnosticLevel::Warn,
                                     });
                                 }
@@ -1206,7 +943,7 @@ pub fn generalize_with_doc(
                                             format_var_name(&effective_field)
                                         ),
                                         span: span.clone(),
-                                        code: crate::typecheck::typecheck_diag::T013_AMBIGUOUS_CONSTRAINT,
+                                        code: "T013",
                                         level: crate::error::DiagnosticLevel::Warn,
                                     });
                                 }
@@ -1225,7 +962,7 @@ pub fn generalize_with_doc(
         // Collect label vars: TypeVars that are label-kinded (Kind::Label in kind_env)
         let label_vars: Vec<String> = generalizable_type_vars
             .iter()
-            .filter(|var| state.get_kind(var.as_str()) == Some(&Kind::Label))
+            .filter(|var| state.kind_env.get(var.as_str()) == Some(&Kind::Label))
             .cloned()
             .collect();
 
@@ -1237,7 +974,6 @@ pub fn generalize_with_doc(
             kind_vars: Vec::new(),
             doc,
             inner_schemes: None,
-            param_narrowings: Vec::new(),
         }
     }
 }
@@ -1277,11 +1013,11 @@ fn collect_pretty_type_vars(ty: &Type, seen: &mut Vec<String>) {
                 collect_pretty_type_vars(v, seen);
             }
         }
+        // Type::Seq and Type::Map are represented as Type::App chains; handled by App arm below.
         Type::App(f, a) => {
             collect_pretty_type_vars(f, seen);
             collect_pretty_type_vars(a, seen);
         }
-        Type::TyCon(_) => {}
         Type::Union(ms) | Type::Intersection(ms) => {
             for m in ms {
                 collect_pretty_type_vars(m, seen);
@@ -1340,16 +1076,12 @@ fn format_type_pretty(ty: &Type, rename: &HashMap<String, String>) -> String {
                 _ => format!("Fn@{ret_str} [{params_str}]"),
             }
         }
-        // App covers parameterized types — pretty-print by recursing into
-        // the structure using format_type_pretty so TypeVars get renamed.
-        Type::TyCon(name) => name.clone(),
-        Type::App(_, _) => {
-            // Use Display for the overall structure (handles parameterized type formatting),
-            // but rename TypeVars inline by applying the rename map to the Display output.
-            // This is a conservative approach: Display already formats these correctly,
-            // and pretty_type_str handles _tN → letter renaming in a post-pass.
-            format!("{}", ty)
-        }
+        // Type::Seq and Type::Map are represented as Type::App chains.
+        Type::App(f, a) => format!(
+            "{}[{}]",
+            format_type_pretty(f, rename),
+            format_type_pretty(a, rename)
+        ),
         Type::Union(ms) => ms
             .iter()
             .map(|m| format_type_pretty(m, rename))
@@ -1448,175 +1180,117 @@ fn tvar_display_name(idx: usize) -> String {
 
 // Display impl for Type moved to type_normalize.rs
 
+/// Parameterized type alias declaration.
+///
+/// `[type [a b] [first: a second: b]]` stores `params: ["a", "b"]` and
+/// `body: Record({first: TypeVar(a), second: TypeVar(b)})`.
+///
+/// When instantiated (e.g., `[Pair Int String]`), build substitution
+/// `{a -> Int, b -> String}` and apply to body.
+#[derive(Debug, Clone)]
+pub struct TypeAlias {
+    pub params: Vec<String>,
+    pub body: Type,
+}
+
 // ClassDecl, InstanceDecl, ClassEnv, InstanceEnv moved to type_class.rs (chr-module-split)
 // Imported via façade: use super::* resolves through types.rs → type_class.rs
 
-/// Per-scope type environment frame.
-///
-/// Class and instance declarations are stored per-frame and collected via `build_class_env()` /
-/// `build_instance_env()`, which traverse the parent chain. This replaces the previous approach of
-/// storing ClassEnv/InstanceEnv in InferState with propagation hacks (`in_prelude_load`,
-/// `prelude_origin`). Now class/instance declarations follow normal lexical scope rules.
-///
-/// ## Slot indexing
-///
-/// Each frame carries a slot-indexed parallel structure alongside the `bindings` HashMap:
-///
-/// - `slots: Vec<TypeScheme>` — schemes in insertion order, matching the resolver's slot
-///   assignment for this scope level.
-/// - `slot_names: Vec<String>` — names parallel to `slots`, used for seeding only.
-///
-/// `get_type_at(level, slot)` walks `level` parent links then indexes into `slots[slot]`.
-/// This mirrors `Environment::get_slot` and is the fast path for type-checking resolved
-/// `VarRef { level, slot }` nodes. The name-based `get()` remains for unresolved VarRefs,
-/// LSP hover, and bootstrap.
-///
-/// **Insertion order invariant:** The slot assigned by the resolver to a name in a given
-/// scope frame equals the position of that name's first insertion into `slots` for the
-/// corresponding `TypeEnv` frame. `insert` and `insert_scheme` maintain this by pushing
-/// to `slots`/`slot_names` only on the first insertion, and updating the existing entry
-/// in-place on re-insertion.
 #[derive(Debug, Clone)]
 pub struct TypeEnv {
-    bindings: HashMap<String, TypeScheme>,
-    /// Slot-indexed schemes — parallel to `slot_names`.
-    /// Slot 0 is the first-inserted binding in this frame, matching the resolver's slot 0.
-    pub(crate) slots: Vec<TypeScheme>,
-    /// Names parallel to `slots` — for seeding and debugging only.
-    pub(crate) slot_names: Vec<String>,
-    tycon_defs: HashMap<String, Arc<TyConDef>>,
-    /// Class declarations registered in this scope frame.
-    classes: Vec<crate::type_class::ClassDecl>,
-    /// Instance declarations registered in this scope frame.
-    instances: Vec<crate::type_class::InstanceDecl>,
+    /// Source-order entries — inserted via `insert_scheme` for bindings that correspond
+    /// to static dict/fn-param keys visible to the resolver.  `get_index(slot)` gives the
+    /// TypeScheme for that resolver-assigned slot.  IndexMap preserves insertion order and
+    /// updates-in-place on duplicate keys, so the slot index of an existing entry is stable.
+    slotted: IndexMap<String, TypeScheme>,
+    /// Name-only entries — inserted via `insert_scheme_named_only` for bindings that are
+    /// NOT assigned a slot by the resolver (class-method injections, ADT constructor type
+    /// information during Pass 2, narrowing overrides, etc.).  Looked up by name only.
+    extras: HashMap<String, TypeScheme>,
+    type_aliases: HashMap<String, TypeAlias>,
     parent: Option<Rc<TypeEnv>>,
 }
 
 impl TypeEnv {
     pub fn new() -> Self {
         Self {
-            bindings: HashMap::new(),
-            slots: Vec::new(),
-            slot_names: Vec::new(),
-            tycon_defs: HashMap::new(),
-            classes: Vec::new(),
-            instances: Vec::new(),
+            slotted: IndexMap::new(),
+            extras: HashMap::new(),
+            type_aliases: HashMap::new(),
             parent: None,
         }
     }
 
     pub fn with_parent(parent: &Rc<TypeEnv>) -> Self {
         Self {
-            bindings: HashMap::new(),
-            slots: Vec::new(),
-            slot_names: Vec::new(),
-            tycon_defs: HashMap::new(),
-            classes: Vec::new(),
-            instances: Vec::new(),
+            slotted: IndexMap::new(),
+            extras: HashMap::new(),
+            type_aliases: HashMap::new(),
             parent: Some(Rc::clone(parent)),
         }
     }
 
-    /// O(1) slot-indexed type lookup with de Bruijn level-based parent chain walking.
-    ///
-    /// `level` is a de Bruijn index: 0 = current frame, 1 = parent, N = Nth ancestor.
-    /// This matches the resolver's level assignment in `resolve.rs`.
-    ///
-    /// For `level = 0`: returns `self.slots.get(slot as usize)`.
-    /// For `level > 0`: walks `level` parent links, then does the slot lookup.
-    ///
-    /// Returns `None` if the level or slot is out of bounds.
-    ///
-    /// **Seeding/bootstrap note:** `get_by_name` via `get()` remains for unresolved
-    /// references, bootstrap, and LSP. This method is the fast path for resolved
-    /// `VarRef { level, slot }` nodes.
-    pub fn get_type_at(&self, level: u32, slot: u32) -> Option<&TypeScheme> {
-        if level == 0 {
-            return self.slots.get(slot as usize);
-        }
-        // Walk `level` steps up the parent chain
-        let mut current = self.parent.as_deref();
-        for _ in 1..level {
-            current = current?.parent.as_deref();
-        }
-        current?.slots.get(slot as usize)
-    }
-
-    /// Register a class declaration in this scope frame.
-    pub fn insert_class(&mut self, decl: crate::type_class::ClassDecl) {
-        self.classes.push(decl);
-    }
-
-    /// Register an instance declaration in this scope frame.
-    pub fn insert_instance(&mut self, decl: crate::type_class::InstanceDecl) {
-        self.instances.push(decl);
-    }
-
-    /// Build a ClassEnv by traversing the parent chain and collecting all ClassDecls.
-    /// The resulting ClassEnv represents the complete class hierarchy visible at this scope.
-    pub fn build_class_env(&self) -> crate::type_class::ClassEnv {
-        let mut env = crate::type_class::ClassEnv::new();
-        self.collect_classes_into(&mut env);
-        env
-    }
-
-    fn collect_classes_into(&self, env: &mut crate::type_class::ClassEnv) {
-        // Walk parent first so that child declarations can override parent ones (shadowing).
-        if let Some(ref parent) = self.parent {
-            parent.collect_classes_into(env);
-        }
-        for decl in &self.classes {
-            env.insert(decl.clone());
-        }
-    }
-
-    /// Build an InstanceEnv by traversing the parent chain and collecting all InstanceDecls.
-    /// The resulting InstanceEnv represents all instances visible at this scope.
-    pub fn build_instance_env(&self) -> crate::type_class::InstanceEnv {
-        let mut env = crate::type_class::InstanceEnv::new();
-        self.collect_instances_into(&mut env);
-        env
-    }
-
-    fn collect_instances_into(&self, env: &mut crate::type_class::InstanceEnv) {
-        // Walk parent first so that child declarations shadow parent ones if keys match.
-        if let Some(ref parent) = self.parent {
-            parent.collect_instances_into(env);
-        }
-        for decl in &self.instances {
-            // insert is idempotent on duplicates; ignore errors (overlap detection
-            // is done at registration time, not collection time).
-            let _ = env.insert(decl.clone());
-        }
-    }
-
-    /// Look up a class declaration by name, traversing the parent chain.
-    pub fn get_class(&self, name: &str) -> Option<crate::type_class::ClassDecl> {
-        for decl in &self.classes {
-            if decl.name == name {
-                return Some(decl.clone());
-            }
-        }
-        self.parent.as_ref().and_then(|p| p.get_class(name))
-    }
-
-    /// Collect all class declarations visible at this scope (parent chain included).
-    /// Returned in order from root to current frame (parent declarations first).
-    pub fn all_classes(&self) -> Vec<crate::type_class::ClassDecl> {
-        let mut result = Vec::new();
-        self.collect_all_classes_into(&mut result);
-        result
-    }
-
-    fn collect_all_classes_into(&self, result: &mut Vec<crate::type_class::ClassDecl>) {
-        if let Some(ref parent) = self.parent {
-            parent.collect_all_classes_into(result);
-        }
-        result.extend(self.classes.iter().cloned());
-    }
-
     pub fn get(&self, name: &str) -> Option<&TypeScheme> {
-        self.lookup(name).map(|(scheme, _)| scheme)
+        // Look in slotted first, then extras, then walk parent chain.
+        if let Some(scheme) = self.slotted.get(name) {
+            return Some(scheme);
+        }
+        if let Some(scheme) = self.extras.get(name) {
+            return Some(scheme);
+        }
+        let mut current = self.parent.as_deref();
+        while let Some(env) = current {
+            if let Some(scheme) = env.slotted.get(name) {
+                return Some(scheme);
+            }
+            if let Some(scheme) = env.extras.get(name) {
+                return Some(scheme);
+            }
+            current = env.parent.as_deref();
+        }
+        None
+    }
+
+    /// Slot-indexed lookup with key verification: walk `level` parent frames (0 = current),
+    /// look up `slot` in the target frame's `slotted` IndexMap, and return the TypeScheme
+    /// ONLY if the key at that slot matches `expected_name`.
+    ///
+    /// The name check is the same safety net used by the runtime `Environment::get_by_slot`:
+    /// if the resolver's slot assignment diverges from the TypeEnv's insertion order (e.g.,
+    /// due to non-source-order insertions in sequential-dict envs), the slot lookup returns
+    /// `None` and the caller falls back to name-based `get(name)`.
+    ///
+    /// Returns `None` if:
+    /// - The parent chain is shallower than `level`.
+    /// - The target frame has fewer than `slot + 1` slotted entries.
+    /// - The key at `slot` does not equal `expected_name` (slot-shift detected).
+    ///
+    /// Call sites MUST fall back to `get(name)` when this returns `None`.
+    pub fn get_type_at(&self, level: u32, slot: u32, expected_name: &str) -> Option<&TypeScheme> {
+        if level == 0 {
+            if let Some((key, scheme)) = self.slotted.get_index(slot as usize) {
+                if key == expected_name {
+                    return Some(scheme);
+                }
+            }
+            return None;
+        }
+        // Walk the parent chain using the same borrow-chain pattern as get().
+        let mut steps = level;
+        let mut current = self.parent.as_deref();
+        while let Some(env) = current {
+            steps -= 1;
+            if steps == 0 {
+                if let Some((key, scheme)) = env.slotted.get_index(slot as usize) {
+                    if key == expected_name {
+                        return Some(scheme);
+                    }
+                }
+                return None;
+            }
+            current = env.parent.as_deref();
+        }
+        None
     }
 
     /// Look up a binding in the CURRENT frame only (does not walk the parent chain).
@@ -1625,143 +1299,101 @@ impl TypeEnv {
     /// `merge_env_bindings_into` already inserted a binding into the flat output env,
     /// without accidentally matching builtins in a parent env.
     pub fn get_own(&self, name: &str) -> Option<&TypeScheme> {
-        self.bindings.get(name)
+        self.slotted.get(name).or_else(|| self.extras.get(name))
     }
 
-    pub(crate) fn lookup(&self, name: &str) -> Option<(&TypeScheme, &HashMap<String, TypeScheme>)> {
-        if let Some(scheme) = self.bindings.get(name) {
-            return Some((scheme, &self.bindings));
+    pub fn get_type_alias(&self, name: &str) -> Option<&TypeAlias> {
+        self.lookup_type_alias(name).map(|(alias, _)| alias)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn lookup(&self, name: &str) -> Option<&TypeScheme> {
+        self.get(name)
+    }
+
+    fn lookup_type_alias(&self, name: &str) -> Option<(&TypeAlias, &HashMap<String, TypeAlias>)> {
+        if let Some(alias) = self.type_aliases.get(name) {
+            return Some((alias, &self.type_aliases));
         }
         let mut current = self.parent.as_deref();
         while let Some(env) = current {
-            if let Some(scheme) = env.bindings.get(name) {
-                return Some((scheme, &env.bindings));
+            if let Some(alias) = env.type_aliases.get(name) {
+                return Some((alias, &env.type_aliases));
             }
             current = env.parent.as_deref();
         }
         None
     }
 
+    /// Insert a type (monomorphic scheme) into the slotted IndexMap.
+    /// The slot index of this entry is `slotted.len() - 1` after insertion.
+    /// If an entry with this name already exists in `slotted`, the value is updated
+    /// in-place and the slot index is preserved (IndexMap semantics).
     pub fn insert(&mut self, name: String, ty: Type) {
-        let scheme = TypeScheme::mono(ty);
-        self.insert_scheme_impl(name, scheme);
+        self.slotted.insert(name, TypeScheme::mono(ty));
     }
 
+    /// Insert a TypeScheme into the slotted IndexMap.
+    /// Use this for entries that correspond to static dict keys or fn params visible
+    /// to the resolver — entries where `slot = get_index_of(name)` is meaningful.
+    /// If the entry already exists, the value is updated in-place (slot preserved).
     pub fn insert_scheme(&mut self, name: String, scheme: TypeScheme) {
-        self.insert_scheme_impl(name, scheme);
+        self.slotted.insert(name, scheme);
     }
 
-    /// Internal: insert a scheme into both `bindings` (HashMap, for name-based lookup) and
-    /// `slots`/`slot_names` (Vec, for slot-indexed lookup).
+    /// Insert a TypeScheme into the extras HashMap (name-only, no slot).
+    /// Use this for entries NOT assigned a slot by the resolver:
+    /// - ADT constructor type information (from `inject_adt_constructor_schemes`)
+    /// - Class method injections (from `pending_scheme_injections`)
+    /// - Narrowing overrides
+    /// - Builtin bindings
     ///
-    /// On first insertion: push to both vecs (slot = current length).
-    /// On re-insertion (same name already in this frame): update the existing vec entry
-    /// in-place so the slot index is preserved (matches resolver's slot assignment).
-    fn insert_scheme_impl(&mut self, name: String, scheme: TypeScheme) {
-        // Update or insert in the slot vecs
-        if let Some(pos) = self.slot_names.iter().position(|n| n == &name) {
-            // Re-insertion: update in place, preserving slot index
-            self.slots[pos] = scheme.clone();
-        } else {
-            // First insertion: push to vecs (slot = next index)
-            self.slot_names.push(name.clone());
-            self.slots.push(scheme.clone());
-        }
-        // Always update HashMap (may replace existing)
-        self.bindings.insert(name, scheme);
+    /// These entries are visible via `get(name)` but are never reached via
+    /// `get_type_at(level, slot)`.
+    pub fn insert_scheme_named_only(&mut self, name: String, scheme: TypeScheme) {
+        self.extras.insert(name, scheme);
     }
 
-    /// Insert a type constructor definition.
-    ///
-    /// Takes `Arc<TyConDef>` so that pointer identity is preserved when the same Arc flows
-    /// from this TypeEnv into `InferState.tycon_env`. `Arc::ptr_eq` in UNIFY-TYCON can then
-    /// detect cross-scope shadowing (B-343).
-    pub fn insert_tycon_def(&mut self, name: String, def: Arc<TyConDef>) {
-        self.tycon_defs.insert(name, def);
+    pub fn insert_type_alias(&mut self, name: String, alias: TypeAlias) {
+        self.type_aliases.insert(name, alias);
     }
 
-    /// Look up a type constructor definition by name, walking the parent chain.
-    ///
-    /// Returns a reference to the `Arc<TyConDef>`, not a plain reference to `TyConDef`,
-    /// so callers can clone the Arc to preserve pointer identity for `Arc::ptr_eq` checks.
-    pub fn lookup_tycon_def(&self, name: &str) -> Option<&Arc<TyConDef>> {
-        if let Some(def) = self.tycon_defs.get(name) {
-            return Some(def);
-        }
-        let mut current = self.parent.as_deref();
-        while let Some(env) = current {
-            if let Some(def) = env.tycon_defs.get(name) {
-                return Some(def);
-            }
-            current = env.parent.as_deref();
-        }
+    /// Look up a user-defined type constructor definition by name.
+    /// Returns `None` if no TyConDef is registered for this name.
+    /// Placeholder: TyConDef registration is in `InferState.tycon_env` (new design)
+    /// or not yet implemented in the current TypeEnv design.
+    pub fn lookup_tycon_def(
+        &self,
+        _name: &str,
+    ) -> Option<std::sync::Arc<crate::type_def::TyConDef>> {
         None
     }
 
-    /// Resolve an unqualified constructor name to its fully qualified tag (T-956).
-    ///
-    /// Searches all TyConDef entries visible in this environment (current frame and parent chain)
-    /// for a constructor whose unqualified name (the part after the last `.`) matches `name`.
-    /// Returns the qualified tag string (e.g., `"Result.Ok"` for `name == "Ok"`) from the
-    /// INNERMOST frame that has a match. Returns `None` if not found in any frame.
-    ///
-    /// Disambiguation: uses inner-wins semantics (same as TypeEnv bindings). If multiple TyCons
-    /// in the same frame have a constructor with the same unqualified name, the lexicographically
-    /// first qualified tag is returned (B-363: deterministic resolution for coherence).
-    pub fn resolve_constructor_tag(&self, name: &str) -> Option<String> {
-        // Already qualified — no lookup needed.
-        if name.contains('.') {
-            return Some(name.to_string());
-        }
-
-        // Search the current frame first (inner-wins).
-        // B-363: collect all matches and pick the lexicographically smallest qualified tag
-        // to guarantee deterministic resolution when multiple TyCons in the same frame
-        // have a constructor with the same unqualified name.
-        let mut candidates: Vec<String> = Vec::new();
-        for (tycon_name, def) in &self.tycon_defs {
-            for (ctor_tag, _arity) in &def.constructors {
-                let unqualified = ctor_tag
-                    .rfind('.')
-                    .map_or(ctor_tag.as_str(), |pos| &ctor_tag[pos + 1..]);
-                if unqualified == name {
-                    let qualified = if ctor_tag.contains('.') {
-                        ctor_tag.clone()
-                    } else {
-                        format!("{}.{}", tycon_name, ctor_tag)
-                    };
-                    candidates.push(qualified);
-                }
-            }
-        }
-        if !candidates.is_empty() {
-            candidates.sort();
-            return Some(candidates.into_iter().next().unwrap());
-        }
-
-        // Walk the parent chain recursively if not found in current frame.
-        self.parent
-            .as_ref()
-            .and_then(|p| p.resolve_constructor_tag(name))
+    /// Register a TyConDef in the type environment (stub — TyCon defs are stored in InferState.tycon_env,
+    /// not in TypeEnv; this method exists for call-site compatibility and is a no-op here).
+    #[allow(unused_variables)]
+    pub fn insert_tycon_def(
+        &mut self,
+        name: String,
+        def: std::sync::Arc<crate::type_def::TyConDef>,
+    ) {
+        // No-op: TyCon registration goes through InferState.tycon_env, not TypeEnv.
     }
 
-    /// Collect all tycon_defs visible from this environment (including parent scopes).
-    ///
-    /// Walks the full scope chain; inner-scope definitions overwrite outer ones (inner-scope wins).
-    /// Used by the REPL to seed `InferState.tycon_env` with type constructor definitions
-    /// accumulated across previous REPL turns, so that `[type ...]` declarations from
-    /// one turn are visible to the type checker in subsequent turns (B-345).
-    ///
-    /// Arc clones are cheap — the Arc is cloned, not the TyConDef. Pointer identity is preserved
-    /// so `Arc::ptr_eq` in UNIFY-TYCON can detect cross-scope shadowing (B-343).
-    pub fn collect_all_tycon_defs(&self, defs: &mut HashMap<String, Arc<TyConDef>>) {
-        // Walk parent chain first, then overlay current frame — inner-scope wins.
-        if let Some(ref parent) = self.parent {
-            parent.collect_all_tycon_defs(defs);
+    /// Register alias type schemes (copy the scheme from canonical to alias names).
+    pub fn alias_types(&mut self, pairs: &[(&str, &str)]) {
+        for &(alias, canonical) in pairs {
+            if let Some(scheme) = self.get(canonical).cloned() {
+                self.insert_scheme_named_only(alias.to_string(), scheme);
+            }
         }
-        for (name, def) in &self.tycon_defs {
-            defs.insert(name.clone(), Arc::clone(def));
-        }
+    }
+
+    /// Look up the qualified form of a constructor tag.
+    /// E.g., "Ok" → "Result.Ok" if Result is in scope.
+    /// Returns `None` if no matching TyCon is found.
+    pub fn resolve_constructor_tag(&self, _tag: &str) -> Option<String> {
+        None
     }
 
     /// Collect all binding names visible from this environment (including parent scopes).
@@ -1769,7 +1401,10 @@ impl TypeEnv {
     /// Walks the scope chain and inserts every bound name into `names`. Used by
     /// `imports::merge_env_bindings_into` to enumerate what the prelude introduced.
     pub fn collect_all_names(&self, names: &mut std::collections::HashSet<String>) {
-        for name in self.bindings.keys() {
+        for name in self.slotted.keys() {
+            names.insert(name.clone());
+        }
+        for name in self.extras.keys() {
             names.insert(name.clone());
         }
         if let Some(ref parent) = self.parent {
@@ -1777,13 +1412,19 @@ impl TypeEnv {
         }
     }
 
-    /// Iterate over the TyConDef entries defined in THIS frame (no parent walk).
-    pub fn own_tycon_defs(&self) -> impl Iterator<Item = (&String, &Arc<TyConDef>)> + '_ {
-        self.tycon_defs.iter()
+    /// Collect only the binding names defined in THIS frame (no parent walk).
+    ///
+    /// Used by `imports::collect_names_above_baseline` to identify names introduced
+    /// by the prelude (rather than inherited from the builtin baseline).
+    pub fn own_type_aliases(&self) -> impl Iterator<Item = (&str, &TypeAlias)> {
+        self.type_aliases.iter().map(|(k, v)| (k.as_str(), v))
     }
 
     pub fn collect_own_names(&self, names: &mut std::collections::HashSet<String>) {
-        for name in self.bindings.keys() {
+        for name in self.slotted.keys() {
+            names.insert(name.clone());
+        }
+        for name in self.extras.keys() {
             names.insert(name.clone());
         }
     }
@@ -1796,42 +1437,170 @@ impl TypeEnv {
         self.parent.as_ref()
     }
 
-    /// Copy all bindings and type constructors from `other` into `self`.
+    /// Copy all bindings and type aliases from `other` into `self`.
     ///
-    /// Copies only the own (non-parent) bindings and tycon_defs from `other`.
+    /// Copies only the own (non-parent) bindings and type aliases from `other`.
     /// Parent chains are not traversed. Existing entries in `self` with the same
     /// name are overwritten by entries from `other`.
     ///
     /// Used by `build_builtins_type_env()` to combine per-module type environments
     /// (core, datetime, net) into a single flat environment.
-    /// T-1064: type_aliases eliminated; only tycon_defs are merged.
     pub fn merge(&mut self, other: TypeEnv) {
-        for (name, scheme) in other.bindings {
-            self.bindings.insert(name, scheme);
+        for (name, scheme) in other.slotted {
+            self.slotted.insert(name, scheme);
         }
-        for (name, def) in other.tycon_defs {
-            self.tycon_defs.insert(name, def);
+        for (name, scheme) in other.extras {
+            self.extras.insert(name, scheme);
         }
-        for decl in other.classes {
-            self.classes.push(decl);
-        }
-        for decl in other.instances {
-            self.instances.push(decl);
+        for (name, alias) in other.type_aliases {
+            self.type_aliases.insert(name, alias);
         }
     }
 
-    /// Register a batch of type aliases by copying the TypeScheme from a canonical name.
+    /// Inject `builtin-*` aliases into this type environment.
     ///
-    /// For each `(alias, canonical)` pair: if `canonical` is found in the environment,
-    /// its `TypeScheme` is inserted under `alias`. If `canonical` is absent, the pair
-    /// is silently skipped (same lookup-and-copy pattern).
+    /// These aliases map `builtin-lt` → `<`, `builtin-add` → `+`, etc.
+    /// They are used by `stdlib/prelude.llt` to call Rust primitives by stable
+    /// names that cannot be shadowed by user code.
     ///
-    /// Used by the per-file `*_builtin_types` functions (T-1102) to co-locate `builtin-*`
-    /// type alias declarations with their Rust implementations.
-    pub fn alias_types(&mut self, pairs: &[(&str, &str)]) {
-        for (alias, canonical) in pairs {
+    /// **Only call this when type-checking prelude itself.** User code does NOT
+    /// have `builtin-*` names in scope — they are private to the prelude evaluation
+    /// layer. Adding them here for user type-checking would allow the type checker
+    /// to accept code that the evaluator would reject with "undefined variable".
+    pub fn inject_builtin_aliases(&mut self) {
+        for (alias, canonical) in [
+            ("builtin-lt", "<"),
+            ("builtin-gt", ">"),
+            ("builtin-gte", ">="),
+            ("builtin-lte", "<="),
+            ("builtin-eq", "="),
+            ("builtin-add", "+"),
+            ("builtin-sub", "-"),
+            ("builtin-mul", "*"),
+            ("builtin-div", "/"),
+            ("builtin-if", "if"),
+            ("builtin-filter", "filter"),
+            ("builtin-map", "map"),
+            ("builtin-reduce", "reduce"),
+            ("builtin-take", "take"),
+            ("builtin-drop", "drop"),
+            ("builtin-eval-ast", "eval-ast"),
+            ("builtin-gensym", "gensym"),
+            ("builtin-llt-repr", "llt-repr"),
+            ("builtin-tag-of", "tag-of"),
+            ("builtin-variant", "variant"),
+            ("builtin-decimal", "decimal"),
+            ("builtin-big-int", "big-int"),
+            ("builtin-proxy", "proxy"),
+            // prelude-missing-wrappers sprint: stable aliases for previously-unwrapped builtins
+            ("builtin-keys", "keys"),
+            ("builtin-merge", "merge"),
+            ("builtin-each", "each"),
+            ("builtin-each-key", "each-key"),
+            ("builtin-each-kv", "each-kv"),
+            ("builtin-floor", "floor"),
+            ("builtin-round", "round"),
+            ("builtin-to-float", "to-float"),
+            ("builtin-try", "try"),
+            ("builtin-apply", "apply"),
+            ("builtin-type-of", "type-of"),
+            ("builtin-narrow", "narrow"),
+            // builtin-from-json deleted (json-serde-removal sprint): from-json is pure tinct in stdlib/codecs/json.llt
+            // builtin-privacy-primary-names sprint: new builtin-* → bare-name mappings
+            ("builtin-raise", "raise"),
+            ("builtin-emit", "emit"),
+            ("builtin-env", "env"),
+            ("builtin-str", "str"),
+            ("builtin-split", "split"),
+            ("builtin-trim", "trim"),
+            ("builtin-str-length", "str-length"),
+            ("builtin-str-slice", "str-slice"),
+            ("builtin-to-int", "to-int"),
+            ("builtin-append", "append"),
+            ("builtin-length", "length"),
+            // docgen-conformance: list-dir, load, expand exported from prelude
+            ("builtin-list-dir", "list-dir"),
+            ("builtin-load", "load"),
+            ("builtin-expand", "expand"),
+            ("builtin-eval", "eval"),
+            ("builtin-eval-types", "eval-types"),
+            ("builtin-blake3", "blake3"),
+            ("builtin-cap-identity", "cap-identity"),
+            ("builtin-include-cache-get", "include-cache-get"),
+            ("builtin-include-cache-put", "include-cache-put"),
+            // builtin-privacy-operators-and-io sprint: new builtin-* → bare-name mappings
+            ("builtin-replace", "replace"),
+            ("builtin-str-chars", "str-chars"),
+            ("builtin-char-code", "char-code"),
+            ("builtin-chr", "chr"),
+            ("builtin-str-bytes", "str-bytes"),
+            ("builtin-bytes-str", "bytes-str"),
+            ("builtin-str-index-of", "str-index-of"),
+            ("builtin-trim-start", "trim-start"),
+            ("builtin-trim-end", "trim-end"),
+            ("builtin-str-to-upper-char", "str-to-upper-char"),
+            ("builtin-str-to-lower-char", "str-to-lower-char"),
+            ("builtin-str-map-chars", "str-map-chars"),
+            ("builtin-regex-match?", "regex-match?"),
+            // math functions (pow, sqrt, sin, etc.) are NOT injected here:
+            // they are stdlib/math.llt exports (require [include %libdir "math.llt"]).
+            // The aliases were removed in T-826 along with the runtime injection loop.
+            ("builtin-band", "band"),
+            ("builtin-bor", "bor"),
+            ("builtin-bxor", "bxor"),
+            ("builtin-shl", "shl"),
+            ("builtin-shr", "shr"),
+            ("builtin-float", "float"),
+            // B-168: I/O and builder builtins renamed to builtin-* prefix
+            ("builtin-open", "open"),
+            ("builtin-write", "write"),
+            ("builtin-write-atomic", "write-atomic"),
+            ("builtin-write-handle", "write-handle"),
+            ("builtin-flush", "flush"),
+            ("builtin-close", "close"),
+            ("builtin-stat", "stat"),
+            ("builtin-exists", "exists"),
+            ("builtin-stat-symlink", "stat-symlink"),
+            ("builtin-copy-file", "copy-file"),
+            ("builtin-symlink", "symlink"),
+            ("builtin-set-permissions", "set-permissions"),
+            ("builtin-make-dir", "make-dir"),
+            ("builtin-rename", "rename"),
+            ("builtin-link", "link"),
+            ("builtin-read-link", "read-link"),
+            ("builtin-get-xattr", "get-xattr"),
+            ("builtin-set-xattr", "set-xattr"),
+            ("builtin-remove-xattr", "remove-xattr"),
+            ("builtin-list-xattrs", "list-xattrs"),
+            ("builtin-raw-create", "raw-create"),
+            ("builtin-seek", "seek"),
+            ("builtin-seek-end", "seek-end"),
+            ("builtin-position", "position"),
+            ("builtin-revocable", "revocable"),
+            ("builtin-revoke-cap", "revoke-cap"),
+            ("builtin-cap-data", "cap-data"),
+            ("builtin-connect", "connect"),
+            ("builtin-tls-layer", "tls-layer"),
+            ("builtin-tls-peer-cert", "tls-peer-cert"),
+            ("builtin-send-datagram", "send-datagram"),
+            ("builtin-recv-datagram", "recv-datagram"),
+            ("builtin-string-handle", "string-handle"),
+            ("builtin-make-builder", "make-builder"),
+            ("builtin-builder-set", "builder-set"),
+            ("builtin-builder-delete", "builder-delete"),
+            ("builtin-builder-finish", "builder-finish"),
+            ("builtin-builder-snapshot", "builder-snapshot"),
+            ("builtin-builder-has?", "builder-has?"),
+            ("builtin-builder-get", "builder-get"),
+            ("builtin-builder-get-or", "builder-get-or"),
+            // Reactive cells (T-831)
+            ("builtin-reactive-cell", "reactive-cell"),
+            ("builtin-cell-get", "cell-get"),
+            ("builtin-cell-set", "cell-set"),
+        ] {
             if let Some(scheme) = self.get(canonical).cloned() {
-                self.insert_scheme(alias.to_string(), scheme);
+                // Builtin aliases are not source-order dict entries; use name-only insertion.
+                self.insert_scheme_named_only(alias.to_string(), scheme);
             }
         }
     }
@@ -1843,10 +1612,125 @@ impl Default for TypeEnv {
     }
 }
 
-/// `TypeError` is the canonical type error type.
-///
-/// It is an alias for `TypeErrorTyped` from `crate::type_errors`.
-pub use crate::type_errors::TypeErrorTyped as TypeError;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeError {
+    pub message: String,
+    pub span: Span,
+    /// Extra `= note:` lines attached at the error-generation site (e.g. "caused by" context).
+    pub notes: Box<Vec<String>>,
+    /// Explicit stable error code, e.g. `"T014"`. When `Some`, overrides the message-pattern
+    /// dispatch in `code()`. Use `with_code()` to attach a code at the construction site.
+    pub code: Option<String>,
+}
+
+impl TypeError {
+    pub fn new(message: impl Into<String>, span: Span) -> Self {
+        let span = Span {
+            start: span.start,
+            end: span.end,
+            file: None,
+        };
+        Self {
+            message: message.into(),
+            span,
+            notes: Box::new(Vec::new()),
+            code: None,
+        }
+    }
+
+    /// Builder method: attach an explicit error code and return `self`.
+    ///
+    /// The explicit code takes priority over the message-pattern dispatch in `code()`.
+    pub fn with_code(mut self, code: impl Into<String>) -> Self {
+        self.code = Some(code.into());
+        self
+    }
+
+    pub fn type_mismatch(expected: &Type, got: &Type, span: Span) -> Self {
+        Self::new(format!("cannot unify {expected} with {got}"), span)
+    }
+
+    pub fn field_not_found(field: &str, record_type: &Type, span: Span) -> Self {
+        Self::new(format!("field '{field}' not found in {record_type}"), span)
+    }
+
+    pub fn not_a_record(ty: &Type, span: Span) -> Self {
+        Self::new(format!("expected record type, got {ty}"), span)
+    }
+
+    pub fn not_a_function(ty: &Type, span: Span) -> Self {
+        Self::new(format!("expected function type, got {ty}"), span)
+    }
+
+    pub fn undefined_variable(name: &str, span: Span) -> Self {
+        // Emit name as-is -- `%`-prefixed refs include `%`; plain identifiers display without sigil.
+        Self::new(format!("undefined variable: {name}"), span)
+    }
+
+    pub fn undefined_type(name: &str, span: Span) -> Self {
+        Self::new(format!("undefined type: {name}"), span)
+    }
+
+    pub fn kind_mismatch(expected_kind: &str, got: &str, span: Span) -> Self {
+        Self::new(
+            format!("kind mismatch: expected `{expected_kind}`, got {got}"),
+            span,
+        )
+    }
+
+    /// Returns the stable type error code for this error.
+    ///
+    /// If an explicit code was attached via `with_code()`, it is returned directly.
+    /// Otherwise the code is derived from the error message:
+    ///
+    /// - T001: arity mismatch (wrong number of arguments at call site)
+    /// - T002: undefined variable or undefined type
+    /// - T003: cannot unify / type mismatch / field not found / not a function / not a record
+    /// - T004: type assert failure (annotation-site mismatch)
+    /// - T014: overlapping CHR instance patterns (disjointness violation)
+    /// - T015: CHR instance consistency violation (FD disagreement between arms)
+    /// - T016: CHR instance coverage violation (determined var absent from determining positions)
+    /// - T091: kind mismatch (expected `* → *`, got concrete type, etc.)
+    /// - T000: other type errors not covered above
+    pub fn code(&self) -> &str {
+        if let Some(ref explicit) = self.code {
+            return explicit.as_str();
+        }
+        let msg = &self.message;
+        if msg.starts_with("arity mismatch") {
+            "T001"
+        } else if msg.starts_with("undefined variable") || msg.starts_with("undefined type") {
+            "T002"
+        } else if msg.starts_with("cannot unify")
+            || msg.starts_with("field '")
+            || msg.starts_with("expected record type")
+            || msg.starts_with("expected function type")
+            || msg.starts_with("type mismatch")
+        {
+            "T003"
+        } else if msg.contains("type assert") || msg.starts_with("non-exhaustive match") {
+            "T004"
+        } else if msg.starts_with("overlapping instance patterns") {
+            "T014"
+        } else if msg.starts_with("consistency violation") {
+            "T015"
+        } else if msg.starts_with("coverage violation") {
+            "T016"
+        } else if msg.starts_with("kind mismatch") {
+            "T091"
+        } else {
+            "T000"
+        }
+    }
+}
+
+impl fmt::Display for TypeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} at {}", self.message, self.span)
+    }
+}
+
+impl std::error::Error for TypeError {}
 
 /// Format a `TypeError` into the Rust-style diagnostic format with source context.
 ///
@@ -1859,7 +1743,7 @@ pub use crate::type_errors::TypeErrorTyped as TypeError;
 ///    |          ^
 /// ```
 ///
-/// When `source` is empty or the span is synthetic,
+/// When `source` is empty or the span is synthetic (`Span::origin()`),
 /// only the header line is emitted (no snippet).
 ///
 /// `file_name` is shown in the ` --> file:line:col` line. Pass `"-"` for stdin input.
@@ -1867,18 +1751,17 @@ pub fn format_type_error(err: &TypeError, source: &str, file_name: &str) -> Stri
     use crate::error::render_span_snippet;
 
     let code = err.code();
-    let span = err.span();
-    let line = span.start.line;
-    let col = span.start.column;
+    let line = err.span.start.line;
+    let col = err.span.start.column;
 
     // Header: error[Txxx]: message
-    let mut out = format!("error[{code}]: {}\n", err.message());
+    let mut out = format!("error[{code}]: {}\n", err.message);
 
     // Location: --> file:line:col
     out.push_str(&format!(" --> {file_name}:{line}:{col}\n"));
 
     // Snippet: source context with caret
-    if let Some(snippet) = render_span_snippet(source, span.clone()) {
+    if let Some(snippet) = render_span_snippet(source, err.span.clone()) {
         out.push_str("  |\n");
         out.push_str(&snippet);
     }
@@ -1891,52 +1774,9 @@ pub fn format_type_error(err: &TypeError, source: &str, file_name: &str) -> Stri
     }
 
     // Attached notes added at error-generation time (e.g. "caused by" for cascade T002s)
-    for note in err.notes().iter() {
+    for note in err.notes.iter() {
         out.push('\n');
         out.push_str(note);
-    }
-
-    // Call-chain context frames (B-374, B-379).
-    //
-    // Frames are ordered innermost-first (index 0 = the directly enclosing call).
-    // Each frame is rendered as:
-    //
-    //   = note: in call to `map`
-    //    --> user.llt:10:5
-    //     |
-    //  10 | [map [* _ 2] xs]
-    //     |  ^^^
-    //
-    // When the frame span comes from a different file (prelude or included file),
-    // the file path from the span is used. When the frame span is a user-code span
-    // with no embedded source, only the location line is shown.
-    for frame in err.call_stack() {
-        let frame_line = frame.span.start.line;
-        let frame_col = frame.span.start.column;
-        out.push('\n');
-        out.push_str(&format!("  = note: in {}\n", frame.label));
-        // Determine which file name to show for this frame.
-        let frame_file = frame
-            .span
-            .file
-            .as_ref()
-            .map(|sf| sf.path.as_ref())
-            .unwrap_or(file_name);
-        out.push_str(&format!("   --> {frame_file}:{frame_line}:{frame_col}"));
-        // Show snippet if source is available via the embedded SourceFile or the current source.
-        let snippet = if let Some(ref sf) = frame.span.file {
-            render_span_snippet(&sf.content, frame.span.clone())
-        } else {
-            render_span_snippet(source, frame.span.clone())
-        };
-        if let Some(snip) = snippet {
-            out.push('\n');
-            out.push_str("    |");
-            for ln in snip.lines() {
-                out.push('\n');
-                out.push_str(ln);
-            }
-        }
     }
 
     out
@@ -1946,135 +1786,321 @@ pub fn format_type_error(err: &TypeError, source: &str, file_name: &str) -> Stri
 ///
 /// Returns a formatted string with note and/or help lines, each prefixed with `  = `.
 fn type_error_note(err: &TypeError) -> Option<String> {
-    match err {
-        // Typed ArityMismatch: variant-first dispatch
-        TypeError::ArityMismatch(_) => {
-            Some("  = note: check that you are passing the correct number of arguments".to_string())
+    let msg = &err.message;
+
+    if msg.starts_with("arity mismatch") {
+        Some("  = note: check that you are passing the correct number of arguments".to_string())
+    } else if msg.starts_with("undefined variable") {
+        // When a caused-by note is attached (cascade from a failed definition), suppress the
+        // generic "not defined in any enclosing scope" note — it would be misleading.
+        if !err.notes.is_empty() {
+            return None;
         }
-        // Typed UndefinedVariable: variant-first dispatch with structured name
-        TypeError::UndefinedVariable(e) => {
-            // When a caused-by note is attached, suppress the generic "not defined in scope" note.
-            if !e.notes.is_empty() {
-                return None;
-            }
-            let name = e.name.trim();
+
+        // Extract the variable name from "undefined variable: <name>"
+        let name = msg
+            .strip_prefix("undefined variable: ")
+            .unwrap_or("")
+            .trim();
+        let mut lines = Vec::new();
+
+        if name.is_empty() {
+            lines.push("  = note: variable is not defined in any enclosing scope".to_string());
+        } else {
+            lines.push(format!(
+                "  = note: `{name}` is not defined in any enclosing scope at this point"
+            ));
+            lines.push("  = help: if this name is defined later in the document, group definitions using a function scope: [call [fn [let] ...]]".to_string());
+        }
+
+        Some(lines.join("\n"))
+    } else if msg.starts_with("cannot unify") {
+        // Extract types from "cannot unify A with B"
+        let rest = msg.strip_prefix("cannot unify ").unwrap_or("");
+        if let Some(idx) = rest.find(" with ") {
+            let expected = &rest[..idx];
+            let got = &rest[idx + 6..];
             let mut lines = Vec::new();
-            if name.is_empty() {
-                lines.push("  = note: variable is not defined in any enclosing scope".to_string());
-            } else {
-                lines.push(format!(
-                    "  = note: `{name}` is not defined in any enclosing scope at this point"
-                ));
-                lines.push("  = help: if this name is defined later in the document, group definitions using a function scope: [call [fn [let] ...]]".to_string());
+
+            lines.push(format!(
+                "  = note: expected `{expected}`\n           found `{got}`"
+            ));
+
+            // Add conversion hints for common type mismatches
+            // "cannot unify A with B" means expected A, got B
+            // So we suggest converting B (got) to A (expected)
+            let help_msg = match (expected, got) {
+                // Expected Int/Number, got String → convert String to Int/Float
+                (e, "String") if e.contains("Int") || e.contains("Number") => {
+                    Some("  = help: convert with [int <expr>] or [float <expr>]")
+                }
+                // Expected String, got Int/Number → convert Int/Number to String
+                ("String", g) if g.contains("Int") || g.contains("Number") => {
+                    Some("  = help: convert with [str <expr>]")
+                }
+                // Expected String, got Float
+                ("String", g) if g.contains("Float") => Some("  = help: convert with [str <expr>]"),
+                // Expected Float, got String
+                (e, "String") if e.contains("Float") => {
+                    Some("  = help: convert with [float <expr>]")
+                }
+                // Expected String, got Bool
+                ("String", "Bool") => Some("  = help: convert with [if <expr> \"true\" \"false\"]"),
+                // Expected Bool, got String
+                ("Bool", "String") => Some("  = help: convert with [not [call $= \"\" <expr>]]"),
+                // Expected Int/Number, got Bool → convert Bool to Int
+                (e, "Bool") if e.contains("Int") || e.contains("Number") => {
+                    Some("  = help: convert with [if <expr> 1 0]")
+                }
+                // Expected Float, got Bool
+                (e, "Bool") if e.contains("Float") => {
+                    Some("  = help: convert with [if <expr> 1.0 0.0]")
+                }
+                // Expected Bool, got Int/Number → convert Int/Number to Bool
+                ("Bool", g) if g.contains("Int") || g.contains("Number") => {
+                    Some("  = help: convert with [not [call $= 0 <expr>]]")
+                }
+                // Expected Bool, got Float
+                ("Bool", g) if g.contains("Float") => {
+                    Some("  = help: convert with [not [call $= 0.0 <expr>]]")
+                }
+                _ => None,
+            };
+
+            if let Some(help) = help_msg {
+                lines.push(help.to_string());
             }
+
             Some(lines.join("\n"))
+        } else {
+            None
         }
-        // Typed UnificationFailure: variant-first dispatch with structured types
-        TypeError::UnificationFailure(e) => {
-            type_error_note_unification(&format!("{}", e.expected), &format!("{}", e.got))
-        }
-        // Generic catch-all: fall back to message-pattern dispatch for backward compatibility.
-        // This handles errors not yet migrated to typed variants (GenericTypeError) and any
-        // other variants whose message happens to match a well-known pattern.
-        _ => {
-            let msg = err.message();
-            if msg.starts_with("arity mismatch") {
-                Some(
-                    "  = note: check that you are passing the correct number of arguments"
-                        .to_string(),
-                )
-            } else if msg.starts_with("undefined variable") {
-                if !err.notes().is_empty() {
-                    return None;
-                }
-                let name = msg
-                    .strip_prefix("undefined variable: ")
-                    .unwrap_or("")
-                    .trim();
-                let mut lines = Vec::new();
-                if name.is_empty() {
-                    lines.push(
-                        "  = note: variable is not defined in any enclosing scope".to_string(),
-                    );
-                } else {
-                    lines.push(format!(
-                        "  = note: `{name}` is not defined in any enclosing scope at this point"
-                    ));
-                    lines.push("  = help: if this name is defined later in the document, group definitions using a function scope: [call [fn [let] ...]]".to_string());
-                }
-                Some(lines.join("\n"))
-            } else if msg.starts_with("cannot unify") {
-                let rest = msg.strip_prefix("cannot unify ").unwrap_or("");
-                if let Some(idx) = rest.find(" with ") {
-                    type_error_note_unification(&rest[..idx], &rest[idx + 6..])
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        }
+    } else {
+        None
     }
 }
 
-/// Generate the `= note:` and `= help:` block for a type mismatch (unification failure).
-///
-/// `expected` and `got` are the Display representations of the mismatching types.
-fn type_error_note_unification(expected: &str, got: &str) -> Option<String> {
-    let mut lines = Vec::new();
-    lines.push(format!(
-        "  = note: expected `{expected}`\n           found `{got}`"
-    ));
-
-    // Add conversion hints for common type mismatches.
-    // "cannot unify A with B" means expected A, got B — suggest converting B → A.
-    let help_msg = match (expected, got) {
-        // Expected Int/Number, got String → convert String to Int/Float
-        (e, "String") if e.contains("Int") || e.contains("Number") => {
-            Some("  = help: convert with [int <expr>] or [float <expr>]")
-        }
-        // Expected String, got Int/Number → convert Int/Number to String
-        ("String", g) if g.contains("Int") || g.contains("Number") => {
-            Some("  = help: convert with [str <expr>]")
-        }
-        // Expected String, got Float
-        ("String", g) if g.contains("Float") => Some("  = help: convert with [str <expr>]"),
-        // Expected Float, got String
-        (e, "String") if e.contains("Float") => Some("  = help: convert with [float <expr>]"),
-        // Expected String, got Bool
-        ("String", "Bool") => Some("  = help: convert with [if <expr> \"true\" \"false\"]"),
-        // Expected Bool, got String
-        ("Bool", "String") => Some("  = help: convert with [not [call $= \"\" <expr>]]"),
-        // Expected Int/Number, got Bool → convert Bool to Int
-        (e, "Bool") if e.contains("Int") || e.contains("Number") => {
-            Some("  = help: convert with [if <expr> 1 0]")
-        }
-        // Expected Float, got Bool
-        (e, "Bool") if e.contains("Float") => Some("  = help: convert with [if <expr> 1.0 0.0]"),
-        // Expected Bool, got Int/Number → convert Int/Number to Bool
-        ("Bool", g) if g.contains("Int") || g.contains("Number") => {
-            Some("  = help: convert with [not [call $= 0 <expr>]]")
-        }
-        // Expected Bool, got Float
-        ("Bool", g) if g.contains("Float") => {
-            Some("  = help: convert with [not [call $= 0.0 <expr>]]")
-        }
-        _ => None,
-    };
-
-    if let Some(help) = help_msg {
-        lines.push(help.to_string());
+/// Convert a `TypeError` to `TypeErrorTyped::Generic` so that `?` works in functions
+/// that return `TypeErrorTyped` but call helpers returning `TypeError`.
+impl From<TypeError> for crate::type_errors::TypeErrorTyped {
+    fn from(e: TypeError) -> Self {
+        crate::type_errors::TypeErrorTyped::Generic(crate::type_errors::GenericTypeError {
+            message: e.message,
+            span: e.span,
+            notes: *e.notes,
+            call_stack: vec![],
+        })
     }
+}
 
-    Some(lines.join("\n"))
+/// Convert a `TypeErrorTyped` to a `TypeError` for call sites that return `Vec<TypeError>`.
+/// This is a lossy conversion — typed details (e.g. call_stack) are not preserved in `TypeError`.
+/// Used as a bridge while `typecheck_annot.rs` is migrated from `TypeErrorTyped` to `TypeError`.
+impl From<crate::type_errors::TypeErrorTyped> for TypeError {
+    fn from(e: crate::type_errors::TypeErrorTyped) -> Self {
+        use crate::type_errors::TypeErrorTyped as E;
+        let (message, span) = match e {
+            E::Generic(g) => (g.message, g.span),
+            E::ArityMismatch(a) => {
+                let msg = format!(
+                    "arity mismatch: expected {} argument(s), got {}",
+                    a.expected, a.got
+                );
+                (msg, a.span)
+            }
+            E::UndefinedVariable(u) => (format!("undefined variable: {}", u.name), u.span),
+            E::UndefinedType(u) => (format!("undefined type: {}", u.name), u.span),
+            E::UnificationFailure(u) => (
+                format!("cannot unify {} with {}", u.expected, u.got),
+                u.span,
+            ),
+            E::FieldNotFound(f) => (
+                format!("field '{}' not found in {}", f.field, f.record_type),
+                f.span,
+            ),
+            E::NotARecord(e) => (format!("expected record type, got {}", e.actual), e.span),
+            E::NotAFunction(e) => (format!("expected function type, got {}", e.actual), e.span),
+            E::TypeAssertFailed(e) => (
+                format!(
+                    "type assertion failed: expected {}, got {}",
+                    e.asserted, e.actual
+                ),
+                e.span,
+            ),
+            E::NonExhaustiveMatch(e) => (
+                format!(
+                    "non-exhaustive match: missing patterns: {}",
+                    e.missing.join(", ")
+                ),
+                e.span,
+            ),
+            E::OverlappingInstancePatterns(e) => {
+                ("overlapping instance patterns".to_string(), e.span)
+            }
+            E::ConsistencyViolation(e) => ("consistency violation".to_string(), e.span),
+            E::CoverageViolation(e) => ("coverage violation".to_string(), e.span),
+            E::InstanceContainsUnknown(e) => (e.message, e.span),
+            E::KindMismatch(e) => (
+                format!("kind mismatch: expected {:?}, got {}", e.expected, e.actual),
+                e.span,
+            ),
+        };
+        TypeError::new(message, span)
+    }
 }
 
 #[cfg(test)]
 mod help_suggestion_tests {
     use super::*;
+    use crate::test_util::test_span;
 
-    #[tokio::test]
-    async fn test_resolve_instance_freshens_type_vars() {
+    #[test]
+    fn test_arity_mismatch_generic_help() {
+        let err = TypeError::new(
+            "arity mismatch: expected 2 argument(s), got 1 (1 positional, 0 named)",
+            test_span(1, 1, 1, 10),
+        );
+        let note = type_error_note(&err);
+        assert!(note.is_some());
+        let note = note.unwrap();
+        assert!(note.contains("= note: check that you are passing the correct number of arguments"));
+    }
+
+    #[test]
+    fn test_arity_mismatch_help() {
+        let err = TypeError::new(
+            "arity mismatch: expected 1 argument(s), got 0 (0 positional, 0 named)",
+            test_span(1, 1, 1, 10),
+        );
+        let note = type_error_note(&err);
+        assert!(note.is_some());
+        let note = note.unwrap();
+        assert!(note.contains("= note: check that you are passing the correct number of arguments"));
+    }
+
+    #[test]
+    fn test_undefined_variable_help() {
+        let err = TypeError::new("undefined variable: myvar", test_span(1, 1, 1, 10));
+        let note = type_error_note(&err);
+        assert!(note.is_some());
+        let note = note.unwrap();
+        assert!(
+            note.contains("= note: `myvar` is not defined in any enclosing scope at this point")
+        );
+        assert!(note.contains("= help: if this name is defined later in the document, group definitions using a function scope"));
+    }
+
+    #[test]
+    fn test_type_mismatch_string_to_int_help() {
+        // "cannot unify Int with String" means expected Int, got String
+        // Should suggest converting String to Int
+        let err = TypeError::new("cannot unify Int with String", test_span(1, 1, 1, 10));
+        let note = type_error_note(&err);
+        assert!(note.is_some());
+        let note = note.unwrap();
+        assert!(note.contains("= note: expected `Int`"));
+        assert!(note.contains("found `String`"));
+        assert!(note.contains("= help: convert with [int <expr>] or [float <expr>]"));
+    }
+
+    #[test]
+    fn test_type_mismatch_int_to_string_help() {
+        // "cannot unify String with Int" means expected String, got Int
+        // Should suggest converting Int to String
+        let err = TypeError::new("cannot unify String with Int", test_span(1, 1, 1, 10));
+        let note = type_error_note(&err);
+        assert!(note.is_some());
+        let note = note.unwrap();
+        assert!(note.contains("= note: expected `String`"));
+        assert!(note.contains("found `Int`"));
+        assert!(note.contains("= help: convert with [str <expr>]"));
+    }
+
+    #[test]
+    fn test_type_mismatch_number_to_string_help() {
+        // "cannot unify String with Number" means expected String, got Number
+        // Should suggest converting Number to String
+        let err = TypeError::new("cannot unify String with Number", test_span(1, 1, 1, 10));
+        let note = type_error_note(&err);
+        assert!(note.is_some());
+        let note = note.unwrap();
+        assert!(note.contains("= help: convert with [str <expr>]"));
+    }
+
+    #[test]
+    fn test_type_mismatch_float_to_string_help() {
+        // "cannot unify String with Float" means expected String, got Float
+        let err = TypeError::new("cannot unify String with Float", test_span(1, 1, 1, 10));
+        let note = type_error_note(&err);
+        assert!(note.is_some());
+        let note = note.unwrap();
+        assert!(note.contains("= note: expected `String`"));
+        assert!(note.contains("found `Float`"));
+        assert!(note.contains("= help: convert with [str <expr>]"));
+    }
+
+    #[test]
+    fn test_type_mismatch_string_to_float_help() {
+        // "cannot unify Float with String" means expected Float, got String
+        let err = TypeError::new("cannot unify Float with String", test_span(1, 1, 1, 10));
+        let note = type_error_note(&err);
+        assert!(note.is_some());
+        let note = note.unwrap();
+        assert!(note.contains("= note: expected `Float`"));
+        assert!(note.contains("found `String`"));
+        assert!(note.contains("= help: convert with [float <expr>]"));
+    }
+
+    #[test]
+    fn test_type_mismatch_bool_to_string_help() {
+        // "cannot unify String with Bool" means expected String, got Bool
+        let err = TypeError::new("cannot unify String with Bool", test_span(1, 1, 1, 10));
+        let note = type_error_note(&err);
+        assert!(note.is_some());
+        let note = note.unwrap();
+        assert!(note.contains("= note: expected `String`"));
+        assert!(note.contains("found `Bool`"));
+        assert!(note.contains("= help: convert with [if <expr> \"true\" \"false\"]"));
+    }
+
+    #[test]
+    fn test_type_mismatch_string_to_bool_help() {
+        // "cannot unify Bool with String" means expected Bool, got String
+        let err = TypeError::new("cannot unify Bool with String", test_span(1, 1, 1, 10));
+        let note = type_error_note(&err);
+        assert!(note.is_some());
+        let note = note.unwrap();
+        assert!(note.contains("= note: expected `Bool`"));
+        assert!(note.contains("found `String`"));
+        assert!(note.contains("= help: convert with [not [call $= \"\" <expr>]]"));
+    }
+
+    #[test]
+    fn test_type_mismatch_bool_to_float_help() {
+        // "cannot unify Float with Bool" means expected Float, got Bool
+        let err = TypeError::new("cannot unify Float with Bool", test_span(1, 1, 1, 10));
+        let note = type_error_note(&err);
+        assert!(note.is_some());
+        let note = note.unwrap();
+        assert!(note.contains("= note: expected `Float`"));
+        assert!(note.contains("found `Bool`"));
+        assert!(note.contains("= help: convert with [if <expr> 1.0 0.0]"));
+    }
+
+    #[test]
+    fn test_type_mismatch_float_to_bool_help() {
+        // "cannot unify Bool with Float" means expected Bool, got Float
+        let err = TypeError::new("cannot unify Bool with Float", test_span(1, 1, 1, 10));
+        let note = type_error_note(&err);
+        assert!(note.is_some());
+        let note = note.unwrap();
+        assert!(note.contains("= note: expected `Bool`"));
+        assert!(note.contains("found `Float`"));
+        assert!(note.contains("= help: convert with [not [call $= 0.0 <expr>]]"));
+    }
+
+    #[test]
+    fn test_resolve_instance_freshens_type_vars() {
         use crate::types::{InferState, InstanceDecl};
         use std::collections::HashMap;
 
@@ -2083,72 +2109,70 @@ mod help_suggestion_tests {
 
         let mut state = InferState::new();
 
-        // Create a parameterized type Box[b] = App(TyCon("Box"), b)
-        let b_var = || Type::TypeVar("b".to_string(), 0);
-        let box_of = |inner: Type| -> Type {
-            Type::App(Box::new(Type::TyCon("Box".into())), Box::new(inner))
-        };
-
-        // Create an instance: Appendable [Box b]
-        // Method: append: [Fn@[Box b] [[Box b] [Box b]]]
+        // Create an instance: Appendable [Seq b]
+        // Method: append: [Fn@[Seq b] [[Seq b] [Seq b]]]
         let instance = InstanceDecl {
             class_name: "Appendable".to_string(),
-            instance_type: box_of(b_var()),
-            det_positions: vec![],
+            instance_type: Type::Seq(Box::new(Type::TypeVar("b".to_string(), 0))),
+            det_positions: vec![], // Single-parameter class, no FDs
             method_types: {
                 let mut methods = HashMap::new();
                 methods.insert(
                     "append".to_string(),
                     Type::Function {
-                        params: vec![(None, box_of(b_var())), (None, box_of(b_var()))],
-                        ret: Box::new(box_of(b_var())),
+                        params: vec![
+                            (None, Type::Seq(Box::new(Type::TypeVar("b".to_string(), 0)))),
+                            (None, Type::Seq(Box::new(Type::TypeVar("b".to_string(), 0)))),
+                        ],
+                        ret: Box::new(Type::Seq(Box::new(Type::TypeVar("b".to_string(), 0)))),
                         variadic: false,
-                        required_count: 2,
                     },
                 );
                 methods
             },
         };
 
-        let mut inst_env = crate::type_class::InstanceEnv::new();
-        inst_env.insert(instance.clone()).unwrap();
+        // Register the instance
+        state.instance_env.insert(instance.clone()).unwrap();
 
-        // Resolve against Box[Int]
-        let target = box_of(Type::Int);
-        let resolved = inst_env
-            .resolve_instance("Appendable", &target, &mut state)
-            .await
-            .expect("resolve_instance should not error");
+        // Resolve against Seq[Int]
+        let target = Type::Seq(Box::new(Type::Int));
+        // Clone to avoid borrowing state both mutably and immutably
+        let inst_env = state.instance_env.clone();
+        let resolved = inst_env.resolve_instance("Appendable", &target, &mut state);
 
-        assert!(resolved.is_some(), "should resolve Appendable for Box[Int]");
+        assert!(resolved.is_some(), "should resolve Appendable for Seq[Int]");
         let resolved = resolved.unwrap();
 
+        // The method types should have Int substituted for b
         let append_ty = resolved.method_types.get("append");
         assert!(append_ty.is_some(), "append method should exist");
 
-        // Check that the method signature has Box[Int], not Box[b]
+        // Check that the method signature has Seq[Int], not Seq[b]
         if let Type::Function { params, ret, .. } = append_ty.unwrap() {
             assert_eq!(params.len(), 2);
-            let p0 = &params[0].1;
-            if let Type::App(_, elem) = p0 {
-                assert!(
-                    matches!(elem.as_ref(), Type::Int | Type::TypeVar(..)),
-                    "first param should be Box[Int] or Box[fresh], got {:?}",
-                    elem
-                );
-            } else {
-                panic!("expected App type for first param, got {:?}", p0);
+            // Both params should be Seq[Int] or Seq[_tN] (freshened)
+            match &params[0].1 {
+                Type::Seq(elem) => {
+                    // Should be Int or a fresh type var that got unified with Int
+                    assert!(
+                        matches!(elem.as_ref(), Type::Int | Type::TypeVar(..)),
+                        "first param should be Seq[Int] or Seq[fresh], got {:?}",
+                        elem
+                    );
+                }
+                other => panic!("expected Seq type for first param, got {:?}", other),
             }
 
-            let ret_ty = ret.as_ref();
-            if let Type::App(_, elem) = ret_ty {
-                assert!(
-                    matches!(elem.as_ref(), Type::Int | Type::TypeVar(..)),
-                    "return should be Box[Int] or Box[fresh], got {:?}",
-                    elem
-                );
-            } else {
-                panic!("expected App type for return, got {:?}", ret_ty);
+            match ret.as_ref() {
+                Type::Seq(elem) => {
+                    assert!(
+                        matches!(elem.as_ref(), Type::Int | Type::TypeVar(..)),
+                        "return should be Seq[Int] or Seq[fresh], got {:?}",
+                        elem
+                    );
+                }
+                other => panic!("expected Seq type for return, got {:?}", other),
             }
         } else {
             panic!("append should have Function type, got {:?}", append_ty);
@@ -2166,7 +2190,7 @@ mod help_suggestion_tests {
         );
 
         let mut state = InferState::new();
-        state.set_kind("m".to_string(), Kind::Operator);
+        state.kind_env.insert("m".to_string(), Kind::Operator);
 
         // Instantiate at level 1
         state.level = 1;
@@ -2179,7 +2203,10 @@ mod help_suggestion_tests {
                 match f.as_ref() {
                     Type::Operator(fresh_name) => {
                         // Check that the fresh name was registered in kind_env with Kind::Operator
-                        assert_eq!(state.get_kind(fresh_name.as_str()), Some(&Kind::Operator));
+                        assert_eq!(
+                            state.kind_env.get(fresh_name.as_str()),
+                            Some(&Kind::Operator)
+                        );
                     }
                     other => panic!("Expected Operator after instantiation, got {:?}", other),
                 }
@@ -2277,7 +2304,7 @@ mod help_suggestion_tests {
     fn test_t013_origin_name_message_format() {
         use crate::ast::{Position, Span};
         use crate::error::DiagnosticLevel;
-        use crate::type_class::{ClassDecl, Constraint, ConstraintArg};
+        use crate::type_class::{ClassDecl, Constraint};
         use std::collections::{HashMap, HashSet};
         use std::sync::Arc;
 
@@ -2289,7 +2316,6 @@ mod help_suggestion_tests {
             determines: vec![],
             resolver: None,
             resolver_injective: false,
-            method_signatures: vec![],
         });
 
         // Constraint with origin_name="str" (as would be set by instantiate_scheme at a VarRef)
@@ -2308,7 +2334,7 @@ mod help_suggestion_tests {
         };
         let constraint_with_origin = Constraint::Class {
             class: Arc::clone(&class),
-            vars: vec![ConstraintArg::Var("_t42".to_string())],
+            vars: vec!["_t42".to_string()],
             origin_name: Some(Arc::from("str")),
             origin_span: Some(arg_span.clone()),
         };
@@ -2343,10 +2369,7 @@ mod help_suggestion_tests {
 
         assert_eq!(diagnostics.len(), 1, "expected exactly one T013 diagnostic");
         let diag = &diagnostics[0];
-        assert_eq!(
-            diag.code,
-            crate::typecheck::typecheck_diag::T013_AMBIGUOUS_CONSTRAINT
-        );
+        assert_eq!(diag.code, "T013");
         assert_eq!(diag.level, DiagnosticLevel::Warn);
         // Message must cite the origin function, not the internal TypeVar name
         assert!(
@@ -2387,7 +2410,6 @@ mod help_suggestion_tests {
             determines: vec![],
             resolver: None,
             resolver_injective: false,
-            method_signatures: vec![],
         });
 
         // Constraint WITHOUT origin info (annotation-driven, as in existing tests)
@@ -2422,10 +2444,7 @@ mod help_suggestion_tests {
 
         assert_eq!(diagnostics.len(), 1, "expected exactly one T013 diagnostic");
         let diag = &diagnostics[0];
-        assert_eq!(
-            diag.code,
-            crate::typecheck::typecheck_diag::T013_AMBIGUOUS_CONSTRAINT
-        );
+        assert_eq!(diag.code, "T013");
         assert_eq!(diag.level, DiagnosticLevel::Warn);
         // Fallback: must still contain "ambiguous type variable" and the constraint class
         assert!(
@@ -2450,7 +2469,7 @@ mod help_suggestion_tests {
     ///
     /// Concretely: the scheme `∀(f: Operator) a. f a` should produce
     /// `App(Operator("_t0"), TypeVar("_t1", 1))` when instantiated at level 1,
-    /// and the fresh Operator name must be registered in `state.type_vars` (with Kind::Operator) so that
+    /// and the fresh Operator name must be registered in `state.kind_env` so that
     /// subsequent UNIFY-OPERATOR and KIND-OPERATOR rules can recognise it as a
     /// type constructor rather than a monomorphic type variable.
     ///
@@ -2481,17 +2500,9 @@ mod help_suggestion_tests {
             label_vars: vec![],
             doc: None,
             inner_schemes: None,
-            param_narrowings: Vec::new(),
         };
 
-        let instantiated = instantiate_scheme(
-            &scheme,
-            state.level,
-            &mut state,
-            &mut Vec::new(),
-            None,
-            None,
-        );
+        let instantiated = instantiate_scheme(&scheme, state.level, &mut state, None, None);
 
         // The instantiated type must be App(Operator(fresh_f), TypeVar(fresh_a, 1)).
         match instantiated {
@@ -2501,16 +2512,16 @@ mod help_suggestion_tests {
                     Type::Operator(fresh_f) => {
                         // The fresh Operator name must be registered in kind_env with Kind::Operator.
                         assert_eq!(
-                            state.get_kind(fresh_f.as_str()),
+                            state.kind_env.get(fresh_f.as_str()),
                             Some(&Kind::Operator),
                             "fresh Operator name '{}' must be in kind_env with Kind::Operator",
                             fresh_f
                         );
-                        // type_vars map should contain the fresh name so level-based
+                        // Levels map should contain the fresh name so level-based
                         // generalization can track it.
                         assert!(
-                            state.type_vars.contains_key(fresh_f.as_str()),
-                            "fresh Operator name '{}' must be registered in state.type_vars",
+                            state.levels.contains_key(fresh_f.as_str()),
+                            "fresh Operator name '{}' must be registered in state.levels",
                             fresh_f
                         );
                     }
@@ -2522,7 +2533,7 @@ mod help_suggestion_tests {
                         assert_eq!(*lv, 1, "TypeVar level must match instantiation level");
                         // a must NOT be in kind_env as Operator (it's a regular type var).
                         assert_ne!(
-                            state.get_kind(fresh_a.as_str()),
+                            state.kind_env.get(fresh_a.as_str()),
                             Some(&Kind::Operator),
                             "regular type_var 'a' must not be Kind::Operator in kind_env"
                         );
@@ -2548,17 +2559,11 @@ mod help_suggestion_tests {
         use crate::types::{InferState, Type};
 
         let mut state = InferState::new();
+        let counter_before = state.name_counter;
 
         let scheme = TypeScheme::mono(Type::Int);
 
-        let result = instantiate_scheme(
-            &scheme,
-            state.level,
-            &mut state,
-            &mut Vec::new(),
-            None,
-            None,
-        );
+        let result = instantiate_scheme(&scheme, state.level, &mut state, None, None);
 
         assert_eq!(
             result,
@@ -2566,8 +2571,8 @@ mod help_suggestion_tests {
             "monomorphic scheme must return body unchanged"
         );
         assert_eq!(
-            state.name_counter, 0,
-            "monomorphic instantiation must not increment name counter"
+            state.name_counter, counter_before,
+            "monomorphic instantiation must not increment name_counter"
         );
     }
 }

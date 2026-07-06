@@ -687,7 +687,7 @@ select-impl: [fn [let ctx sources@Seq handler@Fn]
 # (e.g. cond-impl uses builtin-get which carries an Indexable constraint).
 # Re-exported in dict 2 as: Indexable: .Indexable
 Indexable:
-  [class [let Indexable c k v]
+  [class [let c k v]
     [determines: [[[c k] v]]  resolver: IndexResult]
     get:    [Fn@v      [k c]]
     slice:  [Fn@c      [c Int Int]]
@@ -2077,12 +2077,12 @@ Truncate:  "truncate"
 # I/O Typeclasses: Readable and Writable classify handle types.
 # Call sites that previously used Readable/Writable as open flags now use "read"/"write" strings.
 Readable@[doc: "Typeclass for readable handles: read-chunk and close."]:
-  [class [let Readable h]
+  [class [let h]
     read-chunk: [Fn@Bytes [h Int]]
     close:      [Fn@h     [h]]]
 
 Writable@[doc: "Typeclass for writable handles: write, flush, and close."]:
-  [class [let Writable h]
+  [class [let h]
     write: [Fn@h [h String]]
     flush: [Fn@h [h]]
     close: [Fn@h [h]]]
@@ -2366,7 +2366,7 @@ Note: Returns action result if condition is True, otherwise returns wrapped empt
 # resolved through the standard instance mechanism instead of hardwired Rust logic.
 
 Number@[doc: "Constraint class for numeric types (Int and Float). Empty-method constraint — no methods, just presence."]:
-  [class [let Number n]]
+  [class [let n]]
 
 [instance Number [let n@Int]:   []]
 [instance Number [let n@Float]: []]
@@ -2414,7 +2414,7 @@ Divisible@[doc: "Type class for division with FD (a, b) → c"]:
   [let a@Float b@Float c@Float]: [*: [fn@Float [let x@Float y@Float] [builtin-mul x y]]]]
 
 [instance Divisible
-  [let a@Int   b@Int   c@Int  ]: [/: [fn@Int   [let x@Int   y@Int  ] [builtin-div x y]]]
+  [let a@Int   b@Int   c@Int  ]: [/: [fn       [let x@Int   y@Int  ] [builtin-div x y]]]
   [let a@Int   b@Float c@Float]: [/: [fn@Float [let x@Int   y@Float] [builtin-div x y]]]
   [let a@Float b@Int   c@Float]: [/: [fn@Float [let x@Float y@Int  ] [builtin-div x y]]]
   [let a@Float b@Float c@Float]: [/: [fn@Float [let x@Float y@Float] [builtin-div x y]]]]
@@ -2459,7 +2459,7 @@ Typeclass for types whose values can serve as pattern predicates.
 to-match converts a value to an Int match signal: nonzero = truthy, zero = falsy.
 The Rust pattern matching engine looks up the instance binding directly by type name.
 """]:
-  [class [let Matchable a]
+  [class [let a]
     to-match: [Fn@Int [a]]]
 
 # Matchable instances for Boolean and Int — anonymous multi-arm so lower.rs emits
@@ -2617,7 +2617,7 @@ Instance table:
   Seq a  — Prependable only (O(1) exact)
   List a — Prependable + Appendable + Concatenable + Indexable
 """]:
-  [class [let Prependable c a]
+  [class [let c a]
     push-left: [Fn@c      [a c]]
     peek-left: [Fn@a      [c]]
     pop-left:  [Fn@c      [c]]]
@@ -2637,13 +2637,13 @@ PrependableSeq@[doc: "Prependable instance for Seq: push-left = cons, peek-left 
          Seq.End:      [raise "pop-left: empty sequence"]]]]]
 
 Appendable@[doc: "O(1) amortized push-right, peek-right, pop-right"]:
-  [class [let Appendable c a]
+  [class [let c a]
     push-right: [Fn@c      [c a]]
     peek-right: [Fn@a      [c]]
     pop-right:  [Fn@c      [c]]]
 
 Concatenable@[doc: "O(log n) or better join of two collections"]:
-  [class [let Concatenable c]
+  [class [let c]
     <>: [Fn@c [c c]]]
 
 # ============================================================================
@@ -3191,8 +3191,10 @@ module@[doc: "Resolve a builtin module name to its export dict."]: builtin-modul
 # Returns the updated named dict (or unchanged state.named if doc.name is Unnamed).
 # Mirrors the definition in stdlib/loader.llt.
 update-named: [fn@Any [let state val doc]
+  # Rust returns unqualified tags "Named"/"Unnamed" for doc.name.
+  # Named payload is a raw String (not a dict) — use n directly, not n.name.
   [match [@Any doc.name]
-    [case [let n] [DocumentName.Named n]
+    [case [let n] [Named n]
       [builtin-merge state.named [make-entry [builtin-string-concat "%" n] val]]]
     _:
       state.named]]
@@ -3227,13 +3229,15 @@ as %name bindings available to subsequent documents via scope injection.
                     %emit-channel: emit-ch]]]
       [full-env: [extend-env full-env state.named]]
       [full-env: [extend-env full-env [uses-scope doc]]]
-      # Per-document resolution: resolve against the fully-constructed env.
-      # builtin-resolve doc env: E returns {doc, table} with span-keyed coordinates.
-      [doc-resolved: [resolve doc env: full-env]]
-      [result-env: [eval doc-resolved.doc env: full-env table: doc-resolved.table]]
-      [merge state
-        [percent: result-env.%
-         named: [update-named state result-env.% doc]]]]
+      # Per-document resolution with new builtin-resolve contract: returns {doc, errors}.
+      # builtin-eval returns {env, result, doc-name, error} — use result directly.
+      [doc-resolved:  [resolve doc env: full-env]]
+      [eval-result:   [eval doc-resolved.doc env: full-env]]
+      [builtin-if [builtin-eq-string [builtin-type-of eval-result.error] "String"]
+        [raise eval-result.error]
+        [merge state
+          [percent: eval-result.result
+           named:   [update-named state eval-result.result doc]]]]]
     [percent: initial-input  named: []]
     prog.documents]]
   state.percent]
@@ -3488,7 +3492,7 @@ the next element. Stack depth O(1) per element consumed.
 # Otherwise expects a two-entry dict [0: value 1: next-seed] and yields value
 # as the next element, with [unfold-step f next-seed] as the lazy tail.
 unfold-step: [fn [let f seed]
-  [let result [f seed]]
+  [result: [f seed]]
   [if [empty? result]
     Seq.End
     [Seq.Cons head: result.0  tail: [unfold-step f result.1]]]]
@@ -4934,7 +4938,7 @@ To apply them to a List or Map, call each first:
   [filter pred [each my-list]]             # lazy Seq result
   [collect [filter pred [each my-list]]]   # materialized List result
 """]:
-  [class [let Iterable c a] [determines: [[[c] a]]  resolver: IterResult]
+  [class [let c a] [determines: [[[c] a]]  resolver: IterResult]
     each: [Fn@[Seq a] [c]]]
 
 IterableList@[doc: "Iterable instance for List: each = ft-to-seq (lazy traversal)"]:
@@ -4944,7 +4948,7 @@ IterableList@[doc: "Iterable instance for List: each = ft-to-seq (lazy traversal
 
 IterableMap@[doc: "Iterable instance for Map: each = each-kv (lazy key-value pairs)"]:
   [instance Iterable
-    [let c@[Map k v] [key: k  value: v]]:
+    [let c@[Map k v] a]:
       [each: each-kv]]
 
 IterableSeq@[doc: "Iterable instance for Seq: each = identity (a Seq is already a Seq)"]:
@@ -5002,7 +5006,7 @@ SeekFrom@[doc: "Seek position descriptor for Seekable.seek."]:
 # read  takes up to n bytes; may return fewer than n at end-of-stream.
 # write returns the handle (for chaining); side-effecting.
 ByteStream@[doc: "Ordered, reliable byte pipe. Protocol dict with read-chunk/write methods."]:
-  [class [let ByteStream h]
+  [class [let h]
     read:  [Fn@Bytes [h Int]]
     write: [Fn@h     [h Bytes]]]
 
@@ -5019,7 +5023,7 @@ ByteStream@[doc: "Ordered, reliable byte pipe. Protocol dict with read-chunk/wri
 #
 # The Seekable typeclass is the authoritative definition of random-access capability.
 Seekable@[doc: "Random-access extension of ByteStream. Only seekable file handles."]:
-  [class [let Seekable h] [superclasses: [[ByteStream h]]]
+  [class [let h] [superclasses: [[ByteStream h]]]
     seek: [Fn@Int [h SeekFrom]]]
 
 # SeekableHandle: Value::Handle removed.

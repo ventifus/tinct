@@ -312,9 +312,7 @@ pub(crate) fn builtin_str_has_nth(
         let (source, str_start, str_end) = match s_val {
             Value::String { source, start, end } => (source, start, end),
             other => {
-                return Err(
-                    EvalError::type_mismatch("String", other.type_name(), call_span).into(),
-                )
+                return Err(EvalError::type_mismatch("String", other.type_name(), call_span).into())
             }
         };
 

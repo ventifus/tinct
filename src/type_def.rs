@@ -307,10 +307,10 @@ pub enum Type {
     /// absorption), so parent expressions can continue inference without spurious downstream
     /// errors. `is_subtype(Error, _)` returns false; Error is not a subtype of anything.
     ///
-    /// The payload carries the errors that caused this `Error` node. An empty `Vec` is the
-    /// "cascade sentinel" — an `Error` produced by absorbing a prior error rather than by
-    /// a direct failure at this site. Use `Type::error_cascade()` to construct the sentinel
-    /// and `Type::error_with(errs)` to construct a node with causal errors.
+    /// The payload carries the errors that caused this `Error` node. An empty `Vec` is a
+    /// "bare cascade sentinel" — prefer `Type::error_note(msg)` when any description is
+    /// available, `Type::error_with(errs)` to propagate causal errors, or `Type::error_cascade()`
+    /// only in tests / when genuinely no context exists.
     Error(Arc<Vec<TypeErrorTyped>>),
     /// Directory capability — wraps cap_std::fs::Dir. Injected via CLI --cap-fs or
     /// runtime env (cwd, libdir). Represents authority to access a specific directory tree.
@@ -751,6 +751,29 @@ impl Type {
     /// Construct an Error node carrying the errors that caused it.
     pub fn error_with(errs: Vec<TypeErrorTyped>) -> Self {
         Type::Error(Arc::new(errs))
+    }
+
+    /// Construct an Error node with a plain message string when no source span is available.
+    /// Use for synthetic/internal failures where a meaningful description exists but no AST
+    /// node to point at. Shows as `<error: {msg}>` in diagnostics.
+    pub fn error_note(msg: impl Into<String>) -> Self {
+        use crate::ast::Position;
+        let zero = Position {
+            offset: 0,
+            line: 0,
+            column: 0,
+        };
+        let span = Span {
+            start: zero,
+            end: zero,
+            file: None,
+        };
+        Type::Error(Arc::new(vec![TypeErrorTyped::Generic(GenericTypeError {
+            message: msg.into(),
+            span,
+            notes: vec![],
+            call_stack: vec![],
+        })]))
     }
 
     /// Returns `true` if this type is an `Error` node (with or without payload).
@@ -1933,9 +1956,18 @@ impl Type {
             panic!("normalize_intersection: empty intersection not allowed");
         }
 
-        // Error is absorbing: any intersection containing Error becomes Error
+        // Error is absorbing: any intersection containing Error becomes Error.
+        // Propagate all error payloads from Error members to preserve context.
         if members.iter().any(|m| matches!(m, Type::Error(_))) {
-            return Type::error_cascade();
+            let payloads: Vec<TypeErrorTyped> = members
+                .iter()
+                .flat_map(|m| m.error_payload().to_vec())
+                .collect();
+            return if payloads.is_empty() {
+                Type::error_note("type error in intersection")
+            } else {
+                Type::error_with(payloads)
+            };
         }
 
         // Never is absorbing: T & Never = Never (S-ClsBot base case: bottom annihilates)
@@ -2415,7 +2447,8 @@ pub fn check_kind_wellformed(
                     span,
                     notes: vec![],
                     call_stack: vec![],
-                }));
+                })
+                .into());
             }
             Ok(())
         }
@@ -2457,7 +2490,7 @@ pub fn check_kind_wellformed(
                     message: format!("kind mismatch: operator `{name}` has kind (* → *) but expected kind *; did you forget to apply it?"),
                     span,
                     notes: vec![], call_stack: vec![],
-                }));
+                }).into());
             }
             // Bare Kind::Arrow in a type position is also kind-incorrect.
             // Arrow kinds are for higher-order type constructors that must be fully applied.
@@ -2466,7 +2499,7 @@ pub fn check_kind_wellformed(
                     message: format!("kind mismatch: `{name}` is a higher-kinded type constructor but was used in a type position"),
                     span,
                     notes: vec![], call_stack: vec![],
-                }));
+                }).into());
             }
             // If the name is not in kind_env, let it pass (freshly introduced Operator
             // that hasn't been kind-registered yet, or will be registered later)

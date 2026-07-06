@@ -13,7 +13,9 @@
       [case [let p] [Shape.Square p] [* p.s p.s]]
       [case [let p] [Shape.Rect p]   [* p.w p.h]]
       _: 0]]
-  total: [reduce + 0 [map area [each shapes]]]
+  total:   [reduce + 0 [map area [each shapes]]]
+  compare: [fn [let a@Int b@Int] [if [> a b] a b]]
+  larger:  [compare a: [area [Shape.Circle r: 3]] b: [area [Shape.Square s: 4]]]
 ]
 === out
-Dict({"Shape": Dict({"Circle": Function(r), "Square": Function(s), "Rect": Function(w, h)}), "shapes": Dict({0: Variant(Shape.Circle, Dict({"r": Int(3)})), 1: Variant(Shape.Square, Dict({"s": Int(4)})), 2: Variant(Shape.Rect, Dict({"w": Int(5), "h": Int(6)})), 3: Variant(Shape.Circle, Dict({"r": Int(2)})), 4: Variant(Shape.Square, Dict({"s": Int(7)}))}), "area": Function(s), "total": Int(108)})
+Dict({"Shape": Dict({"Circle": Function(r), "Square": Function(s), "Rect": Function(w, h)}), "shapes": Dict({0: Variant(Shape.Circle, Dict({"r": Int(3)})), 1: Variant(Shape.Square, Dict({"s": Int(4)})), 2: Variant(Shape.Rect, Dict({"w": Int(5), "h": Int(6)})), 3: Variant(Shape.Circle, Dict({"r": Int(2)})), 4: Variant(Shape.Square, Dict({"s": Int(7)}))}), "area": Function(s), "total": Int(108), "compare": Function(a, b), "larger": Int(16)})

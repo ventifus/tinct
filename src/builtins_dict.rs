@@ -456,7 +456,7 @@ async fn field_get_on_value(
                     let mut dict = indexmap::IndexMap::new();
                     for (i, doc_spanned) in prog.documents.iter().enumerate() {
                         let id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                            Value::Document(Arc::new(doc_spanned.node.clone())),
+                            Value::Document(Arc::clone(&doc_spanned.node)),
                             call_span.clone(),
                         )));
                         dict.insert(HashableValue::Int(i as i64), id);
@@ -466,24 +466,24 @@ async fn field_get_on_value(
                 "warnings" => {
                     let mut list = indexmap::IndexMap::new();
                     for (i, err) in warnings.iter().enumerate() {
-                        let span = err.span();
+                        let span = &err.span;
                         let alloc = |v: Value| {
                             ctx.alloc_thunk(Arc::new(Thunk::new_materialized(v, call_span.clone())))
                         };
                         let mut w = indexmap::IndexMap::new();
                         w.insert(
                             HashableValue::Str("kind".into()),
-                            alloc(string_val(err.kind_name())),
+                            alloc(string_val(err.code.as_deref().unwrap_or("type-warning"))),
                         );
                         w.insert(
                             HashableValue::Str("message".into()),
-                            alloc(string_val(&err.message())),
+                            alloc(string_val(&err.message)),
                         );
                         let span_id =
                             crate::eval_materialize::make_span_dict(span, ctx, &call_span);
                         w.insert(HashableValue::Str("span".into()), span_id);
                         let notes_val = {
-                            let notes = err.notes();
+                            let notes = err.notes.as_ref();
                             if notes.is_empty() {
                                 Value::Dict(indexmap::IndexMap::new())
                             } else {
@@ -499,7 +499,7 @@ async fn field_get_on_value(
                         };
                         w.insert(HashableValue::Str("notes".into()), alloc(notes_val));
                         let call_stack_val = {
-                            let frames = err.call_stack();
+                            let frames: &[crate::type_errors::TypeSpanFrame] = &[];
                             if frames.is_empty() {
                                 Value::Dict(indexmap::IndexMap::new())
                             } else {
@@ -607,25 +607,32 @@ async fn field_get_on_value(
                 "expects" => match &doc.expects {
                     None => Value::Dict(indexmap::IndexMap::new()),
                     Some(spanned_ann) => {
-                        let inner = Arc::new(crate::ast::SurfaceNode::new(
-                            crate::ast::SurfaceExpression::VarRef {
-                                name: "%".to_string(),
-                                escaped: false,
-                                resolution: crate::ast::Resolution::new(),
-                                call_dispatch: crate::ast::CallDispatch::new(),
-                                annotation: None,
-                            },
-                            spanned_ann.span.clone(),
-                        ));
-                        let type_assert_node = Arc::new(crate::ast::SurfaceNode::new(
-                            crate::ast::SurfaceExpression::TypeAssert {
-                                annotation: spanned_ann.clone(),
-                                expr: inner,
-                                resolved_type: crate::ast::TypeAnnotation::new(),
-                            },
-                            spanned_ann.span.clone(),
-                        ));
-                        crate::surface_convert::surface_node_to_expr_variant(&type_assert_node, ctx)
+                        let ann_str = match &spanned_ann.node {
+                            crate::ast::Annotation::Simple(s) => s.clone(),
+                            crate::ast::Annotation::Annotated(s, _) => s.clone(),
+                            crate::ast::Annotation::PropertyDict(_) => "Dict".to_string(),
+                        };
+                        crate::value::string_val(&ann_str)
+                    }
+                },
+                "caps" => match &doc.caps {
+                    None => Value::Dict(indexmap::IndexMap::new()),
+                    Some(spanned_caps) => {
+                        let mut dict: indexmap::IndexMap<HashableValue, ThunkId> =
+                            indexmap::IndexMap::new();
+                        for (cap_name, annotation) in &spanned_caps.node {
+                            let ann_str = match annotation {
+                                crate::ast::Annotation::Simple(s) => s.clone(),
+                                crate::ast::Annotation::Annotated(s, _) => s.clone(),
+                                crate::ast::Annotation::PropertyDict(_) => "Dict".to_string(),
+                            };
+                            let id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                                crate::value::string_val(&ann_str),
+                                call_span.clone(),
+                            )));
+                            dict.insert(HashableValue::Str(cap_name.as_str().into()), id);
+                        }
+                        Value::Dict(dict)
                     }
                 },
                 _ => Value::Dict(indexmap::IndexMap::new()),
@@ -961,9 +968,7 @@ pub(crate) fn builtin_dict_has_nth(
         {
             Value::Int(n) => n,
             other => {
-                return Err(
-                    EvalError::type_mismatch("Int", other.type_name(), call_span).into(),
-                )
+                return Err(EvalError::type_mismatch("Int", other.type_name(), call_span).into())
             }
         };
         let exists = if usize::try_from(idx)
@@ -1023,7 +1028,10 @@ pub(crate) fn builtin_dict_nth(
         match usize::try_from(idx).ok().and_then(|i| map.get_index(i)) {
             Some((_, val_id)) => Ok(ctx.get_thunk(*val_id)),
             None => Err(EvalError::user_error(
-                format!("builtin-dict-nth: index {idx} out of bounds (dict has {} entries)", map.len()),
+                format!(
+                    "builtin-dict-nth: index {idx} out of bounds (dict has {} entries)",
+                    map.len()
+                ),
                 call_span,
             )
             .into()),
@@ -1072,9 +1080,7 @@ pub(crate) fn builtin_dict_has_key_nth(
         {
             Value::Int(n) => n,
             other => {
-                return Err(
-                    EvalError::type_mismatch("Int", other.type_name(), call_span).into(),
-                )
+                return Err(EvalError::type_mismatch("Int", other.type_name(), call_span).into())
             }
         };
         let exists = if usize::try_from(idx)
@@ -1192,9 +1198,7 @@ pub(crate) fn builtin_dict_has_kv_nth(
         {
             Value::Int(n) => n,
             other => {
-                return Err(
-                    EvalError::type_mismatch("Int", other.type_name(), call_span).into(),
-                )
+                return Err(EvalError::type_mismatch("Int", other.type_name(), call_span).into())
             }
         };
         let exists = if usize::try_from(idx)
@@ -2063,9 +2067,7 @@ pub(crate) fn builtin_get_by_field(
             Some(d) => d,
             None => {
                 return Err(EvalError::user_error(
-                    format!(
-                        "builtin-get-by-field: type {type_name} not found in type environment"
-                    ),
+                    format!("builtin-get-by-field: type {type_name} not found in type environment"),
                     call_span,
                 )
                 .into())

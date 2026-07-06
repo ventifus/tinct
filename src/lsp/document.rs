@@ -120,12 +120,9 @@ impl DocumentState {
                 let (seeded_env_rc, include_bindings) = crate::async_rt::block_on_anywhere(
                     crate::imports::build_type_env_with_cap(&program, type_base_dir, type_cap_dir),
                 );
-                // typecheck_surface_program takes Arc<TypeEnv>; build_type_env_with_cap returns Rc.
-                let seeded_env = std::sync::Arc::new((*seeded_env_rc).clone());
+                // typecheck_surface_program takes Rc<TypeEnv>; build_type_env_with_cap returns Rc.
                 let (errs, mut map, docs, smap, tc_diagnostics) =
-                    crate::async_rt::block_on_anywhere(
-                        crate::typecheck::typecheck_surface_program(&program, seeded_env),
-                    );
+                    crate::typecheck::typecheck_surface_program(&program, seeded_env_rc);
                 // Post-pass: inject precise Record types for [include %cap "path"] expressions.
                 crate::imports::apply_include_type_post_pass(&program, &include_bindings, &mut map);
                 type_errors = errs;

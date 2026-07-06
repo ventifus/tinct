@@ -792,6 +792,7 @@ fn atom_to_type(atom: &Atom) -> Type {
 /// Used by `constrain()` in type_unify.rs when pushing bounds to `state.bounds`:
 /// the RDNF form of a bound is normalized (simplifications applied) and then
 /// flattened back to a `Type` before accumulation.
+#[allow(dead_code)]
 pub fn flatten_rdnf_to_type(rdnf: Rdnf) -> Type {
     if rdnf.is_empty() {
         return Type::Never;

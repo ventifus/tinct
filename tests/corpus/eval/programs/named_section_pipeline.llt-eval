@@ -1,0 +1,7 @@
+# Named section: --- %users makes doc result accessible as %users in later docs
+--- %users
+[alice: "Alice"  bob: "Bob"]
+---
+[count: [+ 1 1]  first: %users.alice]
+=== out
+Dict({"count": Int(2), "first": String("Alice")})

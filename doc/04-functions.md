@@ -517,7 +517,7 @@ For each (k, θ) ∈ named:
         error("parameter 'k' received both positional and named argument")
     if ¬∃pᵢ ∈ P such that pᵢ.name = k:
         if V = ∅:
-            error("unexpected named argument: k (valid parameter names: p₀.name, …, p_{n-1}.name)")
+            error("unexpected named argument: \"k\" (valid parameter names: p₀.name, …, p_{n-1}.name)")
         else:
             unmatched_named = unmatched_named ∪ {k↦θ}
 ───────────────────────────
@@ -594,7 +594,7 @@ The binding algorithm produces four distinct error classes. Each corresponds to 
 | Uncovered required param | C-COVERAGE | `"missing argument for required parameter '{pᵢ.name}'"` | BIND-ARITY |
 | Too many args | C-COVERAGE (upper) | `"arity mismatch: expected at most {|P|} arguments, got {|pos|}"` | BIND-ARITY |
 | Positional/named overlap | C-NO-OVERLAP | `"parameter '{k}' received both positional and named argument"` | BIND-NAMED |
-| Nonexistent named arg | C-NAMED-VALID | `"unexpected named argument: {k} (valid parameter names: {p₀, …, p_{n-1}})"` | BIND-NAMED |
+| Nonexistent named arg | C-NAMED-VALID | `"unexpected named argument: \"{k}\" (valid parameter names: {p₀, …, p_{n-1}})"` | BIND-NAMED |
 
 Default evaluation errors (from `eval(default(pᵢ), env_d)` in BIND-POSITIONAL) are not binding errors — they propagate as normal evaluation errors with the default expression's span.
 

@@ -398,10 +398,9 @@ pub(crate) fn builtin_until(
         // avoiding repeated runtime type derivation on every iteration.
         let pred_fn_val = materialize(&pred_thunk, Some(&call_span), &ctx).await?;
         let pred_matchable_binding =
-            crate::eval::resolve_matchable_binding_from_fn(&pred_fn_val, &ctx);
+            crate::eval::resolve_matchable_binding_from_fn(&pred_fn_val, &caller_env);
         // Wrap the materialized predicate back into a thunk for use in pending calls.
-        let pred_thunk =
-            Arc::new(Thunk::new_materialized(pred_fn_val, call_span.clone()));
+        let pred_thunk = Arc::new(Thunk::new_materialized(pred_fn_val, call_span.clone()));
 
         loop {
             // Create a pending call to pred(val) and materialize it
@@ -521,9 +520,7 @@ pub(crate) fn builtin_class_dispatch(
         };
 
         let Some(instance_fn) = instance_thunk else {
-            return Err(
-                EvalError::no_instance(class_name, type_tags, call_span).into()
-            );
+            return Err(EvalError::no_instance(class_name, type_tags, call_span).into());
         };
 
         // Call the instance method with the original (unmaterialized) method args.
@@ -1352,6 +1349,155 @@ pub(crate) fn builtin_span_of(
     })
 }
 
+/// `builtin-var-resolution`: given a byte offset and a resolved Program, return the
+/// de Bruijn coordinates `{level: N, slot: M}` for the VarRef whose span contains
+/// that offset, or `[]` if no VarRef is found there.
+///
+/// Used to inspect resolver output from tinct code (e.g. in debug-init.llt).
+pub(crate) fn builtin_var_resolution(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+            ..
+        } = ctx_arg;
+        crate::builtins::reject_named("builtin-var-resolution", named.as_ref(), call_span.clone())?;
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+        let offset_val = materialize(&args[0], Some(&call_span), &ctx).await?;
+        let offset = match offset_val {
+            Value::Int(n) => n as usize,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-var-resolution".to_string(),
+                    "Int",
+                    other.type_name(),
+                    call_span,
+                )
+                .into())
+            }
+        };
+        let prog_val = materialize(&args[1], Some(&call_span), &ctx).await?;
+        let program = match prog_val {
+            Value::Program { program, .. } => program,
+            other => {
+                return Err(EvalError::type_mismatch_ctx(
+                    "builtin-var-resolution".to_string(),
+                    "Program",
+                    other.type_name(),
+                    call_span,
+                )
+                .into())
+            }
+        };
+
+        // Walk all VarRef nodes in the program looking for one whose span contains `offset`.
+        fn find_in_node(
+            node: &std::sync::Arc<crate::ast::SurfaceNode>,
+            offset: usize,
+        ) -> Option<Option<(u32, u32)>> {
+            if node.span.end.offset < offset || node.span.start.offset > offset {
+                return None;
+            }
+            use crate::ast::SurfaceExpression;
+            match &node.expr {
+                SurfaceExpression::VarRef { resolution, .. } => {
+                    return Some(resolution.get().flatten());
+                }
+                SurfaceExpression::Call {
+                    func,
+                    args,
+                    named_args,
+                    ..
+                } => {
+                    if let Some(r) = find_in_node(func, offset) {
+                        return Some(r);
+                    }
+                    for a in args {
+                        if let Some(r) = find_in_node(a, offset) {
+                            return Some(r);
+                        }
+                    }
+                    for na in named_args {
+                        if let Some(r) = find_in_node(&na.node.value, offset) {
+                            return Some(r);
+                        }
+                    }
+                }
+                SurfaceExpression::Dict(entries) => {
+                    for e in entries {
+                        if let Some(k) = &e.node.key {
+                            if let Some(r) = find_in_node(k, offset) {
+                                return Some(r);
+                            }
+                        }
+                        if let Some(r) = find_in_node(&e.node.value, offset) {
+                            return Some(r);
+                        }
+                    }
+                }
+                SurfaceExpression::Fn { body, .. } => {
+                    if let Some(r) = find_in_node(body, offset) {
+                        return Some(r);
+                    }
+                }
+                SurfaceExpression::Field { expr: Some(e), .. } => {
+                    if let Some(r) = find_in_node(e, offset) {
+                        return Some(r);
+                    }
+                }
+                SurfaceExpression::Match { scrutinee, arms } => {
+                    if let Some(r) = find_in_node(scrutinee, offset) {
+                        return Some(r);
+                    }
+                    for arm in arms {
+                        if let Some(r) = find_in_node(&arm.body, offset) {
+                            return Some(r);
+                        }
+                    }
+                }
+                _ => {}
+            }
+            None
+        }
+
+        let mut found: Option<(u32, u32)> = None;
+        'outer: for doc_spanned in &program.documents {
+            for item in &doc_spanned.node.items {
+                if let crate::ast::SurfaceItem::Expr(node) = item {
+                    if let Some(coords) = find_in_node(node, offset) {
+                        found = coords;
+                        break 'outer;
+                    }
+                }
+            }
+        }
+
+        let alloc =
+            |v: Value| ctx.alloc_thunk(Arc::new(Thunk::new_materialized(v, call_span.clone())));
+        match found {
+            None => ok_val(Value::Dict(IndexMap::new()), call_span),
+            Some((level, slot)) => {
+                let mut result: IndexMap<HashableValue, ThunkId> = IndexMap::new();
+                result.insert(
+                    HashableValue::Str("level".into()),
+                    alloc(Value::Int(level as i64)),
+                );
+                result.insert(
+                    HashableValue::Str("slot".into()),
+                    alloc(Value::Int(slot as i64)),
+                );
+                ok_val(Value::Dict(result), call_span)
+            }
+        }
+    })
+}
+
 /// `annotation-of`: return the annotation dict for a value.
 ///
 /// - `Value::Function { annotation, .. }` — returns a `Value::Dict` built from the
@@ -1899,7 +2045,7 @@ pub(crate) fn builtin_parse(
 ///
 /// Takes a parsed (but unresolved) Program and applies:
 /// 1. `desugar_surface_program` — `$_` desugaring
-/// 2. `resolve_surface_program` (or `resolve_surface_program_with_env` if `env:` is provided)
+/// 2. `resolve_surface_program` (with optional `env:` argument for env-seeded resolution)
 ///    — name resolution (De Bruijn levels)
 ///
 /// **Optional `env:` argument**: When provided (a `Value::Environment`), the resolver is
@@ -1969,79 +2115,22 @@ pub(crate) fn builtin_resolve(
             .try_get_materialized()
             .expect("pre-materialized by force_count/pos_strictness");
         match val {
-            Value::Program {
-                program: surface_program,
-                expects_resolved: _,
-                warnings: _,
-            } => {
-                // Step 1: desugar $_ patterns
-                let mut new_surface_program = (*surface_program).clone();
-                crate::desugar::desugar_surface_program(&mut new_surface_program);
-                // Step 2: name resolution — writes inline to AST node resolution fields.
-                let resolve_errors = if let Some(ref env) = env_arc {
-                    crate::resolve::resolve_surface_program_for_builtin_eval(
-                        &new_surface_program,
-                        env,
-                    )
-                } else {
-                    crate::resolve::resolve_surface_program(&new_surface_program)
-                };
-                // Build errors dict from resolve errors (undefined variables).
-                let alloc_prog = |v: Value| {
-                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(v, call_span.clone())))
-                };
-                let mut errors_dict: IndexMap<HashableValue, ThunkId> = IndexMap::new();
-                for (i, (name, span)) in resolve_errors.iter().enumerate() {
-                    let span_id = make_span_dict(span, &ctx, &call_span);
-                    let mut w: IndexMap<HashableValue, ThunkId> = IndexMap::new();
-                    w.insert(
-                        HashableValue::Str("kind".into()),
-                        alloc_prog(string_val("undefined-variable")),
-                    );
-                    w.insert(
-                        HashableValue::Str("message".into()),
-                        alloc_prog(string_val(&format!("undefined variable: {}", name))),
-                    );
-                    w.insert(HashableValue::Str("span".into()), span_id);
-                    w.insert(
-                        HashableValue::Str("notes".into()),
-                        alloc_prog(Value::Dict(IndexMap::new())),
-                    );
-                    w.insert(
-                        HashableValue::Str("call-stack".into()),
-                        alloc_prog(Value::Dict(IndexMap::new())),
-                    );
-                    w.insert(
-                        HashableValue::Str("macro-expand".into()),
-                        alloc_prog(Value::Dict(IndexMap::new())),
-                    );
-                    w.insert(
-                        HashableValue::Str("blame".into()),
-                        alloc_prog(Value::Dict(IndexMap::new())),
-                    );
-                    errors_dict.insert(HashableValue::Int(i as i64), alloc_prog(Value::Dict(w)));
-                }
-
-                // Return {resolved: Program, errors: []} — same structure as builtin-parse.
-                let program_value = Value::Program {
-                    program: std::sync::Arc::new(new_surface_program),
-                    expects_resolved: std::sync::Arc::new(std::collections::HashMap::new()),
-                    warnings: std::sync::Arc::new(vec![]),
-                };
-                let resolved_id = ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
-                    program_value,
-                    call_span.clone(),
-                )));
-                let errors_id = alloc_prog(Value::Dict(errors_dict));
-                let mut result: IndexMap<HashableValue, ThunkId> = IndexMap::new();
-                result.insert(HashableValue::Str("resolved".into()), resolved_id);
-                result.insert(HashableValue::Str("errors".into()), errors_id);
-                Ok(Arc::new(Thunk::new_materialized(
-                    Value::Dict(result),
+            // Program path removed — builtin-resolve only accepts Value::Document.
+            // Tinct code should resolve per-document (the narrow builtin principle):
+            // the loader orchestrates, the builtin does one thing.
+            // Callers that previously passed Value::Program should loop over
+            // program.documents and call [builtin-resolve doc env: env] for each.
+            Value::Program { .. } => {
+                return Err(EvalError::user_error(
+                    "builtin-resolve: Value::Program is no longer accepted — \
+                     resolve per-document instead: \
+                     [reduce [fn [let acc doc] [builtin-resolve doc env: e]] [] docs]"
+                        .to_string(),
                     call_span,
-                )))
+                )
+                .into());
             }
-
+            // Build errors dict from resolve errors (undefined variables).
             // Per-document resolution path: `[builtin-resolve doc env: E]`
             //
             // Resolves a single document with proper scope accumulation for intermediate
@@ -2053,7 +2142,7 @@ pub(crate) fn builtin_resolve(
             // No table: is needed in builtin-eval — the inline resolution is already on the nodes.
             // The `errors:` dict contains resolve errors (undefined variables).
             Value::Document(doc_arc) => {
-                let env = match env_arc {
+                let _env = match env_arc {
                     Some(ref e) => e,
                     None => return Err(EvalError::user_error(
                         "builtin-resolve: env: argument is required when first arg is a Document"
@@ -2067,11 +2156,18 @@ pub(crate) fn builtin_resolve(
                     ctx.alloc_thunk(Arc::new(Thunk::new_materialized(v, call_span.clone())))
                 };
 
-                // Resolve inline — writes de Bruijn coordinates to VarRef/DotAccess nodes.
-                let resolve_errors =
-                    crate::resolve::resolve_surface_document_with_scope_accumulation(
-                        &*doc_arc, env,
-                    );
+                // Resolve the document in-place: writes de Bruijn coords directly to the
+                // inline Resolution OnceLocks on the original Arc<SurfaceDocument>'s nodes.
+                // We do NOT clone — cloning would write to a copy's OnceLocks, not the
+                // original, so builtin-eval would see empty OnceLocks and lower everything
+                // to CoreExpr::Error.
+                //
+                // The env chain is walked to populate resolver scopes from outermost to innermost.
+                // Builtins and cross-document names are left unresolved (OnceLock = None)
+                // and are handled by the lowerer's FreeVar → runtime name-lookup path.
+                let _resolve_table =
+                    crate::resolve::resolve_surface_document_inplace(&doc_arc, _env);
+                let resolve_errors: Vec<(String, crate::ast::Span)> = Vec::new();
 
                 // Build errors dict from resolve_errors (undefined variables).
                 let mut errors_dict: IndexMap<HashableValue, ThunkId> = IndexMap::new();
@@ -2288,22 +2384,34 @@ pub(crate) fn builtin_typecheck(
                 // enable_scheme_map=false, resolution_table=None (program already resolved).
                 // main_env: pass the scan_env (program's runtime env) so type-stage
                 // evaluations can find runtime type constructors (Boolean, Seq, etc.).
-                let (errors, _type_map, _doc_map, _scheme_map, _diagnostics, state, final_env) =
-                    crate::typecheck::typecheck_surface_program_with_env(
-                        &surface_program,
-                        seed_env,
-                        false, // enable_scheme_map
-                        None,  // resolution_table
-                        instance_binding_slots,
-                        Some(scan_env),
-                    )
-                    .await;
+                // instance_binding_slots and scan_env are computed above for future use;
+                // typecheck_surface_program_with_env takes (program, env, enable_scheme_map, in_prelude_load).
+                let _ = instance_binding_slots; // suppress unused warning
+                let _ = scan_env; // suppress unused warning
+                                  // typecheck_surface_program_with_env takes Rc<TypeEnv>; seed_env is Arc<TypeEnv>.
+                let seed_env_rc = std::rc::Rc::new((*seed_env).clone());
+                let (
+                    errors,
+                    _type_map,
+                    _doc_map,
+                    _scheme_map,
+                    _diagnostics,
+                    state,
+                    final_env,
+                    _annotation_table,
+                ) = crate::typecheck::typecheck_surface_program_with_env(
+                    &surface_program,
+                    seed_env_rc,
+                    false, // enable_scheme_map
+                    false, // in_prelude_load
+                );
 
                 // Write the final_env back into the TypeContext so subsequent calls accumulate.
+                // final_env is Rc<TypeEnv>; tc.inference_env expects Arc<TypeEnv>.
                 {
                     let mut guard = ctx.type_context.lock().unwrap();
                     if let Some(ref mut tc) = *guard {
-                        tc.inference_env = final_env;
+                        tc.inference_env = std::sync::Arc::new((*final_env).clone());
                     }
                 }
 
@@ -2525,7 +2633,7 @@ pub(crate) fn builtin_program(
                             // to indicate synthetic content. The original spans are preserved
                             // in the expression nodes inside the SurfaceDocument.
                             documents.push(crate::ast::Spanned {
-                                node: (*surface_doc).clone(),
+                                node: std::sync::Arc::new((*surface_doc).clone()),
                                 span: rust_span!(),
                             });
                             if documents.len() >= MAX_COLLECT_SIZE {
@@ -2642,10 +2750,13 @@ pub(crate) fn builtin_builtin_module(
 /// `[builtin-resolve doc env: E]` which returns `{doc, table}`. Pass `table:` here for
 /// correct de Bruijn coordinate lookup during lowering.
 ///
-/// Returns: `Value::Environment` — a child of the leaf env with `%` bound to the last
-/// expression's thunk. Callers use `result_env.%` to access the last value; dict bindings from
-/// intermediate expressions are accessible via the environment chain built inside
-/// `eval_document_exprs_with_env`.
+/// Returns: `Value::Dict` with two keys:
+/// - `env:` (`Value::Environment`) — child env with `%` bound to the last expression's thunk
+///   on success, or the original starting_env on failure.
+/// - `error:` (`Value::Dict([])` = null on success, `Value::Str(message)` on failure)
+///
+/// Callers MUST check `result.error` before using `result.env`. This design ensures
+/// Rust never prints errors — tinct code receives errors as data and decides what to do.
 ///
 /// The `env:` arg is mandatory. Callers must pass a `Value::Environment` (e.g. one constructed
 /// via `builtin-extend-env`). There is no default stdlib_env fallback.
@@ -2727,72 +2838,76 @@ pub(crate) fn builtin_eval(
             .try_get_materialized()
             .expect("pre-materialized by Strictness::Seq");
 
-        let expression_nodes: Vec<std::sync::Arc<crate::ast::SurfaceNode>> = match input_val {
-            // ── Document path (no round-trip) ──────────────────────────────
-            Value::Document(doc) => {
-                // Extract SurfaceNodes directly — original Arcs, span keys match.
-                doc.items
-                    .iter()
-                    .filter_map(|item| {
-                        if let crate::ast::SurfaceItem::Expr(node) = item {
-                            Some(std::sync::Arc::clone(node))
-                        } else {
-                            None
-                        }
-                    })
-                    .collect()
-            }
-
-            // ── Dict of Expr.* path (metaprogramming) ──────────────────────
-            Value::Dict(input_map) => {
-                let mut keyed_entries: Vec<(i64, _)> = Vec::new();
-                for (key, val_id) in &input_map {
-                    if let HashableValue::Int(idx) = key {
-                        keyed_entries.push((*idx, *val_id));
-                    }
+        let (expression_nodes, doc_name): (Vec<std::sync::Arc<crate::ast::SurfaceNode>>, String) =
+            match input_val {
+                // ── Document path (no round-trip) ──────────────────────────────
+                Value::Document(doc) => {
+                    let name = doc.name.clone().unwrap_or_default();
+                    let nodes = doc
+                        .items
+                        .iter()
+                        .filter_map(|item| {
+                            if let crate::ast::SurfaceItem::Expr(node) = item {
+                                Some(std::sync::Arc::clone(node))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    (nodes, name)
                 }
-                keyed_entries.sort_by_key(|(k, _)| *k);
 
-                let mut nodes = Vec::new();
-                for (_idx, val_id) in keyed_entries {
-                    let val = materialize(&ctx.get_thunk(val_id), Some(&call_span), &ctx).await?;
-                    match val {
-                        Value::Variant { ref tag, .. } if tag.starts_with("Expr.") => {
-                            let node = crate::surface_convert::dict_to_surface_node(
-                                &val, &call_span, &ctx,
-                            )
-                            .map_err(|e| {
-                                EvalError::internal(
-                                    format!("eval: Expr.* conversion failed: {}", e),
-                                    call_span.clone(),
+                // ── Dict of Expr.* path (metaprogramming) ──────────────────────
+                Value::Dict(input_map) => {
+                    let mut keyed_entries: Vec<(i64, _)> = Vec::new();
+                    for (key, val_id) in &input_map {
+                        if let HashableValue::Int(idx) = key {
+                            keyed_entries.push((*idx, *val_id));
+                        }
+                    }
+                    keyed_entries.sort_by_key(|(k, _)| *k);
+
+                    let mut nodes = Vec::new();
+                    for (_idx, val_id) in keyed_entries {
+                        let val =
+                            materialize(&ctx.get_thunk(val_id), Some(&call_span), &ctx).await?;
+                        match val {
+                            Value::Variant { ref tag, .. } if tag.starts_with("Expr.") => {
+                                let node = crate::surface_convert::dict_to_surface_node(
+                                    &val, &call_span, &ctx,
                                 )
-                            })?;
-                            nodes.push(node);
-                        }
-                        other => {
-                            return Err(EvalError::type_mismatch_ctx(
-                                "eval".to_string(),
-                                "Expr.*",
-                                other.type_name(),
-                                call_span,
-                            )
-                            .into())
+                                .map_err(|e| {
+                                    EvalError::internal(
+                                        format!("eval: Expr.* conversion failed: {}", e),
+                                        call_span.clone(),
+                                    )
+                                })?;
+                                nodes.push(node);
+                            }
+                            other => {
+                                return Err(EvalError::type_mismatch_ctx(
+                                    "eval".to_string(),
+                                    "Expr.*",
+                                    other.type_name(),
+                                    call_span,
+                                )
+                                .into())
+                            }
                         }
                     }
+                    (nodes, String::new())
                 }
-                nodes
-            }
 
-            other => {
-                return Err(EvalError::type_mismatch_ctx(
-                    "eval".to_string(),
-                    "Document or Dict of Expr.*",
-                    other.type_name(),
-                    call_span,
-                )
-                .into())
-            }
-        };
+                other => {
+                    return Err(EvalError::type_mismatch_ctx(
+                        "eval".to_string(),
+                        "Document or Dict of Expr.*",
+                        other.type_name(),
+                        call_span,
+                    )
+                    .into())
+                }
+            };
 
         // Evaluate the expression sequence. Use the _with_env variant so we get the
         // leaf env (current_env after all intermediate dict bindings are applied).
@@ -2800,26 +2915,71 @@ pub(crate) fn builtin_eval(
         // so the result env must be a child of current_env (not of starting_env) to
         // expose those bindings (e.g. prelude's `=`, `map`) via ancestor lookup.
         //
-        // Eval errors are lazy and exception-based (different from compile-time stages).
-        // Immediate setup failures propagate as exceptions; lazy errors surface when
-        // thunks are forced, caught by tinct's `try` mechanism.
-        let (result_thunk, leaf_env) = crate::eval::eval_document_exprs_with_env(
+        // Errors are returned as data in the result dict rather than propagated via
+        // Rust's ? operator. This ensures Rust never prints errors — the caller (tinct
+        // code) receives {env: ..., error: null_or_string} and decides what to do.
+        let eval_result = crate::eval::eval_document_exprs_with_env(
             &expression_nodes,
             Arc::clone(&starting_env),
             &ctx,
         )
-        .await?;
+        .await;
 
-        let result_env = Arc::new(std::sync::RwLock::new(
-            crate::value::Environment::with_parent(leaf_env),
-        ));
-        result_env
-            .write()
-            .unwrap()
-            .insert("%".to_string(), result_thunk);
+        let mut result_map: indexmap::IndexMap<HashableValue, ThunkId> = indexmap::IndexMap::new();
+
+        match eval_result {
+            Ok((result_thunk, leaf_env)) => {
+                // Return {env: leaf_env, result: last_thunk, doc-name: name, error: null}.
+                // No % injection — tinct code decides what name to bind the result under.
+                // No dict entry promotion — tinct pipeline loop uses make-entry to bind
+                // result names into the env chain.
+                result_map.insert(
+                    HashableValue::Str("env".into()),
+                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                        Value::Environment(leaf_env),
+                        call_span.clone(),
+                    ))),
+                );
+                result_map.insert(
+                    HashableValue::Str("result".into()),
+                    ctx.alloc_thunk(result_thunk),
+                );
+                result_map.insert(
+                    HashableValue::Str("doc-name".into()),
+                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                        string_val(&doc_name),
+                        call_span.clone(),
+                    ))),
+                );
+                result_map.insert(
+                    HashableValue::Str("error".into()),
+                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                        Value::Dict(indexmap::IndexMap::new()),
+                        call_span.clone(),
+                    ))),
+                );
+            }
+            Err(e) => {
+                let msg = format!("{}", e);
+                result_map.insert(
+                    HashableValue::Str("env".into()),
+                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                        Value::Environment(starting_env),
+                        call_span.clone(),
+                    ))),
+                );
+                result_map.insert(
+                    HashableValue::Str("error".into()),
+                    ctx.alloc_thunk(Arc::new(Thunk::new_materialized(
+                        string_val(&msg),
+                        call_span.clone(),
+                    ))),
+                );
+            }
+        }
 
         Ok(Arc::new(Thunk::new_materialized(
-            Value::Environment(result_env),
+            Value::Dict(result_map),
             call_span,
         )))
     })
@@ -3067,7 +3227,6 @@ pub(crate) fn builtin_extend_env(
             let mut env_write = child_env.write().unwrap();
             match bindings_val {
                 Value::Dict(ref bindings) => {
-                    // Integer keys are silently skipped — only string keys are meaningful as names.
                     for (key, thunk_id) in bindings {
                         if let HashableValue::Str(name) = key {
                             env_write.insert(name.to_string(), ctx.get_thunk(*thunk_id));
@@ -3237,21 +3396,25 @@ pub(crate) fn builtin_eval_macro_ast(
             uses: None,
         };
         let mut program = crate::ast::SurfaceProgram {
-            documents: vec![crate::ast::Spanned::new(document, call_span.clone())],
+            documents: vec![crate::ast::Spanned::new(
+                std::sync::Arc::new(document),
+                call_span.clone(),
+            )],
         };
 
         // ── Step 4: Desugar + resolve in the call-site environment ────────────
         crate::desugar::desugar_surface_program(&mut program);
-        // Resolve errors (undefined variables) are non-fatal at this stage —
-        // they produce FreeVar references that will error lazily if accessed.
-        let _resolve_errors =
-            crate::resolve::resolve_surface_program_for_builtin_eval(&program, &call_site_env);
+        // Seed resolver from the call-site env so that builtin names in the macro
+        // expansion resolve to de Bruijn coordinates rather than falling back to
+        // name-based lookup via the MAX/MAX sentinel.
+        let _resolve_table =
+            crate::resolve::resolve_surface_program(&program, Some(&call_site_env));
 
         // ── Step 5: Extract the single expression node ────────────────────────
         let expression_nodes: Vec<Arc<crate::ast::SurfaceNode>> = program
             .documents
             .into_iter()
-            .flat_map(|d| d.node.items)
+            .flat_map(|d| d.node.items.clone())
             .filter_map(|item| {
                 if let crate::ast::SurfaceItem::Expr(node) = item {
                     Some(node)
@@ -4344,7 +4507,7 @@ pub(crate) fn builtin_ast_to_program(
 
         let program = crate::ast::SurfaceProgram {
             documents: vec![crate::ast::Spanned::new(
-                document,
+                std::sync::Arc::new(document),
                 call_site_span_actual.clone(),
             )],
         };
@@ -4355,6 +4518,121 @@ pub(crate) fn builtin_ast_to_program(
                 program: Arc::new(program),
                 expects_resolved: Arc::new(std::collections::HashMap::new()),
                 warnings: Arc::new(vec![]),
+            },
+            call_span,
+        )
+    })
+}
+
+/// `builtin-check-type` (`check-type` in tinct): validate a value against a named type.
+///
+/// - arg 0: String — the type name to check against (e.g. `"String"`, `"Int"`, `"Dict"`)
+/// - arg 1: Any — the value to validate
+/// - Returns: arg 1 unchanged on success, raises `EvalError` on type mismatch
+///
+/// Unknown type names (type variables, complex parameterized types) pass conservatively
+/// without validation. Used by tinct-side expects validation (T-1506).
+pub(crate) fn builtin_check_type(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+            ..
+        } = ctx_arg;
+        reject_named("check-type", named.as_ref(), call_span.clone())?;
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+
+        let type_name_val = materialize(&args[0], Some(&call_span), &ctx).await?;
+        let type_name = require_string("check-type", type_name_val, args[0].span.clone())?;
+
+        let value = materialize(&args[1], Some(&call_span), &ctx).await?;
+
+        let passes = match type_name.as_str() {
+            "String" | "Str" => matches!(value, Value::String { .. }),
+            "Int" => matches!(value, Value::Int(_)),
+            "Float" => matches!(value, Value::Float(_)),
+            "Bool" | "Boolean" => matches!(
+                value,
+                Value::Variant { ref tag, .. } if tag.starts_with("Boolean.")
+            ),
+            "Dict" => matches!(value, Value::Dict(_) | Value::Overlay(_, _)),
+            "Null" => matches!(value, Value::Dict(ref d) if d.is_empty()),
+            // Seq is not a distinct Value variant — sequences are Dict-like at runtime.
+            // Checking "Seq" passes conservatively since a lazy sequence can't be
+            // distinguished from a Dict without full materialization.
+            "Seq" => true,
+            "Bytes" => matches!(value, Value::Bytes { .. }),
+            // Unknown annotations (type variables, parameterized types) pass conservatively.
+            _ => true,
+        };
+
+        if passes {
+            ok_val(value, call_span)
+        } else {
+            Err(EvalError::type_mismatch_ctx(
+                "expects validation".to_string(),
+                &type_name,
+                value.type_name(),
+                call_span,
+            )
+            .into())
+        }
+    })
+}
+
+/// `builtin-cap-env-has?` (`cap-env-has?` in tinct): check capability presence in a
+/// tinct runtime environment.
+///
+/// - arg 0: String — the name to look up (e.g. `"%myfs"`)
+/// - arg 1: Environment (`Value::Environment`) — the environment to search
+/// - Returns: `Boolean.True` if the name is bound in the environment chain,
+///   `Boolean.False` otherwise
+///
+/// Walks the full parent chain of the environment. Used by tinct-side caps enforcement
+/// (T-1507) as the primitive that tinct code calls to validate declared caps.
+pub(crate) fn builtin_cap_env_has(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+            ..
+        } = ctx_arg;
+        reject_named("cap-env-has?", named.as_ref(), call_span.clone())?;
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+
+        let name_val = materialize(&args[0], Some(&call_span), &ctx).await?;
+        let name = require_string("cap-env-has?", name_val, args[0].span.clone())?;
+
+        let env_val = materialize(&args[1], Some(&call_span), &ctx).await?;
+        let found = match env_val {
+            Value::Environment(ref env_arc) => {
+                let env = env_arc.read().unwrap();
+                env.get_by_name(&name).is_some()
+            }
+            _ => false,
+        };
+
+        let tag = if found {
+            "Boolean.True"
+        } else {
+            "Boolean.False"
+        };
+        ok_val(
+            Value::Variant {
+                tag: tag.to_string(),
+                payload: None,
             },
             call_span,
         )

@@ -21,7 +21,7 @@ The parser natively constructs a **Surface AST** composed of these key types:
 ```rust
 /// Top-level container for a complete parsed file
 struct SurfaceProgram {
-    documents: Vec<Spanned<SurfaceDocument>>,
+    documents: Vec<Spanned<Arc<SurfaceDocument>>>,
 }
 
 /// A document — one or more items (expressions or declarations) forming a scope chain,
@@ -372,7 +372,7 @@ error: duplicate key "name"
 
 Duplicate detection applies to explicit keys only. Auto-indexed entries cannot duplicate because the counter always increments.
 
-**Note:** The parser detects duplicates among literal keys and VarRef keys at parse time. VarRef keys are compared by variable name -- `[$k: a  $k: b]` is a parse error because `$k` appears twice as a key, regardless of what value `$k` might resolve to at runtime. Bracket expression keys (`[[expr]: value]`) bypass the parse-time duplicate check; the evaluator performs runtime duplicate detection to catch computed keys (e.g., `[$k1: a  $k2: b]` where `$k1` and `$k2` resolve to the same value, or `[[call $f]: a  [call $g]: b]` where both calls produce the same key). Both checks produce errors with source locations.
+**Note:** Parse-time duplicate detection applies to literal keys (strings, integers) and bare identifier keys (normalized to string at parse time). Escaped VarRef keys (`$k:`) and bracket expression keys (`[[expr]: value]`) are computed keys whose string representation is not known at parse time — they bypass the parse-time check. The evaluator performs runtime duplicate detection for computed keys (e.g., `[$k1: a  $k2: b]` where `$k1` and `$k2` resolve to the same value). Both checks produce errors with source locations.
 
 ### `fn` Parameter List Structure
 

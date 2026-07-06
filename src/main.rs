@@ -2211,11 +2211,13 @@ async fn run_fmt(
         // PIPELINE INVARIANT: parse -> desugar -> resolve -> typecheck.
         let mut program = output.program;
         tinct::desugar::desugar_surface_program(&mut program);
-        let env = tinct::get_builtin_core_type_env()
+        let env_arc = tinct::get_builtin_core_type_env()
             .await
             .expect("builtin core type env unavailable");
+        // typecheck_surface_program takes Rc<TypeEnv>; get_builtin_core_type_env returns Arc<TypeEnv>.
+        let env = std::rc::Rc::new((*env_arc).clone());
         let (type_errors, _type_map, _doc_map, _scheme_map, fmt_diagnostics) =
-            tinct::typecheck::typecheck_surface_program(&program, env).await;
+            tinct::typecheck::typecheck_surface_program(&program, env);
 
         if !type_errors.is_empty() {
             let error_msgs: Vec<String> = type_errors
@@ -2343,11 +2345,12 @@ async fn run_lint(
     // PIPELINE INVARIANT: parse -> desugar -> resolve -> typecheck.
     let mut program = output.program;
     tinct::desugar::desugar_surface_program(&mut program);
-    let env = tinct::get_builtin_core_type_env()
+    let env_arc = tinct::get_builtin_core_type_env()
         .await
         .expect("builtin core type env unavailable");
+    let env = std::rc::Rc::new((*env_arc).clone());
     let (type_errors, _type_map, _doc_map, _scheme_map, diagnostics) =
-        tinct::typecheck::typecheck_surface_program(&program, env).await;
+        tinct::typecheck::typecheck_surface_program(&program, env);
 
     // Collect all errors and warnings
     let mut all_messages = Vec::new();
@@ -2584,11 +2587,12 @@ async fn run_literate_lint(tangled: &str, config: &LiterateConfig<'_>) -> Result
     tinct::desugar::desugar_surface_program(&mut program);
     // Transform instance decls to method dicts (T-1142).
     tinct::desugar::desugar_instance_decls_surface_program(&mut program);
-    let env = tinct::get_builtin_core_type_env()
+    let env_arc = tinct::get_builtin_core_type_env()
         .await
         .expect("builtin core type env unavailable");
+    let env = std::rc::Rc::new((*env_arc).clone());
     let (type_errors, _type_map, _doc_map, _scheme_map, diagnostics) =
-        tinct::typecheck::typecheck_surface_program(&program, env).await;
+        tinct::typecheck::typecheck_surface_program(&program, env);
 
     // Collect all errors and warnings
     let mut all_messages = Vec::new();
@@ -2677,11 +2681,12 @@ async fn run_describe(file_path: &str) -> Result<(), String> {
     let mut program = output.program;
     tinct::desugar::desugar_surface_program(&mut program);
     // Type check to get DocMap (for doc strings).
-    let env = tinct::get_builtin_core_type_env()
+    let env_arc = tinct::get_builtin_core_type_env()
         .await
         .expect("builtin core type env unavailable");
+    let env = std::rc::Rc::new((*env_arc).clone());
     let (_type_errors, _type_map, doc_map, _scheme_map, _diagnostics) =
-        tinct::typecheck::typecheck_surface_program(&program, env).await;
+        tinct::typecheck::typecheck_surface_program(&program, env);
 
     // Collect contract information from each document section.
     let mut contracts: Vec<ContractSection> = Vec::new();

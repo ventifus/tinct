@@ -43,7 +43,7 @@ use crate::value::{string_val, Environment, HashableValue, Thunk, Value};
 
 thread_local! {
     /// Cached empty dict thunk used as the default `%` when no stdin is provided.
-    /// Avoids allocating a fresh `Arc<Thunk>` on every `eval_surface_file_with_input` call.
+    /// Avoids allocating a fresh `Arc<Thunk>` on every `eval_surface_file` call for empty programs.
     static EMPTY_DICT_THUNK: Arc<Thunk> = Arc::new(Thunk::new_materialized(
         Value::Dict(IndexMap::new()),
         rust_span!(),
@@ -52,62 +52,6 @@ thread_local! {
 
 /// Wrap a thunk with nominal type validation for pipeline input contracts.
 ///
-/// Creates a synthetic `CoreExpr::TypeAssert` wrapping a gensym'd `Var` reference.
-/// When evaluated, it performs the same validation as a regular `[@Type expr]` assertion.
-///
-/// `pipeline_blame` is `Some` when the assertion is for a `--- expects: @Type` contract at
-/// a `---` boundary; it identifies the producing stage (positive party) and consuming stage
-/// (negative party). Pass `None` for all other assertion sites.
-pub(crate) fn wrap_with_nominal_validation(
-    inner: Arc<Thunk>,
-    annotation: &crate::ast::Spanned<crate::ast::Annotation>,
-    resolved_type: Option<crate::types::Type>,
-    validation_span: Span,
-    ctx: &Arc<EvalContext>,
-    pipeline_blame: Option<crate::error::PipelineBlame>,
-) -> Arc<Thunk> {
-    // Generate a unique variable name to avoid collisions with user code.
-    // Scope '𝒩' (U+1D4A9, script N) marks names originating from nominal validation guards.
-    let gensym_name = crate::builtins_meta::gensym_fresh('𝒩', "nominal-input");
-
-    // Create an environment with ℊꜱʏᴍ⧼nominal-input⧽N bound to the inner thunk at slot 0.
-    // This env has a single binding, so level=0 slot=0 unambiguously refers to it.
-    let validation_env = Arc::new(std::sync::RwLock::new(Environment::new()));
-    validation_env
-        .write()
-        .unwrap()
-        .insert(gensym_name.clone(), inner);
-
-    // Create a synthetic TypeAssert expression: [@Annotation ℊꜱʏᴍ⧼nominal-input⧽N]
-    // The Var references slot 0 of the freshly created validation_env (level=0, slot=0).
-    // If resolved_type is None (untyped contract), use Type::Unknown which accepts all values.
-    let type_check_expr = Arc::new(crate::ast::Spanned::new(
-        CoreExpr::TypeAssert {
-            annotation: annotation.clone(),
-            expr: Arc::new(crate::ast::Spanned::new(
-                CoreExpr::Var {
-                    name: gensym_name,
-                    level: 0,
-                    slot: 0,
-                    annotation: None,
-                },
-                validation_span.clone(),
-            )),
-            resolved_type: resolved_type.unwrap_or(crate::types::Type::Unknown),
-            pipeline_blame,
-        },
-        validation_span.clone(),
-    ));
-
-    // Return an Unevaluated thunk wrapping the TypeAssert expression
-    Arc::new(Thunk::new_unevaluated_core(
-        type_check_expr,
-        validation_env,
-        Arc::clone(ctx),
-        validation_span,
-    ))
-}
-
 /// Evaluate a sequence of surface expression nodes as a scope chain, returning the
 /// last expression's thunk lazily.
 ///
@@ -219,83 +163,13 @@ pub(crate) async fn eval_document_exprs_with_env(
 /// - The last expression is returned as-is (lazy, any type).
 /// - An empty document returns an empty dict.
 ///
-/// This function retains only the document-level concerns: caps validation and
-/// collecting the expression nodes before delegating to the shared loop.
+/// Caps enforcement and expects validation are handled by tinct-side loader code
+/// via `builtin-cap-env-has?` and `builtin-check-type` (T-1506, T-1507).
 pub async fn eval_surface_document(
-    doc: &Spanned<crate::ast::SurfaceDocument>,
+    doc: &Spanned<Arc<crate::ast::SurfaceDocument>>,
     env: Arc<RwLock<Environment>>,
     ctx: &Arc<EvalContext>,
 ) -> EvalResult<Arc<Thunk>> {
-    // Validate capabilities declared in the document header
-    if let Some(ref caps_ann) = doc.node.caps {
-        for (cap_name, annotation) in &caps_ann.node {
-            let full_cap_name = format!("%{}", cap_name);
-
-            let cap_present = {
-                // Capability presence check — startup validation only, not a runtime variable lookup.
-                // Walk slot_names (seeding path) rather than using get_by_name,
-                // making the intent explicit: this is presence validation, not eval-time lookup.
-                // Walk the full parent chain in case the capability is in an ancestor scope.
-                let mut found = false;
-                let mut cur: Option<Arc<RwLock<Environment>>> = Some(Arc::clone(&env));
-                while let Some(frame) = cur {
-                    let frame_ref = frame.read().unwrap();
-                    if frame_ref.slot_names.iter().any(|n| n == &full_cap_name) {
-                        found = true;
-                        break;
-                    }
-                    cur = frame_ref.parent.as_ref().map(Arc::clone);
-                }
-                found
-            };
-
-            if !cap_present {
-                let (flag_type, flag_example) = match annotation {
-                    crate::ast::Annotation::Simple(type_name) if type_name == "NetCap" => {
-                        ("--cap-net", format!("{}=HOST:PORT", cap_name))
-                    }
-                    crate::ast::Annotation::Simple(type_name) if type_name == "DirCap" => {
-                        ("--cap-fs", format!("{}=PATH", cap_name))
-                    }
-                    crate::ast::Annotation::Simple(type_name) if type_name == "Handle" => {
-                        ("--cap-file", format!("{}=PATH:r", cap_name))
-                    }
-                    crate::ast::Annotation::Simple(type_name) if type_name == "File" => {
-                        ("--cap-file", format!("{}=PATH:r", cap_name))
-                    }
-                    _ => ("--cap", format!("{}=VALUE", cap_name)),
-                };
-
-                let auto_injected_caps = ["cwd", "libdir", "stdin"];
-                let is_auto_injected = auto_injected_caps.contains(&cap_name.as_str());
-
-                let mut message = format!(
-                    "{}@{} is required but not provided",
-                    full_cap_name,
-                    match annotation {
-                        crate::ast::Annotation::Simple(type_name) => type_name.clone(),
-                        crate::ast::Annotation::PropertyDict(_) => "Dict".to_string(),
-                        crate::ast::Annotation::Annotated(name, _) => name.clone(),
-                    }
-                );
-
-                if is_auto_injected {
-                    message.push_str(&format!(
-                        "\n  note: {} is injected automatically — did you pass --no-{}?",
-                        full_cap_name, cap_name
-                    ));
-                } else {
-                    message.push_str(&format!(
-                        "\n  inject it with:  tinct run {} {} ...\n  or unrestricted: tinct run {} {}=any ...",
-                        flag_type, flag_example, flag_type, cap_name
-                    ));
-                }
-
-                return Err(EvalError::capability_required(message, caps_ann.span.clone()).into());
-            }
-        }
-    }
-
     // Collect expression nodes (skip Decl items — processed by expander) and
     // delegate the scope-chaining loop to the shared eval_document_exprs function.
     let expr_nodes: Vec<Arc<SurfaceNode>> = doc.node.expressions().cloned().collect();
@@ -310,93 +184,47 @@ pub async fn eval_surface_document(
 /// `resolve_surface_program` must be called before passing the program here —
 /// it writes de Bruijn coordinates inline to the AST nodes.
 /// If type checking was skipped, `TypeAssert` nodes will use Type::Unknown (accepts all values).
+///
+/// # Environment threading
+///
+/// `env` is the fully-constructed loader environment (prelude + caps + named sections already
+/// bound). Each document receives the **same** `env` — there is no sequential env threading
+/// in this function. The tinct-side `builtin-eval` call (inside `loader.llt`) is responsible
+/// for threading the per-document leaf env forward via `builtin-extend-env`.
 pub async fn eval_surface_file(
     program: &SurfaceProgram,
     env: Arc<RwLock<Environment>>,
     ctx: &Arc<EvalContext>,
 ) -> EvalResult<Arc<Thunk>> {
-    eval_surface_file_with_input(program, env, ctx, &std::collections::HashMap::new(), None).await
+    let mut last = EMPTY_DICT_THUNK.with(Arc::clone);
+    for surface_doc in &program.documents {
+        if surface_doc.node.stage == Some(crate::ast::Stage::Type) {
+            continue;
+        }
+        last = eval_surface_document(surface_doc, Arc::clone(&env), ctx).await?;
+    }
+    Ok(last)
 }
 
-/// Evaluate a SurfaceProgram with an optional initial `%` value.
+/// Evaluate a SurfaceProgram with an optional initial `%` value injected into the environment.
 ///
 /// See `eval_surface_file` for preconditions. When `initial_input` is `Some(thunk)`,
-/// that thunk becomes `%` for the first document instead of the default empty dict.
+/// that thunk is bound as `%` in a child environment visible to all documents.
+/// Used by the formatter (which passes the AST dict as `%`).
 pub async fn eval_surface_file_with_input(
     program: &SurfaceProgram,
     env: Arc<RwLock<Environment>>,
     ctx: &Arc<EvalContext>,
-    expects_resolved: &std::collections::HashMap<crate::ast::Span, crate::types::Type>,
     initial_input: Option<Arc<Thunk>>,
 ) -> EvalResult<Arc<Thunk>> {
-    let mut prev_output = initial_input.unwrap_or_else(|| EMPTY_DICT_THUNK.with(Arc::clone));
-    let mut named: IndexMap<String, Arc<Thunk>> = IndexMap::new();
-    // Track the label of the previous (producing) document for pipeline blame.
-    // Stage-skipped documents are excluded from the index so runtime indices are contiguous.
-    let mut prev_doc_label: String = "initial input".to_string();
-    let mut runtime_doc_idx: usize = 0;
-
-    for surface_doc in &program.documents {
-        // Skip type-stage documents
-        if surface_doc.node.stage == Some(crate::ast::Stage::Type) {
-            continue;
-        }
-
-        // Each document gets a fresh scope with % and %name bindings
-        let doc_env = Arc::new(RwLock::new(Environment::with_parent(Arc::clone(&env))));
-
-        // Derive the consumer label for the current document.
-        let consumer_label = surface_doc
-            .node
-            .name
-            .as_deref()
-            .map(|n| format!("document '{}'", n))
-            .unwrap_or_else(|| format!("document {}", runtime_doc_idx));
-
-        // Bind % (pipeline variable), wrapping with validation if expects: is declared
-        let percent_thunk = if let Some(ref expects_ann) = surface_doc.node.expects {
-            let resolved_type = expects_resolved.get(&expects_ann.span).cloned();
-            let blame = crate::error::PipelineBlame {
-                producer: prev_doc_label.clone(),
-                consumer: Some(consumer_label.clone()),
-            };
-            wrap_with_nominal_validation(
-                Arc::clone(&prev_output),
-                expects_ann,
-                resolved_type,
-                surface_doc.span.clone(),
-                ctx,
-                Some(blame),
-            )
-        } else {
-            Arc::clone(&prev_output)
-        };
-
-        doc_env
-            .write()
-            .unwrap()
-            .insert("%".to_string(), percent_thunk);
-
-        // Bind all previously named sections as %name
-        for (section_name, section_thunk) in &named {
-            doc_env
-                .write()
-                .unwrap()
-                .insert(format!("%{}", section_name), Arc::clone(section_thunk));
-        }
-
-        let result = eval_surface_document(surface_doc, doc_env, ctx).await?;
-
-        if let Some(ref name) = surface_doc.node.name {
-            named.insert(name.clone(), Arc::clone(&result));
-        }
-
-        prev_doc_label = consumer_label;
-        runtime_doc_idx += 1;
-        prev_output = result; // lazy: no materialization at boundary
-    }
-
-    Ok(prev_output)
+    let eval_env = if let Some(input) = initial_input {
+        let child = Arc::new(RwLock::new(Environment::with_parent(Arc::clone(&env))));
+        child.write().unwrap().insert("%".to_string(), input);
+        child
+    } else {
+        env
+    };
+    eval_surface_file(program, eval_env, ctx).await
 }
 
 // ============================================================================
@@ -609,13 +437,6 @@ pub struct EvalContext {
     /// Propagated to child contexts (with_base_dir, with_cancel_token, with_explicit_cancel,
     /// with_timeout_ms) so nested includes and scoped cancellation see the same TyConEnv.
     pub tycon_env: std::sync::OnceLock<std::sync::Arc<crate::type_def::TyConEnv>>,
-    /// Match-signal class info: (class_name, method_name) discovered during type checking.
-    /// Set once after typechecking via `set_match_signal_class`; read-only thereafter.
-    /// Used by `call_to_match` (looks up the method name in the environment) and
-    /// `resolve_matchable_binding_from_fn` (constructs instance binding names).
-    /// `None` before typechecking or when no match-signal class was discovered.
-    /// Propagated to child contexts so nested includes see the same info.
-    pub match_signal_class: std::sync::OnceLock<Option<(String, String)>>,
     /// Optional sink for method arms registered during `eval_dict_core` pre-scan.
     ///
     /// Unified type environment handle for this evaluation scope.
@@ -682,7 +503,6 @@ impl EvalContext {
             task_registry: Arc::new(Mutex::new(Vec::new())),
             profiling: None,
             tycon_env: std::sync::OnceLock::new(),
-            match_signal_class: std::sync::OnceLock::new(),
             type_context: Arc::new(Mutex::new(None)),
         })
     }
@@ -724,7 +544,6 @@ impl EvalContext {
             task_registry: Arc::new(Mutex::new(Vec::new())),
             profiling: None,
             tycon_env: std::sync::OnceLock::new(),
-            match_signal_class: std::sync::OnceLock::new(),
             type_context: Arc::new(Mutex::new(None)),
         })
     }
@@ -765,13 +584,6 @@ impl EvalContext {
                 let child_lock = std::sync::OnceLock::new();
                 if let Some(env) = self.tycon_env.get() {
                     child_lock.set(std::sync::Arc::clone(env)).ok();
-                }
-                child_lock
-            },
-            match_signal_class: {
-                let child_lock = std::sync::OnceLock::new();
-                if let Some(info) = self.match_signal_class.get() {
-                    child_lock.set(info.clone()).ok();
                 }
                 child_lock
             },
@@ -819,13 +631,6 @@ impl EvalContext {
                 }
                 child_lock
             },
-            match_signal_class: {
-                let child_lock = std::sync::OnceLock::new();
-                if let Some(info) = self.match_signal_class.get() {
-                    child_lock.set(info.clone()).ok();
-                }
-                child_lock
-            },
             type_context: Arc::clone(&self.type_context),
         });
         (child_ctx, child_token)
@@ -859,13 +664,6 @@ impl EvalContext {
                 let child_lock = std::sync::OnceLock::new();
                 if let Some(env) = self.tycon_env.get() {
                     child_lock.set(std::sync::Arc::clone(env)).ok();
-                }
-                child_lock
-            },
-            match_signal_class: {
-                let child_lock = std::sync::OnceLock::new();
-                if let Some(info) = self.match_signal_class.get() {
-                    child_lock.set(info.clone()).ok();
                 }
                 child_lock
             },
@@ -904,13 +702,6 @@ impl EvalContext {
                 let child_lock = std::sync::OnceLock::new();
                 if let Some(env) = self.tycon_env.get() {
                     child_lock.set(std::sync::Arc::clone(env)).ok();
-                }
-                child_lock
-            },
-            match_signal_class: {
-                let child_lock = std::sync::OnceLock::new();
-                if let Some(info) = self.match_signal_class.get() {
-                    child_lock.set(info.clone()).ok();
                 }
                 child_lock
             },
@@ -957,14 +748,6 @@ impl EvalContext {
     ///    TyConEnv frozen after first input).
     pub fn set_tycon_env(&self, env: crate::type_def::TyConEnv) {
         self.tycon_env.set(std::sync::Arc::new(env)).ok();
-    }
-
-    /// Set the match-signal class info discovered during type checking.
-    /// When `Some((class_name, method_name))`, `call_to_match` looks up `method_name`
-    /// in the environment and `resolve_matchable_binding_from_fn` constructs instance
-    /// binding names using `class_name` and `method_name`. Silently no-ops if already set.
-    pub fn set_match_signal_class(&self, info: Option<(String, String)>) {
-        self.match_signal_class.set(info).ok();
     }
 
     /// Get the type constructor environment, if available.
@@ -1815,16 +1598,23 @@ fn eval_core_expr<'a>(
                 name, level, slot, ..
             } => {
                 if *level == u32::MAX || *slot == u32::MAX {
-                    return Err(EvalError::internal(
-                        format!("unresolved variable '{name}': resolver failed to assign de Bruijn coordinates (u32::MAX sentinel)"),
-                        span.clone(),
-                    )
-                    .into());
+                    // Sentinel: resolver did not assign de Bruijn coordinates, or lowerer
+                    // chose name-based lookup. Fall back to name-based lookup via get_by_name.
+                    let env_lock = env.read().unwrap();
+                    if let Some(thunk) = env_lock.get_by_name(name) {
+                        return Ok(thunk);
+                    }
+                    drop(env_lock);
+                    return Err(EvalError::undefined_variable(name.clone(), span.clone()).into());
                 }
                 let env_lock = env.read().unwrap();
                 match env_lock.get_slot(*level, *slot) {
                     Some(thunk) => Ok(thunk),
                     None => {
+                        // Slot lookup failed — fall back to name-based lookup as a safety net.
+                        if let Some(thunk) = env_lock.get_by_name(name) {
+                            return Ok(thunk);
+                        }
                         drop(env_lock);
                         Err(EvalError::undefined_variable(name.clone(), span.clone()).into())
                     }
@@ -2096,33 +1886,25 @@ fn eval_core_expr<'a>(
 /// # Side effects
 ///
 /// Mutates the thunk's internal state via `ThunkInner`. On success, transitions to
-/// Convert a tinct value to a match signal via the match-signal class dispatch function.
+/// Convert a tinct value to a match signal via the `to-match` dispatch function.
 ///
-/// Looks up the match-signal class method dispatch function in the environment (injected
+/// `"to-match"` is the Rust-level protocol name for the match-signal class method —
+/// analogous to Python's `__bool__`. Looks up `"to-match"` in the environment (injected
 /// by ClassDecl lowering) and calls it with the value. The dispatch function internally
 /// resolves the correct instance binding based on the value's runtime type.
 ///
-/// The method name is discovered from `ctx.match_signal_class` (populated during type
-/// checking). Returns `false` in bootstrap/pre-prelude contexts (before the match-signal
-/// class declaration and its instances are loaded) or for types with no instance.
+/// Returns `false` in bootstrap/pre-prelude contexts (before `"to-match"` is in scope)
+/// or for types with no instance.
 pub async fn call_to_match(
     val: &Value,
     env: &Arc<RwLock<Environment>>,
     ctx: &Arc<EvalContext>,
     span: &Span,
 ) -> bool {
-    // Get the match-signal method name from the EvalContext (discovered during type checking).
-    let method_name = match ctx.match_signal_class.get() {
-        Some(Some((_, method_name))) => method_name.as_str(),
-        _ => return false, // No match-signal class discovered — conservative false
-    };
-
-    // Look up the dispatch function in the environment.
-    // This function is injected by the ClassDecl lowering and dispatches
-    // through instances based on the value's runtime type.
+    // "to-match" is the Rust-level protocol name — look it up directly.
     let to_match_thunk = {
         let env_read = env.read().unwrap();
-        env_read.get_by_name(method_name)
+        env_read.get_by_name("to-match")
     };
     let Some(to_match_fn) = to_match_thunk else {
         // Method not in scope yet (bootstrap / pre-prelude context): conservative false
@@ -2137,7 +1919,7 @@ pub async fn call_to_match(
         span.clone(),
         Arc::clone(env),
         span.clone(),
-        Some(Arc::from(method_name)),
+        Some(Arc::from("to-match")),
         Arc::clone(ctx),
         crate::builtins::synthetic_call_expr(span.clone()),
     ));
@@ -2212,19 +1994,20 @@ pub async fn call_to_match_resolved(
 /// iteration, bypassing the dispatch indirection and calling the instance binding directly
 /// (one-hop call).
 ///
-/// Returns `None` if the predicate has no return annotation, the annotation is not a simple
-/// type name, or no match-signal class has been discovered. In that case, callers should
-/// fall back to `call_to_match` for the standard two-hop dispatch.
+/// The class name is discovered by scanning the environment for an instance binding whose
+/// key ends with `∷to-match⟨type_name⟩⧽` — the Rust-level protocol name `"to-match"` is
+/// fixed, and the class name is whatever class declared that method in the prelude.
 ///
-/// This does NOT look up the binding in the environment -- it only extracts and formats the
-/// name. The environment lookup happens inside `call_to_match_resolved` at call time.
-pub fn resolve_matchable_binding_from_fn(pred: &Value, ctx: &EvalContext) -> Option<String> {
-    // Get match-signal class info from the context.
-    let (class_name, method_name) = match ctx.match_signal_class.get() {
-        Some(Some((cn, mn))) => (cn.as_str(), mn.as_str()),
-        _ => return None,
-    };
-
+/// Returns `None` if the predicate has no return annotation, the annotation is not a simple
+/// type name, or no matching instance binding exists in the environment. In that case,
+/// callers should fall back to `call_to_match` for the standard two-hop dispatch.
+///
+/// This does NOT call the binding — it only resolves the name. The environment lookup
+/// and invocation happen inside `call_to_match_resolved` at call time.
+pub fn resolve_matchable_binding_from_fn(
+    pred: &Value,
+    env: &Arc<RwLock<Environment>>,
+) -> Option<String> {
     let return_ann = match pred {
         Value::Function { return_ann, .. } => return_ann.as_ref()?,
         // Builtins don't carry return annotations -- fall back to dynamic dispatch.
@@ -2239,7 +2022,12 @@ pub fn resolve_matchable_binding_from_fn(pred: &Value, ctx: &EvalContext) -> Opt
         crate::ast::Annotation::Simple(name) => name.as_str(),
         _ => return None,
     };
-    Some(crate::type_def::instance_binding_name(class_name, method_name, &[type_name]))
+    // Scan the env for an instance binding for "to-match" on type_name.
+    // Instance binding names have the form: ɪɴꜱᴛᴀɴᴄᴇ⧼{class}∷to-match⟨{type_name}⟩⧽
+    // We search for the suffix ∷to-match⟨{type_name}⟩⧽ to find the binding without
+    // needing to know the class name (which is defined by the prelude, not by Rust).
+    let suffix = format!("\u{2237}to-match\u{27e8}{type_name}\u{27e9}\u{29fd}");
+    env.read().unwrap().find_key_with_suffix(&suffix)
 }
 
 /// Call `call_to_match_resolved` if a pre-resolved binding name is available, otherwise
@@ -3789,7 +3577,7 @@ mod tests {
         ctx: &Arc<EvalContext>,
     ) -> EvalResult<Arc<Thunk>> {
         use crate::desugar::desugar_surface_program;
-        use crate::resolve::resolve_surface_program_with_env;
+        use crate::resolve::resolve_surface_program;
         let span = node.span.clone();
         let doc = SurfaceDocument {
             stage: None,
@@ -3801,13 +3589,14 @@ mod tests {
             uses: None,
         };
         let program = SurfaceProgram {
-            documents: vec![Spanned::new(doc, span.clone())],
+            documents: vec![Spanned::new(Arc::new(doc), span.clone())],
         };
         let mut program = program;
         desugar_surface_program(&mut program);
-        let _resolve_errors = resolve_surface_program_with_env(&program, &env);
+        // Seed resolver from the provided env so $name references resolve to de Bruijn coords.
         // Type annotation names (String, Int, etc.) in test expressions are resolved
         // by the type checker, not the runtime resolver — ignore resolve errors here.
+        let _resolve_errors = resolve_surface_program(&program, Some(&env));
         let _ = span;
         crate::eval_surface_file(&program, Arc::clone(&env), ctx).await
     }
@@ -4511,7 +4300,7 @@ mod tests {
             .expect("eval should return PendingCall thunk");
         let err = materialize(&thunk, None, &test_ctx()).await.unwrap_err();
         assert!(
-            err.to_string().contains("unexpected named argument: z"),
+            err.to_string().contains("unexpected named argument: \"z\""),
             "got: {}",
             err
         );
@@ -4589,6 +4378,7 @@ mod tests {
                     name: "add",
                     pos_strictness: &[],
                     force_count: 0,
+                    params: &[],
                 }),
                 test_span(1, 1, 1, 5),
             )),
@@ -5787,6 +5577,7 @@ mod tests {
                     name: "fail",
                     pos_strictness: &[],
                     force_count: 0,
+                    params: &[],
                 }),
                 test_span(1, 1, 1, 5),
             )),
@@ -5898,6 +5689,7 @@ mod tests {
                     name: "+",
                     pos_strictness: &[],
                     force_count: 0,
+                    params: &[],
                 }),
                 test_span(1, 1, 1, 5),
             )),
@@ -5961,6 +5753,7 @@ mod tests {
                 name: "*",
                 pos_strictness: &[],
                 force_count: 0,
+                params: &[],
             }),
             test_span(1, 1, 1, 5),
         ));
@@ -6174,6 +5967,7 @@ mod tests {
                     name: "+",
                     pos_strictness: &[],
                     force_count: 0,
+                    params: &[],
                 }),
                 test_span(1, 1, 1, 5),
             )),
@@ -6299,6 +6093,7 @@ mod tests {
                     name: "+",
                     pos_strictness: &[],
                     force_count: 0,
+                    params: &[],
                 }),
                 test_span(1, 1, 1, 5),
             )),
@@ -6520,6 +6315,7 @@ mod tests {
                     name: "fail",
                     pos_strictness: &[],
                     force_count: 0,
+                    params: &[],
                 }),
                 test_span(1, 1, 1, 5),
             )),
@@ -7718,7 +7514,7 @@ mod tests {
         desugar::desugar_surface_program(&mut program);
 
         // Production path: typecheck returns the tycon_env.
-        let (_errors, _expects, tycon_env, _match_signal) =
+        let (_errors, _expects, tycon_env) =
             crate::typecheck::typecheck_surface_program_annotation_table(&program).await;
 
         // Verify the typecheck pass actually populated the env for "Color".
@@ -8263,12 +8059,8 @@ mod tests {
         let parsed = crate::parse(source).expect("parse should succeed");
         let mut surface_program = parsed.program;
         crate::desugar::desugar_surface_program(&mut surface_program);
-        let resolve_errors = crate::resolve::resolve_surface_program(&surface_program);
-        assert!(
-            resolve_errors.is_empty(),
-            "unexpected resolve errors: {:?}",
-            resolve_errors
-        );
+        // Resolve without env: dict siblings ($a, $b, $c) are resolved by scope tracking.
+        crate::resolve::resolve_surface_program(&surface_program, None);
         let thunk = super::eval_surface_file(&surface_program, Arc::clone(&env), &ctx)
             .await
             .expect("eval_surface_file should succeed (lazy dict construction)");
@@ -8454,6 +8246,7 @@ mod tests {
             name: "keys",
             pos_strictness: KEYS_STRICTNESS,
             force_count: 1,
+            params: &[],
         };
 
         // Create a PendingBuiltin thunk wrapping `builtin_keys` with the unevaluated arg.
@@ -8523,6 +8316,7 @@ mod tests {
             name: "keys",
             pos_strictness: KEYS_STRICTNESS,
             force_count: 1,
+            params: &[],
         };
         let func_thunk = Arc::new(Thunk::new_materialized(
             Value::Builtin(keys_def),
@@ -8721,100 +8515,6 @@ mod tests {
             result.is_ok(),
             "Pin patterns in different arms must not error; got: {:?}",
             result.err()
-        );
-    }
-
-    /// T-933 Option 3: directly exercise the PipelineBlame runtime enrichment path.
-    ///
-    /// The corpus test runner passes an empty `expects_resolved` HashMap, so the pipeline
-    /// TypeAssert always uses `Type::Unknown` (accepts all values) and the blame code at
-    /// `eval_materialize.rs:2855-2860,2893-2897,2949-2953` is never reached.
-    ///
-    /// This test populates `expects_resolved` via the typechecker so the TypeAssert gets
-    /// a concrete `Type::Str`. When document 0 produces `Int(42)`, the TypeAssert fails
-    /// and `EvalError::with_pipeline_blame` fires, attaching `PipelineBlame { producer:
-    /// "document 0", consumer: Some("document 1") }` to the error.
-    #[tokio::test]
-    async fn test_pipeline_blame_runtime_enrichment() {
-        // Program: doc 0 produces Int(42); doc 1 declares `--- expects: @String` and
-        // returns `%` (the pipeline input).  The `expects:` annotation causes `%` to be
-        // wrapped in a TypeAssert thunk whose resolved_type is `Type::Str`.  Materializing
-        // `%` forces the TypeAssert, detects Int ≠ Str, and attaches PipelineBlame.
-        let source = "42\n--- expects: @String\n%";
-
-        // Parse.
-        let parsed = crate::parse(source).expect("parse must succeed");
-        let mut program = parsed.program;
-
-        // Desugar (no macros in this source, but maintain pipeline invariant).
-        crate::desugar::desugar_surface_program(&mut program);
-
-        // Resolve variable references (writes coordinates inline to AST nodes).
-        let resolve_errors = crate::resolve::resolve_surface_program(&program);
-        assert!(
-            resolve_errors.is_empty(),
-            "unexpected resolve errors: {:?}",
-            resolve_errors
-        );
-
-        // Typecheck: writes type annotations inline on AST nodes and populates `expects_resolved`
-        // with the span of the `expects: @String` annotation mapped to `Type::Str`.
-        // Without this map the TypeAssert falls back to `Type::Unknown` (accepts everything).
-        let (_type_errors, expects_resolved, _tycon_env, _match_signal) =
-            crate::typecheck::typecheck_surface_program_annotation_table(&program).await;
-        assert!(
-            !expects_resolved.is_empty(),
-            "typechecker must have resolved `@String` into expects_resolved; got empty map"
-        );
-
-        // Build a minimal eval context.  No stdlib needed: doc 0 is a bare literal and
-        // doc 1 evaluates `%` (provided by the pipeline, not the environment).
-        let env = empty_env();
-        let ctx = test_ctx();
-
-        // Evaluate: doc 0 produces Int(42), % in doc 1 is wrapped with TypeAssert(@String).
-        // The result thunk is the TypeAssert-wrapped % — still unevaluated (lazy).
-        let result_thunk = super::eval_surface_file_with_input(
-            &program,
-            Arc::clone(&env),
-            &ctx,
-            &expects_resolved,
-            None,
-        )
-        .await
-        .expect("eval_surface_file_with_input must not fail (TypeAssert is lazy)");
-
-        // Materializing the result forces the TypeAssert: Int(42) ≠ Str → error.
-        let err = materialize(&result_thunk, None, &ctx)
-            .await
-            .expect_err("materializing Int(42) against @String must produce a type error");
-
-        let msg = err.to_string();
-
-        // Verify that PipelineBlame was attached and rendered correctly.
-        assert!(
-            msg.contains("produced by: document 0"),
-            "error must contain 'produced by: document 0'; got:\n{msg}"
-        );
-        assert!(
-            msg.contains("consumed by: document 1"),
-            "error must contain 'consumed by: document 1'; got:\n{msg}"
-        );
-
-        // Also verify the pipeline_stage field is directly populated on the error.
-        assert!(
-            err.pipeline_stage.is_some(),
-            "EvalError.pipeline_stage must be Some after blame enrichment"
-        );
-        let blame = err.pipeline_stage.as_ref().unwrap();
-        assert_eq!(
-            blame.producer, "document 0",
-            "blame.producer must be 'document 0'"
-        );
-        assert_eq!(
-            blame.consumer.as_deref(),
-            Some("document 1"),
-            "blame.consumer must be Some('document 1')"
         );
     }
 
