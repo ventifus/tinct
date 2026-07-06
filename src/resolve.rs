@@ -152,14 +152,29 @@ impl SurfaceResolver {
                 }
             }
 
-            SurfaceExpression::Field { expr, .. } => {
+            SurfaceExpression::Field { expr, field, resolution, .. } => {
                 if let Some(target) = expr {
                     self.walk_surface_node(target);
+                    // Resolve field-get to get its de Bruijn level at the current scope depth.
+                    // slot-get lives in the same root env and therefore has the same level.
+                    // The lowerer reads this level and uses it with the hardcoded root slot
+                    // constants (FIELD_GET_ROOT_SLOT / SLOT_GET_ROOT_SLOT), so only the level
+                    // matters here — the slot from resolve_name is intentionally discarded.
+                    // If field-get is not in scope (resolver not seeded with env), leave
+                    // the OnceLock unset — the lowerer falls back to (MAX, MAX).
+                    if let Some(coords) = self.resolve_name("field-get") {
+                        let _ = resolution.set(Some(coords));
+                    }
+                } else if let crate::ast::DotKey::Ident(name) = field {
+                    // Leading-dot `.name`: resolve the name in the current scope.
+                    if let Some(coords) = self.resolve_name(name) {
+                        let _ = resolution.set(Some(coords));
+                    } else {
+                        // Resolver ran but name not found — emit error node, not MAX/MAX.
+                        let _ = resolution.set(None);
+                    }
                 }
-                // Field resolution (root_level for field-get) cannot be computed statically
-                // because the eval-time env chain depth is dynamic (sequential dicts).
-                // The lowerer falls back to (MAX, MAX) name-based lookup for field-get/slot-get
-                // when the Field's resolution OnceLock is unset.
+                // Leading-dot with integer key (`.0`) is a parse error; no resolution needed.
             }
 
             // Pipe: walk both sides (the lowering pass will rewrite pipe to call)

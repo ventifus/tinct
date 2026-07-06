@@ -649,24 +649,14 @@ pub(crate) fn eval_core_expr<'a>(
                 match env_lock.get_slot(*level, *slot) {
                     Some(thunk) => Ok(thunk),
                     None => {
-                        // Slot lookup failed. The MAX/MAX sentinel is only legitimate for
-                        // lowerer-synthesized references that cannot have de Bruijn coordinates
-                        // assigned at lower time:
-                        //   - `field-get`: dynamic env-depth Field resolution
-                        //   - `slot-get`: same (typed field access via positional slot)
-                        //   - `builtin-class-dispatch`: synthesized class method dispatch
-                        //
-                        // All other MAX/MAX references are compile errors: the resolver must
-                        // have been seeded from the env so that every user-written variable
-                        // reference resolves to proper coordinates.
-                        if *level == u32::MAX && *slot == u32::MAX {
-                            let is_legitimate_fallback = name == "field-get"
-                                || name == "slot-get"
-                                || name == "builtin-class-dispatch";
-                            if is_legitimate_fallback {
-                                if let Some(thunk) = env_lock.get_by_name(name) {
-                                    return Ok(thunk);
-                                }
+                        // Slot lookup failed. The only legitimate MAX/MAX use is
+                        // `builtin-class-dispatch`, which is synthesized by the lowerer after
+                        // the resolver runs (so no de Bruijn coordinates can be assigned).
+                        // field-get and slot-get now resolve statically via the Field handler
+                        // in the resolver — they should never reach MAX/MAX.
+                        if *level == u32::MAX && *slot == u32::MAX && name == "builtin-class-dispatch" {
+                            if let Some(thunk) = env_lock.get_by_name(name) {
+                                return Ok(thunk);
                             }
                         }
                         drop(env_lock);

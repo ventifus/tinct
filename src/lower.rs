@@ -214,10 +214,10 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
         } => {
             // Build the getter function Var and the key argument.
             // When the resolver has written a root_level to this Field's resolution, use
-            // slot-based lookup (O(1)). When the resolution is unset (resolver never ran
-            // or Field is in a cross-document position), use the sentinel (MAX, MAX).
-            // The evaluator whitelists exactly field-get, slot-get, and builtin-class-dispatch
-            // for name-based lookup at (MAX, MAX); all other names become undefined_variable.
+            // slot-based lookup (O(1)). When resolution is unset (resolver not seeded with
+            // env, e.g. type-checker-only paths), fall back to MAX/MAX name-based lookup.
+            // field-get and slot-get are whitelisted in eval_core.rs — but this path should
+            // only fire when the resolver had no env and therefore could not assign coords.
             let maybe_root_level: Option<u32> = match resolution.get() {
                 Some(Some((level, _slot))) => Some(level),
                 _ => None, // unset or explicitly unresolvable — use name-based fallback
