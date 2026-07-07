@@ -232,9 +232,10 @@ impl SurfaceResolver {
 
             SurfaceExpression::CaseArm { let_bindings, pattern, body } => {
                 self.walk_surface_node(let_bindings);
-                self.walk_surface_node(pattern);
-                // Extract binding variable names from [let name1 name2 ...] and enter scope
-                // so that body references resolve correctly with de Bruijn coords.
+                // Extract binding variable names from [let name1 name2 ...].
+                // Enter scope BEFORE walking the pattern so that binding VarRefs
+                // inside the pattern (e.g. `v` in `[Result.Ok v]`) resolve to
+                // the case arm's own scope rather than leaving OnceLocks unset.
                 let bound_names: Vec<String> = match &let_bindings.expr {
                     SurfaceExpression::LetDecl { bindings } => bindings
                         .iter()
@@ -252,6 +253,7 @@ impl SurfaceResolver {
                 if has_bindings {
                     self.enter_scope(&bound_names);
                 }
+                self.walk_surface_node(pattern);
                 self.walk_surface_node(body);
                 if has_bindings {
                     self.exit_scope();

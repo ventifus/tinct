@@ -642,11 +642,7 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression, diagnostics: &mu
             body,
         } => CoreExpr::CaseArm {
             let_bindings: Arc::new(lower_inner(let_bindings, diagnostics)),
-            // Pattern VarRefs in CaseArm position are binding declarations, not references.
-            // The resolver doesn't enter the case arm scope before walking the pattern,
-            // so their OnceLocks remain None — that is intentional. Suppress diagnostics
-            // for the pattern to avoid spurious "undefined variable" errors for binding vars.
-            pattern: Arc::new(lower_inner(pattern, &mut Vec::new())),
+            pattern: Arc::new(lower_inner(pattern, diagnostics)),
             body: Arc::new(lower_inner(body, diagnostics)),
         },
 
