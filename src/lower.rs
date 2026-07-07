@@ -22,20 +22,52 @@ use crate::ast::{
 };
 use crate::rust_span;
 
-/// Lower a single surface node to a CoreExpr.
+/// Severity of a diagnostic emitted during lowering.
+#[derive(Debug, Clone)]
+#[allow(dead_code)] // Warning variant is infrastructure for future use
+pub enum LowerDiagnosticKind {
+    Error,
+    Warning,
+}
+
+/// A diagnostic produced during the lowering phase.
+///
+/// The evaluator still embeds a `CoreExpr::Error` node for lazy-eval correctness (errors
+/// surface at force time, not construction time), but callers can inspect the diagnostic
+/// vec to surface errors eagerly when that is appropriate (e.g., during document loading).
+#[derive(Debug, Clone)]
+pub struct LowerDiagnostic {
+    pub kind: LowerDiagnosticKind,
+    pub message: String,
+    pub span: crate::ast::Span,
+}
+
+/// Lower a single surface node to a CoreExpr, collecting diagnostics.
 ///
 /// This is the entry point for per-thunk lowering. Called from `eval_materialize.rs`
 /// when a `UnevaluatedState::Surface` thunk is first forced.
 ///
-/// Lowering errors (malformed AST, impossible variant combinations) propagate as
-/// `CoreExpr::Error` — consistent with tinct's lazy semantics where errors surface
-/// at force time, not at construction time.
+/// Lowering errors (unresolvable variables, malformed AST) propagate as `CoreExpr::Error`
+/// nodes — consistent with tinct's lazy semantics where errors surface at force time.
+/// The same errors are also collected in the returned `Vec<LowerDiagnostic>` so callers
+/// that need eager error reporting (e.g., document loading) can inspect them.
 ///
 /// All cross-phase data (type annotations, field slots, provenance) is read from inline
 /// fields on the AST nodes — no external tables are consulted.
-pub fn lower(arc: &Arc<SurfaceNode>) -> Spanned<CoreExpr> {
+pub fn lower(arc: &Arc<SurfaceNode>) -> (Spanned<CoreExpr>, Vec<LowerDiagnostic>) {
+    let mut diagnostics = Vec::new();
+    let spanned = lower_inner(arc, &mut diagnostics);
+    (spanned, diagnostics)
+}
+
+/// Internal lowering entry point that threads the diagnostics accumulator.
+///
+/// Used by recursive calls within lower.rs and by eval machinery that does not need the
+/// diagnostic Vec (relying on `CoreExpr::Error` nodes for lazy-eval error propagation).
+/// Produces the same `Spanned<CoreExpr>` as the public `lower()`.
+pub(crate) fn lower_inner(arc: &Arc<SurfaceNode>, diagnostics: &mut Vec<LowerDiagnostic>) -> Spanned<CoreExpr> {
     let span = arc.span.clone();
-    let core_expr = lower_expr(arc, &arc.expr);
+    let core_expr = lower_expr(arc, &arc.expr, diagnostics);
 
     // Apply type guard if the type checker set one on this node.
     let core_expr = if let Some(guard_type) = arc.type_guard.get() {
@@ -171,7 +203,7 @@ fn lower_pattern(pat: &Pattern) -> Pattern {
     }
 }
 
-fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
+fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression, diagnostics: &mut Vec<LowerDiagnostic>) -> CoreExpr {
     match expr {
         SurfaceExpression::Int(n) => CoreExpr::Int(*n),
         SurfaceExpression::U64(n) => CoreExpr::U64(*n),
@@ -187,9 +219,15 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
             match resolution.get() {
                 Some(None) => {
                     // Explicitly marked unresolvable by the resolver — compile error.
+                    let message = format!("unresolvable variable: {}", name);
+                    diagnostics.push(LowerDiagnostic {
+                        kind: LowerDiagnosticKind::Error,
+                        message: message.clone(),
+                        span: arc.span.clone(),
+                    });
                     CoreExpr::Error {
                         span: arc.span.clone(),
-                        message: format!("unresolvable variable: {}", name),
+                        message,
                     }
                 }
                 Some(Some((level, slot))) => CoreExpr::Var {
@@ -204,9 +242,15 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
                     // assigned by the resolver (seeded from the env). A None here means the
                     // name is genuinely undefined — emit a compile-time error node so the
                     // evaluator surfaces it when (and only when) the thunk is forced.
+                    let message = format!("undefined variable: {}", name);
+                    diagnostics.push(LowerDiagnostic {
+                        kind: LowerDiagnosticKind::Error,
+                        message: message.clone(),
+                        span: arc.span.clone(),
+                    });
                     CoreExpr::Error {
                         span: arc.span.clone(),
-                        message: format!("undefined variable: {}", name),
+                        message,
                     }
                 }
             }
@@ -257,7 +301,7 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
                 arc.span.clone(),
             ));
             let key_node = Arc::new(crate::ast::Spanned::new(key_arg, arc.span.clone()));
-            let target_node = Arc::new(lower(inner));
+            let target_node = Arc::new(lower_inner(inner, diagnostics));
 
             CoreExpr::Call {
                 func: getter_var,
@@ -308,14 +352,14 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
         // Pipe is syntactic sugar — rewrite to Call(rhs, [lhs]) so the evaluator
         // sees only Call nodes. Equivalent to: f |> g  ==  g(f).
         SurfaceExpression::Pipe { lhs, rhs } => CoreExpr::Call {
-            func: Arc::new(lower(rhs)),
-            args: vec![Arc::new(lower(lhs))],
+            func: Arc::new(lower_inner(rhs, diagnostics)),
+            args: vec![Arc::new(lower_inner(lhs, diagnostics))],
             named_args: vec![],
             implied: true,
         },
 
         SurfaceExpression::Sequential(exprs) => {
-            CoreExpr::Sequential(exprs.iter().map(|e| Arc::new(lower(e))).collect())
+            CoreExpr::Sequential(exprs.iter().map(|e| Arc::new(lower_inner(e, diagnostics))).collect())
         }
 
         SurfaceExpression::Dict(entries) => {
@@ -328,8 +372,8 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
                                 // Named instance: emit outer key binding only.
                                 // Binding names are NOT flattened to avoid duplicate key errors
                                 // when multiple instances of the same class exist in the dict.
-                                let lowered = lower_expr(&se.node.value, &se.node.value.expr);
-                                let key = se.node.key.as_ref().map(|k| Arc::new(lower(k)));
+                                let lowered = lower_expr(&se.node.value, &se.node.value.expr, diagnostics);
+                                let key = se.node.key.as_ref().map(|k| Arc::new(lower_inner(k, diagnostics)));
                                 let value = Arc::new(Spanned::new(lowered, se.span.clone()));
                                 core_entries
                                     .push(Spanned::new(CoreEntry { key, value }, se.span.clone()));
@@ -361,7 +405,7 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
                                             CoreExpr::Str(binding_name),
                                             se.span.clone(),
                                         )));
-                                        let value = Arc::new(lower(&me.node.value));
+                                        let value = Arc::new(lower_inner(&me.node.value, diagnostics));
                                         core_entries.push(Spanned::new(
                                             CoreEntry { key, value },
                                             se.span.clone(),
@@ -373,14 +417,14 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
                         crate::ast::SurfaceDeclaration::TypeAlias { body, .. } => {
                             let type_name_opt = extract_type_name_from_key(&se.node.key);
                             let ctor_dict =
-                                lower_type_alias_to_constructor_dict(type_name_opt, body);
+                                lower_type_alias_to_constructor_dict(type_name_opt, body, diagnostics);
                             let key = se.node.key.as_ref().map(|k| {
                                 let lowered = match &k.expr {
                                     // Both plain and annotated VarRef use the name field.
                                     SurfaceExpression::VarRef { name, .. } => {
                                         CoreExpr::Str(name.clone())
                                     }
-                                    _ => lower_expr(k, &k.expr),
+                                    _ => lower_expr(k, &k.expr, diagnostics),
                                 };
                                 Arc::new(Spanned::new(lowered, k.span.clone()))
                             });
@@ -404,7 +448,7 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
                                         SurfaceExpression::VarRef { name, .. } => {
                                             CoreExpr::Str(name.clone())
                                         }
-                                        _ => lower_expr(k, &k.expr),
+                                        _ => lower_expr(k, &k.expr, diagnostics),
                                     };
                                     Arc::new(Spanned::new(lowered, k.span.clone()))
                                 });
@@ -437,11 +481,11 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
                                 escaped: false,
                                 ..
                             } => CoreExpr::Str(name.clone()),
-                            _ => lower_expr(k, &k.expr),
+                            _ => lower_expr(k, &k.expr, diagnostics),
                         };
                         Arc::new(Spanned::new(lowered, k.span.clone()))
                     });
-                    let value = Arc::new(lower(&se.node.value));
+                    let value = Arc::new(lower_inner(&se.node.value, diagnostics));
                     core_entries.push(Spanned::new(CoreEntry { key, value }, se.span.clone()));
                 }
             }
@@ -476,22 +520,22 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
                         func.span.clone(),
                     ))
                 } else {
-                    Arc::new(lower(func))
+                    Arc::new(lower_inner(func, diagnostics))
                 }
             } else {
-                Arc::new(lower(func))
+                Arc::new(lower_inner(func, diagnostics))
             };
 
             CoreExpr::Call {
                 func: lowered_func,
-                args: args.iter().map(|a| Arc::new(lower(a))).collect(),
+                args: args.iter().map(|a| Arc::new(lower_inner(a, diagnostics))).collect(),
                 named_args: named_args
                     .iter()
                     .map(|na| {
                         Spanned::new(
                             CoreNamedArg {
                                 name: na.node.name.clone(),
-                                value: Arc::new(lower(&na.node.value)),
+                                value: Arc::new(lower_inner(&na.node.value, diagnostics)),
                             },
                             na.span.clone(),
                         )
@@ -521,7 +565,7 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
                     )
                 })
                 .collect(),
-            body: Arc::new(lower(body)),
+            body: Arc::new(lower_inner(body, diagnostics)),
             desugared: *desugared,
         },
 
@@ -539,7 +583,7 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
             };
             CoreExpr::TypeAssert {
                 annotation: annotation.clone(),
-                expr: Arc::new(lower(inner)),
+                expr: Arc::new(lower_inner(inner, diagnostics)),
                 resolved_type: ty,
                 pipeline_blame: None,
             }
@@ -548,7 +592,7 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
         SurfaceExpression::Rest(name, _) => CoreExpr::Rest(name.clone()),
 
         SurfaceExpression::Match { scrutinee, arms } => CoreExpr::Match {
-            scrutinee: Arc::new(lower(scrutinee)),
+            scrutinee: Arc::new(lower_inner(scrutinee, diagnostics)),
             arms: arms
                 .iter()
                 .map(|arm| CoreMatchArm {
@@ -556,21 +600,21 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
                         lower_pattern(&arm.pattern.node),
                         arm.pattern.span.clone(),
                     ),
-                    guard: arm.guard.as_ref().map(|g| Arc::new(lower(g))),
-                    body: Arc::new(lower(&arm.body)),
+                    guard: arm.guard.as_ref().map(|g| Arc::new(lower_inner(g, diagnostics))),
+                    body: Arc::new(lower_inner(&arm.body, diagnostics)),
                     guard_matchable_binding: arm.guard_matchable_binding.clone(),
                 })
                 .collect(),
         },
 
-        SurfaceExpression::Quote(inner) => CoreExpr::Quote(Arc::new(lower(inner))),
+        SurfaceExpression::Quote(inner) => CoreExpr::Quote(Arc::new(lower_inner(inner, diagnostics))),
 
-        SurfaceExpression::Unquote(inner) => CoreExpr::Unquote(Arc::new(lower(inner))),
+        SurfaceExpression::Unquote(inner) => CoreExpr::Unquote(Arc::new(lower_inner(inner, diagnostics))),
 
-        SurfaceExpression::UnquoteSplice(inner) => CoreExpr::UnquoteSplice(Arc::new(lower(inner))),
+        SurfaceExpression::UnquoteSplice(inner) => CoreExpr::UnquoteSplice(Arc::new(lower_inner(inner, diagnostics))),
 
         SurfaceExpression::PatternDecl { bindings } => CoreExpr::PatternDecl {
-            bindings: bindings.iter().map(|b| lower(b)).collect(),
+            bindings: bindings.iter().map(|b| lower_inner(b, diagnostics)).collect(),
         },
 
         SurfaceExpression::LetDecl { bindings } => CoreExpr::LetDecl {
@@ -579,9 +623,9 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
                 .enumerate()
                 .map(|(i, b)| {
                     if i % 2 == 0 {
-                        lower_let_decl_binding(b)
+                        lower_let_decl_binding(b, diagnostics)
                     } else {
-                        lower(b)
+                        lower_inner(b, diagnostics)
                     }
                 })
                 .collect(),
@@ -592,9 +636,9 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
             pattern,
             body,
         } => CoreExpr::CaseArm {
-            let_bindings: Arc::new(lower(let_bindings)),
-            pattern: Arc::new(lower(pattern)),
-            body: Arc::new(lower(body)),
+            let_bindings: Arc::new(lower_inner(let_bindings, diagnostics)),
+            pattern: Arc::new(lower_inner(pattern, diagnostics)),
+            body: Arc::new(lower_inner(body, diagnostics)),
         },
 
         SurfaceExpression::Placeholder => CoreExpr::Placeholder,
@@ -630,7 +674,7 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
                             CoreExpr::Str(binding_name),
                             syn_span.clone(),
                         )));
-                        let value = Arc::new(lower(&me.node.value));
+                        let value = Arc::new(lower_inner(&me.node.value, diagnostics));
                         core_entries.push(Spanned::new(CoreEntry { key, value }, syn_span.clone()));
                     }
                 }
@@ -819,7 +863,7 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
 /// For annotated bindings (`name@Type`), the name is extracted and lowered as `CoreExpr::Str`.
 /// For all other nodes (VarRef, Annotated, Rest), the name is extracted if possible; otherwise
 /// the node is lowered normally (producing an error if unresolvable).
-fn lower_let_decl_binding(arc: &Arc<SurfaceNode>) -> Spanned<CoreExpr> {
+fn lower_let_decl_binding(arc: &Arc<SurfaceNode>, diagnostics: &mut Vec<LowerDiagnostic>) -> Spanned<CoreExpr> {
     let span = arc.span.clone();
     let core_expr = match &arc.expr {
         // Declaration name forms: lower as string literal (name extraction path)
@@ -829,7 +873,7 @@ fn lower_let_decl_binding(arc: &Arc<SurfaceNode>) -> Spanned<CoreExpr> {
         // Wildcard / unnamed rest: use empty string (skipped by LetDecl eval arm)
         SurfaceExpression::Rest(None, _) => CoreExpr::Str(String::new()),
         // All other forms: lower normally (will produce Error if unresolvable)
-        _ => lower_expr(arc, &arc.expr),
+        _ => lower_expr(arc, &arc.expr, diagnostics),
     };
     Spanned::new(core_expr, span)
 }
@@ -937,6 +981,7 @@ fn extract_type_name_from_key(key: &Option<Arc<SurfaceNode>>) -> Option<String> 
 fn lower_type_alias_to_constructor_dict(
     type_name_opt: Option<String>,
     body: &Arc<SurfaceNode>,
+    diagnostics: &mut Vec<LowerDiagnostic>,
 ) -> CoreExpr {
     use crate::ast::CoreEntry;
 
@@ -978,8 +1023,8 @@ fn lower_type_alias_to_constructor_dict(
                 let ann_core_entries: Vec<Spanned<CoreEntry>> = ann_entries
                     .iter()
                     .map(|se| {
-                        let key = se.node.key.as_ref().map(|k| Arc::new(lower(k)));
-                        let value = Arc::new(lower(&se.node.value));
+                        let key = se.node.key.as_ref().map(|k| Arc::new(lower_inner(k, diagnostics)));
+                        let value = Arc::new(lower_inner(&se.node.value, diagnostics));
                         Spanned::new(CoreEntry { key, value }, se.span.clone())
                     })
                     .collect();
@@ -1095,8 +1140,8 @@ fn lower_type_alias_to_constructor_dict(
                 let ann_core_entries: Vec<Spanned<CoreEntry>> = ann_entries
                     .iter()
                     .map(|se| {
-                        let key = se.node.key.as_ref().map(|k| Arc::new(lower(k)));
-                        let value = Arc::new(lower(&se.node.value));
+                        let key = se.node.key.as_ref().map(|k| Arc::new(lower_inner(k, diagnostics)));
+                        let value = Arc::new(lower_inner(&se.node.value, diagnostics));
                         Spanned::new(CoreEntry { key, value }, se.span.clone())
                     })
                     .collect();
@@ -1356,10 +1401,11 @@ mod tests {
         let span = rust_span!();
         let node = make_node(SurfaceExpression::Int(42), span.clone());
 
-        let lowered = lower(&node);
+        let (lowered, diags) = lower(&node);
 
         assert_eq!(lowered.span, span);
         assert!(matches!(lowered.node, CoreExpr::Int(42)));
+        assert!(diags.is_empty(), "unexpected diagnostics: {:?}", diags);
     }
 
     #[test]
@@ -1379,8 +1425,9 @@ mod tests {
             span,
         );
 
-        let lowered = lower(&node);
+        let (lowered, diags) = lower(&node);
 
+        assert!(diags.is_empty(), "unexpected diagnostics: {:?}", diags);
         match lowered.node {
             CoreExpr::Var {
                 name, level, slot, ..
@@ -1408,13 +1455,25 @@ mod tests {
             span.clone(),
         );
 
-        let lowered = lower(&node);
+        let (lowered, diags) = lower(&node);
 
         // Unresolvable VarRef produces CoreExpr::Error — a genuine compile error.
         assert!(
             matches!(lowered.node, CoreExpr::Error { .. }),
             "expected CoreExpr::Error for unresolvable VarRef, got {:?}",
             lowered.node
+        );
+        // The same error must also be reported as a diagnostic.
+        assert_eq!(diags.len(), 1, "expected exactly one diagnostic for unresolvable VarRef");
+        assert!(
+            matches!(diags[0].kind, LowerDiagnosticKind::Error),
+            "expected Error diagnostic, got {:?}",
+            diags[0].kind
+        );
+        assert!(
+            diags[0].message.contains("unbound"),
+            "diagnostic message should mention the variable name: {}",
+            diags[0].message
         );
     }
 
@@ -1447,7 +1506,7 @@ mod tests {
             span,
         );
 
-        let lowered = lower(&node);
+        let (lowered, _diags) = lower(&node);
 
         match lowered.node {
             CoreExpr::Dict(entries) => assert!(
@@ -1506,7 +1565,7 @@ mod tests {
             span,
         );
 
-        let lowered = lower(&node);
+        let (lowered, _diags) = lower(&node);
 
         match lowered.node {
             CoreExpr::Dict(entries) => assert!(

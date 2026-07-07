@@ -104,7 +104,12 @@ pub(crate) async fn eval_document_exprs_with_env(
     let last_idx = expr_nodes.len() - 1;
 
     for (i, node) in expr_nodes.iter().enumerate() {
-        let core_spanned = crate::lower::lower(node);
+        let (core_spanned, lower_diags) = crate::lower::lower(node);
+        if !lower_diags.is_empty() {
+            if let Some(err) = lower_diags.into_iter().find(|d| matches!(d.kind, crate::lower::LowerDiagnosticKind::Error)) {
+                return Err(EvalError::user_error(err.message, err.span).into());
+            }
+        }
         let node_span = node.span.clone();
 
         if i == last_idx {
@@ -1312,7 +1317,7 @@ fn eval_quote_preprocess<'a>(
         match &node.expr {
             SurfaceExpression::Unquote(inner) => {
                 // Evaluate the unquoted expression and convert back to SurfaceNode
-                let core = crate::lower::lower(inner);
+                let core = crate::lower::lower_inner(inner, &mut Vec::new());
                 let thunk = eval_core_expr(&core, env, ctx).await?;
                 let value = materialize(&thunk, Some(&inner.span), ctx).await?;
                 value_to_surface_node(&value, inner.span.clone(), ctx)
@@ -1363,7 +1368,7 @@ fn eval_quote_preprocess<'a>(
                     // Handle unquote-splicing in call argument position
                     if let SurfaceExpression::UnquoteSplice(inner) = &arg.expr {
                         // Evaluate the unquote-splice expression
-                        let core = crate::lower::lower(inner);
+                        let core = crate::lower::lower_inner(inner, &mut Vec::new());
                         let thunk = eval_core_expr(&core, env, ctx).await?;
                         let inner_span = inner.span.clone();
                         let value = materialize(&thunk, Some(&inner_span), ctx).await?;
@@ -2892,7 +2897,7 @@ pub fn materialize<'a>(
             // 1. Lower the SurfaceNode to CoreExpr using lower() (reads inline fields)
             // 2. Evaluate the CoreExpr using eval_core_expr()
             // 3. Materialize the result thunk
-            let lowered = crate::lower::lower(&node);
+            let lowered = crate::lower::lower_inner(&node, &mut Vec::new());
             let result = async {
                 let result_thunk = eval_core_expr(&lowered, &env, &thunk_ctx).await?;
                 run(
@@ -3562,7 +3567,7 @@ mod tests {
         env: Arc<RwLock<Environment>>,
         ctx: &Arc<EvalContext>,
     ) -> EvalResult<Arc<Thunk>> {
-        let core_expr = crate::lower::lower(&node);
+        let core_expr = crate::lower::lower_inner(&node, &mut Vec::new());
         super::eval_core_expr(&core_expr, &env, ctx).await
     }
 

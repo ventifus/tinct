@@ -1065,7 +1065,7 @@ pub(crate) async fn force_step(
             ctx: Arc::clone(&thunk_ctx),
         };
 
-        let lowered = crate::lower::lower(&node);
+        let lowered = crate::lower::lower_inner(&node, &mut Vec::new());
 
         // Handle CoreExpr::TypeAssert inline after lowering — same loop risk as take_core_expr.
         if let crate::ast::CoreExpr::TypeAssert {
@@ -1080,7 +1080,7 @@ pub(crate) async fn force_step(
             let inner_thunk = if let (crate::ast::CoreExpr::Error { .. }, Some(default_node)) =
                 (&inner.node, annotation.node.get_property("default"))
             {
-                let lowered_default = crate::lower::lower(default_node);
+                let lowered_default = crate::lower::lower_inner(default_node, &mut Vec::new());
                 match eval_core_expr(&lowered_default, &env, &thunk_ctx).await {
                     Ok(default_thunk) => default_thunk,
                     Err(e) => {
@@ -1216,7 +1216,7 @@ pub(crate) async fn force_step(
             let inner_thunk = if let (crate::ast::CoreExpr::Error { .. }, Some(default_node)) =
                 (&inner.node, annotation.node.get_property("default"))
             {
-                let lowered_default = crate::lower::lower(default_node);
+                let lowered_default = crate::lower::lower_inner(default_node, &mut Vec::new());
                 match eval_core_expr(&lowered_default, &env, &thunk_ctx).await {
                     Ok(default_thunk) => default_thunk,
                     Err(e) => {
@@ -2531,7 +2531,7 @@ pub(crate) async fn apply_cont(
                     if let Some(default_node) = annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
                     {
                         Action::EvalCore {
-                            expr: Arc::new(crate::lower::lower(default_node)),
+                            expr: Arc::new(crate::lower::lower_inner(default_node, &mut Vec::new())),
                             env,
                             ctx: Arc::clone(&ctx),
                         }
@@ -2566,7 +2566,7 @@ pub(crate) async fn apply_cont(
                                 .node
                                 .get_property(DEFAULT_ANNOTATION_KEY)
                                 .map(|node| {
-                                    (Arc::new(crate::lower::lower(node)), Arc::clone(&env))
+                                    (Arc::new(crate::lower::lower_inner(node, &mut Vec::new())), Arc::clone(&env))
                                 });
                             // Construct BlameLabel for TypeAssert boundary
                             let blame_label = Some(crate::error::BlameLabel {
@@ -2612,7 +2612,7 @@ pub(crate) async fn apply_cont(
                                 // Evaluate default expression iteratively.
                                 // The result will flow to the next continuation on the stack.
                                 Action::EvalCore {
-                                    expr: Arc::new(crate::lower::lower(default_node)),
+                                    expr: Arc::new(crate::lower::lower_inner(default_node, &mut Vec::new())),
                                     env,
                                     ctx: Arc::clone(&ctx),
                                 }
@@ -2651,7 +2651,7 @@ pub(crate) async fn apply_cont(
                                 callable_invoked: false,
                             })));
                             Action::EvalCore {
-                                expr: Arc::new(crate::lower::lower(&predicate_node)),
+                                expr: Arc::new(crate::lower::lower_inner(&predicate_node, &mut Vec::new())),
                                 env,
                                 ctx: Arc::clone(&ctx),
                             }
@@ -2662,7 +2662,7 @@ pub(crate) async fn apply_cont(
                         annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
                     {
                         Action::EvalCore {
-                            expr: Arc::new(crate::lower::lower(default_node)),
+                            expr: Arc::new(crate::lower::lower_inner(default_node, &mut Vec::new())),
                             env,
                             ctx: Arc::clone(&ctx),
                         }
@@ -2994,7 +2994,7 @@ pub(crate) async fn apply_cont(
                         } = &arm.pattern.node
                         {
                             let resolved_binding = to_match_binding.get().cloned();
-                            let lowered_pred = crate::lower::lower(pred_node);
+                            let lowered_pred = crate::lower::lower_inner(pred_node, &mut Vec::new());
                             let pred_span = lowered_pred.span.clone();
                             // Check if the lowered predicate is a Call expression.
                             // If so, extend its arg list with a Var referencing the scrutinee.
@@ -3451,7 +3451,7 @@ pub(crate) async fn apply_cont(
                         {
                             // Evaluate default expression iteratively
                             Action::EvalCore {
-                                expr: Arc::new(crate::lower::lower(default_node)),
+                                expr: Arc::new(crate::lower::lower_inner(default_node, &mut Vec::new())),
                                 env,
                                 ctx: Arc::clone(&ctx),
                             }
@@ -3630,7 +3630,7 @@ fn eval_structural_pattern_inner<'a>(
 
                 // Check if annotation contains an "is:" property (predicate)
                 if let Some(pred_surface_node) = annotation.node.get_property(IS_ANNOTATION_KEY) {
-                    let pred_expr_core = Arc::new(crate::lower::lower(pred_surface_node));
+                    let pred_expr_core = Arc::new(crate::lower::lower_inner(pred_surface_node, &mut Vec::new()));
 
                     let pred_thunk = Arc::new(Thunk::new_unevaluated_core(
                         pred_expr_core,

@@ -194,7 +194,7 @@ fn eval_quote_preprocess<'a>(
         match &node.expr {
             SurfaceExpression::Unquote(inner) => {
                 // Evaluate the unquoted expression and convert back to SurfaceNode
-                let core = crate::lower::lower(inner);
+                let core = crate::lower::lower_inner(inner, &mut Vec::new());
                 let thunk = eval_core_expr(&core, env, ctx).await?;
                 let value = materialize(&thunk, Some(&inner.span), ctx).await?;
                 value_to_surface_node(&value, inner.span.clone(), ctx)
@@ -218,7 +218,7 @@ fn eval_quote_preprocess<'a>(
                     // Handle unquote-splicing in dict entry value position
                     if let SurfaceExpression::UnquoteSplice(inner) = &entry.node.value.expr {
                         // Evaluate the unquote-splice expression
-                        let core = crate::lower::lower(inner);
+                        let core = crate::lower::lower_inner(inner, &mut Vec::new());
                         let thunk = eval_core_expr(&core, env, ctx).await?;
                         let inner_span = inner.span.clone();
                         let value = materialize(&thunk, Some(&inner_span), ctx).await?;
@@ -330,7 +330,7 @@ fn eval_quote_preprocess<'a>(
                     // Handle unquote-splicing in call argument position
                     if let SurfaceExpression::UnquoteSplice(inner) = &arg.expr {
                         // Evaluate the unquote-splice expression
-                        let core = crate::lower::lower(inner);
+                        let core = crate::lower::lower_inner(inner, &mut Vec::new());
                         let thunk = eval_core_expr(&core, env, ctx).await?;
                         let inner_span = inner.span.clone();
                         let value = materialize(&thunk, Some(&inner_span), ctx).await?;
@@ -586,7 +586,7 @@ pub(crate) async fn extract_fn_annotation_extra(
             // This is the T-1124 fix: annotations like `as-type: [fn [let u] u]` are now evaluable.
             _ => {
                 // Lower SurfaceNode → CoreExpr (inline fields provide all needed type info).
-                let core_expr = crate::lower::lower(&e.node.value);
+                let core_expr = crate::lower::lower_inner(&e.node.value, &mut Vec::new());
 
                 // Evaluate the CoreExpr to a thunk, then materialize to a Value.
                 let thunk = eval_core_expr(&core_expr, env, ctx).await?;
