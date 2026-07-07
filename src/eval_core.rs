@@ -900,11 +900,8 @@ pub(crate) fn eval_core_expr<'a>(
             .into()),
 
             // Error: propagate as internal error
-            CoreExpr::Error(err_span) => Err(EvalError::internal(
-                format!(
-                    "syntax error at {}:{} (cannot evaluate error node)",
-                    err_span.start.line, err_span.start.column
-                ),
+            CoreExpr::Error { message, .. } => Err(EvalError::internal(
+                message.clone(),
                 span.clone(),
             )
             .into()),

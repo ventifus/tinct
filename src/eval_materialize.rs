@@ -1077,7 +1077,7 @@ pub(crate) async fn force_step(
         {
             // B-433/B-429: If inner is a literal error node and annotation has default:, use default.
             // Only applies to CoreExpr::Error (parse-time errors), not runtime evaluation failures.
-            let inner_thunk = if let (crate::ast::CoreExpr::Error(_), Some(default_node)) =
+            let inner_thunk = if let (crate::ast::CoreExpr::Error { .. }, Some(default_node)) =
                 (&inner.node, annotation.node.get_property("default"))
             {
                 let lowered_default = crate::lower::lower(default_node);
@@ -1213,7 +1213,7 @@ pub(crate) async fn force_step(
         {
             // B-433/B-429: If inner is a literal error node and annotation has default:, use default.
             // Only applies to CoreExpr::Error (parse-time errors), not runtime evaluation failures.
-            let inner_thunk = if let (crate::ast::CoreExpr::Error(_), Some(default_node)) =
+            let inner_thunk = if let (crate::ast::CoreExpr::Error { .. }, Some(default_node)) =
                 (&inner.node, annotation.node.get_property("default"))
             {
                 let lowered_default = crate::lower::lower(default_node);

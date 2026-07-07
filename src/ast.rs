@@ -1469,7 +1469,7 @@ pub enum CoreExpr {
         body: Arc<Spanned<CoreExpr>>,
     },
     Placeholder,
-    Error(Span),
+    Error { span: Span, message: String },
 }
 
 /// A dict/list entry in a CoreExpr::Dict.

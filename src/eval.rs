@@ -1854,11 +1854,8 @@ fn eval_core_expr<'a>(
             .into()),
 
             // Error: propagate as internal error
-            CoreExpr::Error(err_span) => Err(EvalError::internal(
-                format!(
-                    "syntax error at {}:{} (cannot evaluate error node)",
-                    err_span.start.line, err_span.start.column
-                ),
+            CoreExpr::Error { message, .. } => Err(EvalError::internal(
+                message.clone(),
                 span.clone(),
             )
             .into()),
@@ -3891,7 +3888,7 @@ mod tests {
                         test_span(1, 1, 1, 2),
                     ))),
                     value: Arc::new(Spanned::new(
-                        CoreExpr::Error(error_span.clone()),
+                        CoreExpr::Error { span: error_span.clone(), message: "test error".to_string() },
                         test_span(1, 5, 1, 15),
                     )),
                 },
@@ -3911,10 +3908,10 @@ mod tests {
             other => panic!("expected Dict, got {other:?}"),
         };
 
-        // First attempt: should fail with "syntax error" (from CoreExpr::Error)
+        // First attempt: should fail with "test error" (from CoreExpr::Error)
         let err1 = materialize(&x_thunk, None, &ctx).await.unwrap_err();
         assert!(
-            err1.kind.to_string().contains("syntax error"),
+            err1.kind.to_string().contains("test error"),
             "first attempt: got: {}",
             err1.kind
         );
@@ -3922,7 +3919,7 @@ mod tests {
         // Second attempt: should produce the SAME error, not "circular dependency"
         let err2 = materialize(&x_thunk, None, &ctx).await.unwrap_err();
         assert!(
-            err2.kind.to_string().contains("syntax error"),
+            err2.kind.to_string().contains("test error"),
             "second attempt should not be poisoned, got: {}",
             err2.kind
         );
@@ -4892,7 +4889,7 @@ mod tests {
             CoreExpr::TypeAssert {
                 annotation: sp(Annotation::PropertyDict(entries)),
                 expr: Arc::new(Spanned::new(
-                    CoreExpr::Error(error_span.clone()),
+                    CoreExpr::Error { span: error_span.clone(), message: "test error".to_string() },
                     error_span,
                 )),
                 resolved_type: Type::Int,
@@ -5049,7 +5046,7 @@ mod tests {
                         test_span(1, 1, 1, 2),
                     ))),
                     value: Arc::new(Spanned::new(
-                        CoreExpr::Error(error_span.clone()),
+                        CoreExpr::Error { span: error_span.clone(), message: "test error".to_string() },
                         test_span(1, 5, 1, 15),
                     )),
                 },
@@ -5075,7 +5072,7 @@ mod tests {
         let err = materialize(&x_thunk, Some(&mat_span), &ctx)
             .await
             .unwrap_err();
-        assert!(err.to_string().contains("syntax error"), "got: {}", err);
+        assert!(err.to_string().contains("test error"), "got: {}", err);
         assert_eq!(
             err.materialization_span,
             Some(mat_span),
@@ -5346,13 +5343,13 @@ mod tests {
         let (env, ctx) = core_env_and_ctx();
         let error_span = test_span(1, 1, 1, 12);
         let err = eval_core_for_test(
-            Spanned::new(CoreExpr::Error(error_span.clone()), error_span),
+            Spanned::new(CoreExpr::Error { span: error_span.clone(), message: "test error".to_string() }, error_span),
             Arc::clone(&env),
             &ctx,
         )
         .await
         .unwrap_err();
-        assert!(err.to_string().contains("syntax error"), "got: {}", err);
+        assert!(err.to_string().contains("test error"), "got: {}", err);
     }
 
     #[tokio::test]
@@ -6195,7 +6192,7 @@ mod tests {
                         test_span(1, 1, 1, 2),
                     ))),
                     value: Arc::new(Spanned::new(
-                        CoreExpr::Error(error_span.clone()),
+                        CoreExpr::Error { span: error_span.clone(), message: "test error".to_string() },
                         test_span(1, 5, 1, 15),
                     )),
                 },
@@ -6218,7 +6215,7 @@ mod tests {
         // First materialization: should fail and cache the error
         let err1 = materialize(&x_thunk, None, &ctx).await.unwrap_err();
         assert!(
-            err1.kind.to_string().contains("syntax error"),
+            err1.kind.to_string().contains("test error"),
             "first error: got: {}",
             err1.kind
         );
@@ -6228,13 +6225,13 @@ mod tests {
             let cached_err = x_thunk
                 .get_cached_error()
                 .expect("thunk should be in Failed state");
-            assert!(cached_err.kind.to_string().contains("syntax error"));
+            assert!(cached_err.kind.to_string().contains("test error"));
         }
 
         // Second materialization: should return the cached error
         let err2 = materialize(&x_thunk, None, &ctx).await.unwrap_err();
         assert!(
-            err2.kind.to_string().contains("syntax error"),
+            err2.kind.to_string().contains("test error"),
             "second error: got: {}",
             err2.kind
         );
@@ -6552,7 +6549,7 @@ mod tests {
                         test_span(1, 1, 1, 2),
                     ))),
                     value: Arc::new(Spanned::new(
-                        CoreExpr::Error(error_span.clone()),
+                        CoreExpr::Error { span: error_span.clone(), message: "test error".to_string() },
                         test_span(1, 5, 1, 15),
                     )),
                 },
@@ -6575,8 +6572,8 @@ mod tests {
         // First materialization: should fail with a cacheable error
         let err1 = materialize(&x_thunk, None, &ctx).await.unwrap_err();
         assert!(
-            err1.kind.to_string().contains("syntax error"),
-            "expected syntax error, got: {}",
+            err1.kind.to_string().contains("test error"),
+            "expected test error, got: {}",
             err1.kind.to_string()
         );
 
@@ -6585,7 +6582,7 @@ mod tests {
             .get_cached_error()
             .expect("expected Failed state with cached error after cacheable error");
         assert!(
-            cached_err.kind.to_string().contains("syntax error"),
+            cached_err.kind.to_string().contains("test error"),
             "cached error mismatch: got: {}",
             cached_err.to_string()
         );

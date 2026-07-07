@@ -187,7 +187,10 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
             match resolution.get() {
                 Some(None) => {
                     // Explicitly marked unresolvable by the resolver — compile error.
-                    CoreExpr::Error(arc.span.clone())
+                    CoreExpr::Error {
+                        span: arc.span.clone(),
+                        message: format!("unresolvable variable: {}", name),
+                    }
                 }
                 Some(Some((level, slot))) => CoreExpr::Var {
                     name: name.clone(),
@@ -201,7 +204,10 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
                     // assigned by the resolver (seeded from the env). A None here means the
                     // name is genuinely undefined — emit a compile-time error node so the
                     // evaluator surfaces it when (and only when) the thunk is forced.
-                    CoreExpr::Error(arc.span.clone())
+                    CoreExpr::Error {
+                        span: arc.span.clone(),
+                        message: format!("undefined variable: {}", name),
+                    }
                 }
             }
         }
@@ -276,7 +282,10 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
                 slot,
                 annotation: None,
             },
-            Some(None) => CoreExpr::Error(arc.span.clone()),
+            Some(None) => CoreExpr::Error {
+                span: arc.span.clone(),
+                message: format!("undefined variable: .{}", name),
+            },
             None => CoreExpr::Var {
                 name: name.clone(),
                 level: u32::MAX,
@@ -291,7 +300,10 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
             expr: None,
             field: crate::ast::DotKey::Int(_),
             ..
-        } => CoreExpr::Error(arc.span.clone()),
+        } => CoreExpr::Error {
+            span: arc.span.clone(),
+            message: "leading-dot integer access is not supported".to_string(),
+        },
 
         // Pipe is syntactic sugar — rewrite to Call(rhs, [lhs]) so the evaluator
         // sees only Call nodes. Equivalent to: f |> g  ==  g(f).
@@ -639,7 +651,10 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
             _ => CoreExpr::Placeholder,
         },
 
-        SurfaceExpression::Error(span) => CoreExpr::Error(span.clone()),
+        SurfaceExpression::Error(span) => CoreExpr::Error {
+            span: span.clone(),
+            message: "parse error".to_string(),
+        },
     }
 }
 
@@ -781,7 +796,7 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
             pattern: core_expr_to_surface_node(pattern),
             body: core_expr_to_surface_node(body),
         },
-        CoreExpr::Error(span) => SurfaceExpression::Error(span.clone()),
+        CoreExpr::Error { span, .. } => SurfaceExpression::Error(span.clone()),
         CoreExpr::Placeholder => SurfaceExpression::Placeholder,
         // Variant: emitted by lower.rs for type declarations; not user-writable in quotes.
         // Represent as a VarRef to the tag so quote round-trips see a name.
@@ -1397,7 +1412,7 @@ mod tests {
 
         // Unresolvable VarRef produces CoreExpr::Error — a genuine compile error.
         assert!(
-            matches!(lowered.node, CoreExpr::Error(_)),
+            matches!(lowered.node, CoreExpr::Error { .. }),
             "expected CoreExpr::Error for unresolvable VarRef, got {:?}",
             lowered.node
         );

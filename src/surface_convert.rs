@@ -663,7 +663,7 @@ pub fn core_expr_to_expr_value(
         // ── Placeholder / Error ──────────────────────────────────────────────────
         CoreExpr::Placeholder => make_unit_variant("Expr.Placeholder"),
 
-        CoreExpr::Error(_span) => make_unit_variant("Expr.ExprError"),
+        CoreExpr::Error { .. } => make_unit_variant("Expr.ExprError"),
     };
 
     // Inject the span into the payload (like surface_node_to_expr_variant does)
