@@ -19,7 +19,7 @@ pub const STANDARD_ANN_KEYS: &[&str] = &["return", "constraint", "doc", "bind", 
 ///
 /// `"return"`, `"constraint"`, `"bind"`, `"kinds"` contain type expressions whose
 /// VarRefs may have no runtime resolution slots (e.g. type variables `a`, `b`), so
-/// evaluating them at function-definition time would produce `CoreExpr::Error`.
+/// evaluating them at function-definition time would produce lowering diagnostics.
 ///
 /// `"doc"` is intentionally NOT in this list — it is a string-valued expression
 /// (including triple-quoted strings desugared to `[unindent "..."]`) that evaluates
@@ -851,7 +851,7 @@ pub enum SurfaceExpression {
     //
     // `expr: None` = leading-dot form (`.field` with no preceding expression).
     // Semantics: skip the current letrec scope frame and resolve `field` in the parent scope.
-    // After lowering, produces `CoreExpr::Var` or `CoreExpr::Error` — no runtime changes needed.
+    // After lowering, produces `CoreExpr::Var` or `CoreExpr::Placeholder` — no runtime changes needed.
     // Resolution is stored inline in `resolution` (only used for the leading-dot `expr: None` case).
     // Note: the tag remains "DotAccess" for serialization/macro roundtripping
     #[expr(tag = "DotAccess")]
@@ -1469,7 +1469,6 @@ pub enum CoreExpr {
         body: Arc<Spanned<CoreExpr>>,
     },
     Placeholder,
-    Error { span: Span, message: String },
 }
 
 /// A dict/list entry in a CoreExpr::Dict.

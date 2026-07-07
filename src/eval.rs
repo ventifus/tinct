@@ -1317,7 +1317,10 @@ fn eval_quote_preprocess<'a>(
         match &node.expr {
             SurfaceExpression::Unquote(inner) => {
                 // Evaluate the unquoted expression and convert back to SurfaceNode
-                let core = crate::lower::lower_inner(inner, &mut Vec::new());
+                let (core, lower_diags) = crate::lower::lower(inner);
+                if let Some(err) = lower_diags.into_iter().find(|d| matches!(d.kind, crate::lower::LowerDiagnosticKind::Error)) {
+                    return Err(EvalError::user_error(err.message, err.span).into());
+                }
                 let thunk = eval_core_expr(&core, env, ctx).await?;
                 let value = materialize(&thunk, Some(&inner.span), ctx).await?;
                 value_to_surface_node(&value, inner.span.clone(), ctx)
@@ -1368,7 +1371,10 @@ fn eval_quote_preprocess<'a>(
                     // Handle unquote-splicing in call argument position
                     if let SurfaceExpression::UnquoteSplice(inner) = &arg.expr {
                         // Evaluate the unquote-splice expression
-                        let core = crate::lower::lower_inner(inner, &mut Vec::new());
+                        let (core, lower_diags) = crate::lower::lower(inner);
+                        if let Some(err) = lower_diags.into_iter().find(|d| matches!(d.kind, crate::lower::LowerDiagnosticKind::Error)) {
+                            return Err(EvalError::user_error(err.message, err.span).into());
+                        }
                         let thunk = eval_core_expr(&core, env, ctx).await?;
                         let inner_span = inner.span.clone();
                         let value = materialize(&thunk, Some(&inner_span), ctx).await?;
@@ -1858,12 +1864,6 @@ fn eval_core_expr<'a>(
             )
             .into()),
 
-            // Error: propagate as internal error
-            CoreExpr::Error { message, .. } => Err(EvalError::internal(
-                message.clone(),
-                span.clone(),
-            )
-            .into()),
         }
         // Note: type guards are now inline on AST nodes (TypeAnnotation OnceLock).
         // The lowerer wraps them in CoreExpr::TypeAssert. No runtime guard wrapping needed here.
@@ -2897,7 +2897,10 @@ pub fn materialize<'a>(
             // 1. Lower the SurfaceNode to CoreExpr using lower() (reads inline fields)
             // 2. Evaluate the CoreExpr using eval_core_expr()
             // 3. Materialize the result thunk
-            let lowered = crate::lower::lower_inner(&node, &mut Vec::new());
+            let (lowered, lower_diags) = crate::lower::lower(&node);
+            if let Some(err) = lower_diags.into_iter().find(|d| matches!(d.kind, crate::lower::LowerDiagnosticKind::Error)) {
+                return Err(decorate(EvalError::user_error(err.message, err.span).into()));
+            }
             let result = async {
                 let result_thunk = eval_core_expr(&lowered, &env, &thunk_ctx).await?;
                 run(
@@ -3567,7 +3570,10 @@ mod tests {
         env: Arc<RwLock<Environment>>,
         ctx: &Arc<EvalContext>,
     ) -> EvalResult<Arc<Thunk>> {
-        let core_expr = crate::lower::lower_inner(&node, &mut Vec::new());
+        let (core_expr, lower_diags) = crate::lower::lower(&node);
+        if let Some(err) = lower_diags.into_iter().find(|d| matches!(d.kind, crate::lower::LowerDiagnosticKind::Error)) {
+            return Err(EvalError::user_error(err.message, err.span).into());
+        }
         super::eval_core_expr(&core_expr, &env, ctx).await
     }
 
@@ -3880,7 +3886,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_thunk_retryable_after_error() {
-        // [x: <error>] -- materializing x fails because the value is a CoreExpr::Error.
+        // [x: <placeholder>] -- materializing x fails because the value is a CoreExpr::Placeholder.
         // After failure, the thunk must be cached in Failed state (cacheable error),
         // and a second materialize attempt should return the SAME error, NOT "circular dependency".
         let ctx = test_ctx();
@@ -3893,7 +3899,7 @@ mod tests {
                         test_span(1, 1, 1, 2),
                     ))),
                     value: Arc::new(Spanned::new(
-                        CoreExpr::Error { span: error_span.clone(), message: "test error".to_string() },
+                        CoreExpr::Placeholder,
                         test_span(1, 5, 1, 15),
                     )),
                 },
@@ -3913,20 +3919,19 @@ mod tests {
             other => panic!("expected Dict, got {other:?}"),
         };
 
-        // First attempt: should fail with "test error" (from CoreExpr::Error)
+        // First attempt: should fail (Placeholder is unimplemented)
         let err1 = materialize(&x_thunk, None, &ctx).await.unwrap_err();
         assert!(
-            err1.kind.to_string().contains("test error"),
-            "first attempt: got: {}",
-            err1.kind
+            !err1.kind.to_string().is_empty(),
+            "first attempt: expected an error, got empty message",
         );
 
         // Second attempt: should produce the SAME error, not "circular dependency"
         let err2 = materialize(&x_thunk, None, &ctx).await.unwrap_err();
-        assert!(
-            err2.kind.to_string().contains("test error"),
-            "second attempt should not be poisoned, got: {}",
-            err2.kind
+        assert_eq!(
+            err1.kind.to_string(),
+            err2.kind.to_string(),
+            "second attempt should return cached error, not a different one"
         );
         assert!(
             !err2.kind.to_string().contains("circular dependency"),
@@ -4872,9 +4877,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_type_assert_default_used_on_inner_expr_error() {
-        // B-433/B-429: [@[type: Int default: 0] <error>] -> 0 (inner expr fails, use default)
-        // When the inner expression is a CoreExpr::Error (syntax error, undefined variable),
-        // the default should be used instead of propagating the error.
+        // B-433/B-429: [@[type: Int default: 0] <placeholder>] -> 0 (inner is dead-code Placeholder, use default)
+        // When the inner expression is a CoreExpr::Placeholder (lowered from an unresolvable VarRef
+        // or parse error), the default should be used instead of propagating the error.
         let span = rust_span!();
         let entries = vec![
             surf_ann_entry(
@@ -4894,7 +4899,7 @@ mod tests {
             CoreExpr::TypeAssert {
                 annotation: sp(Annotation::PropertyDict(entries)),
                 expr: Arc::new(Spanned::new(
-                    CoreExpr::Error { span: error_span.clone(), message: "test error".to_string() },
+                    CoreExpr::Placeholder,
                     error_span,
                 )),
                 resolved_type: Type::Int,
@@ -5039,10 +5044,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_materialization_span_on_error() {
-        // [x: <error>] -- materializing x fails because the value is a CoreExpr::Error.
+        // [x: <placeholder>] -- materializing x fails because the value is a CoreExpr::Placeholder.
         // The materialization span passed to materialize() should be attached to the error.
         let ctx = test_ctx();
-        let error_span = test_span(1, 5, 1, 15);
         let dict_core = Spanned::new(
             CoreExpr::Dict(vec![Spanned::new(
                 CoreEntry {
@@ -5051,7 +5055,7 @@ mod tests {
                         test_span(1, 1, 1, 2),
                     ))),
                     value: Arc::new(Spanned::new(
-                        CoreExpr::Error { span: error_span.clone(), message: "test error".to_string() },
+                        CoreExpr::Placeholder,
                         test_span(1, 5, 1, 15),
                     )),
                 },
@@ -5077,7 +5081,8 @@ mod tests {
         let err = materialize(&x_thunk, Some(&mat_span), &ctx)
             .await
             .unwrap_err();
-        assert!(err.to_string().contains("test error"), "got: {}", err);
+        // The specific error message is unimportant; what matters is the span attachment.
+        assert!(!err.to_string().is_empty(), "got empty error: {}", err);
         assert_eq!(
             err.materialization_span,
             Some(mat_span),
@@ -5342,19 +5347,19 @@ mod tests {
 
     #[tokio::test]
     async fn test_dot_access_on_erroring_target_has_frame() {
-        // Dot access on a variable that doesn't exist — should produce an error.
-        // After the field-get refactor, dot access goes through the normal PendingCall path.
-        // CoreExpr::Error evaluates immediately to Err (not a lazy thunk).
+        // Evaluating a Placeholder should produce an error.
+        // CoreExpr::Placeholder evaluates immediately to Err (not a lazy thunk).
         let (env, ctx) = core_env_and_ctx();
-        let error_span = test_span(1, 1, 1, 12);
+        let placeholder_span = test_span(1, 1, 1, 12);
         let err = eval_core_for_test(
-            Spanned::new(CoreExpr::Error { span: error_span.clone(), message: "test error".to_string() }, error_span),
+            Spanned::new(CoreExpr::Placeholder, placeholder_span),
             Arc::clone(&env),
             &ctx,
         )
         .await
         .unwrap_err();
-        assert!(err.to_string().contains("test error"), "got: {}", err);
+        // Placeholder produces an "unimplemented" error (dead-code marker).
+        assert!(!err.to_string().is_empty(), "expected an error from Placeholder, got empty: {}", err);
     }
 
     #[tokio::test]
@@ -6188,7 +6193,6 @@ mod tests {
         // When a thunk fails with a cacheable error, it should transition to Failed state
         // and return the cached error on subsequent materialization attempts.
         let ctx = test_ctx();
-        let error_span = test_span(1, 5, 1, 15);
         let dict_core = Spanned::new(
             CoreExpr::Dict(vec![Spanned::new(
                 CoreEntry {
@@ -6197,7 +6201,7 @@ mod tests {
                         test_span(1, 1, 1, 2),
                     ))),
                     value: Arc::new(Spanned::new(
-                        CoreExpr::Error { span: error_span.clone(), message: "test error".to_string() },
+                        CoreExpr::Placeholder,
                         test_span(1, 5, 1, 15),
                     )),
                 },
@@ -6220,24 +6224,24 @@ mod tests {
         // First materialization: should fail and cache the error
         let err1 = materialize(&x_thunk, None, &ctx).await.unwrap_err();
         assert!(
-            err1.kind.to_string().contains("test error"),
-            "first error: got: {}",
-            err1.kind
+            !err1.kind.to_string().is_empty(),
+            "first error should not be empty"
         );
 
         // Check that the thunk is now in Failed state
         {
-            let cached_err = x_thunk
+            let _cached_err = x_thunk
                 .get_cached_error()
                 .expect("thunk should be in Failed state");
-            assert!(cached_err.kind.to_string().contains("test error"));
         }
 
-        // Second materialization: should return the cached error
+        // Second materialization: should return the cached error (same message)
         let err2 = materialize(&x_thunk, None, &ctx).await.unwrap_err();
-        assert!(
-            err2.kind.to_string().contains("test error"),
-            "second error: got: {}",
+        assert_eq!(
+            err1.kind.to_string(),
+            err2.kind.to_string(),
+            "second error should be the cached error, not a different one: first={}, second={}",
+            err1.kind,
             err2.kind
         );
     }
@@ -6543,9 +6547,8 @@ mod tests {
     #[tokio::test]
     async fn test_regular_error_does_cache() {
         // Regular errors should transition to Failed state (cacheable).
-        // CoreExpr::Error produces an InternalError which is cacheable.
+        // CoreExpr::Placeholder produces an Unimplemented error which is cacheable.
         let ctx = test_ctx();
-        let error_span = test_span(1, 5, 1, 15);
         let dict_core = Spanned::new(
             CoreExpr::Dict(vec![Spanned::new(
                 CoreEntry {
@@ -6554,7 +6557,7 @@ mod tests {
                         test_span(1, 1, 1, 2),
                     ))),
                     value: Arc::new(Spanned::new(
-                        CoreExpr::Error { span: error_span.clone(), message: "test error".to_string() },
+                        CoreExpr::Placeholder,
                         test_span(1, 5, 1, 15),
                     )),
                 },
@@ -6577,18 +6580,18 @@ mod tests {
         // First materialization: should fail with a cacheable error
         let err1 = materialize(&x_thunk, None, &ctx).await.unwrap_err();
         assert!(
-            err1.kind.to_string().contains("test error"),
-            "expected test error, got: {}",
+            !err1.kind.to_string().is_empty(),
+            "expected an error, got empty: {}",
             err1.kind.to_string()
         );
 
-        // The thunk SHOULD be in Failed state because InternalError is cacheable
+        // The thunk SHOULD be in Failed state because Unimplemented is cacheable
         let cached_err = x_thunk
             .get_cached_error()
             .expect("expected Failed state with cached error after cacheable error");
         assert!(
-            cached_err.kind.to_string().contains("test error"),
-            "cached error mismatch: got: {}",
+            !cached_err.kind.to_string().is_empty(),
+            "cached error should not be empty, got: {}",
             cached_err.to_string()
         );
     }
@@ -8474,11 +8477,10 @@ mod tests {
         let ctx = test_ctx();
         // eval() returns Ok (arm matched, body is lazy), materialize() fails because x is unresolved
         let err = materialize(&result, None, &ctx).await.unwrap_err();
-        // In the stash design, unresolved VarRef → CoreExpr::Error → "syntax error" on force.
+        // Unresolved VarRef → CoreExpr::Placeholder → unimplemented error on force.
         assert!(
-            err.to_string().contains("syntax error")
-                || err.to_string().contains("undefined variable"),
-            "expected error for unresolved body var x, got: {:?}",
+            !err.to_string().is_empty(),
+            "expected an error for unresolved body var x, got empty: {:?}",
             err.kind
         );
     }

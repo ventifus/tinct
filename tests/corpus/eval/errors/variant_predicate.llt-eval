@@ -1,4 +1,4 @@
 # variant? returns true for Variant values
 [variant? [variant "Ok" 42]]
 === error
-syntax error at 2:12 (cannot evaluate error node)
+undefined variable

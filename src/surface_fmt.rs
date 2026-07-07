@@ -273,7 +273,6 @@ fn collect_free_vars(
         | CoreExpr::Float(_)
         | CoreExpr::Str(_)
         | CoreExpr::Placeholder
-        | CoreExpr::Error { .. }
         | CoreExpr::Rest(_) => {}
 
         // Variant: tag is a literal, payload may contain variable references.
@@ -560,8 +559,7 @@ fn collect_free_vars_in_quote(
         | CoreExpr::Str(_)
         | CoreExpr::Var { .. }  // includes annotated Var (Var { annotation: Some(_) })
         | CoreExpr::Rest(_)
-        | CoreExpr::Placeholder
-        | CoreExpr::Error { .. } => {}
+        | CoreExpr::Placeholder => {}
     }
 }
 
@@ -623,9 +621,8 @@ fn core_expr_to_tinct(
         CoreExpr::Float(f) => fmt_float(*f),
         CoreExpr::Str(s) => Ok(fmt_string(s)),
 
-        // Placeholder and Error — emit as opaque marker strings
+        // Placeholder — dead-code marker, emitted as opaque marker string
         CoreExpr::Placeholder => Ok("_".to_string()),
-        CoreExpr::Error { .. } => Err("cannot serialize CoreExpr::Error to tinct".to_string()),
 
         // Rest parameter reference
         CoreExpr::Rest(name) => match name {
@@ -1047,7 +1044,6 @@ fn core_expr_to_tinct_raw(
         CoreExpr::Float(f) => fmt_float(*f),
         CoreExpr::Str(s) => Ok(fmt_string(s)),
         CoreExpr::Placeholder => Ok("_".to_string()),
-        CoreExpr::Error { .. } => Err("cannot serialize CoreExpr::Error".to_string()),
         CoreExpr::Rest(name) => match name {
             Some(n) => Ok(format!("...{}", n)),
             None => Ok("...".to_string()),

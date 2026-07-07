@@ -5,7 +5,7 @@
 //! De Bruijn coordinates are read from the inline `resolution` field on VarRef/Field nodes.
 //!
 //! Key transformations:
-//! - `VarRef` → `Var` (resolved de Bruijn coordinates) or `Error` (unresolvable — genuine compile error)
+//! - `VarRef` → `Var` (resolved de Bruijn coordinates) or `Placeholder` (unresolvable — diagnostic emitted)
 //! - `Pipe { lhs, rhs }` → `Call { func: rhs, args: [lhs], implied: true }` (syntactic sugar)
 //! - `TypeAssert` → `TypeAssert` (with resolved_type from the inline TypeAnnotation field or Type::Unknown)
 //! - `TypeAssertPending` in patterns → `TypeAssert` (using the inline `resolved` TypeAnnotation field)
@@ -32,9 +32,10 @@ pub enum LowerDiagnosticKind {
 
 /// A diagnostic produced during the lowering phase.
 ///
-/// The evaluator still embeds a `CoreExpr::Error` node for lazy-eval correctness (errors
-/// surface at force time, not construction time), but callers can inspect the diagnostic
-/// vec to surface errors eagerly when that is appropriate (e.g., during document loading).
+/// Lowering errors (unresolvable variables, parse errors) are reported via this diagnostic
+/// and the corresponding expression is replaced with `CoreExpr::Placeholder`. Callers
+/// that need eager error reporting (e.g., document loading) inspect the returned diagnostic
+/// vec rather than waiting for the placeholder to be forced at runtime.
 #[derive(Debug, Clone)]
 pub struct LowerDiagnostic {
     pub kind: LowerDiagnosticKind,
@@ -47,10 +48,11 @@ pub struct LowerDiagnostic {
 /// This is the entry point for per-thunk lowering. Called from `eval_materialize.rs`
 /// when a `UnevaluatedState::Surface` thunk is first forced.
 ///
-/// Lowering errors (unresolvable variables, malformed AST) propagate as `CoreExpr::Error`
-/// nodes — consistent with tinct's lazy semantics where errors surface at force time.
-/// The same errors are also collected in the returned `Vec<LowerDiagnostic>` so callers
-/// that need eager error reporting (e.g., document loading) can inspect them.
+/// Lowering errors (unresolvable variables, malformed AST) are reported as `LowerDiagnostic`
+/// entries in the returned vec and the corresponding expression is replaced with
+/// `CoreExpr::Placeholder`. Callers that need eager error reporting (e.g., document loading)
+/// inspect the diagnostic vec; callers that discard it accept that the placeholder will error
+/// at runtime if forced.
 ///
 /// All cross-phase data (type annotations, field slots, provenance) is read from inline
 /// fields on the AST nodes — no external tables are consulted.
@@ -63,8 +65,9 @@ pub fn lower(arc: &Arc<SurfaceNode>) -> (Spanned<CoreExpr>, Vec<LowerDiagnostic>
 /// Internal lowering entry point that threads the diagnostics accumulator.
 ///
 /// Used by recursive calls within lower.rs and by eval machinery that does not need the
-/// diagnostic Vec (relying on `CoreExpr::Error` nodes for lazy-eval error propagation).
-/// Produces the same `Spanned<CoreExpr>` as the public `lower()`.
+/// diagnostic Vec. When a VarRef or parse error is encountered, a `LowerDiagnostic` is
+/// pushed and `CoreExpr::Placeholder` is emitted. Produces the same `Spanned<CoreExpr>`
+/// as the public `lower()`.
 pub(crate) fn lower_inner(arc: &Arc<SurfaceNode>, diagnostics: &mut Vec<LowerDiagnostic>) -> Spanned<CoreExpr> {
     let span = arc.span.clone();
     let core_expr = lower_expr(arc, &arc.expr, diagnostics);
@@ -222,13 +225,10 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression, diagnostics: &mu
                     let message = format!("unresolvable variable: {}", name);
                     diagnostics.push(LowerDiagnostic {
                         kind: LowerDiagnosticKind::Error,
-                        message: message.clone(),
+                        message,
                         span: arc.span.clone(),
                     });
-                    CoreExpr::Error {
-                        span: arc.span.clone(),
-                        message,
-                    }
+                    CoreExpr::Placeholder
                 }
                 Some(Some((level, slot))) => CoreExpr::Var {
                     name: name.clone(),
@@ -240,18 +240,15 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression, diagnostics: &mu
                     // Resolver ran but this name was not found in any lexical scope.
                     // Every user-written variable reference must have de Bruijn coordinates
                     // assigned by the resolver (seeded from the env). A None here means the
-                    // name is genuinely undefined — emit a compile-time error node so the
-                    // evaluator surfaces it when (and only when) the thunk is forced.
+                    // name is genuinely undefined — emit a diagnostic and a Placeholder so
+                    // the error surfaces when (and only when) the thunk is forced.
                     let message = format!("undefined variable: {}", name);
                     diagnostics.push(LowerDiagnostic {
                         kind: LowerDiagnosticKind::Error,
-                        message: message.clone(),
+                        message,
                         span: arc.span.clone(),
                     });
-                    CoreExpr::Error {
-                        span: arc.span.clone(),
-                        message,
-                    }
+                    CoreExpr::Placeholder
                 }
             }
         }
@@ -326,10 +323,14 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression, diagnostics: &mu
                 slot,
                 annotation: None,
             },
-            Some(None) => CoreExpr::Error {
-                span: arc.span.clone(),
-                message: format!("undefined variable: .{}", name),
-            },
+            Some(None) => {
+                diagnostics.push(LowerDiagnostic {
+                    kind: LowerDiagnosticKind::Error,
+                    message: format!("undefined variable: .{}", name),
+                    span: arc.span.clone(),
+                });
+                CoreExpr::Placeholder
+            }
             None => CoreExpr::Var {
                 name: name.clone(),
                 level: u32::MAX,
@@ -344,10 +345,14 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression, diagnostics: &mu
             expr: None,
             field: crate::ast::DotKey::Int(_),
             ..
-        } => CoreExpr::Error {
-            span: arc.span.clone(),
-            message: "leading-dot integer access is not supported".to_string(),
-        },
+        } => {
+            diagnostics.push(LowerDiagnostic {
+                kind: LowerDiagnosticKind::Error,
+                message: "leading-dot integer access is not supported".to_string(),
+                span: arc.span.clone(),
+            });
+            CoreExpr::Placeholder
+        }
 
         // Pipe is syntactic sugar — rewrite to Call(rhs, [lhs]) so the evaluator
         // sees only Call nodes. Equivalent to: f |> g  ==  g(f).
@@ -695,10 +700,14 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression, diagnostics: &mu
             _ => CoreExpr::Placeholder,
         },
 
-        SurfaceExpression::Error(span) => CoreExpr::Error {
-            span: span.clone(),
-            message: "parse error".to_string(),
-        },
+        SurfaceExpression::Error(span) => {
+            diagnostics.push(LowerDiagnostic {
+                kind: LowerDiagnosticKind::Error,
+                message: "parse error".to_string(),
+                span: span.clone(),
+            });
+            CoreExpr::Placeholder
+        }
     }
 }
 
@@ -840,7 +849,6 @@ fn core_expr_to_surface_expr(core: &crate::ast::CoreExpr) -> SurfaceExpression {
             pattern: core_expr_to_surface_node(pattern),
             body: core_expr_to_surface_node(body),
         },
-        CoreExpr::Error { span, .. } => SurfaceExpression::Error(span.clone()),
         CoreExpr::Placeholder => SurfaceExpression::Placeholder,
         // Variant: emitted by lower.rs for type declarations; not user-writable in quotes.
         // Represent as a VarRef to the tag so quote round-trips see a name.
@@ -1457,13 +1465,13 @@ mod tests {
 
         let (lowered, diags) = lower(&node);
 
-        // Unresolvable VarRef produces CoreExpr::Error — a genuine compile error.
+        // Unresolvable VarRef produces CoreExpr::Placeholder and a diagnostic.
         assert!(
-            matches!(lowered.node, CoreExpr::Error { .. }),
-            "expected CoreExpr::Error for unresolvable VarRef, got {:?}",
+            matches!(lowered.node, CoreExpr::Placeholder),
+            "expected CoreExpr::Placeholder for unresolvable VarRef, got {:?}",
             lowered.node
         );
-        // The same error must also be reported as a diagnostic.
+        // The error must be reported as a diagnostic.
         assert_eq!(diags.len(), 1, "expected exactly one diagnostic for unresolvable VarRef");
         assert!(
             matches!(diags[0].kind, LowerDiagnosticKind::Error),

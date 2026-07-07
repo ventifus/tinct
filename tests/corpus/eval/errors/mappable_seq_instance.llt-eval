@@ -7,4 +7,4 @@
   result: [collect [inst.fmap [fn [x] [+ x 10]] [builtin-range 0 3]]]
 ]
 === error
-syntax error at 5:41 (cannot evaluate error node) (defined at 5:41-5:42)
+undefined variable

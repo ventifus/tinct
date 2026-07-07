@@ -3,4 +3,4 @@
 # reduce should unpack the Seq and fold over its elements
 [reduce [+ _ _] 0 [variant-payload "Wrapper" [1 2 3 4 5]]]
 === error
-syntax error at 4:20 (cannot evaluate error node)
+undefined variable: variant-payload

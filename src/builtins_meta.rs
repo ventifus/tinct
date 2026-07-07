@@ -2071,7 +2071,7 @@ pub(crate) fn builtin_resolve(
                 // inline Resolution OnceLocks on the original Arc<SurfaceDocument>'s nodes.
                 // We do NOT clone — cloning would write to a copy's OnceLocks, not the
                 // original, so builtin-eval would see empty OnceLocks and lower everything
-                // to CoreExpr::Error.
+                // to CoreExpr::Placeholder (with a LowerDiagnostic for each unresolved name).
                 //
                 // The env chain is walked to populate resolver scopes from outermost to innermost.
                 // Builtins and cross-document names are left unresolved (OnceLock = None)

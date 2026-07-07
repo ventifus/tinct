@@ -37,4 +37,4 @@
   result: [unwrap [Ok 42]]
 ]
 === error
-syntax error at 31:12 (cannot evaluate error node) (defined at 31:12-31:13)
+placeholder

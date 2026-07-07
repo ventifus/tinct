@@ -258,7 +258,7 @@
       [builtin-extend-env dot-access-env extras]
       [builtin-raise [join "" [[builtin-int->string n-parse] " parse error(s) in " path]]]]]
     # Per-document: each document gets its own module builtins via uses-scope.
-    # Stops on any resolve error rather than continuing with unresolved CoreExpr::Error nodes.
+    # Stops on any resolve error rather than continuing with unresolved CoreExpr::Placeholder nodes.
     [final-env: [reduce
       [fn [let env doc]
         # All documents (type-stage and runtime) evaluated uniformly.

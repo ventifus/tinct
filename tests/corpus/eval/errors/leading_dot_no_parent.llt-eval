@@ -1,6 +1,7 @@
 # Leading-dot (.name) with no parent-scope binding for 'b' produces an error
 # at evaluation time. The resolver marks .b as unresolvable; the lowerer emits
-# CoreExpr::Error; evaluation of that node raises an internal error.
+# a LowerDiagnostic and CoreExpr::Placeholder; forcing the thunk propagates
+# the diagnostic as a user error.
 [a: .b]
 === error
-syntax error at 4:5 (cannot evaluate error node)
+undefined variable: .b

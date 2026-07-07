@@ -899,12 +899,6 @@ pub(crate) fn eval_core_expr<'a>(
             )
             .into()),
 
-            // Error: propagate as internal error
-            CoreExpr::Error { message, .. } => Err(EvalError::internal(
-                message.clone(),
-                span.clone(),
-            )
-            .into()),
         }
         // Type guards are now inline on AST nodes (TypeAnnotation OnceLock);
         // the lowerer wraps them in CoreExpr::TypeAssert. No runtime guard wrapping needed here.

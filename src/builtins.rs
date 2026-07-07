@@ -1439,7 +1439,7 @@ mod tests {
             expr: crate::ast::SurfaceExpression::VarRef {
                 name: "__nonexistent__".to_string(),
                 escaped: false,
-                resolution: crate::ast::Resolution::new(), // Not set → unresolvable → CoreExpr::Error
+                resolution: crate::ast::Resolution::new(), // Not set → unresolvable → CoreExpr::Placeholder + LowerDiagnostic
                 call_dispatch: crate::ast::CallDispatch::new(),
                 annotation: None,
             },

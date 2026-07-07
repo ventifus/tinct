@@ -1065,7 +1065,21 @@ pub(crate) async fn force_step(
             ctx: Arc::clone(&thunk_ctx),
         };
 
-        let lowered = crate::lower::lower_inner(&node, &mut Vec::new());
+        let (lowered, surface_lower_diags) = crate::lower::lower(&node);
+        if let Some(err) = surface_lower_diags.into_iter().find(|d| matches!(d.kind, crate::lower::LowerDiagnosticKind::Error)) {
+            let decorated = attach_materialization_context(
+                EvalError::user_error(err.message, err.span).into(),
+                mat_span.as_ref(),
+                origin.as_deref(),
+                thunk_span.clone(),
+            );
+            if decorated.kind.is_cacheable() {
+                thunk.cache_failure_once(&decorated);
+            } else {
+                restore.restore(thunk);
+            }
+            return Action::Continue(Err(decorated));
+        }
 
         // Handle CoreExpr::TypeAssert inline after lowering — same loop risk as take_core_expr.
         if let crate::ast::CoreExpr::TypeAssert {
@@ -1075,12 +1089,28 @@ pub(crate) async fn force_step(
             pipeline_blame,
         } = &lowered.node
         {
-            // B-433/B-429: If inner is a literal error node and annotation has default:, use default.
-            // Only applies to CoreExpr::Error (parse-time errors), not runtime evaluation failures.
-            let inner_thunk = if let (crate::ast::CoreExpr::Error { .. }, Some(default_node)) =
+            // B-433/B-429: If inner is a Placeholder (lowered from a parse-time error or
+            // unresolvable VarRef) and annotation has default:, use the default instead.
+            // Placeholder is the dead-code marker emitted by the lowerer when a diagnostic
+            // is produced; it is never meant to evaluate successfully.
+            let inner_thunk = if let (crate::ast::CoreExpr::Placeholder, Some(default_node)) =
                 (&inner.node, annotation.node.get_property("default"))
             {
-                let lowered_default = crate::lower::lower_inner(default_node, &mut Vec::new());
+                let (lowered_default, lower_diags) = crate::lower::lower(default_node);
+                if let Some(err) = lower_diags.into_iter().find(|d| matches!(d.kind, crate::lower::LowerDiagnosticKind::Error)) {
+                    let decorated = attach_materialization_context(
+                        EvalError::user_error(err.message, err.span).into(),
+                        mat_span.as_ref(),
+                        origin.as_deref(),
+                        thunk_span.clone(),
+                    );
+                    if decorated.kind.is_cacheable() {
+                        thunk.cache_failure_once(&decorated);
+                    } else {
+                        restore.restore(thunk);
+                    }
+                    return Action::Continue(Err(decorated));
+                }
                 match eval_core_expr(&lowered_default, &env, &thunk_ctx).await {
                     Ok(default_thunk) => default_thunk,
                     Err(e) => {
@@ -1211,12 +1241,26 @@ pub(crate) async fn force_step(
             pipeline_blame,
         } = &core_expr.node
         {
-            // B-433/B-429: If inner is a literal error node and annotation has default:, use default.
-            // Only applies to CoreExpr::Error (parse-time errors), not runtime evaluation failures.
-            let inner_thunk = if let (crate::ast::CoreExpr::Error { .. }, Some(default_node)) =
+            // B-433/B-429: If inner is a Placeholder (lowered from a parse-time error or
+            // unresolvable VarRef) and annotation has default:, use the default instead.
+            let inner_thunk = if let (crate::ast::CoreExpr::Placeholder, Some(default_node)) =
                 (&inner.node, annotation.node.get_property("default"))
             {
-                let lowered_default = crate::lower::lower_inner(default_node, &mut Vec::new());
+                let (lowered_default, lower_diags) = crate::lower::lower(default_node);
+                if let Some(err) = lower_diags.into_iter().find(|d| matches!(d.kind, crate::lower::LowerDiagnosticKind::Error)) {
+                    let decorated = attach_materialization_context(
+                        EvalError::user_error(err.message, err.span).into(),
+                        mat_span.as_ref(),
+                        origin.as_deref(),
+                        thunk_span.clone(),
+                    );
+                    if decorated.kind.is_cacheable() {
+                        thunk.cache_failure_once(&decorated);
+                    } else {
+                        thunk.restore_unevaluated(restore);
+                    }
+                    return Action::Continue(Err(decorated));
+                }
                 match eval_core_expr(&lowered_default, &env, &thunk_ctx).await {
                     Ok(default_thunk) => default_thunk,
                     Err(e) => {
@@ -2526,14 +2570,19 @@ pub(crate) async fn apply_cont(
             let expected = *resolved;
             match result {
                 Err(e) => {
-                    // B-433: When inner expr materialization fails (CoreExpr::Error, undefined variable, etc.),
+                    // B-433: When inner expr materialization fails (Placeholder, undefined variable, etc.),
                     // check for `default:` annotation and evaluate it instead of propagating the error.
                     if let Some(default_node) = annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
                     {
-                        Action::EvalCore {
-                            expr: Arc::new(crate::lower::lower_inner(default_node, &mut Vec::new())),
-                            env,
-                            ctx: Arc::clone(&ctx),
+                        let (lowered_default, lower_diags) = crate::lower::lower(default_node);
+                        if let Some(diag) = lower_diags.into_iter().find(|d| matches!(d.kind, crate::lower::LowerDiagnosticKind::Error)) {
+                            Action::Continue(Err(EvalError::user_error(diag.message, diag.span).into()))
+                        } else {
+                            Action::EvalCore {
+                                expr: Arc::new(lowered_default),
+                                env,
+                                ctx: Arc::clone(&ctx),
+                            }
                         }
                     } else {
                         Action::Continue(Err(e))
@@ -2562,12 +2611,15 @@ pub(crate) async fn apply_cont(
                             other => other,
                         };
                         if let Value::Dict(entries) = &value {
-                            let default_opt = annotation
-                                .node
-                                .get_property(DEFAULT_ANNOTATION_KEY)
-                                .map(|node| {
-                                    (Arc::new(crate::lower::lower_inner(node, &mut Vec::new())), Arc::clone(&env))
-                                });
+                            let default_opt = if let Some(node) = annotation.node.get_property(DEFAULT_ANNOTATION_KEY) {
+                                let (lowered, lower_diags) = crate::lower::lower(node);
+                                if let Some(diag) = lower_diags.into_iter().find(|d| matches!(d.kind, crate::lower::LowerDiagnosticKind::Error)) {
+                                    return Action::Continue(Err(EvalError::user_error(diag.message, diag.span).into()));
+                                }
+                                Some((Arc::new(lowered), Arc::clone(&env)))
+                            } else {
+                                None
+                            };
                             // Construct BlameLabel for TypeAssert boundary
                             let blame_label = Some(crate::error::BlameLabel {
                                 origin_span: thunk_span.clone(),  // where the value was produced
@@ -2611,8 +2663,12 @@ pub(crate) async fn apply_cont(
                             {
                                 // Evaluate default expression iteratively.
                                 // The result will flow to the next continuation on the stack.
+                                let (lowered_default, lower_diags) = crate::lower::lower(default_node);
+                                if let Some(diag) = lower_diags.into_iter().find(|d| matches!(d.kind, crate::lower::LowerDiagnosticKind::Error)) {
+                                    return Action::Continue(Err(EvalError::user_error(diag.message, diag.span).into()));
+                                }
                                 Action::EvalCore {
-                                    expr: Arc::new(crate::lower::lower_inner(default_node, &mut Vec::new())),
+                                    expr: Arc::new(lowered_default),
                                     env,
                                     ctx: Arc::clone(&ctx),
                                 }
@@ -2641,6 +2697,10 @@ pub(crate) async fn apply_cont(
                     } else if value_matches_type(&value, &expected, &ctx) {
                         let is_predicate = annotation.node.get_property(IS_ANNOTATION_KEY).cloned();
                         if let Some(predicate_node) = is_predicate {
+                            let (lowered_pred, lower_diags) = crate::lower::lower(&predicate_node);
+                            if let Some(diag) = lower_diags.into_iter().find(|d| matches!(d.kind, crate::lower::LowerDiagnosticKind::Error)) {
+                                return Action::Continue(Err(EvalError::user_error(diag.message, diag.span).into()));
+                            }
                             stack.push(Cont::PredicateCheck(Box::new(PredicateCheckData {
                                 value: value.clone(),
                                 annotation,
@@ -2651,7 +2711,7 @@ pub(crate) async fn apply_cont(
                                 callable_invoked: false,
                             })));
                             Action::EvalCore {
-                                expr: Arc::new(crate::lower::lower_inner(&predicate_node, &mut Vec::new())),
+                                expr: Arc::new(lowered_pred),
                                 env,
                                 ctx: Arc::clone(&ctx),
                             }
@@ -2661,8 +2721,12 @@ pub(crate) async fn apply_cont(
                     } else if let Some(default_node) =
                         annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
                     {
+                        let (lowered_default, lower_diags) = crate::lower::lower(default_node);
+                        if let Some(diag) = lower_diags.into_iter().find(|d| matches!(d.kind, crate::lower::LowerDiagnosticKind::Error)) {
+                            return Action::Continue(Err(EvalError::user_error(diag.message, diag.span).into()));
+                        }
                         Action::EvalCore {
-                            expr: Arc::new(crate::lower::lower_inner(default_node, &mut Vec::new())),
+                            expr: Arc::new(lowered_default),
                             env,
                             ctx: Arc::clone(&ctx),
                         }
@@ -2994,7 +3058,10 @@ pub(crate) async fn apply_cont(
                         } = &arm.pattern.node
                         {
                             let resolved_binding = to_match_binding.get().cloned();
-                            let lowered_pred = crate::lower::lower_inner(pred_node, &mut Vec::new());
+                            let (lowered_pred, lower_diags) = crate::lower::lower(pred_node);
+                            if let Some(diag) = lower_diags.into_iter().find(|d| matches!(d.kind, crate::lower::LowerDiagnosticKind::Error)) {
+                                return Action::Continue(Err(EvalError::user_error(diag.message, diag.span).into()));
+                            }
                             let pred_span = lowered_pred.span.clone();
                             // Check if the lowered predicate is a Call expression.
                             // If so, extend its arg list with a Var referencing the scrutinee.
@@ -3450,8 +3517,12 @@ pub(crate) async fn apply_cont(
                             annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
                         {
                             // Evaluate default expression iteratively
+                            let (lowered_default, lower_diags) = crate::lower::lower(default_node);
+                            if let Some(diag) = lower_diags.into_iter().find(|d| matches!(d.kind, crate::lower::LowerDiagnosticKind::Error)) {
+                                return Action::Continue(Err(EvalError::user_error(diag.message, diag.span).into()));
+                            }
                             Action::EvalCore {
-                                expr: Arc::new(crate::lower::lower_inner(default_node, &mut Vec::new())),
+                                expr: Arc::new(lowered_default),
                                 env,
                                 ctx: Arc::clone(&ctx),
                             }
@@ -3630,7 +3701,11 @@ fn eval_structural_pattern_inner<'a>(
 
                 // Check if annotation contains an "is:" property (predicate)
                 if let Some(pred_surface_node) = annotation.node.get_property(IS_ANNOTATION_KEY) {
-                    let pred_expr_core = Arc::new(crate::lower::lower_inner(pred_surface_node, &mut Vec::new()));
+                    let (lowered_pred, lower_diags) = crate::lower::lower(pred_surface_node);
+                    if let Some(diag) = lower_diags.into_iter().find(|d| matches!(d.kind, crate::lower::LowerDiagnosticKind::Error)) {
+                        return Err(EvalError::user_error(diag.message, diag.span).into());
+                    }
+                    let pred_expr_core = Arc::new(lowered_pred);
 
                     let pred_thunk = Arc::new(Thunk::new_unevaluated_core(
                         pred_expr_core,
