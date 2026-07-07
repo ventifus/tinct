@@ -373,7 +373,6 @@
 
     # Typecheck the now-resolved program (OnceLocks set above).
     [typed: [builtin-typecheck parse-result.program [builtin-get-type-context prelude] env: base-env]]
-
     # Accumulate resolve errors + typecheck warnings into warn-box.
     [resolve-count: [builtin-length resolve-errors]]
     [all-warnings:  [reduce

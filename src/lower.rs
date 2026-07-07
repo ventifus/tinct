@@ -219,7 +219,7 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
             // When resolution is unset (resolver had no env), fall back to MAX/MAX.
             let (field_get_level, field_get_slot) = match resolution.get() {
                 Some(Some((level, slot))) => (level, slot),
-                _ => (u32::MAX, u32::MAX), // resolver had no env — name-based fallback
+                _ => (u32::MAX, u32::MAX), // resolver had no env (e.g. type-stage docs) — name-based fallback
             };
 
             let (getter_name, getter_level, getter_slot, key_arg) =

@@ -649,10 +649,17 @@ pub(crate) fn eval_core_expr<'a>(
                 match env_lock.get_slot(*level, *slot) {
                     Some(thunk) => Ok(thunk),
                     None => {
-                        // Slot lookup failed. No MAX/MAX name-based fallback exists.
-                        // field-get/slot-get resolve statically via the resolver's Field handler.
-                        // builtin-class-dispatch and its synthesized dispatch functions are deleted.
-                        // Any MAX/MAX reference reaching here is a compiler bug.
+                        // Slot lookup failed. field-get and slot-get use MAX/MAX when the resolver
+                        // had no env (e.g. type-stage documents are skipped by builtin-resolve).
+                        // They fall back to name-based lookup as a VM-level fallback.
+                        // All other MAX/MAX references are compiler bugs.
+                        if *level == u32::MAX && *slot == u32::MAX
+                            && (name == "field-get" || name == "slot-get")
+                        {
+                            if let Some(thunk) = env_lock.get_by_name(name) {
+                                return Ok(thunk);
+                            }
+                        }
                         drop(env_lock);
                         Err(EvalError::undefined_variable(name.clone(), span.clone()).into())
                     }

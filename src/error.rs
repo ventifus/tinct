@@ -1119,27 +1119,30 @@ impl EvalError {
         match self.kind {
             ErrorKind::ArityMismatch {
                 callee: ref mut c, ..
-            } => *c = callee,
+            } if c.is_none() => *c = callee,
             ErrorKind::MissingRequiredParam {
                 callee: ref mut c, ..
-            } => *c = callee,
+            } if c.is_none() => *c = callee,
             ErrorKind::NamedArgConflict {
                 callee: ref mut c, ..
-            } => *c = callee,
+            } if c.is_none() => *c = callee,
             ErrorKind::UnknownNamedArg {
                 callee: ref mut c, ..
-            } => *c = callee,
+            } if c.is_none() => *c = callee,
             _ => {}
         }
     }
 
     /// Attach parameter names to an arity mismatch error.
-    /// No-op for other error kinds.
+    /// No-op for other error kinds, and no-op if params are already set.
     pub fn set_arity_params(&mut self, new_params: Vec<String>) {
         if let ErrorKind::ArityMismatch {
             params: ref mut p, ..
         } = self.kind
         {
+            if !p.is_empty() {
+                return;
+            }
             *p = new_params
                 .into_iter()
                 .map(|s| std::sync::Arc::from(s.as_str()))
