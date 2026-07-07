@@ -81,6 +81,9 @@
   # Defined here for Dict 1 because it runs before prelude is loaded.
   make-entry: [fn [let k v] [$k: v]]
 
+  # dot-access-env: minimal env with only field-get and slot-get for use as seed base.
+  dot-access-env: [builtin-extend-env [] [field-get: .field-get  slot-get: .slot-get]]
+
   read-file: [fn [let handle acc]
     [chunk: [builtin-file-read handle 65536]]
     [builtin-if [bytes-empty? chunk]
@@ -167,7 +170,7 @@
              [decl-bytes:     [read-file decl-handle [builtin-bytes]]]
              [parse-result:   [builtin-parse decl-bytes decl-path]]
              # builtin-resolve requires Value::Environment for env: — use empty root env.
-             [decl-env:       [builtin-extend-env [] []]]
+             [decl-env:       [builtin-extend-env dot-access-env []]]
              [resolve-errors: [reduce
                [fn [let acc doc]
                  [r: [builtin-resolve doc env: decl-env]]
@@ -201,7 +204,7 @@
     [n-parse:  [builtin-length parse-result.errors]
      _pe:      [emit-diagnostics parse-result.errors]
      seed-env: [builtin-if [builtin-eq-int [builtin-add n-parse _pe] 0]
-       [builtin-extend-env [] extras]
+       [builtin-extend-env dot-access-env extras]
        [builtin-raise [join "" [[builtin-int->string n-parse] " parse error(s) in " path]]]]]
     # Per-document: each document gets its own module builtins via uses-scope.
     # Accumulator is {env, last-result} so we have direct access to the last document's
@@ -216,15 +219,15 @@
          _re:        [emit-diagnostics resolved.errors]
          eval-result:[builtin-if [builtin-eq-int [builtin-add n-re _re] 0]
            [builtin-eval resolved.doc env: doc-env]
-           [builtin-raise [join "" [[builtin-int->string n-re] " resolve error(s) in " path]]]]]
+           [builtin-raise [join "" [[builtin-int->string n-re] " resolve error(s) in " path]]]]
+         new-env:    [builtin-extend-env eval-result.env
+           [make-entry
+             [builtin-if [builtin-eq-string eval-result.doc-name ""] "%" eval-result.doc-name]
+             eval-result.result]]]
         [builtin-if done
           state
           [builtin-if [builtin-eq-string [builtin-type-of eval-result.error] "String"]
             [builtin-raise eval-result.error]
-            [new-env: [builtin-extend-env eval-result.env
-              [make-entry
-                [builtin-if [builtin-eq-string eval-result.doc-name ""] "%" eval-result.doc-name]
-                eval-result.result]]]
             [env: new-env  last-result: eval-result.result]]]]
       [env: seed-env  last-result: []]
       parse-result.program.documents]]
@@ -410,13 +413,13 @@
                [builtin-if [builtin-gte [builtin-length [builtin-type-of [builtin-check-type doc.expects state.last-result]]] 0]
                  Boolean.True
                  Boolean.True]
-               Boolean.True]]
+               Boolean.True]
+             new-env:    [builtin-extend-env eval-result.env
+               [make-entry
+                 [builtin-if [builtin-eq-string eval-result.doc-name ""] "%" eval-result.doc-name]
+                 eval-result.result]]]
             [builtin-if [builtin-eq-string [builtin-tag-of _caps-ok] "Boolean.True"]
               [builtin-if [builtin-eq-string [builtin-tag-of _expects-ok] "Boolean.True"]
-                [new-env: [builtin-extend-env eval-result.env
-                  [make-entry
-                    [builtin-if [builtin-eq-string eval-result.doc-name ""] "%" eval-result.doc-name]
-                    eval-result.result]]]
                 [env: new-env  last-result: eval-result.result]
                 [builtin-raise "unreachable"]]
               [builtin-raise "unreachable"]]]]]]

@@ -138,19 +138,6 @@ fn tycon_app(name: &str, elem: Type) -> Type {
     Type::App(Box::new(Type::TyCon(name.into())), Box::new(elem))
 }
 
-/// Slot of `field-get` in the root scope (core builtins environment).
-///
-/// INVARIANT: `field-get` MUST be the FIRST entry in `core_builtins()` — slot 0.
-/// The lowerer (`lower.rs`) hardcodes this slot for untyped dot-access desugaring.
-/// Changing this slot requires updating the lowerer's `FIELD_GET_ROOT_SLOT` constant.
-pub const FIELD_GET_ROOT_SLOT: u32 = 0;
-
-/// Slot of `slot-get` in the root scope (core builtins environment).
-///
-/// INVARIANT: `slot-get` MUST be the SECOND entry in `core_builtins()` — slot 1.
-/// The lowerer (`lower.rs`) hardcodes this slot for typed dot-access desugaring.
-/// Changing this slot requires updating the lowerer's `SLOT_GET_ROOT_SLOT` constant.
-pub const SLOT_GET_ROOT_SLOT: u32 = 1;
 
 /// Returns all "core" module Rust builtins aggregated from the split implementation files.
 ///

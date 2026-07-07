@@ -213,42 +213,33 @@ fn lower_expr(arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) -> CoreExpr {
             resolution,
         } => {
             // Build the getter function Var and the key argument.
-            // When the resolver has written a root_level to this Field's resolution, use
-            // slot-based lookup (O(1)). When resolution is unset (resolver not seeded with
-            // env, e.g. type-checker-only paths), fall back to MAX/MAX name-based lookup.
-            // field-get and slot-get are whitelisted in eval_core.rs — but this path should
-            // only fire when the resolver had no env and therefore could not assign coords.
-            let maybe_root_level: Option<u32> = match resolution.get() {
-                Some(Some((level, _slot))) => Some(level),
-                _ => None, // unset or explicitly unresolvable — use name-based fallback
+            // The resolver writes (level, slot) for field-get into Field.resolution.
+            // field-get and slot-get live in the same env frame; slot-get is always one
+            // slot after field-get (by construction in dot-access-env and build_core_env).
+            // When resolution is unset (resolver had no env), fall back to MAX/MAX.
+            let (field_get_level, field_get_slot) = match resolution.get() {
+                Some(Some((level, slot))) => (level, slot),
+                _ => (u32::MAX, u32::MAX), // resolver had no env — name-based fallback
             };
 
-            let (getter_root_slot, key_arg) = if let Some(slot) = field_slot.get() {
-                // Typed: use slot-get (positional O(1) access) at root scope slot 1.
-                (
-                    crate::builtins_core::SLOT_GET_ROOT_SLOT,
-                    CoreExpr::Int(slot as i64),
-                )
-            } else {
-                // Untyped: use field-get (key-based lookup) at root scope slot 0.
-                let key_core = match field {
-                    crate::ast::DotKey::Int(n) => CoreExpr::Int(*n),
-                    crate::ast::DotKey::Ident(s) => CoreExpr::Str(s.clone()),
+            let (getter_name, getter_level, getter_slot, key_arg) =
+                if let Some(typed_slot) = field_slot.get() {
+                    // Typed: use slot-get (positional O(1) access).
+                    // slot-get is always one slot after field-get in the same env frame.
+                    (
+                        "slot-get",
+                        field_get_level,
+                        if field_get_slot == u32::MAX { u32::MAX } else { field_get_slot + 1 },
+                        CoreExpr::Int(typed_slot as i64),
+                    )
+                } else {
+                    // Untyped: use field-get (key-based lookup).
+                    let key_core = match field {
+                        crate::ast::DotKey::Int(n) => CoreExpr::Int(*n),
+                        crate::ast::DotKey::Ident(s) => CoreExpr::Str(s.clone()),
+                    };
+                    ("field-get", field_get_level, field_get_slot, key_core)
                 };
-                (crate::builtins_core::FIELD_GET_ROOT_SLOT, key_core)
-            };
-
-            let getter_name = if getter_root_slot == crate::builtins_core::FIELD_GET_ROOT_SLOT {
-                "field-get"
-            } else {
-                "slot-get"
-            };
-
-            let (getter_level, getter_slot) = if let Some(root_level) = maybe_root_level {
-                (root_level, getter_root_slot)
-            } else {
-                (u32::MAX, u32::MAX)
-            };
 
             let getter_var = Arc::new(crate::ast::Spanned::new(
                 CoreExpr::Var {

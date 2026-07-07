@@ -115,6 +115,12 @@
   # make-entry: construct single-entry dict from key and value.
   # Defined here for Dict 1 because it runs before prelude is loaded.
   make-entry: [fn [let k v] [$k: v]]
+
+  # dot-access-env: a minimal env containing only field-get and slot-get.
+  # Used as the base for all seed envs built by bare-eval and eval-file so that
+  # any derived env has these VM-level dot-access primitives in its parent chain.
+  # Leading-dot captures them from the initial core env without injecting anything else.
+  dot-access-env: [builtin-extend-env [] [field-get: .field-get  slot-get: .slot-get]]
 ]
 
 # ============================================================================
@@ -184,7 +190,7 @@
             [parse-result:   [builtin-parse decl-bytes decl-path]]
             # builtin-resolve requires Value::Environment for env: — use empty root env.
             # Declaration files are typechecked only (no eval); OnceLock coords unused.
-            [decl-env:       [builtin-extend-env [] []]]
+            [decl-env:       [builtin-extend-env dot-access-env []]]
             [resolve-errors: [reduce
               [fn [let acc doc]
                 [r: [builtin-resolve doc env: decl-env]]
@@ -249,7 +255,7 @@
     [n-parse:       [builtin-length parse-result.errors]]
     [_pe:           [builtin-length [emit-diagnostics parse-result.errors]]]
     [seed-env:      [builtin-if [builtin-eq-int [builtin-add n-parse _pe] 0]
-      [builtin-extend-env [] extras]
+      [builtin-extend-env dot-access-env extras]
       [builtin-raise [join "" [[builtin-int->string n-parse] " parse error(s) in " path]]]]]
     # Per-document: each document gets its own module builtins via uses-scope.
     # Stops on any resolve error rather than continuing with unresolved CoreExpr::Error nodes.
