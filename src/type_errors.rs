@@ -230,11 +230,6 @@ impl TypeErrorTyped {
     // Each produces a `Generic` variant; call sites should migrate to typed variants.
 
     pub fn new(message: impl Into<String>, span: Span) -> Self {
-        let span = Span {
-            start: span.start,
-            end: span.end,
-            file: None,
-        };
         TypeErrorTyped::Generic(GenericTypeError {
             message: message.into(),
             span,
@@ -266,7 +261,31 @@ impl TypeErrorTyped {
     }
 
     pub fn not_a_function(ty: &Type, span: Span) -> Self {
-        Self::new(format!("expected function type, got {ty}"), span)
+        let mut notes = Vec::new();
+        if let Type::Error(payload) = ty {
+            for root_cause in payload.iter() {
+                let rc_span = root_cause.span();
+                let location = if let Some(sf) = rc_span.file.as_ref() {
+                    format!(
+                        "{}:{}:{}",
+                        sf.path, rc_span.start.line, rc_span.start.column
+                    )
+                } else {
+                    format!("{}:{}", rc_span.start.line, rc_span.start.column)
+                };
+                notes.push(format!(
+                    "  = note: caused by error at {location}: {}",
+                    root_cause.message()
+                ));
+            }
+        }
+        TypeErrorTyped::NotAFunction(NotAFunction {
+            actual: ty.clone(),
+            span,
+            notes,
+            call_stack: Vec::new(),
+            callee: None,
+        })
     }
 
     pub fn undefined_variable(name: &str, span: Span) -> Self {

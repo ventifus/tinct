@@ -439,7 +439,7 @@ error: `:` can only appear in dict, call, class, instance, or match forms
 
 **Dual-dispatch operations** (`$map`, `$filter`, `$take`, `$drop`, `$reduce`, `$join`) accept both Dict and Seq inputs and produce different output types depending on the input. `$try` returns a precise `Ok@T | Err@String` nominal result type under BAS.
 
-User-defined types participate in `=`, `<`, `str`, and arithmetic by declaring `Equatable`, `Comparable`, `Showable`, and `Add`/`Sub`/`Mul`/`Div` instances. Primitive operator dispatch checks the ClassEnv for a registered instance before falling back to the built-in Rust implementation. See `doc/feature/advanced-typeclasses.md`.
+User-defined types participate in `=`, `<`, `str`/`cast`, and arithmetic by declaring `Equatable`, `Comparable`, `Castable`, and `Add`/`Sub`/`Mul`/`Div` instances. Primitive operator dispatch checks the ClassEnv for a registered instance before falling back to the built-in Rust implementation. See `doc/feature/advanced-typeclasses.md`.
 
 ### Detailed Dispatch Table
 

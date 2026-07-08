@@ -640,19 +640,20 @@ async fn field_get_on_value(
             Ok(Arc::new(Thunk::new_materialized(val, call_span)))
         }
         Value::Environment(env_arc) => {
-            // Own-frame slot_names scan — does NOT walk the parent chain.
+            // Own-frame slot lookup — does NOT walk the parent chain.
             // This makes result-env.% and math.hypot work: the value is in the
             // environment's own bindings (slot 0 for %, or position N for exports).
             // The type-driven solution (T-1490) will replace this with slot-get once
             // the type checker annotates field_slot from return-type information.
             if let HashableValue::Str(ref field_name) = key {
                 let env_read = env_arc.read().unwrap();
+                // Look up in the current frame's slots IndexMap by name (own frame only).
                 match env_read
-                    .slot_names
-                    .iter()
-                    .position(|n| n == field_name.as_ref())
+                    .slots
+                    .get(field_name.as_ref())
+                    .and_then(|s| s.value.clone())
                 {
-                    Some(pos) => Ok(Arc::clone(&env_read.slots[pos])),
+                    Some(thunk) => Ok(thunk),
                     None => Err(
                         EvalError::key_not_found(field_name.as_ref(), vec![], target_span).into(),
                     ),
@@ -748,8 +749,9 @@ pub(crate) fn builtin_slot_get(
             },
             Value::Environment(env_arc) => {
                 let env = env_arc.read().unwrap();
-                match env.slots.get(slot) {
-                    Some(thunk) => Ok(Arc::clone(thunk)),
+                // slots is IndexMap<String, EnvSlot>; get_index gives O(1) positional access.
+                match env.slots.get_index(slot).and_then(|(_, s)| s.value.clone()) {
+                    Some(thunk) => Ok(thunk),
                     None => Err(EvalError::internal(
                         format!(
                             "slot-get: slot {slot} out of bounds (env has {} slots)",

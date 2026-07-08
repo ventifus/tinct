@@ -3,7 +3,7 @@
 > **Supersedes:**
 >
 > - `doc/08-evaluation.md §Runtime Reflection` — spec-level description; this document is the user-facing guide
-> - `doc/11a-builtins.md §Meta & Code Generation` — `ast-of` and `eval-ast` entries added there; `str` updated to note Showable dispatch
+> - `doc/11a-builtins.md §Meta & Code Generation` — `ast-of` and `eval-ast` entries added there; `str` updated to note Castable dispatch
 
 Tinct functions carry their full annotation metadata at runtime. The `ast-of` primitive returns a structured dict describing any value **without forcing it** — it peeks at the thunk's state and branches accordingly. The prelude provides helpers for inspection, signature display, and documentation generation.
 

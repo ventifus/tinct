@@ -151,6 +151,118 @@ pub(crate) fn builtin_str_length(
     })
 }
 
+/// `builtin-str-byte-count`: Number of UTF-8 bytes in a String.
+///
+/// O(1) — `str.len()` is stored directly. Takes 1 arg (String). Returns an Int.
+pub(crate) fn builtin_str_byte_count(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx,
+            ..
+        } = ctx_arg;
+        let val = expect_one_arg(
+            "str-byte-count",
+            &args,
+            named.as_ref(),
+            &ctx,
+            call_span.clone(),
+        )?;
+        let s = require_string("str-byte-count", val, args[0].span.clone())?;
+        ok_val(Value::Int(s.len() as i64), call_span)
+    })
+}
+
+/// `builtin-str-has-nth-byte?`: Check whether UTF-8 byte index `i` is valid.
+///
+/// O(1) — bounds check only. Takes 2 args (String, Int). Returns Int 1 or 0.
+pub(crate) fn builtin_str_has_nth_byte(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx: _ctx,
+            ..
+        } = ctx_arg;
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+        reject_named(
+            "builtin-str-has-nth-byte?",
+            named.as_ref(),
+            call_span.clone(),
+        )?;
+        let s_val = args[0].try_get_materialized().expect("pre-materialized");
+        let (str_start, str_end) = match s_val {
+            Value::String { start, end, .. } => (start, end),
+            other => {
+                return Err(EvalError::type_mismatch("String", other.type_name(), call_span).into())
+            }
+        };
+        let idx = match args[1].try_get_materialized().expect("pre-materialized") {
+            Value::Int(n) => n,
+            other => {
+                return Err(EvalError::type_mismatch("Int", other.type_name(), call_span).into())
+            }
+        };
+        let len = (str_end - str_start) as i64;
+        ok_val(
+            Value::Int(if idx >= 0 && idx < len { 1 } else { 0 }),
+            call_span,
+        )
+    })
+}
+
+/// `builtin-str-nth-byte`: Get the UTF-8 byte at index `i` as an Int (0–255).
+///
+/// O(1) — direct byte array indexing. Takes 2 args (String, Int). Returns Int.
+pub(crate) fn builtin_str_nth_byte(
+    ctx_arg: BuiltinArgs,
+) -> Pin<Box<dyn Future<Output = EvalResult<Arc<Thunk>>>>> {
+    Box::pin(async move {
+        let BuiltinArgs {
+            args,
+            named,
+            call_span,
+            ctx: _ctx,
+            ..
+        } = ctx_arg;
+        if args.len() != 2 {
+            return Err(EvalError::arity_mismatch(2, args.len(), call_span).into());
+        }
+        reject_named("builtin-str-nth-byte", named.as_ref(), call_span.clone())?;
+        let s_val = args[0].try_get_materialized().expect("pre-materialized");
+        let (source, str_start, str_end) = match s_val {
+            Value::String { source, start, end } => (source, start, end),
+            other => {
+                return Err(EvalError::type_mismatch("String", other.type_name(), call_span).into())
+            }
+        };
+        let idx = match args[1].try_get_materialized().expect("pre-materialized") {
+            Value::Int(n) => n,
+            other => {
+                return Err(EvalError::type_mismatch("Int", other.type_name(), call_span).into())
+            }
+        };
+        if idx < 0 || idx as usize >= str_end - str_start {
+            return Err(EvalError::user_error(
+                format!("builtin-str-nth-byte: index {idx} out of bounds"),
+                call_span,
+            )
+            .into());
+        }
+        let byte = source.as_bytes()[str_start + idx as usize] as i64;
+        ok_val(Value::Int(byte), call_span)
+    })
+}
+
 /// `str-slice`: Extract a substring by character indices [start, end).
 ///
 /// Takes 3 args: `input` (String), `start` (Int), `end` (Int).
@@ -823,9 +935,7 @@ pub(crate) fn builtin_str_map_chars(
                         args: vec![Arc::clone(&char_thunk)],
                         named: None,
                         call_span: call_span.clone(),
-                        caller_env: Arc::new(std::sync::RwLock::new(
-                            crate::value::Environment::new(),
-                        )),
+                        caller_env: Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
                         ctx: Arc::clone(&ctx),
                     };
                     (def.func)(builtin_args).await?

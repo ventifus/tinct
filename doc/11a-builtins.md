@@ -178,7 +178,7 @@ Each predicate materializes its argument and checks the `Value` variant. `num?` 
 | `macro-injects` | `[Fn@String [String]]` | Given a macro name, return its `inject:` default binding name if declared, or `null` if not. Reflection primitive for anaphoric macros (e.g., `[macro-injects "aif"]` → `"it"`). |
 | `llt-repr` | `[Fn@String [Any]]` | Convert value to LLT source code representation (inverse of parsing; useful for code generation) |
 | `builtin-ast-of` | `[Fn@Dict [Any]]` | Return the AST dict without forcing the argument. Thunk-aware: inspects thunk state without materializing. Materialized → AST of the value (`Value::Function` → `[type: "fn" ...]`, `Value::Builtin` → `[type: "builtin" ...]`, other → `[type: type-of(val)]`); Unevaluated → AST of the expression via `ast_to_dict_expr` (doc annotations visible); Pending → `[type: "pending"]` descriptor. Public alias: `ast-of` (re-exported from prelude). See `doc/feature/runtime-reflection.md`. |
-| `str` | `[Fn@String [...Any]]` | Stringify and concatenate all arguments. Routes through registered `Showable` instance for user-defined types; built-in Rust dispatch for primitives. |
+| `str` | `[Fn@String [Any]]` | Convert a single value to String via Castable dispatch. Thin alias for `[@String [cast x]]`. For multi-arg concatenation use `str-parts`. |
 
 **Error cases:**
 

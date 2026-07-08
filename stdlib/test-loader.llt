@@ -118,7 +118,7 @@
   # Format a single diagnostic dict as a human-readable error line.
   format-diagnostic: [fn [let d]
     [s: d.span]
-    [file-part: [builtin-if [builtin-eq-int [builtin-length s.file] 0] "" [builtin-string-concat s.file ":"]]]
+    [file-part: [builtin-if [builtin-eq-int [builtin-length s.file] 0] "<unknown>:" [builtin-string-concat s.file ":"]]]
     [loc: [builtin-string-concat file-part [builtin-string-concat [builtin-int->string s.start-line] [builtin-string-concat ":" [builtin-int->string s.start-col]]]]]
     [stack-empty: [builtin-eq-int [builtin-length d.call-stack] 0]]
     [label: [builtin-if [builtin-eq-string d.kind "resolve-error"]
@@ -129,13 +129,20 @@
                   "error"
                   d.kind]]]]
     [base-line: [builtin-string-concat loc [builtin-string-concat ": " [builtin-string-concat label [builtin-string-concat ": " [builtin-string-concat d.message "\n"]]]]]]
-    [builtin-if stack-empty
+    [notes-empty: [builtin-eq-int [builtin-length d.notes] 0]]
+    [with-notes: [builtin-if notes-empty
       base-line
+      [reduce
+        [fn [let acc note] [builtin-string-concat acc [builtin-string-concat note "\n"]]]
+        base-line
+        d.notes]]]
+    [builtin-if stack-empty
+      with-notes
       [reduce
         [fn [let acc frame]
           [frame-file: [builtin-if [builtin-eq-int [builtin-length frame.span.file] 0] "" [builtin-string-concat frame.span.file ":"]]]
           [builtin-string-concat acc [builtin-string-concat "  in " [builtin-string-concat frame.label [builtin-string-concat " at " [builtin-string-concat frame-file [builtin-string-concat [builtin-int->string frame.span.start-line] [builtin-string-concat ":" [builtin-string-concat [builtin-int->string frame.span.start-col] "\n"]]]]]]]]]
-        base-line
+        with-notes
         d.call-stack]]]
 
   # _emit-loop: index-based recursion that writes each diagnostic and returns the
@@ -362,38 +369,19 @@
     # Parse the test source (no expand step).
     [parse-result:  [builtin-parse [builtin-str-bytes source] path]]
 
-    # Resolve per-document to write de Bruijn coords inline on AST nodes.
-    # builtin-resolve only accepts Document — accumulate resolve errors across all docs.
-    [resolve-errors: [reduce
-      [fn [let acc doc]
-        [r: [builtin-resolve doc env: base-env]]
-        [builtin-merge acc [reduce [fn [let a i] [builtin-merge a [[builtin-add [builtin-length acc] i]: [builtin-get i r.errors]]]] [] [builtin-keys r.errors]]]]
-      []
-      parse-result.program.documents]]
-
-    # Typecheck the now-resolved program (OnceLocks set above).
-    [typed: [builtin-typecheck parse-result.program [builtin-get-type-context prelude] env: base-env]]
-    # Accumulate resolve errors + typecheck warnings into warn-box.
-    [resolve-count: [builtin-length resolve-errors]]
-    [all-warnings:  [reduce
-      [fn [let acc i]
-        [builtin-merge acc [[builtin-add resolve-count i]: [builtin-get i typed.warnings]]]]
-      resolve-errors
-      [builtin-keys typed.warnings]]]
-    # Force warn-box update as a data dependency (no >> needed).
-    # builtin-builder-set writes to the builder and returns the builder object.
-    # We force it by reading the builder snapshot length (always >= 0).
-    [_wb:           [builtin-builder-set 0 all-warnings warn-box]]
-    [_wb-forced:    [builtin-if [builtin-gte [builtin-length [builtin-builder-snapshot _wb]] 0] 1 1]]
-
-    # Evaluate test source document by document, threading env.
-    # The final env has .% = the last expression's result value.
-    # Use typed.documents (not resolved-prog.documents) to create an explicit data
-    # dependency on the typecheck pass. This ensures call_dispatch annotations are
-    # written to AST nodes before the lowerer reads them during builtin-eval.
+    # Combined resolve+eval loop: resolve each document against the env it will be
+    # evaluated with, then evaluate it. Threading the env ensures de Bruijn coordinates
+    # from the resolve pass match the evaluation env for each document.
+    #
+    # Errors (both resolve and eval) surface immediately via emit-diagnostics and raise.
     [test-state: [reduce
       [fn [let state doc]
-        [eval-result: [builtin-eval doc env: state.env]]
+        [r:           [builtin-resolve doc env: state.env]]
+        [n-re:        [builtin-length r.errors]
+         _re:         [emit-diagnostics r.errors]]
+        [eval-result: [builtin-if [builtin-eq-int [builtin-add n-re _re] 0]
+          [builtin-eval r.doc env: state.env]
+          [builtin-raise [join "" [[builtin-int->string n-re] " resolve error(s) in " path]]]]]
         [builtin-if [builtin-eq-string [builtin-type-of eval-result.error] "String"]
           [builtin-raise eval-result.error]
           [call [fn [let]
@@ -423,7 +411,23 @@
                 [builtin-raise "unreachable"]]
               [builtin-raise "unreachable"]]]]]]
       [env: base-env  last-result: []]
-      typed.documents]]
+      parse-result.program.documents]]
+
+    # Typecheck for call_dispatch annotations and warnings.
+    # Depends on test-state.env so typecheck only runs after the combined loop above
+    # has fully resolved and evaluated all documents (OnceLocks set, eval thunks created).
+    # call_dispatch annotations are written here; they are read by the lowerer when the
+    # lazy result thunks are forced below (after _wb-forced runs typecheck first).
+    [typed:      [builtin-if [builtin-gte [builtin-length [builtin-type-of test-state.env]] 0]
+      [builtin-typecheck parse-result.program [builtin-get-type-context prelude] env: base-env]
+      []]]
+    # Accumulate typecheck warnings into warn-box.
+    [all-warnings: typed.warnings]
+    # Force warn-box update as a data dependency (no >> needed).
+    # builtin-builder-set writes to the builder and returns the builder object.
+    # We force it by reading the builder snapshot length (always >= 0).
+    [_wb:           [builtin-builder-set 0 all-warnings warn-box]]
+    [_wb-forced:    [builtin-if [builtin-gte [builtin-length [builtin-builder-snapshot _wb]] 0] 1 1]]
 
     # Format the test result directly using builtin-llt-repr (core builtin, always available).
     # Avoids llt.llt formatter which needs prelude functions not available in bare-eval scope.

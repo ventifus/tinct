@@ -1220,10 +1220,10 @@ pub fn math_builtin_types(env: &mut crate::types::TypeEnv) {
 mod tests {
     use super::*;
     use crate::ast::Span;
+    use crate::env::Env;
     use crate::error::ErrorKind;
     use crate::rust_span;
     use crate::test_util::test_span;
-    use crate::value::Environment;
     use crate::value::{BuiltinArgs, Thunk, Value};
     use std::sync::RwLock;
 
@@ -1241,12 +1241,12 @@ mod tests {
 
     fn test_ctx() -> Arc<crate::eval::EvalContext> {
         let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();
-        let env = Arc::new(RwLock::new(Environment::new()));
+        let env = Arc::new(RwLock::new(Env::new()));
         if let Some(defs) = crate::builtins::builtin_module("core") {
             for def in defs {
                 let name = def.name.to_string();
                 let thunk = Arc::new(Thunk::new_materialized(Value::Builtin(def), rust_span!()));
-                env.write().unwrap().insert(name, thunk);
+                env.write().unwrap().insert_value(name, thunk);
             }
         }
         crate::eval::EvalContext::new_empty(base_dir, env, false)
@@ -1268,7 +1268,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }));
         // MAX_SAFE_INT.abs() > MAX_SAFE_INT is false → precision check passes → Float result
         let t = result.expect("expected Float result at MAX_SAFE_INT boundary");
@@ -1289,7 +1289,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }));
         assert!(
             result.is_err(),
@@ -1314,7 +1314,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }));
         let t = result.expect("expected Int(7)");
         assert_eq!(t.try_get_materialized(), Some(Value::Int(7)));
@@ -1328,7 +1328,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }));
         let t = result.expect("expected Int(42)");
         assert_eq!(t.try_get_materialized(), Some(Value::Int(42)));
@@ -1343,7 +1343,7 @@ mod tests {
             named: no_named(),
             call_span: call_span(),
             ctx: test_ctx(),
-            caller_env: Arc::new(RwLock::new(Environment::new())),
+            caller_env: Arc::new(RwLock::new(Env::new())),
         }));
         // Non-Int/Float operands produce a TypeMismatch error.
         assert!(

@@ -93,16 +93,17 @@ p2: [Priority 3]
 
 `Comparable` entails `Equatable` — declaring `ComparablePriority` automatically makes `Priority` equatable without a separate `EquatablePriority` declaration.
 
-### Showable
+### Castable (replaces Showable)
 
 ```tinct
 [type Color [r@Int g@Int b@Int]]
 
-[ShowableColor: [instance [Showable Color]
-  [str: [fn [c] [str "rgb(" c.r "," c.g "," c.b ")"]]]]]
+[instance Castable [let target@String source@Color]
+  [cast: [fn [let c] [str-parts "rgb(" [@String [cast c.r]] "," [@String [cast c.g]] "," [@String [cast c.b]] ")"]]]]
 
 red: [Color 255 0 0]
-[str red]    # "rgb(255,0,0)"  ✓
+[@String [cast red]]    # "rgb(255,0,0)"  ✓
+[str red]               # same, via str convenience alias
 ```
 
 ### Custom Arithmetic Types

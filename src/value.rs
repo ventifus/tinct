@@ -1,4 +1,4 @@
-//! Runtime value types: `Value`, `Thunk` (lazy memoization), `Environment` (lexical scope chain).
+//! Runtime value types: `Value`, `Thunk` (lazy memoization). Lexical scope is provided by `crate::env::Env`.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -21,7 +21,7 @@ pub use crate::arena::ThunkId;
 
 /// Type alias for the optional default expression + environment pair in guarded thunks.
 /// Reduces type_complexity in UnevaluatedState::Guarded and Thunk constructors.
-type GuardDefault = (Arc<Spanned<CoreExpr>>, Arc<RwLock<Environment>>);
+type GuardDefault = (Arc<Spanned<CoreExpr>>, Arc<RwLock<crate::env::Env>>);
 
 /// Runtime metadata for user-defined functions — stored on `Value::Function`.
 /// Enables runtime reflection via `ast-of` builtin and LSP features (hover, go-to-def).
@@ -58,7 +58,7 @@ pub struct BuiltinArgs {
     /// dispatch, this is the caller's environment — enabling `builtin-current-env` to
     /// capture it. For internal builtin-to-builtin calls (not via PendingCall), this is
     /// an empty environment and should not be used as a meaningful scope.
-    pub caller_env: Arc<RwLock<Environment>>,
+    pub caller_env: Arc<RwLock<crate::env::Env>>,
 }
 
 /// Signature for built-in functions: receives a `BuiltinArgs` struct containing
@@ -649,7 +649,7 @@ pub enum Value {
     Function {
         params: Rc<Vec<Param>>,
         body: Arc<Spanned<CoreExpr>>,
-        env: Arc<RwLock<Environment>>,
+        env: Arc<RwLock<crate::env::Env>>,
         annotation: Option<Box<FnAnnotation>>,
         /// Return type annotation from the `fn@Annotation` form.
         /// For named-field constructors, this carries `Annotation::Simple(qualified_tag)`,
@@ -839,7 +839,7 @@ pub enum Value {
     /// Passed as `env:` to `builtin-eval` to set the starting environment for evaluation,
     /// enabling method arms and bindings to flow through the env chain rather than being
     /// flattened into a dict.
-    Environment(Arc<RwLock<Environment>>),
+    Environment(Arc<RwLock<crate::env::Env>>),
 }
 
 /// State of an async task spawned via `task` builtin.
@@ -1033,7 +1033,6 @@ impl Value {
             Value::Environment(_) => "Environment",
         }
     }
-
 
     /// Extract a string slice from a `Value::String`, or `None` if not a string.
     pub fn as_str(&self) -> Option<&str> {
@@ -1366,7 +1365,7 @@ pub enum UnevaluatedState {
     /// inline on the AST nodes — no external tables needed.
     Surface {
         node: Arc<SurfaceNode>,
-        env: Arc<RwLock<Environment>>,
+        env: Arc<RwLock<crate::env::Env>>,
         ctx: Arc<crate::eval::EvalContext>,
     },
     /// Lazy AST node field access via `surface_node_get_field`.
@@ -1378,7 +1377,7 @@ pub enum UnevaluatedState {
     /// CoreExpr body thunk — created by invoke_function when body is Arc<Spanned<CoreExpr>>.
     CoreExpr {
         expr: Arc<crate::ast::Spanned<crate::ast::CoreExpr>>,
-        env: Arc<RwLock<Environment>>,
+        env: Arc<RwLock<crate::env::Env>>,
         ctx: Arc<crate::eval::EvalContext>,
     },
     /// Deferred builtin call (was PendingBuiltin).
@@ -1387,7 +1386,7 @@ pub enum UnevaluatedState {
         args: Vec<Arc<Thunk>>,
         named: Option<IndexMap<String, Arc<Thunk>>>,
         call_span: Span,
-        caller_env: Arc<RwLock<Environment>>,
+        caller_env: Arc<RwLock<crate::env::Env>>,
         ctx: Arc<crate::eval::EvalContext>,
     },
     /// Deferred function call (was PendingCall).
@@ -1396,7 +1395,7 @@ pub enum UnevaluatedState {
         args: Vec<Arc<Thunk>>,
         named: Option<Box<IndexMap<String, Arc<Thunk>>>>,
         call_span: Span,
-        caller_env: Arc<RwLock<Environment>>,
+        caller_env: Arc<RwLock<crate::env::Env>>,
         ctx: Arc<crate::eval::EvalContext>,
         /// Original CoreExpr::Call node for DepthExceeded retry path.
         /// Enables CoreExpr-based restore (no Arc<Thunk> references held).
@@ -1478,7 +1477,7 @@ pub type PendingBuiltinParts = (
     Vec<Arc<Thunk>>,
     Option<IndexMap<String, Arc<Thunk>>>,
     Span,
-    Arc<RwLock<Environment>>,
+    Arc<RwLock<crate::env::Env>>,
     Arc<crate::eval::EvalContext>,
 );
 
@@ -1488,7 +1487,7 @@ pub type PendingCallParts = (
     Vec<Arc<Thunk>>,
     Option<IndexMap<String, Arc<Thunk>>>,
     Span,
-    Arc<RwLock<Environment>>,
+    Arc<RwLock<crate::env::Env>>,
     Arc<crate::eval::EvalContext>,
     Arc<Spanned<CoreExpr>>,
 );
@@ -1496,7 +1495,7 @@ pub type PendingCallParts = (
 /// Return type of `Thunk::take_core_expr`.
 pub type CoreExprParts = (
     Arc<Spanned<CoreExpr>>,
-    Arc<RwLock<Environment>>,
+    Arc<RwLock<crate::env::Env>>,
     Arc<crate::eval::EvalContext>,
 );
 
@@ -1507,13 +1506,13 @@ pub type GuardedParts = (
     Vec<String>,
     Span,
     Option<crate::error::BlameLabel>,
-    Option<(Arc<Spanned<CoreExpr>>, Arc<RwLock<Environment>>)>,
+    Option<(Arc<Spanned<CoreExpr>>, Arc<RwLock<crate::env::Env>>)>,
 );
 
 /// Return type of `Thunk::take_surface`.
 pub type SurfaceParts = (
     Arc<SurfaceNode>,
-    Arc<RwLock<Environment>>,
+    Arc<RwLock<crate::env::Env>>,
     Arc<crate::eval::EvalContext>,
 );
 
@@ -1553,7 +1552,7 @@ impl Thunk {
     /// On first force, `eval_core_expr_pub` is called directly — no conversion to Expr needed.
     pub fn new_unevaluated_core(
         expr: Arc<crate::ast::Spanned<crate::ast::CoreExpr>>,
-        env: Arc<RwLock<Environment>>,
+        env: Arc<RwLock<crate::env::Env>>,
         ctx: Arc<crate::eval::EvalContext>,
         span: Span,
     ) -> Self {
@@ -1593,7 +1592,7 @@ impl Thunk {
     /// and evaluated.
     pub fn new_surface(
         node: std::sync::Arc<crate::ast::SurfaceNode>,
-        env: Arc<RwLock<Environment>>,
+        env: Arc<RwLock<crate::env::Env>>,
         ctx: Arc<crate::eval::EvalContext>,
         span: Span,
     ) -> Self {
@@ -1639,14 +1638,14 @@ impl Thunk {
     /// `caller_env`: the lexical environment at the call site. Pass the actual caller
     /// environment when creating a PendingBuiltin from a user-code call (PendingCall
     /// dispatch). For internal builtin-to-builtin calls with no meaningful call site,
-    /// pass `Arc::new(RwLock::new(Environment::new()))`.
+    /// pass `Arc::new(RwLock::new(crate::env::Env::new()))`.
     pub fn new_pending_builtin(
         def: BuiltinDef,
         args: Vec<Arc<Thunk>>,
         named: Option<IndexMap<String, Arc<Thunk>>>,
         span: Span,
         origin: Option<Arc<str>>,
-        caller_env: Arc<RwLock<Environment>>,
+        caller_env: Arc<RwLock<crate::env::Env>>,
         ctx: Arc<crate::eval::EvalContext>,
     ) -> Self {
         let (create_parent, create_time_us) = Self::profiling_data(&ctx);
@@ -1675,7 +1674,7 @@ impl Thunk {
         args: Vec<Arc<Thunk>>,
         named: IndexMap<String, Arc<Thunk>>,
         call_span: Span,
-        caller_env: Arc<RwLock<Environment>>,
+        caller_env: Arc<RwLock<crate::env::Env>>,
         span: Span,
         origin: Option<Arc<str>>,
         ctx: Arc<crate::eval::EvalContext>,
@@ -2195,207 +2194,6 @@ impl fmt::Debug for Thunk {
     }
 }
 
-/// Lexical scope chain: bindings in the current scope plus an optional parent link.
-/// Slots are stored in a `Vec<Arc<Thunk>>` indexed by position; parallel `Vec<String>`
-/// holds the names for resolver seeding and non-eval name-based lookup only.
-/// The evaluator accesses bindings exclusively via `get_slot(level, slot)` — no hash lookup.
-///
-/// # DAG invariant
-///
-/// The parent chain forms a directed acyclic graph (DAG), not a cyclic graph. This
-/// invariant is guaranteed structurally by lexical scoping: each `Environment` is created
-/// from a parent that already exists (the enclosing scope at the time of evaluation), so
-/// no environment can transitively point back to itself. Specifically:
-///
-/// - `eval()` creates a child env by calling `Environment::with_parent(env)` on the
-///   **current** scope before evaluating the body. The body is evaluated in the child;
-///   the parent cannot reference the child.
-/// - `letrec` dict bindings share a single pre-allocated environment, but all thunks in
-///   that env point to the same env — a self-referential structure that is still acyclic
-///   in the parent chain (no environment has itself as an ancestor).
-/// - `$include` creates a fresh child env from the stdlib root; it cannot create cycles.
-///
-/// The absence of cycles means `Environment::get_by_name()` always terminates. It also means
-/// environments form a tree rooted at the stdlib environment, enabling safe stack-free
-/// traversal via iterative parent-pointer walking.
-
-#[derive(Debug, Clone)]
-pub struct Environment {
-    /// Slot-indexed thunk storage — the evaluator's ONLY access path at runtime.
-    /// Slot indices are assigned by the resolver in resolve.rs and used at the
-    /// `CoreExpr::Var` call site in eval_core.rs / eval.rs via `get_slot`.
-    /// No name-based hash lookup occurs during evaluation.
-    pub(crate) slots: Vec<Arc<Thunk>>,
-    /// Names parallel to `slots` — used ONLY by the resolver's `from_env()` for
-    /// scope seeding, and by non-eval paths (typecheck, LSP, pattern matching) that
-    /// need name-based lookup via `get_by_name()`.
-    /// Never used for runtime variable lookup.
-    pub(crate) slot_names: Vec<String>,
-    pub(crate) parent: Option<Arc<RwLock<Environment>>>,
-}
-
-/// Profiling counters for slot-based lookup hit rate measurement.
-/// Enabled only in test builds to avoid runtime overhead in production.
-#[cfg(test)]
-pub(crate) static SLOT_HIT_COUNT: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
-#[cfg(test)]
-pub(crate) static SLOT_MISS_COUNT: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
-
-/// Reset profiling counters between tests to prevent cross-test accumulation.
-/// Call at the start of any test that asserts slot hit/miss ratios.
-#[cfg(test)]
-#[allow(dead_code)]
-pub(crate) fn reset_slot_counters() {
-    use std::sync::atomic::Ordering;
-    SLOT_HIT_COUNT.store(0, Ordering::Relaxed);
-    SLOT_MISS_COUNT.store(0, Ordering::Relaxed);
-}
-
-impl Environment {
-    pub fn new() -> Self {
-        Self {
-            slots: Vec::new(),
-            slot_names: Vec::new(),
-            parent: None,
-        }
-    }
-
-    pub fn with_parent(parent: Arc<RwLock<Environment>>) -> Self {
-        Self {
-            slots: Vec::new(),
-            slot_names: Vec::new(),
-            parent: Some(parent),
-        }
-    }
-
-    /// Look up a binding by name, searching this environment then ancestors.
-    ///
-    /// This is used by non-eval paths: typecheck, LSP, pattern pin matching, and the
-    /// `Value::Environment` dot-access path. The evaluator uses `get_slot` exclusively.
-    ///
-    /// # Lock safety
-    ///
-    /// This method acquires a read lock on each ancestor `RwLock<Environment>` as
-    /// it walks up the scope chain.  Callers **must not** hold a write lock
-    /// on any ancestor environment while calling `get_by_name()`, or
-    /// the program will deadlock.
-    ///
-    /// The scope chain must form a DAG -- circular parent links will cause an
-    /// infinite loop.
-    pub fn get_by_name(&self, name: &str) -> Option<Arc<Thunk>> {
-        // Check current scope first — linear scan of slot_names
-        if let Some(idx) = self.slot_names.iter().rposition(|n| n == name) {
-            return Some(Arc::clone(&self.slots[idx]));
-        }
-        // Walk parent chain iteratively
-        let mut current = self.parent.as_ref().map(Arc::clone);
-        while let Some(env_rc) = current {
-            let env = env_rc.read().unwrap();
-            if let Some(idx) = env.slot_names.iter().rposition(|n| n == name) {
-                return Some(Arc::clone(&env.slots[idx]));
-            }
-            current = env.parent.as_ref().map(Arc::clone);
-        }
-        None
-    }
-
-    pub fn insert(&mut self, name: String, thunk: Arc<Thunk>) {
-        self.slot_names.push(name);
-        self.slots.push(thunk);
-    }
-
-    /// Iterate over (name, thunk) pairs in this environment frame (not parents).
-    pub fn iter_slots(&self) -> impl Iterator<Item = (&str, &Arc<Thunk>)> {
-        self.slot_names
-            .iter()
-            .map(String::as_str)
-            .zip(self.slots.iter())
-    }
-
-    /// Search the full environment chain for the first key that ends with `suffix`.
-    ///
-    /// Walks the parent chain the same way `get_by_name` does. Returns the matching
-    /// key string, or `None` if no key in scope ends with `suffix`.
-    ///
-    /// Used by `resolve_matchable_binding_from_fn` to discover the Matchable class
-    /// instance binding for a given type name without knowing the class name ahead of time.
-    pub fn find_key_with_suffix(&self, suffix: &str) -> Option<String> {
-        // Check current frame
-        if let Some(name) = self.slot_names.iter().find(|n| n.ends_with(suffix)) {
-            return Some(name.clone());
-        }
-        // Walk parent chain
-        let mut current = self.parent.as_ref().map(Arc::clone);
-        while let Some(env_rc) = current {
-            let env = env_rc.read().unwrap();
-            if let Some(name) = env.slot_names.iter().find(|n| n.ends_with(suffix)) {
-                return Some(name.clone());
-            }
-            current = env.parent.as_ref().map(Arc::clone);
-        }
-        None
-    }
-
-    /// O(1) slot-based lookup with De Bruijn level-based parent chain walking.
-    ///
-    /// `level` is a De Bruijn index: 0 = current environment, 1 = parent, N = Nth ancestor.
-    /// This matches the resolver's level assignment in `resolve.rs::Resolver::resolve`.
-    ///
-    /// For `level = 0`: looks up `slot` directly in the current environment's `slots` Vec —
-    /// no name hash, no string comparison, pure positional indexing.
-    ///
-    /// For `level > 0`: walks `level` steps up the parent chain, then does the
-    /// slot lookup. Each step costs one `Arc::clone` + `RwLock::read`, so the
-    /// total cost is O(level).
-    ///
-    /// Returns `None` if the level or slot is out of bounds.
-    /// The caller is responsible for turning `None` into an error; there is no
-    /// name-based fallback.
-    pub fn get_slot(&self, level: u32, slot: u32) -> Option<Arc<Thunk>> {
-        if level == 0 {
-            // Fast path: O(1) index into the current scope's slots Vec
-            let result = self.slots.get(slot as usize).map(Arc::clone);
-            #[cfg(test)]
-            if result.is_some() {
-                SLOT_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
-            } else {
-                SLOT_MISS_COUNT.fetch_add(1, Ordering::Relaxed);
-            }
-            return result;
-        }
-        // Walk `level` steps up the parent chain, then do slot lookup
-        let mut steps_remaining = level;
-        let mut current = self.parent.as_ref().map(Arc::clone);
-        while let Some(env_rc) = current {
-            steps_remaining -= 1;
-            if steps_remaining == 0 {
-                let env = env_rc.read().unwrap();
-                let result = env.slots.get(slot as usize).map(Arc::clone);
-                #[cfg(test)]
-                if result.is_some() {
-                    SLOT_HIT_COUNT.fetch_add(1, Ordering::Relaxed);
-                } else {
-                    SLOT_MISS_COUNT.fetch_add(1, Ordering::Relaxed);
-                }
-                return result;
-            }
-            let next = env_rc.read().unwrap().parent.as_ref().map(Arc::clone);
-            current = next;
-        }
-        #[cfg(test)]
-        SLOT_MISS_COUNT.fetch_add(1, Ordering::Relaxed);
-        None
-    }
-}
-
-impl Default for Environment {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[cfg(test)]
 #[allow(clippy::approx_constant)] // test values like 3.14 are intentional, not PI approximations
 mod tests {
@@ -2404,7 +2202,7 @@ mod tests {
 
     fn test_ctx() -> Arc<crate::eval::EvalContext> {
         let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();
-        let env = Arc::new(RwLock::new(Environment::new()));
+        let env = Arc::new(RwLock::new(crate::env::Env::new()));
         crate::eval::EvalContext::new(base_dir, Arc::clone(&env), Arc::clone(&env), false)
     }
 
@@ -2575,7 +2373,7 @@ mod tests {
         let f = Value::Function {
             params: Rc::new(vec![]),
             body: Arc::new(Spanned::new(CoreExpr::Int(0), test_span(1, 1, 1, 1))),
-            env: Arc::new(RwLock::new(Environment::new())),
+            env: Arc::new(RwLock::new(crate::env::Env::new())),
             annotation: None,
             return_ann: None,
         };
@@ -2724,57 +2522,6 @@ mod tests {
     }
 
     #[test]
-    fn test_environment_get_current_scope() {
-        let mut env = Environment::new();
-        let span = test_span(1, 1, 1, 5);
-        let thunk = Arc::new(Thunk::new_materialized(Value::Int(42), span));
-        env.insert("x".into(), Arc::clone(&thunk));
-
-        let found = env.get_by_name("x");
-        assert!(found.is_some());
-        assert!(Arc::ptr_eq(&found.unwrap(), &thunk));
-    }
-
-    #[test]
-    fn test_environment_get_parent_scope() {
-        let mut parent = Environment::new();
-        let span = test_span(1, 1, 1, 5);
-        let thunk = Arc::new(Thunk::new_materialized(Value::Int(99), span));
-        parent.insert("y".into(), Arc::clone(&thunk));
-
-        let parent_rc = Arc::new(RwLock::new(parent));
-        let child = Environment::with_parent(Arc::clone(&parent_rc));
-
-        let found = child.get_by_name("y");
-        assert!(found.is_some());
-        assert!(Arc::ptr_eq(&found.unwrap(), &thunk));
-    }
-
-    #[test]
-    fn test_environment_get_missing() {
-        let env = Environment::new();
-        assert!(env.get_by_name("nonexistent").is_none());
-    }
-
-    #[test]
-    fn test_environment_get_shadow() {
-        let mut parent = Environment::new();
-        let span = test_span(1, 1, 1, 5);
-        let parent_thunk = Arc::new(Thunk::new_materialized(Value::Int(1), span.clone()));
-        parent.insert("x".into(), Arc::clone(&parent_thunk));
-
-        let parent_rc = Arc::new(RwLock::new(parent));
-        let mut child = Environment::with_parent(parent_rc);
-        let child_thunk = Arc::new(Thunk::new_materialized(Value::Int(2), span));
-        child.insert("x".into(), Arc::clone(&child_thunk));
-
-        let found = child.get_by_name("x").unwrap();
-        // Should find the child's binding, not the parent's
-        assert!(Arc::ptr_eq(&found, &child_thunk));
-        assert!(!Arc::ptr_eq(&found, &parent_thunk));
-    }
-
-    #[test]
     fn test_thunk_new_materialized() {
         let span = test_span(1, 1, 1, 5);
         let thunk = Thunk::new_materialized(Value::Int(7), span);
@@ -2789,7 +2536,7 @@ mod tests {
         // Verify that Debug output works for an Unevaluated thunk without panicking.
         let span = test_span(1, 1, 1, 5);
         let expr = Arc::new(Spanned::new(CoreExpr::Int(0), span.clone()));
-        let env = Arc::new(RwLock::new(Environment::new()));
+        let env = Arc::new(RwLock::new(crate::env::Env::new()));
         let thunk = Thunk::new_unevaluated_core(expr, env, test_ctx(), span);
 
         // Debug should not panic for an Unevaluated thunk
@@ -2875,7 +2622,7 @@ mod tests {
             },
         ]);
         let body = Arc::new(Spanned::new(CoreExpr::Int(0), span));
-        let env = Arc::new(RwLock::new(Environment::new()));
+        let env = Arc::new(RwLock::new(crate::env::Env::new()));
         let func = Value::Function {
             params,
             body,
@@ -2970,7 +2717,7 @@ mod tests {
             },
         ]);
         let body = Arc::new(Spanned::new(CoreExpr::Int(0), span));
-        let env = Arc::new(RwLock::new(Environment::new()));
+        let env = Arc::new(RwLock::new(crate::env::Env::new()));
         let func = Value::Function {
             params,
             body,
@@ -3007,14 +2754,14 @@ mod tests {
     fn test_thunk_unevaluated_preserves_ctx_across_materialization() {
         // Create ctx1 with a distinct base_dir
         let base_dir1 = crate::test_util::test_caps().root.try_clone().unwrap();
-        let env1 = Arc::new(RwLock::new(Environment::new()));
+        let env1 = Arc::new(RwLock::new(crate::env::Env::new()));
         let ctx1 =
             crate::eval::EvalContext::new(base_dir1, Arc::clone(&env1), Arc::clone(&env1), false);
 
         // Create a thunk that captures ctx1
         let span = test_span(1, 1, 1, 5);
         let expr = Arc::new(Spanned::new(CoreExpr::Int(42), span.clone()));
-        let env = Arc::new(RwLock::new(Environment::new()));
+        let env = Arc::new(RwLock::new(crate::env::Env::new()));
         let thunk = Thunk::new_unevaluated_core(
             Arc::clone(&expr),
             Arc::clone(&env),
@@ -3066,7 +2813,7 @@ mod tests {
 
         // Create ctx1
         let base_dir1 = crate::test_util::test_caps().root.try_clone().unwrap();
-        let env1 = Arc::new(RwLock::new(Environment::new()));
+        let env1 = Arc::new(RwLock::new(crate::env::Env::new()));
         let ctx1 =
             crate::eval::EvalContext::new(base_dir1, Arc::clone(&env1), Arc::clone(&env1), false);
 
@@ -3109,7 +2856,7 @@ mod tests {
     fn test_thunk_pending_call_preserves_ctx() {
         // Create ctx1
         let base_dir1 = crate::test_util::test_caps().root.try_clone().unwrap();
-        let env1 = Arc::new(RwLock::new(Environment::new()));
+        let env1 = Arc::new(RwLock::new(crate::env::Env::new()));
         let ctx1 =
             crate::eval::EvalContext::new(base_dir1, Arc::clone(&env1), Arc::clone(&env1), false);
 
@@ -3121,7 +2868,7 @@ mod tests {
                     crate::ast::CoreExpr::Int(0),
                     test_span(1, 1, 1, 1),
                 )),
-                env: Arc::new(RwLock::new(Environment::new())),
+                env: Arc::new(RwLock::new(crate::env::Env::new())),
                 annotation: None,
                 return_ann: None,
             },
@@ -3133,7 +2880,7 @@ mod tests {
             vec![],
             IndexMap::new(),
             span.clone(),
-            Arc::new(RwLock::new(Environment::new())), // caller_env
+            Arc::new(RwLock::new(crate::env::Env::new())), // caller_env
             span.clone(),
             Some(Arc::from("test call")),
             Arc::clone(&ctx1),
@@ -3349,7 +3096,7 @@ mod tests {
 
         let span = test_span(1, 1, 1, 10);
         let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();
-        let env = Arc::new(RwLock::new(Environment::new()));
+        let env = Arc::new(RwLock::new(crate::env::Env::new()));
         let ctx = EvalContext::new(base_dir, Arc::clone(&env), Arc::clone(&env), false);
 
         // Create a PendingBuiltin thunk (using a dummy builtin function)
@@ -3408,7 +3155,7 @@ mod tests {
 
         let span = test_span(1, 1, 1, 10);
         let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();
-        let env = Arc::new(RwLock::new(Environment::new()));
+        let env = Arc::new(RwLock::new(crate::env::Env::new()));
         let ctx = EvalContext::new(base_dir, Arc::clone(&env), Arc::clone(&env), false);
 
         fn error_builtin(
@@ -3494,7 +3241,7 @@ mod tests {
         // Start from Unevaluated so the OnceCell result is unset, then transition to Failed.
         let span = test_span(1, 1, 1, 5);
         let expr = Arc::new(Spanned::new(CoreExpr::Int(0), span.clone()));
-        let env = Arc::new(RwLock::new(Environment::new()));
+        let env = Arc::new(RwLock::new(crate::env::Env::new()));
         let thunk = Thunk::new_unevaluated_core(expr, env, test_ctx(), span.clone());
         let err = crate::error::EvalError::internal("sentinel error".into(), span);
         thunk.cache_failure_once(&err);
@@ -3527,7 +3274,7 @@ mod tests {
     fn test_get_cached_error_unevaluated_returns_none() {
         let span = test_span(1, 1, 1, 5);
         let expr = Arc::new(Spanned::new(CoreExpr::Int(0), span.clone()));
-        let env = Arc::new(RwLock::new(Environment::new()));
+        let env = Arc::new(RwLock::new(crate::env::Env::new()));
         let thunk = Thunk::new_unevaluated_core(expr, env, test_ctx(), span);
         assert!(
             thunk.get_cached_error().is_none(),
@@ -3540,7 +3287,7 @@ mod tests {
         // InProgress: take_core_expr() transitions to InProgress; result not yet set.
         let span = test_span(1, 1, 1, 5);
         let expr = Arc::new(Spanned::new(CoreExpr::Int(0), span.clone()));
-        let env = Arc::new(RwLock::new(Environment::new()));
+        let env = Arc::new(RwLock::new(crate::env::Env::new()));
         let thunk = Thunk::new_unevaluated_core(expr, env, test_ctx(), span);
         let _taken = thunk.take_core_expr(); // transitions to InProgress
         assert!(
@@ -3556,7 +3303,7 @@ mod tests {
         // After take_core_expr(), thunk is InProgress: is_in_progress() must return true.
         let span = test_span(1, 1, 1, 5);
         let expr = Arc::new(Spanned::new(CoreExpr::Int(0), span.clone()));
-        let env = Arc::new(RwLock::new(Environment::new()));
+        let env = Arc::new(RwLock::new(crate::env::Env::new()));
         let thunk = Thunk::new_unevaluated_core(expr, env, test_ctx(), span);
         thunk.take_core_expr(); // transitions to InProgress
         assert!(
@@ -3569,7 +3316,7 @@ mod tests {
     fn test_is_in_progress_false_for_unevaluated() {
         let span = test_span(1, 1, 1, 5);
         let expr = Arc::new(Spanned::new(CoreExpr::Int(0), span.clone()));
-        let env = Arc::new(RwLock::new(Environment::new()));
+        let env = Arc::new(RwLock::new(crate::env::Env::new()));
         let thunk = Thunk::new_unevaluated_core(expr, env, test_ctx(), span);
         assert!(
             !thunk.is_in_progress(),
@@ -3592,7 +3339,7 @@ mod tests {
         // Start from Unevaluated so cache_failure_once() can write to the OnceCell.
         let span = test_span(1, 1, 1, 5);
         let expr = Arc::new(Spanned::new(CoreExpr::Int(0), span.clone()));
-        let env = Arc::new(RwLock::new(Environment::new()));
+        let env = Arc::new(RwLock::new(crate::env::Env::new()));
         let thunk = Thunk::new_unevaluated_core(expr, env, test_ctx(), span.clone());
         let err = crate::error::EvalError::internal("test".into(), span);
         thunk.cache_failure_once(&err);

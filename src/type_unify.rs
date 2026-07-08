@@ -289,8 +289,8 @@ async fn check_constraints_on_var(
                 // satisfies_constraint returned false: try instance resolution for all
                 // concrete types (primitives, records, nominals) and user-defined instances.
                 // This enables user-defined instances (future work: dictionary construction)
-                // Clone instance_env to avoid borrowing state both immutably (for the
-                // field access) and mutably (as the unify parameter) at the same time.
+                // Build a temporary InstanceEnv snapshot to avoid borrow checker conflict:
+                // resolve_instance takes &self on InstanceEnv AND &mut state simultaneously.
                 const MAX_INSTANCE_RESOLUTION_DEPTH: u32 = 64;
                 if state.instance_resolution_depth >= MAX_INSTANCE_RESOLUTION_DEPTH {
                     // Too deep — return a type error instead of silently skipping.
@@ -308,7 +308,7 @@ async fn check_constraints_on_var(
                     })));
                 }
                 state.instance_resolution_depth += 1;
-                let inst_env = state.instance_env.clone();
+                let inst_env = state.build_instance_env_snapshot();
                 let resolve_result =
                     Box::pin(inst_env.resolve_instance(&class, concrete_ty, state)).await;
                 state.instance_resolution_depth -= 1;
@@ -330,7 +330,7 @@ async fn check_constraints_on_var(
                             if satisfies_constraint(&widened, &class) {
                                 continue;
                             }
-                            let inst_env2 = state.instance_env.clone();
+                            let inst_env2 = state.build_instance_env_snapshot();
                             state.instance_resolution_depth += 1;
                             let retry_result =
                                 Box::pin(inst_env2.resolve_instance(&class, &widened, state)).await;
@@ -523,7 +523,7 @@ async fn improve_functional_dependency_inner(
             if all_ded_ground {
                 // Scan InstanceEnv for an instance whose determined-position type
                 // unifies with the ground determined types we have.
-                let instance_env = state.instance_env.clone();
+                let instance_env = state.build_instance_env_snapshot();
                 if let Some((determining_types, det_pos_list)) = Box::pin(
                     instance_env.reverse_lookup_mptc(
                         class,
@@ -681,9 +681,12 @@ async fn improve_functional_dependency_inner(
             None
         };
 
+        // Extract class_decl with a scoped read lock so the guard drops before
+        // any subsequent &mut state borrows (e.g. in lookup_mptc).
+        let class_decl_for_fd = { state.env.read().unwrap().get_class(class) };
         let result_type = if let Some(ty) = indexable_record_result {
             ty
-        } else if let Some(class_decl) = state.class_env.get(class) {
+        } else if let Some(class_decl) = class_decl_for_fd {
             // Check for resolver or fall back to general MPTC instance lookup
             if let Some(ref resolver_name) = class_decl.resolver.clone() {
                 // Resolver-based path: construct a TypeStageApp and normalize it.
@@ -712,8 +715,8 @@ async fn improve_functional_dependency_inner(
                 // covariant: if T <: S and S satisfies C, then T satisfies C. We widen on miss.
                 let det_arg_types: Vec<Type> = det_types.iter().map(|(_, ty)| ty.clone()).collect();
 
-                // Clone instance_env to avoid borrow checker conflict
-                let instance_env = state.instance_env.clone();
+                // Build a temporary InstanceEnv snapshot to avoid borrow checker conflict.
+                let instance_env = state.build_instance_env_snapshot();
                 let lookup_result =
                     Box::pin(instance_env.lookup_mptc(class, &det_arg_types, state)).await;
 
@@ -724,7 +727,7 @@ async fn improve_functional_dependency_inner(
                         .map(|ty| crate::typecheck::typecheck_call::widen_literal_types(ty.clone()))
                         .collect();
                     if widened != det_arg_types {
-                        let instance_env2 = state.instance_env.clone();
+                        let instance_env2 = state.build_instance_env_snapshot();
                         Box::pin(instance_env2.lookup_mptc(class, &widened, state)).await
                     } else {
                         None

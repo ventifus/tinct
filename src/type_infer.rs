@@ -5,10 +5,10 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use crate::ast::Span;
-use crate::types::{ClassDecl, ClassEnv, Constraint, InstanceEnv, Kind, Row, Type};
+use crate::types::{Constraint, Kind, Row, Type, TypeError};
 
 /// All per-TypeVar metadata in one place.
 /// IndexMap preserves insertion order (= TypeVar creation order via monotonic counter),
@@ -87,8 +87,19 @@ impl Substitution {
                 variadic: *variadic,
                 required_count: *required_count,
             },
-            // Note: Type::Seq, Type::Map, Type::Handle don't exist as variants.
-            // These are represented as App(TyCon("Seq"), ...) etc. and handled by the App arm below.
+            // App(f, a): type constructor application — substitute into both sides.
+            // App(TyCon("Seq"), TypeVar("_t0")) with {_t0 → Int} → App(TyCon("Seq"), Int).
+            Type::App(f, a) => Type::App(
+                Box::new(Self::apply_inner(f, map)),
+                Box::new(Self::apply_inner(a, map)),
+            ),
+            // Recursive(μvar.body): substitute through the body WITHOUT touching the binder name.
+            // The binder is a μ-name (not a type variable in the substitution domain),
+            // so it must be left unchanged. Only free type variables inside the body are substituted.
+            Type::Recursive { var, body } => Type::Recursive {
+                var: var.clone(),
+                body: Box::new(Self::apply_inner(body, map)),
+            },
             Type::Record(row) => Type::Record(Self::apply_row(row, map)),
             Type::Union(types) => {
                 Type::Union(types.iter().map(|t| Self::apply_inner(t, map)).collect())
@@ -198,12 +209,10 @@ pub struct InferState {
     /// are resolved (Kind::Label). Used to prevent promotion of label-kinded TypeVars and to
     /// enforce kind checking (e.g., reject `Seq(TypeVar(l, Label))`).
     pub kind_env: HashMap<String, Kind>,
-    /// Type class environment: registry of class declarations.
-    /// Dict-scoped: class declarations are visible in the dict and children.
-    pub class_env: ClassEnv,
-    /// Type class instance environment: registry of instance declarations.
-    /// Globally registered: coherence requires global uniqueness.
-    pub instance_env: InstanceEnv,
+    /// Unified environment: the canonical store for classes, instances, type schemes, and values.
+    /// Class/instance lookups go through `state.env.read().unwrap().get_class(name)` and
+    /// `state.env.read().unwrap().get_instance(mangled)`.
+    pub env: Arc<RwLock<crate::env::Env>>,
     /// Names of bindings that failed type inference, mapping to the span of the failed binding.
     /// Used to annotate downstream T002 "undefined variable" errors with a "caused by" note
     /// that points to the failed definition site instead of just saying "not in scope".
@@ -246,11 +255,6 @@ pub struct InferState {
     /// unify → check_constraints_on_var cycle. Incremented when entering resolve_instance,
     /// decremented when exiting. Matches GHC's -freduction-depth semantics (Sulzmann et al. 2007 §3.2).
     pub instance_resolution_depth: u32,
-    /// Flag indicating whether we are currently type-checking the prelude.
-    /// When true, instance method body inference is skipped (optimization — method types
-    /// in InstanceDecl are populated but only consumed by resolve_instance, which is not
-    /// called during prelude loading itself).
-    pub in_prelude_load: bool,
     /// Monad resolutions for inferred [do] forms: sentinel VarRef name → resolved monad variable name.
     /// When the type checker resolves a do-infer sentinel (e.g., `ℊꜱʏᴍ⧼do-infer⧽0`) to a concrete monad
     /// (e.g., "result"), it records the mapping here keyed by the sentinel VarRef name. The eval
@@ -294,10 +298,10 @@ pub struct InferState {
     pub resolution_table: Option<std::sync::Arc<crate::ast::ResolutionTable>>,
     /// Type-stage evaluation environment (from HEAD~1 InferState design).
     /// When `Some`, eval_type_stage_expr uses this environment.
-    pub type_stage_env: Option<std::sync::Arc<std::sync::RwLock<crate::value::Environment>>>,
+    pub type_stage_env: Option<std::sync::Arc<std::sync::RwLock<crate::env::Env>>>,
     /// Main runtime environment (from HEAD~1 InferState design).
     /// Cross-stage bridge: type-stage can resolve types from main env.
-    pub main_env: Option<std::sync::Arc<std::sync::RwLock<crate::value::Environment>>>,
+    pub main_env: Option<std::sync::Arc<std::sync::RwLock<crate::env::Env>>>,
     /// Pending param narrowings from the most recently inferred function (compatibility field).
     pub pending_param_narrowings: Vec<Option<Type>>,
     /// Unified TypeVar table (from HEAD~1 design).
@@ -314,229 +318,31 @@ pub struct InferState {
     /// Type constructor environment (from HEAD~1 design).
     /// Maps type constructor names to their TyConDef.
     pub tycon_env: std::collections::HashMap<String, std::sync::Arc<crate::type_def::TyConDef>>,
+    /// Side-channel error accumulator for sync annotation resolution.
+    ///
+    /// The sync annotation resolve functions (`resolve_type_node_for_typeassert`,
+    /// `resolve_simple_annotation_for_typeassert`, etc.) return `Type` rather than
+    /// `Result<Type, _>`. When these functions detect malformed annotations (e.g.
+    /// `@[type: 42]`, `@[type: [Fn@Int]]` with only 1 entry), they push errors here
+    /// instead of propagating them via the return value.
+    ///
+    /// Callers (the `Fn` and `TypeAssert` arms of `infer_surface_expr`) drain this
+    /// field after each annotation resolution call and fold the collected errors
+    /// into the expression result.
+    pub annotation_errors: Vec<TypeError>,
 }
 
 impl InferState {
     pub fn new() -> Self {
-        let mut class_env = ClassEnv::new();
+        Self::with_env(Arc::new(RwLock::new(crate::env::Env::new())))
+    }
 
-        // Register built-in type classes with their superclass relationships.
-        // Class declarations define the hierarchy (which classes extend which).
-        // Instance resolution happens in two stages:
-        //   1. satisfies_constraint: hardcoded for Numeric, Comparable, Equatable, and Showable
-        //   2. InstanceEnv::resolve_instance: dynamic resolution from prelude.llt instances
-        //
-        // These pre-registrations ensure the class hierarchy is available before prelude.llt
-        // is type-checked. When prelude.llt is loaded, it will register instances (not classes)
-        // which will be used by resolve_instance for constraint checking.
-
-        // Equatable: base class (instances defined in prelude.llt)
-        class_env.insert(ClassDecl {
-            name: "Equatable".to_string(),
-            params: vec![("a".to_string(), Kind::Type)],
-            superclasses: vec![],
-            determines: vec![],
-            resolver: None,
-            resolver_injective: false,
-            method_signatures: vec![],
-        });
-
-        // Numeric: extends Equatable (hardcoded instance set for Int/Float/Number/IntLiteral)
-        class_env.insert(ClassDecl {
-            name: "Numeric".to_string(),
-            params: vec![("a".to_string(), Kind::Type)],
-            superclasses: vec![("Equatable".to_string(), vec!["a".to_string()])],
-            determines: vec![],
-            resolver: None,
-            resolver_injective: false,
-            method_signatures: vec![],
-        });
-
-        // Addable: 3-parameter type class with functional dependency (a,b) → c
-        class_env.insert(ClassDecl {
-            name: "Addable".to_string(),
-            params: vec![
-                ("a".to_string(), Kind::Type),
-                ("b".to_string(), Kind::Type),
-                ("c".to_string(), Kind::Type),
-            ],
-            superclasses: vec![],
-            determines: vec![(vec![0, 1], vec![2])], // (a,b) → c
-            resolver: None,
-            resolver_injective: false,
-            method_signatures: vec![],
-        });
-
-        // Subtractable: 3-parameter type class with functional dependency (a,b) → c
-        class_env.insert(ClassDecl {
-            name: "Subtractable".to_string(),
-            params: vec![
-                ("a".to_string(), Kind::Type),
-                ("b".to_string(), Kind::Type),
-                ("c".to_string(), Kind::Type),
-            ],
-            superclasses: vec![],
-            determines: vec![(vec![0, 1], vec![2])], // (a,b) → c
-            resolver: None,
-            resolver_injective: false,
-            method_signatures: vec![],
-        });
-
-        // Multipliable: 3-parameter type class with functional dependency (a,b) → c
-        class_env.insert(ClassDecl {
-            name: "Multipliable".to_string(),
-            params: vec![
-                ("a".to_string(), Kind::Type),
-                ("b".to_string(), Kind::Type),
-                ("c".to_string(), Kind::Type),
-            ],
-            superclasses: vec![],
-            determines: vec![(vec![0, 1], vec![2])], // (a,b) → c
-            resolver: None,
-            resolver_injective: false,
-            method_signatures: vec![],
-        });
-
-        // Divisible: 3-parameter type class with functional dependency (a,b) → c
-        class_env.insert(ClassDecl {
-            name: "Divisible".to_string(),
-            params: vec![
-                ("a".to_string(), Kind::Type),
-                ("b".to_string(), Kind::Type),
-                ("c".to_string(), Kind::Type),
-            ],
-            superclasses: vec![],
-            determines: vec![(vec![0, 1], vec![2])], // (a,b) → c
-            resolver: None,
-            resolver_injective: false,
-            method_signatures: vec![],
-        });
-
-        // Comparable: extends Equatable (instances defined in prelude.llt)
-        class_env.insert(ClassDecl {
-            name: "Comparable".to_string(),
-            params: vec![("a".to_string(), Kind::Type)],
-            superclasses: vec![("Equatable".to_string(), vec!["a".to_string()])],
-            determines: vec![],
-            resolver: None,
-            resolver_injective: false,
-            method_signatures: vec![],
-        });
-
-        // Showable: base class (instances defined in prelude.llt)
-        class_env.insert(ClassDecl {
-            name: "Showable".to_string(),
-            params: vec![("a".to_string(), Kind::Type)],
-            superclasses: vec![],
-            determines: vec![],
-            resolver: None,
-            resolver_injective: false,
-            method_signatures: vec![],
-        });
-
-        // Mappable: base class (instances defined in prelude.llt)
-        // Kind::Operator for higher-kinded type constructor polymorphism
-        class_env.insert(ClassDecl {
-            name: "Mappable".to_string(),
-            params: vec![("f".to_string(), Kind::Operator)],
-            superclasses: vec![],
-            determines: vec![],
-            resolver: None,
-            resolver_injective: false,
-            method_signatures: vec![],
-        });
-
-        // Appendable: base class (instances defined in prelude.llt)
-        class_env.insert(ClassDecl {
-            name: "Appendable".to_string(),
-            params: vec![("a".to_string(), Kind::Type)],
-            superclasses: vec![],
-            determines: vec![],
-            resolver: None,
-            resolver_injective: false,
-            method_signatures: vec![],
-        });
-
-        // Indexable: 3-parameter type class with functional dependency (container, key) → value
-        // Built-in instances registered below for Map, Seq, and Record
-        class_env.insert(ClassDecl {
-            name: "Indexable".to_string(),
-            params: vec![
-                ("container".to_string(), Kind::Type),
-                ("key".to_string(), Kind::Type),
-                ("value".to_string(), Kind::Type),
-            ],
-            superclasses: vec![],
-            determines: vec![(vec![0, 1], vec![2])], // (container, key) → value
-            resolver: None,
-            resolver_injective: false,
-            method_signatures: vec![],
-        });
-
-        let mut instance_env = InstanceEnv::new();
-
-        // Register built-in Indexable instances for Map, Seq, and Record.
-        // These instances enable FD improvement: given container and key types,
-        // the value type is determined automatically.
-        use crate::type_class::InstanceDecl;
-        use crate::types::Row;
-
-        // Indexable Map[K V] K V
-        // Map[K, V] is App(App(TyCon("Map"), K), V)
-        let map_k_var = Type::TypeVar("K".to_string(), 0);
-        let map_v_var = Type::TypeVar("V".to_string(), 0);
-        let map_ty = Type::App(
-            Box::new(Type::App(
-                Box::new(Type::TyCon("Map".to_string())),
-                Box::new(map_k_var.clone()),
-            )),
-            Box::new(map_v_var.clone()),
-        );
-        let map_instance = InstanceDecl {
-            class_name: "Indexable".to_string(),
-            instance_type: Type::Record(Row {
-                fields: {
-                    let mut fields = indexmap::IndexMap::new();
-                    fields.insert("0".to_string(), map_ty);
-                    fields.insert("1".to_string(), map_k_var.clone());
-                    fields.insert("2".to_string(), map_v_var.clone());
-                    fields
-                },
-                tail: crate::type_def::RowTail::Empty,
-            }),
-            det_positions: vec![0, 1],
-            method_types: HashMap::new(),
-        };
-        instance_env.insert(map_instance).unwrap();
-
-        // Indexable Seq[T] Int T
-        // Seq[T] is App(TyCon("Seq"), T)
-        let seq_t_var = Type::TypeVar("T".to_string(), 0);
-        let seq_ty = Type::App(
-            Box::new(Type::TyCon("Seq".to_string())),
-            Box::new(seq_t_var.clone()),
-        );
-        let seq_instance = InstanceDecl {
-            class_name: "Indexable".to_string(),
-            instance_type: Type::Record(Row {
-                fields: {
-                    let mut fields = indexmap::IndexMap::new();
-                    fields.insert("0".to_string(), seq_ty);
-                    fields.insert("1".to_string(), Type::Int);
-                    fields.insert("2".to_string(), seq_t_var.clone());
-                    fields
-                },
-                tail: crate::type_def::RowTail::Empty,
-            }),
-            det_positions: vec![0, 1],
-            method_types: HashMap::new(),
-        };
-        instance_env.insert(seq_instance).unwrap();
-
-        // Record/Union/Intersection/Top types for Indexable are handled via resolve_has_field
-        // in improve_functional_dependency_inner (type_unify.rs). No instance registration
-        // needed — records are structural, so [HAS-FIELD-*] rules apply directly.
-
+    /// Create a new InferState with the given unified environment.
+    ///
+    /// All class/instance lookups go through `state.env`. The env must already contain
+    /// all classes and instances visible during this type-checking run (seeded from parent
+    /// environments via `Env::with_parent` chains).
+    pub fn with_env(env: Arc<RwLock<crate::env::Env>>) -> Self {
         Self {
             name_counter: 0,
             level: 0,
@@ -544,8 +350,7 @@ impl InferState {
             subst: Substitution::new(),
             constraints: Vec::new(),
             kind_env: HashMap::new(),
-            class_env,
-            instance_env,
+            env,
             failed_bindings: HashMap::new(),
             scheme_map: None,
             current_function: None,
@@ -555,7 +360,6 @@ impl InferState {
             boundary_guards: HashMap::new(),
             fd_depth: 0,
             instance_resolution_depth: 0,
-            in_prelude_load: false,
             do_infer_resolutions: HashMap::new(),
             type_var_source_names: HashMap::new(),
             t013_emitted: std::collections::HashSet::new(),
@@ -571,12 +375,13 @@ impl InferState {
             fd_in_progress: std::collections::HashSet::new(),
             tycon_env: std::collections::HashMap::new(),
             expansion_stack: Vec::new(),
+            annotation_errors: Vec::new(),
         }
     }
 
     /// Add a type class constraint to an explicit constraint accumulator.
     /// Used by the new InferState API (HEAD~1 style) where constraints are passed explicitly.
-    /// Falls back gracefully: if the class is not in `class_env`, just skips the constraint.
+    /// Falls back gracefully: if the class is not in `env`, just skips the constraint.
     pub fn add_constraint_to(
         &mut self,
         constraints: &mut Vec<Constraint>,
@@ -584,7 +389,9 @@ impl InferState {
         var: impl Into<String>,
     ) {
         let class_name = class_name.into();
-        if let Some(class_decl) = self.class_env.get(&class_name) {
+        let env_arc = Arc::clone(&self.env);
+        let env_guard = env_arc.read().unwrap();
+        if let Some(class_decl) = env_guard.get_class(&class_name) {
             constraints.push(Constraint::new(Arc::new(class_decl.clone()), var));
         }
         // Unknown classes are deferred — instance resolution will report an error.
@@ -593,25 +400,32 @@ impl InferState {
     /// Add a type class constraint to the inference state.
     /// The constraint is checked during instantiation.
     ///
-    /// The class_name must be registered in class_env. If not found, this will panic
+    /// The class_name must be registered in env. If not found, this will panic
     /// (the caller is responsible for validating class existence before calling).
     pub fn add_constraint(&mut self, class_name: impl Into<String>, var: impl Into<String>) {
         let class_name = class_name.into();
-        let class_decl = self.class_env.get(&class_name).unwrap_or_else(|| {
+        let env_arc = Arc::clone(&self.env);
+        let env_guard = env_arc.read().unwrap();
+        let class_decl = env_guard.get_class(&class_name).unwrap_or_else(|| {
             panic!(
-                "add_constraint: class '{}' not registered in class_env",
+                "add_constraint: class '{}' not registered in env",
                 class_name
             )
         });
+        drop(env_guard);
         self.constraints
             .push(Constraint::new(Arc::new(class_decl.clone()), var));
     }
 
-    /// Create a fresh type variable at the current level and register it in `state.levels`.
+    /// Create a fresh type variable at the current level and register it in both
+    /// `state.levels` and `state.type_vars`.
     pub fn fresh_type_var(&mut self) -> Type {
         let name = format!("_t{}", self.name_counter);
         self.name_counter = self.name_counter.saturating_add(1);
         self.levels.insert(name.clone(), self.level);
+        self.type_vars
+            .entry(name.clone())
+            .or_insert_with(|| TypeVarEntry::blank(self.level, Kind::Type));
         Type::TypeVar(name, self.level)
     }
 
@@ -625,10 +439,45 @@ impl InferState {
         self.levels.insert(internal_name.clone(), self.level);
         self.type_var_source_names
             .insert(internal_name.clone(), source_name.into());
+        self.type_vars
+            .entry(internal_name.clone())
+            .or_insert_with(|| TypeVarEntry::blank(self.level, Kind::Type));
         Type::TypeVar(internal_name, self.level)
     }
 
     // fresh_row_var_name removed — BAS Step 4: no RowVar tails exist
+
+    /// Build a temporary `ClassEnv` from `self.env` for backward-compatible callers.
+    ///
+    /// This is a bridge for code that still needs a `ClassEnv` reference (e.g., `entails`,
+    /// `satisfies_constraint`). The returned ClassEnv is a snapshot — it does not update
+    /// when `self.env` changes. Use sparingly; prefer direct `self.env.read().get_class()`.
+    pub fn build_class_env_snapshot(&self) -> crate::types::ClassEnv {
+        let mut class_env = crate::types::ClassEnv::new();
+        let env_guard = self.env.read().unwrap();
+        for decl in env_guard.all_classes() {
+            class_env.insert(decl);
+        }
+        class_env
+    }
+
+    /// Build a temporary `InstanceEnv` from `self.env` for backward-compatible callers.
+    ///
+    /// This is a bridge for code that still calls `InstanceEnv::resolve_instance`,
+    /// `lookup_mptc`, or `reverse_lookup_mptc`. The returned InstanceEnv is a snapshot.
+    /// The borrow-checker pattern is:
+    ///   ```
+    ///   let inst_env = state.build_instance_env_snapshot();
+    ///   let result = Box::pin(inst_env.resolve_instance(class_name, ty, state)).await;
+    ///   ```
+    pub fn build_instance_env_snapshot(&self) -> crate::types::InstanceEnv {
+        let mut inst_env = crate::types::InstanceEnv::new();
+        let env_guard = self.env.read().unwrap();
+        for (_mangled, decl) in env_guard.all_instances() {
+            let _ = inst_env.insert(decl);
+        }
+        inst_env
+    }
 
     /// Compact the levels map by removing entries for TypeVars that have been unified.
     /// A TypeVar is considered unified if its name appears in the substitution's type_map.
@@ -668,20 +517,55 @@ impl InferState {
         self.kind_env.insert(name.into(), kind);
     }
 
-    /// Get a reference to the kind environment.
-    /// Compatibility method for code that calls `state.kind_env()` as a method.
-    pub fn kind_env(&self) -> &HashMap<String, Kind> {
-        &self.kind_env
+    /// Get a filtered view of the kind environment that excludes `Kind::Type` entries.
+    ///
+    /// `Kind::Type` is the default kind for regular type variables and is therefore not
+    /// stored explicitly — callers that enumerate the kind environment expect to see only
+    /// *non-default* kinds (`Kind::Operator`, `Kind::Label`, `Kind::Arrow`, …).  Returning
+    /// `Kind::Type` entries would cause `test_kind_env_view` to fail and would confuse
+    /// callers that use the kind environment to identify operator-kinded variables.
+    pub fn kind_env(&self) -> HashMap<String, Kind> {
+        self.kind_env
+            .iter()
+            .filter(|(_, k)| !matches!(k, Kind::Type))
+            .map(|(name, kind)| (name.clone(), kind.clone()))
+            .collect()
     }
 
-    /// Get the Kind for a TypeVar name from kind_env (compatibility with new InferState API).
+    /// Get the Kind for a TypeVar name.
+    ///
+    /// Returns the explicitly-set kind from `kind_env` when present; returns
+    /// `Some(Kind::Type)` as the default when the variable exists in `levels` (i.e.
+    /// has been registered as a TypeVar) but has no explicit kind entry; returns
+    /// `None` only when the variable is completely unknown.
+    ///
+    /// This matches the semantics described in `TypeVarEntry.kind`: every registered
+    /// TypeVar has a kind, and `Kind::Type` is the default for ordinary type variables.
     pub fn get_kind(&self, name: &str) -> Option<Kind> {
-        self.kind_env.get(name).cloned()
+        if let Some(kind) = self.kind_env.get(name) {
+            return Some(kind.clone());
+        }
+        // Default: if the variable is registered (has a level), its kind is Type.
+        if self.levels.contains_key(name) {
+            return Some(Kind::Type);
+        }
+        None
     }
 
-    /// Look up the binding for a TypeVar name (compatibility shim for new InferState API).
+    /// Look up the binding for a TypeVar name from the unified `type_vars` table.
+    ///
+    /// Returns `Some(ty)` if the variable has been bound (via `bind_type_var`), `None` if
+    /// the variable is unbound or not registered.  `type_vars` is the single canonical
+    /// source for this lookup — the separate `subst.type_map` is NOT consulted.  This
+    /// means that `state.type_vars = saved_snapshot` correctly hides bindings added after
+    /// the snapshot was taken (see `test_type_vars_snapshot_restore_pattern`).
+    ///
+    /// All TypeVar creation paths (`fresh_type_var`, `fresh_type_var_with_source`,
+    /// `fresh_type_var_with_origin`, `alloc_type_var_at_level`, `set_level`,
+    /// and `instantiate_scheme`) register the variable in `type_vars`, so every
+    /// TypeVar that can be bound is visible here.
     pub fn lookup_binding(&self, name: &str) -> Option<Type> {
-        self.subst.type_map.borrow().get(name).cloned()
+        self.type_vars.get(name).and_then(|e| e.binding.clone())
     }
 
     /// Apply the substitution to a type using a visited set to prevent infinite recursion.
@@ -697,8 +581,15 @@ impl InferState {
         // cycles. If needed, use apply_type_with_visited from type_unify.rs instead.
     }
 
-    /// Bind a TypeVar to a type (compatibility shim for new InferState API).
+    /// Bind a TypeVar to a type.
+    ///
+    /// Writes the binding to both `type_vars[name].binding` (so that snapshot/restore
+    /// patterns on `type_vars` correctly capture and discard bindings) and to
+    /// `subst.type_map` (for the existing unification and substitution application paths).
     pub fn bind_type_var(&mut self, name: String, ty: Type) {
+        if let Some(entry) = self.type_vars.get_mut(&name) {
+            entry.binding = Some(ty.clone());
+        }
         self.subst.type_map.borrow_mut().insert(name, ty);
     }
 
@@ -721,9 +612,19 @@ impl InferState {
         n
     }
 
-    /// Set the level for a TypeVar name (compatibility with new InferState API).
+    /// Set the level for a TypeVar name and ensure it exists in `type_vars`.
+    ///
+    /// Writes to `levels` (for backward-compatible callers) and also inserts a blank entry
+    /// into `type_vars` if one does not already exist.  This ensures that `type_vars` is
+    /// the canonical unified table: any TypeVar registered via `set_level` can later be
+    /// found and bound via `bind_type_var`, and its binding will be preserved through
+    /// snapshot/restore patterns on `type_vars`.
     pub fn set_level(&mut self, name: impl Into<String>, level: u32) {
-        self.levels.insert(name.into(), level);
+        let name = name.into();
+        self.levels.insert(name.clone(), level);
+        self.type_vars
+            .entry(name)
+            .or_insert_with(|| TypeVarEntry::blank(level, Kind::Type));
     }
 
     /// Get the level of a TypeVar name (compatibility with new InferState API).
@@ -746,6 +647,9 @@ impl InferState {
             self.type_var_source_names
                 .insert(name.clone(), src.to_string());
         }
+        self.type_vars
+            .entry(name.clone())
+            .or_insert_with(|| TypeVarEntry::blank(self.level, Kind::Type));
         Type::TypeVar(name, self.level)
     }
 
@@ -767,6 +671,9 @@ impl InferState {
             self.type_var_source_names
                 .insert(name.clone(), src.to_string());
         }
+        self.type_vars
+            .entry(name.clone())
+            .or_insert_with(|| TypeVarEntry::blank(level, Kind::Type));
         let ty = Type::TypeVar(name.clone(), level);
         (name, ty)
     }

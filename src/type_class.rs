@@ -91,18 +91,10 @@ impl Constraint {
     ///
     /// **WARNING: This method is ONLY safe for classes that have no functional dependencies.**
     ///
-    /// Used in built-in environment construction where the full `ClassDecl` is not yet available.
     /// Because `new_by_name` creates a `ClassDecl` with `determines: vec![]`, using it for
-    /// FD-bearing classes causes functional dependency improvement to silently skip:
-    /// `improve_functional_dependency` finds no FDs in the minimal ClassDecl and cannot resolve
-    /// determined types from determining types.
-    ///
-    /// For classes with functional dependencies, use `state.class_env.get(class_name)` to
+    /// FD-bearing classes causes functional dependency improvement to silently skip.
+    /// For classes with functional dependencies, use `state.env.read().unwrap().get_class(class_name)` to
     /// retrieve the full `ClassDecl`, then construct `Constraint::Class { class, vars, .. }` directly.
-    ///
-    /// **Audit findings (B-315):**
-    /// - `src/builtins_core.rs:1402` — safe (Showable, no FDs)
-    /// - `src/type_env.rs:2067` — safe (Showable, no FDs, test code)
     pub fn new_by_name(name: impl Into<String>, var: impl Into<String>) -> Self {
         let name = name.into();
         let class = Arc::new(ClassDecl {
@@ -167,7 +159,7 @@ pub struct ClassDecl {
     /// Each pair is (Vec<usize>, Vec<usize>) indexing into `params`.
     /// Example: for Add a b c with FD (a,b) → c: determines = vec![(vec![0,1], vec![2])]
     pub(crate) determines: Vec<(Vec<usize>, Vec<usize>)>,
-    /// Type-stage resolver function name (e.g., "AddResult" for Add class).
+    /// Type-stage resolver function name — names a function in the type-stage env.
     /// When Some, the resolver is called at type-check time to compute determined types from determining types.
     pub(crate) resolver: Option<String>,
     /// Whether the resolver is injective (one-to-one mapping).
@@ -242,8 +234,8 @@ pub struct InstanceDecl {
 /// `get()` walks the full parent chain for lookups.
 ///
 /// `parent` uses `Arc` so the parent frame can be shared without cloning when creating children.
-/// `InferState` holds a plain `ClassEnv` (not Arc); on dict entry/exit, `mem::take` and
-/// parent-chain restore are used (see `typecheck_dict.rs`).
+/// `InferState.env` (Arc<RwLock<Env>>) is the canonical store for class declarations;
+/// `ClassEnv` is used as a temporary snapshot via `state.build_class_env_snapshot()`.
 ///
 /// Uses `BTreeMap` for deterministic iteration order across threads. HashMap iteration
 /// order is randomized per-process (via `RandomState` hashing) and differs across threads

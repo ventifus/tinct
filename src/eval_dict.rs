@@ -14,7 +14,7 @@ use indexmap::IndexMap;
 use crate::ast::{Annotation, CoreEntry, CoreExpr, Span, Spanned, SurfaceExpression};
 use crate::error::{EvalError, EvalResult};
 use crate::value::ThunkId;
-use crate::value::{string_val, Environment, HashableValue, Thunk, Value};
+use crate::value::{string_val, HashableValue, Thunk, Value};
 
 use super::{eval_core_expr, materialize, EvalContext};
 
@@ -208,7 +208,7 @@ pub(crate) fn core_expr_is_static_key(k: &CoreExpr) -> bool {
 /// there are no `CoreExpr::TypeDecl` entries in the lowered AST.
 pub(crate) async fn eval_dict_core(
     entries: &[Spanned<CoreEntry>],
-    parent_env: &Arc<RwLock<Environment>>,
+    parent_env: &Arc<RwLock<crate::env::Env>>,
     ctx: &Arc<EvalContext>,
     dict_span: &Span,
 ) -> EvalResult<Arc<Thunk>> {
@@ -222,9 +222,9 @@ pub(crate) async fn eval_dict_core(
     });
 
     let dict_env = if has_non_literal {
-        Some(Arc::new(RwLock::new(Environment::with_parent(Arc::clone(
-            parent_env,
-        )))))
+        Some(Arc::new(RwLock::new(crate::env::Env::with_parent(
+            Arc::clone(parent_env),
+        ))))
     } else {
         None
     };
@@ -358,7 +358,7 @@ pub(crate) async fn eval_dict_core(
                 if let Some(ref env) = dict_env {
                     env.write()
                         .unwrap()
-                        .insert(name.to_string(), Arc::clone(&thunk));
+                        .insert_value(name.to_string(), Arc::clone(&thunk));
                 }
             }
         }
@@ -424,7 +424,7 @@ pub(crate) async fn eval_dict_core(
 /// General path materializes the expression via `eval_core_expr`.
 pub(crate) async fn eval_key_core(
     key_expr: &Arc<Spanned<CoreExpr>>,
-    parent_env: &Arc<RwLock<Environment>>,
+    parent_env: &Arc<RwLock<crate::env::Env>>,
     ctx: &Arc<EvalContext>,
 ) -> EvalResult<HashableValue> {
     // Fast path for static keys — avoids thunk creation and materialization

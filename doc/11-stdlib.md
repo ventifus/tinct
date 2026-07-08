@@ -1437,9 +1437,9 @@ Instances: `FunctorResult`, `FunctorSeq`, `FunctorMaybe`, `ApplicativeResult`, `
 | `Appendable` | — | `append: a → a → a`; `empty: a` | Monoid — concatenation with identity |
 | `Equatable` | — | `eq?: a → a → Bool` | Structural equality |
 | `Comparable` | `Equatable` | `lt?: a → a → Bool` | Ordering |
-| `Showable` | — | `show: a → String` | String representation |
+| `Castable` | — | `cast: source → target` | General cast protocol (two params: target, source) |
 
-Instances: `AppendableStr`, `AppendableSeq`, `AppendableDict`, and instances of `Equatable`, `Comparable`, `Showable` for `Int`, `Float`, `Str`, `Bool`.
+Instances: `AppendableStr`, `AppendableSeq`, `AppendableDict`, and instances of `Equatable`, `Comparable`, `Castable String` for `Int`, `Float`, `Str`, `Bool`, `Bytes`, `Dict`, `Map`.
 
 **Generic functions over any `Monad` + `Traversable`:**
 

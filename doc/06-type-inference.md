@@ -1121,7 +1121,7 @@ TypeScheme {
 **Display format:** Constraints appear before the type body, separated by `=>`:
 
 - `Equatable a => Fn@Bool [a a]` — equality requires Equatable constraint
-- `Numeric a, Showable b => Fn@Str [a b]` — multiple constraints comma-separated
+- `Numeric a, Castable String b => Fn@Str [a b]` — multiple constraints comma-separated
 - `Fn@Int [Int Int]` — monomorphic schemes (no constraints) display as before
 
 ### Primitive Built-in Constraints
@@ -1133,7 +1133,7 @@ Four classes have primitive built-in instances whose dispatch is handled by the 
 | `Equatable` | Int, IntLiteral, Float, Str, StringLiteral, Bool, Number | `=` |
 | `Comparable` | Int, IntLiteral, Float, Str, StringLiteral, Number | `<`, `>`, `<=`, `>=` |
 | `Numeric` | Int, IntLiteral, Float, Number | `+`, `-`, `*`, `/` |
-| `Showable` | all types except Error | `str` |
+| `Castable` | String target: Int, Float, Str, Bool, Bytes, Dict, Map | `cast`, `str` |
 
 **Rationale:** Function, Seq, and Record are excluded from Equatable because structural equality would force lazy thunks, violating lazy evaluation semantics.
 
@@ -1147,17 +1147,17 @@ When a constraint `C(τ)` is checked and τ is a compound BAS type, propagation 
 [CONSTRAIN-FIELD]   C({f: τ}) ⊢ satisfied    iff    C(τ) ⊢ satisfied
 [CONSTRAIN-INTER]   C(τ₁ & τ₂) ⊢ satisfied  iff    C(τ₁) ⊢ satisfied ∧ C(τ₂) ⊢ satisfied
 [CONSTRAIN-UNION]   C(τ₁ | τ₂) ⊢ satisfied  iff    C(τ₁) ⊢ satisfied ∧ C(τ₂) ⊢ satisfied
-[CONSTRAIN-TOP]     Showable(⊤) ⊢ satisfied
+[CONSTRAIN-TOP]     Castable(⊤) ⊢ satisfied
                     C(⊤) ⊢ error   for C ∈ {Equatable, Comparable, Numeric, Mappable, Appendable}
 [CONSTRAIN-UNKNOWN] C(?) ⊢ satisfied             (AGT existential — deferred to runtime ClassEnv)
 [CONSTRAIN-NEVER]   C(⊥) ⊢ satisfied             (⊥ is uninhabited — vacuously true)
 ```
 
-**[CONSTRAIN-FIELD]** applies only to built-in classes with compositional/structural semantics (`Equatable`, `Comparable`, `Showable`, `Numeric`, `Mappable`, `Appendable`). User-defined classes do not automatically propagate over record fields unless declared with the appropriate instance.
+**[CONSTRAIN-FIELD]** applies only to built-in classes with compositional/structural semantics (`Equatable`, `Comparable`, `Castable`, `Numeric`, `Mappable`, `Appendable`). User-defined classes do not automatically propagate over record fields unless declared with the appropriate instance.
 
 **[CONSTRAIN-UNION]** direction is `∧` (ALL members) — a union-typed value could be either alternative at runtime, so both branches must satisfy the constraint. Implementors: use `all()`, not `any()`.
 
-**[CONSTRAIN-TOP]** distinction: `⊤` concretizes only to itself (`γ(⊤) = {⊤}`), so `Equatable(⊤)` requires Top to be a literal Equatable instance — it is not. `Showable` is the sole exception because `str` is defined as a total function by policy. `?` concretizes to all static types (`γ(?) = STypes`), so `Equatable(?)` is existentially satisfied and deferred to runtime ClassEnv dispatch.
+**[CONSTRAIN-TOP]** distinction: `⊤` concretizes only to itself (`γ(⊤) = {⊤}`), so `Equatable(⊤)` requires Top to be a literal Equatable instance — it is not. `Castable` is the sole exception because `str`/`cast` is defined as a total function by policy. `?` concretizes to all static types (`γ(?) = STypes`), so `Equatable(?)` is existentially satisfied and deferred to runtime ClassEnv dispatch.
 
 **Normalization ordering:** BAS normalization must complete before constraint propagation fires. `satisfies_constraint` is called on already-normalized types.
 
@@ -1169,7 +1169,8 @@ When a constraint `C(τ)` is checked and τ is a compound BAS type, propagation 
    =  : Equatable a => a → a → Bool
    <  : Comparable a => a → a → Bool
    +  : Numeric a => a → a → a
-   str: Showable a => a → Str
+   str:  Castable String a => a → Str
+   cast: Castable target a => a → target
    ```
 
 2. **Instantiation** (`instantiate_scheme`): When a constrained scheme is instantiated, constraints are copied with renamed variables:
@@ -1199,7 +1200,7 @@ When a constraint `C(τ)` is checked and τ is a compound BAS type, propagation 
 4. **Generalization** (`generalize`): Constraints on generalized variables are included in the resulting TypeScheme:
 
    ```text
-   state.constraints: [Numeric _t0, Showable _t1]
+   state.constraints: [Numeric _t0, Castable String _t1]
    generalizable vars: {_t0, _t2}
    → scheme.constraints: [Numeric a]    (only _t0 was generalized)
    ```
@@ -1427,7 +1428,7 @@ The stdlib defines the following typeclass hierarchy:
 | `Appendable` | `*` | — | `append : a → a → a`, `empty : a` |
 | `Equatable` | `*` | — | `= : a → a → Bool`, `not= : a → a → Bool` |
 | `Comparable` | `*` | Equatable | `< : a → a → Bool`, etc. |
-| `Showable` | `*` | — | `show : a → Str` |
+| `Castable` | `* → *` | — | `cast : source → target` (two params: target, source) |
 
 **†`Mappable` kind:** `Mappable` is registered with `Kind::Operator` (type constructor kind `* → *`). User-defined types can declare themselves `Mappable`.
 

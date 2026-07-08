@@ -258,13 +258,13 @@ error: unmatched closing bracket
 **Intersection — `each` type-stage combinator:**
 
 ```tinct
-x@[each Comparable Showable]       # Comparable ∩ Showable
-constraint: [a: [each Comparable Showable]]
+x@[each Comparable Printable]       # Comparable ∩ Printable
+constraint: [a: [each Comparable Printable]]
 === error
 error: `:` can only appear in dict, call, class, instance, or match forms
  --> block 9:2:11
   |
-  2 | constraint: [a: [each Comparable Showable]]
+  2 | constraint: [a: [each Comparable Printable]]
     |           ^
 ```
 
@@ -275,7 +275,7 @@ error: `:` can only appear in dict, call, class, instance, or match forms
 The `all` and `without` type-stage functions are also available in the double-bracket annotation form for inline BAS types:
 
 ```tinct
-x@[[all Comparable Showable]]    # intersection: Comparable ∩ Showable
+x@[[all Comparable Printable]]    # intersection: Comparable ∩ Printable
 x@[[without String]]             # negation: ~String (any type except String)
 ```
 
@@ -422,13 +422,13 @@ error: `:` can only appear in dict, call, class, instance, or match forms
 
 ```tinct
 # a declared in bind:, referenced everywhere
-transform: [fn@[bind: [a b]  return: [Seq b]  constraint: [a: Showable]]
+transform: [fn@[bind: [a b]  return: [Seq b]  constraint: [a: Printable]]
              [xs@[Seq a]  f@[Fn@b [a]]] ...]
 === error
 error: `:` can only appear in dict, call, class, instance, or match forms
  --> block 17:2:10
   |
-  2 | transform: [fn@[bind: [a b]  return: [Seq b]  constraint: [a: Showable]]
+  2 | transform: [fn@[bind: [a b]  return: [Seq b]  constraint: [a: Printable]]
     |          ^
 ```
 
@@ -456,10 +456,10 @@ But when TypeVars appear only in MPTC positional entries (like `c` in `[$Addable
 constraint: [a: Comparable]
 
 # Multiple TypeVars
-constraint: [a: Comparable  b: Showable]
+constraint: [a: Comparable  b: Printable]
 
 # Multiple constraints on one TypeVar — each combinator
-constraint: [a: [each Comparable Showable]]
+constraint: [a: [each Comparable Printable]]
 === error
 error: `:` can only appear in dict, call, class, instance, or match forms
  --> block 19:2:11
@@ -468,7 +468,7 @@ error: `:` can only appear in dict, call, class, instance, or match forms
     |           ^
 ```
 
-**Routing:** constraint values are type-stage expressions. `Comparable` resolves to `TypeNode.TypeConstructor { name: "Comparable" }` → `Constraint::Class("Comparable", α)`. `[each Comparable Showable]` resolves to `TypeNode.Intersect { types: [...] }` → two separate `Constraint::Class` entries.
+**Routing:** constraint values are type-stage expressions. `Comparable` resolves to `TypeNode.TypeConstructor { name: "Comparable" }` → `Constraint::Class("Comparable", α)`. `[each Comparable Printable]` resolves to `TypeNode.Intersect { types: [...] }` → two separate `Constraint::Class` entries.
 
 **Interaction with inference.** Explicit constraints compose with inferred constraints. If `constraint: [a: Comparable]` is declared and the body also uses `a` in an `Equatable` context, both register; constraint simplification removes `Equatable a` since `Comparable` entails it via the superclass relation.
 
@@ -486,13 +486,13 @@ min: [fn@[bind: [a]  return: a  constraint: [a: Comparable]  doc: "Return smalle
       [xs@[Seq a]] ...]
 # Inferred: Comparable a => Fn@a [[Seq a]]
 
-compare: [fn@[bind: [a b]  return: Bool  constraint: [a: Comparable  b: Showable]]
+compare: [fn@[bind: [a b]  return: Bool  constraint: [a: Comparable  b: Printable]]
           [x@a  y@a  logger@b] ...]
-# Inferred: (Comparable a, Showable b) => Fn@Bool [a a b]
+# Inferred: (Comparable a, Printable b) => Fn@Bool [a a b]
 
-display-sorted: [fn@[bind: [a]  return: String  constraint: [a: [each Comparable Showable]]]
+display-sorted: [fn@[bind: [a]  return: String  constraint: [a: [each Comparable Printable]]]
                  [xs@[Seq a]] ...]
-# Inferred: (Comparable a, Showable a) => Fn@String [[Seq a]]
+# Inferred: (Comparable a, Printable a) => Fn@String [[Seq a]]
 
 check-all: [fn@[bind: [a]  return: Bool  constraint: [a: Equatable]]
             [xs@[Seq a]  target@a] ...]

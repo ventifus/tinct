@@ -2,11 +2,11 @@
 #![allow(dead_code)]
 
 use std::collections::{HashMap, HashSet};
-use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use super::{check_surface_expr, contains_unknown_or_top, infer_surface_expr, TypeMap};
 use crate::ast::{Annotation, Span, Spanned, SurfaceEntry, SurfaceExpression, SurfaceNode};
+use crate::env::Env;
 use crate::rust_span;
 use crate::type_class::ConstraintArg;
 use crate::type_def::TyConDef;
@@ -236,11 +236,12 @@ fn walk_polarity(
 
 pub(crate) async fn expand_type_alias(
     inner: &Arc<SurfaceNode>,
-    env: &Rc<TypeEnv>,
+    env: &Arc<RwLock<Env>>,
     state: &mut InferState,
 ) -> Result<Type, TypeError> {
-    // Use a fresh per-alias mapping so annotation names within one type alias expression
-    // (e.g., `a` in `[Fn@a [a]]`) consistently map to the same fresh TypeVar.
+    let _env_guard = env; // env is kept for future use; internal functions use TypeEnv::new()
+                          // Use a fresh per-alias mapping so annotation names within one type alias expression
+                          // (e.g., `a` in `[Fn@a [a]]`) consistently map to the same fresh TypeVar.
     let mut alias_ann_map: HashMap<String, String> = HashMap::new();
     // The `let _ = resolve_type_expr(...)` discards the resolved type intentionally — the call
     // is for validation side-effects (error propagation) only. Standalone type alias expressions
@@ -265,9 +266,10 @@ pub(crate) async fn expand_type_alias(
     // All other side effects of resolve_type_expr (error propagation, alias registration) flow
     // through the return value or through state.type_vars directly, not through the constraints Vec.
     let mut _unused_type_alias_constraints: Vec<Constraint> = Vec::new();
+    let stub_type_env = TypeEnv::new();
     let _ = resolve_type_expr(
         inner,
-        env,
+        &stub_type_env,
         state,
         &mut _unused_type_alias_constraints,
         &mut Some(&mut alias_ann_map),
@@ -281,7 +283,7 @@ pub(crate) async fn expand_type_alias(
 pub(crate) async fn resolve_type_assert(
     annotation: &Spanned<Annotation>,
     inner: &Arc<SurfaceNode>,
-    env: &Rc<TypeEnv>,
+    env: &Arc<RwLock<Env>>,
     _span: Span,
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
@@ -294,9 +296,10 @@ pub(crate) async fn resolve_type_assert(
     let mut ann_mapping_opt = ann_mapping.as_mut();
     let mut row_ann_mapping_opt: Option<&mut HashMap<String, String>> = None;
 
+    let stub_type_env = TypeEnv::new();
     let expected = resolve_annotation(
         &annotation.node,
-        env,
+        &stub_type_env,
         annotation.span.clone(),
         state,
         constraints,
@@ -405,7 +408,7 @@ pub(crate) async fn resolve_type_assert(
 pub(crate) async fn resolve_annotated(
     name: &str,
     annotation: &Spanned<Annotation>,
-    env: &Rc<TypeEnv>,
+    _env: &Arc<RwLock<Env>>,
     span: Span,
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
@@ -413,10 +416,11 @@ pub(crate) async fn resolve_annotated(
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
     type_params_scope: Option<(&HashMap<String, crate::types::Type>, bool)>,
 ) -> Result<Type, TypeError> {
+    let stub_type_env = TypeEnv::new();
     if name == "Fn" {
         resolve_fn_type(
             &annotation.node,
-            env,
+            &stub_type_env,
             annotation.span.clone(),
             state,
             constraints,
@@ -437,7 +441,7 @@ pub(crate) async fn resolve_annotated(
         // Resolve the inner annotation as a type and wrap in Handle.
         let cap_type = resolve_annotation(
             &annotation.node,
-            env,
+            &stub_type_env,
             span,
             state,
             constraints,
@@ -450,7 +454,7 @@ pub(crate) async fn resolve_annotated(
     } else {
         resolve_annotation(
             &annotation.node,
-            env,
+            &stub_type_env,
             span,
             state,
             constraints,
@@ -769,7 +773,7 @@ pub(crate) async fn resolve_fn_metadata(
         if let Some(key_expr) = &entry.node.key {
             if let SurfaceExpression::Str(key_name) = &key_expr.expr {
                 if key_name == "constraint" {
-                    // constraint: [a: Comparable] or [a: [each Comparable Showable]]
+                    // constraint: [a: Comparable] or [a: [each Comparable Printable]]
                     match &entry.node.value.expr {
                         SurfaceExpression::Dict(constraint_entries) => {
                             for c_entry in constraint_entries {
@@ -822,9 +826,9 @@ pub(crate) async fn resolve_fn_metadata(
                                 };
 
                                 // Parse the class name(s) — can be a single name, [each ...], or [...]
-                                // The parser represents `[each Comparable Showable]` as
+                                // The parser represents `[each Comparable Printable]` as
                                 // SurfaceExpression::Call { func: VarRef("each"),
-                                // args: [VarRef("Comparable"), VarRef("Showable")] }.
+                                // args: [VarRef("Comparable"), VarRef("Printable")] }.
                                 // We accept both Dict form (legacy) and Call form (natural parse).
                                 match &c_entry.node.value.expr {
                                     SurfaceExpression::VarRef { name, .. } => {
@@ -846,10 +850,10 @@ pub(crate) async fn resolve_fn_metadata(
                                                 &class_list[0].node.value.expr
                                             {
                                                 if name == "each" {
-                                                    // [a: [each Comparable Showable]] — skip 'each'
+                                                    // [a: [each Comparable Printable]] — skip 'each'
                                                     &class_list[1..]
                                                 } else {
-                                                    // [a: [Comparable Showable]] — no 'each', error
+                                                    // [a: [Comparable Printable]] — no 'each', error
                                                     return Err(TypeErrorTyped::Generic(GenericTypeError {
                                                         message: "constraint class list must start with 'each' keyword: use [each ClassName ...]".to_string(),
                                                         span: class_list[0].span.clone(),
@@ -904,8 +908,8 @@ pub(crate) async fn resolve_fn_metadata(
                                             }
                                         }
                                     }
-                                    // Call form: `[each Comparable Showable]` →
-                                    // Call(VarRef("each"), [VarRef("Comparable"), VarRef("Showable")]).
+                                    // Call form: `[each Comparable Printable]` →
+                                    // Call(VarRef("each"), [VarRef("Comparable"), VarRef("Printable")]).
                                     // The parser produces Call for bracket forms with bare names.
                                     // If func is "each" (the multi-class keyword), args are the classes.
                                     // If func is a class name with no args, treat as single class.
@@ -1017,9 +1021,10 @@ pub(crate) async fn resolve_fn_metadata(
                                         // Escaped reference like $Add — this is the class name
                                         let class_name = name;
 
-                                        // Validate the class exists in ClassEnv and get the ClassDecl
-                                        let class_decl =
-                                            state.class_env.get(class_name).ok_or_else(|| {
+                                        // Validate the class exists in env and get the ClassDecl
+                                        let class_decl = {
+                                            let env_guard = state.env.read().unwrap();
+                                            env_guard.get_class(class_name).ok_or_else(|| {
                                                 TypeErrorTyped::Generic(GenericTypeError {
                                                     message: format!(
                                                         "unknown class '{}' in MPTC constraint",
@@ -1029,7 +1034,8 @@ pub(crate) async fn resolve_fn_metadata(
                                                     notes: vec![],
                                                     call_stack: vec![],
                                                 })
-                                            })?;
+                                            })?
+                                        };
 
                                         // Collect TypeVar names from subsequent positional entries
                                         let mut typevar_names = Vec::new();
@@ -1350,6 +1356,7 @@ async fn resolve_annotation_as_type(
                 &row_ref,
                 type_params_scope,
             )
+            .await
         }
         Annotation::PropertyDict(surface_entries) => {
             // In a type-expression context, a PropertyDict is always a structural type:
@@ -1410,6 +1417,7 @@ pub(crate) async fn resolve_annotation(
                 &row_ref,
                 type_params_scope,
             )
+            .await
         }
         Annotation::Annotated(name, inner) => {
             // Parameterized type annotations: Seq@Int, Map@[String: Int], Record@[field: Type]
@@ -1511,31 +1519,6 @@ pub(crate) async fn resolve_annotation(
                             .await?;
                             Ok(Type::map(state.fresh_type_var(), value_type))
                         }
-                    }
-                }
-                "Record" => {
-                    // @Record@[field: Type ...]
-                    match inner.as_ref() {
-                        Annotation::PropertyDict(surface_entries) => {
-                            // @Record@[field: Type ...] → structural record type.
-                            // Delegate to resolve_type_dict which handles record fields,
-                            // row variables (...r), and type constructor applications.
-                            Box::pin(resolve_type_dict(
-                                surface_entries,
-                                env,
-                                span,
-                                state,
-                                constraints,
-                                ann_mapping,
-                                row_ann_mapping,
-                                type_params_scope,
-                            ))
-                            .await
-                        }
-                        _ => Err(TypeError::new(
-                            "Record parameterization requires a dict: @Record@[field: Type ...]",
-                            span,
-                        )),
                     }
                 }
                 "Handle" => {
@@ -1895,10 +1878,11 @@ async fn instantiate_tycon_def(
             // Only Var positions have a param name to look up; Ground positions are already resolved.
             if let Some(crate::type_class::ConstraintArg::Var(param_name)) = vars.first() {
                 if let Some(arg_type) = type_subst.get(param_name) {
-                    // Clone instance_env to avoid borrow conflict: resolve_instance takes &self
-                    // on instance_env AND &mut state simultaneously, which Rust's borrow checker
-                    // rejects when both are fields of InferState.
-                    let instance_env = state.instance_env.clone();
+                    // Build a temporary InstanceEnv snapshot from state.env to avoid borrow
+                    // conflict: resolve_instance takes &self on InstanceEnv AND &mut state
+                    // simultaneously, which Rust's borrow checker would reject if both were
+                    // fields of InferState. The snapshot is built once per constraint check.
+                    let instance_env = state.build_instance_env_snapshot();
                     let error_span = origin_span.clone().unwrap_or_else(|| rust_span!());
                     match Box::pin(instance_env.resolve_instance(&class.name, arg_type, state))
                         .await
@@ -2063,7 +2047,7 @@ fn apply_type_alias_substitution(
 
 /// Resolve a type name with recursion guard (used during alias registration).
 #[allow(clippy::too_many_arguments)] // Internal helper for type alias expansion
-pub(crate) fn resolve_type_name_with_guard(
+pub(crate) async fn resolve_type_name_with_guard(
     name: &str,
     env: &TypeEnv,
     span: Span,
@@ -2075,24 +2059,9 @@ pub(crate) fn resolve_type_name_with_guard(
     depth: usize,
     type_params_scope: Option<(&HashMap<String, crate::types::Type>, bool)>,
 ) -> Result<Type, TypeError> {
-    // Handle builtin types and lowercase type variables using normal resolution
-    if !name.starts_with(|c: char| c.is_uppercase())
-        || matches!(
-            name,
-            "Int"
-                | "Float"
-                | "String"
-                | "Any"
-                | "Handle"
-                | "Null"
-                | "Dict"
-                | "Map"
-                | "Record"
-                | "Fn"
-                | "Never"
-                | "Unknown"
-        )
-    {
+    // Route lowercase names and all primitive/structural type names through resolve_type_name,
+    // which now uses the type-stage env as the canonical source.
+    if !name.starts_with(|c: char| c.is_uppercase()) {
         let row_ref: Option<&HashMap<String, String>> = row_ann_mapping.as_ref().map(|m| &**m);
         let mut _discard = Vec::new();
         return resolve_type_name(
@@ -2104,7 +2073,8 @@ pub(crate) fn resolve_type_name_with_guard(
             ann_mapping,
             &row_ref,
             type_params_scope,
-        );
+        )
+        .await;
     }
 
     // Uppercase type name — check for type alias
@@ -2150,7 +2120,10 @@ pub(crate) fn resolve_type_name_with_guard(
         recursion_guard.remove(name);
 
         result
-    } else if let Some(class_decl) = state.class_env.get(name).cloned() {
+    } else if let Some(class_decl) = {
+        let env_guard = state.env.read().unwrap();
+        env_guard.get_class(name)
+    } {
         // T-1197: Class name used in annotation position in a recursive/guarded context.
         // Mirrors the same logic in resolve_type_name so both lookup paths handle class
         // names consistently. See resolve_type_name for the full rationale.
@@ -2180,7 +2153,7 @@ pub(crate) fn resolve_type_name_with_guard(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn resolve_type_name(
+pub(crate) async fn resolve_type_name(
     name: &str,
     env: &TypeEnv,
     span: Span,
@@ -2191,82 +2164,19 @@ pub(crate) fn resolve_type_name(
     type_params_scope: Option<(&HashMap<String, crate::types::Type>, bool)>,
 ) -> Result<Type, TypeError> {
     match name {
-        "Int" => Ok(Type::Int),
-        "Float" => Ok(Type::Float),
-        "String" => Ok(Type::Str),
-        "Bytes" => Ok(Type::Bytes),
-        "Any" => Ok(Type::Any),
-        "Proxy" => Ok(Type::Proxy),
-        // BAS type names
-        "Never" => Ok(Type::Never),
-        "Unknown" => Ok(Type::Unknown),
-        "Operator" => Err(TypeError::new(
+        // Kind constraints — not types, require special handling before the type-stage path.
+        "Operator" => return Err(TypeError::new(
             "Operator is a kind, not a type — annotate a class type parameter as `f@Operator`, not a value expression",
             span,
         )),
         "Label" => {
-            // Anonymous Label-kinded TypeVar (parallel to `@Operator` error above).
-            // Create a fresh system-generated name like `_label_0`.
-            // This is for when the label TypeVar is not referenced elsewhere (e.g., `get`/`get-or`).
+            // Anonymous Label-kinded TypeVar. Not a type — creates a fresh label-kinded TypeVar.
             let level = state.level;
             let n = state.alloc_counter("", "label");
             let fresh = format!("_label_{}", n);
             state.set_level(fresh.clone(), level);
             state.set_kind(fresh.clone(), crate::types::Kind::Label);
-            Ok(Type::TypeVar(fresh, level))
-        }
-        // Bare @Handle — no capability row argument. Resolves to Handle(Unknown),
-        // which is the gradual "any handle" type. This is correct for unannotated
-        // handle parameters where the caller doesn't know (or care about) the
-        // capability row. Parameterized forms (`h@Handle@DirCap`, `[Handle DirCap]`,
-        // `@Handle@DirCap`) resolve through resolve_annotated/resolve_annotation/
-        // resolve_type_dict respectively and never reach this bare-name path.
-        "Handle" => Ok(Type::handle(Type::Unknown)),
-        "Null" => Ok(Type::Record(Row {
-            fields: indexmap::IndexMap::new(),
-            tail: crate::type_def::RowTail::Empty,
-        })),
-        "Dict" => {
-            // Empty record — represents "any dict" under BAS width subtyping.
-            // Any concrete record is a subtype because all required fields (none) are present.
-            Ok(Type::Record(Row {
-                fields: indexmap::IndexMap::new(),
-                tail: crate::type_def::RowTail::Empty,
-            }))
-        }
-        "Map" => {
-            // Bare @Map → Map[Unknown: Unknown]
-            Ok(Type::map(Type::Unknown, Type::Unknown))
-        }
-        "Record" => {
-            // Bare @Record → open record (empty fields)
-            Ok(Type::Record(Row {
-                fields: indexmap::IndexMap::new(),
-                tail: crate::type_def::RowTail::Empty,
-            }))
-        }
-        "Fn" => {
-            // `@Fn` means "any callable".  Encode as a variadic function with zero
-            // required parameters and Top return type — the top of the function
-            // lattice.  A variadic function with 0 required params accepts calls of
-            // any arity, so unification with a concrete function type (e.g.
-            // `Fn(Int, Str) -> Bool`) succeeds: the concrete type satisfies the
-            // "at least 0 params" contract.  Top as the return type is consistent
-            // with any concrete return type via subtyping.
-            //
-            // There are currently 31 `@Fn` annotation sites in stdlib/prelude.llt.
-            // These all annotate parameters that are genuinely function-valued but
-            // whose precise signature is not statically known at the annotation site
-            // (e.g. `pred@Fn`, `f@Fn`, `cmp@Fn`).  Using a precise `Function` type
-            // here (rather than `Type::Unknown`) preserves callability enforcement:
-            // a TypeAssert `[@Fn 42]` will correctly fail because `Int` is not a
-            // subtype of `Function{...}`.
-            Ok(Type::Function {
-                params: vec![],
-                ret: Box::new(Type::Any),
-                variadic: true,
-                required_count: 0,
-            })
+            return Ok(Type::TypeVar(fresh, level));
         }
         _ => {
             if name.starts_with(|c: char| c.is_lowercase()) {
@@ -2384,7 +2294,10 @@ pub(crate) fn resolve_type_name(
                     // Non-nominal zero-parameter alias: return the body directly.
                     // Recursive expansion happens during alias registration via resolve_type_name_with_guard.
                     Ok(alias.body.clone())
-                } else if let Some(class_decl) = state.class_env.get(name).cloned() {
+                } else if let Some(class_decl) = {
+                    let env_guard = state.env.read().unwrap();
+                    env_guard.get_class(name)
+                } {
                     // T-1197: Class name used in annotation position: @Comparable, @Equatable, etc.
                     //
                     // When a name in annotation position resolves to a ClassDecl (not a type alias),
@@ -2413,6 +2326,56 @@ pub(crate) fn resolve_type_name(
                     });
                     Ok(fresh_ty)
                 } else {
+                    // @Foo is identical to @[type: Foo] — look up Foo in the type-stage env.
+                    // This is the canonical path for all type names defined in prelude's
+                    // --- stage: type section (Int, Float, Null, Dict, Fn, Handle, etc.).
+                    let ts_env = match state.type_stage_env.clone() {
+                        Some(e) => e,
+                        None => match crate::imports::get_prelude_type_stage_env().await {
+                            Some(e) => e,
+                            None => return Err(TypeError::new(
+                                format!("undefined type: {} (type-stage env unavailable)", name),
+                                span,
+                            )),
+                        },
+                    };
+                    // Find the thunk for this name by iterating the type-stage env slots.
+                    let thunk_opt: Option<Arc<crate::value::Thunk>> = {
+                        let env_guard = ts_env.read().unwrap();
+                        let found = env_guard.iter_slots()
+                            .find(|(slot_name, _)| *slot_name == name)
+                            .and_then(|(_, slot)| slot.value.as_ref().map(Arc::clone));
+                        found
+                    };
+                    if let Some(thunk) = thunk_opt {
+                        // Build an EvalContext the same way eval_type_stage_expr does,
+                        // so typenode_value_to_type can materialize nested payload thunks.
+                        #[allow(clippy::disallowed_methods)]
+                        if let Ok(base_dir) = cap_std::fs::Dir::open_ambient_dir(
+                            ".", cap_std::ambient_authority()
+                        ) {
+                            let eval_env = if let Some(ref main_env) = state.main_env {
+                                let mut combined = crate::env::Env::with_parent(Arc::clone(main_env));
+                                {
+                                    let ts = ts_env.read().unwrap();
+                                    for (slot_name, slot) in ts.iter_slots() {
+                                        if let Some(ref t) = slot.value {
+                                            combined.insert_value(slot_name.to_string(), Arc::clone(t));
+                                        }
+                                    }
+                                }
+                                Arc::new(std::sync::RwLock::new(combined))
+                            } else {
+                                Arc::clone(&ts_env)
+                            };
+                            let ctx = crate::eval::EvalContext::new_empty(base_dir, eval_env, false);
+                            if let Ok(val) = crate::eval::materialize(&thunk, None, &ctx).await {
+                                if let Some(ty) = typenode_value_to_type(&val, &ctx).await {
+                                    return Ok(ty);
+                                }
+                            }
+                        }
+                    }
                     Err(TypeError::new(format!("undefined type: {}", name), span))
                 }
             }
@@ -2620,18 +2583,21 @@ pub(crate) async fn resolve_type_expr_with_guard(
 
     match &node.expr {
         SurfaceExpression::Str(s) => Ok(Type::StringLiteral(s.clone())),
-        SurfaceExpression::VarRef { name, .. } => resolve_type_name_with_guard(
-            name,
-            env,
-            node.span.clone(),
-            state,
-            ann_mapping,
-            row_ann_mapping,
-            recursion_guard,
-            current_alias,
-            depth,
-            type_params_scope,
-        ),
+        SurfaceExpression::VarRef { name, .. } => {
+            resolve_type_name_with_guard(
+                name,
+                env,
+                node.span.clone(),
+                state,
+                ann_mapping,
+                row_ann_mapping,
+                recursion_guard,
+                current_alias,
+                depth,
+                type_params_scope,
+            )
+            .await
+        }
         SurfaceExpression::Dict(entries) => {
             Box::pin(resolve_type_dict_with_guard(
                 entries,
@@ -2969,7 +2935,9 @@ pub(crate) async fn resolve_type_expr(
                 ann_mapping,
                 &row_ref,
                 type_params_scope,
-            ) {
+            )
+            .await
+            {
                 Ok(ty) => Ok(ty),
                 Err(e) if crate::eval::is_constructor_name(name) => {
                     // Unknown uppercase name: treat as a zero-payload nominal variant constructor.
@@ -3475,7 +3443,8 @@ pub(crate) async fn resolve_type_expr(
                         ann_mapping,
                         &row_ann_mapping.as_ref().map(|m| &**m),
                         type_params_scope,
-                    )?;
+                    )
+                    .await?;
                     let mut members = vec![head_ty];
                     for arg in args.iter() {
                         let member_ty = Box::pin(resolve_type_expr(
@@ -3838,22 +3807,28 @@ pub(crate) async fn resolve_type_dict(
                     let is_builtin_type = _tycon_env_ref2
                         .get(&tag)
                         .is_some_and(|def| def.builtin_type.is_some());
-                    if is_builtin_type && entries.len() == 1 && first.node.key.is_none() {
-                        // Single positional entry that is a builtin type name: [Int] → Type::Int.
-                        // This handles annotations like @[Int] which should resolve to Int,
-                        // not to NominalVariant { tag: "Int" }.
+                    if entries.len() == 1 && first.node.key.is_none() {
+                        // Single positional entry: try resolve_type_name first.
+                        // This handles builtin type names (Int, Float, String, etc.) and
+                        // user-defined type aliases regardless of tycon_env population.
+                        // Only fall through to NominalVariant if resolve_type_name fails.
                         let row_ref: Option<&HashMap<String, String>> =
                             row_ann_mapping.as_ref().map(|m| &**m);
-                        return resolve_type_name(
+                        if let Ok(ty) = resolve_type_name(
                             &tag,
                             env,
-                            span,
+                            span.clone(),
                             state,
                             constraints,
                             ann_mapping,
                             &row_ref,
                             type_params_scope,
-                        );
+                        )
+                        .await
+                        {
+                            return Ok(ty);
+                        }
+                        // resolve_type_name failed — fall through to NominalVariant check below.
                     }
                     if crate::eval::is_constructor_name(&tag) && !is_builtin_type {
                         // Case 1: Pure positional — [Constructor] or [Constructor PayloadType]
@@ -4390,6 +4365,15 @@ fn typenode_value_to_type<'a>(
                         fields: indexmap::IndexMap::new(),
                         tail: crate::type_def::RowTail::Empty,
                     })),
+                    "TypeNode.Bytes" => Some(Type::Bytes),
+                    "TypeNode.Proxy" => Some(Type::Proxy),
+                    // Any callable — variadic function with zero required params.
+                    "TypeNode.AnyFn" => Some(Type::Function {
+                        params: vec![],
+                        ret: Box::new(Type::Any),
+                        variadic: true,
+                        required_count: 0,
+                    }),
 
                     // ── Union ─────────────────────────────────────────────────────────────
                     // TypeNode.Union { types: [Seq TypeNode] } → Type::normalize_union(members)
@@ -4816,15 +4800,17 @@ pub(crate) async fn eval_type_stage_expr(
     // defined in the main env but not in the type-stage env. This is the cross-stage bridge:
     // type-stage expressions in annotations can reference types from the main environment
     // without moving `[type ...]` declarations into the type-stage.
-    let eval_env: Arc<std::sync::RwLock<crate::value::Environment>> =
+    let eval_env: Arc<std::sync::RwLock<crate::env::Env>> =
         if let Some(ref main_env) = state.main_env {
             // Create a new env frame that has type-stage bindings as its own slots
             // and the main env as its parent chain. Type-stage names shadow main env names.
-            let mut combined = crate::value::Environment::with_parent(Arc::clone(main_env));
+            let mut combined = crate::env::Env::with_parent(Arc::clone(main_env));
             {
                 let ts = type_stage_env.read().unwrap();
-                for (name, thunk) in ts.iter_slots() {
-                    combined.insert(name.to_string(), Arc::clone(thunk));
+                for (name, slot) in ts.iter_slots() {
+                    if let Some(ref thunk) = slot.value {
+                        combined.insert_value(name.to_string(), Arc::clone(thunk));
+                    }
                 }
             }
             Arc::new(std::sync::RwLock::new(combined))
@@ -4875,7 +4861,7 @@ pub(crate) async fn eval_type_stage_expr(
                 tag: "TypeNode.TypeVar".to_string(),
                 payload: Some(payload_tid),
             };
-            env_guard.insert(
+            env_guard.insert_value(
                 source_name.clone(),
                 Arc::new(Thunk::new_materialized(typevar_val, node_span.clone())),
             );
@@ -4927,13 +4913,15 @@ pub(crate) async fn eval_type_stage_expr(
         // to find "TypeNode" without calling get_by_name.
         let typenode_thunk = {
             let mut found: Option<Arc<Thunk>> = None;
-            let mut cur: Option<Arc<std::sync::RwLock<crate::value::Environment>>> =
+            let mut cur: Option<Arc<std::sync::RwLock<crate::env::Env>>> =
                 Some(Arc::clone(&type_stage_env));
             while let Some(frame) = cur {
                 let frame_ref = frame.read().ok()?;
-                if let Some(idx) = frame_ref.slot_names.iter().rposition(|n| n == "TypeNode") {
-                    found = Some(Arc::clone(&frame_ref.slots[idx]));
-                    break;
+                if let Some(slot) = frame_ref.slots.get("TypeNode") {
+                    if let Some(ref thunk) = slot.value {
+                        found = Some(Arc::clone(thunk));
+                        break;
+                    }
                 }
                 cur = frame_ref.parent.as_ref().map(Arc::clone);
             }
@@ -5195,7 +5183,14 @@ pub(crate) fn expand_named(
     state: &mut InferState,
 ) -> Option<Type> {
     // Step 1: look up the TyConDef.
-    let def_arc = env.lookup_tycon_def(name)?;
+    // Primary lookup: state.tycon_env is the canonical store (populated by infer_dict Pass 2
+    // and builtins registration). TypeEnv::lookup_tycon_def is a no-op stub; state.tycon_env
+    // is the real store for all registered type constructors.
+    let def_arc = state
+        .tycon_env
+        .get(name)
+        .cloned()
+        .or_else(|| env.lookup_tycon_def(name))?;
     let def = Arc::clone(&def_arc);
 
     // Arity check: number of args must match declared params.

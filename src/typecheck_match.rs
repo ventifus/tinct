@@ -8,12 +8,12 @@
 //!   checking (both unification and checking modes)
 
 use std::collections::HashMap;
-use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use super::{check_surface_expr, infer_surface_expr, TypeMap};
 use crate::ast::{Annotation, Param, Pattern, Span, Spanned, SurfaceExpression, SurfaceNode};
-use crate::types::{instantiate_scheme, unify, Constraint, InferState, Type, TypeEnv, TypeError};
+use crate::env::Env;
+use crate::types::{instantiate_scheme, unify, Constraint, InferState, Type, TypeError};
 
 // resolve_annotation and resolve_fn_metadata come from typecheck_annot via the
 // `use typecheck_annot::*` glob in typecheck.rs; they are re-exported into super's
@@ -48,7 +48,7 @@ use super::{resolve_annotation, resolve_fn_metadata};
 /// For `TypeAssertPending`, the annotation's own span is used as the error location.
 pub(crate) fn elaborate_pattern<'a>(
     pat: &'a Pattern,
-    env: &'a Rc<TypeEnv>,
+    env: &'a Arc<RwLock<Env>>,
     state: &'a mut InferState,
     span: &'a Span,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Pattern, Vec<TypeError>>> + 'a>> {
@@ -59,9 +59,10 @@ pub(crate) fn elaborate_pattern<'a>(
             } => {
                 // Resolve the annotation to a concrete Type.
                 let mut pat_constraints: Vec<Constraint> = Vec::new();
+                let stub_type_env = crate::types::TypeEnv::new();
                 let resolved_type = resolve_annotation(
                     &annotation.node,
-                    env,
+                    &stub_type_env,
                     annotation.span.clone(),
                     state,
                     &mut pat_constraints,
@@ -132,6 +133,8 @@ pub(crate) fn elaborate_pattern<'a>(
                         // evaluator matches against qualified runtime variant tags.
                         if !tag.contains('.') {
                             let qualified = env
+                                .read()
+                                .unwrap()
                                 .resolve_constructor_tag(tag)
                                 .unwrap_or_else(|| tag.clone());
                             return Err(vec![TypeError::new(
@@ -218,7 +221,7 @@ pub(crate) async fn typecheck_case_arm(
     pattern: &Arc<SurfaceNode>,
     body: &Arc<SurfaceNode>,
     scrutinee_ty: &Type,
-    env: &Rc<TypeEnv>,
+    env: &Arc<RwLock<Env>>,
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
     type_map: &mut Option<&mut TypeMap>,
@@ -227,7 +230,7 @@ pub(crate) async fn typecheck_case_arm(
         SurfaceExpression::LetDecl { bindings } => {
             // Process each binding element against the scrutinee type.
             // For now, simplified: extract binding names and types, extend env, infer body.
-            let mut arm_env = TypeEnv::with_parent(env);
+            let mut arm_env_inner = crate::env::Env::with_parent(Arc::clone(env));
 
             for binding in bindings {
                 match &binding.expr {
@@ -247,7 +250,7 @@ pub(crate) async fn typecheck_case_arm(
                         ..
                     } => {
                         // Bind name to scrutinee type
-                        arm_env.insert(name.clone(), scrutinee_ty.clone());
+                        arm_env_inner.insert(name.clone(), scrutinee_ty.clone());
                     }
 
                     // Annotated binding — either typed or structural test:
@@ -296,10 +299,12 @@ pub(crate) async fn typecheck_case_arm(
                             let constructor_name = constructor_name_opt.unwrap();
 
                             // Look up the constructor in the type environment
-                            let payload_ty = if let Some(scheme) = env.get(&constructor_name) {
+                            let payload_ty = if let Some(scheme) =
+                                env.read().unwrap().get_scheme(&constructor_name)
+                            {
                                 // Instantiate the scheme at the current level to get fresh type vars
                                 let ctor_ty = instantiate_scheme(
-                                    scheme,
+                                    &scheme,
                                     state.level,
                                     state,
                                     Some(constructor_name.as_str()),
@@ -370,7 +375,7 @@ pub(crate) async fn typecheck_case_arm(
                             // this warning is purely a static dead-code diagnostic.
 
                             if name != "_" {
-                                arm_env.insert(name.to_string(), payload_ty);
+                                arm_env_inner.insert(name.to_string(), payload_ty);
                             }
                         } else {
                             // Typed binding: `name@Type`
@@ -378,9 +383,10 @@ pub(crate) async fn typecheck_case_arm(
                             // [let n@T] binds n with type scrutinee_ty ∩ T.
                             // Unknown is the identity in intersection (AGT lifting), so when scrutinee_ty
                             // is Unknown, the intersection reduces to ann_ty (via normalize_intersection).
+                            let stub_type_env = crate::types::TypeEnv::new();
                             let ann_ty = resolve_annotation(
                                 &annotation.node,
-                                env,
+                                &stub_type_env,
                                 annotation.span.clone(),
                                 state,
                                 constraints,
@@ -410,7 +416,7 @@ pub(crate) async fn typecheck_case_arm(
                             // normalize_intersection handles Unknown-as-identity and Top-as-identity.
                             let narrowed_ty =
                                 Type::normalize_intersection(vec![scrutinee_ty.clone(), ann_ty]);
-                            arm_env.insert(name.to_string(), narrowed_ty);
+                            arm_env_inner.insert(name.to_string(), narrowed_ty);
                         }
                     }
 
@@ -435,9 +441,10 @@ pub(crate) async fn typecheck_case_arm(
                                     annotation: Some(annotation),
                                     ..
                                 } => {
+                                    let stub_type_env2 = crate::types::TypeEnv::new();
                                     let ann_ty = resolve_annotation(
                                         &annotation.node,
-                                        env,
+                                        &stub_type_env2,
                                         annotation.span.clone(),
                                         state,
                                         constraints,
@@ -447,7 +454,7 @@ pub(crate) async fn typecheck_case_arm(
                                     )
                                     .await
                                     .map_err(|e| vec![e])?;
-                                    arm_env.insert(name.clone(), ann_ty);
+                                    arm_env_inner.insert(name.clone(), ann_ty);
                                 }
                                 SurfaceExpression::VarRef {
                                     name,
@@ -457,7 +464,7 @@ pub(crate) async fn typecheck_case_arm(
                                     // Use constructor field type if available, otherwise Unknown
                                     let field_ty =
                                         field_types.get(idx).cloned().unwrap_or(Type::Unknown);
-                                    arm_env.insert(name.clone(), field_ty);
+                                    arm_env_inner.insert(name.clone(), field_ty);
                                 }
                                 _ => {
                                     // Wildcard or other — no binding
@@ -477,8 +484,8 @@ pub(crate) async fn typecheck_case_arm(
             }
 
             // Type-check body with extended environment (body is already Arc<SurfaceNode>)
-            let arm_env = Rc::new(arm_env);
-            infer_surface_expr(body, &arm_env, state, type_map)
+            let arm_env_arc = Arc::new(RwLock::new(arm_env_inner));
+            infer_surface_expr(body, &arm_env_arc, state, type_map)
         }
 
         _ => {
@@ -534,12 +541,13 @@ pub(crate) async fn typecheck_case_arm(
 /// without the type checker needing to hardcode predicate function names.
 async fn extract_is_narrowing(
     ann: &Annotation,
-    env: &Rc<TypeEnv>,
+    _env: &Arc<RwLock<Env>>,
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
     ann_mapping: &mut Option<&mut HashMap<String, String>>,
     row_ann_mapping: &mut Option<&mut HashMap<String, String>>,
 ) -> Option<Type> {
+    let stub_type_env = crate::types::TypeEnv::new();
     if let Annotation::PropertyDict(entries) = ann {
         for entry in entries {
             if let Some(ref key) = entry.node.key {
@@ -552,7 +560,7 @@ async fn extract_is_narrowing(
                     };
                     return resolve_annotation(
                         &ann_for_value,
-                        env,
+                        &stub_type_env,
                         entry.node.value.span.clone(),
                         state,
                         constraints,
@@ -574,12 +582,13 @@ pub(crate) async fn infer_fn(
     return_ann: &Option<Spanned<Annotation>>,
     params: &[Spanned<Param>],
     body: &Arc<SurfaceNode>,
-    env: &Rc<TypeEnv>,
+    env: &Arc<RwLock<Env>>,
     _span: Span,
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
+    let stub_type_env = crate::types::TypeEnv::new();
     // Create a fresh annotation mapping for this function to prevent
     // cross-contamination of type variables.
     // Only allocate if any param has an annotation or there's a return annotation.
@@ -616,7 +625,7 @@ pub(crate) async fn infer_fn(
                 let expr_ann = crate::ast::Annotation::Simple("Expr".into());
                 resolve_annotation(
                     &expr_ann,
-                    env,
+                    &stub_type_env,
                     ann.span.clone(),
                     state,
                     constraints,
@@ -629,7 +638,7 @@ pub(crate) async fn infer_fn(
             }
             Some(ann) => resolve_annotation(
                 &ann.node,
-                env,
+                &stub_type_env,
                 ann.span.clone(),
                 state,
                 constraints,
@@ -695,7 +704,7 @@ pub(crate) async fn infer_fn(
         Vec::new()
     };
 
-    let mut fn_env = TypeEnv::with_parent(env);
+    let mut fn_env_inner = crate::env::Env::with_parent(Arc::clone(env));
     for (i, param) in params.iter().enumerate() {
         if param.node.variadic {
             let elem_ty = state.fresh_type_var();
@@ -707,12 +716,12 @@ pub(crate) async fn infer_fn(
                 },
             });
             param_types[i].1 = variadic_ty.clone();
-            fn_env.insert(param.node.name.clone(), variadic_ty);
+            fn_env_inner.insert(param.node.name.clone(), variadic_ty);
         } else {
-            fn_env.insert(param.node.name.clone(), param_types[i].1.clone());
+            fn_env_inner.insert(param.node.name.clone(), param_types[i].1.clone());
         }
     }
-    let fn_env = Rc::new(fn_env);
+    let fn_env = Arc::new(RwLock::new(fn_env_inner));
 
     let ret_type = match return_ann {
         Some(ann) => {
@@ -744,7 +753,7 @@ pub(crate) async fn infer_fn(
                         // Function metadata dict: extract return type from return: key.
                         let (ret, _doc) = resolve_fn_metadata(
                             surface_entries,
-                            env,
+                            &stub_type_env,
                             ann.span.clone(),
                             state,
                             constraints,
@@ -760,7 +769,7 @@ pub(crate) async fn infer_fn(
                         // Delegate to resolve_annotation which calls resolve_type_dict.
                         resolve_annotation(
                             &ann.node,
-                            env,
+                            &stub_type_env,
                             ann.span.clone(),
                             state,
                             constraints,
@@ -776,7 +785,7 @@ pub(crate) async fn infer_fn(
                     // Simple annotation - resolve normally
                     resolve_annotation(
                         &ann.node,
-                        env,
+                        &stub_type_env,
                         ann.span.clone(),
                         state,
                         constraints,

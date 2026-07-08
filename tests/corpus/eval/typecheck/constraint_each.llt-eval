@@ -1,8 +1,8 @@
 # Constraint with [each ...] keyword for multi-class intersection
-# Tests that fn@[bind: [a] constraint: [a: [each Comparable Showable]] return: a]
-# applies both Comparable and Showable constraints to TypeVar 'a'
+# Tests that fn@[bind: [a] constraint: [a: [each Comparable Printable]] return: a]
+# applies both Comparable and Printable constraints to TypeVar 'a'
 [
-  compare-and-show: [fn@[bind: [a] constraint: [a: [each Comparable Showable]] return: a]
+  compare-and-show: [fn@[bind: [a] constraint: [a: [each Comparable Printable]] return: a]
     [let x@a] x]
   result: [compare-and-show 42]
 ]

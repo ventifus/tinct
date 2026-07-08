@@ -191,6 +191,30 @@ pub async fn format_source_tinct(
     format_source_tinct_with_dir(input, script_path, None).await
 }
 
+/// If `entries` is the canonical normalized form produced by `normalize_varref_annotation`
+/// — exactly one entry with key `Str("type")` and value `VarRef { name, .. }` — return
+/// `Some(name)` so the formatter can emit `@TypeName` instead of `@[type: TypeName]`.
+/// Returns `None` for all other PropertyDict shapes.
+fn extract_normalized_type_name(entries: &[Spanned<SurfaceEntry>]) -> Option<String> {
+    if entries.len() != 1 {
+        return None;
+    }
+    let entry = &entries[0].node;
+    // Key must be Str("type")
+    let key_is_type = entry
+        .key
+        .as_ref()
+        .is_some_and(|k| matches!(&k.expr, SurfaceExpression::Str(s) if s == "type"));
+    if !key_is_type {
+        return None;
+    }
+    // Value must be VarRef
+    match &entry.value.expr {
+        SurfaceExpression::VarRef { name, .. } => Some(name.clone()),
+        _ => None,
+    }
+}
+
 struct Formatter<'a> {
     parse_output: &'a ParseOutput,
     source: &'a str,
@@ -1246,8 +1270,15 @@ impl<'a> Formatter<'a> {
         match &annotation.node {
             Annotation::Simple(name) => self.output.push_str(name),
             Annotation::PropertyDict(entries) => {
-                // Format as a dict bracket using the old Entry type (annotations were not migrated)
-                self.format_annotation_dict(entries);
+                // Detect the canonical normalized form produced by normalize_varref_annotation:
+                // a single entry with key=Str("type") and value=VarRef(name).
+                // In this case, emit just the type name for round-trip fidelity (e.g., x@Int).
+                if let Some(type_name) = extract_normalized_type_name(entries) {
+                    self.output.push_str(&type_name);
+                } else {
+                    // General PropertyDict: format as a bracketed dict
+                    self.format_annotation_dict(entries);
+                }
             }
             Annotation::Annotated(name, inner) => {
                 self.output.push_str(name);

@@ -47,13 +47,14 @@ use crate::ast::Span;
 use crate::builtins::{
     builtin, ok_val, reject_named, require_string, synthetic_call_expr, MAX_COLLECT_SIZE,
 };
+use crate::env::Env as Environment;
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{materialize, TypeContextData};
 use crate::eval_call::{invoke_function, CallContext};
 use crate::eval_materialize::make_span_dict;
 use crate::rust_span;
 use crate::value::ThunkId;
-use crate::value::{string_val, BuiltinArgs, Environment, HashableValue, Strictness, Thunk, Value};
+use crate::value::{string_val, BuiltinArgs, HashableValue, Strictness, Thunk, Value};
 
 // ── Unified error dict helpers ────────────────────────────────────────────────
 
@@ -298,7 +299,7 @@ pub(crate) fn builtin_try(
                 // runtime, causing all references inside the fn body to resolve to wrong
                 // slots (off-by-one in the parent chain).
                 let call_env = std::sync::Arc::new(std::sync::RwLock::new(
-                    crate::value::Environment::with_parent(Arc::clone(&closure_env)),
+                    Environment::with_parent(Arc::clone(&closure_env)),
                 ));
                 let body_thunk = Arc::new(Thunk::new_unevaluated_core(
                     Arc::clone(&body),
@@ -451,7 +452,6 @@ pub(crate) fn builtin_until(
         }
     })
 }
-
 
 /// Helper that performs the actual $apply logic after args are pre-materialized.
 /// This is separated from builtin_apply so that builtin_apply can return a
@@ -608,7 +608,7 @@ pub(crate) fn builtin_apply(
             named_opt,
             call_span,
             Some(Arc::from("apply")),
-            Arc::new(std::sync::RwLock::new(crate::value::Environment::new())),
+            Arc::new(std::sync::RwLock::new(Environment::new())),
             ctx,
         )))
     })
@@ -2074,11 +2074,11 @@ pub(crate) fn builtin_resolve(
                 // to CoreExpr::Placeholder (with a LowerDiagnostic for each unresolved name).
                 //
                 // The env chain is walked to populate resolver scopes from outermost to innermost.
-                // Builtins and cross-document names are left unresolved (OnceLock = None)
-                // and are handled by the lowerer's FreeVar → runtime name-lookup path.
-                let _resolve_table =
+                // Names not found in the env chain have their OnceLock left unset (None) and are
+                // returned in resolve_errors. The resolver MUST be seeded from the same env the
+                // document will be evaluated with — a mismatch causes wrong de Bruijn levels.
+                let (_resolve_table, resolve_errors) =
                     crate::resolve::resolve_surface_document_inplace(&doc_arc, _env);
-                let resolve_errors: Vec<(String, crate::ast::Span)> = Vec::new();
 
                 // Build errors dict from resolve_errors (undefined variables).
                 let mut errors_dict: IndexMap<HashableValue, ThunkId> = IndexMap::new();
@@ -2166,12 +2166,14 @@ pub(crate) fn builtin_typecheck(
             named,
             call_span,
             ctx,
-            caller_env,
             ..
         } = ctx_arg;
-        // Extract optional env: named argument (the runtime env the program was resolved
-        // against). Used to scan for instance binding slots for typeclass dispatch.
-        // Reject any other named arguments.
+        // Extract optional env: named argument. When provided, used as the resolver seed env
+        // so that instance binding names (ɪ-prefixed) visible in the runtime env are also
+        // visible to the type checker's name resolution pass. This fixes false-positive
+        // "undefined variable" warnings for class method VarRefs (cast, +, -, etc.) when
+        // type-checking the prelude.
+        // Reject any unknown named arguments.
         let opt_env_thunk = if let Some(ref named_map) = named {
             let unknown: Vec<&str> = named_map
                 .keys()
@@ -2192,8 +2194,9 @@ pub(crate) fn builtin_typecheck(
         } else {
             None
         };
-        // Materialize the env: argument if present.
-        let env_for_slots: Option<Arc<std::sync::RwLock<crate::value::Environment>>> =
+        // Materialize and validate the env: argument if provided.
+        // Extract the Arc<RwLock<Env>> for use as resolver seed in typecheck_surface_program_with_env.
+        let resolver_seed_env: Option<std::sync::Arc<std::sync::RwLock<crate::env::Env>>> =
             if let Some(env_thunk) = opt_env_thunk {
                 let env_val = materialize(&env_thunk, Some(&call_span), &ctx).await?;
                 match env_val {
@@ -2244,8 +2247,8 @@ pub(crate) fn builtin_typecheck(
                 warnings: _,
             } => {
                 // Seed from the accumulated inference_env stored in the TypeContext.
-                // Lock, clone the env, then drop the lock before the async typecheck call.
-                let seed_env: Arc<crate::types::TypeEnv> = {
+                // Lock, clone the Arc, then drop the lock before the async typecheck call.
+                let parent_env: Arc<std::sync::RwLock<crate::env::Env>> = {
                     let guard = ctx.type_context.lock().unwrap();
                     match guard.as_ref() {
                         Some(tc) => Arc::clone(&tc.inference_env),
@@ -2261,46 +2264,12 @@ pub(crate) fn builtin_typecheck(
                     }
                 };
 
-                // Collect instance binding slots from the runtime env chain.
-                // These are populated by the lowerer when it flattens InstanceDecl entries.
-                // The type checker uses them to write call_dispatch coordinates for typeclass
-                // method calls (level from the class method stub VarRef resolution, slot here).
-                //
-                // Use the explicit env: argument if provided (the env the program was resolved
-                // against, which contains instance bindings from prelude). Fall back to
-                // caller_env if env: was not provided.
-                let scan_env = env_for_slots
-                    .as_ref()
-                    .map(Arc::clone)
-                    .unwrap_or_else(|| Arc::clone(&caller_env));
-                let instance_binding_slots = {
-                    let mut slots = std::collections::HashMap::new();
-                    let mut current = Some(Arc::clone(&scan_env));
-                    while let Some(env_arc) = current {
-                        let env_guard = env_arc.read().unwrap();
-                        for (i, key) in env_guard.slot_names.iter().enumerate() {
-                            if key.starts_with('ɪ') {
-                                slots
-                                    .entry(key.clone())
-                                    .or_insert(u32::try_from(i).expect("slot overflow"));
-                            }
-                        }
-                        current = env_guard.parent.as_ref().map(Arc::clone);
-                    }
-                    slots
-                };
-
                 // Run the full typecheck pass seeded from the accumulated env.
-                // All type annotations are written inline on AST nodes.
-                // enable_scheme_map=false, resolution_table=None (program already resolved).
-                // main_env: pass the scan_env (program's runtime env) so type-stage
-                // evaluations can find runtime type constructors (Boolean, Seq, etc.).
-                // instance_binding_slots and scan_env are computed above for future use;
-                // typecheck_surface_program_with_env takes (program, env, enable_scheme_map, in_prelude_load).
-                let _ = instance_binding_slots; // suppress unused warning
-                let _ = scan_env; // suppress unused warning
-                                  // typecheck_surface_program_with_env takes Rc<TypeEnv>; seed_env is Arc<TypeEnv>.
-                let seed_env_rc = std::rc::Rc::new((*seed_env).clone());
+                // Pass resolver_seed_env (from the env: named argument, if any) so that
+                // instance binding names (ɪ-prefixed) visible in the runtime eval env are
+                // also visible to the type checker's name resolution pass. Without this,
+                // method VarRefs (cast, +, -, etc.) produce false-positive "undefined variable"
+                // warnings because the type-only parent_env lacks ɪ-prefixed instance bindings.
                 let (
                     errors,
                     _type_map,
@@ -2312,17 +2281,16 @@ pub(crate) fn builtin_typecheck(
                     _annotation_table,
                 ) = crate::typecheck::typecheck_surface_program_with_env(
                     &surface_program,
-                    seed_env_rc,
+                    parent_env,
                     false, // enable_scheme_map
-                    false, // in_prelude_load
+                    resolver_seed_env,
                 );
 
                 // Write the final_env back into the TypeContext so subsequent calls accumulate.
-                // final_env is Rc<TypeEnv>; tc.inference_env expects Arc<TypeEnv>.
                 {
                     let mut guard = ctx.type_context.lock().unwrap();
                     if let Some(ref mut tc) = *guard {
-                        tc.inference_env = std::sync::Arc::new((*final_env).clone());
+                        tc.inference_env = Arc::clone(&final_env);
                     }
                 }
 
@@ -3106,8 +3074,8 @@ pub(crate) fn builtin_extend_env(
 
         // Create the child environment (or a fresh env if base_env is None).
         let child_env = Arc::new(std::sync::RwLock::new(match base_env {
-            Some(ref parent) => crate::value::Environment::with_parent(Arc::clone(parent)),
-            None => crate::value::Environment::new(),
+            Some(ref parent) => Environment::with_parent(Arc::clone(parent)),
+            None => Environment::new(),
         }));
 
         // Force arg[1] — must be Value::Dict or Value::Environment.
@@ -3140,15 +3108,17 @@ pub(crate) fn builtin_extend_env(
                 Value::Dict(ref bindings) => {
                     for (key, thunk_id) in bindings {
                         if let HashableValue::Str(name) = key {
-                            env_write.insert(name.to_string(), ctx.get_thunk(*thunk_id));
+                            env_write.insert_value(name.to_string(), ctx.get_thunk(*thunk_id));
                         }
                     }
                 }
                 Value::Environment(ref src_env) => {
                     // Copy only the immediate (own) bindings from src_env — not the parent chain.
                     let src_read = src_env.read().unwrap();
-                    for (name, thunk) in src_read.slot_names.iter().zip(src_read.slots.iter()) {
-                        env_write.insert(name.clone(), Arc::clone(thunk));
+                    for (name, slot) in src_read.iter_slots() {
+                        if let Some(ref thunk) = slot.value {
+                            env_write.insert_value(name.to_string(), Arc::clone(thunk));
+                        }
                     }
                 }
                 other => {
@@ -3248,7 +3218,7 @@ pub(crate) fn builtin_eval_macro_ast(
         const MACRO_ENV_NAME: &str = "ᴍᴀᴄʀᴏ∷env";
 
         let call_site_env: Arc<RwLock<Environment>> = {
-            let env_thunk_opt = caller_env.read().unwrap().get_by_name(MACRO_ENV_NAME);
+            let env_thunk_opt = caller_env.read().unwrap().get_value_by_name(MACRO_ENV_NAME);
             if let Some(env_thunk) = env_thunk_opt {
                 let env_val = materialize(&env_thunk, Some(&call_span), &ctx).await?;
                 match env_val {
@@ -3389,15 +3359,15 @@ pub(crate) fn builtin_eval_types(
             let env_val = materialize(&env_thunk, Some(&call_span), &ctx).await?;
             match env_val {
                 Value::Dict(entries) => {
-                    let child_env = Arc::new(std::sync::RwLock::new(
-                        crate::value::Environment::with_parent(Arc::clone(&base_env)),
-                    ));
+                    let child_env = Arc::new(std::sync::RwLock::new(Environment::with_parent(
+                        Arc::clone(&base_env),
+                    )));
                     for (key, thunk_id) in entries.iter() {
                         if let HashableValue::Str(name) = key {
                             child_env
                                 .write()
                                 .unwrap()
-                                .insert(name.to_string(), ctx.get_thunk(*thunk_id));
+                                .insert_value(name.to_string(), ctx.get_thunk(*thunk_id));
                         }
                     }
                     child_env
@@ -3418,13 +3388,13 @@ pub(crate) fn builtin_eval_types(
 
         // Add %: (pipeline input) as % binding if provided
         let final_env = if let Some(input_thunk) = pipeline_input {
-            let child_env = Arc::new(std::sync::RwLock::new(
-                crate::value::Environment::with_parent(Arc::clone(&env_with_bindings)),
-            ));
+            let child_env = Arc::new(std::sync::RwLock::new(Environment::with_parent(
+                Arc::clone(&env_with_bindings),
+            )));
             child_env
                 .write()
                 .unwrap()
-                .insert("%".to_string(), input_thunk);
+                .insert_value("%".to_string(), input_thunk);
             child_env
         } else {
             env_with_bindings
@@ -4530,7 +4500,7 @@ pub(crate) fn builtin_cap_env_has(
         let found = match env_val {
             Value::Environment(ref env_arc) => {
                 let env = env_arc.read().unwrap();
-                env.get_by_name(&name).is_some()
+                env.get_value_by_name(&name).is_some()
             }
             _ => false,
         };
@@ -4587,9 +4557,10 @@ mod tests {
     use indexmap::IndexMap;
 
     use super::{builtin_current_env, builtin_tag_of};
+    use crate::env::Env as Environment;
     use crate::error::EvalResult;
     use crate::test_util::test_span;
-    use crate::value::{string_val, BuiltinArgs, Environment, Thunk, Value};
+    use crate::value::{string_val, BuiltinArgs, Thunk, Value};
 
     fn thunk(val: Value) -> Arc<Thunk> {
         Arc::new(Thunk::new_materialized(val, test_span(1, 1, 1, 5)))
@@ -4706,7 +4677,7 @@ mod tests {
         let caller_env = Arc::new(RwLock::new(Environment::new()));
         {
             let mut env = caller_env.write().unwrap();
-            env.insert(
+            env.insert_value(
                 "x".to_string(),
                 Arc::new(Thunk::new_materialized(Value::Int(42), call_span())),
             );
@@ -4733,7 +4704,7 @@ mod tests {
         let x_thunk = captured_env
             .read()
             .unwrap()
-            .get_by_name("x")
+            .get_value_by_name("x")
             .expect("binding 'x' must be present in captured env");
 
         let x_val = materialize_sync(&x_thunk, &test_ctx()).await;

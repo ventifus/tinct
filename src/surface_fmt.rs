@@ -12,11 +12,12 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::ast::{CoreExpr, LiteralPattern, Param, Pattern, Spanned};
+use crate::env::Env;
 use crate::eval::core_expr_is_static_key;
 use crate::eval::EvalContext;
 use crate::lexer::{fmt_float, fmt_int, fmt_string};
 use crate::value::ThunkId;
-use crate::value::{Environment, HashableValue, Value};
+use crate::value::{HashableValue, Value};
 
 /// Format a dict as a tinct literal `[k: v  ...]`.
 ///
@@ -110,7 +111,7 @@ pub fn fmt_variant(
 pub fn fmt_fn(
     params: &[Param],
     body: &Arc<Spanned<CoreExpr>>,
-    env: &Environment,
+    env: &Env,
     ctx: &Arc<EvalContext>,
 ) -> Result<String, String> {
     // Build initial param scope from the top-level parameters.
@@ -129,7 +130,7 @@ pub fn fmt_fn(
     // For each captured name, look it up in env and serialize its value.
     let mut substitutions: HashMap<String, String> = HashMap::new();
     for name in &free_vars {
-        if let Some(thunk) = env.get_by_name(name) {
+        if let Some(thunk) = env.get_value_by_name(name) {
             let value = thunk
                 .try_get_materialized()
                 .ok_or_else(|| format!("captured variable `{name}` is not materialized"))?;
@@ -263,7 +264,7 @@ fn extract_identifiers(text: &str) -> HashSet<&str> {
 fn collect_free_vars(
     expr: &CoreExpr,
     param_scope: &HashSet<String>,
-    stdlib_env: &Environment,
+    stdlib_env: &Env,
     out: &mut HashSet<String>,
 ) {
     match expr {
@@ -285,7 +286,7 @@ fn collect_free_vars(
         // Variable references — the decision point
         CoreExpr::Var { name, .. } => {
             if !param_scope.contains(name.as_str())
-                && stdlib_env.get_by_name(name.as_str()).is_none()
+                && stdlib_env.get_value_by_name(name.as_str()).is_none()
             {
                 out.insert(name.clone());
             }
@@ -448,7 +449,7 @@ fn collect_free_vars_in_quote(
     expr: &CoreExpr,
     depth: usize,
     param_scope: &HashSet<String>,
-    stdlib_env: &Environment,
+    stdlib_env: &Env,
     out: &mut HashSet<String>,
 ) {
     match expr {

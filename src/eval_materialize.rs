@@ -23,7 +23,7 @@ use crate::eval_call::{invoke_function, invoke_function_tco, CallContext};
 use crate::eval_core::eval_core_expr;
 use crate::rust_span;
 use crate::types::Type;
-use crate::value::{string_val, Environment, HashableValue, Thunk, ThunkId, Value};
+use crate::value::{string_val, HashableValue, Thunk, ThunkId, Value};
 
 /// RAII guard for profiling spans. Automatically closes the span on drop.
 struct ProfilingSpanGuard {
@@ -92,7 +92,7 @@ impl Drop for ProfilingSpanGuard {
 /// Reduces type_complexity in RestoreState and GuardedValidateData.
 type GuardDefault = (
     Arc<crate::ast::Spanned<crate::ast::CoreExpr>>,
-    Arc<RwLock<Environment>>,
+    Arc<RwLock<crate::env::Env>>,
 );
 
 /// Attach materialization span and origin frame to an error.
@@ -138,7 +138,7 @@ pub(crate) enum RestoreState {
         args: Vec<Arc<Thunk>>,
         named: Option<IndexMap<String, Arc<Thunk>>>,
         call_span: Span,
-        caller_env: Arc<RwLock<Environment>>,
+        caller_env: Arc<RwLock<crate::env::Env>>,
         ctx: Arc<EvalContext>,
     },
     /// Restore a Call (PendingCall) thunk for non-cacheable errors.
@@ -148,7 +148,7 @@ pub(crate) enum RestoreState {
         args: Vec<Arc<Thunk>>,
         named: Option<Box<IndexMap<String, Arc<Thunk>>>>,
         call_span: Span,
-        caller_env: Arc<RwLock<Environment>>,
+        caller_env: Arc<RwLock<crate::env::Env>>,
         ctx: Arc<EvalContext>,
         original_call: Arc<crate::ast::Spanned<crate::ast::CoreExpr>>,
     },
@@ -165,14 +165,14 @@ pub(crate) enum RestoreState {
     /// All cross-phase data is stored inline on AST nodes.
     Surface {
         node: std::sync::Arc<crate::ast::SurfaceNode>,
-        env: Arc<RwLock<Environment>>,
+        env: Arc<RwLock<crate::env::Env>>,
         ctx: Arc<EvalContext>,
     },
     /// Restore a CoreExpr thunk for non-cacheable errors.
     /// Stores the Arc<Spanned<CoreExpr>> directly — no re-lowering on retry.
     CoreExpr {
         expr: Arc<crate::ast::Spanned<crate::ast::CoreExpr>>,
-        env: Arc<RwLock<Environment>>,
+        env: Arc<RwLock<crate::env::Env>>,
         ctx: Arc<EvalContext>,
     },
 }
@@ -262,7 +262,7 @@ pub(crate) struct PendingCallDispatchData {
     pub(crate) args: Vec<Arc<Thunk>>,
     pub(crate) named: Option<Box<IndexMap<String, Arc<Thunk>>>>,
     pub(crate) call_span: Span,
-    pub(crate) caller_env: Arc<RwLock<Environment>>,
+    pub(crate) caller_env: Arc<RwLock<crate::env::Env>>,
     pub(crate) ctx: Arc<EvalContext>,
     pub(crate) origin: Option<Arc<str>>,
     pub(crate) thunk_span: Span,
@@ -303,7 +303,7 @@ pub(crate) struct TypeAssertCheckData {
     pub(crate) resolved: Box<Type>,
     pub(crate) expr_span: Span,
     pub(crate) thunk_span: Span,
-    pub(crate) env: Arc<RwLock<Environment>>,
+    pub(crate) env: Arc<RwLock<crate::env::Env>>,
     pub(crate) ctx: Arc<EvalContext>,
     /// Pipeline blame for `--- expects: @Type` contract assertions.
     /// Carried from `CoreExpr::TypeAssert::pipeline_blame` (set during expects annotation resolution).
@@ -318,7 +318,7 @@ pub(crate) struct BuiltinForceArgData {
     pub(crate) args: Vec<Arc<Thunk>>,
     pub(crate) named: Option<IndexMap<String, Arc<Thunk>>>,
     pub(crate) call_span: Span,
-    pub(crate) caller_env: Arc<RwLock<Environment>>,
+    pub(crate) caller_env: Arc<RwLock<crate::env::Env>>,
     pub(crate) ctx: Arc<EvalContext>,
     pub(crate) origin: Option<Arc<str>>,
     pub(crate) thunk_span: Span,
@@ -332,7 +332,7 @@ pub(crate) struct SequentialStepData {
     /// When idx reaches exprs.len(), the Sequential is complete and we return the last value.
     pub(crate) idx: usize,
     pub(crate) exprs: Arc<Vec<Arc<Spanned<CoreExpr>>>>,
-    pub(crate) env: Arc<RwLock<Environment>>,
+    pub(crate) env: Arc<RwLock<crate::env::Env>>,
     pub(crate) ctx: Arc<EvalContext>,
     pub(crate) seq_span: Span,
 }
@@ -347,7 +347,7 @@ pub(crate) struct VariantUnpackForSeqData {
     /// Index of the next expression to evaluate
     pub(crate) next_idx: usize,
     pub(crate) exprs: Arc<Vec<Arc<Spanned<CoreExpr>>>>,
-    pub(crate) env: Arc<RwLock<Environment>>,
+    pub(crate) env: Arc<RwLock<crate::env::Env>>,
     pub(crate) ctx: Arc<EvalContext>,
     pub(crate) seq_span: Span,
     /// Span of the current expression (for error reporting)
@@ -360,7 +360,7 @@ pub(crate) struct MatchDispatchData {
     pub(crate) arm_idx: usize,
     pub(crate) arms: Arc<Vec<crate::ast::CoreMatchArm>>,
     /// The original environment for fallback matching
-    pub(crate) env: Arc<RwLock<Environment>>,
+    pub(crate) env: Arc<RwLock<crate::env::Env>>,
     pub(crate) ctx: Arc<EvalContext>,
     pub(crate) match_span: Span,
 }
@@ -370,11 +370,11 @@ pub(crate) struct MatchGuardCheckData {
     /// Current arm index (for continuing to next arm if guard fails)
     pub(crate) arm_idx: usize,
     pub(crate) arms: Arc<Vec<crate::ast::CoreMatchArm>>,
-    pub(crate) env: Arc<RwLock<Environment>>,
+    pub(crate) env: Arc<RwLock<crate::env::Env>>,
     pub(crate) ctx: Arc<EvalContext>,
     pub(crate) match_span: Span,
     /// Environment with pattern bindings from the matched arm
-    pub(crate) arm_env: Arc<RwLock<Environment>>,
+    pub(crate) arm_env: Arc<RwLock<crate::env::Env>>,
     /// The scrutinee value (needed for predicate invocation and fallback)
     pub(crate) scrutinee_value: Value,
     /// The arm body to evaluate if guard passes
@@ -399,7 +399,7 @@ pub(crate) struct MatchPredicateCheckData {
     /// Current arm index (for continuing to next arm if predicate fails)
     pub(crate) arm_idx: usize,
     pub(crate) arms: Arc<Vec<crate::ast::CoreMatchArm>>,
-    pub(crate) env: Arc<RwLock<Environment>>,
+    pub(crate) env: Arc<RwLock<crate::env::Env>>,
     pub(crate) ctx: Arc<EvalContext>,
     pub(crate) match_span: Span,
     /// The scrutinee value (passed as last arg to the predicate, and re-used on success)
@@ -426,7 +426,7 @@ pub(crate) struct PredicateCheckData {
     /// Span where the value was produced (for error reporting)
     pub(crate) thunk_span: Span,
     /// Environment for evaluating the default expression if predicate fails
-    pub(crate) env: Arc<RwLock<Environment>>,
+    pub(crate) env: Arc<RwLock<crate::env::Env>>,
     pub(crate) ctx: Arc<EvalContext>,
     /// True when the predicate was a callable and has already been invoked via the CEK machine.
     /// On the second entry into PredicateCheck, `result` is the call's return value
@@ -584,7 +584,7 @@ pub(crate) enum Action {
     /// default-fallback (apply_cont).
     EvalCore {
         expr: Arc<Spanned<CoreExpr>>,
-        env: Arc<RwLock<Environment>>,
+        env: Arc<RwLock<crate::env::Env>>,
         ctx: Arc<EvalContext>,
     },
 }
@@ -661,7 +661,7 @@ pub(crate) fn apply_predicate_to_subject(
     subject: Value,
     pred_span: Span,
     subj_span: Span,
-    env: &Arc<RwLock<Environment>>,
+    env: &Arc<RwLock<crate::env::Env>>,
     ctx: &Arc<EvalContext>,
 ) -> Arc<Thunk> {
     let subject_thunk = Arc::new(Thunk::new_materialized(subject, subj_span));
@@ -1066,7 +1066,10 @@ pub(crate) async fn force_step(
         };
 
         let (lowered, surface_lower_diags) = crate::lower::lower(&node);
-        if let Some(err) = surface_lower_diags.into_iter().find(|d| matches!(d.kind, crate::lower::LowerDiagnosticKind::Error)) {
+        if let Some(err) = surface_lower_diags
+            .into_iter()
+            .find(|d| matches!(d.kind, crate::lower::LowerDiagnosticKind::Error))
+        {
             let decorated = attach_materialization_context(
                 EvalError::user_error(err.message, err.span).into(),
                 mat_span.as_ref(),
@@ -1097,7 +1100,10 @@ pub(crate) async fn force_step(
                 (&inner.node, annotation.node.get_property("default"))
             {
                 let (lowered_default, lower_diags) = crate::lower::lower(default_node);
-                if let Some(err) = lower_diags.into_iter().find(|d| matches!(d.kind, crate::lower::LowerDiagnosticKind::Error)) {
+                if let Some(err) = lower_diags
+                    .into_iter()
+                    .find(|d| matches!(d.kind, crate::lower::LowerDiagnosticKind::Error))
+                {
                     let decorated = attach_materialization_context(
                         EvalError::user_error(err.message, err.span).into(),
                         mat_span.as_ref(),
@@ -1247,7 +1253,10 @@ pub(crate) async fn force_step(
                 (&inner.node, annotation.node.get_property("default"))
             {
                 let (lowered_default, lower_diags) = crate::lower::lower(default_node);
-                if let Some(err) = lower_diags.into_iter().find(|d| matches!(d.kind, crate::lower::LowerDiagnosticKind::Error)) {
+                if let Some(err) = lower_diags
+                    .into_iter()
+                    .find(|d| matches!(d.kind, crate::lower::LowerDiagnosticKind::Error))
+                {
                     let decorated = attach_materialization_context(
                         EvalError::user_error(err.message, err.span).into(),
                         mat_span.as_ref(),
@@ -2575,8 +2584,13 @@ pub(crate) async fn apply_cont(
                     if let Some(default_node) = annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
                     {
                         let (lowered_default, lower_diags) = crate::lower::lower(default_node);
-                        if let Some(diag) = lower_diags.into_iter().find(|d| matches!(d.kind, crate::lower::LowerDiagnosticKind::Error)) {
-                            Action::Continue(Err(EvalError::user_error(diag.message, diag.span).into()))
+                        if let Some(diag) = lower_diags
+                            .into_iter()
+                            .find(|d| matches!(d.kind, crate::lower::LowerDiagnosticKind::Error))
+                        {
+                            Action::Continue(Err(
+                                EvalError::user_error(diag.message, diag.span).into()
+                            ))
                         } else {
                             Action::EvalCore {
                                 expr: Arc::new(lowered_default),
@@ -2611,10 +2625,18 @@ pub(crate) async fn apply_cont(
                             other => other,
                         };
                         if let Value::Dict(entries) = &value {
-                            let default_opt = if let Some(node) = annotation.node.get_property(DEFAULT_ANNOTATION_KEY) {
+                            let default_opt = if let Some(node) =
+                                annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
+                            {
                                 let (lowered, lower_diags) = crate::lower::lower(node);
-                                if let Some(diag) = lower_diags.into_iter().find(|d| matches!(d.kind, crate::lower::LowerDiagnosticKind::Error)) {
-                                    return Action::Continue(Err(EvalError::user_error(diag.message, diag.span).into()));
+                                if let Some(diag) = lower_diags.into_iter().find(|d| {
+                                    matches!(d.kind, crate::lower::LowerDiagnosticKind::Error)
+                                }) {
+                                    return Action::Continue(Err(EvalError::user_error(
+                                        diag.message,
+                                        diag.span,
+                                    )
+                                    .into()));
                                 }
                                 Some((Arc::new(lowered), Arc::clone(&env)))
                             } else {
@@ -2663,9 +2685,16 @@ pub(crate) async fn apply_cont(
                             {
                                 // Evaluate default expression iteratively.
                                 // The result will flow to the next continuation on the stack.
-                                let (lowered_default, lower_diags) = crate::lower::lower(default_node);
-                                if let Some(diag) = lower_diags.into_iter().find(|d| matches!(d.kind, crate::lower::LowerDiagnosticKind::Error)) {
-                                    return Action::Continue(Err(EvalError::user_error(diag.message, diag.span).into()));
+                                let (lowered_default, lower_diags) =
+                                    crate::lower::lower(default_node);
+                                if let Some(diag) = lower_diags.into_iter().find(|d| {
+                                    matches!(d.kind, crate::lower::LowerDiagnosticKind::Error)
+                                }) {
+                                    return Action::Continue(Err(EvalError::user_error(
+                                        diag.message,
+                                        diag.span,
+                                    )
+                                    .into()));
                                 }
                                 Action::EvalCore {
                                     expr: Arc::new(lowered_default),
@@ -2698,8 +2727,14 @@ pub(crate) async fn apply_cont(
                         let is_predicate = annotation.node.get_property(IS_ANNOTATION_KEY).cloned();
                         if let Some(predicate_node) = is_predicate {
                             let (lowered_pred, lower_diags) = crate::lower::lower(&predicate_node);
-                            if let Some(diag) = lower_diags.into_iter().find(|d| matches!(d.kind, crate::lower::LowerDiagnosticKind::Error)) {
-                                return Action::Continue(Err(EvalError::user_error(diag.message, diag.span).into()));
+                            if let Some(diag) = lower_diags.into_iter().find(|d| {
+                                matches!(d.kind, crate::lower::LowerDiagnosticKind::Error)
+                            }) {
+                                return Action::Continue(Err(EvalError::user_error(
+                                    diag.message,
+                                    diag.span,
+                                )
+                                .into()));
                             }
                             stack.push(Cont::PredicateCheck(Box::new(PredicateCheckData {
                                 value: value.clone(),
@@ -2722,8 +2757,15 @@ pub(crate) async fn apply_cont(
                         annotation.node.get_property(DEFAULT_ANNOTATION_KEY)
                     {
                         let (lowered_default, lower_diags) = crate::lower::lower(default_node);
-                        if let Some(diag) = lower_diags.into_iter().find(|d| matches!(d.kind, crate::lower::LowerDiagnosticKind::Error)) {
-                            return Action::Continue(Err(EvalError::user_error(diag.message, diag.span).into()));
+                        if let Some(diag) = lower_diags
+                            .into_iter()
+                            .find(|d| matches!(d.kind, crate::lower::LowerDiagnosticKind::Error))
+                        {
+                            return Action::Continue(Err(EvalError::user_error(
+                                diag.message,
+                                diag.span,
+                            )
+                            .into()));
                         }
                         Action::EvalCore {
                             expr: Arc::new(lowered_default),
@@ -2906,7 +2948,7 @@ pub(crate) async fn apply_cont(
                         // by subsequent expressions. Dead bindings (never accessed) never fire,
                         // which is the correct lazy evaluation behavior.
                         let child_env =
-                            Arc::new(RwLock::new(Environment::with_parent(Arc::clone(&env))));
+                            Arc::new(RwLock::new(crate::env::Env::with_parent(Arc::clone(&env))));
 
                         {
                             let mut env_write = child_env.write().unwrap();
@@ -2914,7 +2956,7 @@ pub(crate) async fn apply_cont(
                                 if let HashableValue::Str(name) = key {
                                     if static_key_set.contains(name.as_ref()) {
                                         let val_thunk = ctx.get_thunk(thunk_id);
-                                        env_write.insert(name.to_string(), val_thunk);
+                                        env_write.insert_value(name.to_string(), val_thunk);
                                     }
                                 }
                             }
@@ -2989,7 +3031,7 @@ pub(crate) async fn apply_cont(
                     // by subsequent expressions. Dead bindings (never accessed) never fire,
                     // which is the correct lazy evaluation behavior.
                     let child_env =
-                        Arc::new(RwLock::new(Environment::with_parent(Arc::clone(&env))));
+                        Arc::new(RwLock::new(crate::env::Env::with_parent(Arc::clone(&env))));
 
                     {
                         let mut env_write = child_env.write().unwrap();
@@ -2997,7 +3039,7 @@ pub(crate) async fn apply_cont(
                             if let HashableValue::Str(name) = key {
                                 if static_key_set.contains(name.as_ref()) {
                                     let val_thunk = ctx.get_thunk(thunk_id);
-                                    env_write.insert(name.to_string(), val_thunk);
+                                    env_write.insert_value(name.to_string(), val_thunk);
                                 }
                             }
                         }
@@ -3059,8 +3101,14 @@ pub(crate) async fn apply_cont(
                         {
                             let resolved_binding = to_match_binding.get().cloned();
                             let (lowered_pred, lower_diags) = crate::lower::lower(pred_node);
-                            if let Some(diag) = lower_diags.into_iter().find(|d| matches!(d.kind, crate::lower::LowerDiagnosticKind::Error)) {
-                                return Action::Continue(Err(EvalError::user_error(diag.message, diag.span).into()));
+                            if let Some(diag) = lower_diags.into_iter().find(|d| {
+                                matches!(d.kind, crate::lower::LowerDiagnosticKind::Error)
+                            }) {
+                                return Action::Continue(Err(EvalError::user_error(
+                                    diag.message,
+                                    diag.span,
+                                )
+                                .into()));
                             }
                             let pred_span = lowered_pred.span.clone();
                             // Check if the lowered predicate is a Call expression.
@@ -3076,7 +3124,7 @@ pub(crate) async fn apply_cont(
                                     // Insert scrutinee into a child env under a gensym name.
                                     let subj_name = "%pred_subj".to_string();
                                     let child_env = Arc::new(RwLock::new(
-                                        Environment::with_parent(Arc::clone(&env)),
+                                        crate::env::Env::with_parent(Arc::clone(&env)),
                                     ));
                                     let scrutinee_thunk = Arc::new(Thunk::new_materialized(
                                         scrutinee_value.clone(),
@@ -3085,7 +3133,7 @@ pub(crate) async fn apply_cont(
                                     child_env
                                         .write()
                                         .unwrap()
-                                        .insert(subj_name.clone(), scrutinee_thunk);
+                                        .insert_value(subj_name.clone(), scrutinee_thunk);
                                     // Append a Var referencing `%pred_subj` as the final positional arg.
                                     // The name is bound at slot 0 in child_env (the only binding).
                                     args.push(Arc::new(Spanned::new(
@@ -3518,8 +3566,14 @@ pub(crate) async fn apply_cont(
                         {
                             // Evaluate default expression iteratively
                             let (lowered_default, lower_diags) = crate::lower::lower(default_node);
-                            if let Some(diag) = lower_diags.into_iter().find(|d| matches!(d.kind, crate::lower::LowerDiagnosticKind::Error)) {
-                                return Action::Continue(Err(EvalError::user_error(diag.message, diag.span).into()));
+                            if let Some(diag) = lower_diags.into_iter().find(|d| {
+                                matches!(d.kind, crate::lower::LowerDiagnosticKind::Error)
+                            }) {
+                                return Action::Continue(Err(EvalError::user_error(
+                                    diag.message,
+                                    diag.span,
+                                )
+                                .into()));
                             }
                             Action::EvalCore {
                                 expr: Arc::new(lowered_default),
@@ -3589,11 +3643,11 @@ async fn eval_case_arm_structural_pattern(
     pattern: &Arc<Spanned<CoreExpr>>,
     binding_set: &std::collections::HashSet<String>,
     scrutinee_value: &Value,
-    env: &Arc<RwLock<Environment>>,
+    env: &Arc<RwLock<crate::env::Env>>,
     match_span: Span,
     ctx: &Arc<EvalContext>,
-) -> EvalResult<Option<Arc<RwLock<Environment>>>> {
-    let arm_env = Arc::new(RwLock::new(Environment::with_parent(Arc::clone(env))));
+) -> EvalResult<Option<Arc<RwLock<crate::env::Env>>>> {
+    let arm_env = Arc::new(RwLock::new(crate::env::Env::with_parent(Arc::clone(env))));
     if eval_structural_pattern_inner(
         &pattern.node,
         binding_set,
@@ -3611,12 +3665,12 @@ async fn eval_case_arm_structural_pattern(
         {
             let mut env_write = arm_env.write().unwrap();
             for name in binding_set {
-                if name != "_" && !env_write.slot_names.iter().any(|n| n == name) {
+                if name != "_" && !env_write.slots.contains_key(name.as_str()) {
                     let thunk = Arc::new(Thunk::new_materialized(
                         scrutinee_value.clone(),
                         match_span.clone(),
                     ));
-                    env_write.insert(name.clone(), thunk);
+                    env_write.insert_value(name.clone(), thunk);
                 }
             }
         }
@@ -3638,8 +3692,8 @@ fn eval_structural_pattern_inner<'a>(
     pattern: &'a CoreExpr,
     binding_set: &'a std::collections::HashSet<String>,
     scrutinee_value: &'a Value,
-    env: &'a Arc<RwLock<Environment>>,
-    arm_env: &'a Arc<RwLock<Environment>>,
+    env: &'a Arc<RwLock<crate::env::Env>>,
+    arm_env: &'a Arc<RwLock<crate::env::Env>>,
     match_span: Span,
     ctx: &'a Arc<EvalContext>,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<bool>> + 'a>> {
@@ -3702,7 +3756,10 @@ fn eval_structural_pattern_inner<'a>(
                 // Check if annotation contains an "is:" property (predicate)
                 if let Some(pred_surface_node) = annotation.node.get_property(IS_ANNOTATION_KEY) {
                     let (lowered_pred, lower_diags) = crate::lower::lower(pred_surface_node);
-                    if let Some(diag) = lower_diags.into_iter().find(|d| matches!(d.kind, crate::lower::LowerDiagnosticKind::Error)) {
+                    if let Some(diag) = lower_diags
+                        .into_iter()
+                        .find(|d| matches!(d.kind, crate::lower::LowerDiagnosticKind::Error))
+                    {
                         return Err(EvalError::user_error(diag.message, diag.span).into());
                     }
                     let pred_expr_core = Arc::new(lowered_pred);
@@ -3718,8 +3775,8 @@ fn eval_structural_pattern_inner<'a>(
 
                     let bound_value_thunk = {
                         let env_read = arm_env.read().unwrap();
-                        if let Some(idx) = env_read.slot_names.iter().rposition(|n| n == name) {
-                            Arc::clone(&env_read.slots[idx])
+                        if let Some(thunk) = env_read.get_value_by_name(name) {
+                            thunk
                         } else {
                             return Err(EvalError::internal(
                                 format!(
@@ -3936,7 +3993,7 @@ fn eval_structural_pattern_inner<'a>(
                                 arm_env
                                     .write()
                                     .unwrap()
-                                    .insert(name.clone(), scrutinee_thunk);
+                                    .insert_value(name.clone(), scrutinee_thunk);
                             }
 
                             let guard_expr_spanned = Arc::new(crate::ast::Spanned::new(
@@ -4049,8 +4106,8 @@ async fn bind_or_pin_name(
     name: &str,
     binding_set: &std::collections::HashSet<String>,
     scrutinee_value: &Value,
-    env: &Arc<RwLock<Environment>>,
-    arm_env: &Arc<RwLock<Environment>>,
+    env: &Arc<RwLock<crate::env::Env>>,
+    arm_env: &Arc<RwLock<crate::env::Env>>,
     match_span: &Span,
     ctx: &Arc<EvalContext>,
     pin_level: u32,
@@ -4062,7 +4119,10 @@ async fn bind_or_pin_name(
             scrutinee_value.clone(),
             match_span.clone(),
         ));
-        arm_env.write().unwrap().insert(name.to_string(), thunk);
+        arm_env
+            .write()
+            .unwrap()
+            .insert_value(name.to_string(), thunk);
         Ok(true)
     } else {
         // Pin: look up name via de Bruijn coordinates in env, compare with scrutinee.
@@ -4072,7 +4132,7 @@ async fn bind_or_pin_name(
                 match_span.clone(),
             ).into());
         }
-        let pin_thunk = match env.read().unwrap().get_slot(pin_level, pin_slot) {
+        let pin_thunk = match env.read().unwrap().get_value_at(pin_level, pin_slot) {
             Some(t) => t,
             None => {
                 return Err(EvalError::internal(
@@ -4153,12 +4213,12 @@ mod tests {
     use super::*;
     use crate::ast::CoreExpr;
     use crate::test_util::{sp, test_span};
-    use crate::value::{Environment, Thunk};
-    fn empty_env() -> Arc<RwLock<Environment>> {
-        Arc::new(RwLock::new(Environment::new()))
+    use crate::value::Thunk;
+    fn empty_env() -> Arc<RwLock<crate::env::Env>> {
+        Arc::new(RwLock::new(crate::env::Env::new()))
     }
 
-    fn test_env() -> Arc<RwLock<Environment>> {
+    fn test_env() -> Arc<RwLock<crate::env::Env>> {
         empty_env()
     }
 
@@ -4705,7 +4765,7 @@ mod tests {
         let fallback_thunk = Arc::new(Thunk::new_materialized(Value::Int(99), span.clone()));
         env.write()
             .unwrap()
-            .insert("fallback_val".into(), fallback_thunk);
+            .insert_value("fallback_val".into(), fallback_thunk);
 
         // Inner thunk: a String value — fails the Int guard.
         let inner = Arc::new(Thunk::new_materialized(

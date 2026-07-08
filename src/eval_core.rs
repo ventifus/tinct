@@ -22,7 +22,7 @@ use crate::builtins::MAX_COLLECT_SIZE;
 use crate::error::{EvalError, EvalResult};
 use crate::eval::{eval_call_core, eval_dict_core, materialize, EvalContext};
 use crate::value::ThunkId;
-use crate::value::{string_val, Environment, HashableValue, Thunk, Value};
+use crate::value::{string_val, HashableValue, Thunk, Value};
 
 // maybe_wrap_guard removed: type guards are now inline on SurfaceNode.type_guard
 // (TypeAnnotation OnceLock). The lowerer wraps them in CoreExpr::TypeAssert during lowering.
@@ -178,7 +178,7 @@ async fn collect_seq_elements(
 /// Operates entirely on SurfaceNode — no Expr round-trip.
 fn eval_quote_preprocess<'a>(
     node: Arc<crate::ast::SurfaceNode>,
-    env: &'a Arc<RwLock<Environment>>,
+    env: &'a Arc<RwLock<crate::env::Env>>,
     ctx: &'a Arc<EvalContext>,
 ) -> std::pin::Pin<
     Box<dyn std::future::Future<Output = EvalResult<Arc<crate::ast::SurfaceNode>>> + 'a>,
@@ -520,7 +520,7 @@ fn eval_quote_preprocess<'a>(
 
 async fn eval_quote_walk(
     node: Arc<crate::ast::SurfaceNode>,
-    env: Arc<RwLock<Environment>>,
+    env: Arc<RwLock<crate::env::Env>>,
     ctx: &Arc<EvalContext>,
 ) -> EvalResult<Arc<Thunk>> {
     let span = node.span.clone();
@@ -548,7 +548,7 @@ async fn eval_quote_walk(
 /// duplicating this logic. The two call sites are identical except for crate-path prefixes.
 pub(crate) async fn extract_fn_annotation_extra(
     return_ann: Option<&crate::ast::Spanned<crate::ast::Annotation>>,
-    env: &Arc<RwLock<Environment>>,
+    env: &Arc<RwLock<crate::env::Env>>,
     ctx: &Arc<EvalContext>,
 ) -> EvalResult<IndexMap<String, Value>> {
     let Some(ann_spanned) = return_ann else {
@@ -613,7 +613,7 @@ pub(crate) async fn extract_fn_annotation_extra(
 /// Dict/Call/Fn to eliminate the bridge conversions.
 pub(crate) fn eval_core_expr<'a>(
     expr: &'a Spanned<CoreExpr>,
-    env: &'a Arc<RwLock<Environment>>,
+    env: &'a Arc<RwLock<crate::env::Env>>,
     ctx: &'a Arc<EvalContext>,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = EvalResult<Arc<Thunk>>> + 'a>> {
     Box::pin(async move {
@@ -646,17 +646,27 @@ pub(crate) fn eval_core_expr<'a>(
             } => {
                 // Variable lookup with de Bruijn coordinates — O(1) slot-based lookup.
                 let env_lock = env.read().unwrap();
-                match env_lock.get_slot(*level, *slot) {
+                match env_lock.get_value_at(*level, *slot) {
                     Some(thunk) => Ok(thunk),
                     None => {
-                        // Slot lookup failed. field-get and slot-get use MAX/MAX when the resolver
-                        // had no env (e.g. type-stage documents are skipped by builtin-resolve).
-                        // They fall back to name-based lookup as a VM-level fallback.
+                        // Slot lookup failed. Three name-based fallback cases use MAX/MAX:
+                        //
+                        // 1. field-get and slot-get: the resolver had no env (e.g. type-stage
+                        //    documents are skipped by builtin-resolve).
+                        //
+                        // 2. Typeclass instance bindings: the type checker resolved a typeclass
+                        //    method call to a concrete instance (call_dispatch in lower.rs emits
+                        //    level=MAX, slot=MAX with the mangled binding name, e.g.
+                        //    ɪɴꜱᴛᴀɴᴄᴇ⧼Addable∷+⟨Int,Int,Int⟩⧽). The instance binding is in
+                        //    scope at runtime (injected by the lowered InstanceDecl), so
+                        //    get_value_by_name traverses the env chain to find it.
+                        //
                         // All other MAX/MAX references are compiler bugs.
-                        if *level == u32::MAX && *slot == u32::MAX
-                            && (name == "field-get" || name == "slot-get")
+                        if *level == u32::MAX
+                            && *slot == u32::MAX
+                            && (name == "field-get" || name == "slot-get" || name.starts_with('ɪ'))
                         {
-                            if let Some(thunk) = env_lock.get_by_name(name) {
+                            if let Some(thunk) = env_lock.get_value_by_name(name) {
                                 return Ok(thunk);
                             }
                         }
@@ -898,7 +908,6 @@ pub(crate) fn eval_core_expr<'a>(
                 span.clone(),
             )
             .into()),
-
         }
         // Type guards are now inline on AST nodes (TypeAnnotation OnceLock);
         // the lowerer wraps them in CoreExpr::TypeAssert. No runtime guard wrapping needed here.

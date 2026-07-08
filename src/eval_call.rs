@@ -8,7 +8,7 @@ use smallvec::SmallVec;
 
 use crate::ast::{CoreExpr, CoreNamedArg, Param, Span, Spanned, SurfaceNode};
 use crate::error::{ArityBound, EvalError, EvalResult};
-use crate::value::{Environment, HashableValue, Thunk, ThunkId, Value};
+use crate::value::{HashableValue, Thunk, ThunkId, Value};
 
 // Import eval function and context from eval module
 // Note: this creates a circular dependency, but it's safe because
@@ -51,7 +51,7 @@ pub(crate) async fn eval_call_core(
     func_expr: &Spanned<CoreExpr>,
     args: &[Arc<Spanned<CoreExpr>>],
     named_args: &[Spanned<CoreNamedArg>],
-    env: &Arc<RwLock<Environment>>,
+    env: &Arc<RwLock<crate::env::Env>>,
     ctx: &Arc<EvalContext>,
     call_span: &Span,
     original_call: Arc<Spanned<CoreExpr>>,
@@ -115,10 +115,10 @@ pub(crate) async fn eval_call_core(
 pub struct CallContext<'a> {
     pub params: &'a [Param],
     pub body: &'a Arc<Spanned<CoreExpr>>,
-    pub closure_env: &'a Arc<RwLock<Environment>>,
+    pub closure_env: &'a Arc<RwLock<crate::env::Env>>,
     pub positional: &'a [Arc<Thunk>],
     pub named: Option<&'a IndexMap<String, Arc<Thunk>>>,
-    pub default_env: &'a Arc<RwLock<Environment>>,
+    pub default_env: &'a Arc<RwLock<crate::env::Env>>,
     pub call_span: Span,
     /// Label for stack traces (e.g. "call $f"). `None` for anonymous calls.
     pub origin: Option<Arc<str>>,
@@ -164,7 +164,7 @@ pub async fn invoke_function(ctx: &CallContext<'_>) -> EvalResult<Arc<Thunk>> {
 /// Returns `(body_expr, call_env)` so the caller can construct `Action::EvalCore`.
 pub(crate) async fn invoke_function_tco(
     ctx: &CallContext<'_>,
-) -> EvalResult<(Arc<Spanned<CoreExpr>>, Arc<RwLock<Environment>>)> {
+) -> EvalResult<(Arc<Spanned<CoreExpr>>, Arc<RwLock<crate::env::Env>>)> {
     let call_env = bind_args_thunks(
         ctx.params,
         ctx.positional,
@@ -191,12 +191,12 @@ pub(crate) async fn bind_args_thunks(
     params: &[Param],
     positional: &[Arc<Thunk>],
     named: Option<&IndexMap<String, Arc<Thunk>>>,
-    default_env: &Arc<RwLock<Environment>>,
-    closure_env: &Arc<RwLock<Environment>>,
+    default_env: &Arc<RwLock<crate::env::Env>>,
+    closure_env: &Arc<RwLock<crate::env::Env>>,
     ctx: &Arc<EvalContext>,
     call_span: &Span,
-) -> EvalResult<Arc<RwLock<Environment>>> {
-    let call_env = Arc::new(RwLock::new(Environment::with_parent(Arc::clone(
+) -> EvalResult<Arc<RwLock<crate::env::Env>>> {
+    let call_env = Arc::new(RwLock::new(crate::env::Env::with_parent(Arc::clone(
         closure_env,
     ))));
 
@@ -265,7 +265,10 @@ pub(crate) async fn bind_args_thunks(
                 param.name
             );
         };
-        call_env.write().unwrap().insert(param.name.clone(), thunk);
+        call_env
+            .write()
+            .unwrap()
+            .insert_value(param.name.clone(), thunk);
     }
 
     // BIND-SYSTEM: System-injected named args (names containing '∷') are bound directly
@@ -285,7 +288,7 @@ pub(crate) async fn bind_args_thunks(
                 call_env
                     .write()
                     .unwrap()
-                    .insert(name.clone(), Arc::clone(thunk));
+                    .insert_value(name.clone(), Arc::clone(thunk));
             }
         }
     }
@@ -373,7 +376,7 @@ pub(crate) async fn bind_args_thunks(
         call_env
             .write()
             .unwrap()
-            .insert(var_param.name.clone(), dict_thunk);
+            .insert_value(var_param.name.clone(), dict_thunk);
     }
 
     Ok(call_env)

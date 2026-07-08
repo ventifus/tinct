@@ -208,15 +208,12 @@
 
   # ── Named section accumulation ────────────────────────────────────────────
 
-  # Rust returns unqualified tags "Named"/"Unnamed" for doc.name — match them without
-  # the "DocName." prefix. This is consistent with what builtins_dict.rs produces.
+  # doc.name returns Variant{tag:"Named",payload:String} or Variant{tag:"Unnamed"}.
+  # Use builtin-tag-of / builtin-variant-payload to avoid constructor name lookup.
   update-named: [fn [let state val doc]
-    [match doc.name
-      # Named payload is a raw String (not a dict) — access it directly as p, not p.name.
-      [case [let p] [Named p]
-        [builtin-merge state.named [[[builtin-string-concat "%" p]]: val]]]
-      Unnamed:
-        state.named]]
+    [if [builtin-eq-string [builtin-tag-of doc.name] "Named"]
+      [builtin-merge state.named [make-entry [builtin-string-concat "%" [builtin-variant-payload doc.name]] val]]
+      state.named]]
 
   # ── Diagnostic formatting ─────────────────────────────────────────────────
   # Each diagnostic is a unified error dict:
@@ -226,7 +223,7 @@
   # Uses only core builtins — safe to call before prelude is loaded.
   format-diagnostic: [fn [let d]
     [s: d.span]
-    [file-part: [builtin-if [builtin-eq-int [builtin-length s.file] 0] "" [builtin-string-concat s.file ":"]]]
+    [file-part: [builtin-if [builtin-eq-int [builtin-length s.file] 0] "<unknown>:" [builtin-string-concat s.file ":"]]]
     [join "" [0: file-part  1: [builtin-int->string s.start-line]  2: ":"  3: [builtin-int->string s.start-col]  4: ": "  5: d.kind  6: " — "  7: d.message  8: "\n"]]]
 
   emit-diagnostics: [fn [let diagnostics]

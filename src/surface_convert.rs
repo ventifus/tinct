@@ -2861,10 +2861,10 @@ mod tests {
     use super::*;
 
     fn test_ctx() -> Arc<crate::eval::EvalContext> {
-        use crate::value::Environment;
+        use crate::env::Env;
         use std::sync::RwLock;
 
-        let env = Arc::new(RwLock::new(Environment::new()));
+        let env = Arc::new(RwLock::new(Env::new()));
         let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();
         crate::eval::EvalContext::new(base_dir, Arc::clone(&env), Arc::clone(&env), false)
     }

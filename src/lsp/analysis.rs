@@ -44,14 +44,13 @@ pub async fn hover_at(
         // Parse and type-check the block to get a local type_map and scheme_map.
         // doc.type_map is empty for markdown documents (type-checking runs per-block,
         // not at document level). We must re-run here to populate hover type info.
-        let block_parsed = crate::parser::parse(&block.code).ok()?;
-        // Desugar and typecheck the block — pipeline: parse → desugar → resolve → typecheck.
-        let mut program = block_parsed.program.clone();
+        // Move program out of ParseOutput — cloning would share Arcs and cause
+        // Arc::get_mut inside desugar_surface_program to panic.
+        let mut program = crate::parser::parse(&block.code).ok()?.program;
         crate::desugar::desugar_surface_program(&mut program);
-        let (seeded_env_rc, _) = crate::imports::build_type_env(&program, None).await;
-        // typecheck_surface_program takes Arc<TypeEnv>; build_type_env returns Rc.
+        let (seeded_env, _) = crate::imports::build_type_env(&program, None).await;
         let (_type_errors, block_type_map, block_doc_map, block_scheme_map, _diagnostics) =
-            crate::typecheck::typecheck_surface_program(&program, seeded_env_rc);
+            crate::typecheck::typecheck_surface_program(&program, seeded_env);
 
         // Walk the block's Surface AST with block-local offset
         for document in &program.documents {
@@ -1347,9 +1346,10 @@ pub async fn diagnostics_for(
             let block_parse_result = crate::parser::parse(&block.code);
 
             match block_parse_result {
-                Ok(output) => {
+                Ok(mut output) => {
                     // Recovered parse errors
-                    for err in output.errors {
+                    let parse_errors = std::mem::take(&mut output.errors);
+                    for err in parse_errors {
                         let mut diag = parse_error_to_diagnostic(&err, &block.code);
                         // Map span from block-local to markdown coordinates
                         if let Some(span) = err.span {
@@ -1365,13 +1365,15 @@ pub async fn diagnostics_for(
                     }
 
                     // Type errors — pipeline: parse → desugar → resolve → typecheck.
-                    let mut program = output.program.clone();
+                    // Move program out of output (don't clone — shared Arcs would cause
+                    // Arc::get_mut inside desugar_surface_program to panic).
+                    let mut program = output.program;
                     crate::desugar::desugar_surface_program(&mut program);
 
                     // Type check
-                    let (seeded_env_rc, _) = crate::imports::build_type_env(&program, None).await;
+                    let (seeded_env, _) = crate::imports::build_type_env(&program, None).await;
                     let (type_errors, _, _, _, _) =
-                        crate::typecheck::typecheck_surface_program(&program, seeded_env_rc);
+                        crate::typecheck::typecheck_surface_program(&program, seeded_env);
 
                     for err in type_errors {
                         let mut diag = type_error_to_diagnostic(&err, &block.code, uri);
@@ -1647,10 +1649,10 @@ mod tests {
     use std::sync::{Arc, RwLock};
 
     use crate::builtins::build_core_env;
-    use crate::value::Environment;
+    use crate::env::Env;
 
     /// Helper: create a core env for tests.
-    async fn test_env() -> Arc<RwLock<Environment>> {
+    async fn test_env() -> Arc<RwLock<Env>> {
         build_core_env()
     }
 

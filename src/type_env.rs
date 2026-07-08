@@ -58,7 +58,7 @@ pub fn instantiate_at_level(ty: &Type, state: &mut InferState) -> Type {
         if !renaming.type_map.borrow().contains_key(&var) {
             let fresh_name = format!("_t{}", state.name_counter);
             state.name_counter = state.name_counter.saturating_add(1);
-            state.levels.insert(fresh_name.clone(), state.level);
+            state.set_level(fresh_name.clone(), state.level);
 
             // If this var appears as Type::Operator in the original type, preserve the Operator kind
             if operator_names.contains(&var) {
@@ -148,6 +148,11 @@ fn rename_single_type_var(ty: &Type, old_name: &str, fresh_name: &str, level: u3
             tag: tag.clone(),
             fields: rename_single_type_var_in_row(fields, old_name, fresh_name, level),
         },
+        // Recursive(μvar.body): rename inside body; do NOT rename the μ-binder itself.
+        Type::Recursive { var, body } => Type::Recursive {
+            var: var.clone(),
+            body: Box::new(rename_single_type_var(body, old_name, fresh_name, level)),
+        },
         // Primitives, Any, Error, Number, Proxy: no type variables inside.
         _ => ty.clone(),
     }
@@ -199,7 +204,7 @@ pub fn instantiate_scheme(
     if scheme.type_vars.len() == 1 && scheme.kind_vars.is_empty() {
         let fresh_name = format!("_t{}", state.name_counter);
         state.name_counter = state.name_counter.saturating_add(1);
-        state.levels.insert(fresh_name.clone(), level);
+        state.set_level(fresh_name.clone(), level);
         var_renaming.insert(scheme.type_vars[0].clone(), fresh_name.clone());
 
         // Copy constraints with renamed variables
@@ -290,7 +295,7 @@ pub fn instantiate_scheme(
     for var in &scheme.type_vars {
         let fresh_name = format!("_t{}", state.name_counter);
         state.name_counter = state.name_counter.saturating_add(1);
-        state.levels.insert(fresh_name.clone(), level);
+        state.set_level(fresh_name.clone(), level);
         var_renaming.insert(var.clone(), fresh_name.clone());
         renaming
             .type_map
@@ -310,7 +315,7 @@ pub fn instantiate_scheme(
     for (var, kind) in &scheme.kind_vars {
         let fresh_name = format!("_t{}", state.name_counter);
         state.name_counter = state.name_counter.saturating_add(1);
-        state.levels.insert(fresh_name.clone(), level);
+        state.set_level(fresh_name.clone(), level);
         var_renaming.insert(var.clone(), fresh_name.clone());
 
         let instantiated_type = match kind {
@@ -957,7 +962,8 @@ pub fn generalize_with_doc(
         // Simplify constraints: remove redundant constraints entailed by others
         // For example, if both `Comparable a` and `Equatable a` are present,
         // remove `Equatable a` (it's entailed via Comparable's superclass).
-        simplify_constraints(&state.class_env, &mut generalizable_constraints);
+        let class_env_snapshot = state.build_class_env_snapshot();
+        simplify_constraints(&class_env_snapshot, &mut generalizable_constraints);
 
         // Collect label vars: TypeVars that are label-kinded (Kind::Label in kind_env)
         let label_vars: Vec<String> = generalizable_type_vars
@@ -1101,6 +1107,11 @@ fn format_type_pretty(ty: &Type, rename: &HashMap<String, String>) -> String {
                 .join(", ");
             format!("{}({})", fn_name, args_str)
         }
+        // Error sentinel: always show as <error> regardless of payload.
+        // The test test_hover_type_not_shown_on_error asserts exact equality with
+        // "Variable: $undefined (<error>)". Using Display would emit "<error: msg>"
+        // for non-empty error payloads, breaking the assertion.
+        Type::Error(_) => "<error>".to_string(),
         // All other types: fall back to Display (concrete types have no TypeVars to rename)
         other => other.to_string(),
     }
@@ -1209,8 +1220,21 @@ pub struct TypeEnv {
     extras: HashMap<String, TypeScheme>,
     type_aliases: HashMap<String, TypeAlias>,
     parent: Option<Rc<TypeEnv>>,
+    /// Class declarations registered in this scope frame.
+    /// Populated by `insert_class` during type-checking; walked by `get_class` and
+    /// `build_class_env`. Classes in parent frames are visible to children (inner wins).
+    classes: IndexMap<String, ClassDecl>,
+    /// Instance declarations registered in this scope frame, keyed by the mangled instance
+    /// binding name (e.g. `ɪɴꜱᴛᴀɴᴄᴇ⧼...⧽`). Populated by `insert_instance` during
+    /// type-checking; walked by `get_instance`, `all_instances`, and `build_instance_env`.
+    instances: IndexMap<String, InstanceDecl>,
+    /// Type constructor definitions registered in this scope frame.
+    /// Used by `resolve_constructor_tag` to map unqualified constructor names to their
+    /// fully-qualified form (e.g. "Ok" → "Result.Ok" when Result is in scope).
+    tycon_defs: HashMap<String, std::sync::Arc<crate::type_def::TyConDef>>,
 }
 
+#[allow(dead_code)]
 impl TypeEnv {
     pub fn new() -> Self {
         Self {
@@ -1218,6 +1242,9 @@ impl TypeEnv {
             extras: HashMap::new(),
             type_aliases: HashMap::new(),
             parent: None,
+            classes: IndexMap::new(),
+            instances: IndexMap::new(),
+            tycon_defs: HashMap::new(),
         }
     }
 
@@ -1227,6 +1254,9 @@ impl TypeEnv {
             extras: HashMap::new(),
             type_aliases: HashMap::new(),
             parent: Some(Rc::clone(parent)),
+            classes: IndexMap::new(),
+            instances: IndexMap::new(),
+            tycon_defs: HashMap::new(),
         }
     }
 
@@ -1377,7 +1407,7 @@ impl TypeEnv {
         name: String,
         def: std::sync::Arc<crate::type_def::TyConDef>,
     ) {
-        // No-op: TyCon registration goes through InferState.tycon_env, not TypeEnv.
+        self.tycon_defs.insert(name, def);
     }
 
     /// Register alias type schemes (copy the scheme from canonical to alias names).
@@ -1391,8 +1421,28 @@ impl TypeEnv {
 
     /// Look up the qualified form of a constructor tag.
     /// E.g., "Ok" → "Result.Ok" if Result is in scope.
-    /// Returns `None` if no matching TyCon is found.
-    pub fn resolve_constructor_tag(&self, _tag: &str) -> Option<String> {
+    /// Returns the qualified tag "TypeName.CtorName" if found, None otherwise.
+    pub fn resolve_constructor_tag(&self, tag: &str) -> Option<String> {
+        // Search own tycon_defs for a constructor matching the unqualified name
+        for (tycon_name, def) in &self.tycon_defs {
+            for (ctor_tag, _arity) in &def.constructors {
+                // ctor_tag is fully qualified: "TypeName.CtorName"
+                // Extract the unqualified part after the last dot
+                if let Some(unqualified) = ctor_tag.rfind('.').map(|pos| &ctor_tag[pos + 1..]) {
+                    if unqualified == tag {
+                        return Some(ctor_tag.clone());
+                    }
+                }
+                // Also accept exact match for constructors already in qualified form
+                if ctor_tag == tag {
+                    return Some(format!("{}.{}", tycon_name, tag));
+                }
+            }
+        }
+        // Walk parent chain
+        if let Some(ref parent) = self.parent {
+            return parent.resolve_constructor_tag(tag);
+        }
         None
     }
 
@@ -1429,6 +1479,26 @@ impl TypeEnv {
         }
     }
 
+    /// Iterate over the slot-indexed scheme entries in THIS frame only (no parent walk).
+    pub fn iter_slotted(&self) -> impl Iterator<Item = (&str, &TypeScheme)> {
+        self.slotted.iter().map(|(k, v)| (k.as_str(), v))
+    }
+
+    /// Iterate over the extras (name-only) scheme entries in THIS frame only (no parent walk).
+    pub fn iter_extras(&self) -> impl Iterator<Item = (&str, &TypeScheme)> {
+        self.extras.iter().map(|(k, v)| (k.as_str(), v))
+    }
+
+    /// Iterate over the class declarations in THIS frame only (no parent walk).
+    pub fn own_classes(&self) -> impl Iterator<Item = &ClassDecl> {
+        self.classes.values()
+    }
+
+    /// Iterate over the instance declarations in THIS frame only (no parent walk).
+    pub fn own_instances(&self) -> impl Iterator<Item = (&str, &InstanceDecl)> {
+        self.instances.iter().map(|(k, v)| (k.as_str(), v))
+    }
+
     /// Return the parent environment frame, if any.
     ///
     /// Used by `imports::collect_names_above_baseline` to walk the frame chain up to
@@ -1436,6 +1506,118 @@ impl TypeEnv {
     pub fn parent(&self) -> Option<&Rc<TypeEnv>> {
         self.parent.as_ref()
     }
+
+    // ---- Class and instance registration ----
+
+    /// Insert a class declaration into this frame, keyed by `decl.name`.
+    /// If a class with the same name already exists in this frame, it is overwritten.
+    pub fn insert_class(&mut self, decl: ClassDecl) {
+        self.classes.insert(decl.name.clone(), decl);
+    }
+
+    /// Insert an instance declaration into this frame, keyed by `mangled_name`.
+    /// The mangled name is the instance binding name used in the runtime env
+    /// (e.g. `ɪɴꜱᴛᴀɴᴄᴇ⧼Addable Int Float Float⧽`). Idempotent: if an entry
+    /// with this key already exists, it is overwritten.
+    pub fn insert_instance(&mut self, mangled_name: String, decl: InstanceDecl) {
+        self.instances.insert(mangled_name, decl);
+    }
+
+    /// Look up a class declaration by name, walking the parent chain (inner wins).
+    /// Returns a clone so the caller is not restricted by borrow lifetimes.
+    pub fn get_class(&self, name: &str) -> Option<ClassDecl> {
+        if let Some(decl) = self.classes.get(name) {
+            return Some(decl.clone());
+        }
+        let mut current = self.parent.as_deref();
+        while let Some(env) = current {
+            if let Some(decl) = env.classes.get(name) {
+                return Some(decl.clone());
+            }
+            current = env.parent.as_deref();
+        }
+        None
+    }
+
+    /// Look up an instance declaration by mangled name, walking the parent chain (inner wins).
+    pub fn get_instance(&self, mangled: &str) -> Option<InstanceDecl> {
+        if let Some(decl) = self.instances.get(mangled) {
+            return Some(decl.clone());
+        }
+        let mut current = self.parent.as_deref();
+        while let Some(env) = current {
+            if let Some(decl) = env.instances.get(mangled) {
+                return Some(decl.clone());
+            }
+            current = env.parent.as_deref();
+        }
+        None
+    }
+
+    /// Collect all class declarations from the full parent chain, root-first.
+    /// Later (inner) frames with the same class name overwrite earlier (outer) ones.
+    /// Returns one `ClassDecl` per unique class name.
+    pub fn all_classes(&self) -> Vec<ClassDecl> {
+        // Collect into a BTreeMap to deduplicate by name (inner wins via overwrite).
+        let mut map: std::collections::BTreeMap<String, ClassDecl> =
+            std::collections::BTreeMap::new();
+        self.collect_all_classes_into(&mut map);
+        map.into_values().collect()
+    }
+
+    fn collect_all_classes_into(&self, map: &mut std::collections::BTreeMap<String, ClassDecl>) {
+        // Walk parent chain first (root-to-leaf), then overwrite with self (inner wins).
+        if let Some(ref parent) = self.parent {
+            parent.collect_all_classes_into(map);
+        }
+        for (name, decl) in &self.classes {
+            map.insert(name.clone(), decl.clone());
+        }
+    }
+
+    /// Collect all instance declarations from the full parent chain.
+    /// Returns `(mangled_name, InstanceDecl)` pairs. Inner frames overwrite outer for
+    /// the same mangled key.
+    pub fn all_instances(&self) -> Vec<(String, InstanceDecl)> {
+        let mut map: std::collections::BTreeMap<String, InstanceDecl> =
+            std::collections::BTreeMap::new();
+        self.collect_all_instances_into(&mut map);
+        map.into_iter().collect()
+    }
+
+    fn collect_all_instances_into(
+        &self,
+        map: &mut std::collections::BTreeMap<String, InstanceDecl>,
+    ) {
+        if let Some(ref parent) = self.parent {
+            parent.collect_all_instances_into(map);
+        }
+        for (mangled, decl) in &self.instances {
+            map.insert(mangled.clone(), decl.clone());
+        }
+    }
+
+    /// Build a `ClassEnv` from this TypeEnv's class chain (root-first).
+    /// Used to seed `state.env` with class declarations from a TypeEnv chain.
+    pub fn build_class_env(&self) -> ClassEnv {
+        let mut env = ClassEnv::new();
+        for decl in self.all_classes() {
+            env.insert(decl);
+        }
+        env
+    }
+
+    /// Build an `InstanceEnv` from this TypeEnv's instance chain (root-first).
+    /// Used to seed `state.env` with instance declarations from a TypeEnv chain.
+    pub fn build_instance_env(&self) -> InstanceEnv {
+        let mut env = InstanceEnv::new();
+        for (_mangled, decl) in self.all_instances() {
+            let _ = env.insert(decl);
+        }
+        env
+    }
+
+    // ---- End class/instance registration ----
 
     /// Copy all bindings and type aliases from `other` into `self`.
     ///
@@ -1454,6 +1636,12 @@ impl TypeEnv {
         }
         for (name, alias) in other.type_aliases {
             self.type_aliases.insert(name, alias);
+        }
+        for (name, decl) in other.classes {
+            self.classes.insert(name, decl);
+        }
+        for (mangled, decl) in other.instances {
+            self.instances.insert(mangled, decl);
         }
     }
 
@@ -1625,17 +1813,20 @@ pub struct TypeError {
 
 impl TypeError {
     pub fn new(message: impl Into<String>, span: Span) -> Self {
-        let span = Span {
-            start: span.start,
-            end: span.end,
-            file: None,
-        };
         Self {
             message: message.into(),
             span,
             notes: Box::new(Vec::new()),
             code: None,
         }
+    }
+
+    /// Returns a reference to the human-readable error message.
+    ///
+    /// Provided as a method so that test code can call `err.message()` consistently
+    /// regardless of whether `message` is stored as a field or a computed value.
+    pub fn message(&self) -> &str {
+        &self.message
     }
 
     /// Builder method: attach an explicit error code and return `self`.
@@ -1659,7 +1850,25 @@ impl TypeError {
     }
 
     pub fn not_a_function(ty: &Type, span: Span) -> Self {
-        Self::new(format!("expected function type, got {ty}"), span)
+        let mut err = Self::new(format!("expected function type, got {ty}"), span);
+        if let crate::types::Type::Error(payload) = ty {
+            for root_cause in payload.iter() {
+                let rc_span = root_cause.span();
+                let location = if let Some(sf) = rc_span.file.as_ref() {
+                    format!(
+                        "{}:{}:{}",
+                        sf.path, rc_span.start.line, rc_span.start.column
+                    )
+                } else {
+                    format!("{}:{}", rc_span.start.line, rc_span.start.column)
+                };
+                err.notes.push(format!(
+                    "  = note: caused by error at {location}: {}",
+                    root_cause.message()
+                ));
+            }
+        }
+        err
     }
 
     pub fn undefined_variable(name: &str, span: Span) -> Self {
@@ -2099,8 +2308,8 @@ mod help_suggestion_tests {
         assert!(note.contains("= help: convert with [not [call $= 0.0 <expr>]]"));
     }
 
-    #[test]
-    fn test_resolve_instance_freshens_type_vars() {
+    #[tokio::test]
+    async fn test_resolve_instance_freshens_type_vars() {
         use crate::types::{InferState, InstanceDecl};
         use std::collections::HashMap;
 
@@ -2111,36 +2320,53 @@ mod help_suggestion_tests {
 
         // Create an instance: Appendable [Seq b]
         // Method: append: [Fn@[Seq b] [[Seq b] [Seq b]]]
+        let seq_b = Type::App(
+            Box::new(Type::TyCon("Seq".to_string())),
+            Box::new(Type::TypeVar("b".to_string(), 0)),
+        );
         let instance = InstanceDecl {
             class_name: "Appendable".to_string(),
-            instance_type: Type::Seq(Box::new(Type::TypeVar("b".to_string(), 0))),
+            instance_type: seq_b.clone(),
             det_positions: vec![], // Single-parameter class, no FDs
             method_types: {
                 let mut methods = HashMap::new();
                 methods.insert(
                     "append".to_string(),
                     Type::Function {
-                        params: vec![
-                            (None, Type::Seq(Box::new(Type::TypeVar("b".to_string(), 0)))),
-                            (None, Type::Seq(Box::new(Type::TypeVar("b".to_string(), 0)))),
-                        ],
-                        ret: Box::new(Type::Seq(Box::new(Type::TypeVar("b".to_string(), 0)))),
+                        params: vec![(None, seq_b.clone()), (None, seq_b.clone())],
+                        ret: Box::new(seq_b.clone()),
                         variadic: false,
+                        required_count: 2,
                     },
                 );
                 methods
             },
         };
 
-        // Register the instance
-        state.instance_env.insert(instance.clone()).unwrap();
+        // Register the instance in state.env
+        let mangled = format!(
+            "ɪɴꜱᴛᴀɴᴄᴇ⧼{} {}⧽",
+            instance.class_name, instance.instance_type
+        );
+        state
+            .env
+            .write()
+            .unwrap()
+            .insert_instance(mangled, instance.clone());
 
         // Resolve against Seq[Int]
-        let target = Type::Seq(Box::new(Type::Int));
-        // Clone to avoid borrowing state both mutably and immutably
-        let inst_env = state.instance_env.clone();
-        let resolved = inst_env.resolve_instance("Appendable", &target, &mut state);
+        let target = Type::App(
+            Box::new(Type::TyCon("Seq".to_string())),
+            Box::new(Type::Int),
+        );
+        // Build a temporary InstanceEnv snapshot to avoid borrow checker conflict
+        let inst_env = state.build_instance_env_snapshot();
+        let resolved = inst_env
+            .resolve_instance("Appendable", &target, &mut state)
+            .await;
 
+        assert!(resolved.is_ok(), "resolve_instance should not error");
+        let resolved = resolved.unwrap();
         assert!(resolved.is_some(), "should resolve Appendable for Seq[Int]");
         let resolved = resolved.unwrap();
 
@@ -2153,7 +2379,7 @@ mod help_suggestion_tests {
             assert_eq!(params.len(), 2);
             // Both params should be Seq[Int] or Seq[_tN] (freshened)
             match &params[0].1 {
-                Type::Seq(elem) => {
+                Type::App(head, elem) if matches!(head.as_ref(), Type::TyCon(n) if n == "Seq") => {
                     // Should be Int or a fresh type var that got unified with Int
                     assert!(
                         matches!(elem.as_ref(), Type::Int | Type::TypeVar(..)),
@@ -2165,7 +2391,7 @@ mod help_suggestion_tests {
             }
 
             match ret.as_ref() {
-                Type::Seq(elem) => {
+                Type::App(head, elem) if matches!(head.as_ref(), Type::TyCon(n) if n == "Seq") => {
                     assert!(
                         matches!(elem.as_ref(), Type::Int | Type::TypeVar(..)),
                         "return should be Seq[Int] or Seq[fresh], got {:?}",
@@ -2308,17 +2534,18 @@ mod help_suggestion_tests {
         use std::collections::{HashMap, HashSet};
         use std::sync::Arc;
 
-        // Build a minimal ClassDecl for "Showable" (params=[] follows Constraint::new_by_name pattern)
+        // Build a minimal ClassDecl for "Castable" (params=[] follows Constraint::new_by_name pattern)
         let class = Arc::new(ClassDecl {
-            name: "Showable".to_string(),
+            name: "Castable".to_string(),
             params: vec![],
             superclasses: vec![],
             determines: vec![],
             resolver: None,
             resolver_injective: false,
+            method_signatures: vec![],
         });
 
-        // Constraint with origin_name="str" (as would be set by instantiate_scheme at a VarRef)
+        // Constraint with origin_name="cast" (as would be set by instantiate_scheme at a VarRef)
         let arg_span = Span {
             start: Position {
                 offset: 10,
@@ -2334,8 +2561,8 @@ mod help_suggestion_tests {
         };
         let constraint_with_origin = Constraint::Class {
             class: Arc::clone(&class),
-            vars: vec!["_t42".to_string()],
-            origin_name: Some(Arc::from("str")),
+            vars: vec![crate::type_class::ConstraintArg::Var("_t42".to_string())],
+            origin_name: Some(Arc::from("cast")),
             origin_span: Some(arg_span.clone()),
         };
 
@@ -2373,13 +2600,13 @@ mod help_suggestion_tests {
         assert_eq!(diag.level, DiagnosticLevel::Warn);
         // Message must cite the origin function, not the internal TypeVar name
         assert!(
-            diag.message.contains("argument to `str`"),
-            "expected message to cite origin function 'str'; got: {}",
+            diag.message.contains("argument to `cast`"),
+            "expected message to cite origin function 'cast'; got: {}",
             diag.message
         );
         assert!(
-            diag.message.contains("Showable"),
-            "expected message to cite constraint class 'Showable'; got: {}",
+            diag.message.contains("Castable"),
+            "expected message to cite constraint class 'Castable'; got: {}",
             diag.message
         );
         assert!(
@@ -2410,6 +2637,7 @@ mod help_suggestion_tests {
             determines: vec![],
             resolver: None,
             resolver_injective: false,
+            method_signatures: vec![],
         });
 
         // Constraint WITHOUT origin info (annotation-driven, as in existing tests)

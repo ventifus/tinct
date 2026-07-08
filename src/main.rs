@@ -1537,7 +1537,7 @@ async fn run_eval(
         let cwd_thunk = tinct::Thunk::new_materialized(cwd_value, tinct::rust_span!());
         env.write()
             .unwrap()
-            .insert("%cwd".to_string(), Arc::new(cwd_thunk));
+            .insert_value("%cwd".to_string(), Arc::new(cwd_thunk));
     }
 
     // %stdin: Handle/WriteHandle removed. When -i is specified, %stdin is not injected.
@@ -1596,7 +1596,7 @@ async fn run_eval(
                     tinct::Thunk::new_materialized(libdir_value, tinct::rust_span!());
                 env.write()
                     .unwrap()
-                    .insert("%libdir".to_string(), Arc::new(libdir_thunk));
+                    .insert_value("%libdir".to_string(), Arc::new(libdir_thunk));
                 libdir_rc_for_ctx = Some(libdir_arc);
             }
             // If the dir can't be opened, silently skip — stdlib is embedded anyway.
@@ -1627,7 +1627,7 @@ async fn run_eval(
             };
             env.write()
                 .unwrap()
-                .insert(scoped_name, Arc::new(cap_thunk));
+                .insert_value(scoped_name, Arc::new(cap_thunk));
         }
     }
 
@@ -1671,7 +1671,7 @@ async fn run_eval(
         for (name, entries) in net_caps {
             let cap_value = Value::NetCap(Rc::new(entries));
             let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::rust_span!());
-            env.write().unwrap().insert(name, Arc::new(cap_thunk));
+            env.write().unwrap().insert_value(name, Arc::new(cap_thunk));
         }
     }
 
@@ -1705,7 +1705,7 @@ async fn run_eval(
         let cap_thunk = tinct::Thunk::new_materialized(cap_value, tinct::rust_span!());
         env.write()
             .unwrap()
-            .insert("%clock".to_string(), Arc::new(cap_thunk));
+            .insert_value("%clock".to_string(), Arc::new(cap_thunk));
     }
 
     // Inject --cap-file NAME=PATH[:MODE] entries into the root environment as `%NAME`.
@@ -1917,7 +1917,7 @@ async fn run_eval(
         .map_err(|e| format!("cannot open cwd for eval context: {e}"))?
     };
     let eval_ctx = {
-        let type_stage_env = std::sync::Arc::new(std::sync::RwLock::new(tinct::Environment::new()));
+        let type_stage_env = std::sync::Arc::new(std::sync::RwLock::new(tinct::Env::new()));
         let mut ctx = EvalContext::new_with_options(
             cwd_for_ctx,
             Arc::clone(&env),
@@ -1934,7 +1934,7 @@ async fn run_eval(
         }
         // Initialize TypeContext so loader.llt can call [builtin-get-type-context].
         ctx.init_type_context(tinct::TypeContextData {
-            type_stage_env: std::sync::Arc::new(std::sync::RwLock::new(tinct::Environment::new())),
+            type_stage_env: std::sync::Arc::new(std::sync::RwLock::new(tinct::Env::new())),
             inference_env: tinct::get_builtin_core_type_env()
                 .await
                 .expect("builtin_core type env unavailable at startup"),
@@ -2065,12 +2065,14 @@ async fn run_eval(
         ));
         env.write()
             .unwrap()
-            .insert("%programs".to_string(), programs_thunk);
+            .insert_value("%programs".to_string(), programs_thunk);
         let args_thunk = std::sync::Arc::new(tinct::Thunk::new_materialized(
             args_dict,
             tinct::rust_span!(),
         ));
-        env.write().unwrap().insert("%args".to_string(), args_thunk);
+        env.write()
+            .unwrap()
+            .insert_value("%args".to_string(), args_thunk);
     }
 
     // Wrap the evaluation section in an async block so profiling cleanup runs unconditionally
@@ -2214,10 +2216,8 @@ async fn run_fmt(
         let env_arc = tinct::get_builtin_core_type_env()
             .await
             .expect("builtin core type env unavailable");
-        // typecheck_surface_program takes Rc<TypeEnv>; get_builtin_core_type_env returns Arc<TypeEnv>.
-        let env = std::rc::Rc::new((*env_arc).clone());
         let (type_errors, _type_map, _doc_map, _scheme_map, fmt_diagnostics) =
-            tinct::typecheck::typecheck_surface_program(&program, env);
+            tinct::typecheck::typecheck_surface_program(&program, env_arc);
 
         if !type_errors.is_empty() {
             let error_msgs: Vec<String> = type_errors
@@ -2348,9 +2348,8 @@ async fn run_lint(
     let env_arc = tinct::get_builtin_core_type_env()
         .await
         .expect("builtin core type env unavailable");
-    let env = std::rc::Rc::new((*env_arc).clone());
     let (type_errors, _type_map, _doc_map, _scheme_map, diagnostics) =
-        tinct::typecheck::typecheck_surface_program(&program, env);
+        tinct::typecheck::typecheck_surface_program(&program, env_arc);
 
     // Collect all errors and warnings
     let mut all_messages = Vec::new();
@@ -2590,9 +2589,8 @@ async fn run_literate_lint(tangled: &str, config: &LiterateConfig<'_>) -> Result
     let env_arc = tinct::get_builtin_core_type_env()
         .await
         .expect("builtin core type env unavailable");
-    let env = std::rc::Rc::new((*env_arc).clone());
     let (type_errors, _type_map, _doc_map, _scheme_map, diagnostics) =
-        tinct::typecheck::typecheck_surface_program(&program, env);
+        tinct::typecheck::typecheck_surface_program(&program, env_arc);
 
     // Collect all errors and warnings
     let mut all_messages = Vec::new();
@@ -2684,9 +2682,8 @@ async fn run_describe(file_path: &str) -> Result<(), String> {
     let env_arc = tinct::get_builtin_core_type_env()
         .await
         .expect("builtin core type env unavailable");
-    let env = std::rc::Rc::new((*env_arc).clone());
     let (_type_errors, _type_map, doc_map, _scheme_map, _diagnostics) =
-        tinct::typecheck::typecheck_surface_program(&program, env);
+        tinct::typecheck::typecheck_surface_program(&program, env_arc);
 
     // Collect contract information from each document section.
     let mut contracts: Vec<ContractSection> = Vec::new();

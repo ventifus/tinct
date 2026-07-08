@@ -9,10 +9,11 @@ use std::sync::{Arc, RwLock};
 
 use indexmap::IndexMap;
 
+use crate::env::Env as Environment;
 use crate::rust_span;
 use crate::type_def::Type;
 use crate::type_infer::TypeVarEntry;
-use crate::value::{Environment, Thunk, Value};
+use crate::value::{Thunk, Value};
 
 /// Normalization context for type expressions.
 ///
@@ -27,17 +28,11 @@ pub struct NormCtxt {
     pub max_depth: u32,
     /// Call stack for cycle detection (resolver function names)
     pub call_stack: Vec<String>,
-    /// Resolver result cache: (resolver_name, [arg_types]) -> result_type
-    ///
-    /// Lazily populated on first resolver evaluation. Once a TypeStageApp is reduced
-    /// to a ground type, the result is stored here so subsequent identical calls return
-    /// without invoking the type-stage environment again.
-    pub resolver_cache: HashMap<(String, Vec<Type>), Type>,
     /// Type-stage evaluation environment for user-defined resolver functions.
     ///
     /// Contains bindings from `--- stage: type` sections of prelude.llt.
     /// When set, `normalize()` will call user-defined resolver functions to
-    /// reduce `TypeStageApp` nodes that are not in the `resolver_cache`.
+    /// reduce `TypeStageApp` nodes. Results are memoized in `cache`.
     ///
     /// `None` during bootstrap (when the type-stage env is being built),
     /// when type-stage env creation fails, or when resolver evaluation is
@@ -61,7 +56,6 @@ impl NormCtxt {
             depth: 0,
             max_depth: 64,
             call_stack: Vec::new(),
-            resolver_cache: HashMap::new(),
             type_stage_env,
             allow_eval: true,
         }
@@ -75,9 +69,8 @@ impl NormCtxt {
 /// 2. If the type is TypeStageApp { fn_name, args }:
 ///    - Normalize each arg recursively
 ///    - If all args are ground (no TypeVars) and no cycle detected, attempt reduction:
-///      a. Check `resolver_cache` (memoized results from previous LLT calls this run)
-///      b. On cache miss, call `evaluate_resolver()` to invoke the type-stage function
-///         from the prelude (e.g. `AddResult`, `DivResult`) and cache the result.
+///      a. Call `evaluate_resolver()` to invoke the type-stage function.
+///         Results are memoized by the outer `cache` (TypeStageApp → resolved type).
 ///      c. If evaluation fails, return stuck TypeStageApp
 ///         (caller can retry via deferred_equalities)
 ///    - If depth exceeded or cycle detected, return stuck TypeStageApp
@@ -130,20 +123,11 @@ pub fn normalize<'a>(
                     // Push fn_name to call stack for cycle detection
                     ctx.call_stack.push(fn_name.clone());
 
-                    // Check resolver_cache for pre-populated results (arithmetic resolvers)
-                    let cache_key = (fn_name.clone(), normalized_args.clone());
-                    let result = if let Some(resolved_type) = ctx.resolver_cache.get(&cache_key) {
-                        // Cache hit: return the resolved type directly
-                        resolved_type.clone()
-                    } else if ctx.allow_eval {
-                        // allow_eval is true — try evaluating resolver from type-stage env
+                    let result = if ctx.allow_eval {
                         if let Some(env) = ctx.type_stage_env.clone() {
-                            // Cache miss — try evaluating user-defined resolver from type-stage env
                             if let Some(resolved) =
                                 evaluate_resolver(fn_name, &normalized_args, &env).await
                             {
-                                // Insert into resolver_cache so subsequent calls are fast
-                                ctx.resolver_cache.insert(cache_key, resolved.clone());
                                 resolved
                             } else {
                                 // Resolver evaluation failed — return stuck TypeStageApp
@@ -196,11 +180,9 @@ pub fn normalize<'a>(
 
 /// Convert a `Type` to a TypeNode `Value` (T-1061).
 ///
-/// Resolver functions (`AddResult`, etc.) receive TypeNode Variant values as arguments.
+/// Resolver functions receive TypeNode Variant values as arguments.
 ///
-/// Handles primitive types that appear as arithmetic resolver arguments.
-/// Complex types (App, Union, Record, etc.) return `None` — arithmetic
-/// resolvers never receive those as arguments.
+/// Handles primitive types. Complex types (App, Union, Record, etc.) return `None`.
 fn type_to_typenode(ty: &Type) -> Option<Value> {
     // Build a leaf TypeNode Variant (no payload) for the given tag name.
     let leaf = |tag: &str| -> Value {
@@ -243,17 +225,8 @@ pub(crate) async fn evaluate_resolver(
     // Walks slot_names (linear scan) + parent chain, identical semantics to get_by_name
     // but using the slot_names Vec directly to make the seeding nature explicit.
     let fn_thunk = {
-        let mut result: Option<Arc<Thunk>> = None;
-        let mut cur: Option<Arc<RwLock<Environment>>> = Some(Arc::clone(env));
-        while let Some(frame) = cur {
-            let frame_ref = frame.read().unwrap();
-            if let Some(idx) = frame_ref.slot_names.iter().rposition(|n| n == fn_name) {
-                result = Some(Arc::clone(&frame_ref.slots[idx]));
-                break;
-            }
-            cur = frame_ref.parent.as_ref().map(Arc::clone);
-        }
-        result?
+        let env_guard = env.read().unwrap();
+        env_guard.get_value_by_name(fn_name)?
     };
 
     // Create a minimal EvalContext for type-stage evaluation.
@@ -771,7 +744,6 @@ mod tests {
         assert_eq!(ctx.depth, 0);
         assert_eq!(ctx.max_depth, 64);
         assert!(ctx.call_stack.is_empty());
-        assert!(ctx.resolver_cache.is_empty());
     }
 
     /// Test: cache only stores ground types
@@ -838,9 +810,9 @@ mod tests {
         assert!(!ty.has_inference_vars());
     }
 
-    /// Test: unknown resolver returns stuck TypeStageApp
+    /// Test: unknown resolver returns stuck TypeStageApp (no env → allow_eval path skipped)
     #[tokio::test]
-    async fn test_resolver_cache_miss_unknown_resolver() {
+    async fn test_unknown_resolver_returns_stuck() {
         let subst = empty_type_vars();
         let mut ctx = NormCtxt::new(None);
         let ty = Type::TypeStageApp {
@@ -848,7 +820,6 @@ mod tests {
             args: vec![Type::Int, Type::Float],
         };
         let result = norm(&ty, &subst, &mut ctx).await;
-        // Should return stuck TypeStageApp (cache miss)
         assert_eq!(
             result,
             Type::TypeStageApp {

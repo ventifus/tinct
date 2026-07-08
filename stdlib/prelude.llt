@@ -36,13 +36,23 @@
   # Letrec scoping means all entries in this dict are mutually visible.
   Int:     TypeNode.Int
   Str:     TypeNode.String
+  String:  TypeNode.String      # alias — @String and @Str are identical
   Bool:    TypeNode.Bool
   Float:   TypeNode.Float
   Any:     TypeNode.Top
   Never:   TypeNode.Never
+  Unknown: TypeNode.Unknown
+  Proxy:   TypeNode.Proxy
+  # Any callable — variadic function accepting any arguments
+  Fn:      TypeNode.AnyFn
   # Named-field TypeNode constructors: accessed via qualified TypeNode.X names.
   # TypeNode is declared in this same letrec dict, so it is in scope via letrec mutual recursion.
   Null:    [TypeNode.Record fields: []  open: False]
+  Dict:    [TypeNode.Record fields: []  open: True]
+  # Any handle — Handle applied to Unknown capability row
+  Handle:  [TypeNode.TypeApplication
+    ctor: [TypeNode.TypeConstructor name: "Handle"]
+    args: [0: TypeNode.Unknown]]
   Seq:     [fn [let elem]
     [TypeNode.TypeApplication
       ctor: [TypeNode.TypeConstructor name: "Seq"]
@@ -616,7 +626,7 @@ partition-finish: [fn [let result] result]
 
 # group-by-get-bucket: retrieve existing bucket for key k from acc dict, or [] if missing.
 # Uses builtin-try to test key existence without the public get-or wrapper.
-group-by-get-bucket: [fn [let k acc]
+group-by-get-bucket: [fn@Any [let k acc@Dict]
     [match [builtin-try [fn [let] [builtin-get k acc]]]
         [case [let v] [Result.Ok v]    v]
         [case [let _] [Result.Error]   []]]]
@@ -624,12 +634,12 @@ group-by-get-bucket: [fn [let k acc]
 # group-by-insert: update key k in plain dict acc with x appended to existing bucket.
 # Uses builtin-merge (right-biased overlay) to store the updated bucket.
 # Separated from group-by-step to avoid [let k [f x]] LetDecl-nesting bug (B-264).
-group-by-insert: [fn [let k x acc]
+group-by-insert: [fn@Dict [let k x acc@Dict]
     [builtin-merge acc [make-entry k [builtin-append x [group-by-get-bucket k acc]]]]]
 
 # group-by-step: compute key via f, then delegate to group-by-insert.
 # The explicit k parameter avoids the [let k [f x]] LetDecl-nesting bug (B-264).
-group-by-step: [fn [let f acc x]
+group-by-step: [fn@Dict [let f@[Fn@k [a]] acc@Dict x@a]
     [group-by-insert [f x] x acc]]
 
 # ============================================================================
@@ -688,7 +698,7 @@ select-impl: [fn [let ctx sources@Seq handler@Fn]
 # Re-exported in dict 2 as: Indexable: .Indexable
 Indexable:
   [class [let c k v]
-    [determines: [[[c k] v]]  resolver: IndexResult]
+    [determines: [[[c k] v]]]
     get:    [Fn@v      [k c]]
     slice:  [Fn@c      [c Int Int]]
     length: [Fn@Int    [c]]]
@@ -1263,7 +1273,7 @@ make-entry@[doc: "Construct single-entry dict from key and value"]: [fn@Dict [le
 # Merge additional key-value pairs into a dict (returns updated dict).
 # Variadic: accepts xs as base dict, and ...kvs as an inline dict of entries to merge in.
 # assert: [set [a: 1] b: 2] => [a: 1  b: 2]
-set: [fn@Any [let xs@Dict ...kvs] [merge xs [@Any kvs]]]
+set: [fn@Dict [let xs@Dict ...kvs@Dict] [merge xs kvs]]
 
 remove: [fn@[return: Dict  doc: """
 Remove a key from a dict.
@@ -1277,7 +1287,7 @@ Preserves remaining keys in insertion order. Returns dict unchanged if key is no
 
 # Update a key by applying a function to its current value.
 # assert: [update "x" [fn [v] [+ v 1]] [x: 5]] => [x: 6]
-update@[doc: "Update dict value by applying function"]: [fn@Dict [let k f@Fn xs@Dict]
+update@[doc: "Update dict value by applying function"]: [fn@Dict [let k f@[Fn@Any [Any]] xs@Dict]
     [merge xs [make-entry k [f [get k xs]]]]]
 
 values: [fn@[return: Any  doc: """
@@ -1575,8 +1585,8 @@ find-first-or@[doc: "Find first matching element or return default"]: [fn@a [let
 # group-by-step/group-by-insert/group-by-get-bucket (private dict) handle per-element work.
 # Accumulator starts as [] (empty dict); each step merges one updated bucket entry.
 # Buckets are built with append — elements are in insertion order, no reverse needed.
-group-by-finish@[doc: "group-by internal helper — not public API"]: [fn [let f xs]
-    [reduce [fn [let acc x] [group-by-step f acc x]] [] xs]]
+group-by-finish@[doc: "group-by internal helper — not public API"]: [fn@Dict [let f@[Fn@k [a]] xs]
+    [reduce [fn@Dict [let acc@Dict x@a] [group-by-step f acc x]] [] xs]]
 
 group-by: [fn@[return: Dict  doc: """
 Group elements of xs into a dict of lists, keyed by the result of applying f.
@@ -1585,7 +1595,7 @@ Example: [group-by [fn [x] [mod x 2]] [1 2 3 4 5]] => [0: [2 4]  1: [1 3 5]]
 
 Note: Elements with the same key are collected together (insertion order preserved). O(n²) via repeated merge.
 Buckets are accumulated with append — elements appear in insertion order.
-"""] [let f@Fn xs]
+"""] [let f@[Fn@k [a] constraint: [k Hashable]] xs]
     [group-by-finish f xs]]
 
 # Merge two dicts recursively. Sub-dicts are merged depth-first;
@@ -2050,6 +2060,13 @@ str-chars-step@[doc: "Internal: step function for str-chars."]:
       [Seq.Cons head: [builtin-str-nth-char s i]  tail: [str-chars-step s [+ i 1]]]
       Seq.End]]
 
+# str-bytes-step: lazy Seq over raw UTF-8 bytes of a string (0–255 Ints).
+str-bytes-step@[doc: "Internal: step function for str-bytes."]:
+  [fn [let s i]
+    [if [builtin-str-has-nth-byte? s i]
+      [Seq.Cons head: [builtin-str-nth-byte s i]  tail: [str-bytes-step s [+ i 1]]]
+      Seq.End]]
+
 # ============================================================================
 # Transport Type (Network Transport Variants)
 # ============================================================================
@@ -2426,7 +2443,7 @@ Divisible@[doc: "Type class for division with FD (a, b) → c"]:
 # Types supporting equality comparison (=)
 Equatable@[doc: "Type class for types that support equality comparison"]:
   [class [let a]
-    =: [Fn@Bool [a a]]]
+    =: [Fn@Boolean [a a]]]
 
 # Concrete type Equatable instances — use type-specific equality primitives.
 # builtin-eq-int/float/string return Int(1/0); wrap with builtin-if for Boolean.
@@ -2435,7 +2452,7 @@ Equatable@[doc: "Type class for types that support equality comparison"]:
   [let a@Int]:    [=: [fn [let x@Int    y@Int]    [builtin-if [builtin-eq-int    x y] Boolean.True Boolean.False]]]
   [let a@Float]:  [=: [fn [let x@Float  y@Float]  [builtin-if [builtin-eq-float  x y] Boolean.True Boolean.False]]]
   [let a@String]: [=: [fn [let x@String y@String] [builtin-if [builtin-eq-string x y] Boolean.True Boolean.False]]]
-  [let a@Bool]:   [=: [fn [let x@Bool   y@Bool]   [builtin-if [builtin-eq-int [bool->int-priv x] [bool->int-priv y]] Boolean.True Boolean.False]]]]
+  [let a@Boolean]:   [=: [fn [let x@Bool   y@Bool]   [builtin-if [builtin-eq-int [bool->int-priv x] [bool->int-priv y]] Boolean.True Boolean.False]]]]
 
 # Cross-type catch-all: comparing values of different types always returns Boolean.False
 [instance Equatable
@@ -2481,7 +2498,7 @@ The Rust pattern matching engine looks up the instance binding directly by type 
 # Types supporting ordering (< > <= >=)
 Comparable@[doc: "Type class for types that support ordering"]:
   [class [let a] [superclasses: [[Equatable a]]]
-    <: [Fn@Bool [a a]]]
+    <: [Fn@Boolean [a a]]]
 
 # Concrete type Comparable instances — method key is < (operator name for dispatch)
 # Single binding per arm: dispatch checks arg0 position only (n_to_check = min(1, 2) = 1).
@@ -2492,72 +2509,67 @@ Comparable@[doc: "Type class for types that support ordering"]:
   [let a@Int]:    [<: [fn [let x y] [builtin-if [builtin-lt x y] Boolean.True Boolean.False]]]
   [let a@Float]:  [<: [fn [let x y] [builtin-if [builtin-lt x y] Boolean.True Boolean.False]]]
   [let a@String]: [<: [fn [let x y] [builtin-if [builtin-lt x y] Boolean.True Boolean.False]]]
-  [let a@Bool]:   [<: [fn [let x y] [builtin-if [builtin-lt x y] Boolean.True Boolean.False]]]]
+  [let a@Boolean]:   [<: [fn [let x y] [builtin-if [builtin-lt x y] Boolean.True Boolean.False]]]]
 
 # ============================================================================
-# Type Class Declarations: Showable
+# Type Class Declarations: Castable
 # ============================================================================
 
-# Types that can be converted to string (str)
-Showable@[doc: "Type class for types that can be converted to strings"]:
-  [class [let a]]
+# General cast protocol: values that can be cast to a target type.
+# The two-parameter class (target, source) replaces the old single-parameter
+# Showable class. The canonical call form is [@String [cast x]] — the @String
+# annotation tells the type checker target=String and dispatches to the
+# appropriate Castable String <source> instance.
+#
+# str is a thin convenience alias: [fn@String [let x] [cast x]].
+Castable@[doc: "Typeclass for values that can be cast to a target type"]:
+  [class [let target source]
+    cast: [Fn@target [source]]]
 
-# str: convert value(s) to String and concatenate. Resolver-visible wrapper.
-# Dispatches via Showable typeclass for well-typed calls.
-# Uses builtin-reduce to avoid infinite recursion (join-seq-impl calls [str x] recursively).
-str@[doc: "Convert value(s) to String and concatenate"]:
-  [fn [let ...args]
-    [reduce
-      [fn [let acc x]
-        [builtin-string-concat acc
-          [if [str? x]   x
-            [if [int? x]   [builtin-int->string x]
-            [if [float? x] [builtin-float->string x]
-            [llt-repr x]]]]]]
-      ""
-      [each args]]]
+[instance Castable [let target@String source@Int]:
+  [cast: [fn [let x] [builtin-int->string x]]]]
 
-ShowableInt@[doc: "Showable instance for Int"]:
-  [instance Showable
-    [let a@Int]: [str: [fn [let x] [builtin-int->string x]]]]
+[instance Castable [let target@String source@Float]:
+  [cast: [fn [let x] [builtin-float->string x]]]]
 
-ShowableFloat@[doc: "Showable instance for Float"]:
-  [instance Showable
-    [let a@Float]: [str: [fn [let x] [builtin-float->string x]]]]
+[instance Castable [let target@String source@String]:
+  [cast: [fn [let x] x]]]
 
-ShowableStr@[doc: "Showable instance for Str"]:
-  [instance Showable
-    [let a@String]: [str: [fn [let x] x]]]
+[instance Castable [let target@String source@Boolean]:
+  [cast: [fn [let x] [if x "true" "false"]]]]
 
-ShowableBool@[doc: "Showable instance for Bool"]:
-  [instance Showable
-    [let a@Bool]: [str: [fn [let x] [if x "true" "false"]]]]
+[instance Castable [let target@String source@Bytes]:
+  [cast: [fn [let x] [builtin-bytes-str x]]]]
 
-ShowableBytes@[doc: "Showable instance for Bytes: UTF-8 decode to String"]:
-  [instance Showable
-    [let a@Bytes]: [str: [fn [let x] [builtin-bytes-str x]]]]
+[instance Castable [let target@String source@Dict]:
+  [cast: [fn [let d]
+    [pairs: [map [fn [let k]
+        [builtin-string-concat [@String [cast k]] [builtin-string-concat ": " [@String [cast [get k d]]]]]]
+      [keys d]]]
+    [builtin-string-concat "[" [builtin-string-concat [join "  " pairs] "]"]]]]]
 
-ShowableDict@[doc: "Showable instance for Dict: produce LLT source representation"]:
-  [instance Showable
-    [let a@Dict]: [str: [fn [let x] [builtin-llt-repr x]]]]
+[instance Castable [let target@String source@Map]:
+  [cast: [fn [let m]
+    [pairs: [map [fn [let k]
+        [builtin-string-concat [@String [cast k]] [builtin-string-concat ": " [@String [cast [get k m]]]]]]
+      [keys m]]]
+    [builtin-string-concat "[" [builtin-string-concat [join "  " pairs] "]"]]]]]
 
-ShowableMap@[doc: "Showable instance for Map: produce LLT source representation"]:
-  [instance Showable
-    [let a@Map]: [str: [fn [let x] [builtin-llt-repr x]]]]
+# str: thin convenience alias for [@String [cast x]].
+# The @String return annotation drives Castable dispatch to the String target.
+str@[doc: "Convert a single value to String via Castable dispatch"]:
+  [fn@String [let x] [@String [cast x]]]
 
 # ============================================================================
 # Type Class Declarations: Printable
 # ============================================================================
 #
 # Printable is the well-typed typeclass for converting a specific primitive to
-# a String via its `print` method. Unlike Showable (which references the `str`
-# builtin directly and therefore cannot serve as the implementation of `str`),
-# Printable instances use the thin primitives `builtin-int->string` and
-# `builtin-float->string` that do no typeclass dispatch and cannot recurse.
-#
-# Future work: once `str` is reimplemented as a tinct stdlib function that
-# dispatches through Printable instances, Showable can be removed. That
-# migration is a separate sprint.
+# a String via its `print` method. Printable instances use the thin primitives
+# `builtin-int->string` and `builtin-float->string` that do no typeclass
+# dispatch and cannot recurse. Castable String instances (above) use these
+# same primitives, making Castable the general form and Printable the
+# primitive-only subset.
 
 Printable@[doc: "Type class for types that can be converted to a String via print"]:
   [class [let a]]
@@ -2572,7 +2584,7 @@ PrintableFloat@[doc: "Printable instance for Float: print converts a Float to it
 
 PrintableBool@[doc: "Printable instance for Bool: print converts a Bool to \"True\" or \"False\""]:
   [instance Printable
-    [let a@Bool]: [print: [fn [let x] [builtin-if [bool->int x] "True" "False"]]]]
+    [let a@Boolean]: [print: [fn [let x] [builtin-if [bool->int x] "True" "False"]]]]
 
 PrintableStr@[doc: "Printable instance for String: print is the identity (strings are already strings)"]:
   [instance Printable
@@ -2673,30 +2685,17 @@ Int64LE/BE, UInt64LE/BE, Float32LE/BE, Float64LE/BE.
 # ============================================================================
 # Type Class Declarations: Hashable
 # ============================================================================
-#
-# Hashable: types that can be used as dict keys.
-# hash must be consistent with =: if [= a b] then [= [hash a] [hash b]].
-# Hashable implies Equatable (dict equality requires value equality checks).
-#
-# Equatable instances use type-specific builtins (builtin-eq-int, builtin-eq-float, builtin-eq-string).
+# Float is intentionally excluded: NaN != NaN violates Equatable reflexivity.
 
-Hashable@[doc: """
-Typeclass for types that can be used as dict keys.
-hash must be consistent with =: [= a b] implies [= [hash a] [hash b]].
-Hashable implies Equatable.
-"""]:
-  [class [let k]  [superclasses: [[Equatable k]]]
+Hashable@[doc: "Type class for types that can be used as dict keys (hash-consistent with =)"]:
+  [class [let k] [superclasses: [[Equatable k]]]
     hash: [Fn@Int [k]]]
 
-# Hashable instance for Int: Int is its own hash
-HashableInt@[doc: "Hashable instance for Int: hash is identity"]:
-  [instance Hashable
-    [let k@Int]: [hash: [fn [let a@Int] a]]]
-
-# Hashable instance for Bool: True hashes to 1, False to 0
-HashableBool@[doc: "Hashable instance for Bool: hash maps true to 1, false to 0"]:
-  [instance Hashable
-    [let k@Bool]: [hash: [fn [let a] [if a 1 0]]]]
+[instance Hashable
+  [let k@Int]:     [hash: [fn [let a@Int]     a]]
+  [let k@String]:  [hash: [fn [let a@String]
+    [reduce [fn [let acc b] [mod [+ [* acc 31] b] 2147483647]] 0 [str-bytes a]]]]
+  [let k@Boolean]: [hash: [fn [let a@Boolean] [match a Boolean.True: 1 _: 0]]]]
 
 # ============================================================================
 # Type Class Declarations: Sortable
@@ -3195,13 +3194,11 @@ module@[doc: "Resolve a builtin module name to its export dict."]: builtin-modul
 # Returns the updated named dict (or unchanged state.named if doc.name is Unnamed).
 # Mirrors the definition in stdlib/loader.llt.
 update-named: [fn@Any [let state val doc]
-  # Rust returns unqualified tags "Named"/"Unnamed" for doc.name.
-  # Named payload is a raw String (not a dict) — use n directly, not n.name.
-  [match [@Any doc.name]
-    [case [let n] [Named n]
-      [builtin-merge state.named [make-entry [builtin-string-concat "%" n] val]]]
-    _:
-      state.named]]
+  # doc.name returns Variant{tag:"Named",payload:String} or Variant{tag:"Unnamed"}.
+  # Use builtin-tag-of / builtin-variant-payload to avoid constructor name lookup.
+  [if [builtin-eq-string [builtin-tag-of doc.name] "Named"]
+    [builtin-merge state.named [make-entry [builtin-string-concat "%" [builtin-variant-payload doc.name]] val]]
+    state.named]]
 
 # uses-scope: compute the scope contributed by a document's --- uses: [...] declarations.
 # Maps builtin-module over the list of module names in doc.uses, merging all exports.
@@ -3297,7 +3294,8 @@ chr@[doc: "Return a single-character string for the given Unicode codepoint Int"
 
 # String inspection (sequence of characters, byte sequence)
 str-chars@[doc: "Return a lazy Seq of single-character strings from a string"]: [fn [let s] [str-chars-step s 0]]
-str-bytes@[doc: "Return a Bytes value from a string (UTF-8 bytes)"]: builtin-str-bytes
+str-bytes@[doc: "Return a lazy Seq of UTF-8 byte values (Ints 0–255) from a string"]: [fn [let s@String] [str-bytes-step s 0]]
+str-bytes-raw@[doc: "Return the raw Bytes value for a string (UTF-8 encoded)"]: builtin-str-bytes
 bytes-str@[doc: "Return a String decoded from a Bytes value (UTF-8)"]: builtin-bytes-str
 
 # String search
@@ -3512,7 +3510,7 @@ Purely tinct (T-1380): dispatches on empty? of step result rather than Rust vari
 """] [let f@Fn seed] [unfold-step f seed]]
 
 # join-seq-impl: Join a Seq of elements with a separator. Eagerly collects elements.
-# Used by join for Seq inputs. str converts each element to its string representation.
+# Used by join for Seq inputs. cast converts each element to its string representation.
 join-seq-impl: [fn [let sep s]
   [match s
     Seq.End:      ""
@@ -3533,9 +3531,10 @@ Join collection elements as strings with a separator.
 
 Example: [join ", " ["a" "b" "c"]] => "a, b, c"
 
-Note: Converts each element to a string, then concatenates with separator between elements.
-Works on any Iterable collection (Dict, Seq, List, Map) via the Iterable typeclass.
-"""] [let sep@String xs@[Iterable Showable]]
+Note: Converts each element to a string via Castable dispatch, then concatenates
+with separator between elements. Works on any Iterable collection (Dict, Seq, List, Map)
+via the Iterable typeclass.
+"""] [let sep@String xs@[Iterable a constraint: [Castable String a]]]
   [join-seq-impl sep [each xs]]]
 
 concat: [fn@[return: Unknown  doc: """
@@ -4071,7 +4070,7 @@ SIGUSR1: Signal.SIGUSR1
 SIGUSR2: Signal.SIGUSR2
 
 # Action: zero-arg side-effecting function (Moggi/Haskell IO distinction)
-Action: [type [Fn@Null []]]
+Action: [type Fn]
 
 # Channel recv/select result types — declared in private dict.
 # Callers use fully-qualified constructors: Closed.Closed, Full.Full, Lagged.Lagged.
@@ -4942,7 +4941,7 @@ To apply them to a List or Map, call each first:
   [filter pred [each my-list]]             # lazy Seq result
   [collect [filter pred [each my-list]]]   # materialized List result
 """]:
-  [class [let c a] [determines: [[[c] a]]  resolver: IterResult]
+  [class [let c a] [determines: [[[c] a]]]
     each: [Fn@[Seq a] [c]]]
 
 IterableList@[doc: "Iterable instance for List: each = ft-to-seq (lazy traversal)"]:
@@ -5039,7 +5038,7 @@ Seekable@[doc: "Random-access extension of ByteStream. Only seekable file handle
 #
 # The parser converts i"Hello $name" to [tmpl "Hello $name"].
 # tmpl expands [tmpl "raw-template" expr0 expr1 ...] to
-# [str segment1 var1 segment2 ...].
+# [str-parts segment1 var1 segment2 ...].
 #
 # Raw template encoding (set by the parser in emit_tmpl_call):
 #   $$    — literal $ (re-encoded from InterpolatedPart::Literal segments containing $)
@@ -5057,7 +5056,7 @@ Seekable@[doc: "Random-access extension of ByteStream. Only seekable file handle
 #      - empty string  → $$ escape: emit literal "$", skip next piece as literal
 #      - starts with { → ${N} expr placeholder: lookup args[N+1]
 #      - otherwise     → $name variable reference: parse ident up to stop char
-#   4. Return {type: "call", fn: {type: "var", name: "str"}, args: [...], named-args: [], implied: True}
+#   4. Return {type: "call", fn: {type: "var", name: "str-parts"}, args: [...], named-args: [], implied: True}
 
 # True if character c is a stop character for variable names in interpolated strings.
 # Mirrors the stop-char set in src/lexer.rs lex_interpolated_string VarRef branch
@@ -5101,7 +5100,7 @@ tmpl-process-expr-piece: [fn [let piece macro-args nodes]
   [if [str-contains? "}" piece]
     [tmpl-process-expr-with-close piece macro-args nodes]
     # Malformed ${}: no closing "}" found — emit "$" + piece as a literal
-    [dlist-snoc nodes [tmpl-str-node [str "$" piece]]]
+    [dlist-snoc nodes [tmpl-str-node [join "" ["$" piece]]]]
   ]]
 
 # Helper: piece has a "}" — extract index and suffix.
@@ -5196,13 +5195,19 @@ tmpl-build-args: [fn [let template parts-dict]
     [0: template]
     [range 0 [length parts-dict]]]]
 
-# Wrap the collected AST nodes in a [str ...] call Expression.
-# Uses quasiquoting: [quote [str [unquote-splice nodes]]] splices all
-# accumulated AST nodes as positional args to str, returning a Value::Expression
+# str-parts: variadic helper used by tmpl-generated code to join interpolated string
+# fragments. i"Hello $name" expands to [str-parts "Hello " name], and str-parts joins
+# all its parts with an empty separator. str is a single-argument Castable wrapper;
+# str-parts handles the variadic concatenation that [str a b c] previously performed.
+str-parts: [fn [let ...parts] [join "" parts]]
+
+# Wrap the collected AST nodes in a [str-parts ...] call Expression.
+# Uses quasiquoting: [quote [str-parts [unquote-splice nodes]]] splices all
+# accumulated AST nodes as positional args to str-parts, returning a Value::Expression
 # directly. result.nodes is a DList (function Seq→Seq); dlist-to-seq finalizes
 # it into a lazy Seq accepted by unquote-splice / collect_seq_elements.
 tmpl-emit-call: [fn [let result]
-  [quote [str [unquote-splice [dlist-to-seq result.nodes]]]]]
+  [quote [str-parts [unquote-splice [dlist-to-seq result.nodes]]]]]
 
 # ============================================================================
 # [do] macro helpers — AST node builders for monadic do-notation desugaring
@@ -5360,7 +5365,7 @@ eval-macro-ast@[doc: "Evaluate a macro-produced AST in the call-site scope."]:
 # i"..." strings desugar at the parser level to [tmpl "raw-template" expr0 expr1 ...].
 # The raw template encodes $name references literally and ${N} placeholders for ${...} exprs.
 # tmpl-expand splits on "$", builds Expr.VarRef nodes for $name and Expr.* nodes for
-# ${N}, and returns [quote [str parts...]] for evaluation in the call-site scope.
+# ${N}, and returns [quote [str-parts parts...]] for evaluation in the call-site scope.
 #
 # template@Expr — Expr.Literal for the raw template string; template.value gives the str
 # parts@Expr    — Expr.* nodes for ${N} expression placeholders (0-indexed in Seq)

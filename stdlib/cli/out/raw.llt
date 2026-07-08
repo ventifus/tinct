@@ -9,7 +9,7 @@
 # 3. Await drain task completion
 
 [
-  # Helper: convert value to raw string — str handles all Showable types, including String.
+  # Helper: convert value to raw string — str dispatches via Castable to handle all types.
   raw: [fn@String [let v@Any] [str v]]
 ]
 

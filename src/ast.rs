@@ -733,19 +733,7 @@ pub fn is_expr_annotation(ann: &Annotation) -> bool {
 pub fn annotated_inner_default() -> Arc<SurfaceNode> {
     Arc::new(SurfaceNode::new(
         SurfaceExpression::Placeholder,
-        Span {
-            start: Position {
-                offset: 0,
-                line: 0,
-                column: 0,
-            },
-            end: Position {
-                offset: 0,
-                line: 0,
-                column: 0,
-            },
-            file: None,
-        },
+        crate::rust_span!(),
     ))
 }
 
@@ -768,19 +756,7 @@ impl SurfaceNode {
     pub fn default_annotations() -> Self {
         Self {
             expr: SurfaceExpression::Placeholder,
-            span: Span {
-                start: crate::ast::Position {
-                    offset: 0,
-                    line: 0,
-                    column: 0,
-                },
-                end: crate::ast::Position {
-                    offset: 0,
-                    line: 0,
-                    column: 0,
-                },
-                file: None,
-            },
+            span: crate::rust_span!(),
             type_guard: TypeAnnotation::new(),
             provenance: Provenance::new(),
         }
@@ -1215,18 +1191,29 @@ pub struct MacroProvenance {
 }
 
 /// Inline call dispatch — written once by the type checker for typeclass method VarRef nodes.
-/// Stores de Bruijn (level, slot) coordinates for the resolved instance binding so the lowerer
-/// can emit a direct CoreExpr::Var without any name-based lookup.
-pub struct CallDispatch(std::sync::OnceLock<Option<(u32, u32)>>);
+///
+/// Stores the mangled instance binding name (e.g., `ɪɴꜱᴛᴀɴᴄᴇ⧼Addable∷+⟨Int,Int,Int⟩⧽`)
+/// so the lowerer can emit a `CoreExpr::Var` with `level = u32::MAX, slot = u32::MAX`
+/// and the mangled name, which the runtime resolves via name-based env chain lookup.
+///
+/// Written at most once by the type checker (after argument-type unification determines the
+/// concrete instance). Read once by the lowerer when emitting the Call's function sub-expression.
+/// Interior-mutable via `OnceLock` so the type checker can set it through a shared reference
+/// to the `Arc<SurfaceNode>` that owns the VarRef.
+pub struct CallDispatch(std::sync::OnceLock<String>);
 impl CallDispatch {
     pub fn new() -> Self {
         Self(std::sync::OnceLock::new())
     }
-    pub fn get(&self) -> Option<(u32, u32)> {
-        self.0.get().and_then(|o| *o)
+    /// Returns the mangled instance binding name if set, or `None` if not yet dispatched.
+    pub fn get(&self) -> Option<&str> {
+        self.0.get().map(String::as_str)
     }
-    pub fn set(&self, level: u32, slot: u32) {
-        let _ = self.0.set(Some((level, slot)));
+    /// Set the mangled instance binding name.  Silently ignores a second call (OnceLock
+    /// semantics): the first write wins.  Call sites must ensure the write happens at most
+    /// once per VarRef (guaranteed because type-checking is a single forward pass).
+    pub fn set(&self, mangled_name: String) {
+        let _ = self.0.set(mangled_name);
     }
 }
 impl Clone for CallDispatch {
@@ -1246,7 +1233,7 @@ impl Default for CallDispatch {
 }
 impl std::fmt::Debug for CallDispatch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "CallDispatch({:?})", self.0.get().and_then(|o| *o))
+        write!(f, "CallDispatch({:?})", self.0.get())
     }
 }
 

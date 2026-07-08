@@ -1307,6 +1307,46 @@ The bootstrap refactoring in this document resolves that final bridge by elimina
 
 The two migrations (pervasive-async and bootstrap unification) are independent in implementation order but together constitute the complete removal of sync-from-async bridges. Either can land first; the OnceLock bridge is eliminated only when both are complete.
 
+## TODO: Decision Type for Predicate Narrowing Through Function Calls
+
+**Context:** `[if cond then else]` is a plain function `∀a. Bool → a → a → a`. The type checker
+cannot narrow variables in `then`/`else` based on `cond` (e.g. `[str? x]` narrowing `x` to `String`)
+without a special case, because the general call path infers arguments independently.
+
+The `extract_narrowings` / predicate narrowing machinery already captures the *information* that
+`[str? x]` implies `x : String` when True. What is missing is a way to encode this in `if`'s
+*type signature* so the general call path applies it — rather than hardcoding `if` by name.
+
+**Proposed mechanism: Decision type**
+
+`str?` (and other type predicates) would return a `Decision(x : T)` type instead of `Boolean`.
+`Decision(P)` carries the proof `P` at the type level. `if` would then have type:
+
+```
+if : ∀(d: Decision(P)). ∀(T: Type). (P → T) → (¬P → T) → T
+```
+
+The `then` block receives the proof `P` (e.g. `x : String`) as a type-level argument, enabling
+narrowing without any name-based special-casing.
+
+**Key insight:** `Decision` is not adding new information — `extract_narrowings` already knows
+`str?` implies string-ness. It is a different *encoding* that makes the narrowing flow through
+the type signature rather than through AST-structure inspection.
+
+**Alternative (current decision):** `if` stays as `∀a. Bool → a → a → a` with no narrowing.
+Users who need type narrowing use `match`:
+```tinct
+[match x n@String: [use-as-string n]  _: fallback]
+```
+`match` already provides structural narrowing. `if` is a convenience for simple conditionals
+where narrowing is not required.
+
+**To investigate when implementing this whatif:**
+- Can `Decision` be expressed using tinct's existing typeclass + FD machinery?
+- What is the ergonomics cost of `then`/`else` blocks taking explicit proof arguments?
+- Is the `match`-for-narrowing convention sufficient, or do users frequently need `if`-narrowing?
+- Idris/Agda precedent: how do their `if`-equivalents handle this?
+
 ## Implementation Notes
 
 ### `builtin-eval` Return Type

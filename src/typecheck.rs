@@ -3,8 +3,7 @@
 //! unification for polymorphic function calls.
 
 use std::collections::HashMap;
-use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use crate::ast::{
     node_id, Annotation, Pattern, Span, Spanned, SurfaceDeclaration, SurfaceDocument,
@@ -13,6 +12,7 @@ use crate::ast::{
 // All production inference helpers now walk SurfaceExpression natively.
 // No Expr bridge needed — tests use parse_surface_expression directly.
 use crate::coverage;
+use crate::env::Env;
 use crate::types::{
     generalize, instantiate_scheme, InferState, Row, Type, TypeAlias, TypeEnv, TypeError,
     TypeScheme,
@@ -24,8 +24,6 @@ pub(crate) mod typecheck_annot;
 #[path = "typecheck_dict.rs"]
 mod typecheck_dict;
 // Special-case type refinement dispatchers for polymorphic builtins
-#[path = "typecheck_special.rs"]
-pub(crate) mod typecheck_special;
 // Path-sensitive narrowing, pattern binding extraction, overlap checking
 #[path = "typecheck_narrow.rs"]
 pub(crate) mod typecheck_narrow;
@@ -52,7 +50,6 @@ use typecheck_match::*;
 #[allow(unused_imports)]
 use typecheck_narrow::*;
 #[allow(unused_imports)]
-use typecheck_special::*;
 
 /// Map from source span `(start_offset, end_offset)` to inferred type. Populated during type
 /// checking so LSP hover/diagnostics can look up types without re-running inference. Offsets
@@ -96,11 +93,11 @@ pub fn typecheck_surface_program_annotation_table(
 ) -> (
     Vec<TypeError>,
     TypeAnnotationTable,
-    HashMap<crate::ast::Span, Type>,
+    crate::type_def::TyConEnv,
 ) {
     let mut errors = Vec::new();
     let mut table = TypeAnnotationTable::new();
-    let mut env = Rc::new(TypeEnv::new());
+    let mut env: Arc<RwLock<Env>> = Arc::new(RwLock::new(Env::new()));
     let mut state = InferState::new();
     // Compute and store the resolution table for slot-indexed VarRef lookup.
     // No runtime env at the type-checker path; pass None.
@@ -143,7 +140,7 @@ pub fn typecheck_surface_program_annotation_table(
         pipeline_type = doc_output_type;
     }
 
-    (errors, table, state.expects_resolved)
+    (errors, table, state.tycon_env)
 }
 
 /// Type-check a `SurfaceProgram` with a given initial type environment.
@@ -165,7 +162,7 @@ pub fn typecheck_surface_program_annotation_table(
 /// recursive `collect_type_map_from_node` walk.
 pub fn typecheck_surface_program(
     program: &SurfaceProgram,
-    parent_env: Rc<TypeEnv>,
+    parent_env: Arc<RwLock<Env>>,
 ) -> (
     Vec<TypeError>,
     TypeMap,
@@ -174,14 +171,14 @@ pub fn typecheck_surface_program(
     Vec<crate::error::TypeDiagnostic>,
 ) {
     let (errors, type_map, doc_map, scheme_map, diagnostics, _state, _env, _annotation_table) =
-        typecheck_surface_program_with_env(program, parent_env, true, false);
+        typecheck_surface_program_with_env(program, parent_env, true, None);
     // type_map is now populated during inference (enable_scheme_map=true path).
     (errors, type_map, doc_map, scheme_map, diagnostics)
 }
 
-/// Type-check a `SurfaceProgram` with full control over scheme-map generation and the
-/// prelude-load optimisation flag, returning all intermediate state including a
-/// [`TypeAnnotationTable`] for the evaluator's lowering pass.
+/// Type-check a `SurfaceProgram` with full control over scheme-map generation,
+/// returning all intermediate state including a [`TypeAnnotationTable`] for the evaluator's
+/// lowering pass.
 ///
 /// This is the native-Surface implementation — it walks `program.documents` directly
 /// via [`typecheck_surface_document`] without any conversion through the old `File` AST.
@@ -191,9 +188,17 @@ pub fn typecheck_surface_program(
 /// # Parameters
 ///
 /// - `program`: The surface AST to type-check.
-/// - `parent_env`: Initial type environment (e.g., from `build_prelude_env()`).
+/// - `parent_env`: Initial type environment. All classes and instances visible to this
+///   program must already be in `parent_env`'s chain (populated by prior type-checking runs
+///   via `TypeContext`).
 /// - `enable_scheme_map`: When `true`, populates the [`SchemeMap`] for LSP hover.
-/// - `in_prelude_load`: When `true`, skips instance-method body inference (prelude optimisation).
+/// - `resolver_seed_env`: Optional env used to seed the resolver (name resolution pass).
+///   When `Some`, the resolver is seeded from this env so that instance binding names
+///   (ɪ-prefixed, e.g. `ɪɴꜱᴛᴀɴᴄᴇ⧼Castable∷cast⟨String,Int⟩⧽`) are visible in scope
+///   and `method_to_instance` can resolve class method VarRefs. This should be the full
+///   runtime eval env (from `builtin-typecheck env: <env>`), which contains instance
+///   bindings that the type-only `parent_env` does not. When `None`, falls back to
+///   `parent_env` for resolver seeding (the prior behavior).
 ///
 /// # Returns
 ///
@@ -204,9 +209,9 @@ pub fn typecheck_surface_program(
 #[allow(clippy::type_complexity)]
 pub fn typecheck_surface_program_with_env(
     program: &SurfaceProgram,
-    parent_env: Rc<TypeEnv>,
+    parent_env: Arc<RwLock<Env>>,
     enable_scheme_map: bool,
-    in_prelude_load: bool,
+    resolver_seed_env: Option<Arc<RwLock<Env>>>,
 ) -> (
     Vec<TypeError>,
     TypeMap,
@@ -214,20 +219,27 @@ pub fn typecheck_surface_program_with_env(
     SchemeMap,
     Vec<crate::error::TypeDiagnostic>,
     InferState,
-    Rc<TypeEnv>,
+    Arc<RwLock<Env>>,
     TypeAnnotationTable,
 ) {
     let mut errors = Vec::new();
     let mut diagnostics = Vec::new();
-    let mut env = parent_env;
-    let mut state = InferState::new();
-    // Compute and store the resolution table for slot-indexed VarRef lookup.
-    // No runtime env at the type-checker path; pass None.
-    state.resolution_table = Some(std::sync::Arc::new(
-        crate::resolve::resolve_surface_program(program, None),
-    ));
-
-    state.in_prelude_load = in_prelude_load;
+    // Create a child Env scope for this type-checking session: reads walk through
+    // to the parent (finding prelude classes/instances), writes stay in the child.
+    let child_env = Arc::new(RwLock::new(Env::with_parent(Arc::clone(&parent_env))));
+    let mut env: Arc<RwLock<Env>> = Arc::clone(&child_env);
+    let mut state = InferState::with_env(Arc::clone(&child_env));
+    // Seed the resolver so that instance binding names (ɪ-prefixed) are visible
+    // in scope and method_to_instance can resolve class method VarRefs (cast, +, -, etc.)
+    // to their letrec slots. When a resolver_seed_env is provided (typically the full
+    // runtime eval env from builtin-typecheck's env: argument), use it — it contains
+    // ɪ-prefixed instance bindings that the type-only parent_env lacks. Otherwise fall
+    // back to parent_env (the prior behavior, used by all non-builtin-typecheck callers).
+    let resolver_seed = resolver_seed_env.as_ref().unwrap_or(&parent_env);
+    state.resolution_table = Some(Arc::new(crate::resolve::resolve_surface_program(
+        program,
+        Some(resolver_seed),
+    )));
 
     if enable_scheme_map {
         state.scheme_map = Some(SchemeMap::new());
@@ -308,6 +320,11 @@ pub fn typecheck_surface_program_with_env(
         DocMap::new()
     };
 
+    // Merge the document-level Env scheme bindings back into the child Env.
+    // This ensures that variables declared in this program are visible to callers
+    // that hold the returned Arc<RwLock<Env>> (e.g., subsequent builtin-typecheck calls).
+    merge_env_schemes_into_env(&env, &child_env);
+
     (
         errors,
         type_map_inner,
@@ -315,9 +332,106 @@ pub fn typecheck_surface_program_with_env(
         scheme_map,
         diagnostics,
         state,
-        env,
+        child_env,
         annotation_table,
     )
+}
+
+/// Merge ALL scheme bindings from an `Arc<RwLock<Env>>` chain into a target `Arc<RwLock<Env>>`.
+///
+/// After type-checking a program's documents, the final env is a chain of frames
+/// (one per document, plus the initial parent frame). This function walks all
+/// own-frame bindings and copies their schemes into `target_env` (the child Env) so that
+/// callers holding the child Env can see all new bindings.
+///
+/// Since `target_env.parent == parent_env`, schemes that already exist in the parent
+/// chain are already visible — no filtering is needed. Duplicate insertion is safe
+/// (insert_scheme and insert_scheme_named_only are idempotent for same-name, same-value).
+fn merge_env_schemes_into_env(source_env: &Arc<RwLock<Env>>, target_env: &Arc<RwLock<Env>>) {
+    // Collect frames from innermost to outermost, stopping when we reach target_env
+    // to avoid reading and writing the same RwLock simultaneously (deadlock prevention).
+    let target_ptr = Arc::as_ptr(target_env);
+    let mut frames: Vec<Arc<RwLock<Env>>> = Vec::new();
+    let mut current = Some(Arc::clone(source_env));
+    while let Some(arc) = current {
+        // Stop if we have reached the target (we'd hold both read and write locks on it).
+        if Arc::as_ptr(&arc) == target_ptr {
+            break;
+        }
+        let parent = arc.read().unwrap().parent.as_ref().map(Arc::clone);
+        frames.push(arc);
+        current = parent;
+    }
+    if frames.is_empty() {
+        return; // source_env IS target_env or is a child of it; nothing to merge.
+    }
+    let mut guard = target_env.write().unwrap();
+    // Walk frames from outermost to innermost so inner frames override outer.
+    for frame_arc in frames.iter().rev() {
+        let frame = frame_arc.read().unwrap();
+        for (name, slot) in frame.iter_slots() {
+            if let Some(ref scheme) = slot.scheme {
+                guard.insert_scheme(name.to_string(), scheme.clone());
+            }
+        }
+        for (name, slot) in &frame.extras {
+            if let Some(ref scheme) = slot.scheme {
+                guard.insert_scheme_named_only(name.clone(), scheme.clone());
+            }
+        }
+        for (name, alias) in frame.own_type_aliases() {
+            guard.insert_type_alias(name.to_string(), alias.clone());
+        }
+        for (_, decl) in &frame.classes {
+            guard.insert_class(decl.clone());
+        }
+        for (mangled, decl) in &frame.instances {
+            guard.insert_instance(mangled.clone(), decl.clone());
+        }
+    }
+}
+
+/// Propagate newly discovered class and instance declarations from `state.env` into `result_env`.
+///
+/// After type-checking a document, `state.env` contains all class/instance declarations
+/// visible during that run. This function copies declarations from `state.env` that are NOT
+/// already present in `parent_env` into `result_env` so they propagate to subsequent documents.
+///
+/// This is the mechanism that makes classes and instances declared in one document (e.g.,
+/// earlier documents) visible when type-checking the next document.
+fn propagate_classes_instances_to_env(
+    state: &InferState,
+    parent_env: &Arc<RwLock<Env>>,
+    result_env: &mut Env,
+) {
+    // Only propagate classes/instances declared in state.env's OWN frame (not inherited
+    // from the parent chain). The parent chain's classes are already in parent_env.
+    // Using all_classes() would walk state.env's parent chain (which IS parent_env),
+    // causing a deadlock when combined with the parent_guard lock.
+    let env_guard = state.env.read().unwrap();
+    // Collect own classes/instances first (before releasing the lock).
+    let own_classes: Vec<_> = env_guard.classes.values().cloned().collect();
+    let own_instances: Vec<_> = env_guard
+        .instances
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    drop(env_guard); // Release before acquiring parent lock to avoid deadlock.
+
+    let parent_guard = parent_env.read().unwrap();
+    // Propagate new class declarations.
+    for decl in &own_classes {
+        // Only propagate if this class is not already visible in the parent chain.
+        if parent_guard.get_class(&decl.name).is_none() {
+            result_env.insert_class(decl.clone());
+        }
+    }
+    // Propagate new instance declarations.
+    for (mangled, decl) in &own_instances {
+        if parent_guard.get_instance(mangled).is_none() {
+            result_env.insert_instance(mangled.clone(), decl.clone());
+        }
+    }
 }
 
 /// Type-check a single SurfaceDocument.
@@ -326,28 +440,28 @@ pub fn typecheck_surface_program_with_env(
 /// Converts SurfaceNode back to Expr for type inference, then captures results in TypeAnnotationTable.
 fn typecheck_surface_document(
     doc: &SurfaceDocument,
-    parent_env: &Rc<TypeEnv>,
+    parent_env: &Arc<RwLock<Env>>,
     state: &mut InferState,
     table: &mut TypeAnnotationTable,
     type_map: &mut Option<&mut TypeMap>,
     pipeline_type: &Type,
     named_types: &HashMap<String, Type>,
-) -> (Rc<TypeEnv>, Type, Vec<TypeError>) {
+) -> (Arc<RwLock<Env>>, Type, Vec<TypeError>) {
     let mut errors = Vec::new();
     let mut advisory_errors: Vec<TypeError> = Vec::new();
 
     // Create environment with % and %name bindings
-    let mut env = TypeEnv::with_parent(parent_env);
-
-    // Bind % (pipeline variable) with the incoming type
-    env.insert("%".to_string(), pipeline_type.clone());
-
-    // Bind all named sections as %name
-    for (name, ty) in named_types {
-        env.insert(format!("%{}", name), ty.clone());
-    }
-
-    let mut env = Rc::new(env);
+    let doc_env_inner = {
+        let mut e = Env::with_parent(Arc::clone(parent_env));
+        // Bind % (pipeline variable) with the incoming type
+        e.insert("%".to_string(), pipeline_type.clone());
+        // Bind all named sections as %name
+        for (name, ty) in named_types {
+            e.insert(format!("%{}", name), ty.clone());
+        }
+        e
+    };
+    let mut env: Arc<RwLock<Env>> = Arc::new(RwLock::new(doc_env_inner));
 
     // Note: expects: and caps: annotation validation requires async resolve_annotation.
     // Since typecheck_surface_document is sync, these are skipped here.
@@ -361,11 +475,26 @@ fn typecheck_surface_document(
     // but do NOT propagate to subsequent documents via result_env (module bindings
     // are doc-local, matching the runtime's `builtin_module()` injection behavior).
     if let Some(ref uses) = doc.uses {
-        let mut env_mut = (*env).clone();
+        let mut env_inner = Env::with_parent(Arc::clone(&env));
         for module_name in &uses.node {
             match crate::builtins::type_env_module(&module_name.node) {
                 Some(module_env) => {
-                    env_mut.merge(module_env);
+                    // Convert TypeEnv to Env: copy all scheme entries
+                    for (name, scheme) in module_env.iter_slotted() {
+                        env_inner.insert_scheme(name.to_string(), scheme.clone());
+                    }
+                    for (name, scheme) in module_env.iter_extras() {
+                        env_inner.insert_scheme_named_only(name.to_string(), scheme.clone());
+                    }
+                    for (name, alias) in module_env.own_type_aliases() {
+                        env_inner.insert_type_alias(name.to_string(), alias.clone());
+                    }
+                    for decl in module_env.own_classes() {
+                        env_inner.insert_class(decl.clone());
+                    }
+                    for (mangled, decl) in module_env.own_instances() {
+                        env_inner.insert_instance(mangled.to_string(), decl.clone());
+                    }
                 }
                 None => {
                     // Emit a diagnostic for unknown native modules.
@@ -378,7 +507,7 @@ fn typecheck_surface_document(
                 }
             }
         }
-        env = Rc::new(env_mut);
+        env = Arc::new(RwLock::new(env_inner));
     }
 
     let mut result_type = Type::Record(Row {
@@ -406,7 +535,7 @@ fn typecheck_surface_document(
                     resolver,
                     resolver_injective,
                 } => {
-                    // Infer the class declaration to register it into state.class_env
+                    // Infer the class declaration to register it into state.env
                     let superclasses_flat: Vec<(String, String)> = superclasses
                         .iter()
                         .flat_map(|(sc_name, sc_params)| {
@@ -490,12 +619,18 @@ fn typecheck_surface_document(
         // Note: output_type annotation validation requires async resolve_annotation — skip.
         let _ = &doc.output_type; // acknowledged
 
-        let mut result_env = TypeEnv::with_parent(&env);
-        result_env.insert("%".to_string(), result_type.clone());
+        let mut result_env_inner = Env::with_parent(Arc::clone(parent_env));
+        result_env_inner.insert("%".to_string(), result_type.clone());
+        // Propagate new class/instance declarations into result_env.
+        propagate_classes_instances_to_env(state, parent_env, &mut result_env_inner);
 
         // Always return Ok with the partial env so callers always propagate env.
         advisory_errors.append(&mut errors);
-        return (Rc::new(result_env), result_type, advisory_errors);
+        return (
+            Arc::new(RwLock::new(result_env_inner)),
+            result_type,
+            advisory_errors,
+        );
     }
 
     // Tracks schemes from the last dict expression so they can be threaded into result_env.
@@ -526,13 +661,12 @@ fn typecheck_surface_document(
                 last_dict_schemes = Some(schemes);
                 last_node = Some(Arc::clone(surface_node));
             } else {
-                let mut new_env = TypeEnv::with_parent(&env);
+                let mut new_env_inner = Env::with_parent(Arc::clone(&env));
                 for (name, scheme) in &schemes {
-                    new_env.insert_scheme(name.clone(), scheme.clone());
+                    new_env_inner.insert_scheme(name.clone(), scheme.clone());
                 }
-                let mut alias_errs = register_type_aliases(surface_node, &mut new_env, &env, state);
-                errors.append(&mut alias_errs);
-                env = Rc::new(new_env);
+                register_type_aliases_env(surface_node, &mut new_env_inner, state, &mut errors);
+                env = Arc::new(RwLock::new(new_env_inner));
             }
         } else {
             // Non-dict expression: infer at incremented level so type variables can be
@@ -561,15 +695,18 @@ fn typecheck_surface_document(
                         // Mirrors typecheck_document line 1097.
                         match &ty {
                             Type::Record(Row { fields, .. }) => {
-                                let mut new_env = TypeEnv::with_parent(&env);
+                                let mut new_env_inner = Env::with_parent(Arc::clone(&env));
                                 for (name, field_ty) in fields {
                                     let scheme = generalize(enclosing_level, field_ty, state);
-                                    new_env.insert_scheme(name.clone(), scheme);
+                                    new_env_inner.insert_scheme(name.clone(), scheme);
                                 }
-                                let mut alias_errs =
-                                    register_type_aliases(surface_node, &mut new_env, &env, state);
-                                errors.append(&mut alias_errs);
-                                env = Rc::new(new_env);
+                                register_type_aliases_env(
+                                    surface_node,
+                                    &mut new_env_inner,
+                                    state,
+                                    &mut errors,
+                                );
+                                env = Arc::new(RwLock::new(new_env_inner));
                             }
                             Type::Unknown => {} // Gradual: dict type inference failed, skip type alias registration
                             _ => {
@@ -600,10 +737,10 @@ fn typecheck_surface_document(
     // This ensures doc-local bindings (%, %name, caps, and module-from-uses) do NOT
     // propagate to subsequent documents. Only explicitly exported bindings (last-dict
     // schemes, last-Record fields, %) are propagated via result_env.bindings.
-    let mut result_env = TypeEnv::with_parent(parent_env);
+    let mut result_env_inner = Env::with_parent(Arc::clone(parent_env));
     if let Some(schemes) = last_dict_schemes {
         for (name, scheme) in schemes {
-            result_env.insert_scheme(name, scheme);
+            result_env_inner.insert_scheme(name, scheme);
         }
     }
     // If the last expression was a non-dict Record, generalize and thread its fields.
@@ -611,23 +748,29 @@ fn typecheck_surface_document(
     if let Some((Type::Record(Row { fields, .. }), enclosing_level)) = last_record_type {
         for (name, field_ty) in fields {
             let scheme = generalize(enclosing_level, &field_ty, state);
-            result_env.insert_scheme(name, scheme);
+            result_env_inner.insert_scheme(name, scheme);
         }
     }
     if let Some(ref node) = last_node {
-        let _ = register_type_aliases(node, &mut result_env, &env, state);
+        register_type_aliases_env(node, &mut result_env_inner, state, &mut errors);
     }
-    result_env.insert("%".to_string(), result_type.clone());
+    result_env_inner.insert("%".to_string(), result_type.clone());
+    // Propagate new class/instance declarations into result_env.
+    propagate_classes_instances_to_env(state, parent_env, &mut result_env_inner);
 
     // Always return the partial env — even if there are type errors.
     // This mirrors the pre-surface-migration behavior: the bridge path (typecheck_document)
     // always returned an env and propagated errors separately. Returning Err here caused
     // `typecheck_surface_program_with_env` to skip updating the accumulated env, which meant
-    // the prelude's bindings (map, filter, keys, …) were never inserted into final_env.
+    // stdlib bindings (map, filter, keys, …) were never inserted into final_env.
     // Non-advisory errors are merged into advisory_errors so callers still collect them via
     // the third tuple element.
     advisory_errors.append(&mut errors);
-    (Rc::new(result_env), result_type, advisory_errors)
+    (
+        Arc::new(RwLock::new(result_env_inner)),
+        result_type,
+        advisory_errors,
+    )
 }
 
 /// Type-check a single [`SurfaceDocument`] using the native Surface path.
@@ -650,9 +793,8 @@ pub(crate) fn typecheck_surface_document_native(
     doc: &SurfaceDocument,
     state: &mut InferState,
     type_map: &mut TypeAnnotationTable,
-    env: &TypeEnv,
+    env: &Arc<RwLock<Env>>,
 ) -> Result<(), Vec<TypeError>> {
-    let parent_env = Rc::new(env.clone());
     let pipeline_type = Type::Record(Row {
         fields: indexmap::IndexMap::new(),
         tail: crate::type_def::RowTail::Empty,
@@ -661,7 +803,7 @@ pub(crate) fn typecheck_surface_document_native(
 
     let (_env, _ty, errors) = typecheck_surface_document(
         doc,
-        &parent_env,
+        env,
         state,
         type_map,
         &mut None, // no span TypeMap for this entry point
@@ -801,6 +943,7 @@ fn collect_nominal_tags(ty: &Type) -> Vec<String> {
     }
 }
 
+#[allow(dead_code)]
 fn register_type_aliases(
     node: &Arc<SurfaceNode>,
     target_env: &mut TypeEnv,
@@ -809,12 +952,6 @@ fn register_type_aliases(
 ) -> Vec<TypeError> {
     let errors = Vec::new();
     if let SurfaceExpression::Dict(entries) = &node.expr {
-        // Two-pass registration to support recursive type aliases:
-        // Pass 1: Pre-register all aliases with placeholder bodies (Unknown)
-        // Pass 2: Resolve actual bodies (now recursive references can be looked up)
-
-        // Pass 1: Collect alias names and pre-register placeholders
-        // Each entry carries (alias_name, params, body_node, declaration_span).
         let mut alias_entries: Vec<(String, Vec<String>, Arc<SurfaceNode>, Span)> = Vec::new();
         for entry in entries {
             if let Some(ref key) = entry.node.key {
@@ -829,7 +966,6 @@ fn register_type_aliases(
                                 Arc::clone(body),
                                 entry.node.value.span.clone(),
                             ));
-                            // Pre-register with placeholder body
                             target_env.insert_type_alias(
                                 name.clone(),
                                 TypeAlias {
@@ -842,50 +978,249 @@ fn register_type_aliases(
                 }
             }
         }
-
-        // Pass 2: resolve_type_expr_with_guard is async; skip in sync context.
-        // Bodies remain as Unknown placeholders from Pass 1.
-        // Alias bodies remain as Unknown placeholders from Pass 1 (async resolution skipped).
         let _ = alias_entries;
     }
     errors
 }
 
-/// Type-check an `if` expression with path-sensitive narrowing.
-fn infer_if(
-    cond: &Arc<SurfaceNode>,
-    then_expr: &Arc<SurfaceNode>,
-    else_expr: &Arc<SurfaceNode>,
-    env: &Rc<TypeEnv>,
-    state: &mut InferState,
-    type_map: &mut Option<&mut TypeMap>,
-) -> Result<Type, Vec<TypeError>> {
-    // Infer the condition type (must be Bool)
-    let _cond_ty = infer_surface_expr(cond, env, state, type_map)?;
+/// Variant of `register_type_aliases` operating on an owned `Env` rather than `TypeEnv`.
+/// Used by `typecheck_surface_document` after the Env migration.
+fn register_type_aliases_env(
+    node: &Arc<SurfaceNode>,
+    target_env: &mut Env,
+    _state: &mut InferState,
+    _errors: &mut Vec<TypeError>,
+) {
+    if let SurfaceExpression::Dict(entries) = &node.expr {
+        let mut alias_entries: Vec<(String, Vec<String>)> = Vec::new();
+        for entry in entries {
+            if let Some(ref key) = entry.node.key {
+                if let SurfaceExpression::Str(name) = &key.expr {
+                    if let SurfaceExpression::Decl(decl_box) = &entry.node.value.expr {
+                        if let SurfaceDeclaration::TypeAlias { params, .. } = decl_box.as_ref() {
+                            let param_names: Vec<String> =
+                                params.iter().map(|(n, _)| n.clone()).collect();
+                            alias_entries.push((name.clone(), param_names.clone()));
+                            target_env.insert_type_alias(
+                                name.clone(),
+                                TypeAlias {
+                                    params: param_names,
+                                    body: Type::Unknown,
+                                },
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
 
-    // Extract narrowings from the condition — walks SurfaceExpression natively.
-    let narrowings = extract_narrowings(cond);
+/// Map a resolved `Type` to the dispatch tag string used in instance binding names.
+///
+/// This mapping must match `extract_dispatch_tags` in `lower.rs`, which reads `@Annotation`
+/// names from instance arm patterns.  Annotations are written as `@Int`, `@Float`, `@String`,
+/// `@Bool`, `@Bytes`, `@TyConName` — the strings that appear in `instance_binding_name` calls.
+///
+/// Returns `None` for:
+/// - Unbound `TypeVar` (instance not yet determined).
+/// - `Unknown` / `Top` / `Error` (gradual / lattice types that don't correspond to instances).
+/// - Compound types that don't map to a single dispatch tag (records, functions, unions).
+///
+/// `IntLiteral`/`StringLiteral` are promoted to `"Int"`/`"String"` because instance arms are
+/// always annotated with the widened type (e.g., `@Int`, never `@42`).
+fn type_to_dispatch_tag(ty: &Type) -> Option<String> {
+    match ty {
+        Type::Int | Type::IntLiteral(_) => Some("Int".to_string()),
+        Type::Float => Some("Float".to_string()),
+        Type::Str | Type::StringLiteral(_) => Some("String".to_string()),
+        // Bytes is a direct variant (not TyCon("Bytes")).
+        Type::Bytes => Some("Bytes".to_string()),
+        // TyCon: map to the type name directly. Instance arm annotations must match the declared
+        // type name exactly (e.g., @Boolean not @Bool) for dispatch tags to align.
+        Type::TyCon(name) => Some(name.clone()),
+        // Unresolved inference variables and gradual types cannot be dispatched.
+        Type::TypeVar(_, _) | Type::Unknown | Type::Any | Type::Error(_) => None,
+        // Compound types don't correspond to single-param dispatch tags.
+        _ => None,
+    }
+}
 
-    // Fork the environment for the true branch
-    let env_true = apply_narrowings(env, &narrowings, state);
+/// Attempt to set `call_dispatch` on the function VarRef node after resolving the typeclass
+/// instance for a polymorphic call.
+///
+/// Called from the sync `infer_surface_expr` Call arm after arg types have been inferred.
+/// Uses a temporary (throwaway) type-variable binding map so that the dispatch computation
+/// does not pollute `state.subst` with unification side effects.
+///
+/// Algorithm:
+/// 1. Find the Constraint::Class entries introduced by scheme instantiation (those with vars
+///    that are fresh TypeVars — not yet bound in `state.subst`).
+/// 2. The scheme's instantiated Function type gives us `params[i] = TypeVar(_tN)`.
+///    For each param position that maps to a constraint var, record `_tN → arg_types[i]`.
+/// 3. Build the `type_args` array by applying these bindings to each constraint var and
+///    mapping to dispatch tag strings.
+/// 4. If all constraint vars resolve to ground dispatch tags, compute the binding name and
+///    call `call_dispatch.set(mangled_name)`.
+///
+/// Silently does nothing when:
+/// - `func` is not a VarRef (e.g., a lambda literal).
+/// - The scheme has no class constraints.
+/// - Some constraint vars remain unresolved (no instance can be determined statically).
+fn try_resolve_call_dispatch(
+    func: &std::sync::Arc<SurfaceNode>,
+    instantiated_func_ty: &Type,
+    arg_types: &[Type],
+    constraints_before: usize,
+    state: &InferState,
+) {
+    // Only VarRef function nodes carry call_dispatch.
+    let call_dispatch = if let SurfaceExpression::VarRef { call_dispatch, .. } = &func.expr {
+        call_dispatch
+    } else {
+        return;
+    };
 
-    // Fork the environment for the false branch: apply negation narrowings (BAS false-branch).
-    // For each TypeOf narrowing (e.g., [int? x] → x : Int in true branch),
-    // the false branch narrows x to Negation(Int) — i.e., "definitely not Int".
-    // This enables false-branch type refinement: if x : Int | Str and [int? x] fails,
-    // then x : (Int | Str) & ~Int = Str in the false branch.
-    let env_false = apply_negation_narrowings(env, &narrowings, state);
+    // Already dispatched (OnceLock semantics: first write wins, subsequent writes silently fail).
+    if call_dispatch.get().is_some() {
+        return;
+    }
 
-    // Infer the then and else branches in their respective environments
-    let then_ty = infer_surface_expr(then_expr, &env_true, state, type_map)?;
-    let else_ty = infer_surface_expr(else_expr, &env_false, state, type_map)?;
+    // Extract new Class constraints added since `constraints_before`.
+    // `instantiate_scheme` pushes them onto `state.constraints`.
+    let new_constraints = &state.constraints[constraints_before..];
+    if new_constraints.is_empty() {
+        return;
+    }
 
-    // Form the union of both branch types and simplify (RDNF step 1b).
-    // normalize_union deduplicates — if both branches return Int, the result is Int not Union([Int, Int]).
-    let raw_union = Type::normalize_union(vec![then_ty, else_ty]);
-    let result_ty = Type::simplify_type(raw_union);
+    // Find the first Class constraint (the primary typeclass membership constraint).
+    // For multi-class schemes (rare), we dispatch on the first — consistent with how
+    // lower.rs processes the first instance arm pattern.
+    let (class_name, constraint_vars) = match new_constraints.iter().find_map(|c| {
+        if let crate::type_class::Constraint::Class { class, vars, .. } = c {
+            Some((class.name.as_str(), vars.as_slice()))
+        } else {
+            None
+        }
+    }) {
+        Some(cv) => cv,
+        None => return,
+    };
 
-    Ok(result_ty)
+    // Build a temporary mapping from constraint TypeVar names to arg types by matching
+    // the instantiated function param types against the constraint var positions.
+    //
+    // The instantiated Function type has `params: Vec<(Option<String>, Type)>` where each
+    // param type is a TypeVar (fresh from instantiate_scheme). The constraint vars at the
+    // corresponding positions have the same TypeVar names.
+    //
+    // Strategy: for each (param_type, arg_type) pair, if param_type is a TypeVar whose name
+    // appears in the constraint vars, record that mapping in a local HashMap.
+    let mut var_to_type: HashMap<String, Type> = HashMap::new();
+
+    if let Type::Function { params, ret, .. } = instantiated_func_ty {
+        for (i, (_, param_ty)) in params.iter().enumerate() {
+            if let Some(arg_ty) = arg_types.get(i) {
+                // Follow any existing bindings in state.subst for the param type var.
+                let resolved_param_ty = state.subst.apply(param_ty);
+                let resolved_arg_ty = state.subst.apply(arg_ty);
+
+                // Widen literal types to base types for dispatch (IntLiteral → Int, etc.).
+                let widened_arg_ty = match &resolved_arg_ty {
+                    Type::IntLiteral(_) => Type::Int,
+                    Type::StringLiteral(_) => Type::Str,
+                    other => other.clone(),
+                };
+
+                if let Type::TypeVar(var_name, _) = &resolved_param_ty {
+                    // Only record if this TypeVar appears in the constraint.
+                    if constraint_vars
+                        .iter()
+                        .any(|cv| cv.as_var() == Some(var_name.as_str()))
+                    {
+                        var_to_type
+                            .entry(var_name.clone())
+                            .or_insert(widened_arg_ty);
+                    }
+                }
+            }
+        }
+
+        // Also try to resolve the return type var via the functional dependency.
+        // For FD (a, b) → c: if we know a and b, look up c in the current state.
+        // state.subst may have already bound c via FD improvement (from type_unify.rs).
+        let resolved_ret = state.subst.apply(ret);
+        if let Type::TypeVar(var_name, _) = &resolved_ret {
+            if constraint_vars
+                .iter()
+                .any(|cv| cv.as_var() == Some(var_name.as_str()))
+            {
+                if !var_to_type.contains_key(var_name.as_str()) {
+                    // Check if state.subst already bound this var (e.g., via FD improvement).
+                    let subst_val = state.subst.apply(&Type::TypeVar(var_name.clone(), 0));
+                    if !matches!(subst_val, Type::TypeVar(_, _)) {
+                        let widened = match &subst_val {
+                            Type::IntLiteral(_) => Type::Int,
+                            Type::StringLiteral(_) => Type::Str,
+                            other => other.clone(),
+                        };
+                        var_to_type.insert(var_name.clone(), widened);
+                    }
+                }
+            }
+        }
+    }
+
+    // Resolve each constraint var to a dispatch tag string.
+    // If any var is unresolved (no ground type), dispatch cannot be determined statically.
+    let mut type_args: Vec<String> = Vec::with_capacity(constraint_vars.len());
+    for cv in constraint_vars {
+        match cv {
+            crate::type_class::ConstraintArg::Ground(ty) => {
+                // Ground type already known from FD improvement before generalization.
+                match type_to_dispatch_tag(ty) {
+                    Some(tag) => type_args.push(tag),
+                    None => return, // Cannot dispatch on this ground type
+                }
+            }
+            crate::type_class::ConstraintArg::Var(var_name) => {
+                // Check local var_to_type first, then state.subst.
+                let ty = if let Some(t) = var_to_type.get(var_name.as_str()) {
+                    t.clone()
+                } else {
+                    let resolved = state.subst.apply(&Type::TypeVar(var_name.clone(), 0));
+                    match &resolved {
+                        Type::TypeVar(_, _) => return, // Still unresolved — cannot dispatch
+                        other => {
+                            let widened = match other {
+                                Type::IntLiteral(_) => Type::Int,
+                                Type::StringLiteral(_) => Type::Str,
+                                t => t.clone(),
+                            };
+                            widened
+                        }
+                    }
+                };
+                match type_to_dispatch_tag(&ty) {
+                    Some(tag) => type_args.push(tag),
+                    None => return, // Cannot dispatch on this type
+                }
+            }
+        }
+    }
+
+    // All constraint vars resolved — compute the mangled instance binding name.
+    // The method name is the VarRef's `name` field (e.g., "+", "=", "compare").
+    let method_name = if let SurfaceExpression::VarRef { name, .. } = &func.expr {
+        name.as_str()
+    } else {
+        return;
+    };
+    let type_arg_refs: Vec<&str> = type_args.iter().map(String::as_str).collect();
+    let mangled_name =
+        crate::type_def::instance_binding_name(class_name, method_name, &type_arg_refs);
+
+    call_dispatch.set(mangled_name);
 }
 
 /// Type-infer a SurfaceNode expression.
@@ -895,7 +1230,7 @@ fn infer_if(
 /// Bridge to check_* functions (via surface_node_to_expr) will be eliminated in Phase 4.
 pub(crate) fn infer_surface_expr(
     node: &std::sync::Arc<SurfaceNode>,
-    env: &Rc<TypeEnv>,
+    env: &Arc<RwLock<Env>>,
     state: &mut InferState,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
@@ -906,24 +1241,28 @@ pub(crate) fn infer_surface_expr(
         // There is no SurfaceExpression::Bool variant — skip
         SurfaceExpression::Str(s) => Ok(Type::StringLiteral(s.clone())),
 
-        SurfaceExpression::VarRef { name, .. } => {
+        SurfaceExpression::VarRef {
+            name, annotation, ..
+        } => {
             // Slot-indexed fast path: if the resolver assigned de Bruijn coordinates for
-            // this VarRef, try get_type_at(level, slot) before falling back to name lookup.
+            // this VarRef, try get_scheme_at(level, slot) before falling back to name lookup.
             // This O(1) path is only taken when the resolution table is present AND this
-            // node has a resolved entry.  Falls back to name-based env.get(name) when:
+            // node has a resolved entry.  Falls back to name-based get_scheme(name) when:
             //   - No resolution table (tests, inline programs)
             //   - No entry for this node (free variable)
-            //   - get_type_at returns None (narrowing frame intervened, extras entry, etc.)
-            let scheme: Option<&TypeScheme> = 'lookup: {
+            //   - get_scheme_at returns None (narrowing frame intervened, extras entry, etc.)
+            let scheme: Option<TypeScheme> = 'lookup: {
                 if let Some(ref table) = state.resolution_table {
                     let id = node_id(node);
                     if let Some(&(level, slot)) = table.get(&id) {
-                        if let Some(s) = env.get_type_at(level, slot, name) {
+                        // Read and drop the guard before the fallback to avoid holding the lock.
+                        let slot_scheme = env.read().unwrap().get_scheme_at(level, slot);
+                        if let Some(s) = slot_scheme {
                             break 'lookup Some(s);
                         }
                     }
                 }
-                env.get(name)
+                env.read().unwrap().get_scheme(name)
             };
             if let Some(scheme) = scheme {
                 // Record scheme in scheme_map for LSP hover (constraints + type vars).
@@ -940,7 +1279,7 @@ pub(crate) fn infer_surface_expr(
                     }
                 }
                 Ok(instantiate_scheme(
-                    scheme,
+                    &scheme,
                     state.level,
                     state,
                     Some(name.as_str()),
@@ -954,6 +1293,36 @@ pub(crate) fn infer_surface_expr(
                         cause_span.start.line, cause_span.start.column
                     ));
                 }
+                // Gradual typing: if the VarRef has an inline annotation, use the
+                // annotation type even when the variable is undefined. This allows patterns
+                // like `Config@Int` to resolve to `Int` without requiring `Config` to be
+                // defined (the annotation provides the type).
+                //
+                // Special case: `Fn@RetType` — the name "Fn"/"Function" in annotation
+                // position with a return-type annotation produces a zero-param function type.
+                // This supports standalone `Fn@Int` expressions in type position.
+                if let Some(ann) = annotation {
+                    if name == "Fn" || name == "Function" {
+                        let ret_ty =
+                            resolve_typeassert_annotation_sync(ann, state).unwrap_or(Type::Unknown);
+                        state
+                            .failed_bindings
+                            .insert(name.clone(), node.span.clone());
+                        return Ok(Type::Function {
+                            params: vec![],
+                            ret: Box::new(ret_ty),
+                            variadic: false,
+                            required_count: 0,
+                        });
+                    }
+                    if let Some(ty) = resolve_typeassert_annotation_sync(ann, state) {
+                        state
+                            .failed_bindings
+                            .insert(name.clone(), node.span.clone());
+                        return Ok(ty);
+                    }
+                }
+                // No annotation: undefined variable is a hard error.
                 Err(vec![err])
             }
         }
@@ -965,15 +1334,6 @@ pub(crate) fn infer_surface_expr(
             } else {
                 Err(errs)
             }
-        }
-
-        SurfaceExpression::Field {
-            expr: target_opt, ..
-        } if target_opt.is_some() => {
-            // check_dot_access is async; fallback to inferring target type
-            let target = target_opt.as_ref().unwrap();
-            let _target_ty = infer_surface_expr(target, env, state, type_map)?;
-            Ok(Type::Unknown)
         }
 
         SurfaceExpression::Pipe { .. } => {
@@ -997,7 +1357,7 @@ pub(crate) fn infer_surface_expr(
                 }));
             }
 
-            let mut current_env = Rc::clone(env);
+            let mut current_env: Arc<RwLock<Env>> = Arc::clone(env);
 
             for (i, seq_expr) in exprs.iter().enumerate() {
                 let is_last = i == exprs.len() - 1;
@@ -1023,17 +1383,17 @@ pub(crate) fn infer_surface_expr(
                     }
 
                     if let Type::Record(_) = &dict_ty {
-                        let mut child_env = TypeEnv::with_parent(&current_env);
+                        let mut child_env_inner = Env::with_parent(Arc::clone(&current_env));
 
                         // Insert schemes (preserving polymorphism) for entries
                         // that have generalized TypeSchemes from infer_dict.
                         // Fall back to mono() for any field in the Record type
                         // that doesn't have a scheme (e.g., auto-indexed entries).
                         for (field_name, scheme) in &schemes {
-                            child_env.insert_scheme(field_name.clone(), scheme.clone());
+                            child_env_inner.insert_scheme(field_name.clone(), scheme.clone());
                         }
 
-                        current_env = Rc::new(child_env);
+                        current_env = Arc::new(RwLock::new(child_env_inner));
                     } else {
                         // Non-dict intermediate (from an explicit Dict expression that
                         // happened to produce a non-Record type) — treat as advisory.
@@ -1051,14 +1411,14 @@ pub(crate) fn infer_surface_expr(
                     // generalization, `id` would be inserted as a monomorphic
                     // entry and could only be used at a single type.
                     if let Type::Record(row) = expr_ty {
-                        let mut child_env = TypeEnv::with_parent(&current_env);
+                        let mut child_env_inner = Env::with_parent(Arc::clone(&current_env));
 
                         for (field_name, field_ty) in &row.fields {
                             let scheme = generalize(enclosing_level, field_ty, state);
-                            child_env.insert_scheme(field_name.clone(), scheme);
+                            child_env_inner.insert_scheme(field_name.clone(), scheme);
                         }
 
-                        current_env = Rc::new(child_env);
+                        current_env = Arc::new(RwLock::new(child_env_inner));
                     }
                     // Non-dict intermediate expression (e.g. a side-effecting call like
                     // [cancel-root] or [drain]): no bindings contributed. This is valid —
@@ -1078,76 +1438,6 @@ pub(crate) fn infer_surface_expr(
             named_args,
             implied: _,
         } => {
-            // Special case: `if` is a type-level special form with path-sensitive narrowing
-            if let SurfaceExpression::VarRef { name, .. } = &func.expr {
-                if name == "if" && args.len() == 3 && named_args.is_empty() {
-                    return infer_if(&args[0], &args[1], &args[2], env, state, type_map);
-                }
-
-                // Special case: `get-in` is a type-level special form that unfolds into
-                // repeated `get` calls for nested dict access.
-                // check_get_in and check_open are async; use Unknown in sync context
-                if name == "get-in" || name == "open" {
-                    // Infer args for side effects
-                    for arg in args {
-                        let _ = infer_surface_expr(arg, env, state, type_map);
-                    }
-                    return Ok(Type::Unknown);
-                }
-
-                // Special-case dispatches (connect, first, last, map, concat, tls-layer, get)
-                // are async; skip in sync context — infer args for side effects only.
-                if matches!(
-                    name.as_str(),
-                    "connect"
-                        | "builtin-first"
-                        | "builtin-head"
-                        | "builtin-last"
-                        | "map"
-                        | "builtin-map"
-                        | "builtin-concat"
-                        | "tls-layer"
-                        | "get"
-                        | "builtin-get"
-                ) {
-                    let _ = infer_surface_expr(func, env, state, type_map);
-                    for arg in args {
-                        let _ = infer_surface_expr(arg, env, state, type_map);
-                    }
-                    return Ok(Type::Unknown);
-                }
-
-                // Special case: `+`/`-`/`*` (and builtin-* aliases) — refine return type from
-                // Number to Int/Float based on operand types. The prelude scheme returns Number
-                // for all arithmetic which loses precision for Int-only code.
-                if matches!(
-                    name.as_str(),
-                    "+" | "-" | "*" | "builtin-add" | "builtin-sub" | "builtin-mul"
-                ) && named_args.is_empty()
-                    && args.len() == 2
-                {
-                    // Infer func for LSP hover only. Save and restore constraints to prevent
-                    // the Addable constraint from scheme instantiation from leaking into the
-                    // outer scope — it would trigger spurious T013 warnings for the enclosing
-                    // dict entry, since check_arithmetic bypasses the constraint-based path.
-                    // check_arithmetic/check_div are async; use Unknown in sync context
-                    for arg in args {
-                        let _ = infer_surface_expr(arg, env, state, type_map);
-                    }
-                    return Ok(Type::Unknown);
-                }
-
-                if (name == "/" || name == "builtin-div")
-                    && named_args.is_empty()
-                    && args.len() == 2
-                {
-                    for arg in args {
-                        let _ = infer_surface_expr(arg, env, state, type_map);
-                    }
-                    return Ok(Type::Float);
-                }
-            }
-
             // Special case: do-infer sentinel — inferred [do] form monad resolution.
             if let SurfaceExpression::Field {
                 expr: Some(da_target),
@@ -1164,13 +1454,204 @@ pub(crate) fn infer_surface_expr(
                 }
             }
 
+            // Special case: [if cond true-branch false-branch] with path-sensitive narrowing.
+            // Applies narrowing constraints from the condition to the true branch environment,
+            // then joins the branch result types. Both branches are widened (literal → base type)
+            // before joining so that Union(Int, IntLiteral(0)) collapses to Int correctly.
+            if let SurfaceExpression::VarRef { name, .. } = &func.expr {
+                if (name == "if" || name == "builtin-if")
+                    && args.len() == 3
+                    && named_args.is_empty()
+                {
+                    let cond_node = &args[0];
+                    let true_node = &args[1];
+                    let false_node = &args[2];
+
+                    // Infer condition for side effects (type errors on the condition itself).
+                    let _cond_ty = infer_surface_expr(cond_node, env, state, type_map)
+                        .unwrap_or(Type::Unknown);
+
+                    // Extract narrowing constraints from the condition.
+                    let narrowings = extract_narrowings(cond_node);
+
+                    // Infer true branch with narrowed environment.
+                    let true_ty = if narrowings.is_empty() {
+                        infer_surface_expr(true_node, env, state, type_map).unwrap_or(Type::Unknown)
+                    } else {
+                        let narrowed_env = apply_narrowings(env, &narrowings, state);
+                        infer_surface_expr(true_node, &narrowed_env, state, type_map)
+                            .unwrap_or(Type::Unknown)
+                    };
+
+                    // Infer false branch with the original environment.
+                    let false_ty = infer_surface_expr(false_node, env, state, type_map)
+                        .unwrap_or(Type::Unknown);
+
+                    // Widen literal types before joining so that Union(Int, IntLiteral(n)) → Int,
+                    // Union(Str, StringLiteral(s)) → Str, etc.
+                    let true_ty = widen_literal_types(true_ty);
+                    let false_ty = widen_literal_types(false_ty);
+
+                    let result_ty = if true_ty == false_ty {
+                        true_ty
+                    } else {
+                        Type::normalize_union(vec![true_ty, false_ty])
+                    };
+                    return Ok(result_ty);
+                }
+            }
+
             // Special case: if func is a VarRef to a polymorphic scheme, pass the scheme
             // directly to avoid double instantiation (VAR-POLY followed by CALL-POLY).
             if let SurfaceExpression::VarRef { name, .. } = &func.expr {
+                // Special case: `builtin-get`, `get`, `get?` — field-type-resolving dispatch.
+                // In the sync path, the FD improvement machinery (check_constraints_on_var) is
+                // not called, so the Indexable constraint does not resolve `v` to the field type.
+                // This special case implements the Indexable Record case directly:
+                // when the key is a string literal and the container is a Record, return the field type.
+                // For `get?`, the return type is `field_type | Null`.
+                if (name == "builtin-get" || name == "get" || name == "get?")
+                    && args.len() == 2
+                    && named_args.is_empty()
+                {
+                    // Infer the container type (arg 1)
+                    let container_ty =
+                        infer_surface_expr(&args[1], env, state, type_map).unwrap_or(Type::Unknown);
+                    let container_resolved = state.subst.apply(&container_ty);
+
+                    // Infer the key type (arg 0)
+                    let key_ty =
+                        infer_surface_expr(&args[0], env, state, type_map).unwrap_or(Type::Unknown);
+                    let key_resolved = state.subst.apply(&key_ty);
+
+                    // When the key is a string literal and container is a Record, resolve the field type.
+                    let field_ty = if let (Type::StringLiteral(field_name), Type::Record(row)) =
+                        (&key_resolved, &container_resolved)
+                    {
+                        row.fields
+                            .get(field_name.as_str())
+                            .cloned()
+                            .unwrap_or(Type::Unknown)
+                    } else if let (Type::StringLiteral(field_name), Type::Union(members)) =
+                        (&key_resolved, &container_resolved)
+                    {
+                        // Union of records: distribute field access and normalize
+                        let field_types: Vec<Type> = members
+                            .iter()
+                            .filter_map(|m| {
+                                if let Type::Record(row) = m {
+                                    row.fields.get(field_name.as_str()).cloned()
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+                        if field_types.is_empty() {
+                            Type::Unknown
+                        } else {
+                            Type::normalize_union(field_types)
+                        }
+                    } else {
+                        Type::Unknown
+                    };
+
+                    return if name == "get?" {
+                        // get? returns the field type or Null (empty record)
+                        let null_ty = Type::Record(Row {
+                            fields: indexmap::IndexMap::new(),
+                            tail: crate::type_def::RowTail::Empty,
+                        });
+                        if matches!(field_ty, Type::Unknown) {
+                            Ok(Type::Unknown)
+                        } else {
+                            Ok(Type::normalize_union(vec![field_ty, null_ty]))
+                        }
+                    } else {
+                        Ok(field_ty)
+                    };
+                }
+
+                // Special case: `get-in` — path-following field access with precise return type.
+                // [GET-IN-NIL]: empty path returns dict type unchanged.
+                // [GET-IN-CONS]: literal string path follows fields through records.
+                // Variable/non-literal path: returns Unknown (gradual fallback).
+                if name == "get-in" && args.len() == 2 && named_args.is_empty() {
+                    // Infer dict type (arg 1)
+                    let dict_ty =
+                        infer_surface_expr(&args[1], env, state, type_map).unwrap_or(Type::Unknown);
+                    let dict_ty = state.subst.apply(&dict_ty);
+
+                    // Check if path (arg 0) is a literal dict with auto-indexed string entries
+                    match &args[0].expr {
+                        SurfaceExpression::Dict(path_entries) => {
+                            // Extract string literal keys from path
+                            let mut keys: Vec<String> = Vec::new();
+                            let mut all_literal = true;
+                            for (idx, entry) in path_entries.iter().enumerate() {
+                                let is_auto_indexed = match &entry.node.key {
+                                    None => true,
+                                    Some(k) => {
+                                        matches!(&k.expr, SurfaceExpression::Int(n) if *n == idx as i64)
+                                    }
+                                };
+                                if !is_auto_indexed {
+                                    all_literal = false;
+                                    break;
+                                }
+                                match &entry.node.value.expr {
+                                    SurfaceExpression::Str(s) => keys.push(s.clone()),
+                                    _ => {
+                                        all_literal = false;
+                                        break;
+                                    }
+                                }
+                            }
+                            if all_literal {
+                                if keys.is_empty() {
+                                    // Empty path: return dict type unchanged
+                                    return Ok(dict_ty);
+                                }
+                                // Follow path through records
+                                let mut current = dict_ty;
+                                let mut resolved = true;
+                                for key in &keys {
+                                    current = state.subst.apply(&current);
+                                    match &current {
+                                        Type::Record(row) => {
+                                            if let Some(field_ty) = row.fields.get(key.as_str()) {
+                                                current = field_ty.clone();
+                                            } else {
+                                                current = Type::Unknown;
+                                                resolved = false;
+                                                break;
+                                            }
+                                        }
+                                        Type::Unknown => {
+                                            resolved = false;
+                                            break;
+                                        }
+                                        _ => {
+                                            current = Type::Unknown;
+                                            resolved = false;
+                                            break;
+                                        }
+                                    }
+                                }
+                                let _ = infer_surface_expr(&args[0], env, state, type_map);
+                                return Ok(if resolved { current } else { Type::Unknown });
+                            }
+                        }
+                        _ => {}
+                    }
+                    // Non-literal path: infer arg 0 for side effects, return Unknown
+                    let _ = infer_surface_expr(&args[0], env, state, type_map);
+                    return Ok(Type::Unknown);
+                }
+
                 // Monomorphic recursion check (same logic as infer_expr)
                 if state.current_function.as_ref() == Some(name) {
-                    let fn_resolved_ty = env
-                        .get(name)
+                    let fn_scheme_opt: Option<TypeScheme> = env.read().unwrap().get_scheme(name);
+                    let fn_resolved_ty = fn_scheme_opt
                         .map(|scheme| state.subst.apply(&scheme.body))
                         .unwrap_or_else(|| state.fresh_type_var());
 
@@ -1197,7 +1678,7 @@ pub(crate) fn infer_surface_expr(
                             {
                                 return Err(vec![TypeError::new(
                                     format!(
-                                        "arity mismatch: expected {}{} argument(s), got {}",
+                                        "arity mismatch: expected {}{} arguments, got {}",
                                         if variadic { "at least " } else { "" },
                                         min_required,
                                         total_supplied,
@@ -1219,8 +1700,21 @@ pub(crate) fn infer_surface_expr(
                             }
                             return Ok(state.subst.apply(&ret));
                         }
+                        Type::TypeVar(_, _) => {
+                            // TypeVar: this is a recursive call to an unannotated function.
+                            // The return type is unknown and cannot be determined without a
+                            // type annotation. Emit an error: recursive function requires
+                            // a return type annotation.
+                            return Err(vec![TypeError::new(
+                                format!(
+                                    "recursive function requires a return type annotation to be type-checked (function '{}')",
+                                    name
+                                ),
+                                func.span.clone(),
+                            )]);
+                        }
                         _ => {
-                            // TypeVar or other non-Function type: allow speculatively.
+                            // Other non-Function type: allow speculatively.
                             for arg in args {
                                 let _ = infer_surface_expr(arg, env, state, type_map)?;
                             }
@@ -1232,7 +1726,8 @@ pub(crate) fn infer_surface_expr(
                     }
                 }
 
-                match env.get(name) {
+                let scheme_opt: Option<TypeScheme> = env.read().unwrap().get_scheme(name);
+                match scheme_opt {
                     Some(scheme)
                         if !scheme.type_vars.is_empty() || !scheme.kind_vars.is_empty() =>
                     {
@@ -1246,59 +1741,392 @@ pub(crate) fn infer_surface_expr(
                                 smap.insert(key, scheme.clone());
                             }
                         }
-                        // check_call_with_scheme/check_call are async; use Unknown in sync
+                        // Instantiate the scheme before inferring args so that the fresh
+                        // TypeVar names in the instantiated function type are available for
+                        // try_resolve_call_dispatch (which maps param TypeVars to arg types).
+                        let constraints_before = state.constraints.len();
+                        let inst_ty = instantiate_scheme(
+                            &scheme,
+                            state.level,
+                            state,
+                            Some(name.as_str()),
+                            Some(node.span.clone()),
+                        );
+                        // Record the function VarRef span → instantiated type in type_map.
+                        // This mirrors check_call_with_scheme's explicit recording, enabling
+                        // LSP hover to show the function type at call sites.
+                        if let Some(ref mut tm) = type_map {
+                            let key = (func.span.start.offset, func.span.end.offset);
+                            tm.insert(key, inst_ty.clone());
+                        }
+                        // Arity check on the instantiated type before inferring args.
+                        // Catches wrong argument count for polymorphic functions.
+                        if let Type::Function {
+                            params: ref fn_params,
+                            variadic: fn_variadic,
+                            required_count: fn_required,
+                            ..
+                        } = &inst_ty
                         {
+                            let total_supplied = args.len() + named_args.len();
+                            let min_required = *fn_required;
+                            let max_allowed = if *fn_variadic {
+                                usize::MAX
+                            } else {
+                                fn_params.len()
+                            };
+                            if total_supplied < min_required || total_supplied > max_allowed {
+                                return Err(vec![TypeError::new(
+                                    format!(
+                                        "arity mismatch: expected {}{} arguments, got {}",
+                                        if *fn_variadic { "at least " } else { "" },
+                                        if *fn_variadic {
+                                            min_required
+                                        } else {
+                                            fn_params.len()
+                                        },
+                                        total_supplied,
+                                    ),
+                                    node.span.clone(),
+                                )]);
+                            }
+                        }
+                        // Infer args and collect types for call_dispatch resolution.
+                        let mut arg_types: Vec<Type> = Vec::with_capacity(args.len());
+                        for arg in args {
+                            match infer_surface_expr(arg, env, state, type_map) {
+                                Ok(ty) => arg_types.push(ty),
+                                Err(_) => arg_types.push(Type::Unknown),
+                            }
+                        }
+                        // Bind instantiated param TypeVars to inferred arg types.
+                        // This is the sync approximation of CALL-POLY unification:
+                        // for each param `TypeVar(_tN)` and corresponding arg type T,
+                        // bind `_tN → T` in state.subst. This makes the return type resolve
+                        // correctly (e.g., identity `∀a. a→a` applied to Int returns Int).
+                        // For subsequent args that bind the same TypeVar (from same annotation
+                        // name, e.g. `fn [let x@a y@a]`), check for type conflicts.
+                        let mut poly_errors: Vec<TypeError> = Vec::new();
+                        if let Type::Function {
+                            params: ref fn_params,
+                            ..
+                        } = &inst_ty
+                        {
+                            for ((_, param_ty), arg_ty) in fn_params.iter().zip(arg_types.iter()) {
+                                let param_resolved = state.subst.apply(param_ty);
+                                match param_resolved {
+                                    Type::TypeVar(var_name, _) => {
+                                        let existing = {
+                                            let map = state.subst.type_map.borrow();
+                                            map.get(&var_name).cloned()
+                                        };
+                                        match existing {
+                                            None => {
+                                                // First binding: bind TypeVar to arg type
+                                                state
+                                                    .subst
+                                                    .type_map
+                                                    .borrow_mut()
+                                                    .insert(var_name, arg_ty.clone());
+                                            }
+                                            Some(bound) => {
+                                                // Subsequent binding: check consistency
+                                                let bound_resolved = state.subst.apply(&bound);
+                                                if !Type::is_consistent_subtype(
+                                                    arg_ty,
+                                                    &bound_resolved,
+                                                ) && !Type::is_consistent_subtype(
+                                                    &bound_resolved,
+                                                    arg_ty,
+                                                ) {
+                                                    poly_errors.push(TypeError::new(
+                                                        format!(
+                                                            "cannot unify {} with {}",
+                                                            bound_resolved, arg_ty
+                                                        ),
+                                                        node.span.clone(),
+                                                    ));
+                                                }
+                                            }
+                                        }
+                                    }
+                                    already_bound => {
+                                        // TypeVar already fully resolved — check consistency with arg.
+                                        // This handles the case where apply() resolved the TypeVar
+                                        // to a concrete type (e.g., IntLiteral) from a prior arg.
+                                        if !Type::is_consistent_subtype(arg_ty, &already_bound)
+                                            && !Type::is_consistent_subtype(&already_bound, arg_ty)
+                                        {
+                                            poly_errors.push(TypeError::new(
+                                                format!(
+                                                    "cannot unify {} with {}",
+                                                    already_bound, arg_ty
+                                                ),
+                                                node.span.clone(),
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if !poly_errors.is_empty() {
+                            return Err(poly_errors);
+                        }
+                        // Attempt to set call_dispatch on the function VarRef if the scheme
+                        // has typeclass constraints and all constraint vars can be resolved
+                        // from the inferred arg types.
+                        try_resolve_call_dispatch(
+                            func,
+                            &inst_ty,
+                            &arg_types,
+                            constraints_before,
+                            state,
+                        );
+                        if let Type::Function { ret, .. } = inst_ty {
+                            Ok(state.subst.apply(&ret))
+                        } else if matches!(inst_ty, Type::Unknown | Type::Any) {
+                            // Gradual: Unknown/Any in function position → return Unknown
+                            Ok(Type::Unknown)
+                        } else if matches!(inst_ty, Type::Error(_)) {
+                            // Error cascade suppression (B-180): scheme body is Error → suppress T003.
                             for arg in args {
                                 let _ = infer_surface_expr(arg, env, state, type_map);
                             }
-                            let ret = instantiate_scheme(
-                                scheme,
-                                state.level,
-                                state,
-                                Some(name.as_str()),
-                                Some(node.span.clone()),
-                            );
-                            Ok(if let Type::Function { ret, .. } = ret {
-                                *ret
+                            for na in named_args {
+                                let _ = infer_surface_expr(&na.node.value, env, state, type_map);
+                            }
+                            Ok(Type::Unknown)
+                        } else {
+                            // Concrete non-function type in call position → error
+                            Err(vec![TypeError::not_a_function(&inst_ty, func.span.clone())])
+                        }
+                    }
+                    Some(scheme) => {
+                        // Monomorphic call (no quantified type variables).
+                        // Apply substitution to get the concrete function type, then check
+                        // arity and argument types synchronously.
+                        let func_ty = state.subst.apply(&scheme.body);
+                        // Record the function type at the func VarRef span for LSP hover.
+                        // Without this, the func VarRef has no entry in type_map
+                        // because the monomorphic path looks up the scheme directly
+                        // rather than recursively calling infer_surface_expr on the func.
+                        if let Some(ref mut tm) = type_map {
+                            let key = (func.span.start.offset, func.span.end.offset);
+                            tm.insert(key, Type::simplify_type(func_ty.clone()));
+                        }
+                        if let Type::Function {
+                            params: fn_params,
+                            ret: fn_ret,
+                            variadic: fn_variadic,
+                            required_count: fn_required,
+                        } = func_ty
+                        {
+                            let total_supplied = args.len() + named_args.len();
+                            let min_required = fn_required;
+                            let max_allowed = if fn_variadic {
+                                usize::MAX
                             } else {
-                                Type::Unknown
-                            })
-                        }
-                    }
-                    Some(_) => {
-                        // check_call is async; infer func and args for side effects
-                        let _func_ty = infer_surface_expr(func, env, state, type_map)?;
-                        for arg in args {
-                            let _ = infer_surface_expr(arg, env, state, type_map);
-                        }
-                        Ok(Type::Unknown)
-                    }
-                    None => {
-                        // Special handling for $proxy builtin: produces Type::Proxy
-                        if name == "proxy" {
-                            // Infer arguments for type map population
+                                fn_params.len()
+                            };
+                            if total_supplied < min_required || total_supplied > max_allowed {
+                                return Err(vec![TypeError::new(
+                                    format!(
+                                        "arity mismatch: expected {}{} arguments, got {}",
+                                        if fn_variadic { "at least " } else { "" },
+                                        if fn_variadic {
+                                            min_required
+                                        } else {
+                                            fn_params.len()
+                                        },
+                                        total_supplied,
+                                    ),
+                                    node.span.clone(),
+                                )]);
+                            }
+                            // Type-check each positional argument against its parameter type.
+                            // Skip checking if the param type is a TyCon — in the sync path,
+                            // lowercase type annotations like @a resolve to TyCon("a") because
+                            // the async resolution path is unavailable. TyCon("a") is opaque and
+                            // cannot be meaningfully checked against concrete arg types here.
+                            for (arg, (_param_name, param_ty)) in args.iter().zip(fn_params.iter())
+                            {
+                                let param_resolved = state.subst.apply(param_ty);
+                                if matches!(
+                                    &param_resolved,
+                                    Type::TyCon(_) | Type::Unknown | Type::Any
+                                ) {
+                                    // Gradual or opaque param: infer for side effects only
+                                    let _ = infer_surface_expr(arg, env, state, type_map);
+                                } else {
+                                    check_surface_expr(arg, &param_resolved, env, state, type_map)
+                                        .map_err(|e| e)?;
+                                }
+                            }
+                            // Named args: type-check against the matching parameter by name.
+                            for na in named_args {
+                                let param_match = fn_params.iter().find(|(pname, _)| {
+                                    pname.as_deref() == Some(na.node.name.as_str())
+                                });
+                                match param_match {
+                                    Some((_, param_ty)) => {
+                                        let param_resolved = state.subst.apply(param_ty);
+                                        if matches!(
+                                            &param_resolved,
+                                            Type::TyCon(_) | Type::Unknown | Type::Any
+                                        ) {
+                                            // Gradual or opaque param: infer for side effects
+                                            let _ = infer_surface_expr(
+                                                &na.node.value,
+                                                env,
+                                                state,
+                                                type_map,
+                                            );
+                                        } else {
+                                            // Type-check the named arg value.
+                                            // On mismatch, wrap the error with a named-arg context.
+                                            let actual_ty = infer_surface_expr(
+                                                &na.node.value,
+                                                env,
+                                                state,
+                                                type_map,
+                                            )?;
+                                            let actual_resolved = state.subst.apply(&actual_ty);
+                                            if !Type::is_consistent_subtype(
+                                                &actual_resolved,
+                                                &param_resolved,
+                                            ) {
+                                                return Err(vec![TypeError::new(
+                                                    format!(
+                                                        "named argument '{}' type mismatch: cannot unify {} with {}",
+                                                        na.node.name, param_resolved, actual_resolved
+                                                    ),
+                                                    na.node.value.span.clone(),
+                                                )]);
+                                            }
+                                        }
+                                    }
+                                    None => {
+                                        // Unknown named arg — report error
+                                        return Err(vec![TypeError::new(
+                                            format!("unknown named argument '{}'", na.node.name),
+                                            na.node.value.span.clone(),
+                                        )]);
+                                    }
+                                }
+                            }
+                            Ok(state.subst.apply(&fn_ret))
+                        } else if matches!(func_ty, Type::TypeVar(_, _) | Type::Unknown | Type::Any)
+                        {
+                            // TypeVar or gradual type: cannot check call statically.
+                            // Infer func and args for side effects, return Unknown.
+                            let _func_ty = infer_surface_expr(func, env, state, type_map)?;
                             for arg in args {
-                                let _ = infer_surface_expr(arg, env, state, type_map)?;
+                                let _ = infer_surface_expr(arg, env, state, type_map);
+                            }
+                            Ok(Type::Unknown)
+                        } else if matches!(func_ty, Type::Error(_)) {
+                            // Error cascade suppression (B-180): when calling a function typed as
+                            // Type::Error (e.g. because its definition failed type-checking), do NOT
+                            // emit a T003 "expected function type, got <error>" error. The root cause
+                            // has already been reported at the definition site.
+                            // Infer args for side effects (type map population) and return Unknown.
+                            for arg in args {
+                                let _ = infer_surface_expr(arg, env, state, type_map);
                             }
                             for na in named_args {
-                                let _ = infer_surface_expr(&na.node.value, env, state, type_map)?;
+                                let _ = infer_surface_expr(&na.node.value, env, state, type_map);
                             }
-                            Ok(Type::Proxy)
+                            Ok(Type::Unknown)
                         } else {
-                            let mut err = TypeError::undefined_variable(name, func.span.clone());
-                            if let Some(cause_span) = state.failed_bindings.get(name.as_str()) {
-                                err.notes.push(format!(
-                                    "  = note: `{name}` could not be defined because its definition at {}:{} failed type checking",
-                                    cause_span.start.line, cause_span.start.column
-                                ));
-                            }
-                            Err(vec![err])
+                            // Concrete non-function type: calling a non-function is an error.
+                            Err(vec![TypeError::not_a_function(&func_ty, func.span.clone())])
                         }
+                    }
+                    None => {
+                        let mut err = TypeError::undefined_variable(name, func.span.clone());
+                        if let Some(cause_span) = state.failed_bindings.get(name.as_str()) {
+                            err.notes.push(format!(
+                                "  = note: `{name}` could not be defined because its definition at {}:{} failed type checking",
+                                cause_span.start.line, cause_span.start.column
+                            ));
+                        }
+                        Err(vec![err])
                     }
                 }
             } else {
-                // check_call is async; fallback to Unknown in sync context
-                let _func_ty = infer_surface_expr(func, env, state, type_map)?;
+                // Non-VarRef function expression (e.g., literal, nested call).
+                // Infer the function expression type and check it's callable.
+                let func_ty = infer_surface_expr(func, env, state, type_map)?;
+                let func_resolved = if state.subst.type_map.borrow().is_empty() {
+                    func_ty
+                } else {
+                    state.subst.apply(&func_ty)
+                };
+                // Detect non-function types in call position (e.g., `[call 42 1]`).
+                if !matches!(
+                    &func_resolved,
+                    Type::Function { .. }
+                        | Type::TypeVar(_, _)
+                        | Type::Unknown
+                        | Type::Any
+                        | Type::Error(_) // Error cascade suppression (B-180)
+                ) {
+                    return Err(vec![TypeError::not_a_function(
+                        &func_resolved,
+                        func.span.clone(),
+                    )]);
+                }
+                // When the function type is a concrete Function with inference vars (CALL-POLY),
+                // bind param TypeVars to arg types in state.subst, then return the resolved ret type.
+                // This enables inline lambdas like `[call [fn [let x@a] $x] $data]` to produce
+                // the correct return type (not just Unknown). Mirrors the VarRef polymorphic path.
+                if let Type::Function {
+                    params: ref fn_params,
+                    ret: ref fn_ret,
+                    variadic: fn_variadic,
+                    required_count: fn_required,
+                } = func_resolved
+                {
+                    let total_supplied = args.len() + named_args.len();
+                    let min_required = fn_required;
+                    let max_allowed = if fn_variadic {
+                        usize::MAX
+                    } else {
+                        fn_params.len()
+                    };
+                    if total_supplied < min_required || total_supplied > max_allowed {
+                        // Arity mismatch for non-VarRef callee — still infer args for side effects
+                        for arg in args {
+                            let _ = infer_surface_expr(arg, env, state, type_map);
+                        }
+                        return Ok(Type::Unknown);
+                    }
+                    let mut arg_types: Vec<Type> = Vec::with_capacity(args.len());
+                    for arg in args {
+                        match infer_surface_expr(arg, env, state, type_map) {
+                            Ok(ty) => arg_types.push(ty),
+                            Err(_) => arg_types.push(Type::Unknown),
+                        }
+                    }
+                    // Bind param TypeVars to arg types (sync approximation of CALL-POLY unification)
+                    let fn_params_clone = fn_params.clone();
+                    let fn_ret_clone = fn_ret.clone();
+                    let fn_variadic_clone = fn_variadic;
+                    for ((_param_name, param_ty), arg_ty) in
+                        fn_params_clone.iter().zip(arg_types.iter())
+                    {
+                        let param_resolved = state.subst.apply(param_ty);
+                        if let Type::TypeVar(var_name, _) = param_resolved {
+                            state
+                                .subst
+                                .type_map
+                                .borrow_mut()
+                                .insert(var_name, arg_ty.clone());
+                        }
+                    }
+                    let _ = fn_variadic_clone;
+                    return Ok(state.subst.apply(&fn_ret_clone));
+                }
                 for arg in args {
                     let _ = infer_surface_expr(arg, env, state, type_map);
                 }
@@ -1330,25 +2158,64 @@ pub(crate) fn infer_surface_expr(
             // infer_fn is async; use simplified sync inference in sync context.
             // Also check return annotation if present (fn@RetType).
             {
-                let mut fn_env = TypeEnv::with_parent(env);
+                // ann_mapping: reuse the same TypeVar for the same lowercase annotation name.
+                // Without this, `fn [let x@a y@a]` would give x and y DIFFERENT TypeVars,
+                // losing the constraint that both params have the same type.
+                let mut ann_mapping: HashMap<String, Type> = HashMap::new();
+                let mut fn_env_inner = Env::with_parent(Arc::clone(env));
                 let mut param_types: Vec<(Option<String>, Type)> = Vec::new();
                 for p in &params_converted {
                     // Use param annotation if available for better type info
-                    let param_ty = if let Some(ann) = &p.node.annotation {
-                        resolve_simple_annotation_for_typeassert(ann, state)
+                    let param_ty = if p.node.variadic {
+                        // Variadic params collect positional args into an open integer-keyed record.
+                        // Mirrors the infer_fn (async) treatment of variadic params.
+                        let elem_ty = state.fresh_type_var();
+                        Type::Record(Row {
+                            fields: indexmap::IndexMap::new(),
+                            tail: crate::type_def::RowTail::Uniform {
+                                key: None,
+                                value: Box::new(elem_ty),
+                            },
+                        })
+                    } else if let Some(ann) = &p.node.annotation {
+                        resolve_simple_annotation_for_typeassert_with_mapping(
+                            ann,
+                            state,
+                            &mut ann_mapping,
+                        )
                     } else {
-                        state.fresh_type_var()
+                        // Unannotated params use Unknown (gradual typing escape hatch).
+                        // Using fresh_type_var() here would cause O(N²) blowup in the prelude
+                        // type-checking (see comment in infer_fn in typecheck_match.rs).
+                        Type::Unknown
                     };
-                    fn_env.insert(p.node.name.clone(), param_ty.clone());
+                    // Drain annotation_errors collected during param annotation resolution.
+                    if !state.annotation_errors.is_empty() {
+                        return Err(std::mem::take(&mut state.annotation_errors));
+                    }
+                    fn_env_inner.insert(p.node.name.clone(), param_ty.clone());
                     param_types.push((Some(p.node.name.clone()), param_ty));
                 }
-                let fn_env_rc = Rc::new(fn_env);
-                let body_ty = infer_surface_expr(body, &fn_env_rc, state, type_map)?;
+                let fn_env_arc = Arc::new(RwLock::new(fn_env_inner));
+                let body_ty = infer_surface_expr(body, &fn_env_arc, state, type_map)?;
 
-                // Check return annotation if present — only for primitive types to avoid
-                // false positives from TyCon("Dict") vs Record, or builtin-div returning Float.
-                if let Some(ret_ann) = return_ann {
-                    let declared_ret = resolve_simple_annotation_for_typeassert(ret_ann, state);
+                // Determine the function's return type.
+                // Priority: declared return annotation (if resolvable) > inferred body type.
+                // Resolve the return annotation using the same ann_mapping as params,
+                // so that `fn@a [let x@a]` shares the same TypeVar for param and return.
+                let fn_ret_ty = if let Some(ret_ann) = return_ann {
+                    // Use the mapping-aware resolver first to handle lowercase TypeVar names
+                    // correctly (e.g., @a in both param and return shares the same TypeVar).
+                    let declared_ret = resolve_simple_annotation_for_typeassert_with_mapping(
+                        ret_ann,
+                        state,
+                        &mut ann_mapping,
+                    );
+                    // Drain annotation_errors from return annotation resolution.
+                    if !state.annotation_errors.is_empty() {
+                        return Err(std::mem::take(&mut state.annotation_errors));
+                    }
+                    // Check for body type mismatches against concrete return annotations.
                     // Only check concrete primitive mismatches: Int, Float, String, Bytes.
                     // Avoid TyCon (e.g. "Dict" doesn't match Record), TypeVar, Unknown, Any.
                     let is_checkable_primitive = matches!(
@@ -1376,13 +2243,29 @@ pub(crate) fn infer_surface_expr(
                             )]);
                         }
                     }
-                }
+                    // If the resolved return type is Unknown/TypeVar and the body type is
+                    // concrete, prefer the body type (it carries more information than Unknown).
+                    // But preserve TypeVar — it's a deliberate annotation that should unify.
+                    match &declared_ret {
+                        Type::Unknown => body_ty.clone(),
+                        _ => declared_ret,
+                    }
+                } else {
+                    body_ty.clone()
+                };
 
+                let is_variadic = params_converted.iter().any(|p| p.node.variadic);
+                // required_count: for variadic functions, the variadic param itself doesn't count.
+                let required_count = if is_variadic {
+                    params_converted.len().saturating_sub(1)
+                } else {
+                    params_converted.len()
+                };
                 Ok(Type::Function {
                     params: param_types,
-                    ret: Box::new(body_ty),
-                    variadic: params_converted.iter().any(|p| p.node.variadic),
-                    required_count: params_converted.len(),
+                    ret: Box::new(fn_ret_ty),
+                    variadic: is_variadic,
+                    required_count,
                 })
             }
         }
@@ -1394,93 +2277,167 @@ pub(crate) fn infer_surface_expr(
         } => {
             // Infer the inner expression type, then try to resolve the annotation
             // synchronously and check for type mismatches (arity, return type, etc.).
-            let actual = infer_surface_expr(inner, env, state, type_map)?;
-            let actual_resolved = if state.subst.type_map.borrow().is_empty() {
-                actual.clone()
-            } else {
-                state.subst.apply(&actual)
+            //
+            // ASSERT-DEFAULT: when the annotation carries a `default:` property, a type
+            // mismatch or inference error on the inner expression is suppressed — the
+            // default provides a fallback value at runtime. Errors on the default itself
+            // are never suppressed (hard type errors).
+            let has_default = annotation.node.get_property("default").is_some();
+            let actual_result = infer_surface_expr(inner, env, state, type_map);
+
+            let (actual, inner_ok) = match actual_result {
+                Ok(ty) => (ty, true),
+                Err(errs) => {
+                    if has_default {
+                        // Suppress inner inference error when default is present.
+                        (Type::Unknown, false)
+                    } else {
+                        return Err(errs);
+                    }
+                }
             };
 
-            if let Some(expected) = resolve_typeassert_annotation_sync(annotation, state) {
+            let annotation_result = resolve_typeassert_annotation_sync(annotation, state);
+            // Drain annotation_errors produced inside resolve_typeassert_annotation_sync.
+            // These are malformed-annotation errors (e.g. @[type: 42], @[type: [Fn@Int]]).
+            if !state.annotation_errors.is_empty() {
+                return Err(std::mem::take(&mut state.annotation_errors));
+            }
+
+            if let Some(expected) = annotation_result {
                 let expected_resolved = if state.subst.type_map.borrow().is_empty() {
                     expected.clone()
                 } else {
                     state.subst.apply(&expected)
                 };
 
-                // Check function arity and type mismatches
-                match (&actual_resolved, &expected_resolved) {
-                    (
-                        Type::Function {
-                            params: p_actual,
-                            ret: r_actual,
-                            ..
-                        },
-                        Type::Function {
-                            params: p_expected,
-                            ret: r_expected,
-                            ..
-                        },
-                    ) => {
-                        if p_actual.len() != p_expected.len() {
-                            return Err(vec![TypeError::new(
-                                format!(
-                                    "arity mismatch: expected {} arguments, got {}",
-                                    p_expected.len(),
-                                    p_actual.len()
-                                ),
-                                node.span.clone(),
-                            )]);
-                        }
-                        // Check return type compatibility
-                        if !Type::is_consistent_subtype(r_actual, r_expected) {
-                            return Err(vec![TypeError::new(
-                                format!(
-                                    "[UnificationFailure] cannot unify {} with {}",
-                                    r_expected, r_actual
-                                ),
-                                node.span.clone(),
-                            )]);
-                        }
-                        // Check param types
-                        for (i, ((_, p_act), (_, p_exp))) in
-                            p_actual.iter().zip(p_expected.iter()).enumerate()
-                        {
-                            if !Type::is_consistent_subtype(p_act, p_exp) {
-                                // Check direction: actual param is more restrictive than expected
-                                if Type::is_consistent_subtype(p_exp, p_act) {
-                                    return Err(vec![TypeError::new(
-                                        format!(
-                                            "[TypeError] parameter annotation {} is more restrictive than required type {}",
-                                            p_act, p_exp
-                                        ),
-                                        node.span.clone(),
-                                    )]);
-                                }
-                                let _ = i; // suppress unused
-                                return Err(vec![TypeError::new(
+                // Only check type compatibility when the inner expression inferred successfully.
+                if inner_ok {
+                    let actual_resolved = if state.subst.type_map.borrow().is_empty() {
+                        actual.clone()
+                    } else {
+                        state.subst.apply(&actual)
+                    };
+
+                    // Check function arity and type mismatches
+                    let mismatch_err = match (&actual_resolved, &expected_resolved) {
+                        (
+                            Type::Function {
+                                params: p_actual,
+                                ret: r_actual,
+                                ..
+                            },
+                            Type::Function {
+                                params: p_expected,
+                                ret: r_expected,
+                                ..
+                            },
+                        ) => {
+                            if p_actual.len() != p_expected.len() {
+                                Some(vec![TypeError::new(
                                     format!(
-                                        "[UnificationFailure] cannot unify {} with {}",
-                                        p_exp, p_act
+                                        "arity mismatch: expected {} arguments, got {}",
+                                        p_expected.len(),
+                                        p_actual.len()
                                     ),
                                     node.span.clone(),
+                                )])
+                            } else {
+                                // Check param types FIRST (before return type).
+                                // A parameter annotation incompatibility is the primary error:
+                                // the lambda's annotated param type is more restrictive than required.
+                                // This mirrors bidirectional typing (Pierce & Turner 2000 §3.2): when
+                                // checking a lambda against a concrete function type, param annotations
+                                // must be compatible with the expected param types (contravariant).
+                                let mut param_err = None;
+                                for (_, ((_, p_act), (_, p_exp))) in
+                                    p_actual.iter().zip(p_expected.iter()).enumerate()
+                                {
+                                    if !Type::is_consistent_subtype(p_act, p_exp) {
+                                        // Parameter annotation is incompatible with expected type.
+                                        // Produce "parameter annotation more restrictive" error in
+                                        // all incompatible cases — the annotation makes the function
+                                        // accept fewer values than the required type allows.
+                                        param_err = Some(vec![TypeError::new(
+                                            format!(
+                                                "[TypeError] parameter annotation {} is more restrictive than required type {}",
+                                                p_act, p_exp
+                                            ),
+                                            node.span.clone(),
+                                        )]);
+                                        break;
+                                    }
+                                }
+                                // If no param error, check return type.
+                                if param_err.is_some() {
+                                    param_err
+                                } else if !Type::is_consistent_subtype(r_actual, r_expected) {
+                                    Some(vec![TypeError::new(
+                                        format!(
+                                            "[UnificationFailure] cannot unify {} with {}",
+                                            r_expected, r_actual
+                                        ),
+                                        node.span.clone(),
+                                    )])
+                                } else {
+                                    None
+                                }
+                            }
+                        }
+                        _ => {
+                            // Non-function type: general consistency check
+                            if !Type::is_consistent_subtype(&actual_resolved, &expected_resolved) {
+                                Some(vec![TypeError::new(
+                                    format!(
+                                        "[UnificationFailure] cannot unify {} with {}",
+                                        expected_resolved, actual_resolved
+                                    ),
+                                    node.span.clone(),
+                                )])
+                            } else {
+                                None
+                            }
+                        }
+                    };
+
+                    if let Some(errs) = mismatch_err {
+                        if !has_default {
+                            return Err(errs);
+                        }
+                        // With default: suppress the main-check error (ASSERT-DEFAULT rule).
+                    }
+                }
+
+                // Validate the default value type — hard error regardless of main-check result.
+                if let Some(default_node) = annotation.node.get_property("default") {
+                    match infer_surface_expr(default_node, env, state, type_map) {
+                        Ok(default_ty) => {
+                            let default_resolved = if state.subst.type_map.borrow().is_empty() {
+                                default_ty
+                            } else {
+                                state.subst.apply(&default_ty)
+                            };
+                            let passes = Type::is_subtype(
+                                &default_resolved,
+                                &expected_resolved,
+                                Some(&state.tycon_env),
+                            ) || ((contains_unknown_or_top(&default_resolved)
+                                || contains_unknown_or_top(&expected_resolved))
+                                && Type::is_consistent(&default_resolved, &expected_resolved));
+                            if !passes {
+                                return Err(vec![TypeError::new(
+                                    format!(
+                                        "default value type mismatch: default has type {default_resolved}, \
+                                         but assertion expects {expected_resolved}"
+                                    ),
+                                    default_node.span.clone(),
                                 )]);
                             }
                         }
-                    }
-                    _ => {
-                        // Non-function type: general consistency check
-                        if !Type::is_consistent_subtype(&actual_resolved, &expected_resolved) {
-                            return Err(vec![TypeError::new(
-                                format!(
-                                    "[UnificationFailure] cannot unify {} with {}",
-                                    expected_resolved, actual_resolved
-                                ),
-                                node.span.clone(),
-                            )]);
-                        }
+                        Err(errs) => return Err(errs),
                     }
                 }
+
                 Ok(expected)
             } else {
                 Ok(actual)
@@ -1548,14 +2505,14 @@ pub(crate) fn infer_surface_expr(
 
                 let mut pat_bindings: Vec<(String, Type)> = Vec::new();
                 collect_pattern_bindings(&arm.pattern.node, &arm_scrutinee_ty, &mut pat_bindings);
-                let arm_env = if pat_bindings.is_empty() {
-                    env.clone()
+                let arm_env: Arc<RwLock<Env>> = if pat_bindings.is_empty() {
+                    Arc::clone(env)
                 } else {
-                    let mut child = TypeEnv::with_parent(env);
+                    let mut child_inner = Env::with_parent(Arc::clone(env));
                     for (name, ty) in pat_bindings {
-                        child.insert(name, ty);
+                        child_inner.insert(name, ty);
                     }
-                    Rc::new(child)
+                    Arc::new(RwLock::new(child_inner))
                 };
 
                 // Type-check guard if present, and apply is: predicate narrowing.
@@ -1741,7 +2698,7 @@ pub(crate) fn infer_surface_expr(
             //
             // let_bindings is a [let name1 name2 ...] LetDecl node. Walk its bindings to collect
             // declared names; assign each a fresh TypeVar so the body can reference them.
-            let arm_env = {
+            let arm_env: Arc<RwLock<Env>> = {
                 let binding_names: Vec<String> = match &let_bindings.expr {
                     SurfaceExpression::LetDecl { bindings } => bindings
                         .iter()
@@ -1756,13 +2713,13 @@ pub(crate) fn infer_surface_expr(
                     _ => Vec::new(),
                 };
                 if binding_names.is_empty() {
-                    env.clone()
+                    Arc::clone(env)
                 } else {
-                    let mut child = TypeEnv::with_parent(env);
+                    let mut child_inner = Env::with_parent(Arc::clone(env));
                     for name in binding_names {
-                        child.insert(name, state.fresh_type_var());
+                        child_inner.insert(name, state.fresh_type_var());
                     }
-                    Rc::new(child)
+                    Arc::new(RwLock::new(child_inner))
                 }
             };
             infer_surface_expr(body, &arm_env, state, type_map)
@@ -1789,7 +2746,8 @@ pub(crate) fn infer_surface_expr(
                 Some(base) => {
                     let base_ty = infer_surface_expr(base, env, state, type_map)?;
                     // Look up the field type from the record type (or Unknown for gradual).
-                    match &state.subst.apply(&base_ty) {
+                    let resolved_base = state.subst.apply(&base_ty);
+                    match &resolved_base {
                         Type::Record(row) => {
                             let key = match field {
                                 crate::ast::DotKey::Ident(s) => s.clone(),
@@ -1797,8 +2755,36 @@ pub(crate) fn infer_surface_expr(
                             };
                             Ok(row.fields.get(&key).cloned().unwrap_or(Type::Unknown))
                         }
-                        Type::Unknown => Ok(Type::Unknown),
-                        _ => Ok(Type::Unknown),
+                        // Intersection: search all member records for the field.
+                        Type::Intersection(members) => {
+                            let key = match field {
+                                crate::ast::DotKey::Ident(s) => s.clone(),
+                                crate::ast::DotKey::Int(n) => n.to_string(),
+                            };
+                            for m in members {
+                                if let Type::Record(row) = m {
+                                    if let Some(ty) = row.fields.get(&key) {
+                                        return Ok(ty.clone());
+                                    }
+                                }
+                            }
+                            Ok(Type::Unknown)
+                        }
+                        // Gradual / unknown types — no static field information available.
+                        Type::Unknown | Type::Any | Type::TypeVar(_, _) => Ok(Type::Unknown),
+                        // Negation type: field access returns Unknown (conservative).
+                        // A Negation type restricts what values CAN'T inhabit the type, but
+                        // doesn't describe the field structure. Return Unknown for any field.
+                        Type::Negation(_) => Ok(Type::Unknown),
+                        // Concrete non-record types: produce an error.
+                        // TypeVar cases are handled above; TyCon may expand to a Record so
+                        // we allow Unknown for those.
+                        Type::TyCon(_) | Type::App(_, _) => Ok(Type::Unknown),
+                        // All other concrete types (Int, Str, Float, Function, etc.): error.
+                        other => Err(vec![TypeError::new(
+                            format!("expected record type for field access, but got {}", other),
+                            node.span.clone(),
+                        )]),
                     }
                 }
             }
@@ -1834,8 +2820,14 @@ pub(crate) fn infer_surface_expr(
                 let simplified = Type::simplify_type(ty.clone());
                 map.insert(key, simplified);
             }
-            Err(_) => {
-                map.insert(key, Type::error_cascade());
+            Err(ref errs) => {
+                let typed: Vec<crate::type_errors::TypeErrorTyped> = errs
+                    .iter()
+                    .map(|e| {
+                        crate::type_errors::TypeErrorTyped::new(e.message.clone(), e.span.clone())
+                    })
+                    .collect();
+                map.insert(key, Type::error_with(typed));
             }
         }
     }
@@ -1855,7 +2847,7 @@ fn infer_class_decl_from_surface(
     resolver: &Option<Arc<SurfaceNode>>,
     resolver_injective: bool,
     span: Span,
-    _env: &Rc<TypeEnv>,
+    _env: &Arc<RwLock<Env>>,
     state: &mut InferState,
     _type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
@@ -1873,11 +2865,13 @@ fn infer_class_decl_from_surface(
     // method_signatures is populated as empty (matches existing ClassDecl construction sites).
     let _ = methods; // suppress unused warning
 
-    let existing_param_kinds: std::collections::HashMap<String, Kind> = state
-        .class_env
-        .get(name)
-        .map(|existing| existing.params.iter().cloned().collect())
-        .unwrap_or_default();
+    let existing_param_kinds: std::collections::HashMap<String, Kind> = {
+        let env_guard = state.env.read().unwrap();
+        env_guard
+            .get_class(name)
+            .map(|existing| existing.params.iter().cloned().collect())
+            .unwrap_or_default()
+    };
 
     let mut fd_indices: Vec<(Vec<usize>, Vec<usize>)> = Vec::new();
     for fd_node in determines {
@@ -1934,7 +2928,7 @@ fn infer_class_decl_from_surface(
         method_signatures: vec![],
     };
 
-    state.class_env.insert(class_decl.clone());
+    state.env.write().unwrap().insert_class(class_decl.clone());
     for (param_name, kind) in &class_decl.params {
         if *kind == Kind::Operator {
             state.kind_env.insert(param_name.clone(), Kind::Operator);
@@ -1956,7 +2950,7 @@ fn infer_instance_decl_from_surface(
     class_name: &str,
     arms: &[(Arc<SurfaceNode>, Vec<Spanned<crate::ast::SurfaceEntry>>)],
     span: Span,
-    env: &Rc<TypeEnv>,
+    env: &Arc<RwLock<Env>>,
     state: &mut InferState,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<Type, Vec<TypeError>> {
@@ -1970,12 +2964,17 @@ fn infer_instance_decl_from_surface(
     }
 
     let (param_count, has_fds, fd_list, _param_names) = {
-        let class_decl = state.class_env.get(class_name).ok_or_else(|| {
-            vec![TypeError::new(
-                format!("unknown class '{}'", class_name),
-                span.clone(),
-            )]
-        })?;
+        let class_decl = state
+            .env
+            .read()
+            .unwrap()
+            .get_class(class_name)
+            .ok_or_else(|| {
+                vec![TypeError::new(
+                    format!("unknown class '{}'", class_name),
+                    span.clone(),
+                )]
+            })?;
         (
             class_decl.params.len(),
             !class_decl.determines.is_empty(),
@@ -2127,31 +3126,28 @@ fn infer_instance_decl_from_surface(
 
         let mut method_types = HashMap::new();
 
-        if !state.in_prelude_load {
-            for method in *methods {
-                let method_name = match &method.node.key {
-                    Some(key_node) => match &key_node.expr {
-                        SurfaceExpression::Str(s) => s.clone(),
-                        SurfaceExpression::VarRef { name: n, .. } => n.clone(),
-                        _ => {
-                            return Err(vec![TypeError::new(
-                                "instance method name must be a string or identifier",
-                                key_node.span.clone(),
-                            )]);
-                        }
-                    },
-                    None => {
+        for method in *methods {
+            let method_name = match &method.node.key {
+                Some(key_node) => match &key_node.expr {
+                    SurfaceExpression::Str(s) => s.clone(),
+                    SurfaceExpression::VarRef { name: n, .. } => n.clone(),
+                    _ => {
                         return Err(vec![TypeError::new(
-                            "instance method must have a name",
-                            method.span.clone(),
+                            "instance method name must be a string or identifier",
+                            key_node.span.clone(),
                         )]);
                     }
-                };
+                },
+                None => {
+                    return Err(vec![TypeError::new(
+                        "instance method must have a name",
+                        method.span.clone(),
+                    )]);
+                }
+            };
 
-                let method_impl_type =
-                    infer_surface_expr(&method.node.value, env, state, type_map)?;
-                method_types.insert(method_name, method_impl_type);
-            }
+            let method_impl_type = infer_surface_expr(&method.node.value, env, state, type_map)?;
+            method_types.insert(method_name, method_impl_type);
         }
 
         let det_positions: Vec<usize> = {
@@ -2175,24 +3171,17 @@ fn infer_instance_decl_from_surface(
             method_types,
         };
 
-        // Structural overlap check: detect instances whose head types unify even if
-        // their string keys differ (e.g., `[Seq a]` vs `[Seq Int]`).
-        // Clone the instance_env to satisfy the borrow checker — check_structural_overlap
-        // takes &self (read-only) but state is also needed mutably for freshening.
-        // This follows the same clone pattern used in resolve_instance callers.
-        // The check is skipped during prelude loading (in_prelude_load) because prelude
-        // instances are registered in a separate session before user code is type-checked,
-        // and cross-session overlap is detected when user code re-declares prelude instances
-        // (string-key dedup handles exact duplicates; structural overlap in the prelude itself
-        // is an authoring error caught by the prelude test suite).
-        // Structural overlap check is async (calls unify) and cannot be called from sync
-        // infer_instance_decl_from_surface. The check is skipped here; it runs during
-        // the async type-checking paths (typecheck_surface_document_native).
-        // Exact duplicates are still caught by the string-key dedup in instance_env.insert.
-
-        if let Err(msg) = state.instance_env.insert(instance_decl) {
-            return Err(vec![TypeError::new(msg, span.clone())]);
-        }
+        // Structural overlap is async (calls unify) and cannot be checked from this sync function.
+        // Exact duplicates are caught by the mangled-key dedup in env.insert_instance.
+        let mangled = format!(
+            "ɪɴꜱᴛᴀɴᴄᴇ⧼{} {}⧽",
+            instance_decl.class_name, instance_decl.instance_type
+        );
+        state
+            .env
+            .write()
+            .unwrap()
+            .insert_instance(mangled, instance_decl);
     }
 
     Ok(Type::Record(Row {
@@ -2243,12 +3232,52 @@ fn contains_unknown_or_top(ty: &Type) -> bool {
 pub(crate) fn check_surface_expr(
     node: &Arc<SurfaceNode>,
     expected: &Type,
-    env: &Rc<TypeEnv>,
+    env: &Arc<RwLock<Env>>,
     state: &mut InferState,
     type_map: &mut Option<&mut TypeMap>,
 ) -> Result<(), Vec<TypeError>> {
+    // Lambda checking mode (CHECK-FN) — arity check.
+    // When the node is a Fn expression and expected is a concrete Function type, check
+    // that the lambda's param count matches the expected param count. This is a necessary
+    // arity check even when full bidirectional propagation is not available (sync context).
+    if let (
+        SurfaceExpression::Fn { params, .. },
+        Type::Function {
+            params: exp_params,
+            variadic: exp_variadic,
+            required_count: exp_required,
+            ..
+        },
+    ) = (&node.expr, expected)
+    {
+        if !expected.has_inference_vars() {
+            let actual_count = params.len();
+            let expected_count = exp_params.len();
+            let min_required = *exp_required;
+            let max_allowed = if *exp_variadic {
+                usize::MAX
+            } else {
+                expected_count
+            };
+            if actual_count < min_required || actual_count > max_allowed {
+                return Err(vec![TypeError::new(
+                    format!(
+                        "arity mismatch: expected {} arguments, got {}",
+                        if *exp_variadic {
+                            format!("at least {}", min_required)
+                        } else {
+                            expected_count.to_string()
+                        },
+                        actual_count
+                    ),
+                    node.span.clone(),
+                )]);
+            }
+        }
+    }
+
     // Default: synthesize then check via infer_surface_expr.
-    // Lambda checking mode (CHECK-FN) that propagates expected parameter types into a lambda
+    // Full lambda checking mode (CHECK-FN) that propagates expected parameter types into a lambda
     // requires async annotation resolution (resolve_annotation) and cannot be performed in this
     // sync function. Lambda inference is handled correctly by infer_fn in typecheck_match.rs
     // when infer_surface_expr reaches a Fn node. Fall through to synthesize+subsume.
@@ -2340,20 +3369,100 @@ fn resolve_typeassert_annotation_sync(
             Some(resolve_simple_type_name_for_typeassert(name, state))
         }
         Annotation::PropertyDict(entries) => {
-            // Case 1: normalized `@TypeName` form — PropertyDict([{key:"type", value: VarRef("TypeName")}])
-            for entry in entries {
-                let key_is_type = entry.node.key.as_ref().map_or(false, |k| {
+            // Case 1: normalized `@TypeName` form — PropertyDict([{key:"type", value: TypeExpr}])
+            // The `type:` key value is the actual type. We handle:
+            //   - Simple VarRef: `@[type: Int]` → Type::Int
+            //   - Call form `[Fn@Ret [Params...]]`: `@[type: [Fn@Int [Int]]]` → Function{...}
+            //   - Record dict: `@[type: [name: Str  age: Int]]` → Record{...}
+            //
+            // IMPORTANT: `type:` is only the shorthand when all other keys are property-dict keys
+            // (default, doc, constraint, kinds, bind, return, resolver). When non-property keys
+            // are present (e.g. @[type: String id: Int]), treat as a record type instead.
+            let property_dict_keys = [
+                "type",
+                "default",
+                "doc",
+                "constraint",
+                "kinds",
+                "bind",
+                "return",
+                "resolver",
+                "repr",
+                "is",
+            ];
+            let has_type_key = entries.iter().any(|e| {
+                e.node.key.as_ref().map_or(false, |k| {
                     matches!(&k.expr, SurfaceExpression::Str(s) if s == "type")
                         || matches!(&k.expr, SurfaceExpression::VarRef { name, .. } if name == "type")
-                });
-                if key_is_type {
-                    if let SurfaceExpression::VarRef { name, .. } = &entry.node.value.expr {
-                        return Some(resolve_simple_type_name_for_typeassert(
-                            name.as_str(),
-                            state,
-                        ));
+                })
+            });
+            let all_keys_are_property_keys = entries.iter().all(|e| {
+                e.node.key.as_ref().map_or(true, |k| {
+                    let name = match &k.expr {
+                        SurfaceExpression::Str(s) => s.as_str(),
+                        SurfaceExpression::VarRef { name, .. } => name.as_str(),
+                        _ => return false,
+                    };
+                    property_dict_keys.contains(&name)
+                })
+            });
+            if has_type_key && all_keys_are_property_keys {
+                for entry in entries {
+                    let key_is_type = entry.node.key.as_ref().map_or(false, |k| {
+                        matches!(&k.expr, SurfaceExpression::Str(s) if s == "type")
+                            || matches!(&k.expr, SurfaceExpression::VarRef { name, .. } if name == "type")
+                    });
+                    if key_is_type {
+                        let resolved = resolve_type_node_for_typeassert(&entry.node.value, state);
+                        return Some(resolved);
                     }
-                    return None;
+                }
+            }
+
+            // Case 1.5: single positional entry that is an `[all T1 T2 ...]` intersection
+            // or `[without T]` negation call. These appear as the sole positional entry in
+            // a PropertyDict annotation: `@[[all [x: Int ...] [y: String ...]]]`.
+            if entries.len() == 1 && entries[0].node.key.is_none() {
+                let inner = &entries[0].node.value;
+                if let SurfaceExpression::Call {
+                    func,
+                    args,
+                    implied: true,
+                    ..
+                } = &inner.expr
+                {
+                    if let SurfaceExpression::VarRef {
+                        name,
+                        annotation: None,
+                        ..
+                    } = &func.expr
+                    {
+                        if name == "all" {
+                            let members: Vec<Type> = args
+                                .iter()
+                                .map(|a| resolve_type_node_for_typeassert(a, state))
+                                .collect();
+                            if !members.is_empty() {
+                                return Some(Type::normalize_intersection(members));
+                            }
+                        } else if name == "without" && args.len() == 1 {
+                            let inner_ty = resolve_type_node_for_typeassert(&args[0], state);
+                            return Some(Type::Negation(Box::new(inner_ty)));
+                        } else if name == "or" || name == "union" {
+                            let members: Vec<Type> = args
+                                .iter()
+                                .map(|a| resolve_type_node_for_typeassert(a, state))
+                                .collect();
+                            if !members.is_empty() {
+                                return Some(Type::normalize_union(members));
+                            }
+                        }
+                    }
+                }
+                // Single positional entry that is itself a type node (e.g. @[VarRef("Int")]).
+                let resolved = resolve_type_node_for_typeassert(inner, state);
+                if !matches!(resolved, Type::Unknown) {
+                    return Some(resolved);
                 }
             }
 
@@ -2386,12 +3495,347 @@ fn resolve_typeassert_annotation_sync(
                 }
             }
 
+            // Case 2.5: parameterized type alias application — `@[TypeName Arg1 Arg2 ...]`.
+            // All-positional entries where the first entry is a registered TyCon name (starts
+            // uppercase) and there are type arguments following it. Expand via expand_named.
+            let all_positional = entries.iter().all(|e| e.node.key.is_none());
+            if all_positional && entries.len() >= 2 {
+                // Check if the first entry is an uppercase-named VarRef (potential TyCon head).
+                let first_is_tycon = if let SurfaceExpression::VarRef {
+                    name,
+                    annotation: None,
+                    ..
+                } = &entries[0].node.value.expr
+                {
+                    name.starts_with(|c: char| c.is_uppercase())
+                        && state.tycon_env.contains_key(name.as_str())
+                } else {
+                    false
+                };
+
+                if first_is_tycon {
+                    let tycon_name = match &entries[0].node.value.expr {
+                        SurfaceExpression::VarRef { name, .. } => name.clone(),
+                        _ => unreachable!(),
+                    };
+                    // Only apply if the arg count matches the alias's param count exactly.
+                    // Prevents misinterpreting `@[Boolean True]` (union of 2 type members) as
+                    // a parameterized application of `Boolean` (which has 0 params).
+                    let expected_arity = state
+                        .tycon_env
+                        .get(tycon_name.as_str())
+                        .map(|def| def.params.len());
+                    let arg_count = entries.len() - 1; // entries[1..] are the args
+                    if expected_arity == Some(arg_count) && arg_count > 0 {
+                        let args: Vec<Type> = entries[1..]
+                            .iter()
+                            .map(|e| resolve_simple_type_node_for_typeassert(&e.node.value, state))
+                            .collect();
+                        // Use a stub TypeEnv — expand_named now looks in state.tycon_env first.
+                        let stub_env = TypeEnv::new();
+                        if let Some(expanded) = expand_named(&tycon_name, &args, &stub_env, state) {
+                            return Some(expanded);
+                        }
+                    } else if let Some(expected) = expected_arity {
+                        if expected > 0 && arg_count > 0 && expected != arg_count {
+                            // Arity mismatch: type alias expects `expected` params, got `arg_count`.
+                            state.annotation_errors.push(TypeError::new(
+                                format!(
+                                    "type alias '{}' requires {} argument(s) but got {}",
+                                    tycon_name, expected, arg_count
+                                ),
+                                annotation.span.clone(),
+                            ));
+                            return Some(Type::Unknown);
+                        }
+                    }
+                    // If arity doesn't match (in other cases) or expansion fails, fall through to Union.
+                }
+            }
+
+            // Case 2.6: keyed record type annotation — `@[name: String  age: Int]`.
+            // When there are keyed entries (at least one key is present) that are NOT all
+            // property-dict keys, treat the annotation as a structural record type.
+            // This handles annotations like `@[name: String ...]` (with `...` rest notation)
+            // and `@[x: Int  y: Float]` (multi-field record type assertions).
+            if entries.iter().any(|e| e.node.key.is_some()) {
+                use indexmap::IndexMap;
+                let mut fields: IndexMap<String, Type> = IndexMap::new();
+                for entry in entries {
+                    // Skip `...` rest entries (SurfaceExpression::Rest) — they have no key.
+                    if let SurfaceExpression::Rest(_name, _) = &entry.node.value.expr {
+                        continue;
+                    }
+                    if let Some(ref key_node) = entry.node.key {
+                        let key_name: Option<String> = match &key_node.expr {
+                            SurfaceExpression::Str(s) => Some(s.clone()),
+                            SurfaceExpression::VarRef { name, .. } => Some(name.clone()),
+                            _ => None,
+                        };
+                        if let Some(k) = key_name {
+                            let field_ty =
+                                resolve_type_node_for_typeassert(&entry.node.value, state);
+                            fields.insert(k, field_ty);
+                        }
+                    }
+                }
+                if !fields.is_empty() {
+                    return Some(Type::Record(Row {
+                        fields,
+                        tail: crate::type_def::RowTail::Empty,
+                    }));
+                }
+            }
+
+            // Case 3: all-positional entries → Union type.
+            // `@[Int Null]`, `@[a Null]`, `@[[ok: Int] [err: String]]` — two or more keyless
+            // entries, none matching the special-case handlers above. Each positional entry is
+            // a union member resolved via resolve_type_node_for_typeassert (handles Dict/Record
+            // nodes as well as simple type names).
+            if all_positional && entries.len() >= 2 {
+                let members: Vec<Type> = entries
+                    .iter()
+                    .map(|e| resolve_type_node_for_typeassert(&e.node.value, state))
+                    .collect();
+                return Some(Type::normalize_union(members));
+            }
+
             None
         }
     }
 }
 
-fn resolve_simple_type_name_for_typeassert(name: &str, _state: &mut InferState) -> Type {
+/// Resolve a SurfaceNode as a type synchronously for TypeAssert resolution.
+/// Handles VarRef (simple type name), Call (implied call in annotation position), and Dict (record type).
+///
+/// Malformed annotations push errors into `state.annotation_errors`; the caller is
+/// responsible for draining that field and folding errors into the result.
+fn resolve_type_node_for_typeassert(node: &Arc<SurfaceNode>, state: &mut InferState) -> Type {
+    match &node.expr {
+        // String literal in type position: `"ok"`, `"err"` — string-tag union members.
+        SurfaceExpression::Str(s) => Type::StringLiteral(s.clone()),
+        SurfaceExpression::VarRef {
+            name,
+            annotation: None,
+            ..
+        } => resolve_simple_type_name_for_typeassert(name, state),
+        SurfaceExpression::VarRef {
+            name,
+            annotation: Some(ann),
+            ..
+        } => {
+            // Annotated VarRef: `Fn@RetType` in type position (used in `@[Fn@Int [Int]]`)
+            // The annotation is the return type. The VarRef name is the constructor.
+            if name == "Fn" || name == "fn" {
+                // Function type: Fn@RetType — no params yet, need the args from the call node.
+                // Return the return type wrapped in a zero-param function as a best effort.
+                let ret_ty =
+                    resolve_typeassert_annotation_sync(ann, state).unwrap_or(Type::Unknown);
+                Type::Function {
+                    params: vec![],
+                    ret: Box::new(ret_ty),
+                    variadic: false,
+                    required_count: 0,
+                }
+            } else {
+                resolve_simple_type_name_for_typeassert(name, state)
+            }
+        }
+        // Implied call: `[Fn@RetType [ParamType1 ParamType2 ...]]` in annotation position.
+        // func = VarRef("Fn")@RetType, args = [[ParamType1 ...]] or [ParamType1, ParamType2, ...]
+        SurfaceExpression::Call {
+            func,
+            args,
+            implied: true,
+            ..
+        } => {
+            if let SurfaceExpression::VarRef {
+                name,
+                annotation: Some(ret_ann),
+                ..
+            } = &func.expr
+            {
+                if name == "Fn" || name == "fn" {
+                    // Validate: the argument list (if any) must not include non-bracket types.
+                    for arg in args {
+                        if matches!(
+                            &arg.expr,
+                            SurfaceExpression::Int(_) | SurfaceExpression::Float(_)
+                        ) {
+                            state.annotation_errors.push(TypeError::new(
+                                "parameter list must be a bracket expression",
+                                arg.span.clone(),
+                            ));
+                            return Type::Unknown;
+                        }
+                    }
+                    let ret_ty =
+                        resolve_typeassert_annotation_sync(ret_ann, state).unwrap_or(Type::Unknown);
+                    let param_types = if args.len() == 1 {
+                        resolve_params_for_typeassert(&args[0], state)
+                    } else {
+                        args.iter()
+                            .map(|a| resolve_simple_type_node_for_typeassert(a, state))
+                            .collect()
+                    };
+                    let required_count = param_types.len();
+                    let params: Vec<(Option<String>, Type)> =
+                        param_types.into_iter().map(|ty| (None, ty)).collect();
+                    return Type::Function {
+                        params,
+                        ret: Box::new(ret_ty),
+                        variadic: false,
+                        required_count,
+                    };
+                }
+            }
+            // `[or T1 T2 ...]` — union type form.
+            // For [or Int Null]: func = VarRef("or"), args = [VarRef("Int"), VarRef("Null")]
+            if let SurfaceExpression::VarRef {
+                name,
+                annotation: None,
+                ..
+            } = &func.expr
+            {
+                if name == "or" || name == "union" {
+                    let members: Vec<Type> = args
+                        .iter()
+                        .map(|a| resolve_simple_type_node_for_typeassert(a, state))
+                        .collect();
+                    if !members.is_empty() {
+                        return Type::normalize_union(members);
+                    }
+                }
+            }
+            // Non-Fn implied call: treat as unknown type.
+            Type::Unknown
+        }
+        // Integer literal in type position: invalid type expression.
+        SurfaceExpression::Int(_) | SurfaceExpression::Float(_) => {
+            state.annotation_errors.push(TypeError::new(
+                "invalid type expression in annotation: expected a type name or composite type",
+                node.span.clone(),
+            ));
+            Type::Unknown
+        }
+        // Dict expression: record type `[name: Str  age: Int]` or function type `[Fn@Ret [Params]]`.
+        SurfaceExpression::Dict(dict_entries) => {
+            // Check for Fn@RetType [Params] form: all-positional Dict where entry[0] is Fn@RetType.
+            let all_positional = dict_entries.iter().all(|e| e.node.key.is_none());
+            if all_positional && !dict_entries.is_empty() {
+                // Check if first entry is Fn@RetType
+                if let SurfaceExpression::VarRef {
+                    name,
+                    annotation: Some(ret_ann),
+                    ..
+                } = &dict_entries[0].node.value.expr
+                {
+                    if name == "Fn" || name == "fn" {
+                        // Exactly 2 entries required: [Fn@Ret, [Params...]]
+                        if dict_entries.len() == 1 {
+                            state.annotation_errors.push(TypeError::new(
+                                "function type annotation requires exactly 2 entries: [Fn@RetType [ParamTypes...]]",
+                                node.span.clone(),
+                            ));
+                            return Type::Unknown;
+                        }
+                        // Validate that second entry is a Dict or VarRef (valid param list).
+                        let params_node = &dict_entries[1].node.value;
+                        let is_valid_param_list = matches!(
+                            &params_node.expr,
+                            SurfaceExpression::Dict(_)
+                                | SurfaceExpression::VarRef { .. }
+                                | SurfaceExpression::Call { implied: true, .. }
+                        );
+                        if !is_valid_param_list {
+                            state.annotation_errors.push(TypeError::new(
+                                "parameter list must be a bracket expression",
+                                params_node.span.clone(),
+                            ));
+                            return Type::Unknown;
+                        }
+                        let ret_ty = resolve_typeassert_annotation_sync(ret_ann, state)
+                            .unwrap_or(Type::Unknown);
+                        let param_types = resolve_params_for_typeassert(params_node, state);
+                        let required_count = param_types.len();
+                        let params: Vec<(Option<String>, Type)> =
+                            param_types.into_iter().map(|ty| (None, ty)).collect();
+                        return Type::Function {
+                            params,
+                            ret: Box::new(ret_ty),
+                            variadic: false,
+                            required_count,
+                        };
+                    }
+                }
+            }
+            // Build a Record type from keyed entries.
+            use indexmap::IndexMap;
+            let mut fields = IndexMap::new();
+            let mut has_keys = false;
+            for entry in dict_entries {
+                if let Some(ref key_node) = entry.node.key {
+                    has_keys = true;
+                    let key_name = match &key_node.expr {
+                        SurfaceExpression::Str(s) => Some(s.clone()),
+                        SurfaceExpression::VarRef { name, .. } if name != "_" => Some(name.clone()),
+                        _ => None,
+                    };
+                    if let Some(k) = key_name {
+                        let field_ty = resolve_type_node_for_typeassert(&entry.node.value, state);
+                        // annotation_errors from nested resolution accumulate in state.annotation_errors;
+                        // the outer caller (Fn or TypeAssert arm) will drain them.
+                        fields.insert(k, field_ty);
+                    }
+                }
+            }
+            if has_keys && !fields.is_empty() {
+                Type::Record(Row {
+                    fields,
+                    tail: crate::type_def::RowTail::Empty,
+                })
+            } else if all_positional && dict_entries.len() >= 2 {
+                // All-positional multi-entry dict in type position: treat as a union.
+                // `[[ok: Int] [err: String]]` → Union(Record({ok: Int}), Record({err: String}))
+                let members: Vec<Type> = dict_entries
+                    .iter()
+                    .map(|e| resolve_type_node_for_typeassert(&e.node.value, state))
+                    .collect();
+                let non_unknown: Vec<Type> = members
+                    .into_iter()
+                    .filter(|t| !matches!(t, Type::Unknown))
+                    .collect();
+                if non_unknown.is_empty() {
+                    Type::Unknown
+                } else {
+                    Type::normalize_union(non_unknown)
+                }
+            } else {
+                // Empty or single-positional dict with no recognized form: Unknown
+                Type::Unknown
+            }
+        }
+        _ => Type::Unknown,
+    }
+}
+
+/// Resolve a SurfaceNode as a type synchronously for TypeAssert resolution.
+/// Simple version: handles VarRef (type names) and Str (string literal types).
+fn resolve_simple_type_node_for_typeassert(
+    node: &Arc<SurfaceNode>,
+    state: &mut InferState,
+) -> Type {
+    match &node.expr {
+        SurfaceExpression::VarRef { name, .. } => {
+            resolve_simple_type_name_for_typeassert(name, state)
+        }
+        // String literal in type position: `"ok" | "err"` — used in string-tag union annotations.
+        SurfaceExpression::Str(s) => Type::StringLiteral(s.clone()),
+        _ => Type::Unknown,
+    }
+}
+
+fn resolve_simple_type_name_for_typeassert(name: &str, state: &mut InferState) -> Type {
     match name {
         "Int" | "Integer" => Type::Int,
         "Float" => Type::Float,
@@ -2399,7 +3843,149 @@ fn resolve_simple_type_name_for_typeassert(name: &str, _state: &mut InferState) 
         "Bytes" => Type::Bytes,
         "Any" => Type::Any,
         "Unknown" => Type::Unknown,
-        other => Type::TyCon(other.to_string()),
+        "Never" => Type::Never,
+        "Null" => Type::Record(Row {
+            fields: indexmap::IndexMap::new(),
+            tail: crate::type_def::RowTail::Empty,
+        }),
+        // Bare `@Fn` or `@Function` — the top of the function lattice: "any callable".
+        // Equivalent to `Function { params: [], ret: Top, variadic: true, required_count: 0 }`.
+        // This allows unification with any concrete function type via subtyping.
+        "Fn" | "Function" => Type::Function {
+            params: vec![],
+            ret: Box::new(Type::Any),
+            variadic: true,
+            required_count: 0,
+        },
+        other if other.starts_with(|c: char| c.is_uppercase()) => {
+            // User-defined type name: try to expand via state.tycon_env.
+            // This enables `@Coord` in a TypeAssert to expand to the alias body (e.g., Record({x: Int, y: Int}))
+            // rather than staying as an opaque TyCon. The expansion only handles zero-param aliases
+            // and aliases with simple bodies — parameterized aliases remain as TyCon.
+            if let Some(def) = state.tycon_env.get(other) {
+                if def.params.is_empty() && !matches!(&def.body, Type::Unknown) {
+                    return def.body.clone();
+                }
+            }
+            Type::TyCon(other.to_string())
+        }
+        // Lowercase names in type position are type variables.
+        // Return a fresh TypeVar rather than Unknown so that union annotations like
+        // `@[a Null]` produce Union(TypeVar(_tN), Record({})) instead of Unknown.
+        // Each call to resolve_simple_type_name_for_typeassert creates an independent fresh
+        // TypeVar (no sharing across calls). For sharing within a single function, use
+        // resolve_simple_annotation_for_typeassert_with_mapping with ann_mapping instead.
+        _ => state.fresh_type_var(),
+    }
+}
+
+/// Resolve a param annotation synchronously, reusing TypeVars for the same lowercase name.
+///
+/// This is the annotation-name-aware variant of `resolve_simple_annotation_for_typeassert`.
+/// It uses `ann_mapping` to ensure that `fn [let x@a y@a]` gives x and y the SAME TypeVar
+/// for `a` — preserving the "same annotation = same type" semantics of the async path.
+fn resolve_simple_annotation_for_typeassert_with_mapping(
+    ann: &Spanned<Annotation>,
+    state: &mut InferState,
+    ann_mapping: &mut HashMap<String, Type>,
+) -> Type {
+    match &ann.node {
+        Annotation::Simple(name) => {
+            if name.starts_with(|c: char| c.is_lowercase())
+                && !matches!(name.as_str(), "any" | "unknown")
+            {
+                // Lowercase annotation name (e.g. @a, @b): reuse or create TypeVar
+                ann_mapping
+                    .entry(name.clone())
+                    .or_insert_with(|| state.fresh_type_var())
+                    .clone()
+            } else {
+                resolve_simple_type_name_for_typeassert(name.as_str(), state)
+            }
+        }
+        Annotation::PropertyDict(entries) => {
+            // `normalize_varref_annotation` converts `Simple("a")` to
+            // `PropertyDict([{type: VarRef("a")}])`. Detect this normalized form
+            // for lowercase type variable names so they route through ann_mapping
+            // and produce reusable TypeVars (enabling polymorphism like `∀a. a → a`).
+            if entries.len() == 1 {
+                let entry = &entries[0];
+                let key_is_type = entry.node.key.as_ref().map_or(false, |k| {
+                    matches!(&k.expr, SurfaceExpression::Str(s) if s == "type")
+                        || matches!(&k.expr, SurfaceExpression::VarRef { name, .. } if name == "type")
+                });
+                if key_is_type {
+                    if let SurfaceExpression::VarRef { name, .. } = &entry.node.value.expr {
+                        if name.starts_with(|c: char| c.is_lowercase())
+                            && !matches!(name.as_str(), "any" | "unknown")
+                        {
+                            return ann_mapping
+                                .entry(name.clone())
+                                .or_insert_with(|| state.fresh_type_var())
+                                .clone();
+                        }
+                    }
+                }
+
+                // @[label: name] — named Label-kinded TypeVar.
+                // Validate and create a Label-kinded TypeVar for parameter annotations
+                // like `key@[label: l]`. The `label:` key is recognized here (not in the
+                // property-dict fallback) so validation errors are pushed to annotation_errors.
+                let key_is_label = entry.node.key.as_ref().map_or(
+                    false,
+                    |k| matches!(&k.expr, SurfaceExpression::Str(s) if s == "label"),
+                );
+                if key_is_label {
+                    match &entry.node.value.expr {
+                        SurfaceExpression::Str(_) => {
+                            // String literal: error — must be a bare name
+                            state.annotation_errors.push(TypeError::new(
+                                "label: value must be a bare name (e.g. `label: l`), not a string literal",
+                                ann.span.clone(),
+                            ));
+                            return Type::Unknown;
+                        }
+                        SurfaceExpression::VarRef {
+                            name: label_name, ..
+                        } => {
+                            if label_name.starts_with(|c: char| c.is_uppercase()) {
+                                // Uppercase: error — must be a lowercase type variable name
+                                state.annotation_errors.push(TypeError::new(
+                                    format!(
+                                        "label: value must be a lowercase type variable name (e.g. `label: l`), got '{}'",
+                                        label_name
+                                    ),
+                                    ann.span.clone(),
+                                ));
+                                return Type::Unknown;
+                            }
+                            // Valid lowercase label name: create or reuse Label-kinded TypeVar
+                            if let Some(existing) = ann_mapping.get(label_name.as_str()) {
+                                return existing.clone();
+                            }
+                            let level = state.level;
+                            let n = state.alloc_counter("", "label");
+                            let v = format!("_label_{}", n);
+                            state.set_level(v.clone(), level);
+                            state.set_kind(v.clone(), crate::types::Kind::Label);
+                            let fresh_ty = Type::TypeVar(v.clone(), level);
+                            ann_mapping.insert(label_name.clone(), fresh_ty.clone());
+                            return fresh_ty;
+                        }
+                        _ => {
+                            // Other: error
+                            state.annotation_errors.push(TypeError::new(
+                                "label: value must be a bare name (e.g. `label: l`)",
+                                ann.span.clone(),
+                            ));
+                            return Type::Unknown;
+                        }
+                    }
+                }
+            }
+            resolve_simple_annotation_for_typeassert(ann, state)
+        }
+        Annotation::Annotated(_, _) => resolve_simple_annotation_for_typeassert(ann, state),
     }
 }
 
@@ -2410,16 +3996,124 @@ fn resolve_simple_annotation_for_typeassert(
     match &ann.node {
         Annotation::Simple(name) => resolve_simple_type_name_for_typeassert(name.as_str(), state),
         Annotation::PropertyDict(entries) => {
-            for entry in entries {
-                let key_is_type = entry.node.key.as_ref().map_or(false, |k| {
+            // Check for `type:` key — the value IS the type expression.
+            // BUT only treat it as the `@[type: T]` shorthand when ALL other keys
+            // are in the known property-dict-key set (type, default, doc, constraint,
+            // kinds, bind, return, resolver). When non-property keys like `id:` are
+            // present alongside `type:`, the annotation is a record type, not a shorthand.
+            let property_dict_keys = [
+                "type",
+                "default",
+                "doc",
+                "constraint",
+                "kinds",
+                "bind",
+                "return",
+                "resolver",
+                "repr",
+                "is",
+            ];
+            let has_type_key = entries.iter().any(|e| {
+                e.node.key.as_ref().map_or(false, |k| {
                     matches!(&k.expr, SurfaceExpression::Str(s) if s == "type")
                         || matches!(&k.expr, SurfaceExpression::VarRef { name, .. } if name == "type")
-                });
-                if key_is_type {
-                    if let SurfaceExpression::VarRef { name, .. } = &entry.node.value.expr {
-                        return resolve_simple_type_name_for_typeassert(name.as_str(), state);
+                })
+            });
+            let all_keys_are_property_keys = entries.iter().all(|e| {
+                e.node.key.as_ref().map_or(true, |k| {
+                    let name = match &k.expr {
+                        SurfaceExpression::Str(s) => s.as_str(),
+                        SurfaceExpression::VarRef { name, .. } => name.as_str(),
+                        _ => return false,
+                    };
+                    property_dict_keys.contains(&name)
+                })
+            });
+            if has_type_key && all_keys_are_property_keys {
+                for entry in entries {
+                    let key_is_type = entry.node.key.as_ref().map_or(false, |k| {
+                        matches!(&k.expr, SurfaceExpression::Str(s) if s == "type")
+                            || matches!(&k.expr, SurfaceExpression::VarRef { name, .. } if name == "type")
+                    });
+                    if key_is_type {
+                        return resolve_type_node_for_typeassert(&entry.node.value, state);
                     }
                 }
+            }
+            // Check for `return:` key — function metadata annotation return type.
+            // @[return: T doc: "..."] → resolve T as the return type.
+            // Only when all keys are property-dict keys (not a record type).
+            if all_keys_are_property_keys {
+                for entry in entries {
+                    let key_is_return = entry.node.key.as_ref().map_or(false, |k| {
+                        matches!(&k.expr, SurfaceExpression::Str(s) if s == "return")
+                            || matches!(&k.expr, SurfaceExpression::VarRef { name, .. } if name == "return")
+                    });
+                    if key_is_return {
+                        return resolve_type_node_for_typeassert(&entry.node.value, state);
+                    }
+                }
+            }
+            // If we have keyed entries and NOT all keys are property-dict keys,
+            // treat this as a record type (e.g. @[type: String id: Int]).
+            if entries.iter().any(|e| e.node.key.is_some()) && !all_keys_are_property_keys {
+                use indexmap::IndexMap;
+                let mut fields = IndexMap::new();
+                for entry in entries {
+                    if let Some(ref key_node) = entry.node.key {
+                        let key_name = match &key_node.expr {
+                            SurfaceExpression::Str(s) => Some(s.clone()),
+                            SurfaceExpression::VarRef { name, .. } => Some(name.clone()),
+                            _ => None,
+                        };
+                        if let Some(k) = key_name {
+                            let field_ty =
+                                resolve_type_node_for_typeassert(&entry.node.value, state);
+                            fields.insert(k, field_ty);
+                        }
+                    }
+                }
+                if !fields.is_empty() {
+                    return Type::Record(Row {
+                        fields,
+                        tail: crate::type_def::RowTail::Empty,
+                    });
+                }
+            }
+            // Check for Fn@Ret [Params] form (positional function type annotation).
+            if entries.len() == 2 && entries[0].node.key.is_none() && entries[1].node.key.is_none()
+            {
+                if let SurfaceExpression::VarRef {
+                    name,
+                    annotation: Some(ret_ann),
+                    ..
+                } = &entries[0].node.value.expr
+                {
+                    if name == "Fn" || name == "fn" {
+                        let ret_ty = resolve_simple_annotation_for_typeassert(ret_ann, state);
+                        let param_types =
+                            resolve_params_for_typeassert(&entries[1].node.value, state);
+                        let required_count = param_types.len();
+                        let params: Vec<(Option<String>, Type)> =
+                            param_types.into_iter().map(|ty| (None, ty)).collect();
+                        return Type::Function {
+                            params,
+                            ret: Box::new(ret_ty),
+                            variadic: false,
+                            required_count,
+                        };
+                    }
+                }
+            }
+            // All-positional entries → Union type (e.g. @[Int Null], @[a Null]).
+            // This handles fn@[A B] return annotations where the annotation has no key entries.
+            let all_positional = entries.iter().all(|e| e.node.key.is_none());
+            if all_positional && entries.len() >= 2 {
+                let members: Vec<Type> = entries
+                    .iter()
+                    .map(|e| resolve_simple_type_node_for_typeassert(&e.node.value, state))
+                    .collect();
+                return Type::normalize_union(members);
             }
             state.fresh_type_var()
         }
@@ -2432,6 +4126,7 @@ fn resolve_simple_annotation_for_typeassert(
 /// Resolve parameter types from a params bracket like `[Int Int]` (parsed as Call).
 /// `[Int Int]` → Call{func: VarRef("Int"), args: [VarRef("Int")]} → [Int, Int]
 /// `[Int]` → Call{func: VarRef("Int"), args: []} → [Int]
+/// `[[input: String ...r]]` → Dict with one positional entry [input: String ...r] → [Record({input: Str})]
 fn resolve_params_for_typeassert(node: &Arc<SurfaceNode>, state: &mut InferState) -> Vec<Type> {
     match &node.expr {
         SurfaceExpression::Call { func, args, .. } => {
@@ -2445,6 +4140,18 @@ fn resolve_params_for_typeassert(node: &Arc<SurfaceNode>, state: &mut InferState
             vec![resolve_simple_type_name_for_typeassert(name, state)]
         }
         SurfaceExpression::Dict(entries) if entries.is_empty() => vec![],
+        SurfaceExpression::Dict(entries) => {
+            // Non-empty Dict: each positional (keyless) entry is a parameter type.
+            // This handles `[[input: String ...r]]` (Dict with one keyless entry whose value
+            // is `[input: String ...r]`, a record type) producing [Record({input: Str})].
+            // Use resolve_type_node_for_typeassert so that record-dict entries (keyed dicts)
+            // are correctly interpreted as Record types.
+            entries
+                .iter()
+                .filter(|e| e.node.key.is_none())
+                .map(|e| resolve_type_node_for_typeassert(&e.node.value, state))
+                .collect()
+        }
         _ => vec![state.fresh_type_var()],
     }
 }
@@ -2462,6 +4169,92 @@ fn resolve_surface_node_as_type(node: &Arc<SurfaceNode>, state: &mut InferState)
         } => resolve_simple_annotation_for_typeassert(ann, state),
         _ => state.fresh_type_var(),
     }
+}
+
+/// Heuristically resolve which monad library a `Type` value corresponds to.
+///
+/// Used in `[do ...]` inference to determine which monad dict to inject when
+/// the call's head type is known.  Returns the lowercase monad dict name
+/// (e.g. `"result"`, `"option"`) or `None` if no match can be found.
+///
+/// Rules:
+/// - `Type::Operator(name)` → if name is `"Result"`, return `"result"` (extensible to other monads)
+/// - `Type::Record` with an `"ok"` or `"err"` field → `"result"`
+/// - `Type::Union` → first member that matches one of the above rules
+/// - Anything else → `None`
+#[cfg(test)]
+pub(crate) fn resolve_monad_from_type(ty: &Type, _state: &InferState) -> Option<String> {
+    match ty {
+        Type::Operator(name) => {
+            let lower = name.to_lowercase();
+            if lower == "result" {
+                Some("result".to_string())
+            } else {
+                None
+            }
+        }
+        Type::Record(Row { fields, .. }) => {
+            if fields.contains_key("ok") || fields.contains_key("err") {
+                Some("result".to_string())
+            } else {
+                None
+            }
+        }
+        Type::Union(members) => members
+            .iter()
+            .find_map(|m| resolve_monad_from_type(m, _state)),
+        _ => None,
+    }
+}
+
+/// Heuristically resolve which monad library an implied-call `SurfaceNode` targets.
+///
+/// Inspects the function position of an implied call expression to determine which
+/// monad dict the constructor belongs to.  Returns the lowercase monad dict name
+/// (e.g. `"result"`) or `None` if the node is not an implied constructor call or the
+/// constructor cannot be resolved.
+///
+/// Rules:
+/// 1. Node must be a `SurfaceExpression::Call { implied: true, ... }`.
+/// 2. If the function position is a dot-access chain (e.g. `Result.Ok`), extract the
+///    leading type name and return `Some(name.to_lowercase())`.
+/// 3. If the function position is a plain `VarRef` (e.g. `Ok`), look up the qualified
+///    tag via `type_env.resolve_constructor_tag(name)`, extract the TyCon prefix, and
+///    return `Some(tycon.to_lowercase())`.
+/// 4. Otherwise return `None`.
+#[cfg(test)]
+pub(crate) fn resolve_monad_from_surface(
+    node: &std::sync::Arc<SurfaceNode>,
+    type_env: &TypeEnv,
+) -> Option<String> {
+    let SurfaceExpression::Call {
+        func,
+        implied: true,
+        ..
+    } = &node.expr
+    else {
+        return None;
+    };
+
+    // Rule 2: dot-access chain like `Result.Ok`
+    if let Some(tag) = crate::ast::flatten_dot_access_to_tag(&func.expr) {
+        if let Some(dot_pos) = tag.find('.') {
+            let tycon = &tag[..dot_pos];
+            return Some(tycon.to_lowercase());
+        }
+    }
+
+    // Rule 3: plain VarRef like `Ok` — resolve via type_env
+    if let SurfaceExpression::VarRef { name, .. } = &func.expr {
+        if let Some(qualified) = type_env.resolve_constructor_tag(name) {
+            if let Some(dot_pos) = qualified.find('.') {
+                let tycon = &qualified[..dot_pos];
+                return Some(tycon.to_lowercase());
+            }
+        }
+    }
+
+    None
 }
 
 #[cfg(test)]

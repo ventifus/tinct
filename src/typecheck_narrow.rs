@@ -7,11 +7,11 @@
 //! - Instance pattern type extraction and functional-dependency parameter index resolution
 //! - Pattern overlap / type unification probes (side-effect-free)
 
-use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use crate::ast::{Annotation, Pattern, Span, SurfaceExpression, SurfaceNode};
-use crate::types::{InferState, Row, Type, TypeEnv, TypeError, TypeScheme};
+use crate::env::Env;
+use crate::types::{InferState, Row, Type, TypeError, TypeScheme};
 
 /// Narrowing constraints extracted from conditional expressions.
 /// Each constraint refines the type of a variable in the true branch of an `if`.
@@ -258,15 +258,15 @@ pub(crate) fn try_type_of(left: &Arc<SurfaceNode>, right: &Arc<SurfaceNode>) -> 
 
 /// Apply narrowings to a type environment, creating a refined environment for the true branch.
 pub(crate) fn apply_narrowings(
-    env: &Rc<TypeEnv>,
+    env: &Arc<RwLock<Env>>,
     narrowings: &[Narrowing],
     state: &mut InferState,
-) -> Rc<TypeEnv> {
+) -> Arc<RwLock<Env>> {
     if narrowings.is_empty() {
-        return Rc::clone(env);
+        return Arc::clone(env);
     }
 
-    let mut new_env = TypeEnv::with_parent(env);
+    let mut new_env_inner = Env::with_parent(Arc::clone(env));
 
     for narrowing in narrowings {
         match narrowing {
@@ -274,15 +274,19 @@ pub(crate) fn apply_narrowings(
                 // BAS: all tails are Empty — no row var registration needed.
                 // Use insert_scheme_named_only: narrowing frames are not resolver scopes,
                 // so their entries must not occupy slotted positions.
-                new_env.insert_scheme_named_only(var.clone(), TypeScheme::mono(ty.clone()));
+                new_env_inner.insert_scheme_named_only(var.clone(), TypeScheme::mono(ty.clone()));
             }
             Narrowing::TypeOf { var, ty } => {
                 // BAS: all tails are Empty — no row var registration needed.
-                new_env.insert_scheme_named_only(var.clone(), TypeScheme::mono(ty.clone()));
+                new_env_inner.insert_scheme_named_only(var.clone(), TypeScheme::mono(ty.clone()));
             }
             Narrowing::HasKey { var, key } => {
                 // Get the current type of the variable (if any)
-                let current_ty = env.get(var).map(|scheme| scheme.body.clone());
+                let current_ty = env
+                    .read()
+                    .unwrap()
+                    .get_scheme(var)
+                    .map(|scheme| scheme.body);
 
                 // Create a record type with at least the given key
                 let mut fields: indexmap::IndexMap<String, Type> = indexmap::IndexMap::new();
@@ -309,53 +313,12 @@ pub(crate) fn apply_narrowings(
                     })
                 };
 
-                new_env.insert_scheme_named_only(var.clone(), TypeScheme::mono(new_ty));
+                new_env_inner.insert_scheme_named_only(var.clone(), TypeScheme::mono(new_ty));
             }
         }
     }
 
-    Rc::new(new_env)
-}
-
-/// Apply negation narrowings for the false branch of an `if` expression.
-///
-/// For each `TypeOf { var, ty }` narrowing (e.g., produced by `[int? x]`), the false branch
-/// knows the predicate FAILED, so the variable's type is intersected with `Negation(ty)`.
-/// This is the BAS false-branch rule: ~[int? x] → x : ~Int.
-///
-/// EqLiteral and HasKey narrowings are not negated in the false branch (they produce
-/// Negation(literal) which is rarely useful and can confuse downstream unification).
-pub(crate) fn apply_negation_narrowings(
-    env: &Rc<TypeEnv>,
-    narrowings: &[Narrowing],
-    _state: &mut InferState,
-) -> Rc<TypeEnv> {
-    // Only TypeOf narrowings produce useful false-branch refinements
-    let type_of_narrowings: Vec<_> = narrowings
-        .iter()
-        .filter(|n| matches!(n, Narrowing::TypeOf { .. }))
-        .collect();
-
-    if type_of_narrowings.is_empty() {
-        return Rc::clone(env);
-    }
-
-    let mut new_env = TypeEnv::with_parent(env);
-
-    for narrowing in type_of_narrowings {
-        let Narrowing::TypeOf { var, ty } = narrowing else {
-            continue;
-        };
-        // In the false branch: x : ~ty (negation of the predicate type)
-        // Skip Unknown — ~Unknown is not a useful constraint (gradual typing escape hatch).
-        if matches!(ty, Type::Unknown) {
-            continue;
-        }
-        let negated = Type::Negation(Box::new(ty.clone()));
-        new_env.insert_scheme_named_only(var.clone(), TypeScheme::mono(negated));
-    }
-
-    Rc::new(new_env)
+    Arc::new(RwLock::new(new_env_inner))
 }
 
 /// Collect variable bindings introduced by a pattern, with their types.
@@ -382,9 +345,10 @@ pub(crate) fn collect_pattern_bindings(
     out: &mut Vec<(String, Type)>,
 ) {
     match pat {
-        Pattern::Pin(name, _) => {
-            // In T-1154, Pin replaced Variable. In-scope pins bind; out-of-scope act as wildcard.
-            out.push((name.clone(), scrutinee_ty.clone()));
+        Pattern::Pin(_, _) => {
+            // Pin patterns are equality checks (or wildcards when out of scope) — they do NOT
+            // introduce new variable bindings. New bindings are declared via [case [let name] ...].
+            // T-1154: Pin replaced Variable; Variable introduced bindings, Pin never does.
         }
         Pattern::Wildcard | Pattern::Literal(_) => {}
         Pattern::Dict { fields, .. } => {
@@ -603,15 +567,30 @@ pub(crate) fn collect_pattern_bindings(
                 collect_pattern_bindings(&first.node, scrutinee_ty, out);
             }
         }
-        // TypeAssert / TypeAssertPending / Predicate: no variable bindings introduced
-        Pattern::TypeAssert { inner, .. } => {
+        // TypeAssert / TypeAssertPending: bind the inner Pin's name to the narrowed type.
+        // `n@Int: body` → TypeAssert { resolved_type: Int, inner: Pin("n") } → bind n: Int.
+        // Pin itself produces no binding (see above), so TypeAssert must push explicitly.
+        Pattern::TypeAssert {
+            resolved_type,
+            inner,
+        } => {
             if let Some(inner) = inner {
-                collect_pattern_bindings(&inner.node, scrutinee_ty, out);
+                match &inner.node {
+                    // n@Int: bind n to the resolved type from the TypeAssert annotation.
+                    Pattern::Pin(name, _) => out.push((name.clone(), resolved_type.clone())),
+                    // Non-pin inner: recurse (e.g., nested patterns inside TypeAssert).
+                    _ => collect_pattern_bindings(&inner.node, scrutinee_ty, out),
+                }
             }
         }
         Pattern::TypeAssertPending { inner, .. } => {
+            // TypeAssertPending appears before elaboration; inner Pin binds to scrutinee_ty
+            // (resolved_type is not yet available — elaboration hasn't run yet).
             if let Some(inner) = inner {
-                collect_pattern_bindings(&inner.node, scrutinee_ty, out);
+                match &inner.node {
+                    Pattern::Pin(name, _) => out.push((name.clone(), scrutinee_ty.clone())),
+                    _ => collect_pattern_bindings(&inner.node, scrutinee_ty, out),
+                }
             }
         }
         Pattern::Predicate { .. } => {}
@@ -672,7 +651,7 @@ fn resolve_annotation_sync(ann: &crate::ast::Spanned<Annotation>, state: &mut In
 
 pub(crate) fn extract_pattern_types(
     pattern_node: &Arc<SurfaceNode>,
-    env: &Rc<TypeEnv>,
+    env: &Arc<RwLock<Env>>,
     state: &mut InferState,
 ) -> Result<Vec<Type>, Vec<TypeError>> {
     match &pattern_node.expr {
@@ -700,7 +679,7 @@ pub(crate) fn extract_pattern_types(
 /// - `SurfaceExpression::Placeholder` — wildcard `_` → `Type::Unknown`
 pub(crate) fn extract_binding_types(
     binding: &Arc<SurfaceNode>,
-    env: &Rc<TypeEnv>,
+    env: &Arc<RwLock<Env>>,
     state: &mut InferState,
     types: &mut Vec<Type>,
 ) -> Result<(), Vec<TypeError>> {

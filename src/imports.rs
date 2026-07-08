@@ -8,15 +8,15 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use crate::ast::{Span, SurfaceExpression, SurfaceNode, SurfaceProgram};
 use crate::desugar;
+use crate::env::Env;
 use crate::parser;
 use crate::rust_span;
 use crate::typecheck::{typecheck_surface_program_with_env, TypeMap};
-use crate::types::{Row, Type, TypeEnv};
+use crate::types::{Row, Type};
 
 /// Type alias for include bindings map: span → list of (name, type) pairs
 type IncludeBindings = HashMap<Span, Vec<(String, Type)>>;
@@ -27,20 +27,18 @@ const MAX_INCLUDE_DEPTH: usize = 16;
 thread_local! {
     /// Thread-local cache of stdlib module type environments.
     ///
-    /// Maps stdlib module path (e.g., `"strings.llt"`) to a `TypeEnv` containing only
-    /// the bindings that module exports (above the prelude baseline). Built on demand
+    /// Maps stdlib module path (e.g., `"strings.llt"`) to an `Arc<RwLock<Env>>` containing
+    /// only the bindings that module exports (above the prelude baseline). Built on demand
     /// when the type checker encounters `[include %libdir "X.llt"]` calls and caches
     /// the result so subsequent references to the same module are cheap.
-    ///
-    /// Stays thread-local because `TypeEnv` contains `Rc` (not `Arc`) and is not `Send`.
-    static STDLIB_MODULE_CACHE: RefCell<HashMap<String, Rc<TypeEnv>>> = RefCell::new(HashMap::new());
+    static STDLIB_MODULE_CACHE: RefCell<HashMap<String, Arc<RwLock<Env>>>> = RefCell::new(HashMap::new());
 
     /// Recursion guard for stdlib module env building (prevents re-entrant calls).
     static BUILDING_STDLIB_MODULE_ENV: RefCell<bool> = const { RefCell::new(false) };
 }
 
 thread_local! {
-    static PRELUDE_TYPE_STAGE_ENV_CACHE: RefCell<Option<Arc<std::sync::RwLock<crate::value::Environment>>>> =
+    static PRELUDE_TYPE_STAGE_ENV_CACHE: RefCell<Option<Arc<std::sync::RwLock<crate::env::Env>>>> =
         const { RefCell::new(None) };
     static BUILDING_PRELUDE_TYPE_STAGE_ENV: RefCell<bool> = const { RefCell::new(false) };
 }
@@ -52,8 +50,7 @@ thread_local! {
 ///
 /// No circular dependency: does NOT call `build_core_env` or
 /// the type-stage docs are pure dict/fn (no macros needed).
-pub async fn get_prelude_type_stage_env(
-) -> Option<Arc<std::sync::RwLock<crate::value::Environment>>> {
+pub async fn get_prelude_type_stage_env() -> Option<Arc<std::sync::RwLock<crate::env::Env>>> {
     let cached = PRELUDE_TYPE_STAGE_ENV_CACHE.with(|c| c.borrow().clone());
     if let Some(env) = cached {
         return Some(env);
@@ -71,10 +68,10 @@ pub async fn get_prelude_type_stage_env(
     result
 }
 
-async fn build_prelude_type_stage_env_inner(
-) -> Option<Arc<std::sync::RwLock<crate::value::Environment>>> {
+async fn build_prelude_type_stage_env_inner() -> Option<Arc<std::sync::RwLock<crate::env::Env>>> {
     use crate::ast::Stage;
-    use crate::value::{Environment, HashableValue, Thunk, Value};
+    use crate::env::Env as Environment;
+    use crate::value::{HashableValue, Thunk, Value};
 
     // Bootstrap env: core builtins only — type-stage docs use only core_builtins() names.
     let bootstrap_env = Arc::new(std::sync::RwLock::new(Environment::new()));
@@ -83,7 +80,7 @@ async fn build_prelude_type_stage_env_inner(
         for def in crate::builtins_core::core_builtins() {
             let name = def.name.to_string();
             let thunk = Arc::new(Thunk::new_materialized(Value::Builtin(def), rust_span!()));
-            env_write.insert(name, thunk);
+            env_write.insert_value(name, thunk);
         }
     }
 
@@ -169,7 +166,7 @@ async fn build_prelude_type_stage_env_inner(
             for (key, thunk_id) in &dict {
                 if let HashableValue::Str(name) = key {
                     let thunk = ctx.get_thunk(*thunk_id);
-                    env_write.insert(name.to_string(), thunk);
+                    env_write.insert_value(name.to_string(), thunk);
                     any_success = true;
                 }
             }
@@ -205,7 +202,7 @@ async fn build_prelude_type_stage_env_inner(
 /// - A re-entrant call is detected (recursion guard).
 // AMBIENT-OK: type-checker include resolution fallback — reads libdir files without cap; type-only, no runtime I/O
 #[allow(clippy::disallowed_methods, dead_code)]
-pub async fn get_stdlib_module_type_env(module_path: &str) -> Option<Rc<TypeEnv>> {
+pub async fn get_stdlib_module_type_env(module_path: &str) -> Option<Arc<RwLock<Env>>> {
     // Recursion guard: prevent re-entrant calls (e.g., from modules that include other modules
     // during type-checking). The guard is per-thread so parallel test threads are independent.
     let already_building = BUILDING_STDLIB_MODULE_ENV.with(|flag| *flag.borrow());
@@ -214,7 +211,7 @@ pub async fn get_stdlib_module_type_env(module_path: &str) -> Option<Rc<TypeEnv>
     }
 
     // Cache hit path: check without the recursion guard set (fast path).
-    let cached = STDLIB_MODULE_CACHE.with(|cache| cache.borrow().get(module_path).map(Rc::clone));
+    let cached = STDLIB_MODULE_CACHE.with(|cache| cache.borrow().get(module_path).map(Arc::clone));
     if let Some(env) = cached {
         return Some(env);
     }
@@ -231,7 +228,7 @@ pub async fn get_stdlib_module_type_env(module_path: &str) -> Option<Rc<TypeEnv>
         STDLIB_MODULE_CACHE.with(|cache| {
             cache
                 .borrow_mut()
-                .insert(module_path.to_string(), Rc::clone(env));
+                .insert(module_path.to_string(), Arc::clone(env));
         });
     }
 
@@ -243,7 +240,7 @@ pub async fn get_stdlib_module_type_env(module_path: &str) -> Option<Rc<TypeEnv>
 /// Finds the libdir, reads the module file, type-checks it, and extracts bindings.
 // AMBIENT-OK: type-checker include resolution — reads libdir files; type-only, no runtime I/O
 #[allow(clippy::disallowed_methods, dead_code)]
-async fn build_stdlib_module_type_env_inner(module_path: &str) -> Option<Rc<TypeEnv>> {
+async fn build_stdlib_module_type_env_inner(module_path: &str) -> Option<Arc<RwLock<Env>>> {
     // Step 1: Locate the stdlib directory.
     let libdir = crate::find_libdir_path()?;
     let full_path = libdir.join(module_path);
@@ -255,9 +252,9 @@ async fn build_stdlib_module_type_env_inner(module_path: &str) -> Option<Rc<Type
     };
 
     // Step 3: Build SourceFile with the module's path for span attribution.
-    let sf = std::sync::Arc::new(crate::ast::SourceFile {
-        path: std::sync::Arc::from(full_path.to_string_lossy().as_ref()),
-        content: std::sync::Arc::from(source.as_str()),
+    let sf = Arc::new(crate::ast::SourceFile {
+        path: Arc::from(full_path.to_string_lossy().as_ref()),
+        content: Arc::from(source.as_str()),
     });
 
     // Step 4: Parse.
@@ -270,27 +267,25 @@ async fn build_stdlib_module_type_env_inner(module_path: &str) -> Option<Rc<Type
     // No runtime env available at this type-checker bootstrap path; pass None.
     let _resolve_errors = crate::resolve::resolve_surface_program(&program, None);
 
-    // Step 8: Build parent env — builtin_core TypeEnv contains Boolean, Handle, builtin-* names.
-    let parent_env_arc = get_builtin_core_type_env().await?;
-    let parent_env: Rc<TypeEnv> = Rc::new((*parent_env_arc).clone());
+    // Step 8: Build parent env — builtin_core Env contains Boolean, Handle, builtin-* names.
+    let parent_env = get_builtin_core_type_env().await?;
 
     // Step 9: Type-check the module with the builtin_core env as parent.
-    // enable_scheme_map=false (no LSP hover needed for bootstrap).
     let (_errors, _type_map, _doc_map, _scheme_map, _diagnostics, _state, final_env, _annot) =
         typecheck_surface_program_with_env(
             &program, parent_env, false, // enable_scheme_map
-            false, // in_prelude_load
+            None,  // resolver_seed_env: no runtime env available at bootstrap
         );
 
-    // `final_env` contains the parent bindings plus all new declarations from the module.
-    Some(Rc::new((*final_env).clone()))
+    // `final_env` is the child Env containing parent bindings plus new declarations.
+    Some(final_env)
 }
 
 // Thread-local cache for the builtin_core.llt type environment (T-1366 Rust step 2 bootstrap).
 // Populated on first call to `get_builtin_core_type_env()`. Once built, all subsequent
 // calls on the same thread return an `Arc::clone` without re-parsing or re-typechecking.
 thread_local! {
-    static BUILTIN_CORE_TYPE_ENV: RefCell<Option<Arc<TypeEnv>>> = const { RefCell::new(None) };
+    static BUILTIN_CORE_TYPE_ENV: RefCell<Option<Arc<RwLock<Env>>>> = const { RefCell::new(None) };
     /// Recursion guard: prevents re-entrant calls from within the typecheck of builtin_core.llt.
     static BUILDING_BUILTIN_CORE_ENV: RefCell<bool> = const { RefCell::new(false) };
 }
@@ -305,7 +300,7 @@ thread_local! {
 /// Returns `None` if:
 /// - A re-entrant call is detected (recursion guard).
 /// - Parsing or resolution fails (rare; the file is compiled-in and known-good).
-pub async fn get_builtin_core_type_env() -> Option<Arc<TypeEnv>> {
+pub async fn get_builtin_core_type_env() -> Option<Arc<RwLock<Env>>> {
     // Fast path: return cached result.
     let cached = BUILTIN_CORE_TYPE_ENV.with(|c| c.borrow().clone());
     if let Some(env) = cached {
@@ -333,15 +328,15 @@ pub async fn get_builtin_core_type_env() -> Option<Arc<TypeEnv>> {
 /// Inner implementation of `get_builtin_core_type_env`.
 ///
 /// Parses `stdlib/builtin_core.llt` (embedded at compile time via `include_str!`),
-/// runs the full pipeline (expand → desugar → resolve → typecheck), and returns the
-/// resulting `TypeEnv` with the new type declarations merged on top of
-/// `build_builtins_type_env()` as the parent.
-async fn build_builtin_core_type_env_inner() -> Option<Arc<TypeEnv>> {
+/// runs the full pipeline (desugar → resolve → typecheck), and returns the
+/// resulting `Arc<RwLock<Env>>` with the new type declarations merged on top of
+/// `build_builtins_type_env_arc()` as the parent.
+async fn build_builtin_core_type_env_inner() -> Option<Arc<RwLock<Env>>> {
     // Embedded source — no libdir access needed at runtime.
     let source = include_str!("../stdlib/builtin_core.llt");
-    let sf = std::sync::Arc::new(crate::ast::SourceFile {
-        path: std::sync::Arc::from("stdlib/builtin_core.llt"),
-        content: std::sync::Arc::from(source),
+    let sf = Arc::new(crate::ast::SourceFile {
+        path: Arc::from("stdlib/builtin_core.llt"),
+        content: Arc::from(source),
     });
 
     // Parse — extract .program from ParseOutput
@@ -354,22 +349,19 @@ async fn build_builtin_core_type_env_inner() -> Option<Arc<TypeEnv>> {
     // No runtime env at this type-checker bootstrap path; pass None.
     let _resolve_errors = crate::resolve::resolve_surface_program(&program, None);
 
-    // Build parent env: builtins type env (Rust-native type signatures).
-    let builtins_env = crate::builtins::build_builtins_type_env();
-    let parent_env = Rc::new(builtins_env);
+    // Build parent env: all Rust-native builtin type signatures in a unified Env.
+    let parent_env = crate::builtins::build_builtins_type_env_arc();
 
     // Typecheck with builtins env as parent.
-    // enable_scheme_map=false (no LSP hover needed for bootstrap),
-    // resolution_table=None (use fresh resolver output).
+    // enable_scheme_map=false (no LSP hover needed for bootstrap).
     let (_errors, _type_map, _doc_map, _scheme_map, _diagnostics, _state, final_env, _annot) =
         typecheck_surface_program_with_env(
             &program, parent_env, false, // enable_scheme_map
-            false, // in_prelude_load
+            None,  // resolver_seed_env: no runtime env available at bootstrap
         );
 
-    // `final_env` contains the parent bindings plus all new type declarations from
-    // builtin_core.llt. Return it as the bootstrapped TypeEnv.
-    Some(Arc::new((*final_env).clone()))
+    // `final_env` is the child Env containing parent bindings plus new type declarations.
+    Some(final_env)
 }
 
 /// Replace all TypeVar occurrences in a type with Top.
@@ -642,12 +634,12 @@ async fn resolve_includes(
     include_paths: &[(Span, Option<String>, String)],
     base_dir: Option<&Path>,
     libdir: Option<&Path>,
-    base_env: Rc<TypeEnv>,
+    base_env: Arc<RwLock<Env>>,
     visited: &mut HashSet<String>,
     depth: usize,
     cap_dir: &cap_std::fs::Dir,
-    prelude_type_env: Rc<TypeEnv>,
-) -> (Rc<TypeEnv>, IncludeBindings) {
+    prelude_type_env: Arc<RwLock<Env>>,
+) -> (Arc<RwLock<Env>>, IncludeBindings) {
     if depth >= MAX_INCLUDE_DEPTH {
         // Depth limit reached: return base_env unchanged with empty binding map
         return (base_env, HashMap::new());
@@ -780,13 +772,18 @@ async fn resolve_includes(
         // builtin_module() injection and ensures T002 warnings fire correctly for raw
         // builtin references in user code that omits the --- uses: header.
         // For %cwd files (user includes), use the accumulated user env as normal.
-        let typecheck_env = if cap_name.as_deref() == Some("%libdir") {
-            let mut stdlib_env = TypeEnv::with_parent(&prelude_type_env);
-            stdlib_env.insert("%cwd".to_string(), crate::types::Type::DirCap);
-            stdlib_env.insert("%libdir".to_string(), crate::types::Type::DirCap);
-            Rc::new(stdlib_env)
+        let typecheck_env: Arc<RwLock<Env>> = if cap_name.as_deref() == Some("%libdir") {
+            // Build a child Env for stdlib includes: parent = prelude env,
+            // plus %cwd and %libdir capability bindings.
+            let child = Arc::new(RwLock::new(Env::with_parent(Arc::clone(&prelude_type_env))));
+            {
+                let mut guard = child.write().unwrap();
+                guard.insert("%cwd".to_string(), crate::types::Type::DirCap);
+                guard.insert("%libdir".to_string(), crate::types::Type::DirCap);
+            }
+            child
         } else {
-            Rc::clone(&env)
+            Arc::clone(&env)
         };
         let (
             type_errors,
@@ -797,7 +794,7 @@ async fn resolve_includes(
             _state,
             _final_env,
             _annot,
-        ) = typecheck_surface_program_with_env(&program, typecheck_env, false, false);
+        ) = typecheck_surface_program_with_env(&program, typecheck_env, false, None);
 
         // Stdlib includes are user code — their type errors are surfaced like any other.
         if !type_errors.is_empty() {
@@ -808,13 +805,17 @@ async fn resolve_includes(
             continue; // Skip bindings from this file; errors have been reported
         }
 
-        // Extract bindings from this program and track them
-        let mut new_env = TypeEnv::with_parent(&env);
+        // Extract bindings from this program and track them.
+        // Create a child Env that extends the current env with the new bindings.
+        let child_env = Arc::new(RwLock::new(Env::with_parent(Arc::clone(&env))));
         let bindings = extract_bindings_from_program_as_vec(&program, &type_map);
-        for (name, ty) in &bindings {
-            new_env.insert(name.clone(), ty.clone());
+        {
+            let mut guard = child_env.write().unwrap();
+            for (name, ty) in &bindings {
+                guard.insert(name.clone(), ty.clone());
+            }
         }
-        env = Rc::new(new_env);
+        env = child_env;
 
         // Store the bindings for this include call's span
         include_bindings.insert(span.clone(), bindings);
@@ -856,7 +857,7 @@ async fn resolve_includes(
             visited,
             depth + 1,
             &nested_cap_dir,
-            Rc::clone(&prelude_type_env),
+            Arc::clone(&prelude_type_env),
         ))
         .await;
         env = nested_env;
@@ -1037,7 +1038,7 @@ fn apply_include_type_to_node(
 pub async fn build_type_env(
     program: &SurfaceProgram,
     base_dir: Option<&Path>,
-) -> (Rc<TypeEnv>, IncludeBindings) {
+) -> (Arc<RwLock<Env>>, IncludeBindings) {
     // Open "." as the base cap dir for type-checking includes
     let cwd_cap = cap_std::fs::Dir::open_ambient_dir(".", cap_std::ambient_authority())
         .expect("build_type_env: failed to open CWD as cap dir");
@@ -1053,60 +1054,61 @@ pub async fn build_type_env_with_cap(
     program: &SurfaceProgram,
     base_dir: Option<&Path>,
     cap_dir: &cap_std::fs::Dir,
-) -> (Rc<TypeEnv>, IncludeBindings) {
+) -> (Arc<RwLock<Env>>, IncludeBindings) {
     // Seed the environment with the builtin_core type env as the baseline.
     // Falls back to an empty env if unavailable (e.g., re-entrant bootstrap call).
-    let prelude_env_arc = get_builtin_core_type_env()
+    let prelude_env = get_builtin_core_type_env()
         .await
-        .unwrap_or_else(|| Arc::new(TypeEnv::new()));
-    // TypeEnv::with_parent takes &Rc<TypeEnv>; convert Arc → Rc by cloning the contained value.
-    let prelude_env = Rc::new((*prelude_env_arc).clone());
+        .unwrap_or_else(|| Arc::new(RwLock::new(Env::new())));
 
-    // Seed with always-available cap types
-    let mut env = TypeEnv::with_parent(&prelude_env);
-    env.insert("%cwd".to_string(), crate::types::Type::DirCap);
-    env.insert("%libdir".to_string(), crate::types::Type::DirCap);
-    // %stdin is Handle[Readable Text]
+    // Build a child Env with always-available cap types.
+    let env = Arc::new(RwLock::new(Env::with_parent(Arc::clone(&prelude_env))));
     {
-        let mut caps: indexmap::IndexMap<String, Type> = indexmap::IndexMap::new();
-        caps.insert("Readable".to_string(), Type::Any);
-        caps.insert("Text".to_string(), Type::Any);
-        env.insert(
-            "%stdin".to_string(),
-            Type::handle(Type::Record(Row {
-                fields: caps,
-                tail: crate::type_def::RowTail::Empty,
-            })),
-        );
+        let mut guard = env.write().unwrap();
+        guard.insert("%cwd".to_string(), crate::types::Type::DirCap);
+        guard.insert("%libdir".to_string(), crate::types::Type::DirCap);
+        // %stdin is Handle[Readable Text]
+        {
+            let mut caps: indexmap::IndexMap<String, Type> = indexmap::IndexMap::new();
+            caps.insert("Readable".to_string(), Type::Any);
+            caps.insert("Text".to_string(), Type::Any);
+            guard.insert(
+                "%stdin".to_string(),
+                Type::handle(Type::Record(Row {
+                    fields: caps,
+                    tail: crate::type_def::RowTail::Empty,
+                })),
+            );
+        }
+        // %stdout — use __cap_flag_* format consistent with write-handle's type expectation.
+        // write-handle expects Handle[[__cap_flag_writable: []]] (from cap_flag("writable") in builtins_core.rs).
+        // Under BAS width subtyping, Handle[[__cap_flag_writable: [], __cap_flag_text: []]] satisfies it.
+        {
+            let mut caps: indexmap::IndexMap<String, Type> = indexmap::IndexMap::new();
+            caps.insert(
+                "__cap_flag_writable".to_string(),
+                Type::Record(Row {
+                    fields: indexmap::IndexMap::new(),
+                    tail: crate::type_def::RowTail::Empty,
+                }),
+            );
+            caps.insert(
+                "__cap_flag_text".to_string(),
+                Type::Record(Row {
+                    fields: indexmap::IndexMap::new(),
+                    tail: crate::type_def::RowTail::Empty,
+                }),
+            );
+            guard.insert(
+                "%stdout".to_string(),
+                Type::handle(Type::Record(Row {
+                    fields: caps,
+                    tail: crate::type_def::RowTail::Empty,
+                })),
+            );
+        }
     }
-    // %stdout — use __cap_flag_* format consistent with write-handle's type expectation.
-    // write-handle expects Handle[[__cap_flag_writable: []]] (from cap_flag("writable") in builtins_core.rs).
-    // Under BAS width subtyping, Handle[[__cap_flag_writable: [], __cap_flag_text: []]] satisfies it.
-    {
-        let mut caps: indexmap::IndexMap<String, Type> = indexmap::IndexMap::new();
-        caps.insert(
-            "__cap_flag_writable".to_string(),
-            Type::Record(Row {
-                fields: indexmap::IndexMap::new(),
-                tail: crate::type_def::RowTail::Empty,
-            }),
-        );
-        caps.insert(
-            "__cap_flag_text".to_string(),
-            Type::Record(Row {
-                fields: indexmap::IndexMap::new(),
-                tail: crate::type_def::RowTail::Empty,
-            }),
-        );
-        env.insert(
-            "%stdout".to_string(),
-            Type::handle(Type::Record(Row {
-                fields: caps,
-                tail: crate::type_def::RowTail::Empty,
-            })),
-        );
-    }
-    let mut env = Rc::new(env);
+    let mut env = env;
 
     let mut include_bindings = HashMap::new();
 
@@ -1114,7 +1116,6 @@ pub async fn build_type_env_with_cap(
         let include_paths = collect_include_paths(program);
         let mut visited = HashSet::new();
         let libdir = crate::find_libdir_path();
-        // sync bridge — build_type_env_with_cap is called from sync contexts (main.rs, LSP).
         let (new_env, bindings) = resolve_includes(
             &include_paths,
             Some(dir),
@@ -1123,7 +1124,7 @@ pub async fn build_type_env_with_cap(
             &mut visited,
             0,
             cap_dir,
-            Rc::clone(&prelude_env),
+            Arc::clone(&prelude_env),
         )
         .await;
         env = new_env;
@@ -1200,19 +1201,32 @@ mod tests {
     async fn test_build_type_env_has_cap_types() {
         let program = SurfaceProgram { documents: vec![] };
         let (env, _bindings) = build_type_env(&program, None).await;
+        let env_guard = env.read().unwrap();
 
         // Check that cap variables are present with correct types
-        assert!(env.get("%cwd").is_some(), "expected %cwd in type env");
-        assert!(env.get("%libdir").is_some(), "expected %libdir in type env");
-        assert!(env.get("%stdin").is_some(), "expected %stdin in type env");
-        assert!(env.get("%stdout").is_some(), "expected %stdout in type env");
+        assert!(
+            env_guard.get_scheme("%cwd").is_some(),
+            "expected %cwd in type env"
+        );
+        assert!(
+            env_guard.get_scheme("%libdir").is_some(),
+            "expected %libdir in type env"
+        );
+        assert!(
+            env_guard.get_scheme("%stdin").is_some(),
+            "expected %stdin in type env"
+        );
+        assert!(
+            env_guard.get_scheme("%stdout").is_some(),
+            "expected %stdout in type env"
+        );
 
         // Verify types
         use crate::types::Type;
-        assert_eq!(env.get("%cwd").unwrap().body, Type::DirCap);
-        assert_eq!(env.get("%libdir").unwrap().body, Type::DirCap);
+        assert_eq!(env_guard.get_scheme("%cwd").unwrap().body, Type::DirCap);
+        assert_eq!(env_guard.get_scheme("%libdir").unwrap().body, Type::DirCap);
         // %stdin is Handle[Readable Text] (updated to use concrete capability row)
-        let stdin_ty = &env.get("%stdin").unwrap().body;
+        let stdin_ty = env_guard.get_scheme("%stdin").unwrap().body;
         if let Some(inner) = stdin_ty.as_handle() {
             assert!(
                 !matches!(inner, Type::Unknown),
@@ -1222,7 +1236,7 @@ mod tests {
             panic!("expected Handle type for %stdin, got: {}", stdin_ty);
         }
         // %stdout is Handle[Writable Text]
-        let stdout_ty = &env.get("%stdout").unwrap().body;
+        let stdout_ty = env_guard.get_scheme("%stdout").unwrap().body;
         if let Some(inner) = stdout_ty.as_handle() {
             assert!(
                 !matches!(inner, Type::Unknown),

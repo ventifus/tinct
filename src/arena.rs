@@ -429,8 +429,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_placeholder_force_panics() {
+        use crate::env::Env;
         use crate::eval::EvalContext;
-        use crate::value::Environment;
 
         // Create a placeholder thunk (unfilled)
         let mut arena = ThunkArena::new();
@@ -438,7 +438,7 @@ mod tests {
         let thunk = arena.get(id);
 
         // Create a minimal test context
-        let env = Arc::new(std::sync::RwLock::new(Environment::new()));
+        let env = Arc::new(std::sync::RwLock::new(Env::new()));
         let base_dir = crate::test_util::test_caps().root.try_clone().unwrap();
         let ctx = EvalContext::new(base_dir, Arc::clone(&env), Arc::clone(&env), false);
 

@@ -1077,8 +1077,8 @@ async fn test_reverse_fd_back_propagates_determining_type() {
         method_signatures: vec![],
     });
 
-    // Register the class in class_env.
-    state.class_env.insert(ClassDecl {
+    // Register the class in state.env.
+    state.env.write().unwrap().insert_class(ClassDecl {
         name: "MySeq".to_string(),
         params: vec![("t".to_string(), Kind::Type), ("s".to_string(), Kind::Type)],
         superclasses: vec![],
@@ -1103,7 +1103,8 @@ async fn test_reverse_fd_back_propagates_determining_type() {
         det_positions: vec![0], // determining position indices
         method_types: HashMap::new(),
     };
-    state.instance_env.insert(inst).unwrap();
+    let mangled = format!("ɪɴꜱᴛᴀɴᴄᴇ⧼{} {}⧽", inst.class_name, inst.instance_type);
+    state.env.write().unwrap().insert_instance(mangled, inst);
 
     // Create type variables t0 (determining, pos 0) and t1 (determined, pos 1).
     state.set_level("t0".to_string(), 0);
@@ -1163,7 +1164,7 @@ async fn test_reverse_fd_does_not_fire_when_not_injective() {
         method_signatures: vec![],
     });
 
-    state.class_env.insert(ClassDecl {
+    state.env.write().unwrap().insert_class(ClassDecl {
         name: "MyNonInj".to_string(),
         params: vec![("t".to_string(), Kind::Type), ("s".to_string(), Kind::Type)],
         superclasses: vec![],
@@ -1187,7 +1188,8 @@ async fn test_reverse_fd_does_not_fire_when_not_injective() {
         det_positions: vec![0],
         method_types: HashMap::new(),
     };
-    state.instance_env.insert(inst).unwrap();
+    let mangled = format!("ɪɴꜱᴛᴀɴᴄᴇ⧼{} {}⧽", inst.class_name, inst.instance_type);
+    state.env.write().unwrap().insert_instance(mangled, inst);
 
     state.set_level("t0".to_string(), 0);
     state.set_level("t1".to_string(), 0);
@@ -1243,11 +1245,11 @@ async fn test_type_var_entry_stores_level_binding_kind() {
     assert_eq!(state.lookup_binding("a"), Some(Type::Int));
 
     // Kind defaults to Type
-    assert_eq!(state.get_kind("a"), Some(&Kind::Type));
+    assert_eq!(state.get_kind("a"), Some(Kind::Type));
 
     // Set a non-default kind
     state.set_kind("b".to_string(), Kind::Operator);
-    assert_eq!(state.get_kind("b"), Some(&Kind::Operator));
+    assert_eq!(state.get_kind("b"), Some(Kind::Operator));
 }
 
 /// bind_type_var writes to the unified type_vars map.
@@ -1265,27 +1267,6 @@ async fn test_bind_type_var_writes_to_type_vars() {
     assert_eq!(state.lookup_binding("var1"), Some(Type::Int));
     assert_eq!(state.lookup_binding("var2"), Some(Type::Str));
     assert!(state.lookup_binding("nonexistent").is_none());
-}
-
-/// per_origin_counter advances per (origin, param) key via fresh_type_var.
-#[tokio::test]
-async fn test_per_origin_counter_increments() {
-    let mut state = InferState::new();
-    // Initially empty: no TypeVars have been allocated.
-    assert!(state.per_origin_counter.is_empty());
-
-    // Allocate two ad-hoc TypeVars — increments the ("", "") key.
-    let _tv0 = state.fresh_type_var();
-    let _tv1 = state.fresh_type_var();
-    let key = ("".to_string(), "".to_string());
-    assert_eq!(state.per_origin_counter.get(&key).copied().unwrap_or(0), 2);
-
-    // Snapshot/restore preserves per_origin_counter.
-    let saved = state.per_origin_counter.clone();
-    let _tv2 = state.fresh_type_var();
-    assert_eq!(state.per_origin_counter.get(&key).copied().unwrap_or(0), 3);
-    state.per_origin_counter = saved;
-    assert_eq!(state.per_origin_counter.get(&key).copied().unwrap_or(0), 2);
 }
 
 /// kind_env() builds a HashMap view of non-Type kinds.
@@ -1384,7 +1365,7 @@ async fn test_fd_in_progress_terminates_mutual_recursion() {
         method_signatures: vec![],
     });
 
-    state.class_env.insert(ClassDecl {
+    state.env.write().unwrap().insert_class(ClassDecl {
         name: "BiDir".to_string(),
         params: vec![("a".to_string(), Kind::Type), ("b".to_string(), Kind::Type)],
         superclasses: vec![],
@@ -1408,7 +1389,8 @@ async fn test_fd_in_progress_terminates_mutual_recursion() {
         det_positions: vec![0], // Position 0 determines position 1 (forward FD)
         method_types: HashMap::new(),
     };
-    state.instance_env.insert(inst).unwrap();
+    let mangled = format!("ɪɴꜱᴛᴀɴᴄᴇ⧼{} {}⧽", inst.class_name, inst.instance_type);
+    state.env.write().unwrap().insert_instance(mangled, inst);
 
     // Create type variables.
     state.set_level("t0".to_string(), 0);
@@ -1690,7 +1672,8 @@ async fn test_unify_uniform_inconsistent_named_field_type_errors() {
         result.is_err(),
         "Uniform-tailed record with non-conforming named field should fail unification"
     );
-    let err_msg = result.unwrap_err().message();
+    let err = result.unwrap_err();
+    let err_msg = err.message();
     assert!(
         err_msg.contains("does not conform to Uniform constraint"),
         "Expected Uniform constraint violation, got: {err_msg}"
@@ -1778,7 +1761,8 @@ async fn test_unify_empty_uniform_concrete_subtype_fail() {
         result.is_err(),
         "Empty+Uniform with non-conforming concrete type should fail"
     );
-    let err_msg = result.unwrap_err().message();
+    let err = result.unwrap_err();
+    let err_msg = err.message();
     assert!(
         err_msg.contains("does not conform to Uniform constraint")
             || err_msg.contains("cannot unify"),

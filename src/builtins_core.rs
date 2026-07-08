@@ -40,10 +40,11 @@ use crate::builtins_dict::{
 // String implementations.
 use crate::builtins_string::{
     builtin_bytes_str, builtin_char_code, builtin_chr, builtin_float_to_string,
-    builtin_int_to_string, builtin_regex_match, builtin_replace, builtin_str_bytes,
-    builtin_str_has_nth, builtin_str_index_of, builtin_str_length, builtin_str_map_chars,
-    builtin_str_nth_char, builtin_str_slice, builtin_str_to_lower_char, builtin_str_to_upper_char,
-    builtin_string_concat, builtin_trim, builtin_trim_end, builtin_trim_start,
+    builtin_int_to_string, builtin_regex_match, builtin_replace, builtin_str_byte_count,
+    builtin_str_bytes, builtin_str_has_nth, builtin_str_has_nth_byte, builtin_str_index_of,
+    builtin_str_length, builtin_str_map_chars, builtin_str_nth_byte, builtin_str_nth_char,
+    builtin_str_slice, builtin_str_to_lower_char, builtin_str_to_upper_char, builtin_string_concat,
+    builtin_trim, builtin_trim_end, builtin_trim_start,
 };
 // Bytes implementations.
 use crate::builtins_bytes::{
@@ -58,15 +59,14 @@ use crate::stream::builtin_to_tinct;
 use crate::builtins_meta::{
     builtin_annotation_of, builtin_apply, builtin_ast_of, builtin_ast_to_program, builtin_big_int,
     builtin_blake3, builtin_builtin_module, builtin_cap_env_has, builtin_cap_identity,
-    builtin_check_type, builtin_current_env, builtin_decimal, builtin_eval,
-    builtin_eval_macro_ast, builtin_eval_repr, builtin_eval_types, builtin_extend_env,
-    builtin_force, builtin_fork_type_ctx, builtin_gensym, builtin_get_type_context,
-    builtin_include_cache_get, builtin_include_cache_put, builtin_is_contractive, builtin_llt_repr,
-    builtin_load, builtin_macro_error, builtin_macro_injects, builtin_make_annotated,
-    builtin_make_type_ctx, builtin_parse, builtin_program, builtin_raise, builtin_resolve,
-    builtin_sequential, builtin_span_of, builtin_tag_of, builtin_try, builtin_type_of,
-    builtin_typecheck, builtin_until, builtin_validate, builtin_var_resolution,
-    builtin_variant_payload,
+    builtin_check_type, builtin_current_env, builtin_decimal, builtin_eval, builtin_eval_macro_ast,
+    builtin_eval_repr, builtin_eval_types, builtin_extend_env, builtin_force,
+    builtin_fork_type_ctx, builtin_gensym, builtin_get_type_context, builtin_include_cache_get,
+    builtin_include_cache_put, builtin_is_contractive, builtin_llt_repr, builtin_load,
+    builtin_macro_error, builtin_macro_injects, builtin_make_annotated, builtin_make_type_ctx,
+    builtin_parse, builtin_program, builtin_raise, builtin_resolve, builtin_sequential,
+    builtin_span_of, builtin_tag_of, builtin_try, builtin_type_of, builtin_typecheck,
+    builtin_until, builtin_validate, builtin_var_resolution, builtin_variant_payload,
 };
 // I/O implementations.
 use crate::builtins_dict::{builtin_concat, builtin_drop, builtin_take};
@@ -138,7 +138,6 @@ fn tycon_app(name: &str, elem: Type) -> Type {
     Type::App(Box::new(Type::TyCon(name.into())), Box::new(elem))
 }
 
-
 /// Returns all "core" module Rust builtins aggregated from the split implementation files.
 ///
 /// Consumed exclusively by `builtin_module("core")` in `src/builtins.rs`.
@@ -152,6 +151,15 @@ fn tycon_app(name: &str, elem: Type) -> Type {
 ///
 /// SLOT ORDER INVARIANT: `field-get` MUST be slot 0 and `slot-get` MUST be slot 1.
 /// The lowerer hardcodes these slots — do not reorder these first two entries.
+///
+/// The slot indices for the two dot-access builtins, exposed as constants so that
+/// tests can construct `CoreExpr::Var` nodes with the correct slot without hardcoding
+/// magic numbers.
+#[cfg(test)]
+pub const FIELD_GET_ROOT_SLOT: u32 = 0;
+#[cfg(test)]
+pub const SLOT_GET_ROOT_SLOT: u32 = 1;
+
 pub fn core_builtins() -> Vec<BuiltinDef> {
     vec![
         // ── Dot-access builtins — MUST be slots 0 and 1 (lowerer invariant) ─────────
@@ -441,6 +449,27 @@ pub fn core_builtins() -> Vec<BuiltinDef> {
             [Strictness::Seq],
             1,
             ["str"]
+        ),
+        builtin!(
+            "builtin-str-byte-count",
+            builtin_str_byte_count,
+            [Strictness::Seq],
+            1,
+            ["str"]
+        ),
+        builtin!(
+            "builtin-str-has-nth-byte?",
+            builtin_str_has_nth_byte,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["str", "i"]
+        ),
+        builtin!(
+            "builtin-str-nth-byte",
+            builtin_str_nth_byte,
+            [Strictness::Seq, Strictness::Seq],
+            2,
+            ["str", "i"]
         ),
         builtin!(
             "builtin-str-slice",
@@ -3578,6 +3607,36 @@ pub fn core_type_env(env: &mut TypeEnv) {
             required_count: 1,
         },
     );
+    // builtin-str-byte-count: Str → Int  (UTF-8 byte length, O(1))
+    env.insert(
+        "builtin-str-byte-count".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Str)],
+            ret: Box::new(Type::Int),
+            variadic: false,
+            required_count: 1,
+        },
+    );
+    // builtin-str-has-nth-byte?: Str → Int → Int  (1 if index valid, 0 otherwise)
+    env.insert(
+        "builtin-str-has-nth-byte?".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Str), (None, Type::Int)],
+            ret: Box::new(Type::Int),
+            variadic: false,
+            required_count: 2,
+        },
+    );
+    // builtin-str-nth-byte: Str → Int → Int  (UTF-8 byte value 0-255)
+    env.insert(
+        "builtin-str-nth-byte".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Str), (None, Type::Int)],
+            ret: Box::new(Type::Int),
+            variadic: false,
+            required_count: 2,
+        },
+    );
     // builtin-str-slice: Str → Int → Int → Str  (string, start, end)
     env.insert(
         "builtin-str-slice".to_string(),
@@ -4226,6 +4285,23 @@ pub fn core_type_env(env: &mut TypeEnv) {
             ret: Box::new(Type::Proxy),
             variadic: false,
             required_count: 1,
+        },
+    );
+
+    // ── get-in: path-following field access ──────────────────────────────────
+    // get-in: Seq(Str) → Any → Unknown
+    // The return type is path-dependent and cannot be statically determined from
+    // this simple type signature. The sync infer_surface_expr provides special-case
+    // handling that infers precise types for literal string paths.
+    // Registration here ensures "get-in" is defined so type-checking does not
+    // report it as undefined.
+    env.insert(
+        "get-in".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any), (None, Type::Any)],
+            ret: Box::new(Type::Unknown),
+            variadic: false,
+            required_count: 2,
         },
     );
 }

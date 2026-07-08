@@ -429,7 +429,7 @@ fn parse_annotation(
                     let full_span = Span {
                         start: name_span.start,
                         end: inner_ann.span.end,
-                        file: None,
+                        file: name_span.file.clone(),
                     };
 
                     let annotation = Annotation::Annotated(name.clone(), Box::new(inner_ann.node));
@@ -482,7 +482,7 @@ fn parse_annotation(
             let ann_span = Span {
                 start: bracket_start_span.start,
                 end: tokens[end_i].span.end,
-                file: None,
+                file: bracket_start_span.file.clone(),
             };
 
             // Extract the source sub-string for this bracket expression.
@@ -965,7 +965,7 @@ fn recover_from_bracket_error(
                                 Span {
                                     start: key.span.start,
                                     end: e.node.value.span.end,
-                                    file: None,
+                                    file: key.span.file.clone(),
                                 }
                             } else {
                                 e.node.value.span.clone()
@@ -989,7 +989,7 @@ fn recover_from_bracket_error(
                     let dict_span = Span {
                         start: span_start,
                         end: error_span.end,
-                        file: None,
+                        file: error_span.file.clone(),
                     };
                     mk(SurfaceExpression::Dict(partial_entries), dict_span)
                 }
@@ -1059,7 +1059,7 @@ fn recover_from_bracket_error(
                         let call_span = Span {
                             start: span_start,
                             end: error_span.end,
-                            file: None,
+                            file: error_span.file.clone(),
                         };
                         mk(
                             SurfaceExpression::Call {
@@ -1835,10 +1835,11 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                 last_popped_frame = Some(frame_info_static(&frame));
 
                 let span_end = span.end;
+                let span_file = span.file.clone();
                 let dict_span = move |span_start: Position| Span {
                     start: span_start,
                     end: span_end,
-                    file: None,
+                    file: span_file.clone(),
                 };
 
                 // Helper: recover from a CloseBracket-handler error (frame already popped).
@@ -1917,7 +1918,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                                     Span {
                                                         start: key.span.start,
                                                         end: e.node.value.span.end,
-                                                        file: None,
+                                                        file: key.span.file.clone(),
                                                     }
                                                 } else {
                                                     e.node.value.span.clone()
@@ -2467,7 +2468,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                             Span {
                                                 start: key.span.start,
                                                 end: e.node.value.span.end,
-                                                file: None,
+                                                file: key.span.file.clone(),
                                             }
                                         } else {
                                             e.node.value.span.clone()
@@ -2550,7 +2551,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                                     Span {
                                                         start: key.span.start,
                                                         end: e.node.value.span.end,
-                                                        file: None,
+                                                        file: key.span.file.clone(),
                                                     }
                                                 } else {
                                                     e.node.value.span.clone()
@@ -3147,7 +3148,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                             let full_span = Span {
                                 start: name_span.start,
                                 end: annotation.span.end,
-                                file: None,
+                                file: name_span.file.clone(),
                             };
                             let expr = mk(
                                 SurfaceExpression::VarRef {
@@ -3504,7 +3505,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                     Span {
                         start: items.first().unwrap().span().start,
                         end: items.last().unwrap().span().end,
-                        file: None,
+                        file: items.first().unwrap().span().file.clone(),
                     }
                 };
                 documents.push(Spanned::new(
@@ -4051,7 +4052,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                         let dot_access_span = Span {
                             start: target.as_ref().map_or(span.start, |t| t.span.start),
                             end: token_vec[i].span.end,
-                            file: None,
+                            file: token_vec[i].span.file.clone(),
                         };
 
                         let spanned_access = Arc::new(SurfaceNode::new(
@@ -4107,7 +4108,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                         let dot_access_span = Span {
                             start: target.as_ref().map_or(span.start, |t| t.span.start),
                             end: token_vec[i].span.end,
-                            file: None,
+                            file: token_vec[i].span.file.clone(),
                         };
 
                         let spanned_access = Arc::new(SurfaceNode::new(
@@ -4309,7 +4310,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                                 Span {
                                     start: ellipsis_span.start,
                                     end: end_span.end,
-                                    file: None,
+                                    file: ellipsis_span.file.clone(),
                                 },
                             )
                         } else {
@@ -4600,7 +4601,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                 line: innermost_pos.line,
                 column: innermost_pos.column + 1,
             },
-            file: None,
+            file: crate::rust_span!().file,
         };
 
         let count = stack.len();
@@ -4671,7 +4672,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                 line: 1,
                 column: 1,
             },
-            file: None,
+            file: crate::rust_span!().file,
         };
         documents.push(Spanned::new(Arc::new(doc), doc_span));
     } else if !current_document_items.is_empty() {
@@ -4696,7 +4697,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
                 line: 1,
                 column: 1,
             },
-            file: None,
+            file: crate::rust_span!().file,
         };
         documents.push(Spanned::new(Arc::new(doc), doc_span));
     }
@@ -6063,7 +6064,7 @@ fn push_expr_to_parent(
                 let pipe_span = Span {
                     start: *span_start,
                     end: node.span.end,
-                    file: None,
+                    file: node.span.file.clone(),
                 };
                 stack.pop(); // Remove the Pipe frame
 
@@ -6101,7 +6102,7 @@ fn commit_let_pending(
     let combined_span = Span {
         start: key_node.span.start,
         end: rhs_node.span.end,
-        file: None,
+        file: key_node.span.file.clone(),
     };
 
     // Detect if RHS is an uppercase constructor name (bare or qualified).
@@ -6254,9 +6255,13 @@ fn push_value(
                 // it is semantically a string key, not a variable reference.
                 // VarRef { escaped: true } means `$foo:` — a computed key — and passes through.
                 let key = match &key.expr {
+                    // Normalize bare identifier keys (no annotation, not escaped) to Str.
+                    // Annotated keys (`myFunc@[doc: "..."]`) are NOT normalized — they retain
+                    // their VarRef form so that the annotation data is preserved for doc extraction.
                     SurfaceExpression::VarRef {
                         name,
                         escaped: false,
+                        annotation: None,
                         ..
                     } => mk(SurfaceExpression::Str(name.clone()), key.span.clone()),
                     _ => key,
@@ -6279,7 +6284,7 @@ fn push_value(
                 let entry_span = crate::ast::Span {
                     start: key.span.start,
                     end: node.span.end,
-                    file: None,
+                    file: key.span.file.clone(),
                 };
                 entries.push(Spanned::new(
                     SurfaceEntry {
@@ -6340,7 +6345,7 @@ fn push_value(
                 let entry_span = crate::ast::Span {
                     start: key.span.start,
                     end: node.span.end,
-                    file: None,
+                    file: key.span.file.clone(),
                 };
                 methods.push(Spanned::new(
                     SurfaceEntry {
@@ -6374,7 +6379,7 @@ fn push_value(
                 let entry_span = crate::ast::Span {
                     start: key.span.start,
                     end: node.span.end,
-                    file: None,
+                    file: key.span.file.clone(),
                 };
                 current_arm_methods.push(Spanned::new(
                     SurfaceEntry {
@@ -7933,10 +7938,15 @@ mod tests {
                 assert_eq!(params.len(), 1);
                 assert_eq!(params[0].node.name, "x");
                 assert!(params[0].node.annotation.is_some());
-                match &params[0].node.annotation.as_ref().unwrap().node {
-                    Annotation::Simple(name) => assert_eq!(name, "Int"),
-                    other => panic!("expected Simple annotation, got {other:?}"),
-                }
+                // normalize_varref_annotation converts Simple("Int") → PropertyDict{type: Int}
+                assert!(
+                    matches!(
+                        &params[0].node.annotation.as_ref().unwrap().node,
+                        Annotation::PropertyDict(_)
+                    ),
+                    "expected PropertyDict annotation, got {:?}",
+                    params[0].node.annotation.as_ref().unwrap().node
+                );
                 assert!(!params[0].node.variadic);
             }
             other => panic!("expected Fn, got {other:?}"),
@@ -8301,10 +8311,15 @@ mod tests {
                 // param 1: annotated "y@Int"
                 assert_eq!(params[1].node.name, "y");
                 assert!(params[1].node.annotation.is_some());
-                match &params[1].node.annotation.as_ref().unwrap().node {
-                    Annotation::Simple(name) => assert_eq!(name, "Int"),
-                    other => panic!("expected Simple(Int) annotation, got {other:?}"),
-                }
+                // normalize_varref_annotation converts Simple("Int") → PropertyDict{type: Int}
+                assert!(
+                    matches!(
+                        &params[1].node.annotation.as_ref().unwrap().node,
+                        Annotation::PropertyDict(_)
+                    ),
+                    "expected PropertyDict annotation, got {:?}",
+                    params[1].node.annotation.as_ref().unwrap().node
+                );
                 assert!(!params[1].node.variadic);
                 // param 2: variadic "...rest"
                 assert_eq!(params[2].node.name, "rest");
@@ -8341,10 +8356,15 @@ mod tests {
                 assert_eq!(params.len(), 1);
                 assert_eq!(params[0].node.name, "x");
                 assert!(params[0].node.annotation.is_some());
-                match &params[0].node.annotation.as_ref().unwrap().node {
-                    Annotation::Simple(name) => assert_eq!(name, "Int"),
-                    other => panic!("expected Simple(Int) param annotation, got {other:?}"),
-                }
+                // normalize_varref_annotation converts Simple("Int") → PropertyDict{type: Int}
+                assert!(
+                    matches!(
+                        &params[0].node.annotation.as_ref().unwrap().node,
+                        Annotation::PropertyDict(_)
+                    ),
+                    "expected PropertyDict annotation, got {:?}",
+                    params[0].node.annotation.as_ref().unwrap().node
+                );
                 assert!(!params[0].node.variadic);
                 // Body
                 assert!(
@@ -9424,10 +9444,15 @@ mod tests {
                 assert_eq!(params.len(), 2);
                 assert_eq!(params[0].node.name, "x");
                 assert!(params[0].node.annotation.is_some());
-                match &params[0].node.annotation.as_ref().unwrap().node {
-                    Annotation::Simple(name) => assert_eq!(name, "Int"),
-                    other => panic!("expected Simple annotation, got {other:?}"),
-                }
+                // normalize_varref_annotation converts Simple("Int") → PropertyDict{type: Int}
+                assert!(
+                    matches!(
+                        &params[0].node.annotation.as_ref().unwrap().node,
+                        Annotation::PropertyDict(_)
+                    ),
+                    "expected PropertyDict annotation, got {:?}",
+                    params[0].node.annotation.as_ref().unwrap().node
+                );
                 assert!(!params[0].node.variadic);
                 assert_eq!(params[1].node.name, "y");
                 assert!(params[1].node.annotation.is_none());
@@ -9494,10 +9519,15 @@ mod tests {
                     params[0].node.annotation.is_some(),
                     "x should have @Int annotation"
                 );
-                match &params[0].node.annotation.as_ref().unwrap().node {
-                    Annotation::Simple(name) => assert_eq!(name, "Int"),
-                    other => panic!("expected Simple(Int) annotation, got {other:?}"),
-                }
+                // normalize_varref_annotation converts Simple("Int") → PropertyDict{type: Int}
+                assert!(
+                    matches!(
+                        &params[0].node.annotation.as_ref().unwrap().node,
+                        Annotation::PropertyDict(_)
+                    ),
+                    "expected PropertyDict annotation, got {:?}",
+                    params[0].node.annotation.as_ref().unwrap().node
+                );
                 assert_eq!(params[1].node.name, "y");
                 assert!(
                     params[1].node.annotation.is_none(),

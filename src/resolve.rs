@@ -33,6 +33,15 @@ struct SurfaceResolver {
     /// The explicit u32 value is dropped — position IS the slot.
     scopes: Vec<indexmap::IndexMap<String, ()>>,
     table: ResolutionTable,
+    /// Unresolved VarRefs in expression position: (name, span).
+    /// Populated only when suppress_depth == 0.  Positions that are NOT runtime
+    /// variable references (annotations, static dict keys, LetDecl binding names,
+    /// instance/class method-name keys, instance patterns) increment suppress_depth
+    /// so they never contribute false positives.
+    unresolved: Vec<(String, crate::ast::Span)>,
+    /// > 0 when inside a context where unresolved VarRefs are not errors
+    /// (annotation, static key, declaration position, etc.).
+    suppress_depth: usize,
 }
 
 impl SurfaceResolver {
@@ -40,6 +49,8 @@ impl SurfaceResolver {
         Self {
             scopes: Vec::new(),
             table: ResolutionTable::new(),
+            unresolved: Vec::new(),
+            suppress_depth: 0,
         }
     }
 
@@ -69,27 +80,85 @@ impl SurfaceResolver {
         None
     }
 
+    /// Resolve a class method name to ANY matching instance binding in scope.
+    ///
+    /// When `resolve_name` fails (method name not directly in scope), this searches
+    /// all scope entries for instance bindings whose method component matches `name`.
+    /// The instance binding name format is `ɪɴꜱᴛᴀɴᴄᴇ⧼{class}∷{method}⟨{args}⟩⧽`.
+    ///
+    /// Returns coordinates of the first matching binding. The type checker overrides
+    /// via `call_dispatch` when it can determine the specific instance; this is the
+    /// resolver's best-effort fallback so the OnceLock is set and the lowerer doesn't
+    /// emit "undefined variable".
+    fn method_to_instance(&self, name: &str) -> Option<(u32, u32)> {
+        // Instance binding format: "ɪɴꜱᴛᴀɴᴄᴇ⧼{class}∷{method}⟨{args}⟩⧽" (with args)
+        //                      or: "ɪɴꜱᴛᴀɴᴄᴇ⧼{class}∷{method}⧽"            (no args)
+        // Match on "∷{name}⟨" or "∷{name}⧽" appearing in the binding name.
+        let needle_with_args = format!("∷{}⟨", name);
+        let needle_no_args = format!("∷{}⧽", name);
+        for (offset, scope) in self.scopes.iter().rev().enumerate() {
+            for (binding, _) in scope {
+                if binding.starts_with('ɪ')
+                    && (binding.contains(&needle_with_args) || binding.contains(&needle_no_args))
+                {
+                    if let Some(slot) = scope.get_index_of(binding) {
+                        let level = u32::try_from(offset).expect("scope depth overflow");
+                        let slot = u32::try_from(slot).expect("slot index overflow");
+                        return Some((level, slot));
+                    }
+                }
+            }
+        }
+        None
+    }
+
     fn walk_surface_node(&mut self, arc: &Arc<SurfaceNode>) {
         self.walk_surface_expr(arc, &arc.expr);
     }
 
     fn walk_surface_expr(&mut self, arc: &Arc<SurfaceNode>, expr: &SurfaceExpression) {
         match expr {
-            SurfaceExpression::VarRef { name, resolution, .. } => {
+            SurfaceExpression::VarRef {
+                name, resolution, ..
+            } => {
                 if let Some(coords) = self.resolve_name(name) {
                     resolution.set(Some(coords));
                     self.table.insert(node_id(arc), coords);
+                } else if let Some(coords) = self.method_to_instance(name) {
+                    // Class method name not in direct scope — resolve to the first
+                    // matching instance binding. The type checker overrides via
+                    // call_dispatch when it can identify the specific instance.
+                    resolution.set(Some(coords));
+                    self.table.insert(node_id(arc), coords);
+                } else if self.suppress_depth == 0 && name != "_" {
+                    // Genuinely unresolved expression VarRef. Record for builtin-resolve
+                    // error reporting. suppress_depth > 0 when in annotation, static
+                    // dict-key, LetDecl binding, or declaration method-name position —
+                    // none of those are runtime variable references.
+                    self.unresolved.push((name.clone(), arc.span.clone()));
                 }
-                // If not found: leave OnceLock unset (None) = FreeVar at eval time via name lookup
+                // OnceLock left unset (None): the lowerer treats None as
+                // "undefined variable" and emits LowerDiagnostic::Error.
             }
 
             SurfaceExpression::Dict(entries) => {
                 let static_keys = surface_dict_static_keys(entries);
 
-                // Walk key expressions in outer scope
+                // Walk key expressions in outer scope.
+                // Non-escaped VarRef keys (bare identifier keys like `x:`) are static
+                // name declarations, not variable references — suppress error recording.
+                // Escaped VarRef keys ($x:) ARE runtime lookups — report errors normally.
                 for entry in entries {
                     if let Some(key) = &entry.node.key {
+                        let is_static =
+                            matches!(&key.expr, SurfaceExpression::VarRef { escaped: false, .. });
+                        if is_static {
+                            self.suppress_depth += 1;
+                        }
                         self.walk_surface_node(key);
+                        if is_static {
+                            self.suppress_depth -= 1;
+                        }
                     }
                 }
 
@@ -152,7 +221,12 @@ impl SurfaceResolver {
                 }
             }
 
-            SurfaceExpression::Field { expr, field, resolution, .. } => {
+            SurfaceExpression::Field {
+                expr,
+                field,
+                resolution,
+                ..
+            } => {
                 if let Some(target) = expr {
                     self.walk_surface_node(target);
                     // Resolve field-get to get its de Bruijn level at the current scope depth.
@@ -183,7 +257,9 @@ impl SurfaceResolver {
                 self.walk_surface_node(rhs);
             }
 
-            SurfaceExpression::TypeAssert { annotation, expr, .. } => {
+            SurfaceExpression::TypeAssert {
+                annotation, expr, ..
+            } => {
                 self.walk_surface_annotation(annotation);
                 self.walk_surface_node(expr);
             }
@@ -225,12 +301,21 @@ impl SurfaceResolver {
 
             SurfaceExpression::PatternDecl { bindings }
             | SurfaceExpression::LetDecl { bindings } => {
+                // Binding names in [let x y] and [pattern x] are declarations, not
+                // variable references. The lowerer extracts them as string literals via
+                // lower_let_decl_binding(), never reading their OnceLocks as variables.
+                self.suppress_depth += 1;
                 for b in bindings {
                     self.walk_surface_node(b);
                 }
+                self.suppress_depth -= 1;
             }
 
-            SurfaceExpression::CaseArm { let_bindings, pattern, body } => {
+            SurfaceExpression::CaseArm {
+                let_bindings,
+                pattern,
+                body,
+            } => {
                 self.walk_surface_node(let_bindings);
                 // Extract binding variable names from [let name1 name2 ...].
                 // Enter scope BEFORE walking the pattern so that binding VarRefs
@@ -260,6 +345,22 @@ impl SurfaceResolver {
                 }
             }
 
+            // Declaration embedded as a dict entry value — walk class/instance bodies so
+            // that runtime VarRefs inside method implementations (e.g. `result-map`
+            // referenced in a named instance) get resolved against the enclosing letrec
+            // scope.
+            // TypeAlias bodies are type-level and must NOT be walked: names like `Null`,
+            // `Int`, `Fn` etc. inside `[type ...]` are type names resolved by the type
+            // checker, not runtime variables. Walking them triggers false "undefined
+            // variable" diagnostics.
+            SurfaceExpression::Decl(decl) => match decl.as_ref() {
+                crate::ast::SurfaceDeclaration::ClassDecl { .. }
+                | crate::ast::SurfaceDeclaration::InstanceDecl { .. } => {
+                    self.walk_surface_declaration(decl);
+                }
+                _ => {}
+            },
+
             // Terminals with no child expressions
             SurfaceExpression::Int(_)
             | SurfaceExpression::U64(_)
@@ -267,12 +368,14 @@ impl SurfaceResolver {
             | SurfaceExpression::Str(_)
             | SurfaceExpression::Rest(..)
             | SurfaceExpression::Placeholder
-            | SurfaceExpression::Decl(_) // type-level declaration, no variable references to resolve
             | SurfaceExpression::Error(_) => {}
         }
     }
 
     fn walk_surface_annotation(&mut self, ann: &Spanned<crate::ast::Annotation>) {
+        // Annotation nodes contain type names (String, Int, type vars like `a`),
+        // not runtime variable references. Suppress unresolved-error recording.
+        self.suppress_depth += 1;
         match &ann.node {
             crate::ast::Annotation::Simple(_) => {}
             crate::ast::Annotation::PropertyDict(entries) => {
@@ -288,36 +391,30 @@ impl SurfaceResolver {
                 self.walk_surface_annotation(&inner_spanned);
             }
         }
+        self.suppress_depth -= 1;
     }
 
     fn walk_surface_declaration(&mut self, decl: &SurfaceDeclaration) {
         match decl {
             SurfaceDeclaration::TypeAlias { body, .. } => self.walk_surface_node(body),
-            SurfaceDeclaration::ClassDecl {
-                methods,
-                determines,
-                resolver,
-                ..
-            } => {
-                for method in methods {
-                    if let Some(key) = &method.node.key {
-                        self.walk_surface_node(key);
-                    }
-                    self.walk_surface_node(&method.node.value);
-                }
-                for d in determines {
-                    self.walk_surface_node(d);
-                }
-                if let Some(r) = resolver {
-                    self.walk_surface_node(r);
-                }
+            SurfaceDeclaration::ClassDecl { .. } => {
+                // ClassDecl is entirely type-level: method signatures, determines, and the
+                // resolver function name are all resolved by the type checker against the
+                // type-stage env. The runtime resolver never touches them.
             }
             SurfaceDeclaration::InstanceDecl { arms, .. } => {
                 for (pattern, methods) in arms {
+                    // Instance patterns like `[let a@String b@String c]` are type-matching
+                    // context, not runtime variable references.
+                    self.suppress_depth += 1;
                     self.walk_surface_node(pattern);
+                    self.suppress_depth -= 1;
                     for method in methods {
                         if let Some(key) = &method.node.key {
+                            // Method implementation names are declarations, not references.
+                            self.suppress_depth += 1;
                             self.walk_surface_node(key);
+                            self.suppress_depth -= 1;
                         }
                         self.walk_surface_node(&method.node.value);
                     }
@@ -371,6 +468,10 @@ impl SurfaceResolver {
     fn finish(self) -> ResolutionTable {
         self.table
     }
+
+    fn finish_with_errors(self) -> (ResolutionTable, Vec<(String, crate::ast::Span)>) {
+        (self.table, self.unresolved)
+    }
 }
 
 /// Resolve all VarRef nodes in a SurfaceProgram and return a ResolutionTable.
@@ -384,16 +485,21 @@ impl SurfaceResolver {
 /// Resolve a single SurfaceDocument in-place, writing de Bruijn coordinates directly to
 /// the inline `Resolution` OnceLocks on each VarRef node.
 ///
-/// `outer_env_names` lists names visible in the surrounding scope (e.g. `%`, `%section`).
-/// Builtins and cross-document names are NOT listed here — they remain unresolved (OnceLock
-/// stays `None`) and the lowerer maps them to the sentinel `(MAX, MAX)` for name-based
-/// runtime lookup.
+/// The env chain is walked to populate resolver scopes from outermost to innermost.
+/// Names not found in the env chain have their OnceLock left unset (None) and are
+/// returned in the errors vec as `(name, span)` pairs. Only expression-position VarRefs
+/// are reported — annotation type names, static dict keys, LetDecl binding names, and
+/// class/instance method-name keys are suppressed (they are not runtime variable references).
 ///
-/// Returns the ResolutionTable for callers that need it; most callers can discard it.
+/// The resolver MUST be seeded from the same env the document will be evaluated with.
+/// A mismatch produces wrong de Bruijn levels, causing eval-time "undefined variable" errors.
+///
+/// Returns `(ResolutionTable, errors)`. The ResolutionTable can be discarded by most callers;
+/// the errors are what `builtin-resolve` surfaces in its `errors:` result dict.
 pub fn resolve_surface_document_inplace(
     doc: &crate::ast::SurfaceDocument,
-    outer_env: &std::sync::Arc<std::sync::RwLock<crate::value::Environment>>,
-) -> ResolutionTable {
+    outer_env: &std::sync::Arc<std::sync::RwLock<crate::env::Env>>,
+) -> (ResolutionTable, Vec<(String, crate::ast::Span)>) {
     let mut resolver = SurfaceResolver::new();
 
     // Collect env chain levels from outermost to innermost
@@ -402,7 +508,7 @@ pub fn resolve_surface_document_inplace(
         let mut current = Some(std::sync::Arc::clone(outer_env));
         while let Some(env_rc) = current {
             let env = env_rc.read().unwrap();
-            env_levels.push(env.slot_names.clone());
+            env_levels.push(env.slot_names());
             current = env.parent.as_ref().map(std::sync::Arc::clone);
         }
     }
@@ -419,7 +525,7 @@ pub fn resolve_surface_document_inplace(
         resolver.exit_scope();
     }
 
-    resolver.finish()
+    resolver.finish_with_errors()
 }
 
 /// Resolve all VarRef nodes in a SurfaceProgram and return a ResolutionTable.
@@ -437,7 +543,7 @@ pub fn resolve_surface_document_inplace(
 /// that genuinely have no env (tests, type-checker bootstrap paths) pass `None`.
 pub fn resolve_surface_program(
     program: &SurfaceProgram,
-    env: Option<&std::sync::Arc<std::sync::RwLock<crate::value::Environment>>>,
+    env: Option<&std::sync::Arc<std::sync::RwLock<crate::env::Env>>>,
 ) -> ResolutionTable {
     let mut resolver = SurfaceResolver::new();
 
@@ -448,7 +554,7 @@ pub fn resolve_surface_program(
         let mut current = Some(std::sync::Arc::clone(env_arc));
         while let Some(env_rc) = current {
             let env_guard = env_rc.read().unwrap();
-            env_levels.push(env_guard.slot_names.clone());
+            env_levels.push(env_guard.slot_names());
             current = env_guard.parent.as_ref().map(std::sync::Arc::clone);
         }
         // Enter scopes from outermost to innermost so that level 0 = innermost at resolve time.
@@ -479,28 +585,60 @@ pub fn resolve_surface_program(
 }
 
 /// Extract static string-keyed names from a SurfaceExpression::Dict's entries.
-/// Same logic as the old resolver's `dict_static_keys` but for SurfaceEntry.
+///
+/// Handles two cases that the lowerer also handles, so the resolver's letrec scope matches
+/// the evaluator's letrec environment exactly:
+///
+/// 1. Keyed entries — VarRef or string literal keys become static scope slots.
+/// 2. Anonymous InstanceDecl entries (no outer key) — the lowerer flattens these into
+///    ɪ-prefixed binding names (`ɪɴꜱᴛᴀɴᴄᴇ⧼Class∷method⟨T⟩⧽`) in the outer dict.
+///    We register those same names here so `method_to_instance` can find them within
+///    the same letrec scope (e.g., `[< y x]` inside `>` in the same dict as the
+///    Comparable instance).
 fn surface_dict_static_keys(entries: &[Spanned<SurfaceEntry>]) -> Vec<String> {
-    entries
-        .iter()
-        .filter_map(|entry| {
-            entry
-                .node
-                .key
-                .as_ref()
-                .and_then(|key_node| match &key_node.expr {
-                    SurfaceExpression::Str(s) => Some(s.clone()),
-                    // Non-escaped VarRef (bare identifier) → static name for letrec scope.
-                    // Escaped VarRef ($k:) is a computed key — not a static scope binding.
-                    SurfaceExpression::VarRef {
-                        name,
-                        escaped: false,
-                        ..
-                    } => Some(name.clone()),
-                    _ => None,
-                })
-        })
-        .collect()
+    let mut keys = Vec::new();
+    for entry in entries {
+        if let Some(key_node) = &entry.node.key {
+            match &key_node.expr {
+                SurfaceExpression::Str(s) => keys.push(s.clone()),
+                // Non-escaped VarRef (bare identifier) → static name for letrec scope.
+                // Escaped VarRef ($k:) is a computed key — not a static scope binding.
+                SurfaceExpression::VarRef {
+                    name,
+                    escaped: false,
+                    ..
+                } => keys.push(name.clone()),
+                _ => {}
+            }
+        } else if let SurfaceExpression::Decl(decl) = &entry.node.value.expr {
+            // Anonymous entry (no outer key): check for InstanceDecl whose method
+            // bindings the lowerer will flatten into the enclosing dict.
+            if let crate::ast::SurfaceDeclaration::InstanceDecl { class_name, arms } = decl.as_ref()
+            {
+                for (pattern, method_entries) in arms {
+                    let dispatch_tags = crate::lower::extract_dispatch_tags(&pattern.expr);
+                    let type_args: Vec<&str> =
+                        dispatch_tags.iter().filter_map(|t| t.as_deref()).collect();
+                    for me in method_entries {
+                        let method_name = match me.node.key.as_ref() {
+                            Some(k) => match &k.expr {
+                                SurfaceExpression::Str(s) => s.clone(),
+                                SurfaceExpression::VarRef { name, .. } => name.clone(),
+                                _ => continue,
+                            },
+                            None => continue,
+                        };
+                        keys.push(crate::type_def::instance_binding_name(
+                            class_name,
+                            &method_name,
+                            &type_args,
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    keys
 }
 
 /// Extract static string-keyed names from an Arc<SurfaceNode> if it is a Dict.
@@ -686,7 +824,12 @@ mod tests {
                     collect_varrefs_in_node(&na.node.value, name, out);
                 }
             }
-            SurfaceExpression::DotAccess { expr, .. } => collect_varrefs_in_node(expr, name, out),
+            SurfaceExpression::Field {
+                expr: Some(expr), ..
+            } => {
+                collect_varrefs_in_node(expr, name, out);
+                // (Field with expr: None is a leading-dot form — no sub-expression to recurse into)
+            }
             SurfaceExpression::Pipe { lhs, rhs } => {
                 collect_varrefs_in_node(lhs, name, out);
                 collect_varrefs_in_node(rhs, name, out);
@@ -705,6 +848,19 @@ mod tests {
                     }
                     collect_varrefs_in_node(&arm.body, name, out);
                 }
+            }
+            SurfaceExpression::CaseArm {
+                let_bindings,
+                pattern,
+                body,
+            } => {
+                // Walk into all three sub-nodes so VarRef searches reach the body.
+                // Note: let_bindings VarRefs are declarations (not references), but
+                // walking them here is safe — they'll have no entry in the resolution
+                // table (OnceLock unset for declaration-position names).
+                collect_varrefs_in_node(let_bindings, name, out);
+                collect_varrefs_in_node(pattern, name, out);
+                collect_varrefs_in_node(body, name, out);
             }
             _ => {}
         }
@@ -798,38 +954,46 @@ mod tests {
     }
 
     /// Match arm pattern bindings should be resolved in the arm body.
-    /// `[match x [Some n]: [+ n 1]]` — `$n` in the arm body should resolve to (level=0, slot=0).
+    /// Uses [case [let n] _ $n] form: [let n] declares the binding, _ matches anything,
+    /// and $n in the body resolves to the case arm's scope (level=0, slot=0).
     #[test]
     fn match_arm_pattern_binding() {
-        let (program, table) = parse_and_resolve("[match x [Some n]: [+ $n 1]]");
+        // T-1154: bare lowercase names in match arm patterns are now Pin (not Variable).
+        // To bind a variable in a match arm, use [case [let n] pattern body] form.
+        // [case [let n] _  $n] — n is declared by [let n], _ matches anything, $n resolves.
+        let (program, table) = parse_and_resolve("[match 42 [case [let n] _ $n]]");
         let refs = find_varref_nodes(&program, "n");
-        assert!(!refs.is_empty(), "expected VarRef for $n in arm body");
+        assert!(!refs.is_empty(), "expected VarRef for $n in case arm body");
         let (id, _) = &refs[0];
         let coords = table
             .get(id)
-            .expect("$n should be resolved (pattern binding in arm scope)");
+            .expect("$n should be resolved (case arm binding in arm scope)");
         assert_eq!(coords.0, 0, "pattern binding should be at level 0");
-        assert_eq!(coords.1, 0, "n is the first (and only) pattern binding");
+        assert_eq!(coords.1, 0, "n is the first (and only) binding");
     }
 
-    /// Match arm guard expressions should see pattern bindings.
-    /// `[match x [Some n] if: [> $n 0]: $n]` — both `$n` should resolve.
+    /// Case arm bodies see the bindings declared in [let ...].
+    /// T-1154: bare lowercase names in match arm patterns are now Pin (not Variable).
+    /// To bind a variable, use [case [let n] pattern body] form.
     #[test]
     fn match_arm_guard_sees_pattern_bindings() {
-        // Variable binding in match arm: `n: body` binds the matched value as `n`.
-        // The body can reference the bound variable.
-        let src = "[match 42 n: [+ n 1]]";
+        // T-1154: `n:` in match arm position creates a Pin pattern, not a variable binding.
+        // Pins in pattern position resolve against the outer scope — n is NOT introduced into
+        // the arm body scope. Use [case [let n] _ body] to actually bind n.
+        let src = "[match 42 [case [let n] _ [+ $n 1]]]";
         let (program, table) = parse_and_resolve(src);
         let refs = find_varref_nodes(&program, "n");
-        // Should have 1 VarRef for `n` in the body (the pattern `n:` is a key, not a VarRef)
+        // $n in the body should resolve (introduced by [let n] in the case arm)
         assert_eq!(
             refs.len(),
             1,
-            "expected exactly 1 VarRef for n (body reference)"
+            "expected exactly 1 VarRef for $n (body reference)"
         );
         for (id, _) in &refs {
-            let coords = table.get(id).expect("n should be resolved in body");
-            // The match arm scope introduces n as a binding
+            let coords = table
+                .get(id)
+                .expect("$n should be resolved via case arm [let n]");
+            // The case arm scope introduces n as slot 0
             assert_eq!(coords.1, 0, "n is slot 0");
         }
     }

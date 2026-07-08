@@ -512,7 +512,7 @@ before widening `StringLiteral(s) → Str`, check `state.kind_env.get(var_name)`
 New generic functions: `sequence`, `traverse`, `forM`, `whenM`, `liftM2`.
 
 New class declarations: `Functor`, `Applicative`, `Monad`, `Foldable`, `Traversable`,
-`Mappable`, `Appendable`, `Equatable`, `Comparable`, `Showable`.
+`Mappable`, `Appendable`, `Equatable`, `Comparable`, `Castable`.
 
 New type: `Maybe` ADT (`[Some a] | [None]`).
 

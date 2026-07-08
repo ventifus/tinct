@@ -374,7 +374,8 @@ pub enum Type {
     Operator(String),
     /// Type-stage function application — represents a pending type-level computation.
     /// Created during constraint generation for FD classes; reduced by normalize().
-    /// Example: TypeStageApp { fn_name: "AddResult", args: vec![Int, Float] } reduces to Float.
+    /// Example: TypeStageApp { fn_name: "MyResolver", args: vec![Int, Float] } reduces to the type
+    /// returned by the `MyResolver` function in the type-stage env.
     #[allow(clippy::enum_variant_names)]
     // Type prefix is intentional for type-level computation
     TypeStageApp {
@@ -742,8 +743,12 @@ pub(crate) fn extract_tycon_spine(ty: &Type) -> Option<(&str, Vec<&Type>)> {
 impl Type {
     // ── Error constructors and accessors ────────────────────────────────────────
 
-    /// Construct a "cascade sentinel" Error node — an Error produced by absorbing a prior
-    /// Error node rather than by a direct failure at this site.  The payload is empty.
+    /// Construct an Error node with empty payload — **test-only**.
+    ///
+    /// Production code must NEVER use this. Every `Type::Error` in production must carry the
+    /// causal errors that produced it (`error_with`) or at minimum a message (`error_note`).
+    /// An empty payload makes blame information impossible to reconstruct.
+    #[cfg(test)]
     pub fn error_cascade() -> Self {
         Type::Error(Arc::new(vec![]))
     }
@@ -766,7 +771,7 @@ impl Type {
         let span = Span {
             start: zero,
             end: zero,
-            file: None,
+            file: crate::rust_span!().file,
         };
         Type::Error(Arc::new(vec![TypeErrorTyped::Generic(GenericTypeError {
             message: msg.into(),

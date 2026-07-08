@@ -9,15 +9,15 @@
 //! - `check_call` — general function call type checking (CALL-MONO and CALL-POLY)
 
 use std::collections::{HashMap, HashSet};
-use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use super::{check_surface_expr, contains_unknown_or_top, infer_surface_expr, TypeMap};
 use crate::ast::{DotKey, Span, Spanned, SurfaceExpression, SurfaceNamedArg, SurfaceNode};
+use crate::env::Env;
 use crate::type_errors::{ArityMismatch, TypeErrorTyped, UnificationFailure};
 use crate::types::{
-    instantiate_at_level, instantiate_scheme, unify, Constraint, InferState, Row, Type, TypeEnv,
-    TypeError, TypeScheme,
+    instantiate_at_level, instantiate_scheme, unify, Constraint, InferState, Row, Type, TypeError,
+    TypeScheme,
 };
 
 /// Widen literal types in a type, recursively through Record fields.
@@ -61,7 +61,7 @@ pub(crate) fn widen_literal_types(ty: Type) -> Type {
 pub(crate) async fn check_dot_access(
     target: &Arc<SurfaceNode>,
     field: &DotKey,
-    env: &Rc<TypeEnv>,
+    env: &Arc<RwLock<Env>>,
     span: Span,
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
@@ -78,7 +78,7 @@ pub(crate) async fn check_dot_access(
     // [DOT-POLY] fast-path: if target is a VarRef and its scheme has inner_schemes,
     // instantiate the field's scheme polymorphically
     if let SurfaceExpression::VarRef { name, .. } = &target.expr {
-        if let Some(scheme) = env.get(name) {
+        if let Some(scheme) = env.read().unwrap().get_scheme(name) {
             if let Some(ref inner_schemes) = scheme.inner_schemes {
                 if let Some(field_scheme) = inner_schemes.get(field_str) {
                     // Thread origin info for T013 diagnostics: origin_name is the dot-access
@@ -224,7 +224,7 @@ pub(crate) async fn check_dot_access(
 pub(crate) async fn check_dot_access_int(
     target: &Arc<SurfaceNode>,
     index: i64,
-    env: &Rc<TypeEnv>,
+    env: &Arc<RwLock<Env>>,
     span: Span,
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
@@ -323,7 +323,7 @@ pub(crate) async fn check_call_with_scheme(
     func_name: Option<&str>,
     args: &[Arc<SurfaceNode>],
     named_args: &[Spanned<SurfaceNamedArg>],
-    env: &Rc<TypeEnv>,
+    env: &Arc<RwLock<Env>>,
     span: Span,
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
@@ -373,18 +373,7 @@ pub(crate) async fn check_call_with_scheme(
         for na in named_args {
             let _ = infer_surface_expr(&na.node.value, env, state, type_map);
         }
-        // Propagate the Error payload. If it's a bare cascade, name the callee for provenance.
-        return Ok(if func_ty.error_payload().is_empty() {
-            if let Some(name) = func_name {
-                Type::error_note(format!(
-                    "callee `{name}` has type Error (error reported at its definition site)"
-                ))
-            } else {
-                func_ty
-            }
-        } else {
-            func_ty
-        });
+        return Err(vec![TypeError::not_a_function(&func_ty, func_span.clone())]);
     }
 
     match &func_ty {
@@ -526,7 +515,7 @@ async fn check_call_args(
     func_name: Option<&str>,
     args: &[Arc<SurfaceNode>],
     named_args: &[Spanned<SurfaceNamedArg>],
-    env: &Rc<TypeEnv>,
+    env: &Arc<RwLock<Env>>,
     span: Span,
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
@@ -1103,7 +1092,7 @@ pub(crate) async fn check_call(
     func: &Arc<SurfaceNode>,
     args: &[Arc<SurfaceNode>],
     named_args: &[Spanned<SurfaceNamedArg>],
-    env: &Rc<TypeEnv>,
+    env: &Arc<RwLock<Env>>,
     span: Span,
     state: &mut InferState,
     constraints: &mut Vec<Constraint>,
@@ -1145,18 +1134,7 @@ pub(crate) async fn check_call(
         for na in named_args {
             let _ = infer_surface_expr(&na.node.value, env, state, type_map);
         }
-        // Propagate the Error payload. If it's a bare cascade, name the callee for provenance.
-        return Ok(if func_ty.error_payload().is_empty() {
-            if let Some(ref name) = func_callee {
-                Type::error_note(format!(
-                    "callee `{name}` has type Error (error reported at its definition site)"
-                ))
-            } else {
-                func_ty
-            }
-        } else {
-            func_ty
-        });
+        return Err(vec![TypeError::not_a_function(&func_ty, func.span.clone())]);
     }
 
     match &func_ty {

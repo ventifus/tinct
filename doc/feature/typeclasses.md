@@ -28,7 +28,7 @@ Parts of this feature were modified by later features:
 | `Equatable` | `=` | Int, Float, Str, Bool, Null |
 | `Comparable` | `<`, `>`, `<=`, `>=` | Int, Float, Str |
 | `Numeric` | `+`, `-`, `*`, `/`, `%`, `neg` | Int, Float |
-| `Showable` | `str` | All types |
+| `Castable` | `cast`, `str` | All types (target, source two-param class) |
 | `Appendable` | `concat`, `++` | Str, Seq, Dict |
 | `Mappable` | `map` | Dict, Seq |
 | `Foldable` | `reduce`, `length` | Dict, Seq |
@@ -111,7 +111,7 @@ Equatable  : types that support =, !=     (Int, Float, Str, Bool, Null)
 Comparable : types that support <, >, <=  (Int, Float, Str)
 Numeric    : types that support +, -, *   (Int, Float)
 Appendable : types that support ++        (Str, Seq, Dict)
-Showable   : types that support str       (All types)
+Castable   : cast/str protocol (target, source) (All types)
 Mappable   : types that support map       (Dict, Seq)
 Foldable   : types that support fold      (Dict, Seq)
 Filterable : types that support filter    (Dict, Seq)

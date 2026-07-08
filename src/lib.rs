@@ -29,6 +29,7 @@ pub(crate) mod arena;
 pub mod ast;
 pub mod async_rt;
 pub(crate) mod coverage;
+pub(crate) mod env;
 pub(crate) mod error;
 pub(crate) mod eval;
 pub(crate) mod eval_access;
@@ -152,10 +153,12 @@ pub use formatter::{format_source, format_source_tinct, format_source_tinct_with
 #[cfg(feature = "lsp")]
 pub use lsp::run_lsp;
 
+/// Unified evaluation and type-checker environment.
+pub use env::Env;
 /// Runtime value types: values, thunks, environments, and dict keys.
 pub use value::{
-    string_val, ChannelInner, ClockCapInner, DirPerms, Environment, HashableValue, NetCapEntry,
-    Thunk, ThunkId, Value,
+    string_val, ChannelInner, ClockCapInner, DirPerms, HashableValue, NetCapEntry, Thunk, ThunkId,
+    Value,
 };
 
 /// Run the loader.llt bootstrap pipeline with a pre-configured environment.
@@ -183,7 +186,7 @@ pub use value::{
 /// Returns `Ok(())` on success. Any parse, expansion, typecheck, or eval error is
 /// returned as `Err(String)` with a human-readable message.
 pub async fn run_loader_pipeline(
-    env: Arc<std::sync::RwLock<value::Environment>>,
+    env: Arc<std::sync::RwLock<env::Env>>,
     eval_ctx: &Arc<eval::EvalContext>,
     _libdir_dir: &cap_std::fs::Dir,
     _no_fs: bool,
@@ -254,9 +257,8 @@ pub async fn typecheck_source(input: &str) -> Result<(), String> {
     let env_arc = imports::get_builtin_core_type_env()
         .await
         .expect("builtin core type env not available — bootstrap error");
-    let env_rc = std::rc::Rc::new((*env_arc).clone());
     let (type_errors, _type_map, _doc_map, _scheme_map, diagnostics) =
-        typecheck::typecheck_surface_program(&program, env_rc);
+        typecheck::typecheck_surface_program(&program, env_arc);
     if type_errors.is_empty() && diagnostics.is_empty() {
         Ok(())
     } else {
@@ -289,9 +291,8 @@ pub async fn typecheck_source_errors_only(input: &str) -> Result<(), String> {
     let env_arc2 = imports::get_builtin_core_type_env()
         .await
         .expect("builtin core type env not available — bootstrap error");
-    let env_rc2 = std::rc::Rc::new((*env_arc2).clone());
     let (type_errors, _type_map, _doc_map, _scheme_map, _diagnostics) =
-        typecheck::typecheck_surface_program(&program, env_rc2);
+        typecheck::typecheck_surface_program(&program, env_arc2);
     if type_errors.is_empty() {
         Ok(())
     } else {
@@ -911,13 +912,14 @@ mod tests {
         let source = "$undefined_var";
 
         // Parse the source manually to get a real AST with spans.
-        let parsed = parse(source).expect("parse should succeed");
-        let mut program = parsed.program.clone();
+        // Move `program` out of ParseOutput directly — cloning would increase Arc reference
+        // counts and cause `desugar_surface_program`'s `Arc::get_mut` to panic.
+        let mut program = parse(source).expect("parse should succeed").program;
         desugar::desugar_surface_program(&mut program);
         let env = builtins::build_core_env();
         let _resolve_errors = resolve::resolve_surface_program(&program, Some(&env));
         let (_type_errors, _inferred, _tycon_env) =
-            typecheck::typecheck_surface_program_annotation_table(&program).await;
+            typecheck::typecheck_surface_program_annotation_table(&program);
         let ctx = test_ctx().await;
 
         // Evaluate: this should fail because $undefined_var is not defined.

@@ -4,8 +4,7 @@
 //! This file provides:
 //! - `builtin_module(name)` — dispatch to per-module aggregators (`core_builtins()`, etc.)
 //! - `type_env_module(name)` — dispatch to per-module type environments
-//! - `build_builtins_type_env()` — combined type env for all modules
-//! - `build_core_env()` — build a fresh env with only the core Rust builtins (the starting point for run_loader_pipeline)
+//! - `build_core_env()` — build a fresh `crate::env::Env` with all core Rust builtins (runtime values + type schemes)
 //! - Helper functions: `ok_val`, `string_val`, `reject_named`, `require_string`, etc.
 //! - Re-exports of split-file functions for test access via `use super::*`
 
@@ -391,11 +390,11 @@ pub(crate) use crate::builtins_dict::{
 #[allow(unused_imports)] // used in test modules via `use super::*`
 pub(crate) use crate::builtins_meta::{
     builtin_annotation_of, builtin_apply, builtin_ast_of, builtin_big_int, builtin_blake3,
-    builtin_cap_identity, builtin_decimal, builtin_eval,
-    builtin_eval_types, builtin_force, builtin_gensym, builtin_include_cache_get,
-    builtin_include_cache_put, builtin_llt_repr, builtin_load, builtin_macro_error,
-    builtin_macro_injects, builtin_make_annotated, builtin_raise, builtin_span_of, builtin_tag_of,
-    builtin_try, builtin_type_of, builtin_until, builtin_validate,
+    builtin_cap_identity, builtin_decimal, builtin_eval, builtin_eval_types, builtin_force,
+    builtin_gensym, builtin_include_cache_get, builtin_include_cache_put, builtin_llt_repr,
+    builtin_load, builtin_macro_error, builtin_macro_injects, builtin_make_annotated,
+    builtin_raise, builtin_span_of, builtin_tag_of, builtin_try, builtin_type_of, builtin_until,
+    builtin_validate,
 };
 
 // String builtins: str, split, replace, trim, trim-start, trim-end,
@@ -408,9 +407,10 @@ pub(crate) use crate::builtins_meta::{
 #[allow(unused_imports)] // used in test modules via `use super::*`
 pub(crate) use crate::builtins_string::{
     builtin_bytes_str, builtin_char_code, builtin_chr, builtin_regex_match, builtin_replace,
-    builtin_str_bytes, builtin_str_index_of, builtin_str_length, builtin_str_map_chars,
-    builtin_str_nth_char, builtin_str_slice, builtin_str_to_lower_char, builtin_str_to_upper_char,
-    builtin_trim, builtin_trim_end, builtin_trim_start,
+    builtin_str_byte_count, builtin_str_bytes, builtin_str_has_nth_byte, builtin_str_index_of,
+    builtin_str_length, builtin_str_map_chars, builtin_str_nth_byte, builtin_str_nth_char,
+    builtin_str_slice, builtin_str_to_lower_char, builtin_str_to_upper_char, builtin_trim,
+    builtin_trim_end, builtin_trim_start,
 };
 
 // Bytes builtins: bytes, bytes-find, bytes-of, bytes-equal?, ct-equal?.
@@ -995,9 +995,9 @@ pub(crate) fn builtin_sort(
                                 args: pos_args,
                                 named: None,
                                 call_span: call_span.clone(),
-                                caller_env: Arc::new(std::sync::RwLock::new(
-                                    crate::value::Environment::new(),
-                                )),
+                                caller_env: Arc::new(
+                                    std::sync::RwLock::new(crate::env::Env::new()),
+                                ),
                                 ctx: Arc::clone(&ctx),
                             };
                             (def.func)(builtin_args).await?
@@ -1119,8 +1119,8 @@ pub fn builtin_module(name: &str) -> Option<Vec<crate::value::BuiltinDef>> {
 /// This is the single correct execution path for bootstrapping. There is no
 /// pre-evaluation of loader.llt; the caller drives the full pipeline via
 /// `run_loader_pipeline`.
-pub fn build_core_env() -> Arc<RwLock<crate::value::Environment>> {
-    let env = Arc::new(RwLock::new(crate::value::Environment::new()));
+pub fn build_core_env() -> Arc<RwLock<crate::env::Env>> {
+    let env = Arc::new(RwLock::new(crate::env::Env::new()));
     if let Some(defs) = builtin_module("core") {
         let mut env_write = env.write().unwrap();
         for def in defs {
@@ -1129,137 +1129,48 @@ pub fn build_core_env() -> Arc<RwLock<crate::value::Environment>> {
                 crate::value::Value::Builtin(def),
                 rust_span!(),
             ));
-            env_write.insert(name, thunk);
+            env_write.insert_value(name, thunk);
         }
     }
     env
 }
 
-/// Build a `TypeEnv` containing type signatures for all builtin modules (core, datetime, net).
+/// Build the unified builtin type environment as an `Arc<RwLock<Env>>`.
 ///
-/// The combined env includes all registrations from `core_type_env()`, `datetime_type_env()`,
-/// and `net_type_env()`. The result is a flat environment (no parent chain) suitable for use as
-/// the baseline for prelude type-checking and builtin-aware type inference.
-pub fn build_builtins_type_env() -> crate::types::TypeEnv {
-    use crate::type_def::{Row, RowTail, TyConDef, Type, Variance};
-
-    let mut env = crate::types::TypeEnv::new();
-    crate::builtins_core::core_type_env(&mut env);
-    crate::builtins_datetime::datetime_type_env(&mut env);
-    env.merge(crate::builtins_net::net_type_env());
-
-    // Register root-scope TyConDefs for all primitive type names (T-1296).
-    //
-    // These enable the unified type-stage env lookup path to resolve primitive type names
-    // through TyCon lookup instead of a hardwired string-match bypass list.
-    // The body holds the concrete primitive Type so callers that read TyConDef.body directly
-    // (e.g., type display, annotation-of) see the correct underlying type.
-    // builtin_type: Some(name) marks each as opaque — expand_named returns a bare TyCon leaf
-    // without structural expansion (same treatment as builtin TyCons in InferState::new()).
-    // params: vec![] and variance: vec![] for zero-parameter primitives.
-
-    // Zero-parameter primitives
-    for (name, body) in [
-        ("Int", Type::Int),
-        ("Float", Type::Float),
-        ("Bytes", Type::Bytes),
-        ("String", Type::Str),
-        ("Unknown", Type::Unknown),
-        ("Any", Type::Any),
-    ] {
-        env.insert_tycon_def(
-            name.to_string(),
-            Arc::new(TyConDef {
-                params: vec![],
-                body,
-                constraints: vec![],
-                variance: vec![],
-                constructors: vec![],
-                builtin_type: Some(name.to_string()),
-                annotation: None,
-                field_annotations: IndexMap::new(),
-                constructor_constants: IndexMap::new(),
-            }),
-        );
+/// Collects all Rust-native builtin type signatures (core, datetime, net, io, math,
+/// meta, dict, string, bytes, async, base64) and inserts them into a fresh `Env`
+/// via the `insert_scheme_named_only` path (extras — not slot-indexed).
+///
+/// This is the bootstrap parent env for `build_builtin_core_type_env_inner` in imports.rs.
+/// It replaces the old `build_builtins_type_env() -> TypeEnv` function.
+pub fn build_builtins_type_env_arc() -> Arc<RwLock<crate::env::Env>> {
+    let env = Arc::new(RwLock::new(crate::env::Env::new()));
+    {
+        let mut guard = env.write().unwrap();
+        for module_name in &[
+            "core", "datetime", "net", "io", "math", "meta", "dict", "string", "bytes", "async",
+            "base64",
+        ] {
+            if let Some(type_env) = type_env_module(module_name) {
+                for (name, scheme) in type_env.iter_slotted() {
+                    guard.insert_scheme_named_only(name.to_string(), scheme.clone());
+                }
+                for (name, scheme) in type_env.iter_extras() {
+                    guard.insert_scheme_named_only(name.to_string(), scheme.clone());
+                }
+                for decl in type_env.own_classes() {
+                    guard.insert_class(decl.clone());
+                }
+                for (mangled, decl) in type_env.own_instances() {
+                    guard.insert_instance(mangled.to_string(), decl.clone());
+                }
+                for (name, alias) in type_env.own_type_aliases() {
+                    guard.insert_type_alias(name.to_string(), alias.clone());
+                }
+            }
+        }
+        guard.inject_builtin_aliases();
     }
-
-    // One-parameter type constructors (* → *)
-    // Handle: Cap → Handle[Cap]
-    env.insert_tycon_def(
-        "Handle".to_string(),
-        Arc::new(TyConDef {
-            params: vec!["cap".to_string()],
-            body: Type::handle(Type::Unknown),
-            constraints: vec![],
-            variance: vec![Variance::Covariant],
-            constructors: vec![],
-            builtin_type: Some("Handle".to_string()),
-            annotation: None,
-            field_annotations: IndexMap::new(),
-            constructor_constants: indexmap::IndexMap::new(),
-        }),
-    );
-
-    // Two-parameter type constructors (* → * → *)
-    // Map: K → V → Map[K, V]
-    env.insert_tycon_def(
-        "Map".to_string(),
-        Arc::new(TyConDef {
-            params: vec!["k".to_string(), "v".to_string()],
-            body: Type::map(Type::Unknown, Type::Unknown),
-            constraints: vec![],
-            variance: vec![Variance::Invariant, Variance::Covariant],
-            constructors: vec![],
-            builtin_type: Some("Map".to_string()),
-            annotation: None,
-            field_annotations: IndexMap::new(),
-            constructor_constants: indexmap::IndexMap::new(),
-        }),
-    );
-    // Fn: the "any callable" type — variadic function with Top return.
-    env.insert_tycon_def(
-        "Fn".to_string(),
-        Arc::new(TyConDef {
-            params: vec![],
-            body: Type::Function {
-                params: vec![],
-                ret: Box::new(Type::Any),
-                variadic: true,
-                required_count: 0,
-            },
-            constraints: vec![],
-            variance: vec![],
-            constructors: vec![],
-            builtin_type: Some("Fn".to_string()),
-            annotation: None,
-            field_annotations: IndexMap::new(),
-            constructor_constants: indexmap::IndexMap::new(),
-        }),
-    );
-
-    // Structural record types — Dict and Record both represent "any dict" (empty open record).
-    // No builtin_type discriminant: these resolve structurally, not opaquely.
-    let empty_open_record = Type::Record(Row {
-        fields: indexmap::IndexMap::new(),
-        tail: RowTail::Empty,
-    });
-    for name in ["Dict", "Record"] {
-        env.insert_tycon_def(
-            name.to_string(),
-            Arc::new(TyConDef {
-                params: vec![],
-                body: empty_open_record.clone(),
-                constraints: vec![],
-                variance: vec![],
-                constructors: vec![],
-                builtin_type: None,
-                annotation: None,
-                field_annotations: IndexMap::new(),
-                constructor_constants: IndexMap::new(),
-            }),
-        );
-    }
-
     env
 }
 
@@ -1344,9 +1255,10 @@ pub fn type_env_module(name: &str) -> Option<crate::types::TypeEnv> {
 )]
 mod tests {
     use super::*;
+    use crate::env::Env as Environment;
     use crate::error::ErrorKind;
     use crate::test_util::test_span;
-    use crate::value::{string_val, Environment, Strictness};
+    use crate::value::{string_val, Strictness};
 
     /// Helper: wrap a Value in a materialized Thunk inside an Rc.
     fn thunk(val: Value) -> Arc<Thunk> {
@@ -1372,7 +1284,7 @@ mod tests {
             for def in defs {
                 let name = def.name.to_string();
                 let thunk = Arc::new(Thunk::new_materialized(Value::Builtin(def), rust_span!()));
-                env.write().unwrap().insert(name, thunk);
+                env.write().unwrap().insert_value(name, thunk);
             }
         }
         crate::eval::EvalContext::new_empty(base_dir, env, false)
@@ -6125,8 +6037,10 @@ mod tests {
 
     #[tokio::test]
     async fn if_non_bool_condition_error() {
+        // builtin-if requires an Int condition (0=false, non-zero=true).
+        // A Dict condition is not Int and must produce a type error.
         let args = vec![
-            thunk(Value::Int(1)),
+            thunk(Value::Dict(IndexMap::new())),
             thunk(Value::Int(42)),
             thunk(Value::Int(99)),
         ];
@@ -6140,19 +6054,20 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            e.kind.to_string().contains("expected Bool"),
+            e.kind.to_string().contains("expected Int"),
             "got: {}",
             e.kind
         );
         assert!(
-            e.kind.to_string().contains("Bool"),
-            "expected Bool mentioned, got: {}",
+            e.kind.to_string().contains("Int"),
+            "expected Int mentioned, got: {}",
             e.kind
         );
     }
 
     #[tokio::test]
     async fn if_string_condition_error() {
+        // builtin-if requires an Int condition; a String condition must produce a type error.
         let args = vec![
             thunk(string_val("true".into())),
             thunk(Value::Int(42)),
@@ -6168,7 +6083,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            e.kind.to_string().contains("expected Bool"),
+            e.kind.to_string().contains("expected Int"),
             "got: {}",
             e.kind
         );
@@ -6219,13 +6134,14 @@ mod tests {
 
     #[tokio::test]
     async fn if_non_bool_condition_has_secondary_span() {
-        // Test that $if with a non-Bool condition includes secondary_span
+        // Test that $if with a non-Int condition includes secondary_span
         // pointing to where the condition was produced (if different from call site).
-        let condition_span = test_span(5, 1, 5, 10); // Where the Int value is defined
+        // builtin-if accepts only Int; String is not a valid condition type.
+        let condition_span = test_span(5, 1, 5, 10); // Where the String value is defined
         let call_span_val = test_span(10, 1, 10, 30); // Where the $if call is
 
         let args = vec![
-            thunk_with_span(Value::Int(1), condition_span.clone()),
+            thunk_with_span(string_val("true".into()), condition_span.clone()),
             thunk(Value::Int(42)),
             thunk(Value::Int(99)),
         ];
@@ -6257,8 +6173,8 @@ mod tests {
             sec_label
         );
         assert!(
-            sec_label.contains("Int"),
-            "Secondary label should mention the actual type (Int), got: {}",
+            sec_label.contains("String"),
+            "Secondary label should mention the actual type (String), got: {}",
             sec_label
         );
     }
@@ -6267,10 +6183,12 @@ mod tests {
     async fn if_non_bool_secondary_span_suppressed_when_same() {
         // Test that when the condition span equals the call span,
         // secondary_span is NOT set (would be redundant).
+        // builtin-if accepts only Int; a Dict condition with the same span as the
+        // call site must error without a secondary_span (spans are identical).
         let same_span = test_span(1, 1, 1, 10);
 
         let args = vec![
-            thunk_with_span(Value::Int(1), same_span.clone()),
+            thunk_with_span(Value::Dict(IndexMap::new()), same_span.clone()),
             thunk(Value::Int(42)),
             thunk(Value::Int(99)),
         ];
@@ -6299,12 +6217,12 @@ mod tests {
         let env_ref = env.read().unwrap();
         // Should have core builtins
         assert!(
-            env_ref.get_by_name("builtin-if").is_some(),
+            env_ref.get_value_by_name("builtin-if").is_some(),
             "missing builtin builtin-if"
         );
         // Prelude functions are NOT in core_env — they are loaded via run_loader_pipeline.
         assert!(
-            env_ref.get_by_name("map").is_none(),
+            env_ref.get_value_by_name("map").is_none(),
             "map should not be in core env (requires run_loader_pipeline)"
         );
     }
@@ -6805,18 +6723,18 @@ mod tests {
 
         for name in required_names {
             assert!(
-                env.get_by_name(*name).is_some(),
+                env.get_value_by_name(*name).is_some(),
                 "core env is missing expected builtin: {name}"
             );
         }
 
         // Prelude functions must NOT be in core env (they come from run_loader_pipeline).
         assert!(
-            env.get_by_name("map").is_none(),
+            env.get_value_by_name("map").is_none(),
             "map should not be in core env"
         );
         assert!(
-            env.get_by_name("filter").is_none(),
+            env.get_value_by_name("filter").is_none(),
             "filter should not be in core env"
         );
     }

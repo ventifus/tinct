@@ -223,9 +223,8 @@ pub(crate) fn builtin_task(
                         .into());
                     }
                     // Create a call environment
-                    let call_env = Arc::new(std::sync::RwLock::new(
-                        crate::value::Environment::with_parent(env),
-                    ));
+                    let call_env =
+                        Arc::new(std::sync::RwLock::new(crate::env::Env::with_parent(env)));
                     // Evaluate the body
                     let thunk = eval_core_expr(&body, &call_env, &ctx_clone).await?;
                     // Materialize the result
@@ -237,9 +236,7 @@ pub(crate) fn builtin_task(
                         args: vec![],
                         named: None,
                         call_span: call_span_clone,
-                        caller_env: Arc::new(std::sync::RwLock::new(
-                            crate::value::Environment::new(),
-                        )),
+                        caller_env: Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
                         ctx: Arc::clone(&ctx_clone),
                     })
                     .await?;
@@ -1128,10 +1125,9 @@ pub(crate) fn builtin_select_once(
                             }
 
                             // Bind the received value to the parameter.
-                            let call_env = Arc::new(std::sync::RwLock::new(
-                                crate::value::Environment::with_parent(env),
-                            ));
-                            call_env.write().unwrap().insert(
+                            let call_env =
+                                Arc::new(std::sync::RwLock::new(crate::env::Env::with_parent(env)));
+                            call_env.write().unwrap().insert_value(
                                 params[0].name.clone(),
                                 Arc::new(Thunk::new_materialized(value, call_span.clone())),
                             );
@@ -1147,9 +1143,9 @@ pub(crate) fn builtin_select_once(
                                 args: vec![arg_thunk],
                                 named: None,
                                 call_span: call_span.clone(),
-                                caller_env: Arc::new(std::sync::RwLock::new(
-                                    crate::value::Environment::new(),
-                                )),
+                                caller_env: Arc::new(
+                                    std::sync::RwLock::new(crate::env::Env::new()),
+                                ),
                                 ctx: Arc::clone(&ctx),
                             })
                             .await?
@@ -1263,10 +1259,9 @@ pub(crate) fn builtin_par_map(
                         }
 
                         // Bind the item to the parameter
-                        let call_env = Arc::new(std::sync::RwLock::new(
-                            crate::value::Environment::with_parent(env),
-                        ));
-                        call_env.write().unwrap().insert(
+                        let call_env =
+                            Arc::new(std::sync::RwLock::new(crate::env::Env::with_parent(env)));
+                        call_env.write().unwrap().insert_value(
                             params[0].name.clone(),
                             Arc::new(Thunk::new_materialized(item_val, call_span_clone)),
                         );
@@ -1283,9 +1278,7 @@ pub(crate) fn builtin_par_map(
                             args: vec![item_thunk_arg],
                             named: None,
                             call_span: call_span_clone,
-                            caller_env: Arc::new(std::sync::RwLock::new(
-                                crate::value::Environment::new(),
-                            )),
+                            caller_env: Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
                             ctx: ctx_clone.clone(),
                         })
                         .await?;
@@ -1412,10 +1405,9 @@ pub(crate) fn builtin_par_filter(
                         }
 
                         // Bind the item to the parameter
-                        let call_env = Arc::new(std::sync::RwLock::new(
-                            crate::value::Environment::with_parent(env),
-                        ));
-                        call_env.write().unwrap().insert(
+                        let call_env =
+                            Arc::new(std::sync::RwLock::new(crate::env::Env::with_parent(env)));
+                        call_env.write().unwrap().insert_value(
                             params[0].name.clone(),
                             Arc::new(Thunk::new_materialized(
                                 item_val.clone(),
@@ -1436,9 +1428,7 @@ pub(crate) fn builtin_par_filter(
                             args: vec![arg_thunk],
                             named: None,
                             call_span: call_span_clone.clone(),
-                            caller_env: Arc::new(std::sync::RwLock::new(
-                                crate::value::Environment::new(),
-                            )),
+                            caller_env: Arc::new(std::sync::RwLock::new(crate::env::Env::new())),
                             ctx: ctx_clone.clone(),
                         })
                         .await?;
