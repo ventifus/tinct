@@ -143,56 +143,56 @@
 
   TypeNode: [type
     # Primitives — leaf constructors: no @Child fields
-    [Int@[as-type: [fn [let t] t]  guarding: True]]
-    [Float@[as-type: [fn [let t] t]  guarding: True]]
-    [String@[as-type: [fn [let t] t]  guarding: True]]
-    [Bool@[as-type: [fn [let t] t]  guarding: True]]
-    [Absent@[as-type: [fn [let t] t]  guarding: True]]
-    [Unknown@[as-type: [fn [let t] t]  guarding: True]]
-    [Never@[as-type: [fn [let t] t]  guarding: True]]
+    [Int@[as-type: [fn [let t] t]  guarding: 1]]
+    [Float@[as-type: [fn [let t] t]  guarding: 1]]
+    [String@[as-type: [fn [let t] t]  guarding: 1]]
+    [Bool@[as-type: [fn [let t] t]  guarding: 1]]
+    [Absent@[as-type: [fn [let t] t]  guarding: 1]]
+    [Unknown@[as-type: [fn [let t] t]  guarding: 1]]
+    [Never@[as-type: [fn [let t] t]  guarding: 1]]
     # Structural
-    [Dict@[as-type: [fn [let r] r]  guarding: True]
+    [Dict@[as-type: [fn [let r] r]  guarding: 1]
       fields@Child: [Map String TypeNode]   # @Child on Map → MapValues (map over values, preserve keys)
       open:         Int]                    # 1 = open, 0 = closed; no @Child → NonChild
-    [Union@[as-type: [fn [let u] u]  guarding: False]
+    [Union@[as-type: [fn [let u] u]  guarding: 0]
       types@Child: [Map Int TypeNode]]       # @Child on Map → MapValues (map over values)
-    [Intersect@[as-type: [fn [let i] i]  guarding: False]
+    [Intersect@[as-type: [fn [let i] i]  guarding: 0]
       types@Child: [Seq TypeNode]]
-    [Negation@[as-type: [fn [let n] n]  guarding: False]
+    [Negation@[as-type: [fn [let n] n]  guarding: 0]
       inner@Child: TypeNode]                    # @Child on TypeNode → One
     # TypeConstructor — two roles:
     #   Transient (pre-normalization): bare name lookup result, eliminated by expansion
     #   Leaf identity (post-normalization): qualified name "Color.Red", carries nominal identity
-    [TypeConstructor@[as-type: [fn [let t] t]  guarding: True]
+    [TypeConstructor@[as-type: [fn [let t] t]  guarding: 1]
       name: String]                         # no @Child → leaf
-    [TypeApplication@[as-type: [fn [let a] a]  guarding: True]
+    [TypeApplication@[as-type: [fn [let a] a]  guarding: 1]
       ctor@Child:  TypeNode                 # @Child on TypeNode → One
       args@Child:  [Map Int TypeNode]]      # @Child on Map → MapValues
-    [Arrow@[as-type: [fn [let a] a]  guarding: True]
+    [Arrow@[as-type: [fn [let a] a]  guarding: 1]
       params@Child: [Map Int TypeNode]      # @Child on Map → MapValues
       result@Child: TypeNode]              # @Child on TypeNode → One
     # Recursive — equirecursive types; body is a concrete TypeNode with
     # RecursiveRef(var) at recursive positions (not a function)
-    [Recursive@[as-type: [fn [let r] r]  guarding: True]
+    [Recursive@[as-type: [fn [let r] r]  guarding: 1]
       var:         String                   # no @Child → NonChild (binder name, not a type child)
       body@Child:  TypeNode]               # @Child on TypeNode → One
     # Internal sentinel — always a leaf; only appears inside Recursive bodies
-    [RecursiveRef@[as-type: [fn [let r] r]  guarding: False]
+    [RecursiveRef@[as-type: [fn [let r] r]  guarding: 0]
       name: String]                         # no @Child → leaf
     # Inference variable — leaf; name and level are not TypeNode children.
     # TypeVar IS a TypeNode constructor — findable by walk_type, handled uniformly
     # with all other TypeNode forms. level is the Kiselyov creation-time level;
     # state.levels is the authoritative mutable current level (never read from payload).
-    [TypeVar@[as-type: [fn [let t] t]  guarding: False]
+    [TypeVar@[as-type: [fn [let t] t]  guarding: 0]
       name:  String                         # e.g. "_t42"
       level: Int]
     # Fixed-size bytes refinement type — [Bytes N] in annotation position.
     # Supertype: TypeNode.Bytes. Subtype rule [Bytes N] <: Bytes is derived from
     # the supertype: annotation generically, with no Rust special-case.
-    # guarding: False — SizedBytes is a leaf structurally (n is Int, not TypeNode child).
+    # guarding: 0 — SizedBytes is a leaf structurally (n is Int, not TypeNode child).
     # Two SizedBytes nodes are incompatible when n values differ (M ≠ N) — falls
     # out of generic TypeNode structural equality on the n field.
-    [SizedBytes@[supertype: TypeNode.Bytes  as-type: [fn [let b] b]  guarding: False]
+    [SizedBytes@[supertype: TypeNode.Bytes  as-type: [fn [let b] b]  guarding: 0]
       n: Int]]                              # n: the concrete byte-count N from [Bytes N] annotation
 
   # ============================================================================
@@ -402,7 +402,7 @@
   #
   # Contractiveness: a recursive type μa.T is contractive iff every path from
   # the root to a RecursiveRef passes through at least one guarding constructor
-  # (Record, Arrow, TypeApplication, or any TypeNode with guarding: True).
+  # (Record, Arrow, TypeApplication, or any TypeNode with guarding: 1).
   # Non-contractive types (μa.a, μa.(a | Int)) are rejected at construction time
   # with a clear error rather than silently producing a diverging type.
   #
