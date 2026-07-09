@@ -1837,6 +1837,26 @@ pub fn core_type_env(env: &mut TypeEnv) {
         },
     );
 
+    // ── Pipeline stage builtins ───────────────────────────────────────────────
+    // builtin-resolve: doc → (env:) → {doc, errors}
+    // builtin-eval:    doc → (env:) → {env, result, doc-name, error}
+    // These take an optional named arg env: (Value::Environment). Required_count=1
+    // (only the positional doc arg is required; env: is optional with a default).
+    // Prelude defines `resolve` and `eval` as aliases that always pass env:.
+    // builtin-resolve and builtin-eval are variadic so callers can pass env:, table: etc.
+    // as optional named kwargs without triggering "unknown named argument" warnings.
+    for name in ["builtin-resolve", "builtin-eval"] {
+        env.insert(
+            name.to_string(),
+            Type::Function {
+                params: vec![(None, Type::Any)],
+                ret: Box::new(Type::Any),
+                variadic: true,
+                required_count: 1,
+            },
+        );
+    }
+
     // ── Arithmetic builtins — builtin-add, builtin-sub, builtin-mul, builtin-div ──
     // These are stable aliases used inside instance method bodies (Addable, Subtractable,
     // Multipliable, Divisible instances in prelude.llt). They bypass the type class

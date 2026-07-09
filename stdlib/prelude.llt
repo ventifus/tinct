@@ -1272,7 +1272,7 @@ make-entry@[doc: "Construct single-entry dict from key and value"]: [fn@Dict [le
 # Merge additional key-value pairs into a dict (returns updated dict).
 # Variadic: accepts xs as base dict, and ...kvs as an inline dict of entries to merge in.
 # assert: [set [a: 1] b: 2] => [a: 1  b: 2]
-set: [fn@Dict [let xs@Dict ...kvs@Dict] [merge xs kvs]]
+set: [fn@Dict [let xs@Any ...kvs] [merge xs kvs]]
 
 remove: [fn@[return: Dict  doc: """
 Remove a key from a dict.
@@ -1992,8 +1992,8 @@ flatten-seq-concat-values: [fn [let d@Dict ks i@Integer len@Integer rest]
 # seq-map-lazy:     cons-recursive lazy map (tail suspended as thunk, O(1) per element).
 # seq-filter-lazy:  cons-recursive lazy filter (predicate evaluated eagerly per element).
 
-seq-reverse-step@[doc: "Internal: tail-recursive reverse accumulator for Seq."]:
-  [fn [let acc s]
+seq-reverse-step@[return: Any  doc: "Internal: tail-recursive reverse accumulator for Seq."]:
+  [fn@Any [let acc s]
     [match s
       [case [let p] [Seq.Cons p] [seq-reverse-step [Seq.Cons head: p.head  tail: acc] p.tail]]
       Seq.End:      acc]]
@@ -4694,8 +4694,8 @@ ft-add-digits@[doc: "Internal: spine-level inner-concat (Hinze & Paterson 2006).
     [nodes: [chunk-fnodes mids elem-size]]
     [ft-add-nodes left nodes right]]
 
-ft-add-nodes@[doc: "Internal: fold FNodes into the left spine then catenate with the right spine. Uses fnode-size (not 1) when pushing into the spine, maintaining the leaf-count invariant at every level."]:
-  [fn [let left nodes right]
+ft-add-nodes@[return: Any  doc: "Internal: fold FNodes into the left spine then catenate with the right spine. Uses fnode-size (not 1) when pushing into the spine, maintaining the leaf-count invariant at every level."]:
+  [fn@Any [let left nodes right]
     [match nodes
       Seq.End:
         [match left

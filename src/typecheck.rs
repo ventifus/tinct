@@ -652,7 +652,9 @@ async fn typecheck_surface_document(
 
     // Tracks schemes from the last dict expression so they can be threaded into result_env.
     // Mirrors typecheck_document's `last_dict_schemes` / `last_record_type` logic.
-    let mut last_dict_schemes: Option<HashMap<String, TypeScheme>> = None;
+    // IndexMap preserves insertion order so insert_scheme calls into result_env match the
+    // resolver's slot assignments (surface_dict_static_keys source order).
+    let mut last_dict_schemes: Option<indexmap::IndexMap<String, TypeScheme>> = None;
     // last_record_type: captures (type, enclosing_level) for the last non-dict Record result,
     // so its fields can be generalized and threaded into result_env (cross-document scoping).
     let mut last_record_type: Option<(Type, u32)> = None;
@@ -1270,18 +1272,31 @@ pub(crate) async fn infer_surface_expr(
             //   - No resolution table (tests, inline programs)
             //   - No entry for this node (free variable)
             //   - get_scheme_at returns None (narrowing frame intervened, extras entry, etc.)
-            let scheme: Option<TypeScheme> = 'lookup: {
+            // Name-based lookup first: uses the type checker's own env chain and is always
+            // correct for user-defined names. Slot-based lookup is only needed for ɪ-prefixed
+            // class method bindings (e.g. ɪɴꜱᴛᴀɴᴄᴇ⧼Addable∷+⟨Integer⟩⧽) which have no
+            // symbol name (get_scheme("+") returns None). For all other names — including
+            // builtin-* and prelude aliases — name-based lookup finds the correct scheme
+            // in the type checker's parent env chain.
+            //
+            // The resolver uses the runtime env (resolver_seed_env) for slot assignments,
+            // which has different slot positions than the type checker's env chain. Using
+            // slot-based lookup for names that name-based lookup CAN find causes wrong
+            // schemes to be returned (slot alignment mismatch between runtime and typecheck envs).
+            let name_scheme = env.read().unwrap().get_scheme(name);
+            let scheme: Option<TypeScheme> = if name_scheme.is_some() {
+                // Found by name in the type checker's env chain — use directly.
+                name_scheme
+            } else {
+                // Not found by name — fall back to slot lookup (for ɪ-prefixed class methods).
+                let mut slot_scheme: Option<TypeScheme> = None;
                 if let Some(ref table) = state.resolution_table {
                     let id = node_id(node);
                     if let Some(&(level, slot)) = table.get(&id) {
-                        // Read and drop the guard before the fallback to avoid holding the lock.
-                        let slot_scheme = env.read().unwrap().get_scheme_at(level, slot);
-                        if let Some(s) = slot_scheme {
-                            break 'lookup Some(s);
-                        }
+                        slot_scheme = env.read().unwrap().get_scheme_at(level, slot);
                     }
                 }
-                env.read().unwrap().get_scheme(name)
+                slot_scheme
             };
             if let Some(scheme) = scheme {
                 // Record scheme in scheme_map for LSP hover (constraints + type vars).
@@ -1787,16 +1802,23 @@ pub(crate) async fn infer_surface_expr(
                 // triggering a false "undefined variable: +" warning. The resolution table has
                 // the correct (level, slot) → slot-based get_scheme_at finds the ɪ-prefixed
                 // TypeScheme registered by infer_instance_decl_from_surface.
+                // Name-based lookup first: same rationale as in the VarRef arm.
+                // Name-based lookup finds the correct scheme from the type checker's env chain.
+                // Slot-based lookup is the fallback for ɪ-prefixed class method bindings only.
                 let scheme_opt: Option<TypeScheme> = {
-                    let mut slot_scheme: Option<TypeScheme> = None;
-                    if let Some(ref table) = state.resolution_table {
-                        let func_id = node_id(func);
-                        if let Some(&(level, slot)) = table.get(&func_id) {
-                            slot_scheme = env.read().unwrap().get_scheme_at(level, slot);
+                    let name_scheme = env.read().unwrap().get_scheme(name);
+                    if name_scheme.is_some() {
+                        name_scheme
+                    } else {
+                        let mut slot_scheme: Option<TypeScheme> = None;
+                        if let Some(ref table) = state.resolution_table {
+                            let func_id = node_id(func);
+                            if let Some(&(level, slot)) = table.get(&func_id) {
+                                slot_scheme = env.read().unwrap().get_scheme_at(level, slot);
+                            }
                         }
+                        slot_scheme
                     }
-                    // Name-based fallback for entries in extras (builtins, injected names).
-                    slot_scheme.or_else(|| env.read().unwrap().get_scheme(name))
                 };
                 match scheme_opt {
                     Some(scheme)
@@ -1841,7 +1863,13 @@ pub(crate) async fn infer_surface_expr(
                         } = &inst_ty
                         {
                             let total_supplied = args.len() + named_args.len();
-                            let min_required = *fn_required;
+                            // Mirror check_call_args (typecheck_call.rs:534-537): for variadic
+                            // functions the variadic param itself is not required, so subtract 1.
+                            let min_required = if *fn_variadic && !fn_params.is_empty() {
+                                fn_required.saturating_sub(1)
+                            } else {
+                                *fn_required
+                            };
                             let max_allowed = if *fn_variadic {
                                 usize::MAX
                             } else {
@@ -2873,9 +2901,35 @@ pub(crate) async fn infer_surface_expr(
                         // A Negation type restricts what values CAN'T inhabit the type, but
                         // doesn't describe the field structure. Return Unknown for any field.
                         Type::Negation(_) => Ok(Type::Unknown),
+                        // Union type: search members for a NominalVariant whose short name
+                        // (after the last '.') matches the field. This handles qualified
+                        // constructor access like Boolean.True, Transport.Tcp, etc. where
+                        // the base expression's type is the union of all constructors.
+                        Type::Union(members) => {
+                            let key = match field {
+                                crate::ast::DotKey::Ident(s) => s.clone(),
+                                crate::ast::DotKey::Int(n) => n.to_string(),
+                            };
+                            for m in members {
+                                if let Type::NominalVariant { tag, .. } = m {
+                                    let short = tag.rsplit('.').next().unwrap_or(tag.as_str());
+                                    if short == key.as_str() {
+                                        return Ok(m.clone());
+                                    }
+                                }
+                            }
+                            // Field not found among union members — return Unknown for gradual
+                            // typing rather than an error, since unions may have runtime-only
+                            // structure that is not statically visible.
+                            Ok(Type::Unknown)
+                        }
                         // Concrete non-record types: produce an error.
                         // TypeVar cases are handled above; TyCon may expand to a Record so
                         // we allow Unknown for those.
+                        // NominalVariant: a single-constructor type declaration (e.g. StringWriter)
+                        // normalizes to NominalVariant instead of Union, so qualified constructor
+                        // access (StringWriter.Writer) needs gradual treatment here.
+                        Type::NominalVariant { .. } => Ok(Type::Unknown),
                         Type::TyCon(_) | Type::App(_, _) => Ok(Type::Unknown),
                         // All other concrete types (Int, Str, Float, Function, etc.): error.
                         other => Err(vec![TypeError::new(
@@ -3965,6 +4019,10 @@ fn resolve_simple_type_name_for_typeassert(name: &str, state: &mut InferState) -
         "Any" => Type::Any,
         "Unknown" => Type::Unknown,
         "Never" => Type::Never,
+        // Dict: gradual open-record type annotation. Returns Unknown so that
+        // TypeAssert runtime checks with @Dict accept any dict value without
+        // unification errors ([] and {x:1} are both valid Dicts).
+        "Dict" => Type::Unknown,
         "Null" => Type::Record(Row {
             fields: indexmap::IndexMap::new(),
             tail: crate::type_def::RowTail::Empty,

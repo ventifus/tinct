@@ -2198,6 +2198,11 @@ pub(crate) async fn resolve_type_name(
         "Unknown" => return Ok(Type::Unknown),
         "Any" => return Ok(Type::Any),
         "Proxy" => return Ok(Type::Proxy),
+        // Dict: gradual dict annotation — any dict value satisfies this annotation.
+        // Used in prelude for functions that accept or produce arbitrary dicts.
+        // Unknown is the gradual type: it unifies with any concrete dict type,
+        // including closed empty records ([]), open records, and uniform-tailed records.
+        "Dict" => return Ok(Type::Unknown),
         _ => {
             if name.starts_with(|c: char| c.is_lowercase()) {
                 // Type parameter scope enforcement (T-1100 / T-951).

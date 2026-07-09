@@ -251,7 +251,7 @@ pub(crate) async fn infer_dict(
     state: &mut InferState,
     type_map: &mut Option<&mut TypeMap>,
     _span: Span,
-) -> (Type, HashMap<String, TypeScheme>, Vec<TypeError>) {
+) -> (Type, indexmap::IndexMap<String, TypeScheme>, Vec<TypeError>) {
     // Level management: save enclosing level, increment for dict body
     let enclosing_level = state.level;
     state.level += 1;
@@ -291,6 +291,77 @@ pub(crate) async fn infer_dict(
 
     // Pass 0a: Compute SCCs for binding group analysis
     let sccs = compute_sccs(entries, &key_entries);
+
+    // Pass 1 (global): Pre-insert fresh TypeVar placeholders for ALL key entries in SOURCE
+    // ORDER before the SCC loop.  This ensures the slotted IndexMap in dict_env has entries
+    // at the same positions as the resolver's slot assignments (both iterate key_entries in
+    // source order).  Type aliases are included so they occupy their resolver-assigned slot
+    // even though their inferred type is registered separately (via TypeAlias, not a scheme).
+    //
+    // The SCC loop below will update these entries (insert_scheme is update-in-place for
+    // IndexMap, preserving slot positions) as it infers the actual types.
+    //
+    // fresh_vars_by_name: name → TypeVar, used to recover the bound TypeVar in Pass 3_i.
+    // Pass 1 (global): Pre-insert fresh TypeVar placeholders for ALL statically-known bindings
+    // in SOURCE ORDER, matching the slot assignment order of surface_dict_static_keys in resolve.rs.
+    //
+    // This includes:
+    // (a) Static-key entries (keyed with Str/VarRef key): one placeholder per entry.
+    // (b) Anonymous InstanceDecl entries (no outer key): one placeholder per ɪ-prefixed method
+    //     binding, interleaved at the source position where the InstanceDecl appears.
+    //
+    // Correct interleaving is critical: the resolver assigns slots in source order (keyed entries
+    // AND ɪ-prefixed names). If we insert keyed entries first then ɪ-prefixed names, slot indices
+    // shift and get_scheme_at(level, slot) will not find the right TypeScheme for class method VarRefs.
+    let mut fresh_vars_by_name: HashMap<String, Type> = HashMap::new();
+    for ((key_name, is_alias, is_static_key), entry) in key_entries.iter().zip(entries.iter()) {
+        // (a) Static-key entry.
+        if *is_static_key {
+            if let Some(ref name) = key_name {
+                let fresh_var = state.fresh_type_var(&entry.span);
+                if !is_alias {
+                    fresh_vars_by_name.insert(name.clone(), fresh_var.clone());
+                }
+                dict_env
+                    .write()
+                    .unwrap()
+                    .insert_scheme(name.clone(), TypeScheme::mono(fresh_var));
+            }
+        }
+        // (b) Anonymous InstanceDecl entry: insert ɪ-prefixed placeholders at this source position.
+        if entry.node.key.is_none() {
+            if let SurfaceExpression::Decl(decl) = &entry.node.value.expr {
+                if let SurfaceDeclaration::InstanceDecl { class_name, arms } = decl.as_ref() {
+                    for (pattern, method_entries) in arms {
+                        let dispatch_tags = crate::lower::extract_dispatch_tags(&pattern.expr);
+                        let type_args: Vec<&str> =
+                            dispatch_tags.iter().filter_map(|t| t.as_deref()).collect();
+                        for me in method_entries {
+                            let method_name = match me.node.key.as_ref() {
+                                Some(k) => match &k.expr {
+                                    SurfaceExpression::Str(s) => s.clone(),
+                                    SurfaceExpression::VarRef { name, .. } => name.clone(),
+                                    _ => continue,
+                                },
+                                None => continue,
+                            };
+                            let binding_name = crate::type_def::instance_binding_name(
+                                class_name,
+                                &method_name,
+                                &type_args,
+                            );
+                            let fresh_var = state.fresh_type_var(&entry.span);
+                            fresh_vars_by_name.insert(binding_name.clone(), fresh_var.clone());
+                            dict_env
+                                .write()
+                                .unwrap()
+                                .insert_scheme(binding_name, TypeScheme::mono(fresh_var));
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     // Pass 2: Register type aliases (before SCC processing)
     for ((key_name, is_alias, _), entry) in key_entries.iter().zip(entries.iter()) {
@@ -487,77 +558,6 @@ pub(crate) async fn infer_dict(
     // Constraints from fn@[constraint: ...] annotations should be scoped to the function being
     // inferred, not leak across dict entries.
     let mut entry_constraints: HashMap<String, Vec<crate::types::Constraint>> = HashMap::new();
-
-    // Pass 1 (global): Pre-insert fresh TypeVar placeholders for ALL key entries in SOURCE
-    // ORDER before the SCC loop.  This ensures the slotted IndexMap in dict_env has entries
-    // at the same positions as the resolver's slot assignments (both iterate key_entries in
-    // source order).  Type aliases are included so they occupy their resolver-assigned slot
-    // even though their inferred type is registered separately (via TypeAlias, not a scheme).
-    //
-    // The SCC loop below will update these entries (insert_scheme is update-in-place for
-    // IndexMap, preserving slot positions) as it infers the actual types.
-    //
-    // fresh_vars_by_name: name → TypeVar, used to recover the bound TypeVar in Pass 3_i.
-    // Pass 1 (global): Pre-insert fresh TypeVar placeholders for ALL statically-known bindings
-    // in SOURCE ORDER, matching the slot assignment order of surface_dict_static_keys in resolve.rs.
-    //
-    // This includes:
-    // (a) Static-key entries (keyed with Str/VarRef key): one placeholder per entry.
-    // (b) Anonymous InstanceDecl entries (no outer key): one placeholder per ɪ-prefixed method
-    //     binding, interleaved at the source position where the InstanceDecl appears.
-    //
-    // Correct interleaving is critical: the resolver assigns slots in source order (keyed entries
-    // AND ɪ-prefixed names). If we insert keyed entries first then ɪ-prefixed names, slot indices
-    // shift and get_scheme_at(level, slot) will not find the right TypeScheme for class method VarRefs.
-    let mut fresh_vars_by_name: HashMap<String, Type> = HashMap::new();
-    for ((key_name, is_alias, is_static_key), entry) in key_entries.iter().zip(entries.iter()) {
-        // (a) Static-key entry.
-        if *is_static_key {
-            if let Some(ref name) = key_name {
-                let fresh_var = state.fresh_type_var(&entry.span);
-                if !is_alias {
-                    fresh_vars_by_name.insert(name.clone(), fresh_var.clone());
-                }
-                dict_env
-                    .write()
-                    .unwrap()
-                    .insert_scheme(name.clone(), TypeScheme::mono(fresh_var));
-            }
-        }
-        // (b) Anonymous InstanceDecl entry: insert ɪ-prefixed placeholders at this source position.
-        if entry.node.key.is_none() {
-            if let SurfaceExpression::Decl(decl) = &entry.node.value.expr {
-                if let SurfaceDeclaration::InstanceDecl { class_name, arms } = decl.as_ref() {
-                    for (pattern, method_entries) in arms {
-                        let dispatch_tags = crate::lower::extract_dispatch_tags(&pattern.expr);
-                        let type_args: Vec<&str> =
-                            dispatch_tags.iter().filter_map(|t| t.as_deref()).collect();
-                        for me in method_entries {
-                            let method_name = match me.node.key.as_ref() {
-                                Some(k) => match &k.expr {
-                                    SurfaceExpression::Str(s) => s.clone(),
-                                    SurfaceExpression::VarRef { name, .. } => name.clone(),
-                                    _ => continue,
-                                },
-                                None => continue,
-                            };
-                            let binding_name = crate::type_def::instance_binding_name(
-                                class_name,
-                                &method_name,
-                                &type_args,
-                            );
-                            let fresh_var = state.fresh_type_var(&entry.span);
-                            fresh_vars_by_name.insert(binding_name.clone(), fresh_var.clone());
-                            dict_env
-                                .write()
-                                .unwrap()
-                                .insert_scheme(binding_name, TypeScheme::mono(fresh_var));
-                        }
-                    }
-                }
-            }
-        }
-    }
 
     // Pass 0c: pre-register class/instance declarations so all classes and instances
     // are visible during body type-checking, regardless of declaration order in the file.
@@ -760,9 +760,12 @@ pub(crate) async fn infer_dict(
                     state.current_function = None;
                 }
 
-                // Store nested schemes if present
+                // Store nested schemes if present.
+                // inner_schemes is HashMap-keyed (name-based DOT-POLY lookup, no slot indexing),
+                // so convert from IndexMap to HashMap here.
                 if let Some(nested_schemes) = nested_schemes_opt {
-                    entry_inner_schemes.insert(name.clone(), nested_schemes);
+                    entry_inner_schemes
+                        .insert(name.clone(), nested_schemes.into_iter().collect());
                 }
 
                 match value_ty {
@@ -1006,8 +1009,14 @@ pub(crate) async fn infer_dict(
         }
     }
 
-    // Build final schemes map from dict_env.
-    let mut schemes = HashMap::with_capacity(field_types.len());
+    // Build final schemes map from dict_env in SOURCE ORDER.
+    // IndexMap preserves insertion order, which must match the resolver's slot
+    // assignment order (surface_dict_static_keys iterates key_entries in source
+    // order). Callers use insert_scheme() which appends to an IndexMap-backed
+    // slots table; get_scheme_at(level, slot) looks up by positional index.
+    // A HashMap here would produce non-deterministic slot misalignment — see
+    // the diagnosis: 109 false-positive type warnings from HashMap iteration.
+    let mut schemes = indexmap::IndexMap::with_capacity(field_types.len());
     {
         let dict_env_guard = dict_env.read().unwrap();
         for (key_name, _is_alias, _) in &key_entries {
