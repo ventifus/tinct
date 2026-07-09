@@ -106,13 +106,8 @@ pub(crate) async fn eval_document_exprs_with_env(
 
     for (i, node) in expr_nodes.iter().enumerate() {
         let (core_spanned, lower_diags) = crate::lower::lower(node);
-        if !lower_diags.is_empty() {
-            if let Some(err) = lower_diags
-                .into_iter()
-                .find(|d| matches!(d.kind, crate::lower::LowerDiagnosticKind::Error))
-            {
-                return Err(EvalError::user_error(err.message, err.span).into());
-            }
+        if let Some(err) = crate::eval_materialize::lower_errors_to_eval_error(lower_diags) {
+            return Err(err);
         }
         let node_span = node.span.clone();
 
@@ -1319,11 +1314,8 @@ fn eval_quote_preprocess<'a>(
             SurfaceExpression::Unquote(inner) => {
                 // Evaluate the unquoted expression and convert back to SurfaceNode
                 let (core, lower_diags) = crate::lower::lower(inner);
-                if let Some(err) = lower_diags
-                    .into_iter()
-                    .find(|d| matches!(d.kind, crate::lower::LowerDiagnosticKind::Error))
-                {
-                    return Err(EvalError::user_error(err.message, err.span).into());
+                if let Some(err) = crate::eval_materialize::lower_errors_to_eval_error(lower_diags) {
+                    return Err(err);
                 }
                 let thunk = eval_core_expr(&core, env, ctx).await?;
                 let value = materialize(&thunk, Some(&inner.span), ctx).await?;
@@ -1376,11 +1368,8 @@ fn eval_quote_preprocess<'a>(
                     if let SurfaceExpression::UnquoteSplice(inner) = &arg.expr {
                         // Evaluate the unquote-splice expression
                         let (core, lower_diags) = crate::lower::lower(inner);
-                        if let Some(err) = lower_diags
-                            .into_iter()
-                            .find(|d| matches!(d.kind, crate::lower::LowerDiagnosticKind::Error))
-                        {
-                            return Err(EvalError::user_error(err.message, err.span).into());
+                        if let Some(err) = crate::eval_materialize::lower_errors_to_eval_error(lower_diags) {
+                            return Err(err);
                         }
                         let thunk = eval_core_expr(&core, env, ctx).await?;
                         let inner_span = inner.span.clone();
@@ -2893,13 +2882,8 @@ pub fn materialize<'a>(
             // 2. Evaluate the CoreExpr using eval_core_expr()
             // 3. Materialize the result thunk
             let (lowered, lower_diags) = crate::lower::lower(&node);
-            if let Some(err) = lower_diags
-                .into_iter()
-                .find(|d| matches!(d.kind, crate::lower::LowerDiagnosticKind::Error))
-            {
-                return Err(decorate(
-                    EvalError::user_error(err.message, err.span).into(),
-                ));
+            if let Some(err) = crate::eval_materialize::lower_errors_to_eval_error(lower_diags) {
+                return Err(decorate(err));
             }
             let result = async {
                 let result_thunk = eval_core_expr(&lowered, &env, &thunk_ctx).await?;
@@ -3571,11 +3555,8 @@ mod tests {
         ctx: &Arc<EvalContext>,
     ) -> EvalResult<Arc<Thunk>> {
         let (core_expr, lower_diags) = crate::lower::lower(&node);
-        if let Some(err) = lower_diags
-            .into_iter()
-            .find(|d| matches!(d.kind, crate::lower::LowerDiagnosticKind::Error))
-        {
-            return Err(EvalError::user_error(err.message, err.span).into());
+        if let Some(err) = crate::eval_materialize::lower_errors_to_eval_error(lower_diags) {
+            return Err(err);
         }
         super::eval_core_expr(&core_expr, &env, ctx).await
     }

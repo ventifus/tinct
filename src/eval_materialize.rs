@@ -97,7 +97,7 @@ type GuardDefault = (
 
 /// Collect all lower errors into a single EvalError, combining their messages.
 /// Returns None if there are no errors.
-pub(crate) fn lower_errors_to_eval_error(
+pub fn lower_errors_to_eval_error(
     diags: Vec<crate::lower::LowerDiagnostic>,
 ) -> Option<Box<EvalError>> {
     let errors: Vec<_> = diags
