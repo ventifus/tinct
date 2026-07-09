@@ -4265,9 +4265,11 @@ fn typenode_value_to_type<'a>(
                         };
 
                         let tail = if open_val.is_truthy() {
+                            // Open record: any field value is allowed (Top = Any).
+                            // Dict <: open-record: Null <: Record <: Dict hierarchy.
                             crate::type_def::RowTail::Uniform {
                                 key: None,
-                                value: Box::new(Type::Unknown),
+                                value: Box::new(Type::Any),
                             }
                         } else {
                             crate::type_def::RowTail::Empty
@@ -5030,9 +5032,27 @@ pub(crate) fn expand_named(
         return Some(result);
     }
 
+    // Step 2a: nominal ADT guard — do NOT expand the body of a declared nominal type.
+    // Nominal ADTs (those with declared constructors) must stay as TyCon so that nominal
+    // identity is preserved. Expanding @Boolean to Union([Boolean.True, Boolean.False])
+    // collapses it into structural equivalence with any union that happens to match the
+    // body — which is wrong for nominal typing. UNIFY-TYCON-EXPAND handles the TyCon ~
+    // NominalVariant and TyCon ~ Union cases correctly without body expansion.
+    if !def.constructors.is_empty() {
+        let base = Type::TyCon(name.to_string());
+        if args.is_empty() {
+            return Some(base);
+        }
+        let mut result = base;
+        for arg in args {
+            result = Type::App(Box::new(result), Box::new(arg.clone()));
+        }
+        return Some(result);
+    }
+
     // Step 2b: fast path for zero-param types with no TyCon references in body.
-    // Primitives (Int, Float, etc.) have no params and no TyCon references — return
-    // the body directly without pushing to the stack or calling expand_all_tycon_apps.
+    // Structural aliases (Int, Float, etc.) have no params, no constructors, and no TyCon
+    // references in body — return the body directly.
     if def.params.is_empty() && !body_contains_tycon_ref(&def.body) {
         return Some(def.body.clone());
     }

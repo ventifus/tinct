@@ -709,7 +709,20 @@ pub fn is_atom_subtype(
         | (Atom::Record(_), Atom::TyCon(_))
         | (Atom::TyCon(_), Atom::Record(_)) => false,
 
-        // NominalVariant vs non-NominalVariant: never subtypes
+        // NominalVariant <: TyCon: the variant is a member of the TyCon family.
+        // Tags always have the form "TypeName.CtorName". Check via tycon_env body lookup
+        // when available; fall back to tag-prefix match otherwise.
+        (Atom::NominalVariant { tag, .. }, Atom::TyCon(n)) => {
+            if let Some(env) = tycon_env {
+                if let Some(def) = env.get(n.as_str()) {
+                    let variant_ty = atom_to_type(sub);
+                    return Type::is_subtype_bas(&variant_ty, &def.body, tycon_env, sigma);
+                }
+            }
+            tag.starts_with(&format!("{}.", n))
+        }
+
+        // NominalVariant vs non-NominalVariant (other kinds): never subtypes
         (Atom::NominalVariant { .. }, _) | (_, Atom::NominalVariant { .. }) => false,
 
         // Otherwise: different kinds of atoms are never subtypes
@@ -893,7 +906,7 @@ fn is_conjunction_empty(
     // Check every pair of positive atoms for incompatibility.
     for i in 0..positives.len() {
         for j in (i + 1)..positives.len() {
-            if atoms_are_disjoint(positives[i], positives[j]) {
+            if atoms_are_disjoint(positives[i], positives[j], tycon_env) {
                 return true; // Conjunction is empty — incompatible positives
             }
         }
@@ -945,7 +958,7 @@ fn type_as_primitive(ty: &Type) -> Option<PrimitiveAtom> {
 ///
 /// This is the structural disjointness oracle for the BAS emptiness check.
 /// It mirrors `types_are_disjoint` but operates on atoms.
-fn atoms_are_disjoint(a: &Atom, b: &Atom) -> bool {
+fn atoms_are_disjoint(a: &Atom, b: &Atom, tycon_env: Option<&TyConEnv>) -> bool {
     match (a, b) {
         // Same atom → not disjoint
         (x, y) if x == y => false,
@@ -1096,8 +1109,36 @@ fn atoms_are_disjoint(a: &Atom, b: &Atom) -> bool {
         (Atom::TyCon(_), Atom::SingleFieldRecord { .. })
         | (Atom::SingleFieldRecord { .. }, Atom::TyCon(_)) => true,
         (Atom::TyCon(_), Atom::Function { .. }) | (Atom::Function { .. }, Atom::TyCon(_)) => true,
-        (Atom::TyCon(_), Atom::NominalVariant { .. })
-        | (Atom::NominalVariant { .. }, Atom::TyCon(_)) => true,
+        // TyCon vs NominalVariant: disjoint only when the variant is NOT a member of the TyCon.
+        // Look up the TyCon's body and check is_subtype(NominalVariant, body).
+        // When tycon_env is unavailable, fall back to tag-prefix: tags are guaranteed to be
+        // "TypeName.CtorName" by lower.rs, so the prefix determines family membership.
+        (Atom::TyCon(n), Atom::NominalVariant { tag, fields }) => {
+            if let Some(env) = tycon_env {
+                if let Some(def) = env.get(n.as_str()) {
+                    let variant_ty = Type::NominalVariant {
+                        tag: tag.clone(),
+                        fields: fields.clone(),
+                    };
+                    let mut sigma = HashSet::new();
+                    return !Type::is_subtype_bas(&variant_ty, &def.body, tycon_env, &mut sigma);
+                }
+            }
+            !tag.starts_with(&format!("{}.", n))
+        }
+        (Atom::NominalVariant { tag, fields }, Atom::TyCon(n)) => {
+            if let Some(env) = tycon_env {
+                if let Some(def) = env.get(n.as_str()) {
+                    let variant_ty = Type::NominalVariant {
+                        tag: tag.clone(),
+                        fields: fields.clone(),
+                    };
+                    let mut sigma = HashSet::new();
+                    return !Type::is_subtype_bas(&variant_ty, &def.body, tycon_env, &mut sigma);
+                }
+            }
+            !tag.starts_with(&format!("{}.", n))
+        }
 
         // Two Function atoms: conservative — different arities or signatures may still share
         // values (e.g., via subtype variance), so we cannot declare them disjoint without a
@@ -1505,7 +1546,8 @@ mod tests {
     fn test_atoms_disjoint_different_primitives() {
         assert!(atoms_are_disjoint(
             &Atom::Primitive(PrimitiveAtom::Int),
-            &Atom::Primitive(PrimitiveAtom::Str)
+            &Atom::Primitive(PrimitiveAtom::Str),
+            None
         ));
     }
 
@@ -1513,7 +1555,8 @@ mod tests {
     fn test_atoms_not_disjoint_same_primitive() {
         assert!(!atoms_are_disjoint(
             &Atom::Primitive(PrimitiveAtom::Int),
-            &Atom::Primitive(PrimitiveAtom::Int)
+            &Atom::Primitive(PrimitiveAtom::Int),
+            None
         ));
     }
 
@@ -1521,7 +1564,8 @@ mod tests {
     fn test_atoms_disjoint_int_literal_vs_str() {
         assert!(atoms_are_disjoint(
             &Atom::Literal(LiteralAtom::IntLiteral(42)),
-            &Atom::Primitive(PrimitiveAtom::Str)
+            &Atom::Primitive(PrimitiveAtom::Str),
+            None
         ));
     }
 
@@ -1529,7 +1573,8 @@ mod tests {
     fn test_atoms_not_disjoint_int_literal_vs_int() {
         assert!(!atoms_are_disjoint(
             &Atom::Literal(LiteralAtom::IntLiteral(42)),
-            &Atom::Primitive(PrimitiveAtom::Int)
+            &Atom::Primitive(PrimitiveAtom::Int),
+            None
         ));
     }
 
@@ -1546,7 +1591,8 @@ mod tests {
             &Atom::SingleFieldRecord {
                 key: "y".to_string(),
                 value: Box::new(Type::Int),
-            }
+            },
+            None
         ));
     }
 
@@ -1564,7 +1610,8 @@ mod tests {
             &Atom::SingleFieldRecord {
                 key: "x".to_string(),
                 value: Box::new(Type::Str),
-            }
+            },
+            None
         ));
     }
 
@@ -1579,7 +1626,8 @@ mod tests {
             &Atom::SingleFieldRecord {
                 key: "x".to_string(),
                 value: Box::new(Type::Int),
-            }
+            },
+            None
         ));
     }
 
@@ -2027,7 +2075,8 @@ mod tests {
                     key: "x".to_string(),
                     value: Box::new(Type::Int),
                 },
-                &Atom::Primitive(PrimitiveAtom::Int)
+                &Atom::Primitive(PrimitiveAtom::Int),
+                None
             ),
             "SingleFieldRecord and Primitive must be disjoint"
         );
@@ -2038,7 +2087,8 @@ mod tests {
                 &Atom::SingleFieldRecord {
                     key: "name".to_string(),
                     value: Box::new(Type::Str),
-                }
+                },
+                None
             ),
             "Primitive and SingleFieldRecord must be disjoint (commutative)"
         );
@@ -2065,11 +2115,11 @@ mod tests {
             },
         };
         assert!(
-            atoms_are_disjoint(&red, &blue),
+            atoms_are_disjoint(&red, &blue, None),
             "NominalVariant atoms with different tags must be disjoint"
         );
         assert!(
-            atoms_are_disjoint(&blue, &red),
+            atoms_are_disjoint(&blue, &red, None),
             "NominalVariant disjointness must be commutative"
         );
     }
@@ -2099,7 +2149,7 @@ mod tests {
         };
         // Same tag: NOT disjoint (both are Ok variants — a value could satisfy both)
         assert!(
-            !atoms_are_disjoint(&ok1, &ok2),
+            !atoms_are_disjoint(&ok1, &ok2, None),
             "NominalVariant atoms with the same tag must NOT be disjoint"
         );
     }

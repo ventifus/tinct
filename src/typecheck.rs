@@ -1939,11 +1939,9 @@ pub(crate) async fn infer_surface_expr(
                                                     &bound_resolved,
                                                     arg_ty,
                                                 ) {
-                                                    poly_errors.push(TypeError::new(
-                                                        format!(
-                                                            "cannot unify {} with {}",
-                                                            bound_resolved, arg_ty
-                                                        ),
+                                                    poly_errors.push(TypeError::type_mismatch(
+                                                        &bound_resolved,
+                                                        arg_ty,
                                                         node.span.clone(),
                                                     ));
                                                 }
@@ -1957,11 +1955,9 @@ pub(crate) async fn infer_surface_expr(
                                         if !Type::is_consistent_subtype(arg_ty, &already_bound)
                                             && !Type::is_consistent_subtype(&already_bound, arg_ty)
                                         {
-                                            poly_errors.push(TypeError::new(
-                                                format!(
-                                                    "cannot unify {} with {}",
-                                                    already_bound, arg_ty
-                                                ),
+                                            poly_errors.push(TypeError::type_mismatch(
+                                                &already_bound,
+                                                arg_ty,
                                                 node.span.clone(),
                                             ));
                                         }
@@ -2355,11 +2351,9 @@ pub(crate) async fn infer_surface_expr(
                         if body_is_concrete
                             && !Type::is_consistent_subtype(&body_resolved, &declared_ret)
                         {
-                            return Err(vec![TypeError::new(
-                                format!(
-                                    "[UnificationFailure] cannot unify {} with {}",
-                                    declared_ret, body_resolved
-                                ),
+                            return Err(vec![TypeError::type_mismatch(
+                                &declared_ret,
+                                &body_resolved,
                                 node.span.clone(),
                             )]);
                         }
@@ -2493,11 +2487,9 @@ pub(crate) async fn infer_surface_expr(
                                 if param_err.is_some() {
                                     param_err
                                 } else if !Type::is_consistent_subtype(r_actual, r_expected) {
-                                    Some(vec![TypeError::new(
-                                        format!(
-                                            "[UnificationFailure] cannot unify {} with {}",
-                                            r_expected, r_actual
-                                        ),
+                                    Some(vec![TypeError::type_mismatch(
+                                        r_expected,
+                                        r_actual,
                                         node.span.clone(),
                                     )])
                                 } else {
@@ -2508,11 +2500,9 @@ pub(crate) async fn infer_surface_expr(
                         _ => {
                             // Non-function type: general consistency check
                             if !Type::is_consistent_subtype(&actual_resolved, &expected_resolved) {
-                                Some(vec![TypeError::new(
-                                    format!(
-                                        "[UnificationFailure] cannot unify {} with {}",
-                                        expected_resolved, actual_resolved
-                                    ),
+                                Some(vec![TypeError::type_mismatch(
+                                    &expected_resolved,
+                                    &actual_resolved,
                                     node.span.clone(),
                                 )])
                             } else {

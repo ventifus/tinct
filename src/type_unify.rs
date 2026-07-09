@@ -2529,6 +2529,78 @@ pub async fn unify(
             }
         }
 
+        // UNIFY-TYCON-UNION: TyCon unified with a Union of NominalVariants.
+        //
+        // `@Boolean ~ Union([Boolean.True, Boolean.False])`: succeeds when every union member
+        // is a subtype of the TyCon's declared body. This is the subset direction — the union
+        // must be covered entirely by the TyCon's constructor family.
+        //
+        // Symmetric: both (TyCon, Union) and (Union, TyCon) are handled here.
+        // Guard: only fire when the union has no TypeVars. If it has TypeVars, fall through
+        // to C-Var1 which handles constraint rewriting for inference variables.
+        (Type::TyCon(n), Type::Union(members))
+            if !members.iter().any(|m| matches!(m, Type::TypeVar(_, _))) =>
+        {
+            if let Some(def) = state.tycon_env.get(n.as_str()) {
+                let body = def.body.clone();
+                let tycon_env = Some(&state.tycon_env);
+                if members.iter().all(|m| Type::is_subtype(m, &body, tycon_env)) {
+                    Ok(())
+                } else {
+                    Err(TypeError::from(TypeErrorTyped::UnificationFailure(
+                        UnificationFailure {
+                            expected: a.clone(),
+                            got: b.clone(),
+                            span,
+                            notes: vec![],
+                            call_stack: vec![],
+                        },
+                    )))
+                }
+            } else {
+                Err(TypeError::from(TypeErrorTyped::UnificationFailure(
+                    UnificationFailure {
+                        expected: a.clone(),
+                        got: b.clone(),
+                        span,
+                        notes: vec![],
+                        call_stack: vec![],
+                    },
+                )))
+            }
+        }
+        (Type::Union(members), Type::TyCon(n))
+            if !members.iter().any(|m| matches!(m, Type::TypeVar(_, _))) =>
+        {
+            if let Some(def) = state.tycon_env.get(n.as_str()) {
+                let body = def.body.clone();
+                let tycon_env = Some(&state.tycon_env);
+                if members.iter().all(|m| Type::is_subtype(m, &body, tycon_env)) {
+                    Ok(())
+                } else {
+                    Err(TypeError::from(TypeErrorTyped::UnificationFailure(
+                        UnificationFailure {
+                            expected: a.clone(),
+                            got: b.clone(),
+                            span,
+                            notes: vec![],
+                            call_stack: vec![],
+                        },
+                    )))
+                }
+            } else {
+                Err(TypeError::from(TypeErrorTyped::UnificationFailure(
+                    UnificationFailure {
+                        expected: a.clone(),
+                        got: b.clone(),
+                        span,
+                        notes: vec![],
+                        call_stack: vec![],
+                    },
+                )))
+            }
+        }
+
         // UNIFY-OPERATOR-TO-OPERATOR: bind higher-level Operator to lower-level Operator.
         // Follows Kiselyov L3 invariant (same as TypeVar-to-TypeVar at lines 1837-1860).
         (Type::Operator(m), Type::Operator(n)) if m != n => {
