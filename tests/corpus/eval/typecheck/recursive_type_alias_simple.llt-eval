@@ -1,0 +1,10 @@
+# Simple recursive type alias: [List: [type [head: Integer  tail: List]]]
+# should register successfully. The recursive `tail` field position uses a fresh TypeVar
+# (the mu-variable) instead of expanding infinitely or returning Unknown.
+# At runtime, the type alias evaluates to an empty dict; the field `result` is an Int.
+[
+  List: [type [head: Integer  tail: List]]
+  result: 42
+]
+=== out
+Dict({"List": Dict({}), "result": Int(42)})

@@ -2961,19 +2961,19 @@ mod tests {
         // Hovering on the method name inside an [instance ...] declaration should
         // delegate to hover_at_surface_node and return a non-None result.
         //
-        // Source: [instance Equatable [pattern [a@Integer]]: eq: [fn [let x y] [= x y]]]
+        // Source: [instance Equatable [let a@Integer]: [eq: [fn [let x y] [= x y]]]]
         // Offsets:         0         1         2         3         4         5         6
-        //                  0123456789012345678901234567890123456789012345678901234567890123456
-        //                  [instance Equatable [pattern [a@Integer]]: eq: [fn [let x y] [= x y]]]
-        //                                                          ^^ offset 39-40 is "eq" key
+        //                  01234567890123456789012345678901234567890123456789012345678901234
+        //                  [instance Equatable [let a@Integer]: [eq: [fn [let x y] [= x y]]]]
+        //                                                         ^^ offset 38-39 is "eq" key
         let env = test_env().await;
-        let source = "[instance Equatable [pattern [a@Integer]]: eq: [fn [let x y] [= x y]]]";
+        let source = "[instance Equatable [let a@Integer]: [eq: [fn [let x y] [= x y]]]]";
         let doc = DocumentState::new(source.to_string(), &env, &test_ctx().await, None);
-        // Hover on the "eq" method key (offset 39 = 'e' of "eq")
+        // Hover on the "eq" method key (offset 38 = 'e' of "eq")
         let hover = hover_at(
             &doc,
             &test_uri(),
-            39,
+            38,
             &test_include_graph(),
             &test_ctx().await,
         )

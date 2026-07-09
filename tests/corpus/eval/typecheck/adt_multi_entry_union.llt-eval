@@ -1,0 +1,11 @@
+# ADT multi-entry union declaration: [type [let a] [Ok a] [Error String]]
+# registers a parameterized Union type alias with two NominalVariant constructors.
+# At runtime, the type dict contains the constructor functions Ok and Error.
+# Calling Ok with an integer and Error with a string both succeed.
+[
+  Result: [type [let a] [Ok a] [Error String]]
+  ok-val:  [Ok 42]
+  err-val: [Error "something went wrong"]
+]
+=== out
+Dict({"Result": Dict({"Ok": Function(), "Error": Function()}), "ok-val": Variant(Result.Ok, Int(42)), "err-val": Variant(Result.Error, String("something went wrong"))})

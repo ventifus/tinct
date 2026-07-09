@@ -1,0 +1,9 @@
+# Function type in TypeAssert: [F: [type [Fn@Integer [Integer]]]] is a type alias
+# for Integer → Integer. Annotating a lambda with @F enforces (Integer) → Integer.
+[
+  F: [type [Fn@Integer [Integer]]]
+  f: [@F [fn [let n@Integer] n]]
+  result: [f 7]
+]
+=== out
+Dict({"F": Dict({}), "f": Function(n), "result": Int(7)})

@@ -1,0 +1,9 @@
+# Outside function scope, each @a annotation creates a genuinely fresh TypeVar.
+# Two independent @a annotations must not share the same substitution variable.
+# At runtime, both TypeAsserts are transparent: they return the wrapped value.
+[
+  x: [@a 42]
+  y: [@a "hello"]
+]
+=== out
+Dict({"x": Int(42), "y": String("hello")})

@@ -1,0 +1,10 @@
+# Regression: type alias with a field named "type:" should not be confused with
+# the @[type: T] annotation shorthand.
+# [Thing: [type [type: String  id: Integer]]] declares a record type with a field
+# literally named "type", not a type-expression shorthand.
+[
+  Thing: [type [type: String  id: Integer]]
+  t: [@Thing [type: "widget"  id: 1]]
+]
+=== out
+Dict({"Thing": Dict({}), "t": Dict({"type": String("widget"), "id": Int(1)})})

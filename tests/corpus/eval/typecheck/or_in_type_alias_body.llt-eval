@@ -1,0 +1,9 @@
+# [MyUnion: [type [or Integer Null]]] registers a type alias whose body is Union(Int, Null).
+# At runtime, the type dict is empty (or-typed aliases have no constructors to inject).
+# A value annotated with @MyUnion must be Int or Null.
+[
+  MyUnion: [type [or Integer Null]]
+  v: [@MyUnion 42]
+]
+=== out
+Dict({"MyUnion": Dict({}), "v": Int(42)})

@@ -1,0 +1,10 @@
+# B-296: Unit constructors should be usable inside function bodies as values.
+# Before the fix, Status.Active was "undefined variable" inside the function body.
+# get-active returns the Active unit variant.
+[
+  Status: [type [Active] [Inactive]]
+  get-active: [fn [] Active]
+  result: [get-active]
+]
+=== out
+Dict({"Status": Dict({"Active": Variant(Status.Active, Null), "Inactive": Variant(Status.Inactive, Null)}), "get-active": Function(), "result": Variant(Status.Active, Null)})

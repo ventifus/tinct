@@ -1,0 +1,10 @@
+# Type alias with 2+ fields produces Intersection body in the type system.
+# The alias can be used as a TypeAssert annotation.
+# [Point: [type [x: Integer  y: Integer]]] defines a point record type.
+# [@Point [x: 1  y: 2]] checks that the dict satisfies the Point type.
+[
+  Point: [type [x: Integer  y: Integer]]
+  p: [@Point [x: 1  y: 2]]
+]
+=== out
+Dict({"Point": Dict({}), "p": Dict({"x": Int(1), "y": Int(2)})})

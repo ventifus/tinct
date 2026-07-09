@@ -1,0 +1,12 @@
+# B-296: Unit constructors exported by [type ...] evaluate to NominalVariant values.
+# A unit constructor is a value (not a function), so it evaluates to Variant(tag, Null).
+# All constructors in a union ADT are exported, not just the first.
+[
+  T: [type [A] [B] [C] [D]]
+  a: A
+  b: B
+  c: C
+  d: D
+]
+=== out
+Dict({"T": Dict({"A": Variant(T.A, Null), "B": Variant(T.B, Null), "C": Variant(T.C, Null), "D": Variant(T.D, Null)}), "a": Variant(T.A, Null), "b": Variant(T.B, Null), "c": Variant(T.C, Null), "d": Variant(T.D, Null)})

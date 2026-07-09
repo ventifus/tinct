@@ -4757,15 +4757,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_type_assert_property_dict_type_mismatch() {
-        // [@[type: Int] "hello"] -> error (PropertyDict annotation with type:Int, value is String)
+        // [@[type: Integer] "hello"] -> error (PropertyDict annotation with type:Integer, value is String)
         // Use eval_core_for_test with resolved_type: Type::Int. The typecheck pass resolves
-        // the `type: Int` property to Type::Int; without typecheck (eval_str), resolved_type
+        // the `type: Integer` property to Type::Int; without typecheck (eval_str), resolved_type
         // is Type::Unknown which accepts all values via consistent subtyping.
         let span = rust_span!();
         let entries = vec![surf_ann_entry(
             "type",
             SurfaceExpression::VarRef {
-                name: "Int".into(),
+                name: "Integer".into(),
                 escaped: false,
                 resolution: crate::ast::Resolution::new(),
                 call_dispatch: crate::ast::CallDispatch::new(),
@@ -4787,7 +4787,7 @@ mod tests {
         let err = materialize(&thunk, None, &test_ctx()).await.unwrap_err();
         assert!(
             err.to_string()
-                .contains("type assertion failed: expected Int, got String"),
+                .contains("type assertion failed: expected Integer, got String"),
             "got: {}",
             err
         );
@@ -4849,13 +4849,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_type_assert_property_dict_no_default_errors_on_mismatch() {
-        // [@[type: Int] "hello"] -> error (no default, mismatch is an error)
+        // [@[type: Integer] "hello"] -> error (no default, mismatch is an error)
         // Use eval_core_for_test with resolved_type: Type::Int so the type check fires.
         let span = rust_span!();
         let entries = vec![surf_ann_entry(
             "type",
             SurfaceExpression::VarRef {
-                name: "Int".into(),
+                name: "Integer".into(),
                 escaped: false,
                 resolution: crate::ast::Resolution::new(),
                 call_dispatch: crate::ast::CallDispatch::new(),
@@ -4877,7 +4877,7 @@ mod tests {
         let err = materialize(&thunk, None, &test_ctx()).await.unwrap_err();
         assert!(
             err.to_string()
-                .contains("type assertion failed: expected Int, got String"),
+                .contains("type assertion failed: expected Integer, got String"),
             "got: {}",
             err
         );
@@ -6633,7 +6633,7 @@ mod tests {
         let span = rust_span!();
         let expr = Spanned::new(
             CoreExpr::TypeAssert {
-                annotation: sp(Annotation::Simple("Int".into())),
+                annotation: sp(Annotation::Simple("Integer".into())),
                 expr: Arc::new(Spanned::new(CoreExpr::Str("hello".into()), span.clone())),
                 resolved_type: Type::Int,
                 pipeline_blame: None,
@@ -6646,7 +6646,7 @@ mod tests {
         let err = materialize(&thunk, None, &test_ctx()).await.unwrap_err();
         assert!(
             err.to_string()
-                .contains("type assertion failed: expected Int, got String"),
+                .contains("type assertion failed: expected Integer, got String"),
             "got: {}",
             err
         );

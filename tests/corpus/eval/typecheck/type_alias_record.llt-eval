@@ -1,0 +1,9 @@
+# Type alias for a record type: [Person: [type [name: String  age: Integer]]]
+# The alias body resolves to an Intersection of open single-field records.
+# Using [@Person [name: "Alice"  age: 30]] checks the dict satisfies the Person type.
+[
+  Person: [type [name: String  age: Integer]]
+  p: [@Person [name: "Alice"  age: 30]]
+]
+=== out
+Dict({"Person": Dict({}), "p": Dict({"name": String("Alice"), "age": Int(30)})})

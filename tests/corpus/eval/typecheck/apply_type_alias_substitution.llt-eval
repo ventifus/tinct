@@ -1,0 +1,12 @@
+# B-356: apply_type_alias_substitution must recurse into NominalVariant fields.
+# [Option: [type [let t] [Some value: t] None]] with t=Int should substitute
+# Int for t in the field type of Some.
+# At runtime: calling [Option.Some value: 42] wraps 42 in a Some variant.
+# Option.None is a bare unit constructor.
+[
+  Option: [type [let t] [Some value: t] None]
+  some-val: [Option.Some value: 42]
+  none-val: Option.None
+]
+=== out
+Dict({"Option": Dict({"Some": Function(value), "None": Variant(Option.None, Null)}), "some-val": Variant(Option.Some, Dict({"value": Int(42)})), "none-val": Variant(Option.None, Null)})

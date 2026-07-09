@@ -1,0 +1,10 @@
+# Function type alias with one param: [Mapper: [type [let a b] [Fn@b [a]]]]
+# represents an (a → b) function type. [@[Mapper Integer String]] expands to
+# [Fn@String [Integer]], enforcing that the lambda takes Int and returns String.
+[
+  Mapper: [type [let a b] [Fn@b [a]]]
+  f: [@[Mapper Integer String] [fn [let v@Integer] "result"]]
+  result: [f 42]
+]
+=== out
+Dict({"Mapper": Dict({}), "f": Function(v), "result": String("result")})

@@ -1,0 +1,11 @@
+# Lambda checking mode with concrete function type alias.
+# [IntFn: [type [Fn@Integer [Integer]]]] defines Integer → Integer.
+# [@IntFn [fn [let x] x]] checks the lambda against Fn(Int → Int),
+# propagating Int to the unannotated param x.
+[
+  IntFn: [type [Fn@Integer [Integer]]]
+  f: [@IntFn [fn [let x] x]]
+  result: [f 55]
+]
+=== out
+Dict({"IntFn": Dict({}), "f": Function(x), "result": Int(55)})

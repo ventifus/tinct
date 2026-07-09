@@ -1,0 +1,8 @@
+# Exhaustiveness checking: complete coverage of Int+String union passes typecheck.
+# [@[or Int String] 42] gives a scrutinee typed as Union(Int, String).
+# Providing arms for both Int and String satisfies the exhaustiveness checker.
+[match [@[or Int String] 42]
+    Int:    "int"
+    String: "str"]
+=== out
+String("int")

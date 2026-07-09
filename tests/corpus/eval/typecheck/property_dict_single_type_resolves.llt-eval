@@ -1,0 +1,6 @@
+# A positional annotation with a single type entry: [@Integer 42].
+# resolve_annotation processes a PropertyDict with one positional entry (no key),
+# resolving Integer → Type::Int. Single-element union unwraps to the bare type.
+[@Integer 42]
+=== out
+Int(42)

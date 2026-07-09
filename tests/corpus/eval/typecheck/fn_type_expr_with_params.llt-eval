@@ -1,0 +1,10 @@
+# Parameterized function type expression: [Identity: [type [let a] [Fn@a [a]]]]
+# is an identity-function type where param and return are the same type.
+# [@[Identity Integer]] expands to [Fn@Integer [Integer]] — enforces identity contract.
+[
+  Identity: [type [let a] [Fn@a [a]]]
+  id: [@[Identity Integer] [fn [let v] v]]
+  result: [id 99]
+]
+=== out
+Dict({"Identity": Dict({}), "id": Function(v), "result": Int(99)})

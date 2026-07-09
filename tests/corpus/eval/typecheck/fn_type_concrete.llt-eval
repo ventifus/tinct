@@ -1,0 +1,10 @@
+# Non-parameterized function type alias: [Addable: [type [Fn@Integer [Integer Integer]]]]
+# represents (Integer, Integer) → Integer. Annotating a lambda with @Addable enforces
+# that it takes two Int params and returns Int.
+[
+  Addable: [type [Fn@Integer [Integer Integer]]]
+  add: [@Addable [fn [let a@Integer b@Integer] a]]
+  result: [add 3 4]
+]
+=== out
+Dict({"Addable": Dict({}), "add": Function(a, b), "result": Int(3)})

@@ -291,7 +291,7 @@ pub(crate) async fn evaluate_resolver(
 impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Type::Int => write!(f, "Int"),
+            Type::Int => write!(f, "Integer"),
             Type::IntLiteral(n) => write!(f, "{}", n),
             Type::Float => write!(f, "Float"),
             Type::Str => write!(f, "String"),
@@ -680,7 +680,7 @@ mod tests {
             args: vec![Type::Int, Type::Float],
         };
         let formatted = format!("{}", ty);
-        assert_eq!(formatted, "AddResult(Int, Float)");
+        assert_eq!(formatted, "AddResult(Integer, Float)");
     }
 
     /// Test: TypeStageApp Display format with single arg
@@ -691,7 +691,7 @@ mod tests {
             args: vec![Type::Int],
         };
         let formatted = format!("{}", ty);
-        assert_eq!(formatted, "Singleton(Int)");
+        assert_eq!(formatted, "Singleton(Integer)");
     }
 
     /// Test: TypeStageApp Display format with no args

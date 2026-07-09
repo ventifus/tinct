@@ -1,0 +1,10 @@
+# Non-parameterized function type alias in expr form: [Fn@Integer [Integer Integer]].
+# Equivalent to test_fn_type_concrete but uses the same source as the Rust test.
+# The lambda takes two Integer params and returns the first.
+[
+  Addable: [type [Fn@Integer [Integer Integer]]]
+  add: [@Addable [fn [let a@Integer b@Integer] a]]
+  result: [add 10 20]
+]
+=== out
+Dict({"Addable": Dict({}), "add": Function(a, b), "result": Int(10)})

@@ -1,0 +1,13 @@
+# Inner dict can shadow outer dict's type alias — lexical scoping.
+# The outer ID alias is Integer; the inner nested dict shadows ID with String.
+# The inner.inner value uses the shadowed String type.
+[
+  ID: [type Integer]
+  outer: [@ID 42]
+  nested: [
+    ID: [type String]
+    inner: [@ID "text"]
+  ]
+]
+=== out
+Dict({"ID": Dict({}), "outer": Int(42), "nested": Dict({"ID": Dict({}), "inner": String("text")})})

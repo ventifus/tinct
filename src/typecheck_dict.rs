@@ -256,7 +256,7 @@ pub(crate) async fn infer_dict(
     let enclosing_level = state.level;
     state.level += 1;
 
-    let mut dict_env = Env::with_parent(Arc::clone(env));
+    let dict_env: Arc<RwLock<Env>> = Arc::new(RwLock::new(Env::with_parent(Arc::clone(env))));
     // Extra schemes from ADT constructors — injected in Pass 2, merged into final schemes.
     // Keyed by short constructor name (e.g. "True" for Bool.True).
     let mut ctor_schemes: HashMap<String, TypeScheme> = HashMap::new();
@@ -421,7 +421,7 @@ pub(crate) async fn infer_dict(
                                 alias_ann_map.get(p).cloned().unwrap_or_else(|| p.clone())
                             })
                             .collect();
-                        dict_env.insert_type_alias(
+                        dict_env.write().unwrap().insert_type_alias(
                             name.clone(),
                             TypeAlias {
                                 params: remapped_params,
@@ -440,6 +440,8 @@ pub(crate) async fn infer_dict(
                         // parameterized aliases stay as TypeVar (they are instantiated on use).
                         if params.is_empty() {
                             dict_env
+                                .write()
+                                .unwrap()
                                 .insert_scheme(name.clone(), TypeScheme::mono(alias_ty.clone()));
                             // Collect constructor TypeSchemes so callers can look up constructors
                             // by their short name (e.g. "True" for Bool.True, "Ok" for Result.Ok).
@@ -516,7 +518,10 @@ pub(crate) async fn infer_dict(
                 if !is_alias {
                     fresh_vars_by_name.insert(name.clone(), fresh_var.clone());
                 }
-                dict_env.insert_scheme(name.clone(), TypeScheme::mono(fresh_var));
+                dict_env
+                    .write()
+                    .unwrap()
+                    .insert_scheme(name.clone(), TypeScheme::mono(fresh_var));
             }
         }
         // (b) Anonymous InstanceDecl entry: insert ɪ-prefixed placeholders at this source position.
@@ -543,7 +548,10 @@ pub(crate) async fn infer_dict(
                             );
                             let fresh_var = state.fresh_type_var(&entry.span);
                             fresh_vars_by_name.insert(binding_name.clone(), fresh_var.clone());
-                            dict_env.insert_scheme(binding_name, TypeScheme::mono(fresh_var));
+                            dict_env
+                                .write()
+                                .unwrap()
+                                .insert_scheme(binding_name, TypeScheme::mono(fresh_var));
                         }
                     }
                 }
@@ -556,10 +564,13 @@ pub(crate) async fn infer_dict(
     // Modeled on Pass 2 (type alias pre-registration). (Wadler & Blott 1989 — class/instance
     // declarations are globally visible within their scope.)
     //
-    // IMPORTANT: Pass 0c runs AFTER Pass 1 so that dict_env_rc includes all letrec
+    // IMPORTANT: Pass 0c runs AFTER Pass 1 so that dict_env includes all letrec
     // TypeVar placeholders (including sibling names like `result-map`). Running before
     // Pass 1 would leave instance method bodies unable to see sibling bindings.
-    let dict_env_arc = Arc::new(RwLock::new(dict_env.clone()));
+    //
+    // dict_env is the single Arc<RwLock<Env>> used throughout infer_dict. Pass 0c writes
+    // ɪ-prefixed TypeSchemes (from infer_instance_decl_from_surface) directly into it, so
+    // they are visible to all subsequent SCC clones without any propagation step.
     for (idx, entry) in entries.iter().enumerate() {
         let is_class_or_instance = matches!(
             &entry.node.value.expr,
@@ -573,7 +584,7 @@ pub(crate) async fn infer_dict(
             // Infer class/instance expression (registers into state)
             match Box::pin(infer_surface_expr(
                 &entry.node.value,
-                &dict_env_arc,
+                &dict_env,
                 state,
                 type_map,
             ))
@@ -616,21 +627,6 @@ pub(crate) async fn infer_dict(
         }
     }
 
-    // After Pass 0c: propagate ɪ-prefixed TypeSchemes inserted by infer_instance_decl_from_surface
-    // back into the original dict_env. Pass 0c's dict_env_arc is a clone — updates to it are NOT
-    // automatically reflected in dict_env. The SCC loop creates fresh clones of dict_env, so
-    // without this propagation, instance method TypeSchemes are invisible during SCC inference.
-    {
-        let arc_guard = dict_env_arc.read().unwrap();
-        for (name, slot) in arc_guard.slots.iter() {
-            if name.starts_with('ɪ') {
-                if let Some(ref scheme) = slot.scheme {
-                    dict_env.insert_scheme(name.clone(), scheme.clone());
-                }
-            }
-        }
-    }
-
     // Process each SCC in topological order
     // Tarjan's algorithm produces SCCs in reverse topological order, so we process them as-is
     for scc in sccs.into_iter() {
@@ -668,8 +664,11 @@ pub(crate) async fn infer_dict(
             }
         }
 
-        // Wrap dict_env for use in infer_surface_expr calls for this SCC
-        let dict_env_arc = Arc::new(RwLock::new(dict_env.clone()));
+        // Clone the up-to-date dict_env (including Pass 0c's ɪ-prefixed schemes) for
+        // within-SCC isolation. Each SCC gets a fresh snapshot so mutual recursion among
+        // SCC members is handled via TypeVar unification within the snapshot; Pass 4
+        // then promotes the generalized results back to dict_env.
+        let scc_env = Arc::new(RwLock::new(dict_env.read().unwrap().clone()));
 
         // Pass 3_i: Infer values and unify with bound type vars for this SCC
         for &idx in &scc.indices {
@@ -731,7 +730,7 @@ pub(crate) async fn infer_dict(
                     if let SurfaceExpression::Dict(nested_entries) = &entry.node.value.expr {
                         let (ty, schemes, mut nested_errs) = Box::pin(infer_dict(
                             nested_entries,
-                            &dict_env_arc,
+                            &scc_env,
                             state,
                             type_map,
                             entry.node.value.span.clone(),
@@ -741,8 +740,7 @@ pub(crate) async fn infer_dict(
                         (Ok(ty), Some(schemes))
                     } else {
                         (
-                            infer_surface_expr(&entry.node.value, &dict_env_arc, state, type_map)
-                                .await,
+                            infer_surface_expr(&entry.node.value, &scc_env, state, type_map).await,
                             None,
                         )
                     };
@@ -954,7 +952,10 @@ pub(crate) async fn infer_dict(
                         if let Some(inner) = entry_inner_schemes.get(name) {
                             scheme.inner_schemes = Some(inner.clone());
                         }
-                        dict_env.insert_scheme(name.clone(), scheme);
+                        dict_env
+                            .write()
+                            .unwrap()
+                            .insert_scheme(name.clone(), scheme);
                         continue;
                     }
 
@@ -977,7 +978,10 @@ pub(crate) async fn infer_dict(
                     }
 
                     // Update dict_env with the generalized scheme for subsequent SCCs
-                    dict_env.insert_scheme(name.clone(), scheme);
+                    dict_env
+                        .write()
+                        .unwrap()
+                        .insert_scheme(name.clone(), scheme);
                 }
             }
         }
@@ -992,7 +996,10 @@ pub(crate) async fn infer_dict(
             if let Some(name) = key_name {
                 if let Some(def) = state.tycon_env.get(name.as_str()) {
                     if def.params.is_empty() {
-                        dict_env.insert_scheme(name.clone(), TypeScheme::mono(def.body.clone()));
+                        dict_env
+                            .write()
+                            .unwrap()
+                            .insert_scheme(name.clone(), TypeScheme::mono(def.body.clone()));
                     }
                 }
             }
@@ -1001,10 +1008,13 @@ pub(crate) async fn infer_dict(
 
     // Build final schemes map from dict_env.
     let mut schemes = HashMap::with_capacity(field_types.len());
-    for (key_name, _is_alias, _) in &key_entries {
-        if let Some(name) = key_name {
-            if let Some(scheme) = dict_env.get_scheme(name) {
-                schemes.insert(name.clone(), scheme);
+    {
+        let dict_env_guard = dict_env.read().unwrap();
+        for (key_name, _is_alias, _) in &key_entries {
+            if let Some(name) = key_name {
+                if let Some(scheme) = dict_env_guard.get_scheme(name) {
+                    schemes.insert(name.clone(), scheme);
+                }
             }
         }
     }

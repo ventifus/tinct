@@ -1837,6 +1837,60 @@ pub fn core_type_env(env: &mut TypeEnv) {
         },
     );
 
+    // ── Arithmetic builtins — builtin-add, builtin-sub, builtin-mul, builtin-div ──
+    // These are stable aliases used inside instance method bodies (Addable, Subtractable,
+    // Multipliable, Divisible instances in prelude.llt). They bypass the type class
+    // dispatch system and operate directly on numeric values.
+    //
+    // Type signatures use Top (Any) for parameters to avoid false argument-type errors
+    // in heterogeneous instances (e.g. Integer+Float→Float arms). The return type is
+    // Number (union of Int and Float) for arithmetic ops, and Int (0/1) for comparisons.
+    // These signatures must be present so `infer_instance_decl_from_surface` can
+    // successfully type-check instance method bodies, enabling ɪ-prefixed TypeScheme
+    // insertion for + - * / instance dispatch.
+    for name in ["builtin-add", "builtin-sub", "builtin-mul"] {
+        env.insert(
+            name.to_string(),
+            Type::Function {
+                params: vec![(None, Type::Any), (None, Type::Any)],
+                ret: Box::new(Type::normalize_union(vec![Type::Int, Type::Float])),
+                variadic: false,
+                required_count: 2,
+            },
+        );
+    }
+    // builtin-div: always returns Float (integer division is not the Divisible semantics).
+    env.insert(
+        "builtin-div".to_string(),
+        Type::Function {
+            params: vec![(None, Type::Any), (None, Type::Any)],
+            ret: Box::new(Type::Float),
+            variadic: false,
+            required_count: 2,
+        },
+    );
+    // ── Comparison builtins — return Int (0 or 1, not Boolean) ────────────────
+    // Used inside Equatable and Comparable instance method bodies.
+    for name in [
+        "builtin-eq-int",
+        "builtin-eq-float",
+        "builtin-eq-string",
+        "builtin-lt",
+        "builtin-lte",
+        "builtin-gt",
+        "builtin-gte",
+    ] {
+        env.insert(
+            name.to_string(),
+            Type::Function {
+                params: vec![(None, Type::Any), (None, Type::Any)],
+                ret: Box::new(Type::Int),
+                variadic: false,
+                required_count: 2,
+            },
+        );
+    }
+
     // ── Type introspection — builtin-type-of, builtin-tag-of ─────────────────
     // builtin-type-of: Top → Str
     // Returns the runtime type name of any value as a string.

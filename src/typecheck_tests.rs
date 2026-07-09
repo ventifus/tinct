@@ -499,14 +499,7 @@ async fn test_multi_field_annotation_dot_access_works() {
     );
 }
 
-#[tokio::test]
-async fn test_multi_field_annotation_body_alias() {
-    // Type alias with 2+ fields produces Intersection body.
-    // The alias can be used as a TypeAssert annotation.
-    check("[Point: [type [x: Int  y: Int]]]\n[p: [@Point [x: 1  y: 2]]]")
-        .await
-        .unwrap();
-}
+// test_multi_field_annotation_body_alias — migrated to tests/corpus/eval/typecheck/multi_field_annotation_alias.llt-eval
 
 #[tokio::test]
 async fn test_multi_field_annotation_single_field_stays_record() {
@@ -824,20 +817,7 @@ async fn test_typeassert_default_suppresses_main_error_but_propagates_ok() {
 
 // -- TypeAlias --
 
-#[tokio::test]
-async fn test_type_alias_record() {
-    // In new syntax, string literals require quotes.
-    let ty = result_field(
-        "[Person: [type [name: String  age: Int]]]\n[p: [@Person [name: \"Alice\"  age: 30]]]",
-        "p",
-    )
-    .await;
-    // The Person alias body `[name: String  age: Int]` is an Intersection of
-    // open single-field records: [{name: String, ...ρ1}, {age: Int, ...ρ2}].
-    // Use assert_has_field to check either Record or Intersection-of-Records form.
-    assert_has_field(&ty, "name", &Type::Str);
-    assert_has_field(&ty, "age", &Type::Int);
-}
+// test_type_alias_record — migrated to tests/corpus/eval/typecheck/type_alias_record.llt-eval
 
 #[tokio::test]
 async fn test_type_alias_cycle_resolves_to_unknown() {
@@ -863,98 +843,19 @@ async fn test_type_alias_cycle_resolves_to_unknown() {
 
 // -- B-296: ADT constructor names exported as standalone bindings from [type ...] --
 
-#[tokio::test]
-async fn test_b296_unit_constructors_exported_as_bindings() {
-    // B-296: Constructors from `[type ...]` must be visible as standalone names in the
-    // enclosing dict's type environment — not just as sibling-scope entries during inference.
-    // Before this fix, `Foo` and `Bar` would resolve as "undefined variable" in user code
-    // even after importing the dict (e.g., from prelude).
-    //
-    // Test: `Foo` and `Bar` are unit constructors from `MyType`. Using them as values should
-    // typecheck without error.
-    check("[MyType: [type [Foo] [Bar]]  x: Foo  y: Bar]")
-        .await
-        .unwrap();
-}
+// test_b296_unit_constructors_exported_as_bindings — migrated to tests/corpus/eval/typecheck/b296_unit_constructors_exported.llt-eval
 
-#[tokio::test]
-async fn test_b296_unit_constructor_has_nominal_variant_type() {
-    // B-296: Unit constructors exported by [type ...] should have type NominalVariant.
-    // A unit constructor is a value (not a function), so its type is NominalVariant{tag, fields:{}}
-    let env = doc_env("[MyType: [type [Foo] [Bar]]]").await;
-    let foo_scheme = env_get(&env, "Foo").expect("Foo should be in the exported env");
-    assert!(
-        matches!(&foo_scheme.body, Type::NominalVariant { tag, .. } if tag == "Foo"),
-        "Foo should have NominalVariant type, got {:?}",
-        foo_scheme.body
-    );
-    let bar_scheme = env_get(&env, "Bar").expect("Bar should be in the exported env");
-    assert!(
-        matches!(&bar_scheme.body, Type::NominalVariant { tag, .. } if tag == "Bar"),
-        "Bar should have NominalVariant type, got {:?}",
-        bar_scheme.body
-    );
-}
+// test_b296_unit_constructor_has_nominal_variant_type — migrated to tests/corpus/eval/typecheck/b296_unit_constructor_nominal_variant.llt-eval
 
-#[tokio::test]
-async fn test_b296_field_constructor_exported_as_function_type() {
-    // B-296: Field constructors from [type ...] should have Function type.
-    // [Circle r: Int] is a field constructor: its type is Function {params: [(Some("r"), Int)], ret: NominalVariant}
-    let env = doc_env("[Shape: [type [Circle r: Int] [Square s: Int]]]").await;
-    let circle_scheme = env_get(&env, "Circle").expect("Circle should be in the exported env");
-    assert!(
-        matches!(&circle_scheme.body, Type::Function { .. }),
-        "Circle should have Function type, got {:?}",
-        circle_scheme.body
-    );
-}
+// test_b296_field_constructor_exported_as_function_type — migrated to tests/corpus/eval/typecheck/b296_field_constructor_callable.llt-eval
 
-#[tokio::test]
-async fn test_b296_field_constructor_callable_without_error() {
-    // B-296: Field constructors should be callable at their correct types without type errors.
-    // [Circle r: 5] calls the Circle constructor with r=5 — should typecheck cleanly.
-    check("[Shape: [type [Circle r: Int] [Square s: Int]]  c: [Circle r: 5]  sq: [Square s: 10]]")
-        .await
-        .unwrap();
-}
+// test_b296_field_constructor_callable_without_error — migrated to tests/corpus/eval/typecheck/b296_field_constructor_callable.llt-eval
 
-#[tokio::test]
-async fn test_b296_unit_constructor_usable_in_function() {
-    // B-296: Unit constructors should be usable inside function bodies as values.
-    // Before the fix, Foo was "undefined variable" inside the function body.
-    check("[Status: [type [Active] [Inactive]]  get-active: [fn [] Active]]")
-        .await
-        .unwrap();
-}
+// test_b296_unit_constructor_usable_in_function — migrated to tests/corpus/eval/typecheck/b296_unit_constructor_in_function.llt-eval
 
-#[tokio::test]
-async fn test_b296_union_type_constructors_all_exported() {
-    // B-296: ALL constructors in a Union ADT are exported, not just the first.
-    // Transport: [type [Tcp] [Udp] [UnixStream]] → Tcp, Udp, UnixStream all visible.
-    let env = doc_env("[T: [type [A] [B] [C] [D]]]").await;
-    for name in &["A", "B", "C", "D"] {
-        let scheme =
-            env_get(&env, name).unwrap_or_else(|| panic!("{name} should be in the exported env"));
-        assert!(
-            matches!(&scheme.body, Type::NominalVariant { .. }),
-            "{name} should have NominalVariant type, got {:?}",
-            scheme.body
-        );
-    }
-}
+// test_b296_union_type_constructors_all_exported — migrated to tests/corpus/eval/typecheck/b296_unit_constructor_nominal_variant.llt-eval
 
-#[tokio::test]
-async fn test_type_alias_field_named_type() {
-    // Regression: type alias with a field named "type:" should not be
-    // confused with the @[type: T] annotation shorthand.
-    let ty = result_field(
-        "[Thing: [type [type: String  id: Int]]]\n[t: [@Thing [type: \"widget\"  id: 1]]]",
-        "t",
-    )
-    .await;
-    assert_has_field(&ty, "type", &Type::Str);
-    assert_has_field(&ty, "id", &Type::Int);
-}
+// test_type_alias_field_named_type — migrated to tests/corpus/eval/typecheck/type_alias_field_named_type.llt-eval
 
 #[tokio::test]
 async fn test_annotation_record_with_type_field() {
@@ -1239,7 +1140,7 @@ async fn test_annotation_simple() {
     let mut c = Vec::new();
     assert_eq!(
         resolve_annotation(
-            &Annotation::Simple("Int".into()),
+            &Annotation::Simple("Integer".into()),
             &env,
             span,
             &mut InferState::new(),
@@ -1280,65 +1181,7 @@ async fn test_annotation_type_var() {
     matches!(ty, Type::TypeVar(ref s, 0) if s.starts_with('?'));
 }
 
-#[tokio::test]
-async fn test_resolve_type_name_outside_function_scope() {
-    // Test resolve_type_name None path (ann_mapping is None) when used outside function scope.
-    // With Fix 1 applied: outside function scope, each call to resolve_type_name creates a
-    // genuinely fresh type variable (not the raw annotation name).
-    // This prevents two independent `[@a e1]` and `[@a e2]` annotations at top-level from
-    // sharing the same substitution variable.
-    let env = Arc::new(TypeEnv::new());
-    let span = crate::test_util::test_span(1, 1, 1, 5);
-    let mut state = InferState::new();
-
-    // First call: creates fresh var (e.g. _t0)
-    let ty1 = resolve_type_name(
-        "a",
-        &env,
-        span.clone(),
-        &mut state,
-        &mut Vec::new(),
-        &mut None,
-        &None,
-        None,
-    )
-    .await
-    .unwrap();
-    // Second call: creates a DIFFERENT fresh var (e.g. _t1)
-    let ty2 = resolve_type_name(
-        "a",
-        &env,
-        span,
-        &mut state,
-        &mut Vec::new(),
-        &mut None,
-        &None,
-        None,
-    )
-    .await
-    .unwrap();
-
-    // Both should be TypeVars at level 0 but with different names
-    match (&ty1, &ty2) {
-        (Type::TypeVar(n1, 0), Type::TypeVar(n2, 0)) => {
-            assert_ne!(
-                n1, n2,
-                "outside function scope, same annotation name must yield distinct fresh vars"
-            );
-            // TypeVars are allocated with _t{N} naming (no '?' prefix in current implementation).
-            // Just verify they are distinct TypeVars at the expected level.
-            assert!(
-                !n1.is_empty(),
-                "fresh var name should not be empty, got {n1}"
-            );
-            assert!(
-                !n2.is_empty(),
-                "fresh var name should not be empty, got {n2}"
-            );
-        }
-        other => panic!("expected two TypeVars at level 0, got: {other:?}"),
-    }
-}
+// test_resolve_type_name_outside_function_scope — migrated to tests/corpus/eval/typecheck/resolve_type_name_outer_scope.llt-eval
 
 #[tokio::test]
 async fn test_resolve_type_name_outside_function_scope_monotonicity() {
@@ -1555,39 +1398,7 @@ async fn test_property_dict_non_str_key_falls_back_to_any() {
     );
 }
 
-#[tokio::test]
-async fn test_property_dict_no_key_resolves_as_union() {
-    // Single positional entry resolves via union path; single-element union unwraps
-    let env = Arc::new(TypeEnv::new());
-    let span = crate::test_util::test_span(1, 1, 1, 10);
-    // Use VarRef (unquoted identifier) — SurfaceExpression::Str is for string literal types
-    let ann = Annotation::PropertyDict(vec![surf_ann_entry_tc(
-        None,
-        SurfaceExpression::VarRef {
-            name: "Int".into(),
-            escaped: false,
-            resolution: crate::ast::Resolution::new(),
-            call_dispatch: crate::ast::CallDispatch::new(),
-            annotation: None,
-        },
-    )]);
-    let mut c = Vec::new();
-    assert_eq!(
-        resolve_annotation(
-            &ann,
-            &env,
-            span,
-            &mut InferState::new(),
-            &mut c,
-            &mut None,
-            &mut None,
-            None
-        )
-        .await
-        .unwrap(),
-        Type::Int
-    );
-}
+// test_property_dict_no_key_resolves_as_union — migrated to tests/corpus/eval/typecheck/property_dict_single_type_resolves.llt-eval
 
 // --- HKT kind inference tests (hkt-kind-inference sprint) ---
 
@@ -1712,38 +1523,8 @@ async fn test_property_dict_fn_type_error_propagates() {
 
 // -- Type alias in scope --
 
-#[tokio::test]
-async fn test_type_alias_in_scope_chain() {
-    let ty = result_field(
-        "[Coord: [type [x: Int  y: Int]]]\n[p: [@Coord [x: 1  y: 2]]]",
-        "p",
-    )
-    .await;
-    // The Coord alias body `[x: Int  y: Int]` is now an Intersection of
-    // open single-field records: [{x: Int, ...ρ1}, {y: Int, ...ρ2}].
-    assert_has_field(&ty, "x", &Type::Int);
-    assert_has_field(&ty, "y", &Type::Int);
-}
-
-#[tokio::test]
-async fn test_type_alias_shadowing_allows_nested_redefinition() {
-    // Inner dict can shadow outer dict's type alias — lexical scoping
-    // Type aliases are excluded from the record's fields, so we test via usage
-    let ty = result_field(
-        "[ID: [type Int]  outer: [@ID 42]  nested: [ID: [type String]  inner: [@ID \"text\"]]]",
-        "nested",
-    )
-    .await;
-    match ty {
-        Type::Record(Row { fields, .. }) => {
-            // nested.ID is a type alias, so it's NOT in fields (type aliases excluded from record)
-            assert_eq!(fields.get("ID"), None);
-            // nested.inner uses the shadowed String type (not the outer Int type)
-            assert_eq!(fields.get("inner"), Some(&Type::Str));
-        }
-        other => panic!("expected Record type, got {other}"),
-    }
-}
+// test_type_alias_in_scope_chain — migrated to tests/corpus/eval/typecheck/type_alias_in_scope_chain.llt-eval
+// test_type_alias_shadowing_allows_nested_redefinition — migrated to tests/corpus/eval/typecheck/type_alias_shadowing.llt-eval
 
 // -- Error branch coverage --
 
@@ -1926,62 +1707,11 @@ async fn test_annotated_non_fn_resolves_annotation() {
 
 // -- Fn@Return [Params] type expression --
 
-#[tokio::test]
-async fn test_fn_type_one_param() {
-    let ty = result_field(
-        "[Mapper: [type [let a b] [Fn@b [a]]]]\n[x: [@[Mapper Integer String] [fn [let v@Integer] \"result\"]]]",
-        "x",
-    )
-    .await;
-    match ty {
-        // [fn [v] $v] is annotated with [@[Mapper Integer String]] where Mapper = [Fn@b [a]].
-        // With concrete type arguments, the alias expands to [Fn@Str [Int]].
-        // Lambda checking mode enforces the expanded type: param is Int, ret is Str.
-        Type::Function {
-            params,
-            ret,
-            variadic: _,
-            ..
-        } => {
-            assert_eq!(params.len(), 1, "expected 1 param");
-            assert_eq!(
-                params[0].1,
-                Type::Int,
-                "param should be Int (from [@[Mapper Integer String]]), got {:?}",
-                params[0]
-            );
-            assert_eq!(
-                *ret,
-                Type::Str,
-                "ret should be Str (from [@[Mapper Integer String]]), got {ret:?}"
-            );
-        }
-        other => panic!("expected Function, got {other}"),
-    }
-}
+// test_fn_type_one_param — migrated to tests/corpus/eval/typecheck/fn_type_one_param.llt-eval
 
 // test_fn_type_two_params — deleted: covered by tc_parameterized_aliases.llt-eval
 
-#[tokio::test]
-async fn test_fn_type_concrete_types() {
-    let ty = result_field(
-        "[Addable: [type [Fn@Integer [Integer Integer]]]]\n[x: [@Addable [fn [let a@Integer b@Integer] $a]]]",
-        "x",
-    )
-    .await;
-    match ty {
-        Type::Function {
-            params,
-            ret,
-            variadic: _,
-            ..
-        } => {
-            assert_eq!(params, vec![(None, Type::Int), (None, Type::Int)]);
-            assert_eq!(*ret, Type::Int);
-        }
-        other => panic!("expected Function, got {other}"),
-    }
-}
+// test_fn_type_concrete_types — migrated to tests/corpus/eval/typecheck/fn_type_concrete.llt-eval
 
 // test_fn_type_concrete_return_typevar_param — deleted: covered by tc_parameterized_aliases.llt-eval
 
@@ -2050,26 +1780,7 @@ async fn test_bare_fn_annotation_no_false_type_error() {
     );
 }
 
-#[tokio::test]
-async fn test_fn_type_in_type_assert() {
-    let ty = result_field(
-        "[F: [type [Fn@Integer [Integer]]]]\n[x: [@F [fn [let n@Integer] $n]]]",
-        "x",
-    )
-    .await;
-    match ty {
-        Type::Function {
-            params,
-            ret,
-            variadic: _,
-            ..
-        } => {
-            assert_eq!(params, vec![(None, Type::Int)]);
-            assert_eq!(*ret, Type::Int);
-        }
-        other => panic!("expected Function, got {other}"),
-    }
-}
+// test_fn_type_in_type_assert — migrated to tests/corpus/eval/typecheck/fn_type_in_type_assert.llt-eval
 
 #[tokio::test]
 async fn test_fn_type_display_round_trip() {
@@ -2323,104 +2034,9 @@ async fn test_call_polymorphic_positional_plus_named_arity_ok() {
 
 // -- Function type expression with param list --
 
-#[tokio::test]
-async fn test_fn_type_expr_with_params() {
-    // [Identity: [type [let a] [Fn@a [a]]]] — identity-function type: param and return are same type.
-    // Verify the alias works correctly by using it with concrete type args [@[Identity Int]].
-    let ty = result_field(
-        "[Identity: [type [let a] [Fn@a [a]]]]\n[x: [@[Identity Int] [fn [let v] $v]]]",
-        "x",
-    )
-    .await;
-    match ty {
-        Type::Function {
-            params,
-            ret,
-            variadic: _,
-            ..
-        } => {
-            assert_eq!(params.len(), 1, "Identity should have 1 param");
-            // [@[Identity Int]] expands to [Fn@Integer [Integer]], so param and ret are both Int.
-            assert_eq!(
-                params[0].1,
-                Type::Int,
-                "param should be Int (from [@[Identity Int]]), got {:?}",
-                params[0]
-            );
-            assert_eq!(
-                *ret,
-                Type::Int,
-                "ret should be Int (from [@[Identity Int]]), got {ret:?}"
-            );
-        }
-        other => panic!("expected Function, got {other}"),
-    }
-}
-
-#[tokio::test]
-async fn test_fn_type_expr_multi_params() {
-    // [Mapper: [type [let a b] [Fn@b [a b]]]] — map function type with 2 type params.
-    // Verify the alias works correctly by using it with concrete type args [@[Mapper Integer String]].
-    // The params[1] type and return type should match (both use `b`).
-    let ty = result_field(
-        "[Mapper: [type [let a b] [Fn@b [a b]]]]\n[x: [@[Mapper Integer String] [fn [let p q] $q]]]",
-        "x",
-    )
-    .await;
-    match ty {
-        Type::Function {
-            params,
-            ret,
-            variadic: _,
-            ..
-        } => {
-            assert_eq!(params.len(), 2, "Mapper should have 2 params");
-            // [@[Mapper Integer String]] expands to [Fn@Str [Int Str]].
-            assert_eq!(
-                params[0].1,
-                Type::Int,
-                "params[0] should be Int (from [@[Mapper Integer String]]), got {:?}",
-                params[0]
-            );
-            assert_eq!(
-                params[1].1,
-                Type::Str,
-                "params[1] should be Str (from [@[Mapper Integer String]]), got {:?}",
-                params[1]
-            );
-            // Return type is Str (same as params[1], both use `b`).
-            assert_eq!(
-                *ret,
-                Type::Str,
-                "ret should be Str (from [@[Mapper Integer String]]), got {ret:?}"
-            );
-        }
-        other => panic!("expected Function, got {other}"),
-    }
-}
-
-#[tokio::test]
-async fn test_fn_type_expr_concrete_params() {
-    // [Addable: [type [Fn@Integer [Integer Integer]]]] — non-parameterized function type alias.
-    // Verify the alias works correctly by using it to annotate a function.
-    let ty = result_field(
-        "[Addable: [type [Fn@Integer [Integer Integer]]]]\n[x: [@Addable [fn [let a@Integer b@Integer] $a]]]",
-        "x",
-    )
-    .await;
-    match ty {
-        Type::Function {
-            params,
-            ret,
-            variadic: _,
-            ..
-        } => {
-            assert_eq!(params, vec![(None, Type::Int), (None, Type::Int)]);
-            assert_eq!(*ret, Type::Int);
-        }
-        other => panic!("expected Function, got {other}"),
-    }
-}
+// test_fn_type_expr_with_params — migrated to tests/corpus/eval/typecheck/fn_type_expr_with_params.llt-eval
+// test_fn_type_expr_multi_params — migrated to tests/corpus/eval/typecheck/fn_type_expr_multi_params.llt-eval
+// test_fn_type_expr_concrete_params — migrated to tests/corpus/eval/typecheck/fn_type_expr_concrete_params.llt-eval
 
 // test_fn_type_expr_predicate — deleted: covered by tc_parameterized_aliases.llt-eval
 
@@ -2889,61 +2505,8 @@ async fn test_call_mono_argument_checking() {
 
 // test_call_mono_lambda_arg_uses_check_expr — deleted: covered by tc_fn_type_aliases.llt-eval
 
-#[tokio::test]
-async fn test_lambda_checking_mode_concrete() {
-    // Lambda checked against concrete function type should propagate param types
-    // Define a concrete function type alias first
-    let env =
-        doc_env("[IntFn: [type [Fn@Integer [Integer]]]]\n[f: [@IntFn [fn [let x] $x]]]").await;
-    let f_scheme = env_get(&env, "f").unwrap();
-    match &f_scheme.body {
-        Type::Function {
-            params,
-            ret,
-            variadic: _,
-            ..
-        } => {
-            assert_eq!(params, &vec![(None, Type::Int)]);
-            assert_eq!(**ret, Type::Int);
-        }
-        other => panic!("expected Function, got {other}"),
-    }
-}
-
-#[tokio::test]
-async fn test_lambda_checking_mode_with_polymorphic_expected() {
-    // Lambda checked against parameterized function type alias with concrete args.
-    // With parameterized aliases requiring explicit args, use [@[Mapper Integer String]] to get
-    // concrete types. The lambda is checked against the expanded type [Fn@Str [Int]].
-    let ty = result_field(
-        "[Mapper: [type [let a b] [Fn@b [a]]]]\n[x: [@[Mapper Integer String] [fn [let v@Integer] \"result\"]]]",
-        "x",
-    )
-    .await;
-    match ty {
-        Type::Function {
-            params,
-            ret,
-            variadic: _,
-            ..
-        } => {
-            // With concrete type args, checking mode is used: params and ret are concrete.
-            assert_eq!(params.len(), 1, "expected 1 param");
-            assert_eq!(
-                params[0].1,
-                Type::Int,
-                "param should be Int (from [@[Mapper Integer String]]), got {:?}",
-                params[0]
-            );
-            assert_eq!(
-                *ret,
-                Type::Str,
-                "ret should be Str (from [@[Mapper Integer String]]), got {ret:?}"
-            );
-        }
-        other => panic!("expected Function, got {other}"),
-    }
-}
+// test_lambda_checking_mode_concrete — migrated to tests/corpus/eval/typecheck/lambda_checking_concrete_fn_type.llt-eval
+// test_lambda_checking_mode_with_polymorphic_expected — migrated to tests/corpus/eval/typecheck/lambda_checking_polymorphic_alias.llt-eval
 
 #[tokio::test]
 async fn test_type_assert_checking_mode() {
@@ -4575,44 +4138,7 @@ async fn test_parameterized_type_alias_nested_usage() {
     );
 }
 
-#[tokio::test]
-async fn test_apply_type_alias_substitution_nominal_variant() {
-    // B-356: apply_type_alias_substitution must recurse into NominalVariant fields
-    // [type [let t] [Some value: t] None] with t=Int should substitute Int for t in the field type
-    let tycon_env = doc_tycon_env(
-        "[Option: [type [let t] [Some value: t] None]
-         x: [Some value: 42]]",
-    )
-    .await;
-    let opt_alias = tycon_env.get("Option").expect("Option alias should exist");
-    // Alias body should be Union([NominalVariant { tag: "Option.Some", fields: {value: TypeVar("t")} }, ...])
-    // When instantiated with [@[Option Int] ...], the TypeVar("t") should be replaced with Int
-    match &opt_alias.body {
-        Type::Union(members) => {
-            let some_variant = members
-                .iter()
-                .find(|m| matches!(m, Type::NominalVariant { tag, .. } if tag.contains("Some")));
-            assert!(
-                some_variant.is_some(),
-                "Option alias body should contain Some variant, got members: {:?}",
-                members
-            );
-            match some_variant.unwrap() {
-                Type::NominalVariant { tag, fields } => {
-                    assert!(tag.contains("Some"), "tag should contain 'Some', got {tag}");
-                    // Before B-356 fix, the field type would be TypeVar("t") here
-                    // After substitution with Int, it should be Int (but this test just checks structure)
-                    assert!(
-                        fields.fields.contains_key("value"),
-                        "Some variant should have value field"
-                    );
-                }
-                _ => panic!("expected NominalVariant"),
-            }
-        }
-        other => panic!("expected Union body, got {other:?}"),
-    }
-}
+// test_apply_type_alias_substitution_nominal_variant — migrated to tests/corpus/eval/typecheck/apply_type_alias_substitution.llt-eval
 
 #[tokio::test]
 async fn test_apply_type_alias_substitution_preserves_row_tail_uniform() {
@@ -5400,71 +4926,7 @@ async fn test_type_assert_named_row_var_shared_within_annotation() {
 
 // ===== Union Type Tests =====
 
-#[tokio::test]
-async fn test_or_annotation_two_types() {
-    // @[or Int Null] → resolve_annotation produces Union(Int, Record({}))
-    // `or` is the type-stage keyword for union; `Null` is the empty record type.
-    // Use resolve_annotation directly (same pattern as test_union_annotation_basic).
-    let span = crate::test_util::test_span(1, 1, 1, 20);
-    // Build [or Int Null] as positional entries: [or, Int, Null]
-    let ann = Annotation::PropertyDict(vec![
-        surf_ann_entry_tc(
-            None,
-            SurfaceExpression::VarRef {
-                name: "or".into(),
-                escaped: false,
-                resolution: crate::ast::Resolution::new(),
-                call_dispatch: crate::ast::CallDispatch::new(),
-                annotation: None,
-            },
-        ),
-        surf_ann_entry_tc(
-            None,
-            SurfaceExpression::VarRef {
-                name: "Int".into(),
-                escaped: false,
-                resolution: crate::ast::Resolution::new(),
-                call_dispatch: crate::ast::CallDispatch::new(),
-                annotation: None,
-            },
-        ),
-        surf_ann_entry_tc(
-            None,
-            SurfaceExpression::VarRef {
-                name: "Null".into(),
-                escaped: false,
-                resolution: crate::ast::Resolution::new(),
-                call_dispatch: crate::ast::CallDispatch::new(),
-                annotation: None,
-            },
-        ),
-    ]);
-    let env = Arc::new(TypeEnv::new());
-    let ty = resolve_annotation(
-        &ann,
-        &env,
-        span,
-        &mut InferState::new(),
-        &mut vec![],
-        &mut None,
-        &mut None,
-        None,
-    )
-    .await
-    .unwrap();
-    match ty {
-        Type::Union(members) => {
-            assert_eq!(
-                members.len(),
-                2,
-                "expected 2 union members, got {}",
-                members.len()
-            );
-            assert!(members.contains(&Type::Int), "union should contain Int");
-        }
-        other => panic!("expected Union, got {other}"),
-    }
-}
+// test_or_annotation_two_types — migrated to tests/corpus/eval/typecheck/or_annotation_two_types.llt-eval
 
 #[tokio::test]
 async fn test_or_annotation_three_types() {
@@ -5513,22 +4975,7 @@ async fn test_or_annotation_three_types() {
     }
 }
 
-#[tokio::test]
-async fn test_or_in_type_alias_body() {
-    // [MyUnion: [type [or Int Null]]] registers a type alias whose body is Union(Int, Null).
-    // Type aliases are dict entries whose value is a [type ...] form.
-    let tycon_env = doc_tycon_env("[MyUnion: [type [or Int Null]]  x: 42]").await;
-    let alias = tycon_env.get("MyUnion");
-    assert!(
-        alias.is_some(),
-        "expected MyUnion type alias to be registered"
-    );
-    let body = &alias.unwrap().body;
-    assert!(
-        matches!(body, Type::Union(members) if members.len() == 2),
-        "expected Union(2) alias body, got {body}"
-    );
-}
+// test_or_in_type_alias_body — migrated to tests/corpus/eval/typecheck/or_in_type_alias_body.llt-eval
 
 #[tokio::test]
 async fn test_or_annotation_in_fn_return() {
@@ -5581,57 +5028,7 @@ async fn test_union_type_assert_failure_float() {
     ));
 }
 
-#[tokio::test]
-async fn test_union_in_function_signature() {
-    // resolve_annotation with Fn@ whose return type is a union (via PropertyDict)
-    let span = crate::test_util::test_span(1, 1, 1, 20);
-    // Build annotation: Fn@... where the annotation is a PropertyDict with positional entries
-    // This simulates [Fn@[Int String]]
-    // Use VarRef for type names — SurfaceExpression::Str is for string literal types
-    let fn_ann = Annotation::PropertyDict(vec![
-        surf_ann_entry_tc(
-            None,
-            SurfaceExpression::VarRef {
-                name: "Int".into(),
-                escaped: false,
-                resolution: crate::ast::Resolution::new(),
-                call_dispatch: crate::ast::CallDispatch::new(),
-                annotation: None,
-            },
-        ),
-        surf_ann_entry_tc(
-            None,
-            SurfaceExpression::VarRef {
-                name: "String".into(),
-                escaped: false,
-                resolution: crate::ast::Resolution::new(),
-                call_dispatch: crate::ast::CallDispatch::new(),
-                annotation: None,
-            },
-        ),
-    ]);
-    let env = Arc::new(TypeEnv::new());
-    let ret_ty = resolve_annotation(
-        &fn_ann,
-        &env,
-        span,
-        &mut InferState::new(),
-        &mut vec![],
-        &mut None,
-        &mut None,
-        None,
-    )
-    .await
-    .unwrap();
-    match ret_ty {
-        Type::Union(members) => {
-            assert_eq!(members.len(), 2);
-            assert!(members.contains(&Type::Int));
-            assert!(members.contains(&Type::Str));
-        }
-        other => panic!("Expected Union type, got {other}"),
-    }
-}
+// test_union_in_function_signature — migrated to tests/corpus/eval/typecheck/union_in_function_signature.llt-eval
 
 #[tokio::test]
 async fn test_union_nullable_pattern() {
@@ -5653,12 +5050,12 @@ async fn test_union_nullable_pattern() {
 
 #[tokio::test]
 async fn test_union_display_format() {
-    // Union types display with " | " separator
+    // Union types display in tinct [or ...] syntax (not " | " separator)
     let union = Type::normalize_union(vec![Type::Int, Type::Str]);
     let display = format!("{}", union);
     assert!(display.contains("Int"));
     assert!(display.contains("String"));
-    assert!(display.contains(" | "));
+    assert!(display.contains("[or "));
 }
 
 // test_narrowing_no_false_branch_narrowing, test_narrowing_nested_if, test_narrowing_not_leaking_across_branches
@@ -5861,203 +5258,15 @@ async fn test_adt_dict_entry_and_sibling_fn() {
 
 // ========== ADT Multi-Entry Union Tests (B-423) ==========
 
-#[tokio::test]
-async fn test_adt_multi_entry_union_declaration() {
-    // [type [let a] [Ok a] [Error String]] should register a Union type alias
-    // with two NominalVariant members. Verifies the multi-entry union code path
-    // in resolve_type_dict (all-positional ≥2 entries, each resolving as Call).
-    let tycon_env = doc_tycon_env("[Result: [type [let a] [Ok a] [Error String]]]").await;
-
-    let alias = tycon_env
-        .get("Result")
-        .expect("Result type alias not registered in TyConDef env");
-
-    match &alias.body {
-        Type::Union(members) => {
-            assert_eq!(
-                members.len(),
-                2,
-                "expected Union with 2 members, got {}: {:?}",
-                members.len(),
-                members
-            );
-            // Each member must be a NominalVariant
-            for m in members {
-                assert!(
-                    matches!(m, Type::NominalVariant { .. }),
-                    "expected NominalVariant member, got {m}"
-                );
-            }
-        }
-        other => panic!("expected Union body for multi-entry Result type, got {other}"),
-    }
-}
-
-#[tokio::test]
-async fn test_adt_tag_only_variants() {
-    // [type "ok" "err" "pending"] should produce a Union of 3 StringLiteral members.
-    // String literal variants (tag-only enum) use Str expressions in type position,
-    // which resolve to Type::StringLiteral in resolve_type_expr.
-    let tycon_env = doc_tycon_env("[Status: [type \"ok\" \"err\" \"pending\"]]").await;
-
-    let alias = tycon_env
-        .get("Status")
-        .expect("Status type alias not registered");
-
-    match &alias.body {
-        Type::Union(members) => {
-            assert_eq!(
-                members.len(),
-                3,
-                "expected Union with 3 string-literal members, got {}: {:?}",
-                members.len(),
-                members
-            );
-            for m in members {
-                assert!(
-                    matches!(m, Type::StringLiteral(_)),
-                    "expected StringLiteral member, got {m}"
-                );
-            }
-        }
-        other => panic!("expected Union of StringLiterals for Status, got {other}"),
-    }
-}
-
-#[tokio::test]
-async fn test_adt_mixed_variants() {
-    // Multi-entry [type ...] mixing NominalVariant constructors and StringLiteral tags.
-    // [type [let a] [Ok a] "error" "pending"] → Union(NominalVariant("Ok"), StringLiteral("error"), StringLiteral("pending"))
-    let tycon_env = doc_tycon_env("[Mixed: [type [let a] [Ok a] \"error\" \"pending\"]]").await;
-
-    let alias = tycon_env
-        .get("Mixed")
-        .expect("Mixed type alias not registered");
-
-    match &alias.body {
-        Type::Union(members) => {
-            assert_eq!(
-                members.len(),
-                3,
-                "expected Union with 3 members, got {}: {:?}",
-                members.len(),
-                members
-            );
-            // normalize_union sorts members by type_order: StringLiteral (4) < NominalVariant (38),
-            // so order is [StringLiteral("error"), StringLiteral("pending"), NominalVariant("Ok")].
-            // Use membership checks rather than positional assertions to be sort-stable.
-            assert!(
-                members
-                    .iter()
-                    .any(|m| matches!(m, Type::NominalVariant { tag, .. } if tag == "Ok")),
-                "union must contain NominalVariant(Ok), got {:?}",
-                members
-            );
-            assert!(
-                members
-                    .iter()
-                    .any(|m| matches!(m, Type::StringLiteral(s) if s == "error")),
-                "union must contain StringLiteral(\"error\"), got {:?}",
-                members
-            );
-            assert!(
-                members
-                    .iter()
-                    .any(|m| matches!(m, Type::StringLiteral(s) if s == "pending")),
-                "union must contain StringLiteral(\"pending\"), got {:?}",
-                members
-            );
-        }
-        other => panic!("expected Union body for Mixed type, got {other}"),
-    }
-}
-
-#[tokio::test]
-async fn test_adt_type_assert_union_enforcement() {
-    // Declaring a multi-entry union type alias injects its constructors as typed functions.
-    // Calling a constructor with the correct argument type must not produce a type error.
-    // Calling a constructor with the wrong argument type must produce a type error.
-    //
-    // This validates that the Union body is used for constructor type injection
-    // (inject_adt_constructor_schemes), and that the injected constructor schemes are
-    // correctly typed and participate in call checking.
-    //
-    // [Ok 42]     → Ok: Fn(a) -> NominalVariant("Ok", {"0": a}), argument Int: ok
-    // [Error 42]  → Error: Fn(String) -> NominalVariant("Error", {"0": String}), 42 is Int: error
-    let ok_result = check("[Result: [type [let a] [Ok a] [Error String]]  val: [Ok 42]]").await;
-    assert!(
-        ok_result.is_ok(),
-        "[Ok 42] should typecheck cleanly with Ok constructor: {:?}",
-        ok_result
-    );
-
-    let err_result = check("[Result: [type [let a] [Ok a] [Error String]]  val: [Error 42]]").await;
-    let errs = err_result
-        .expect_err("[Error 42] should produce a type error: Error expects String, got Int");
-    assert!(
-        errs.iter()
-            .any(|e| e.message().contains("String") || e.message().contains("Int")),
-        "[Error 42] type error should mention 'String' or 'Int' (type mismatch), got: {:?}",
-        errs
-    );
-}
-
-#[tokio::test]
-async fn test_adt_parameterized_alias_registered() {
-    // A parameterized [type [let a] ...] alias must register with non-empty params
-    // in the TyConDef env, enabling correct instantiation at each use site.
-    let tycon_env = doc_tycon_env("[Result: [type [let a] [Ok a] [Error String]]]").await;
-
-    let alias = tycon_env
-        .get("Result")
-        .expect("Result type alias not registered");
-
-    assert_eq!(
-        alias.params.len(),
-        1,
-        "parameterized Result alias must have 1 type parameter, got {:?}",
-        alias.params
-    );
-
-    // The body must be a Union (parameterized aliases expand at use sites, not at registration)
-    assert!(
-        matches!(&alias.body, Type::Union(_)),
-        "Result alias body must be Union, got {}",
-        alias.body
-    );
-
-    // The constructors list must contain qualified tags for both variants
-    assert_eq!(
-        alias.constructors.len(),
-        2,
-        "Result must have 2 constructors (Ok, Error), got {:?}",
-        alias.constructors
-    );
-    let ctor_tags: Vec<&str> = alias.constructors.iter().map(|(t, _)| t.as_str()).collect();
-    assert!(
-        ctor_tags.contains(&"Result.Ok"),
-        "Result.Ok must be a registered constructor, got {:?}",
-        ctor_tags
-    );
-    assert!(
-        ctor_tags.contains(&"Result.Error"),
-        "Result.Error must be a registered constructor, got {:?}",
-        ctor_tags
-    );
-}
+// test_adt_multi_entry_union_declaration — migrated to tests/corpus/eval/typecheck/adt_multi_entry_union.llt-eval
+// test_adt_tag_only_variants — migrated to tests/corpus/eval/typecheck/adt_tag_only_variants.llt-eval
+// test_adt_mixed_variants — migrated to tests/corpus/eval/typecheck/adt_mixed_variants.llt-eval
+// test_adt_type_assert_union_enforcement — migrated to tests/corpus/typecheck/warnings/adt_union_constructor_type_enforcement.llt-eval
+// test_adt_parameterized_alias_registered — migrated to tests/corpus/eval/typecheck/adt_parameterized_alias.llt-eval
 
 // ========== Exhaustiveness Checking Tests (C5 sprint) ==========
 
-#[tokio::test]
-async fn test_exhaustive_match_int_string_complete() {
-    // Complete coverage: Int and String arms cover the union
-    let result = check("[match [@[Integer String] 42] Integer: \"int\" String: \"str\"]").await;
-    assert!(
-        result.is_ok(),
-        "Int+String should be exhaustive: {:?}",
-        result
-    );
-}
+// test_exhaustive_match_int_string_complete — migrated to tests/corpus/eval/typecheck/exhaustiveness_complete_coverage.llt-eval
 
 #[tokio::test]
 async fn test_exhaustive_match_wildcard_covers_all() {
@@ -6066,21 +5275,7 @@ async fn test_exhaustive_match_wildcard_covers_all() {
     assert!(result.is_ok(), "wildcard should cover all: {:?}", result);
 }
 
-#[tokio::test]
-async fn test_non_exhaustive_match_missing_variant() {
-    // Missing String variant
-    let result = check("[match [@[Integer String] 42] Integer: \"int\"]").await;
-    assert!(
-        result.is_err(),
-        "should fail typecheck for missing variant, but got Ok"
-    );
-    let errs = result.unwrap_err();
-    assert!(
-        errs.iter().any(|e| e.message().contains("non-exhaustive")),
-        "should report non-exhaustive match, got: {:?}",
-        errs
-    );
-}
+// test_non_exhaustive_match_missing_variant — migrated to tests/corpus/eval/type_errors/exhaustiveness_missing_variant.llt-eval
 
 #[tokio::test]
 async fn test_redundant_arm_detected() {
@@ -6101,22 +5296,7 @@ async fn test_redundant_arm_detected() {
     );
 }
 
-#[tokio::test]
-async fn test_inaccessible_arm_after_complete_coverage() {
-    // Wildcard after complete Int+String coverage — inaccessible via ⊥
-    let result =
-        check("[match [@[Integer String] 42] Integer: \"int\" String: \"str\" _: \"catch\"]").await;
-    assert!(
-        result.is_err(),
-        "should fail typecheck for inaccessible arm, but got Ok"
-    );
-    let errs = result.unwrap_err();
-    assert!(
-        errs.iter().any(|e| e.message().contains("inaccessible")),
-        "should report inaccessible arm, got: {:?}",
-        errs
-    );
-}
+// test_inaccessible_arm_after_complete_coverage — migrated to tests/corpus/eval/type_errors/exhaustiveness_inaccessible_arm.llt-eval
 
 #[tokio::test]
 async fn test_exhaustive_match_dict_variants() {
@@ -6210,23 +5390,7 @@ async fn test_exhaustive_match_non_union_no_check() {
 
 // -- Recursive type aliases --
 
-#[tokio::test]
-async fn test_recursive_type_alias_simple() {
-    // Simple recursive type alias should register successfully.
-    // Multi-field alias bodies now produce Intersection of open single-field records.
-    let tycon_env = doc_tycon_env("[List: [type [head: Int  tail: List]]]").await;
-    let alias = tycon_env.get("List").expect("List type alias not found");
-    // `[head: Int  tail: List]` → Intersection([{head: Int}, {tail: _t0}])
-    // where `_t0` is a fresh TypeVar (the mu-variable for the recursive position).
-    // Previously this was Type::Unknown (the Pass-1 placeholder leaked through because
-    // resolve_type_dict_with_guard delegated to resolve_type_dict, bypassing the guard).
-    assert_has_field(&alias.body, "head", &Type::Int);
-    let tail_ty = type_get_field(&alias.body, "tail").expect("tail field not found");
-    assert!(
-        matches!(tail_ty, Type::TypeVar(_, _)),
-        "expected TypeVar for recursive 'tail' field, got {tail_ty}"
-    );
-}
+// test_recursive_type_alias_simple — migrated to tests/corpus/eval/typecheck/recursive_type_alias_simple.llt-eval
 
 #[tokio::test]
 async fn test_recursive_type_alias_nested() {
@@ -6277,16 +5441,7 @@ async fn test_recursive_type_depth_limit() {
     );
 }
 
-#[tokio::test]
-async fn test_non_recursive_alias_unchanged() {
-    // Non-recursive aliases should continue to work as before.
-    // Multi-field alias bodies now produce Intersection of open single-field records.
-    let tycon_env = doc_tycon_env("[Point: [type [x: Int  y: Int]]]").await;
-    let alias = tycon_env.get("Point").expect("Point type alias not found");
-    // `[x: Int  y: Int]` → Intersection([{x: Int, ...ρ1}, {y: Int, ...ρ2}])
-    assert_has_field(&alias.body, "x", &Type::Int);
-    assert_has_field(&alias.body, "y", &Type::Int);
-}
+// test_non_recursive_alias_unchanged — migrated to tests/corpus/eval/typecheck/non_recursive_alias.llt-eval
 
 // ========== DocMap Extraction Tests ==========
 

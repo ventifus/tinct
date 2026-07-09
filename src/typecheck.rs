@@ -1780,7 +1780,24 @@ pub(crate) async fn infer_surface_expr(
                     }
                 }
 
-                let scheme_opt: Option<TypeScheme> = env.read().unwrap().get_scheme(name);
+                // Slot-indexed fast path: try the resolution table before name-based lookup.
+                // Class method VarRefs like `+`, `-`, `*`, `/`, `=`, `<` are registered in
+                // the letrec env under ɪ-prefixed names (e.g. ɪɴꜱᴛᴀɴᴄᴇ⧼Addable∷+⟨Integer⟩⧽),
+                // NOT under their operator symbol. Name-based get_scheme("+") returns None,
+                // triggering a false "undefined variable: +" warning. The resolution table has
+                // the correct (level, slot) → slot-based get_scheme_at finds the ɪ-prefixed
+                // TypeScheme registered by infer_instance_decl_from_surface.
+                let scheme_opt: Option<TypeScheme> = {
+                    let mut slot_scheme: Option<TypeScheme> = None;
+                    if let Some(ref table) = state.resolution_table {
+                        let func_id = node_id(func);
+                        if let Some(&(level, slot)) = table.get(&func_id) {
+                            slot_scheme = env.read().unwrap().get_scheme_at(level, slot);
+                        }
+                    }
+                    // Name-based fallback for entries in extras (builtins, injected names).
+                    slot_scheme.or_else(|| env.read().unwrap().get_scheme(name))
+                };
                 match scheme_opt {
                     Some(scheme)
                         if !scheme.type_vars.is_empty() || !scheme.kind_vars.is_empty() =>

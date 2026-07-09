@@ -5,4 +5,4 @@
 Dict({"f": Function(x)})
 
 === warn
-[UnificationFailure] cannot unify Int with String
+[UnificationFailure] cannot unify Integer with String

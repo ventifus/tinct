@@ -1,0 +1,7 @@
+# Type alias accessible across document scope chain.
+# [Coord: [type [x: Integer  y: Integer]]] defines a coordinate type alias.
+# In the next expression, @Coord is used to annotate a dict.
+[Coord: [type [x: Integer  y: Integer]]]
+[p: [@Coord [x: 1  y: 2]]]
+=== out
+Dict({"p": Dict({"x": Int(1), "y": Int(2)})})

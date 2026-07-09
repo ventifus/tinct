@@ -5,4 +5,4 @@
 Dict({"f": Function(x)})
 
 === warn
-annotation @Number is over-broad — inferred type is Int; consider using @Integer
+annotation @Number is over-broad — inferred type is Integer; consider using @Integer

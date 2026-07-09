@@ -1,0 +1,11 @@
+# Inline union annotation in function signature: [@[Integer String] expr]
+# resolves as Union(Int, Str) — two positional type entries produce a union.
+# A function that returns @[or Integer String] can return either Int or String.
+[
+  to-int-or-str: [fn@[or Integer String] [let n@Integer]
+    [if [= n 0] 0 "nonzero"]]
+  v1: [to-int-or-str 0]
+  v2: [to-int-or-str 1]
+]
+=== out
+Dict({"to-int-or-str": Function(n), "v1": Int(0), "v2": String("nonzero")})

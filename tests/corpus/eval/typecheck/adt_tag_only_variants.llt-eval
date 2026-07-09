@@ -1,0 +1,9 @@
+# ADT tag-only variants: [type "ok" "err" "pending"] produces a Union of
+# 3 StringLiteral members. At runtime, the type dict is empty (no constructors
+# for string-literal variants); the type alias itself evaluates to an empty dict.
+[
+  Status: [type "ok" "err" "pending"]
+  current: "ok"
+]
+=== out
+Dict({"Status": Dict({}), "current": String("ok")})

@@ -1,0 +1,7 @@
+# @[or Integer Null] annotation produces Union(Int, Null).
+# `or` is the type-stage keyword for union.
+# `Null` resolves as NominalVariant("Null") in an empty type env.
+# Value 42 satisfies the union because Int is a member.
+[@[or Integer Null] 42]
+=== out
+Int(42)

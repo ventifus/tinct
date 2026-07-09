@@ -1,0 +1,10 @@
+# Non-recursive type aliases continue to work correctly.
+# [Point: [type [x: Integer  y: Integer]]] produces an Intersection body in the type system.
+# At runtime, the type alias evaluates to an empty dict.
+# Usage: [@Point [x: 1  y: 2]] checks the dict satisfies the Point type.
+[
+  Point: [type [x: Integer  y: Integer]]
+  p: [@Point [x: 3  y: 4]]
+]
+=== out
+Dict({"Point": Dict({}), "p": Dict({"x": Int(3), "y": Int(4)})})
