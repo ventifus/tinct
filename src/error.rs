@@ -526,48 +526,6 @@ impl PartialEq for ErrorKind {
 }
 
 impl ErrorKind {
-    /// Returns a stable error code string for this error kind.
-    pub fn code(&self) -> &'static str {
-        match self {
-            Self::KeyNotFound { .. } => "E001",
-            Self::UndefinedVariable { .. } => "E002",
-            Self::TypeMismatch { .. } => "E010",
-            Self::TypeAssertFailed { .. } => "E011",
-            Self::NoInstance { .. } => "E013",
-            Self::MacroError { .. } => "E012",
-            Self::ArityMismatch { .. } => "E020",
-            Self::MissingRequiredParam { .. } => "E024",
-            Self::NamedArgConflict { .. } => "E021",
-            Self::UnknownNamedArg { .. } => "E022",
-            Self::NamedArgRejected { .. } => "E023",
-            Self::DuplicateKey { .. } => "E030",
-            Self::DivisionByZero { .. } => "E031",
-            Self::IntegerOverflow { .. } => "E032",
-            Self::FloatNotFinite { .. } => "E033",
-            Self::EmptyCollection { .. } => "E034",
-            Self::ValueNotSerializable { .. } => "E035",
-            Self::FloatOutOfRange { .. } => "E036",
-            Self::ResourceLimitExceeded { .. } => "E043",
-            Self::CapabilityRequired { .. } => "E044",
-            Self::IncludeIoError { .. } => "E051",
-            Self::IncludeCycle { .. } => "E052",
-            Self::IncludeFileTooLarge { .. } => "E054",
-            Self::IncludeHashMismatch { .. } => "E055",
-            Self::IncludeHashRequired { .. } => "E056",
-            Self::ParseConversion { .. } => "E060",
-            Self::UriParseError { .. } => "E063",
-            Self::CircularDependency { .. } => "E070",
-            Self::MatchExhaustion { .. } => "E071",
-            Self::DuplicateVariable { .. } => "E072",
-            Self::UserError { .. } => "E080",
-            Self::Unimplemented { .. } => "E081",
-            Self::BuilderFinished { .. } => "E082",
-            Self::SchemaViolation { .. } => "E090",
-            Self::KindMismatch { .. } => "E091",
-            Self::Internal { .. } => "E099",
-        }
-    }
-
     /// Returns a stable kebab-case kind name for this error (used in unified error dicts).
     ///
     /// Unlike `code()` (which returns legacy E-codes), `kind_name()` returns a
@@ -1703,8 +1661,7 @@ impl fmt::Display for EvalError {
         // File path comes from the embedded SourceFile in definition_span, not a separate field.
         write!(
             f,
-            "[{}] {} (defined at {})",
-            self.kind.code(),
+            "{} (defined at {})",
             self.kind,
             format_span_location(&self.definition_span),
         )?;
@@ -2411,52 +2368,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_error_code_exhaustiveness() {
-        // Ensures every ErrorKind variant returns a valid E-code (not the catch-all E099,
-        // unless it IS the Internal variant). This test prevents new variants from silently
-        // falling through to E099 without an explicit code assignment.
-        let variants = all_error_kind_variants();
-
-        for variant in &variants {
-            let code = variant.code();
-
-            // All codes must match E\d{3} format
-            assert!(
-                code.len() == 4 && code.starts_with('E'),
-                "ErrorKind variant {:?} has invalid code format: {}",
-                variant,
-                code
-            );
-
-            // Verify it's a valid 3-digit number after the E
-            let number_part = &code[1..];
-            assert!(
-                number_part.parse::<u32>().is_ok(),
-                "ErrorKind variant {:?} has non-numeric code: {}",
-                variant,
-                code
-            );
-
-            // Only Internal variant should return E099
-            match variant {
-                ErrorKind::Internal { .. } => {
-                    assert_eq!(
-                        code, "E099",
-                        "Internal variant should return E099, got {}",
-                        code
-                    );
-                }
-                _ => {
-                    assert_ne!(
-                        code, "E099",
-                        "Non-Internal variant {:?} should not return catch-all code E099",
-                        variant
-                    );
-                }
-            }
-        }
-    }
 
     #[test]
     fn test_arity_bound_display() {
@@ -3027,49 +2938,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_error_kind_code_exhaustiveness() {
-        // Verify that ALL ErrorKind variants have error codes and that
-        // all codes are unique. This catches silent breakage when new
-        // variants are added without updating code().
-
-        let variants = all_error_kind_variants();
-
-        let mut codes = std::collections::HashSet::new();
-
-        for variant in &variants {
-            let code = variant.code();
-
-            // Each code should start with "E" followed by digits
-            assert!(
-                code.starts_with('E'),
-                "Error code {:?} for variant {:?} does not start with 'E'",
-                code,
-                variant
-            );
-            assert!(
-                code.len() > 1,
-                "Error code {:?} for variant {:?} has no digits",
-                code,
-                variant
-            );
-            let digits = &code[1..];
-            assert!(
-                digits.chars().all(|c| c.is_ascii_digit()),
-                "Error code {:?} for variant {:?} contains non-digit characters after 'E'",
-                code,
-                variant
-            );
-
-            // Each code should be unique
-            assert!(
-                codes.insert(code),
-                "Duplicate error code {:?} found for variant {:?}",
-                code,
-                variant
-            );
-        }
-    }
 
     #[test]
     fn test_stack_frame_accumulation_chain() {
@@ -3524,7 +3392,6 @@ mod tests {
         let span = test_span(2, 3, 2, 15);
         let err = EvalError::user_error("custom error message".to_string(), span);
         assert!(matches!(err.kind, ErrorKind::UserError { .. }));
-        assert_eq!(err.kind.code(), "E080");
         assert_eq!(err.kind.to_string(), "custom error message");
         assert!(err.kind.is_catchable());
         assert!(err.kind.is_cacheable());
@@ -3535,7 +3402,6 @@ mod tests {
         let span = test_span(1, 1, 1, 5);
         let err = EvalError::named_arg_rejected("floor".to_string(), span);
         assert!(matches!(err.kind, ErrorKind::NamedArgRejected { .. }));
-        assert_eq!(err.kind.code(), "E023");
         assert_eq!(
             err.kind.to_string(),
             "floor does not accept named arguments"
@@ -3549,7 +3415,6 @@ mod tests {
         let span = test_span(1, 1, 1, 5);
         let err = EvalError::integer_overflow("*".to_string(), span);
         assert!(matches!(err.kind, ErrorKind::IntegerOverflow { .. }));
-        assert_eq!(err.kind.code(), "E032");
         assert_eq!(err.kind.to_string(), "*: integer overflow");
         assert!(err.kind.is_catchable());
         assert!(err.kind.is_cacheable());
@@ -3567,7 +3432,6 @@ mod tests {
                 ..
             }
         ));
-        assert_eq!(err.kind.code(), "E010");
         assert_eq!(
             err.kind.to_string(),
             "document pipeline: expected Dict, got Int"

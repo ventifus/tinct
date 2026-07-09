@@ -1628,7 +1628,7 @@ fn eval_error_to_diagnostic(err: &crate::error::EvalError, source: &str, uri: &U
         range,
         severity: Some(DiagnosticSeverity::ERROR),
         code: Some(lsp_types::NumberOrString::String(
-            err.kind.code().to_string(),
+            err.kind.kind_name().to_string(),
         )),
         code_description: None,
         source: Some("tinct-eval".to_string()),
