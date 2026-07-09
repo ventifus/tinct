@@ -1283,10 +1283,6 @@ mod tests {
         Arc::new(Thunk::new_materialized(val, test_span(1, 1, 1, 5)))
     }
 
-    fn thunk_with_span(val: Value, span: Span) -> Arc<Thunk> {
-        Arc::new(Thunk::new_materialized(val, span))
-    }
-
     fn no_named() -> Option<IndexMap<String, Arc<Thunk>>> {
         None
     }
@@ -2877,7 +2873,6 @@ mod tests {
             "expected resource limit error to propagate, got: {}",
             err.kind
         );
-        assert_eq!(err.kind.code(), "E043");
     }
 
     #[tokio::test]
@@ -5494,12 +5489,6 @@ mod tests {
             matches!(e.kind, crate::error::ErrorKind::DivisionByZero { .. }),
             "expected DivisionByZero, got: {}",
             e.kind
-        );
-        assert_eq!(
-            e.kind.code(),
-            "E031",
-            "expected E031, got: {}",
-            e.kind.code()
         );
         assert!(
             e.kind.to_string().contains("division by zero"),

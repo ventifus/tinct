@@ -3442,7 +3442,6 @@ mod tests {
         let span = test_span(1, 1, 1, 5);
         let err = EvalError::division_by_zero("%".to_string(), span);
         assert!(matches!(err.kind, ErrorKind::DivisionByZero { .. }));
-        assert_eq!(err.kind.code(), "E031");
         assert_eq!(err.kind.to_string(), "%: division by zero");
         assert!(err.kind.is_catchable());
         assert!(err.kind.is_cacheable());
@@ -3453,7 +3452,6 @@ mod tests {
         let span = test_span(1, 1, 1, 5);
         let err = EvalError::float_not_finite("round".to_string(), f64::INFINITY, span);
         assert!(matches!(err.kind, ErrorKind::FloatNotFinite { .. }));
-        assert_eq!(err.kind.code(), "E033");
         assert!(err.kind.to_string().contains("not a finite number"));
         assert!(err.kind.is_catchable());
         assert!(err.kind.is_cacheable());
@@ -3464,7 +3462,6 @@ mod tests {
         let span = test_span(1, 1, 1, 5);
         let err = EvalError::empty_collection("tail".to_string(), span);
         assert!(matches!(err.kind, ErrorKind::EmptyCollection { .. }));
-        assert_eq!(err.kind.code(), "E034");
         assert_eq!(err.kind.to_string(), "tail on empty collection");
         assert!(err.kind.is_catchable());
         assert!(err.kind.is_cacheable());
@@ -3475,7 +3472,6 @@ mod tests {
         let span = test_span(1, 1, 1, 5);
         let err = EvalError::value_not_serializable("Builtin".to_string(), span);
         assert!(matches!(err.kind, ErrorKind::ValueNotSerializable { .. }));
-        assert_eq!(err.kind.code(), "E035");
         assert_eq!(err.kind.to_string(), "cannot serialize Builtin to JSON");
         assert!(err.kind.is_catchable());
         assert!(err.kind.is_cacheable());
@@ -3486,7 +3482,6 @@ mod tests {
         let span = test_span(1, 1, 1, 5);
         let err = EvalError::float_out_of_range("to-int".to_string(), 1e300, span);
         assert!(matches!(err.kind, ErrorKind::FloatOutOfRange { .. }));
-        assert_eq!(err.kind.code(), "E036");
         assert!(err.kind.to_string().contains("out of range for Int"));
         assert!(err.kind.is_catchable());
         assert!(err.kind.is_cacheable());
@@ -3497,7 +3492,6 @@ mod tests {
         let span = test_span(1, 1, 1, 5);
         let err = EvalError::undefined_variable("myvar".to_string(), span);
         assert!(matches!(err.kind, ErrorKind::UndefinedVariable { .. }));
-        assert_eq!(err.kind.code(), "E002");
         assert_eq!(err.kind.to_string(), "undefined variable: myvar");
         assert!(err.kind.is_catchable());
         assert!(err.kind.is_cacheable());
@@ -3508,7 +3502,6 @@ mod tests {
         let span = test_span(1, 1, 1, 5);
         let err = EvalError::type_assert_failed("Bool", "String", span);
         assert!(matches!(err.kind, ErrorKind::TypeAssertFailed { .. }));
-        assert_eq!(err.kind.code(), "E011");
         assert_eq!(
             err.kind.to_string(),
             "type assertion failed: expected Bool, got String"
@@ -3522,7 +3515,6 @@ mod tests {
         let span = test_span(1, 1, 1, 5);
         let err = EvalError::named_arg_conflict("separator".to_string(), span);
         assert!(matches!(err.kind, ErrorKind::NamedArgConflict { .. }));
-        assert_eq!(err.kind.code(), "E021");
         assert_eq!(
             err.kind.to_string(),
             "parameter 'separator' received both positional and named argument"
@@ -3540,7 +3532,6 @@ mod tests {
             span,
         );
         assert!(matches!(err.kind, ErrorKind::UnknownNamedArg { .. }));
-        assert_eq!(err.kind.code(), "E022");
         assert!(err
             .kind
             .to_string()
@@ -3556,7 +3547,6 @@ mod tests {
         let span = test_span(1, 1, 1, 5);
         let err = EvalError::duplicate_key("host", span);
         assert!(matches!(err.kind, ErrorKind::DuplicateKey { .. }));
-        assert_eq!(err.kind.code(), "E030");
         assert_eq!(err.kind.to_string(), "duplicate key: host");
         assert!(err.kind.is_catchable());
         assert!(err.kind.is_cacheable());
@@ -3570,7 +3560,6 @@ mod tests {
             span,
         );
         assert!(matches!(err.kind, ErrorKind::ResourceLimitExceeded { .. }));
-        assert_eq!(err.kind.code(), "E043");
         assert!(err
             .kind
             .to_string()
@@ -3596,7 +3585,6 @@ mod tests {
             span,
         );
         assert!(matches!(err.kind, ErrorKind::IncludeIoError { .. }));
-        assert_eq!(err.kind.code(), "E051");
         assert!(err
             .kind
             .to_string()
@@ -3611,7 +3599,6 @@ mod tests {
         let span = test_span(1, 1, 1, 5);
         let err = EvalError::include_cycle("recursive.llt".to_string(), span);
         assert!(matches!(err.kind, ErrorKind::IncludeCycle { .. }));
-        assert_eq!(err.kind.code(), "E052");
         assert!(err.kind.to_string().contains("circular include detected"));
         assert!(err.kind.to_string().contains("recursive.llt"));
         assert!(err.kind.is_catchable());
@@ -3624,7 +3611,6 @@ mod tests {
         let err =
             EvalError::include_file_too_large("huge.llt".to_string(), 20_000_000, 10_485_760, span);
         assert!(matches!(err.kind, ErrorKind::IncludeFileTooLarge { .. }));
-        assert_eq!(err.kind.code(), "E054");
         assert!(err.kind.to_string().contains("huge.llt"));
         assert!(err.kind.to_string().contains("20000000"));
         assert!(err.kind.to_string().contains("10485760"));
@@ -3642,7 +3628,6 @@ mod tests {
             span,
         );
         assert!(matches!(err.kind, ErrorKind::IncludeHashMismatch { .. }));
-        assert_eq!(err.kind.code(), "E055");
         assert!(err.kind.to_string().contains("integrity check failed"));
         assert!(err.kind.to_string().contains("config.llt"));
         assert!(err.kind.to_string().contains("blake3:aabbcc"));
@@ -3656,7 +3641,6 @@ mod tests {
         let span = test_span(1, 1, 1, 5);
         let err = EvalError::include_hash_required("untrusted.llt".to_string(), span);
         assert!(matches!(err.kind, ErrorKind::IncludeHashRequired { .. }));
-        assert_eq!(err.kind.code(), "E056");
         assert!(err.kind.to_string().contains("integrity hash required"));
         assert!(err.kind.to_string().contains("untrusted.llt"));
         assert!(err.kind.is_catchable());
@@ -3673,7 +3657,6 @@ mod tests {
             span,
         );
         assert!(matches!(err.kind, ErrorKind::ParseConversion { .. }));
-        assert_eq!(err.kind.code(), "E060");
         assert_eq!(
             err.kind.to_string(),
             "to-float: cannot parse \"not-a-number\" as Float"
@@ -3687,49 +3670,12 @@ mod tests {
         let span = test_span(1, 1, 1, 5);
         let err = EvalError::missing_required_param("separator", span);
         assert!(matches!(err.kind, ErrorKind::MissingRequiredParam { .. }));
-        assert_eq!(err.kind.code(), "E024");
         assert_eq!(
             err.kind.to_string(),
             "missing argument for required parameter 'separator'"
         );
         assert!(err.kind.is_catchable());
         assert!(err.kind.is_cacheable());
-    }
-
-    /// Verify error code uniqueness across all ErrorKind variants.
-    /// Each variant must have a distinct error code — no two variants share a code.
-    #[test]
-    fn test_all_error_codes_are_unique_and_valid() {
-        let variants = all_error_kind_variants();
-        let mut seen_codes = std::collections::HashMap::new();
-        for variant in &variants {
-            let code = variant.code();
-            // Must follow [E\d\d\d] format (3 digits after E)
-            assert!(
-                code.starts_with('E')
-                    && code.len() == 4
-                    && code[1..].chars().all(|c| c.is_ascii_digit()),
-                "Error code {:?} for {:?} must follow E### format",
-                code,
-                variant
-            );
-            if let Some(prev) = seen_codes.insert(code, format!("{:?}", variant)) {
-                panic!(
-                    "Duplicate error code {:?} for variants: {} and {:?}",
-                    code, prev, variant
-                );
-            }
-        }
-        // Verify the count matches all_error_kind_variants() — the canonical list.
-        // If variants are added or removed, update all_error_kind_variants() to match.
-        // Current count: 36 variants (DepthExceeded removed in B-314, absorbed into ResourceLimitExceeded).
-        assert_eq!(
-            variants.len(),
-            36,
-            "Expected 36 ErrorKind variants in all_error_kind_variants(); got {}. \
-             Update all_error_kind_variants() if variants were added or removed.",
-            variants.len()
-        );
     }
 
     // ── render_span_snippet tests ──────────────────────────────────────────

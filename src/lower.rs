@@ -350,12 +350,18 @@ fn lower_expr(
                 });
                 CoreExpr::Placeholder
             }
-            None => CoreExpr::Var {
-                name: name.clone(),
-                level: u32::MAX,
-                slot: u32::MAX,
-                annotation: None,
-            },
+            None => {
+                // Resolver ran but did not set coordinates for this leading-dot reference.
+                // This happens when the resolver skipped this node's enclosing scope
+                // (e.g. inside a TypeAlias body). The name cannot be resolved — emit
+                // a diagnostic rather than silently producing a MAX/MAX sentinel.
+                diagnostics.push(LowerDiagnostic {
+                    kind: LowerDiagnosticKind::Error,
+                    message: format!("undefined variable: .{}", name),
+                    span: arc.span.clone(),
+                });
+                CoreExpr::Placeholder
+            }
         },
 
         // Leading-dot with integer key: `.0` — no parent-scope numeric lookup. The parser
