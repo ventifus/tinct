@@ -6,8 +6,9 @@
 //! See doc/02-syntax.md §Tokenization Rules for the full specification.
 
 use std::fmt;
+use std::sync::Arc;
 
-use crate::ast::{Position, Span, Spanned};
+use crate::ast::{Position, SourceFile, Span, Spanned};
 
 /// Token types for the tinct lexer.
 #[derive(Debug, Clone, PartialEq)]
@@ -155,7 +156,19 @@ const MAX_LEX_DEPTH: usize = 256;
 ///
 /// Returns a vector of spanned tokens or an error if the input is malformed.
 pub fn tokenize(input: &str) -> Result<Vec<Spanned<Token>>, LexError> {
-    Lexer::new(input).tokenize()
+    let sf = Arc::new(SourceFile {
+        path: Arc::from("<tokenize>"),
+        content: Arc::from(input),
+    });
+    Lexer::new(input, sf).tokenize()
+}
+
+/// Tokenize input string with an explicit source file for accurate span attribution.
+pub fn tokenize_with_file(
+    input: &str,
+    source_file: Arc<SourceFile>,
+) -> Result<Vec<Spanned<Token>>, LexError> {
+    Lexer::new(input, source_file).tokenize()
 }
 
 struct Lexer<'a> {
@@ -182,10 +195,12 @@ struct Lexer<'a> {
     /// Used to determine when `@` should emit `ImmediateAt` (immediately after a bare Identifier
     /// with no whitespace gap) vs plain `At`. This enables `x@Int` (ImmediateAt) vs `x @Int` (At).
     last_was_identifier: bool,
+    /// Source file shared across all spans produced by this lexer.
+    source_file: Arc<SourceFile>,
 }
 
 impl<'a> Lexer<'a> {
-    fn new(input: &'a str) -> Self {
+    fn new(input: &'a str, source_file: Arc<SourceFile>) -> Self {
         let mut chars = input.char_indices();
         let current = chars.next();
         Self {
@@ -200,7 +215,12 @@ impl<'a> Lexer<'a> {
             bracket_depth: 0,
             after_access_dot: false,
             last_was_identifier: false,
+            source_file,
         }
+    }
+
+    fn make_span(&self, start: Position, end: Position) -> Span {
+        Span::new(start, end, Arc::clone(&self.source_file))
     }
 
     fn tokenize(mut self) -> Result<Vec<Spanned<Token>>, LexError> {
@@ -268,12 +288,12 @@ impl<'a> Lexer<'a> {
                         self.advance();
                         let end = self.current_position();
                         self.tokens
-                            .push(Spanned::new(Token::Newline, Span::new(start, end)));
+                            .push(Spanned::new(Token::Newline, self.make_span(start, end)));
                     } else {
                         // Bare CR is treated as newline
                         let end = self.current_position();
                         self.tokens
-                            .push(Spanned::new(Token::Newline, Span::new(start, end)));
+                            .push(Spanned::new(Token::Newline, self.make_span(start, end)));
                     }
                 }
                 '\n' => {
@@ -284,7 +304,7 @@ impl<'a> Lexer<'a> {
                     self.advance();
                     let end = self.current_position();
                     self.tokens
-                        .push(Spanned::new(Token::Newline, Span::new(start, end)));
+                        .push(Spanned::new(Token::Newline, self.make_span(start, end)));
                 }
                 _ => break,
             }
@@ -315,14 +335,14 @@ impl<'a> Lexer<'a> {
                     let end = self.current_position();
                     return Err(LexError::new(
                         format!("maximum nesting depth exceeded (limit: {MAX_LEX_DEPTH})"),
-                        Span::new(start, end),
+                        self.make_span(start, end),
                     ));
                 }
                 self.advance();
                 self.bracket_depth += 1;
                 let end = self.current_position();
                 self.tokens
-                    .push(Spanned::new(Token::OpenBracket, Span::new(start, end)));
+                    .push(Spanned::new(Token::OpenBracket, self.make_span(start, end)));
                 Ok(())
             }
             ']' => {
@@ -333,7 +353,7 @@ impl<'a> Lexer<'a> {
                 // Note: Lexer doesn't validate bracket matching (parser's job)
                 let end = self.current_position();
                 self.tokens
-                    .push(Spanned::new(Token::CloseBracket, Span::new(start, end)));
+                    .push(Spanned::new(Token::CloseBracket, self.make_span(start, end)));
                 Ok(())
             }
             ':' => {
@@ -342,7 +362,7 @@ impl<'a> Lexer<'a> {
                 self.advance();
                 let end = self.current_position();
                 self.tokens
-                    .push(Spanned::new(Token::Colon, Span::new(start, end)));
+                    .push(Spanned::new(Token::Colon, self.make_span(start, end)));
                 Ok(())
             }
             ';' => {
@@ -351,7 +371,7 @@ impl<'a> Lexer<'a> {
                 self.advance();
                 let end = self.current_position();
                 self.tokens
-                    .push(Spanned::new(Token::Semicolon, Span::new(start, end)));
+                    .push(Spanned::new(Token::Semicolon, self.make_span(start, end)));
                 Ok(())
             }
             '@' => {
@@ -367,7 +387,7 @@ impl<'a> Lexer<'a> {
                 };
 
                 self.last_was_identifier = false;
-                self.tokens.push(Spanned::new(token, Span::new(start, end)));
+                self.tokens.push(Spanned::new(token, self.make_span(start, end)));
                 Ok(())
             }
             '"' => {
@@ -408,7 +428,7 @@ impl<'a> Lexer<'a> {
                 self.advance();
                 let end = self.current_position();
                 self.tokens
-                    .push(Spanned::new(Token::Pipe, Span::new(start, end)));
+                    .push(Spanned::new(Token::Pipe, self.make_span(start, end)));
                 Ok(())
             }
             '-' => {
@@ -439,7 +459,7 @@ impl<'a> Lexer<'a> {
                         self.advance();
                         let end = self.current_position();
                         self.tokens
-                            .push(Spanned::new(Token::Ellipsis, Span::new(start, end)));
+                            .push(Spanned::new(Token::Ellipsis, self.make_span(start, end)));
                         Ok(())
                     } else {
                         // `..` — two consecutive dots. Emit the first Dot and let the next
@@ -447,7 +467,7 @@ impl<'a> Lexer<'a> {
                         self.advance();
                         let end = self.current_position();
                         self.tokens
-                            .push(Spanned::new(Token::Dot, Span::new(start, end)));
+                            .push(Spanned::new(Token::Dot, self.make_span(start, end)));
                         self.after_access_dot = true;
                         Ok(())
                     }
@@ -457,7 +477,7 @@ impl<'a> Lexer<'a> {
                     self.advance();
                     let end = self.current_position();
                     self.tokens
-                        .push(Spanned::new(Token::Dot, Span::new(start, end)));
+                        .push(Spanned::new(Token::Dot, self.make_span(start, end)));
                     self.after_access_dot = true;
                     Ok(())
                 }
@@ -506,7 +526,7 @@ impl<'a> Lexer<'a> {
 
         let end = self.current_position();
         self.tokens
-            .push(Spanned::new(Token::Comment(text), Span::new(start, end)));
+            .push(Spanned::new(Token::Comment(text), self.make_span(start, end)));
         Ok(())
     }
 
@@ -522,7 +542,7 @@ impl<'a> Lexer<'a> {
                     let end = self.current_position();
                     self.tokens.push(Spanned::new(
                         Token::QuotedString(result),
-                        Span::new(start, end),
+                        self.make_span(start, end),
                     ));
                     return Ok(());
                 }
@@ -553,14 +573,14 @@ impl<'a> Lexer<'a> {
                             let end = self.current_position();
                             return Err(LexError::new(
                                 format!("invalid escape sequence: \\{c}"),
-                                Span::new(start, end),
+                                self.make_span(start, end),
                             ));
                         }
                         None => {
                             let end = self.current_position();
                             return Err(LexError::new(
                                 "unterminated escape sequence",
-                                Span::new(start, end),
+                                self.make_span(start, end),
                             ));
                         }
                     }
@@ -573,7 +593,7 @@ impl<'a> Lexer<'a> {
         }
 
         let end = self.current_position();
-        Err(LexError::new("unterminated string", Span::new(start, end)))
+        Err(LexError::new("unterminated string", self.make_span(start, end)))
     }
 
     fn lex_interpolated_string(&mut self) -> Result<(), LexError> {
@@ -595,7 +615,7 @@ impl<'a> Lexer<'a> {
                     let end = self.current_position();
                     self.tokens.push(Spanned::new(
                         Token::InterpolatedString(parts),
-                        Span::new(start, end),
+                        self.make_span(start, end),
                     ));
                     return Ok(());
                 }
@@ -645,7 +665,7 @@ impl<'a> Lexer<'a> {
                             let end = self.current_position();
                             return Err(LexError::new(
                                 "unterminated ${...} in interpolated string",
-                                Span::new(start, end),
+                                self.make_span(start, end),
                             ));
                         }
 
@@ -656,7 +676,7 @@ impl<'a> Lexer<'a> {
                             let end = self.current_position();
                             return Err(LexError::new(
                                 "empty ${} expression in interpolated string",
-                                Span::new(start, end),
+                                self.make_span(start, end),
                             ));
                         }
                         parts.push(InterpolatedPart::Expr(raw));
@@ -701,7 +721,7 @@ impl<'a> Lexer<'a> {
                             let end = self.current_position();
                             return Err(LexError::new(
                                 "bare $ without identifier in interpolated string",
-                                Span::new(start, end),
+                                self.make_span(start, end),
                             ));
                         }
 
@@ -737,14 +757,14 @@ impl<'a> Lexer<'a> {
                             let end = self.current_position();
                             return Err(LexError::new(
                                 format!("invalid escape sequence: \\{c}"),
-                                Span::new(start, end),
+                                self.make_span(start, end),
                             ));
                         }
                         None => {
                             let end = self.current_position();
                             return Err(LexError::new(
                                 "unterminated escape sequence",
-                                Span::new(start, end),
+                                self.make_span(start, end),
                             ));
                         }
                     }
@@ -759,7 +779,7 @@ impl<'a> Lexer<'a> {
         let end = self.current_position();
         Err(LexError::new(
             "unterminated interpolated string",
-            Span::new(start, end),
+            self.make_span(start, end),
         ))
     }
 
@@ -781,7 +801,7 @@ impl<'a> Lexer<'a> {
                         let end = self.current_position();
                         self.tokens.push(Spanned::new(
                             Token::TripleQuotedString(result),
-                            Span::new(start, end),
+                            self.make_span(start, end),
                         ));
                         return Ok(());
                     } else {
@@ -827,7 +847,7 @@ impl<'a> Lexer<'a> {
         let end = self.current_position();
         Err(LexError::new(
             "unterminated triple-quoted string",
-            Span::new(start, end),
+            self.make_span(start, end),
         ))
     }
 
@@ -855,7 +875,7 @@ impl<'a> Lexer<'a> {
                         let end = self.current_position();
                         self.tokens.push(Spanned::new(
                             Token::TripleInterpolatedString(parts),
-                            Span::new(start, end),
+                            self.make_span(start, end),
                         ));
                         return Ok(());
                     } else {
@@ -907,7 +927,7 @@ impl<'a> Lexer<'a> {
                             let end = self.current_position();
                             return Err(LexError::new(
                                 "unterminated ${...} in triple-quoted interpolated string",
-                                Span::new(start, end),
+                                self.make_span(start, end),
                             ));
                         }
 
@@ -918,7 +938,7 @@ impl<'a> Lexer<'a> {
                             let end = self.current_position();
                             return Err(LexError::new(
                                 "empty ${} expression in triple-quoted interpolated string",
-                                Span::new(start, end),
+                                self.make_span(start, end),
                             ));
                         }
                         parts.push(InterpolatedPart::Expr(raw));
@@ -961,7 +981,7 @@ impl<'a> Lexer<'a> {
                             let end = self.current_position();
                             return Err(LexError::new(
                                 "bare $ without identifier in triple-quoted interpolated string",
-                                Span::new(start, end),
+                                self.make_span(start, end),
                             ));
                         }
 
@@ -1006,7 +1026,7 @@ impl<'a> Lexer<'a> {
         let end = self.current_position();
         Err(LexError::new(
             "unterminated triple-quoted interpolated string",
-            Span::new(start, end),
+            self.make_span(start, end),
         ))
     }
 
@@ -1028,14 +1048,14 @@ impl<'a> Lexer<'a> {
             let end = self.current_position();
             return Err(LexError::new(
                 "bare $ without identifier",
-                Span::new(start, end),
+                self.make_span(start, end),
             ));
         }
 
         let name = self.input[ident_start..ident_end].to_string();
         let end = self.current_position();
         self.tokens
-            .push(Spanned::new(Token::EscapedRef(name), Span::new(start, end)));
+            .push(Spanned::new(Token::EscapedRef(name), self.make_span(start, end)));
         Ok(())
     }
 
@@ -1055,7 +1075,7 @@ impl<'a> Lexer<'a> {
         self.advance();
         let end = self.current_position();
         self.tokens
-            .push(Spanned::new(Token::DocSeparator, Span::new(start, end)));
+            .push(Spanned::new(Token::DocSeparator, self.make_span(start, end)));
         Ok(())
     }
 
@@ -1107,15 +1127,15 @@ impl<'a> Lexer<'a> {
         // Check for reserved keywords
         if word == "let" {
             self.tokens
-                .push(Spanned::new(Token::Let, Span::new(start, end)));
+                .push(Spanned::new(Token::Let, self.make_span(start, end)));
             self.last_was_identifier = false; // Keywords do not trigger ImmediateAt
         } else if word == "case" {
             self.tokens
-                .push(Spanned::new(Token::Case, Span::new(start, end)));
+                .push(Spanned::new(Token::Case, self.make_span(start, end)));
             self.last_was_identifier = false; // Keywords do not trigger ImmediateAt
         } else {
             self.tokens
-                .push(Spanned::new(Token::Identifier(word), Span::new(start, end)));
+                .push(Spanned::new(Token::Identifier(word), self.make_span(start, end)));
             // Only plain (non-access-field) identifiers trigger ImmediateAt for annotations.
             // Access-field identifiers (after `.`) never have `@` immediately after them in
             // valid syntax — the annotation always follows the bare word in parameter position.
@@ -1186,7 +1206,7 @@ impl<'a> Lexer<'a> {
                             let end = self.current_position();
                             return Err(LexError::new(
                                 "invalid number literal: underscore must be followed by a digit",
-                                Span::new(start, end),
+                                self.make_span(start, end),
                             ));
                         }
                     }
@@ -1221,7 +1241,7 @@ impl<'a> Lexer<'a> {
                                 let end = self.current_position();
                                 return Err(LexError::new(
                                     "invalid number literal: underscore must be followed by a digit",
-                                    Span::new(start, end),
+                                    self.make_span(start, end),
                                 ));
                             }
                         }
@@ -1273,7 +1293,7 @@ impl<'a> Lexer<'a> {
                     let end = self.current_position();
                     return Err(LexError::new(
                         "invalid number literal: expected digit after exponent",
-                        Span::new(start, end),
+                        self.make_span(start, end),
                     ));
                 }
                 while matches!(self.peek_char(), Some(c) if c.is_ascii_digit()) {
@@ -1294,7 +1314,7 @@ impl<'a> Lexer<'a> {
             let end = self.current_position();
             return Err(LexError::new(
                 "invalid number literal: `u` suffix is not valid on float literals",
-                Span::new(start, end),
+                self.make_span(start, end),
             ));
         }
 
@@ -1310,13 +1330,13 @@ impl<'a> Lexer<'a> {
         match clean.parse::<f64>() {
             Ok(n) => {
                 self.tokens
-                    .push(Spanned::new(Token::Float(n), Span::new(start, end)));
+                    .push(Spanned::new(Token::Float(n), self.make_span(start, end)));
                 self.last_was_identifier = false;
                 Ok(())
             }
             Err(e) => Err(LexError::new(
                 format!("invalid float literal: {e}"),
-                Span::new(start, end),
+                self.make_span(start, end),
             )),
         }
     }
@@ -1336,7 +1356,7 @@ impl<'a> Lexer<'a> {
                 let end = self.current_position();
                 return Err(LexError::new(
                     "invalid number literal: `u` suffix cannot be used with negative numbers",
-                    Span::new(start, end),
+                    self.make_span(start, end),
                 ));
             }
             self.advance(); // consume 'u'
@@ -1358,26 +1378,26 @@ impl<'a> Lexer<'a> {
             match clean.parse::<u64>() {
                 Ok(n) => {
                     self.tokens
-                        .push(Spanned::new(Token::U64Lit(n), Span::new(start, end)));
+                        .push(Spanned::new(Token::U64Lit(n), self.make_span(start, end)));
                     self.last_was_identifier = false;
                     Ok(())
                 }
                 Err(e) => Err(LexError::new(
                     format!("invalid u64 literal: {e}"),
-                    Span::new(start, end),
+                    self.make_span(start, end),
                 )),
             }
         } else {
             match clean.parse::<i64>() {
                 Ok(n) => {
                     self.tokens
-                        .push(Spanned::new(Token::Int(n), Span::new(start, end)));
+                        .push(Spanned::new(Token::Int(n), self.make_span(start, end)));
                     self.last_was_identifier = false;
                     Ok(())
                 }
                 Err(e) => Err(LexError::new(
                     format!("invalid integer literal: {e}"),
-                    Span::new(start, end),
+                    self.make_span(start, end),
                 )),
             }
         }
@@ -1398,7 +1418,7 @@ impl<'a> Lexer<'a> {
                 let end = self.current_position();
                 return Err(LexError::new(
                     format!("invalid number literal: unexpected character `{c}` after number"),
-                    Span::new(start, end),
+                    self.make_span(start, end),
                 ));
             }
         }
@@ -1433,7 +1453,7 @@ impl<'a> Lexer<'a> {
                             let end = self.current_position();
                             return Err(LexError::new(
                                 "invalid number literal: underscore must be followed by a digit",
-                                Span::new(start, end),
+                                self.make_span(start, end),
                             ));
                         }
                     }
@@ -1456,7 +1476,7 @@ impl<'a> Lexer<'a> {
                                 _ => "radix",
                             }
                         ),
-                        Span::new(start, end),
+                        self.make_span(start, end),
                     ));
                 }
                 _ => break,
@@ -1467,7 +1487,7 @@ impl<'a> Lexer<'a> {
             let end = self.current_position();
             return Err(LexError::new(
                 format!("invalid number literal: expected digits after `{prefix}`"),
-                Span::new(start, end),
+                self.make_span(start, end),
             ));
         }
 
@@ -1496,26 +1516,26 @@ impl<'a> Lexer<'a> {
             match u64::from_str_radix(&clean, radix) {
                 Ok(n) => {
                     self.tokens
-                        .push(Spanned::new(Token::U64Lit(n), Span::new(start, end)));
+                        .push(Spanned::new(Token::U64Lit(n), self.make_span(start, end)));
                     self.last_was_identifier = false;
                     Ok(())
                 }
                 Err(e) => Err(LexError::new(
                     format!("invalid u64 literal: {e}"),
-                    Span::new(start, end),
+                    self.make_span(start, end),
                 )),
             }
         } else {
             match i64::from_str_radix(&clean, radix) {
                 Ok(n) => {
                     self.tokens
-                        .push(Spanned::new(Token::Int(n), Span::new(start, end)));
+                        .push(Spanned::new(Token::Int(n), self.make_span(start, end)));
                     self.last_was_identifier = false;
                     Ok(())
                 }
                 Err(e) => Err(LexError::new(
                     format!("invalid integer literal: {e}"),
-                    Span::new(start, end),
+                    self.make_span(start, end),
                 )),
             }
         }
@@ -1556,7 +1576,7 @@ impl<'a> Lexer<'a> {
                     let end = self.current_position();
                     return Err(LexError::new(
                         format!("invalid digit `{c}` in octal literal"),
-                        Span::new(start, end),
+                        self.make_span(start, end),
                     ));
                 }
                 _ => break,
@@ -1567,7 +1587,7 @@ impl<'a> Lexer<'a> {
             // Just '0' with no following octal digits — plain zero.
             let end = self.current_position();
             self.tokens
-                .push(Spanned::new(Token::Int(0), Span::new(start, end)));
+                .push(Spanned::new(Token::Int(0), self.make_span(start, end)));
             self.last_was_identifier = false;
             return Ok(());
         }
@@ -1594,26 +1614,26 @@ impl<'a> Lexer<'a> {
             match u64::from_str_radix(raw, 8) {
                 Ok(n) => {
                     self.tokens
-                        .push(Spanned::new(Token::U64Lit(n), Span::new(start, end)));
+                        .push(Spanned::new(Token::U64Lit(n), self.make_span(start, end)));
                     self.last_was_identifier = false;
                     Ok(())
                 }
                 Err(e) => Err(LexError::new(
                     format!("invalid u64 literal: {e}"),
-                    Span::new(start, end),
+                    self.make_span(start, end),
                 )),
             }
         } else {
             match i64::from_str_radix(raw, 8) {
                 Ok(n) => {
                     self.tokens
-                        .push(Spanned::new(Token::Int(n), Span::new(start, end)));
+                        .push(Spanned::new(Token::Int(n), self.make_span(start, end)));
                     self.last_was_identifier = false;
                     Ok(())
                 }
                 Err(e) => Err(LexError::new(
                     format!("invalid integer literal: {e}"),
-                    Span::new(start, end),
+                    self.make_span(start, end),
                 )),
             }
         }

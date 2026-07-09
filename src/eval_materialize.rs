@@ -35,13 +35,16 @@ impl ProfilingSpanGuard {
     fn new(ctx: &Arc<EvalContext>, thunk: &Thunk) -> Self {
         let (profiling, span_id) = if let Some(ref prof) = ctx.profiling {
             // Extract span source information.
-            // Span carries file: Option<Arc<SourceFile>> populated by parse_with_file.
-            // Use the embedded path when present; None for synthetic/builtin spans.
-            let source_file: Option<String> = thunk
-                .span
-                .file
-                .as_ref()
-                .map(|sf| sf.path.as_ref().to_string());
+            // Span carries file: Arc<SourceFile>. Use the embedded path when it is a
+            // real source file (not a synthetic span like <parse> or <origin>).
+            let source_file: Option<String> = {
+                let sf = &thunk.span.file;
+                if !sf.path.starts_with('<') {
+                    Some(sf.path.as_ref().to_string())
+                } else {
+                    None
+                }
+            };
             let (source_start, source_end) = if thunk.span != rust_span!() {
                 (
                     Some((thunk.span.start.line, thunk.span.start.column)),
@@ -112,11 +115,14 @@ pub fn lower_errors_to_eval_error(
     for extra in &errors[1..] {
         msg.push('\n');
         msg.push_str(&extra.message);
-        if let Some(ref sf) = extra.span.file {
-            msg.push_str(&format!(
-                " (at {}:{}:{})",
-                sf.path, extra.span.start.line, extra.span.start.column
-            ));
+        {
+            let sf = &extra.span.file;
+            if !sf.path.starts_with('<') {
+                msg.push_str(&format!(
+                    " (at {}:{}:{})",
+                    sf.path, extra.span.start.line, extra.span.start.column
+                ));
+            }
         }
     }
     Some(EvalError::user_error(msg, first.span.clone()).into())
@@ -639,9 +645,13 @@ pub(crate) fn make_span_dict(
     let mut w = indexmap::IndexMap::new();
     w.insert(
         HashableValue::Str("file".into()),
-        alloc(match &span.file {
-            Some(sf) => string_val(sf.path.as_ref()),
-            None => Value::Dict(indexmap::IndexMap::new()),
+        alloc({
+            let sf = &span.file;
+            if !sf.path.starts_with('<') {
+                string_val(sf.path.as_ref())
+            } else {
+                Value::Dict(indexmap::IndexMap::new())
+            }
         }),
     );
     w.insert(

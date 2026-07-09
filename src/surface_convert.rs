@@ -1074,7 +1074,10 @@ pub(crate) fn extract_span(
             let start = extract_position(&start_val, ctx)?;
             let end = extract_position(&end_val, ctx)?;
 
-            Some(Span::new(start, end))
+            Some(Span::new(start, end, std::sync::Arc::new(crate::ast::SourceFile {
+                path: std::sync::Arc::from("<surface-convert>"),
+                content: std::sync::Arc::from(""),
+            })))
         }
         _ => None,
     }

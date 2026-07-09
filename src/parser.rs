@@ -3772,7 +3772,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
 
                             let caps_end = token_vec[i - 1].span.end;
                             next_doc_caps =
-                                Some(Spanned::new(caps_vec, Span::new(caps_start, caps_end)));
+                                Some(Spanned::new(caps_vec, Span::new(caps_start, caps_end, token_vec[i - 1].span.file.clone())));
                         }
                         Token::Identifier(s) if s == "uses" => {
                             // uses: pragma
@@ -3865,7 +3865,7 @@ pub fn parse(input: &str) -> Result<ParseOutput, ParseError> {
 
                             let uses_end = token_vec[i - 1].span.end;
                             next_doc_uses =
-                                Some(Spanned::new(uses_vec, Span::new(uses_start, uses_end)));
+                                Some(Spanned::new(uses_vec, Span::new(uses_start, uses_end, token_vec[i - 1].span.file.clone())));
                         }
                         Token::Identifier(s) if s == "stage" => {
                             // stage: pragma
@@ -6543,7 +6543,7 @@ pub fn format_parse_error(err: &ParseError, source: &str, file_name: &str) -> St
 /// time, so `make_mut` never clones in practice).
 fn stamp_node(node: &mut Arc<SurfaceNode>, file: &Arc<SourceFile>) {
     let n = Arc::make_mut(node);
-    n.span.file = Some(Arc::clone(file));
+    n.span.file = Arc::clone(file);
     stamp_expr(&mut n.expr, file);
 }
 
@@ -6561,7 +6561,7 @@ fn stamp_expr(expr: &mut SurfaceExpression, file: &Arc<SourceFile>) {
         | SurfaceExpression::Placeholder => {}
 
         SurfaceExpression::Error(span) => {
-            span.file = Some(Arc::clone(file));
+            span.file = Arc::clone(file);
         }
 
         SurfaceExpression::Field { expr, .. } => {
@@ -6583,7 +6583,7 @@ fn stamp_expr(expr: &mut SurfaceExpression, file: &Arc<SourceFile>) {
 
         SurfaceExpression::Dict(entries) => {
             for entry in entries {
-                entry.span.file = Some(Arc::clone(file));
+                entry.span.file = Arc::clone(file);
                 if let Some(key) = &mut entry.node.key {
                     stamp_node(key, file);
                 }
@@ -6602,7 +6602,7 @@ fn stamp_expr(expr: &mut SurfaceExpression, file: &Arc<SourceFile>) {
                 stamp_node(arg, file);
             }
             for named in named_args {
-                named.span.file = Some(Arc::clone(file));
+                named.span.file = Arc::clone(file);
                 stamp_node(&mut named.node.value, file);
             }
         }
@@ -6617,7 +6617,7 @@ fn stamp_expr(expr: &mut SurfaceExpression, file: &Arc<SourceFile>) {
                 stamp_annotation_spanned(ann, file);
             }
             for param in params {
-                param.span.file = Some(Arc::clone(file));
+                param.span.file = Arc::clone(file);
                 if let Some(ann) = &mut param.node.annotation {
                     stamp_annotation_spanned(ann, file);
                 }
@@ -6692,7 +6692,7 @@ fn stamp_decl(decl: &mut SurfaceDeclaration, file: &Arc<SourceFile>) {
             ..
         } => {
             for entry in methods {
-                entry.span.file = Some(Arc::clone(file));
+                entry.span.file = Arc::clone(file);
                 if let Some(key) = &mut entry.node.key {
                     stamp_node(key, file);
                 }
@@ -6709,7 +6709,7 @@ fn stamp_decl(decl: &mut SurfaceDeclaration, file: &Arc<SourceFile>) {
             for (pattern, entries) in arms {
                 stamp_node(pattern, file);
                 for entry in entries {
-                    entry.span.file = Some(Arc::clone(file));
+                    entry.span.file = Arc::clone(file);
                     if let Some(key) = &mut entry.node.key {
                         stamp_node(key, file);
                     }
@@ -6730,7 +6730,7 @@ fn stamp_decl(decl: &mut SurfaceDeclaration, file: &Arc<SourceFile>) {
 
 /// Stamp the `span.file` on a `Spanned<Annotation>` and recurse into the annotation.
 fn stamp_annotation_spanned(ann: &mut Spanned<Annotation>, file: &Arc<SourceFile>) {
-    ann.span.file = Some(Arc::clone(file));
+    ann.span.file = Arc::clone(file);
     stamp_annotation(&mut ann.node, file);
 }
 
@@ -6740,7 +6740,7 @@ fn stamp_annotation(ann: &mut Annotation, file: &Arc<SourceFile>) {
         Annotation::Simple(_) | Annotation::Annotated(_, _) => {}
         Annotation::PropertyDict(entries) => {
             for entry in entries {
-                entry.span.file = Some(Arc::clone(file));
+                entry.span.file = Arc::clone(file);
                 if let Some(key) = &mut entry.node.key {
                     stamp_node(key, file);
                 }
@@ -6752,7 +6752,7 @@ fn stamp_annotation(ann: &mut Annotation, file: &Arc<SourceFile>) {
 
 /// Stamp the `span.file` on a `Spanned<Pattern>` and recurse into the pattern.
 fn stamp_pattern_spanned(pat: &mut Spanned<Pattern>, file: &Arc<SourceFile>) {
-    pat.span.file = Some(Arc::clone(file));
+    pat.span.file = Arc::clone(file);
     stamp_pattern(&mut pat.node, file);
 }
 
@@ -6764,7 +6764,7 @@ fn stamp_pattern(pat: &mut Pattern, file: &Arc<SourceFile>) {
         Pattern::TypeAssertPending {
             annotation, inner, ..
         } => {
-            annotation.span.file = Some(Arc::clone(file));
+            annotation.span.file = Arc::clone(file);
             if let Some(inner_pat) = inner {
                 stamp_pattern_spanned(inner_pat, file);
             }
@@ -6803,7 +6803,7 @@ fn stamp_pattern(pat: &mut Pattern, file: &Arc<SourceFile>) {
 /// This is the entry point used by `parse_with_file` after calling `parse()`.
 pub fn stamp_spans_with_file(program: &mut SurfaceProgram, file: &Arc<SourceFile>) {
     for doc in &mut program.documents {
-        doc.span.file = Some(Arc::clone(file));
+        doc.span.file = Arc::clone(file);
         let doc_node = Arc::get_mut(&mut doc.node)
             .expect("stamp_spans_with_file runs immediately after parse, before any Arc sharing");
         // Stamp document-level annotation spans
@@ -6814,7 +6814,7 @@ pub fn stamp_spans_with_file(program: &mut SurfaceProgram, file: &Arc<SourceFile
             stamp_annotation_spanned(ann, file);
         }
         if let Some(caps) = &mut doc_node.caps {
-            caps.span.file = Some(Arc::clone(file));
+            caps.span.file = Arc::clone(file);
             for (_, ann) in &mut caps.node {
                 stamp_annotation(ann, file);
             }
@@ -6825,7 +6825,7 @@ pub fn stamp_spans_with_file(program: &mut SurfaceProgram, file: &Arc<SourceFile
                     stamp_node(node, file);
                 }
                 SurfaceItem::Decl(decl) => {
-                    decl.span.file = Some(Arc::clone(file));
+                    decl.span.file = Arc::clone(file);
                     stamp_decl(&mut decl.node, file);
                 }
             }
@@ -6844,7 +6844,7 @@ pub fn parse_with_file(source: &str, file: Arc<SourceFile>) -> Result<ParseOutpu
     // Also stamp any recovered-error spans
     for err in &mut output.errors {
         if let Some(span) = &mut err.span {
-            span.file = Some(Arc::clone(&file));
+            span.file = Arc::clone(&file);
         }
     }
     Ok(output)

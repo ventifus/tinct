@@ -3,6 +3,7 @@
 use std::sync::{Arc, OnceLock};
 
 use crate::ast::{Position, Span, Spanned};
+use crate::rust_span;
 
 pub fn test_span(start_line: usize, start_col: usize, end_line: usize, end_col: usize) -> Span {
     Span::new(
@@ -16,6 +17,7 @@ pub fn test_span(start_line: usize, start_col: usize, end_line: usize, end_col: 
             line: end_line,
             column: end_col,
         },
+        rust_span!().file,
     )
 }
 

@@ -372,6 +372,7 @@ pub fn block_span_to_md(
                 line: span.end.line + block_start_line,
                 column: span.end.column,
             },
+            span.file.clone(),
         )
     } else {
         // Block index out of bounds — return original span unchanged
@@ -644,6 +645,7 @@ mod tests {
                 line: 1,
                 column: 3,
             },
+            crate::rust_span!().file,
         );
         let md_span = block_span_to_md(&blocks, 0, block_span, md);
         // Code starts at md offset 9, so offset 1 → 10

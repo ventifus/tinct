@@ -130,7 +130,7 @@ mod tests {
                 line: end_line,
                 column: end_col,
             },
-            file: None,
+            file: crate::rust_span!().file,
         }
     }
 

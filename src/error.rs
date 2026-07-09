@@ -1628,13 +1628,22 @@ fn infer_materialization_verb(stack: &[StackFrame]) -> &'static str {
     "materialized at"
 }
 
+/// Returns true when a SourceFile has a path that can be shown in error messages.
+/// Synthetic files with paths starting with '<' (e.g. `<parse>`, `<tokenize>`) are
+/// excluded from path display. Rust source files (.rs) from rust_span!() ARE shown —
+/// they point to the Rust code that created the synthetic node, which is useful attribution.
+fn is_real_source_file(sf: &crate::ast::SourceFile) -> bool {
+    !sf.path.starts_with('<')
+}
+
 /// Format a span location string, prefixing with the file path when available.
 /// Used for both the primary error location and stack frame locations.
 ///
 /// When the span carries an embedded `SourceFile`, formats as `"path:line:col-line:col"`.
 /// Otherwise formats as `"line:col-line:col"` (position only).
 fn format_span_location(span: &Span) -> String {
-    if let Some(ref sf) = span.file {
+    let sf = &span.file;
+    if is_real_source_file(sf) {
         format!("{}:{}", sf.path, span)
     } else {
         format!("{}", span)
@@ -1644,7 +1653,8 @@ fn format_span_location(span: &Span) -> String {
 /// Write a source snippet for a stack frame's span, if the span carries file content.
 /// Outputs `\n   |\n{snippet}` — same style as the primary error snippet but for frames.
 fn write_frame_snippet(f: &mut fmt::Formatter<'_>, span: &Span) -> fmt::Result {
-    if let Some(ref sf) = span.file {
+    let sf = &span.file;
+    if is_real_source_file(sf) {
         if let Some(snippet) = render_span_snippet(&sf.content, span.clone()) {
             write!(f, "\n   |")?;
             for line in snippet.lines() {
@@ -1678,13 +1688,16 @@ impl fmt::Display for EvalError {
         // Source snippet: rustc-style caret underlining, shown when the span carries source content.
         // Only rendered when definition_span has an embedded SourceFile (parser-backed spans).
         // Positioned after the first line so the snippet does not disrupt span location inline text.
-        if let Some(ref sf) = self.definition_span.file {
-            if let Some(snippet) = render_span_snippet(&sf.content, self.definition_span.clone()) {
-                write!(f, "\n  --> {}:{}", sf.path, self.definition_span)?;
-                write!(f, "\n   |")?;
-                // render_span_snippet returns lines like "  N | line" and "  N | ^^^"
-                for line in snippet.lines() {
-                    write!(f, "\n{}", line)?;
+        {
+            let sf = &self.definition_span.file;
+            if is_real_source_file(sf) {
+                if let Some(snippet) = render_span_snippet(&sf.content, self.definition_span.clone()) {
+                    write!(f, "\n  --> {}:{}", sf.path, self.definition_span)?;
+                    write!(f, "\n   |")?;
+                    // render_span_snippet returns lines like "  N | line" and "  N | ^^^"
+                    for line in snippet.lines() {
+                        write!(f, "\n{}", line)?;
+                    }
                 }
             }
         }
@@ -3694,7 +3707,7 @@ mod tests {
                 line: 2,
                 column: 4,
             },
-            file: None,
+            file: rust_span!().file,
         };
         let snippet = render_span_snippet(source, span).unwrap();
 
@@ -3737,7 +3750,7 @@ mod tests {
                 line: 4,
                 column: 2,
             },
-            file: None,
+            file: rust_span!().file,
         };
         let snippet = render_span_snippet(source, span).unwrap();
 
@@ -3973,10 +3986,10 @@ mod tests {
                 line: 3,
                 column: 10,
             },
-            file: Some(Arc::new(SourceFile {
+            file: Arc::new(SourceFile {
                 path: Arc::from(path),
                 content: Arc::from(""),
-            })),
+            }),
         }
     }
 
@@ -4067,10 +4080,10 @@ mod tests {
                     line: 10,
                     column: 6,
                 },
-                file: Some(Arc::new(SourceFile {
+                file: Arc::new(SourceFile {
                     path: Arc::from("user.llt"),
                     content: Arc::from(""),
-                })),
+                }),
             }
         };
 

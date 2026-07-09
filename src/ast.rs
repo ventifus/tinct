@@ -77,12 +77,13 @@ pub struct Position {
     pub column: usize,
 }
 
-/// Source span (start..end)
+/// Source span (start..end). Every span must carry its source file —
+/// a line/column number without a filename is meaningless.
 #[derive(Debug, Clone)]
 pub struct Span {
     pub start: Position,
     pub end: Position,
-    pub file: Option<Arc<SourceFile>>,
+    pub file: Arc<SourceFile>,
 }
 
 // Span identity includes position AND file path.
@@ -92,8 +93,7 @@ impl PartialEq for Span {
     fn eq(&self, other: &Self) -> bool {
         self.start == other.start
             && self.end == other.end
-            && self.file.as_ref().map(|f| f.path.as_ref())
-                == other.file.as_ref().map(|f| f.path.as_ref())
+            && self.file.path == other.file.path
     }
 }
 
@@ -103,19 +103,14 @@ impl Hash for Span {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.start.hash(state);
         self.end.hash(state);
-        if let Some(ref f) = self.file {
-            f.path.hash(state);
-        }
+        self.file.path.hash(state);
     }
 }
 
 impl Span {
-    pub fn new(start: Position, end: Position) -> Self {
-        Self {
-            start,
-            end,
-            file: None,
-        }
+    /// Create a span with a mandatory source file.
+    pub fn new(start: Position, end: Position, file: Arc<SourceFile>) -> Self {
+        Self { start, end, file }
     }
 
     /// Create a span carrying Rust source location for synthetic nodes.
@@ -132,10 +127,10 @@ impl Span {
         Self {
             start: pos,
             end: pos,
-            file: Some(std::sync::Arc::new(SourceFile {
+            file: std::sync::Arc::new(SourceFile {
                 path: std::sync::Arc::from(file),
                 content: std::sync::Arc::from(""),
-            })),
+            }),
         }
     }
 }
@@ -1522,7 +1517,7 @@ mod tests {
                 line: 0,
                 column: 0,
             },
-            file: None,
+            file: rust_span!().file,
         };
         let mk_node = |expr: SurfaceExpression| -> Arc<SurfaceNode> {
             Arc::new(SurfaceNode {

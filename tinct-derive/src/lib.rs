@@ -973,6 +973,7 @@ fn build_from_expr_arm_body(
                         let __ann_span = crate::ast::Span::new(
                             crate::ast::Position { offset: __start_offset, line: __start_line, column: __start_col },
                             crate::ast::Position { offset: __end_offset,   line: __end_line,   column: __end_col   },
+                            crate::rust_span!().file.clone(),
                         );
                         crate::ast::Spanned::new(__ann.node, __ann_span)
                     }

@@ -1488,12 +1488,14 @@ fn type_error_to_diagnostic(err: &TypeError, source: &str, uri: &Uri) -> Diagnos
             }
             // Use embedded source from the frame's span if available (e.g. prelude.llt);
             // otherwise use the current document's source.
-            let frame_source = frame
-                .span
-                .file
-                .as_ref()
-                .map(|sf| sf.content.as_ref())
-                .unwrap_or(source);
+            let frame_source = {
+                let sf = &frame.span.file;
+                if !sf.path.starts_with('<') {
+                    sf.content.as_ref()
+                } else {
+                    source
+                }
+            };
             let frame_range = llt_span_to_lsp_range(&frame.span, frame_source);
             let snippet = render_span_snippet(frame_source, frame.span.clone())
                 .map(|s| format!("\n{s}"))
@@ -1501,20 +1503,23 @@ fn type_error_to_diagnostic(err: &TypeError, source: &str, uri: &Uri) -> Diagnos
             // For cross-file frames, we need a URI for the other file.  When the
             // frame has an embedded SourceFile with a path, construct a file URI.
             // When no file is available, fall back to the current document URI.
-            let frame_uri = if let Some(ref sf) = frame.span.file {
-                // Best-effort: convert the file path to a file:// URI.
-                // If the path is already a URI, parse it directly.
-                let path = sf.path.as_ref();
-                if path.starts_with("file://") {
-                    path.parse::<Uri>().unwrap_or_else(|_| uri.clone())
+            let frame_uri = {
+                let sf = &frame.span.file;
+                if !sf.path.starts_with('<') {
+                    // Best-effort: convert the file path to a file:// URI.
+                    // If the path is already a URI, parse it directly.
+                    let path = sf.path.as_ref();
+                    if path.starts_with("file://") {
+                        path.parse::<Uri>().unwrap_or_else(|_| uri.clone())
+                    } else {
+                        // Construct file URI from an absolute path.
+                        format!("file://{path}")
+                            .parse::<Uri>()
+                            .unwrap_or_else(|_| uri.clone())
+                    }
                 } else {
-                    // Construct file URI from an absolute path.
-                    format!("file://{path}")
-                        .parse::<Uri>()
-                        .unwrap_or_else(|_| uri.clone())
+                    uri.clone()
                 }
-            } else {
-                uri.clone()
             };
             related.push(DiagnosticRelatedInformation {
                 location: Location {
@@ -1966,7 +1971,7 @@ mod tests {
                 line: 1,
                 column: 8,
             },
-            file: None,
+            file: crate::rust_span!().file,
         };
         let mat_span = Span {
             start: Position {
@@ -1979,7 +1984,7 @@ mod tests {
                 line: 2,
                 column: 6,
             },
-            file: None,
+            file: crate::rust_span!().file,
         };
 
         let err =
@@ -2032,7 +2037,7 @@ mod tests {
                 line: 1,
                 column: 11,
             },
-            file: None,
+            file: crate::rust_span!().file,
         };
 
         // No materialization span set, no stack frames.
@@ -3286,7 +3291,7 @@ fn collect_definition_key_edits(
                                         line: key.span.start.line,
                                         column: key.span.start.column + kname_len,
                                     },
-                                    file: None,
+                                    file: key.span.file.clone(),
                                 };
                                 llt_span_to_lsp_range(&name_span, source)
                             }

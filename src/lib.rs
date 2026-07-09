@@ -994,7 +994,7 @@ mod tests {
                 line: 3,
                 column: 2,
             },
-            file: None,
+            file: rust_span!().file,
         };
 
         let snippet = error::render_span_snippet(source, span)

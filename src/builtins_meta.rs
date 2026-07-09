@@ -83,7 +83,10 @@ fn parse_error_to_dict(
             let zero_span = Span {
                 start: zero_pos,
                 end: zero_pos,
-                file: None,
+                file: std::sync::Arc::new(crate::ast::SourceFile {
+                    path: std::sync::Arc::from("<macro-raise>"),
+                    content: std::sync::Arc::from(""),
+                }),
             };
             make_span_dict(&zero_span, ctx, call_span)
         }

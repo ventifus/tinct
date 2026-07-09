@@ -411,11 +411,7 @@ impl InferState {
     /// the parsed AST; Rust-internal creation sites use `rust_span!()` to embed the Rust
     /// source location. No 0:0 or empty-file spans are permitted.
     pub fn typevar_name(source: &str, kind: &Kind, span: &Span) -> String {
-        let file = span
-            .file
-            .as_ref()
-            .map(|f| f.path.as_ref())
-            .unwrap_or("<unknown>");
+        let file = span.file.path.as_ref();
         let line = span.start.line;
         let col = span.start.column;
         match kind {

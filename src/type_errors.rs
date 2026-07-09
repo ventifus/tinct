@@ -265,14 +265,11 @@ impl TypeErrorTyped {
         if let Type::Error(payload) = ty {
             for root_cause in payload.iter() {
                 let rc_span = root_cause.span();
-                let location = if let Some(sf) = rc_span.file.as_ref() {
-                    format!(
-                        "{}:{}:{}",
-                        sf.path, rc_span.start.line, rc_span.start.column
-                    )
-                } else {
-                    format!("{}:{}", rc_span.start.line, rc_span.start.column)
-                };
+                let sf = &rc_span.file;
+                let location = format!(
+                    "{}:{}:{}",
+                    sf.path, rc_span.start.line, rc_span.start.column
+                );
                 notes.push(format!(
                     "  = note: caused by error at {location}: {}",
                     root_cause.message()

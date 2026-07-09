@@ -1916,14 +1916,11 @@ impl TypeError {
         if let crate::types::Type::Error(payload) = ty {
             for root_cause in payload.iter() {
                 let rc_span = root_cause.span();
-                let location = if let Some(sf) = rc_span.file.as_ref() {
-                    format!(
-                        "{}:{}:{}",
-                        sf.path, rc_span.start.line, rc_span.start.column
-                    )
-                } else {
-                    format!("{}:{}", rc_span.start.line, rc_span.start.column)
-                };
+                let sf = &rc_span.file;
+                let location = format!(
+                    "{}:{}:{}",
+                    sf.path, rc_span.start.line, rc_span.start.column
+                );
                 err.notes.push(format!(
                     "  = note: caused by error at {location}: {}",
                     root_cause.message()
@@ -2619,7 +2616,7 @@ mod help_suggestion_tests {
                 line: 1,
                 column: 15,
             },
-            file: None,
+            file: crate::rust_span!().file,
         };
         let constraint_with_origin = Constraint::Class {
             class: Arc::clone(&class),
@@ -2643,7 +2640,7 @@ mod help_suggestion_tests {
                 line: 1,
                 column: 6,
             },
-            file: None,
+            file: crate::rust_span!().file,
         };
         let mut emitted: HashSet<(String, Span)> = HashSet::new();
 
@@ -2719,7 +2716,7 @@ mod help_suggestion_tests {
                 line: 1,
                 column: 6,
             },
-            file: None,
+            file: crate::rust_span!().file,
         };
         let mut emitted: HashSet<(String, Span)> = HashSet::new();
 
