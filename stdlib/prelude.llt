@@ -150,7 +150,7 @@
     [Unknown@[as-type: [fn [let t] t]  guarding: True]]
     [Never@[as-type: [fn [let t] t]  guarding: True]]
     # Structural
-    [Record@[as-type: [fn [let r] r]  guarding: True]
+    [Dict@[as-type: [fn [let r] r]  guarding: True]
       fields@Child: [Map String TypeNode]   # @Child on Map → MapValues (map over values, preserve keys)
       open:         Bool]                   # no @Child → NonChild, passes through
     [Union@[as-type: [fn [let u] u]  guarding: False]
