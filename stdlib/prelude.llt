@@ -975,7 +975,7 @@ Note: Errors if xs is a Seq (collect first). Inherently materializing: short-cir
 #
 # >, <=, >= are derived functions that call <.
 
->: [fn@[return: Boolean  constraint: [a: Comparable]  doc: """
+>: [fn@[bind: [a]  return: Boolean  constraint: [a: Comparable]  doc: """
 Greater than.
 
 Example: [> 5 3] => True
@@ -984,7 +984,7 @@ Example: [> 3 5] => False
 Note: Derived by swapping arguments of <.
 """] [let x y] [< y x]]
 
-<=: [fn@[return: Boolean  constraint: [a: Comparable]  doc: """
+<=: [fn@[bind: [a]  return: Boolean  constraint: [a: Comparable]  doc: """
 Less than or equal.
 
 Example: [<= 3 5] => True
@@ -994,7 +994,7 @@ Example: [<= 5 3] => False
 Note: Derived as negation of >.
 """] [let x y] [not [< y x]]]
 
->=: [fn@[return: Boolean  constraint: [a: Comparable]  doc: """
+>=: [fn@[bind: [a]  return: Boolean  constraint: [a: Comparable]  doc: """
 Greater than or equal.
 
 Example: [>= 5 3] => True
@@ -2122,7 +2122,7 @@ Result: [type [let a] [Ok a] [Error String]]
 Ok:    Result.Ok
 Error: Result.Error
 
-ok?: [fn@[return: Boolean  doc: """
+ok?: [fn@[bind: [a]  return: Boolean  doc: """
 Check if Result is Ok.
 
 Example: [ok? [Result.Ok 42]] => Boolean.True
@@ -2134,7 +2134,7 @@ Note: Predicate for Result success case.
         [case [let _] [Result.Ok]    Boolean.True]
         [case [let _] [Result.Error] Boolean.False]]]
 
-error?: [fn@[return: Boolean  doc: """
+error?: [fn@[bind: [a]  return: Boolean  doc: """
 Check if Result is Error.
 
 Example: [error? [Result.Error "bad"]] => Boolean.True
@@ -3524,7 +3524,7 @@ concat-seq: [fn@[bind: [a]  return: [Seq a]] [let a@[Seq a] b@[Seq a]]
     [case [let p] [Seq.Cons p] [Seq.Cons head: p.head  tail: [concat-seq p.tail b]]]
     Seq.End:      b]]
 
-join: [fn@[return: String  doc: """
+join: [fn@[bind: [a]  return: String  doc: """
 Join collection elements as strings with a separator.
 
 Example: [join ", " ["a" "b" "c"]] => "a, b, c"

@@ -6,14 +6,13 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use crate::ast::{
-    node_id, Annotation, Pattern, Span, Spanned, SurfaceDeclaration, SurfaceDocument,
-    SurfaceExpression, SurfaceItem, SurfaceNode, SurfaceProgram, TypeAnnotationTable,
+    node_id, Pattern, Span, Spanned, SurfaceDeclaration, SurfaceDocument, SurfaceExpression,
+    SurfaceItem, SurfaceNode, SurfaceProgram, TypeAnnotationTable,
 };
 // All production inference helpers now walk SurfaceExpression natively.
 // No Expr bridge needed — tests use parse_surface_expression directly.
 use crate::coverage;
 use crate::env::Env;
-use crate::rust_span;
 use crate::types::{
     generalize, instantiate_scheme, InferState, Kind, Row, Type, TypeAlias, TypeEnv, TypeError,
     TypeScheme,
@@ -1337,9 +1336,21 @@ pub(crate) async fn infer_surface_expr(
                 // position with a return-type annotation produces a zero-param function type.
                 // This supports standalone `Fn@Int` expressions in type position.
                 if let Some(ann) = annotation {
+                    let stub_env = crate::types::TypeEnv::new();
+                    let mut constraints: Vec<crate::types::Constraint> = Vec::new();
                     if name == "Fn" || name == "Function" {
-                        let ret_ty =
-                            resolve_typeassert_annotation_sync(ann, state).unwrap_or(Type::Unknown);
+                        let ret_ty = typecheck_annot::resolve_annotation(
+                            &ann.node,
+                            &stub_env,
+                            ann.span.clone(),
+                            state,
+                            &mut constraints,
+                            &mut None,
+                            &mut None,
+                            None,
+                        )
+                        .await
+                        .unwrap_or(Type::Unknown);
                         state
                             .failed_bindings
                             .insert(name.clone(), node.span.clone());
@@ -1350,12 +1361,22 @@ pub(crate) async fn infer_surface_expr(
                             required_count: 0,
                         });
                     }
-                    if let Some(ty) = resolve_typeassert_annotation_sync(ann, state) {
-                        state
-                            .failed_bindings
-                            .insert(name.clone(), node.span.clone());
-                        return Ok(ty);
-                    }
+                    let ty = typecheck_annot::resolve_annotation(
+                        &ann.node,
+                        &stub_env,
+                        ann.span.clone(),
+                        state,
+                        &mut constraints,
+                        &mut None,
+                        &mut None,
+                        None,
+                    )
+                    .await
+                    .unwrap_or(Type::Unknown);
+                    state
+                        .failed_bindings
+                        .insert(name.clone(), node.span.clone());
+                    return Ok(ty);
                 }
                 // No annotation: undefined variable is a hard error.
                 Err(vec![err])
@@ -2272,64 +2293,78 @@ pub(crate) async fn infer_surface_expr(
                 })
                 .collect();
             // Resolve annotations via the async resolver (resolve_annotation from
-            // typecheck_annot.rs) so that user-defined type names (e.g. @Dict, @Color)
-            // are looked up through state.type_stage_env rather than falling back to the
-            // opaque TyCon("…") sentinel produced by the sync resolver.
-            //
-            // The async resolver (resolve_type_name) requires that lowercase type-variable
-            // names be pre-seeded in ann_mapping before they are referenced — it does not
-            // auto-create TypeVars for unseen names (unlike the old sync resolver).
-            // We therefore scan all param and return annotations first to collect every
-            // lowercase name, create a fresh TypeVar for each, and register it in
-            // ann_mapping_str before the annotation resolution loop.
+            // typecheck_annot.rs). TypeVars must be declared via bind: in the fn metadata;
+            // resolve_annotation populates ann_mapping_str from bind: declarations before
+            // resolving return: and param annotations.
             {
-                // Step 1: Collect all lowercase TypeVar names from all annotations on this
-                // function (params + return). Pre-seed ann_mapping_str so that every
-                // lowercase name encountered during resolve_annotation has an entry.
-                let mut lowercase_names: Vec<String> = Vec::new();
-                for p in &params_converted {
-                    if let Some(ann) = &p.node.annotation {
-                        collect_annotation_type_var_names(&ann.node, &mut lowercase_names);
-                    }
-                }
-                if let Some(ret_ann) = return_ann {
-                    collect_annotation_type_var_names(&ret_ann.node, &mut lowercase_names);
-                }
-
-                // Step 2: Create fresh TypeVars for each unique lowercase name and register
-                // them in ann_mapping_str. Using the first param's span as a fallback span.
-                let fallback_span = params_converted
-                    .first()
-                    .map(|p| p.span.clone())
-                    .unwrap_or_else(|| node.span.clone());
+                // ann_mapping_str starts empty — bind: processing populates it.
+                // All annotations share the same map so TypeVars are deduplicated.
                 let mut ann_mapping_str: HashMap<String, String> = HashMap::new();
-                for name in &lowercase_names {
-                    let var_name = state.fresh_type_var_with(
-                        Some(name.as_str()),
-                        Some(state.level),
-                        Kind::Type,
-                        &fallback_span,
-                    ).0;
-                    state.type_var_source_names.insert(var_name.clone(), name.clone());
-                    ann_mapping_str.insert(name.clone(), var_name);
-                }
-
-                // Step 3: Resolve param and return annotations using the async resolver.
-                // All annotations share the same ann_mapping_str so that a lowercase name
-                // like `a` in `fn@a [let x@a]` maps to the SAME TypeVar throughout.
                 let stub_type_env = crate::types::TypeEnv::new();
                 let mut constraints: Vec<crate::types::Constraint> = Vec::new();
                 let mut ann_mapping_opt = Some(&mut ann_mapping_str);
                 let mut row_ann_mapping_str: HashMap<String, String> = HashMap::new();
                 let mut row_ann_mapping_opt = Some(&mut row_ann_mapping_str);
 
+                // Step 1: Resolve return annotation FIRST so bind: TypeVars are registered
+                // in ann_mapping_str before param annotations are resolved.
+                // For fn metadata dicts (bind:/return:/constraint:/doc:), call
+                // resolve_fn_metadata directly — this populates ann_mapping_str via bind:
+                // AND returns the unwrapped return type (not a Type::Function wrapper).
+                // For other annotation forms, use resolve_annotation normally.
+                let pre_declared_ret: Option<Option<Type>> = if let Some(ret_ann) = return_ann {
+                    let resolved = match &ret_ann.node {
+                        crate::ast::Annotation::PropertyDict(entries)
+                            if entries.iter().any(|e| {
+                                e.node.key.as_ref().map_or(false, |k| {
+                                    matches!(&k.expr,
+                                        crate::ast::SurfaceExpression::Str(s)
+                                            if crate::ast::STANDARD_ANN_KEYS.contains(&s.as_str()))
+                                })
+                            }) =>
+                        {
+                            // fn metadata dict: resolve_fn_metadata populates bind: TypeVars
+                            // into ann_mapping_str and returns the extracted return type directly.
+                            let (ret_ty, _doc) = typecheck_annot::resolve_fn_metadata(
+                                entries,
+                                &stub_type_env,
+                                ret_ann.span.clone(),
+                                state,
+                                &mut constraints,
+                                &mut ann_mapping_opt,
+                                &mut row_ann_mapping_opt,
+                                None,
+                            )
+                            .await
+                            .map_err(|e| vec![TypeError::from(e)])?;
+                            Some(ret_ty)
+                        }
+                        _ => {
+                            // Non-metadata annotation: use resolve_annotation normally.
+                            typecheck_annot::resolve_annotation(
+                                &ret_ann.node,
+                                &stub_type_env,
+                                ret_ann.span.clone(),
+                                state,
+                                &mut constraints,
+                                &mut ann_mapping_opt,
+                                &mut row_ann_mapping_opt,
+                                None,
+                            )
+                            .await
+                            .ok()
+                        }
+                    };
+                    Some(resolved)
+                } else {
+                    None
+                };
+
+                // Step 2: Resolve param annotations using the now-populated ann_mapping.
                 let mut fn_env_inner = Env::with_parent(Arc::clone(env));
                 let mut param_types: Vec<(Option<String>, Type)> = Vec::new();
                 for p in &params_converted {
-                    // Use param annotation if available for better type info
                     let param_ty = if p.node.variadic {
-                        // Variadic params collect positional args into an open integer-keyed record.
-                        // Mirrors the infer_fn (async) treatment of variadic params.
                         let elem_ty = state.fresh_type_var(&p.span);
                         Type::Dict(Row {
                             fields: indexmap::IndexMap::new(),
@@ -2352,9 +2387,6 @@ pub(crate) async fn infer_surface_expr(
                         .await
                         .map_err(|e| vec![e])?
                     } else {
-                        // Unannotated params use Unknown (gradual typing escape hatch).
-                        // Using fresh_type_var() here would cause O(N²) blowup in the prelude
-                        // type-checking (see comment in infer_fn in typecheck_match.rs).
                         Type::Unknown
                     };
                     fn_env_inner.insert(p.node.name.clone(), param_ty.clone());
@@ -2364,55 +2396,47 @@ pub(crate) async fn infer_surface_expr(
                 let body_ty =
                     Box::pin(infer_surface_expr(body, &fn_env_arc, state, type_map)).await?;
 
-                // Determine the function's return type.
-                // Priority: declared return annotation (if resolvable) > inferred body type.
-                // Resolve the return annotation using the same ann_mapping_str as params,
-                // so that `fn@a [let x@a]` shares the same TypeVar for param and return.
-                let fn_ret_ty = if let Some(ret_ann) = return_ann {
-                    let declared_ret = typecheck_annot::resolve_annotation(
-                        &ret_ann.node,
-                        &stub_type_env,
-                        ret_ann.span.clone(),
-                        state,
-                        &mut constraints,
-                        &mut ann_mapping_opt,
-                        &mut row_ann_mapping_opt,
-                        None,
-                    )
-                    .await
-                    .map_err(|e| vec![e])?;
-                    // Check for body type mismatches against concrete return annotations.
-                    // Only check concrete primitive mismatches: Int, Float, String, Bytes.
-                    // Avoid TyCon (e.g. "Dict" doesn't match Record), TypeVar, Unknown, Any.
-                    let is_checkable_primitive = matches!(
-                        declared_ret,
-                        Type::Int | Type::Float | Type::Str | Type::Bytes
-                    );
-                    if is_checkable_primitive {
-                        let body_resolved = if state.subst.type_map.borrow().is_empty() {
-                            body_ty.clone()
-                        } else {
-                            state.subst.apply(&body_ty)
-                        };
-                        // Only report if body is also a concrete non-Unknown primitive type
-                        let body_is_concrete =
-                            !matches!(body_resolved, Type::Unknown | Type::Any | Type::TypeVar(..));
-                        if body_is_concrete
-                            && !Type::is_consistent_subtype(&body_resolved, &declared_ret)
-                        {
-                            return Err(vec![TypeError::type_mismatch(
-                                &declared_ret,
-                                &body_resolved,
-                                node.span.clone(),
-                            )]);
+                // Step 3: Use the pre-resolved return type (or fall back to body type).
+                let fn_ret_ty = if let Some(declared_ret_opt) = pre_declared_ret {
+                    if let Some(declared_ret) = declared_ret_opt {
+                        // Check for body type mismatches against concrete return annotations.
+                        // Only check concrete primitive mismatches: Int, Float, String, Bytes.
+                        // Avoid TyCon (e.g. "Dict" doesn't match Record), TypeVar, Unknown, Any.
+                        let is_checkable_primitive = matches!(
+                            declared_ret,
+                            Type::Int | Type::Float | Type::Str | Type::Bytes
+                        );
+                        if is_checkable_primitive {
+                            let body_resolved = if state.subst.type_map.borrow().is_empty() {
+                                body_ty.clone()
+                            } else {
+                                state.subst.apply(&body_ty)
+                            };
+                            // Only report if body is also a concrete non-Unknown primitive type
+                            let body_is_concrete = !matches!(
+                                body_resolved,
+                                Type::Unknown | Type::Any | Type::TypeVar(..)
+                            );
+                            if body_is_concrete
+                                && !Type::is_consistent_subtype(&body_resolved, &declared_ret)
+                            {
+                                return Err(vec![TypeError::type_mismatch(
+                                    &declared_ret,
+                                    &body_resolved,
+                                    node.span.clone(),
+                                )]);
+                            }
                         }
-                    }
-                    // If the resolved return type is Unknown and the body type is concrete,
-                    // prefer the body type (it carries more information than Unknown).
-                    // But preserve TypeVar — it's a deliberate annotation that should unify.
-                    match &declared_ret {
-                        Type::Unknown => body_ty.clone(),
-                        _ => declared_ret,
+                        // If the resolved return type is Unknown and the body type is concrete,
+                        // prefer the body type (it carries more information than Unknown).
+                        // But preserve TypeVar — it's a deliberate annotation that should unify.
+                        match &declared_ret {
+                            Type::Unknown => body_ty.clone(),
+                            _ => declared_ret,
+                        }
+                    } else {
+                        // Return annotation resolved to error — fall back to body type.
+                        body_ty.clone()
                     }
                 } else {
                     body_ty.clone()
@@ -2439,8 +2463,8 @@ pub(crate) async fn infer_surface_expr(
             expr: inner,
             ..
         } => {
-            // Infer the inner expression type, then try to resolve the annotation
-            // synchronously and check for type mismatches (arity, return type, etc.).
+            // Infer the inner expression type, then resolve the annotation via the async
+            // resolver and check for type mismatches (arity, return type, etc.).
             //
             // ASSERT-DEFAULT: when the annotation carries a `default:` property, a type
             // mismatch or inference error on the inner expression is suppressed — the
@@ -2461,14 +2485,28 @@ pub(crate) async fn infer_surface_expr(
                 }
             };
 
-            let annotation_result = resolve_typeassert_annotation_sync(annotation, state);
-            // Drain annotation_errors produced inside resolve_typeassert_annotation_sync.
-            // These are malformed-annotation errors (e.g. @[type: 42], @[type: [Fn@Int]]).
-            if !state.annotation_errors.is_empty() {
-                return Err(std::mem::take(&mut state.annotation_errors));
-            }
+            // Resolve the annotation using the async resolver so that user-defined type names
+            // (e.g. @Dict, @Color) are looked up through state.tycon_env rather than falling
+            // back to the opaque TyCon("…") sentinel produced by the old sync resolver.
+            let stub_env = crate::types::TypeEnv::new();
+            let mut constraints: Vec<crate::types::Constraint> = Vec::new();
+            let annotation_result = typecheck_annot::resolve_annotation(
+                &annotation.node,
+                &stub_env,
+                annotation.span.clone(),
+                state,
+                &mut constraints,
+                &mut None,
+                &mut None,
+                None,
+            )
+            .await;
+            let annotation_resolved = match annotation_result {
+                Ok(ty) => Some(ty),
+                Err(_) => None,
+            };
 
-            if let Some(expected) = annotation_result {
+            if let Some(expected) = annotation_resolved {
                 let expected_resolved = if state.subst.type_map.borrow().is_empty() {
                     expected.clone()
                 } else {
@@ -3560,768 +3598,6 @@ pub(crate) async fn check_surface_expr(
         } else {
             Ok(())
         }
-    }
-}
-
-/// Resolve a TypeAssert annotation to a Type synchronously, for best-effort TypeAssert checking.
-///
-/// Handles:
-/// - Simple type names: `@Int`, `@String`, etc.
-/// - Normalized form: `PropertyDict([{type: VarRef("Int")}])`
-/// - Function types: `@[Fn@RetType [ParamType1 ParamType2 ...]]`
-///   which after parse_annotation becomes PropertyDict with keyless entries:
-///   [VarRef("Fn")@RetType, Call(Int, [Int, ...])]
-///
-/// Returns None if the annotation cannot be resolved synchronously.
-fn resolve_typeassert_annotation_sync(
-    annotation: &Spanned<Annotation>,
-    state: &mut InferState,
-) -> Option<Type> {
-    match &annotation.node {
-        Annotation::Simple(name) => Some(resolve_simple_type_name_for_typeassert(name, state)),
-        Annotation::Annotated(name, _) => {
-            Some(resolve_simple_type_name_for_typeassert(name, state))
-        }
-        Annotation::PropertyDict(entries) => {
-            // Case 1: normalized `@TypeName` form — PropertyDict([{key:"type", value: TypeExpr}])
-            // The `type:` key value is the actual type. We handle:
-            //   - Simple VarRef: `@[type: Int]` → Type::Int
-            //   - Call form `[Fn@Ret [Params...]]`: `@[type: [Fn@Int [Int]]]` → Function{...}
-            //   - Record dict: `@[type: [name: Str  age: Int]]` → Record{...}
-            //
-            // IMPORTANT: `type:` is only the shorthand when all other keys are property-dict keys
-            // (default, doc, constraint, kinds, bind, return, resolver). When non-property keys
-            // are present (e.g. @[type: String id: Int]), treat as a record type instead.
-            let property_dict_keys = [
-                "type",
-                "default",
-                "doc",
-                "constraint",
-                "kinds",
-                "bind",
-                "return",
-                "resolver",
-                "repr",
-                "is",
-            ];
-            let has_type_key = entries.iter().any(|e| {
-                e.node.key.as_ref().map_or(false, |k| {
-                    matches!(&k.expr, SurfaceExpression::Str(s) if s == "type")
-                        || matches!(&k.expr, SurfaceExpression::VarRef { name, .. } if name == "type")
-                })
-            });
-            let all_keys_are_property_keys = entries.iter().all(|e| {
-                e.node.key.as_ref().map_or(true, |k| {
-                    let name = match &k.expr {
-                        SurfaceExpression::Str(s) => s.as_str(),
-                        SurfaceExpression::VarRef { name, .. } => name.as_str(),
-                        _ => return false,
-                    };
-                    property_dict_keys.contains(&name)
-                })
-            });
-            if has_type_key && all_keys_are_property_keys {
-                for entry in entries {
-                    let key_is_type = entry.node.key.as_ref().map_or(false, |k| {
-                        matches!(&k.expr, SurfaceExpression::Str(s) if s == "type")
-                            || matches!(&k.expr, SurfaceExpression::VarRef { name, .. } if name == "type")
-                    });
-                    if key_is_type {
-                        let resolved = resolve_type_node_for_typeassert(&entry.node.value, state);
-                        return Some(resolved);
-                    }
-                }
-            }
-
-            // Case 1.5: single positional entry that is an `[all T1 T2 ...]` intersection
-            // or `[without T]` negation call. These appear as the sole positional entry in
-            // a PropertyDict annotation: `@[[all [x: Int ...] [y: String ...]]]`.
-            if entries.len() == 1 && entries[0].node.key.is_none() {
-                let inner = &entries[0].node.value;
-                if let SurfaceExpression::Call {
-                    func,
-                    args,
-                    implied: true,
-                    ..
-                } = &inner.expr
-                {
-                    if let SurfaceExpression::VarRef {
-                        name,
-                        annotation: None,
-                        ..
-                    } = &func.expr
-                    {
-                        if name == "all" {
-                            let members: Vec<Type> = args
-                                .iter()
-                                .map(|a| resolve_type_node_for_typeassert(a, state))
-                                .collect();
-                            if !members.is_empty() {
-                                return Some(Type::normalize_intersection(members));
-                            }
-                        } else if name == "without" && args.len() == 1 {
-                            let inner_ty = resolve_type_node_for_typeassert(&args[0], state);
-                            return Some(Type::Negation(Box::new(inner_ty)));
-                        } else if name == "or" || name == "union" {
-                            let members: Vec<Type> = args
-                                .iter()
-                                .map(|a| resolve_type_node_for_typeassert(a, state))
-                                .collect();
-                            if !members.is_empty() {
-                                return Some(Type::normalize_union(members));
-                            }
-                        }
-                    }
-                }
-                // Single positional entry that is itself a type node (e.g. @[VarRef("Int")]).
-                let resolved = resolve_type_node_for_typeassert(inner, state);
-                if !matches!(resolved, Type::Unknown) {
-                    return Some(resolved);
-                }
-            }
-
-            // Case 2: Fn@RetType [Params] form
-            // Keyless entries: [VarRef("Fn")@RetType, params_node]
-            if entries.len() == 2 && entries[0].node.key.is_none() && entries[1].node.key.is_none()
-            {
-                let func_node = &entries[0].node.value;
-                let params_node = &entries[1].node.value;
-
-                if let SurfaceExpression::VarRef {
-                    name,
-                    annotation: Some(ret_ann),
-                    ..
-                } = &func_node.expr
-                {
-                    if name == "Fn" {
-                        let ret_ty = resolve_simple_annotation_for_typeassert(ret_ann, state);
-                        let param_types = resolve_params_for_typeassert(params_node, state);
-                        let required_count = param_types.len();
-                        let params: Vec<(Option<String>, Type)> =
-                            param_types.into_iter().map(|ty| (None, ty)).collect();
-                        return Some(Type::Function {
-                            params,
-                            ret: Box::new(ret_ty),
-                            variadic: false,
-                            required_count,
-                        });
-                    }
-                }
-            }
-
-            // Case 2.5: parameterized type alias application — `@[TypeName Arg1 Arg2 ...]`.
-            // All-positional entries where the first entry is a registered TyCon name (starts
-            // uppercase) and there are type arguments following it. Expand via expand_named.
-            let all_positional = entries.iter().all(|e| e.node.key.is_none());
-            if all_positional && entries.len() >= 2 {
-                // Check if the first entry is an uppercase-named VarRef (potential TyCon head).
-                let first_is_tycon = if let SurfaceExpression::VarRef {
-                    name,
-                    annotation: None,
-                    ..
-                } = &entries[0].node.value.expr
-                {
-                    name.starts_with(|c: char| c.is_uppercase())
-                        && state.tycon_env.contains_key(name.as_str())
-                } else {
-                    false
-                };
-
-                if first_is_tycon {
-                    let tycon_name = match &entries[0].node.value.expr {
-                        SurfaceExpression::VarRef { name, .. } => name.clone(),
-                        _ => unreachable!(),
-                    };
-                    // Only apply if the arg count matches the alias's param count exactly.
-                    // Prevents misinterpreting `@[Boolean True]` (union of 2 type members) as
-                    // a parameterized application of `Boolean` (which has 0 params).
-                    let expected_arity = state
-                        .tycon_env
-                        .get(tycon_name.as_str())
-                        .map(|def| def.params.len());
-                    let arg_count = entries.len() - 1; // entries[1..] are the args
-                    if expected_arity == Some(arg_count) && arg_count > 0 {
-                        let args: Vec<Type> = entries[1..]
-                            .iter()
-                            .map(|e| resolve_simple_type_node_for_typeassert(&e.node.value, state))
-                            .collect();
-                        // Use a stub TypeEnv — expand_named now looks in state.tycon_env first.
-                        let stub_env = TypeEnv::new();
-                        if let Some(expanded) = expand_named(&tycon_name, &args, &stub_env, state) {
-                            return Some(expanded);
-                        }
-                    } else if let Some(expected) = expected_arity {
-                        if expected > 0 && arg_count > 0 && expected != arg_count {
-                            // Arity mismatch: type alias expects `expected` params, got `arg_count`.
-                            state.annotation_errors.push(TypeError::new(
-                                format!(
-                                    "type alias '{}' requires {} argument(s) but got {}",
-                                    tycon_name, expected, arg_count
-                                ),
-                                annotation.span.clone(),
-                            ));
-                            return Some(Type::Unknown);
-                        }
-                    }
-                    // If arity doesn't match (in other cases) or expansion fails, fall through to Union.
-                }
-            }
-
-            // Case 2.6: keyed record type annotation — `@[name: String  age: Int]`.
-            // When there are keyed entries (at least one key is present) that are NOT all
-            // property-dict keys, treat the annotation as a structural record type.
-            // This handles annotations like `@[name: String ...]` (with `...` rest notation)
-            // and `@[x: Int  y: Float]` (multi-field record type assertions).
-            if entries.iter().any(|e| e.node.key.is_some()) {
-                use indexmap::IndexMap;
-                let mut fields: IndexMap<String, Type> = IndexMap::new();
-                for entry in entries {
-                    // Skip `...` rest entries (SurfaceExpression::Rest) — they have no key.
-                    if let SurfaceExpression::Rest(_name, _) = &entry.node.value.expr {
-                        continue;
-                    }
-                    if let Some(ref key_node) = entry.node.key {
-                        let key_name: Option<String> = match &key_node.expr {
-                            SurfaceExpression::Str(s) => Some(s.clone()),
-                            SurfaceExpression::VarRef { name, .. } => Some(name.clone()),
-                            _ => None,
-                        };
-                        if let Some(k) = key_name {
-                            let field_ty =
-                                resolve_type_node_for_typeassert(&entry.node.value, state);
-                            fields.insert(k, field_ty);
-                        }
-                    }
-                }
-                if !fields.is_empty() {
-                    return Some(Type::Dict(Row {
-                        fields,
-                        tail: crate::type_def::RowTail::Empty,
-                    }));
-                }
-            }
-
-            // Case 3: all-positional entries → Union type.
-            // `@[Int Null]`, `@[a Null]`, `@[[ok: Int] [err: String]]` — two or more keyless
-            // entries, none matching the special-case handlers above. Each positional entry is
-            // a union member resolved via resolve_type_node_for_typeassert (handles Dict/Record
-            // nodes as well as simple type names).
-            if all_positional && entries.len() >= 2 {
-                let members: Vec<Type> = entries
-                    .iter()
-                    .map(|e| resolve_type_node_for_typeassert(&e.node.value, state))
-                    .collect();
-                return Some(Type::normalize_union(members));
-            }
-
-            None
-        }
-    }
-}
-
-/// Resolve a SurfaceNode as a type synchronously for TypeAssert resolution.
-/// Handles VarRef (simple type name), Call (implied call in annotation position), and Dict (record type).
-///
-/// Malformed annotations push errors into `state.annotation_errors`; the caller is
-/// responsible for draining that field and folding errors into the result.
-fn resolve_type_node_for_typeassert(node: &Arc<SurfaceNode>, state: &mut InferState) -> Type {
-    match &node.expr {
-        // String literal in type position: `"ok"`, `"err"` — string-tag union members.
-        SurfaceExpression::Str(s) => Type::StringLiteral(s.clone()),
-        SurfaceExpression::VarRef {
-            name,
-            annotation: None,
-            ..
-        } => resolve_simple_type_name_for_typeassert(name, state),
-        SurfaceExpression::VarRef {
-            name,
-            annotation: Some(ann),
-            ..
-        } => {
-            // Annotated VarRef: `Fn@RetType` in type position (used in `@[Fn@Int [Int]]`)
-            // The annotation is the return type. The VarRef name is the constructor.
-            if name == "Fn" || name == "fn" {
-                // Function type: Fn@RetType — no params yet, need the args from the call node.
-                // Return the return type wrapped in a zero-param function as a best effort.
-                let ret_ty =
-                    resolve_typeassert_annotation_sync(ann, state).unwrap_or(Type::Unknown);
-                Type::Function {
-                    params: vec![],
-                    ret: Box::new(ret_ty),
-                    variadic: false,
-                    required_count: 0,
-                }
-            } else {
-                resolve_simple_type_name_for_typeassert(name, state)
-            }
-        }
-        // Implied call: `[Fn@RetType [ParamType1 ParamType2 ...]]` in annotation position.
-        // func = VarRef("Fn")@RetType, args = [[ParamType1 ...]] or [ParamType1, ParamType2, ...]
-        SurfaceExpression::Call {
-            func,
-            args,
-            implied: true,
-            ..
-        } => {
-            if let SurfaceExpression::VarRef {
-                name,
-                annotation: Some(ret_ann),
-                ..
-            } = &func.expr
-            {
-                if name == "Fn" || name == "fn" {
-                    // Validate: the argument list (if any) must not include non-bracket types.
-                    for arg in args {
-                        if matches!(
-                            &arg.expr,
-                            SurfaceExpression::Int(_) | SurfaceExpression::Float(_)
-                        ) {
-                            state.annotation_errors.push(TypeError::new(
-                                "parameter list must be a bracket expression",
-                                arg.span.clone(),
-                            ));
-                            return Type::Unknown;
-                        }
-                    }
-                    let ret_ty =
-                        resolve_typeassert_annotation_sync(ret_ann, state).unwrap_or(Type::Unknown);
-                    let param_types = if args.len() == 1 {
-                        resolve_params_for_typeassert(&args[0], state)
-                    } else {
-                        args.iter()
-                            .map(|a| resolve_simple_type_node_for_typeassert(a, state))
-                            .collect()
-                    };
-                    let required_count = param_types.len();
-                    let params: Vec<(Option<String>, Type)> =
-                        param_types.into_iter().map(|ty| (None, ty)).collect();
-                    return Type::Function {
-                        params,
-                        ret: Box::new(ret_ty),
-                        variadic: false,
-                        required_count,
-                    };
-                }
-            }
-            // `[or T1 T2 ...]` — union type form.
-            // For [or Int Null]: func = VarRef("or"), args = [VarRef("Int"), VarRef("Null")]
-            if let SurfaceExpression::VarRef {
-                name,
-                annotation: None,
-                ..
-            } = &func.expr
-            {
-                if name == "or" || name == "union" {
-                    let members: Vec<Type> = args
-                        .iter()
-                        .map(|a| resolve_simple_type_node_for_typeassert(a, state))
-                        .collect();
-                    if !members.is_empty() {
-                        return Type::normalize_union(members);
-                    }
-                }
-            }
-            // Non-Fn implied call: treat as unknown type.
-            Type::Unknown
-        }
-        // Integer literal in type position: invalid type expression.
-        SurfaceExpression::Int(_) | SurfaceExpression::Float(_) => {
-            state.annotation_errors.push(TypeError::new(
-                "invalid type expression in annotation: expected a type name or composite type",
-                node.span.clone(),
-            ));
-            Type::Unknown
-        }
-        // Dict expression: record type `[name: Str  age: Int]` or function type `[Fn@Ret [Params]]`.
-        SurfaceExpression::Dict(dict_entries) => {
-            // Check for Fn@RetType [Params] form: all-positional Dict where entry[0] is Fn@RetType.
-            let all_positional = dict_entries.iter().all(|e| e.node.key.is_none());
-            if all_positional && !dict_entries.is_empty() {
-                // Check if first entry is Fn@RetType
-                if let SurfaceExpression::VarRef {
-                    name,
-                    annotation: Some(ret_ann),
-                    ..
-                } = &dict_entries[0].node.value.expr
-                {
-                    if name == "Fn" || name == "fn" {
-                        // Exactly 2 entries required: [Fn@Ret, [Params...]]
-                        if dict_entries.len() == 1 {
-                            state.annotation_errors.push(TypeError::new(
-                                "function type annotation requires exactly 2 entries: [Fn@RetType [ParamTypes...]]",
-                                node.span.clone(),
-                            ));
-                            return Type::Unknown;
-                        }
-                        // Validate that second entry is a Dict or VarRef (valid param list).
-                        let params_node = &dict_entries[1].node.value;
-                        let is_valid_param_list = matches!(
-                            &params_node.expr,
-                            SurfaceExpression::Dict(_)
-                                | SurfaceExpression::VarRef { .. }
-                                | SurfaceExpression::Call { implied: true, .. }
-                        );
-                        if !is_valid_param_list {
-                            state.annotation_errors.push(TypeError::new(
-                                "parameter list must be a bracket expression",
-                                params_node.span.clone(),
-                            ));
-                            return Type::Unknown;
-                        }
-                        let ret_ty = resolve_typeassert_annotation_sync(ret_ann, state)
-                            .unwrap_or(Type::Unknown);
-                        let param_types = resolve_params_for_typeassert(params_node, state);
-                        let required_count = param_types.len();
-                        let params: Vec<(Option<String>, Type)> =
-                            param_types.into_iter().map(|ty| (None, ty)).collect();
-                        return Type::Function {
-                            params,
-                            ret: Box::new(ret_ty),
-                            variadic: false,
-                            required_count,
-                        };
-                    }
-                }
-            }
-            // Build a Record type from keyed entries.
-            use indexmap::IndexMap;
-            let mut fields = IndexMap::new();
-            let mut has_keys = false;
-            for entry in dict_entries {
-                if let Some(ref key_node) = entry.node.key {
-                    has_keys = true;
-                    let key_name = match &key_node.expr {
-                        SurfaceExpression::Str(s) => Some(s.clone()),
-                        SurfaceExpression::VarRef { name, .. } if name != "_" => Some(name.clone()),
-                        _ => None,
-                    };
-                    if let Some(k) = key_name {
-                        let field_ty = resolve_type_node_for_typeassert(&entry.node.value, state);
-                        // annotation_errors from nested resolution accumulate in state.annotation_errors;
-                        // the outer caller (Fn or TypeAssert arm) will drain them.
-                        fields.insert(k, field_ty);
-                    }
-                }
-            }
-            if has_keys && !fields.is_empty() {
-                Type::Dict(Row {
-                    fields,
-                    tail: crate::type_def::RowTail::Empty,
-                })
-            } else if all_positional && dict_entries.len() >= 2 {
-                // All-positional multi-entry dict in type position: treat as a union.
-                // `[[ok: Int] [err: String]]` → Union(Record({ok: Int}), Record({err: String}))
-                let members: Vec<Type> = dict_entries
-                    .iter()
-                    .map(|e| resolve_type_node_for_typeassert(&e.node.value, state))
-                    .collect();
-                let non_unknown: Vec<Type> = members
-                    .into_iter()
-                    .filter(|t| !matches!(t, Type::Unknown))
-                    .collect();
-                if non_unknown.is_empty() {
-                    Type::Unknown
-                } else {
-                    Type::normalize_union(non_unknown)
-                }
-            } else {
-                // Empty or single-positional dict with no recognized form: Unknown
-                Type::Unknown
-            }
-        }
-        _ => Type::Unknown,
-    }
-}
-
-/// Resolve a SurfaceNode as a type synchronously for TypeAssert resolution.
-/// Simple version: handles VarRef (type names) and Str (string literal types).
-fn resolve_simple_type_node_for_typeassert(
-    node: &Arc<SurfaceNode>,
-    state: &mut InferState,
-) -> Type {
-    match &node.expr {
-        SurfaceExpression::VarRef { name, .. } => {
-            resolve_simple_type_name_for_typeassert(name, state)
-        }
-        // String literal in type position: `"ok" | "err"` — used in string-tag union annotations.
-        SurfaceExpression::Str(s) => Type::StringLiteral(s.clone()),
-        _ => Type::Unknown,
-    }
-}
-
-/// Collect all lowercase type-variable annotation names from an `Annotation`.
-///
-/// Scans the annotation recursively (including `PropertyDict` entry values) to find
-/// every lowercase name that appears in a type-variable position. The result is used
-/// to pre-seed the `ann_mapping` before calling the async `resolve_annotation`, which
-/// requires all lowercase names to be declared before they are used.
-///
-/// Collected names satisfy: starts with lowercase, not "any" or "unknown", and appear
-/// either as a bare `Simple` annotation or as a `VarRef` inside a `PropertyDict` value.
-fn collect_annotation_type_var_names(ann: &Annotation, out: &mut Vec<String>) {
-    match ann {
-        Annotation::Simple(name) => {
-            if name.starts_with(|c: char| c.is_lowercase())
-                && !matches!(name.as_str(), "any" | "unknown")
-            {
-                if !out.contains(name) {
-                    out.push(name.clone());
-                }
-            }
-        }
-        Annotation::PropertyDict(entries) => {
-            for entry in entries {
-                collect_type_var_names_in_surface_node(&entry.node.value, out);
-            }
-        }
-        Annotation::Annotated(_, inner) => {
-            collect_annotation_type_var_names(inner, out);
-        }
-    }
-}
-
-/// Recursively collect lowercase type-variable names from a surface expression node.
-/// Only `VarRef` nodes whose name starts with lowercase (excluding "any"/"unknown") are
-/// collected — these are the positions where type-variable names appear in annotation dicts.
-fn collect_type_var_names_in_surface_node(node: &Arc<SurfaceNode>, out: &mut Vec<String>) {
-    collect_type_var_names_in_expr(&node.expr, out);
-}
-
-fn collect_type_var_names_in_expr(expr: &SurfaceExpression, out: &mut Vec<String>) {
-    match expr {
-        SurfaceExpression::VarRef { name, .. } => {
-            if name.starts_with(|c: char| c.is_lowercase())
-                && !matches!(name.as_str(), "any" | "unknown")
-            {
-                if !out.contains(name) {
-                    out.push(name.clone());
-                }
-            }
-        }
-        SurfaceExpression::Call { func, args, .. } => {
-            collect_type_var_names_in_surface_node(func, out);
-            for arg in args {
-                collect_type_var_names_in_surface_node(arg, out);
-            }
-        }
-        SurfaceExpression::Dict(entries) => {
-            for entry in entries {
-                collect_type_var_names_in_surface_node(&entry.node.value, out);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn resolve_simple_type_name_for_typeassert(name: &str, state: &mut InferState) -> Type {
-    match name {
-        "Int" | "Integer" => Type::Int,
-        "Float" => Type::Float,
-        "String" | "Str" => Type::Str,
-        "Bytes" => Type::Bytes,
-        "Any" => Type::Any,
-        "Unknown" => Type::Unknown,
-        "Never" => Type::Never,
-        // Bare `@Fn` or `@Function` — the top of the function lattice: "any callable".
-        // Equivalent to `Function { params: [], ret: Top, variadic: true, required_count: 0 }`.
-        // This allows unification with any concrete function type via subtyping.
-        "Fn" | "Function" => Type::Function {
-            params: vec![],
-            ret: Box::new(Type::Any),
-            variadic: true,
-            required_count: 0,
-        },
-        other if other.starts_with(|c: char| c.is_uppercase()) => {
-            // User-defined type name: try to expand via state.tycon_env.
-            // This enables `@Coord` in a TypeAssert to expand to the alias body (e.g., Record({x: Int, y: Int}))
-            // rather than staying as an opaque TyCon. The expansion only handles zero-param aliases
-            // and aliases with simple bodies — parameterized aliases remain as TyCon.
-            if let Some(def) = state.tycon_env.get(other) {
-                if def.params.is_empty() && !matches!(&def.body, Type::Unknown) {
-                    return def.body.clone();
-                }
-            }
-            Type::TyCon(other.to_string())
-        }
-        // Lowercase names in type position are type variables.
-        // Return a fresh TypeVar rather than Unknown so that union annotations like
-        // `@[a Null]` produce Union(TypeVar(_tN), Record({})) instead of Unknown.
-        // Each call to resolve_simple_type_name_for_typeassert creates an independent fresh
-        // TypeVar (no sharing across calls). For sharing within a single function, use
-        // resolve_simple_annotation_for_typeassert_with_mapping with ann_mapping instead.
-        _ => state.fresh_type_var(&rust_span!()),
-    }
-}
-
-fn resolve_simple_annotation_for_typeassert(
-    ann: &Spanned<Annotation>,
-    state: &mut InferState,
-) -> Type {
-    match &ann.node {
-        Annotation::Simple(name) => resolve_simple_type_name_for_typeassert(name.as_str(), state),
-        Annotation::PropertyDict(entries) => {
-            // Check for `type:` key — the value IS the type expression.
-            // BUT only treat it as the `@[type: T]` shorthand when ALL other keys
-            // are in the known property-dict-key set (type, default, doc, constraint,
-            // kinds, bind, return, resolver). When non-property keys like `id:` are
-            // present alongside `type:`, the annotation is a record type, not a shorthand.
-            let property_dict_keys = [
-                "type",
-                "default",
-                "doc",
-                "constraint",
-                "kinds",
-                "bind",
-                "return",
-                "resolver",
-                "repr",
-                "is",
-            ];
-            let has_type_key = entries.iter().any(|e| {
-                e.node.key.as_ref().map_or(false, |k| {
-                    matches!(&k.expr, SurfaceExpression::Str(s) if s == "type")
-                        || matches!(&k.expr, SurfaceExpression::VarRef { name, .. } if name == "type")
-                })
-            });
-            let all_keys_are_property_keys = entries.iter().all(|e| {
-                e.node.key.as_ref().map_or(true, |k| {
-                    let name = match &k.expr {
-                        SurfaceExpression::Str(s) => s.as_str(),
-                        SurfaceExpression::VarRef { name, .. } => name.as_str(),
-                        _ => return false,
-                    };
-                    property_dict_keys.contains(&name)
-                })
-            });
-            if has_type_key && all_keys_are_property_keys {
-                for entry in entries {
-                    let key_is_type = entry.node.key.as_ref().map_or(false, |k| {
-                        matches!(&k.expr, SurfaceExpression::Str(s) if s == "type")
-                            || matches!(&k.expr, SurfaceExpression::VarRef { name, .. } if name == "type")
-                    });
-                    if key_is_type {
-                        return resolve_type_node_for_typeassert(&entry.node.value, state);
-                    }
-                }
-            }
-            // Check for `return:` key — function metadata annotation return type.
-            // @[return: T doc: "..."] → resolve T as the return type.
-            // Only when all keys are property-dict keys (not a record type).
-            if all_keys_are_property_keys {
-                for entry in entries {
-                    let key_is_return = entry.node.key.as_ref().map_or(false, |k| {
-                        matches!(&k.expr, SurfaceExpression::Str(s) if s == "return")
-                            || matches!(&k.expr, SurfaceExpression::VarRef { name, .. } if name == "return")
-                    });
-                    if key_is_return {
-                        return resolve_type_node_for_typeassert(&entry.node.value, state);
-                    }
-                }
-            }
-            // If we have keyed entries and NOT all keys are property-dict keys,
-            // treat this as a record type (e.g. @[type: String id: Int]).
-            if entries.iter().any(|e| e.node.key.is_some()) && !all_keys_are_property_keys {
-                use indexmap::IndexMap;
-                let mut fields = IndexMap::new();
-                for entry in entries {
-                    if let Some(ref key_node) = entry.node.key {
-                        let key_name = match &key_node.expr {
-                            SurfaceExpression::Str(s) => Some(s.clone()),
-                            SurfaceExpression::VarRef { name, .. } => Some(name.clone()),
-                            _ => None,
-                        };
-                        if let Some(k) = key_name {
-                            let field_ty =
-                                resolve_type_node_for_typeassert(&entry.node.value, state);
-                            fields.insert(k, field_ty);
-                        }
-                    }
-                }
-                if !fields.is_empty() {
-                    return Type::Dict(Row {
-                        fields,
-                        tail: crate::type_def::RowTail::Empty,
-                    });
-                }
-            }
-            // Check for Fn@Ret [Params] form (positional function type annotation).
-            if entries.len() == 2 && entries[0].node.key.is_none() && entries[1].node.key.is_none()
-            {
-                if let SurfaceExpression::VarRef {
-                    name,
-                    annotation: Some(ret_ann),
-                    ..
-                } = &entries[0].node.value.expr
-                {
-                    if name == "Fn" || name == "fn" {
-                        let ret_ty = resolve_simple_annotation_for_typeassert(ret_ann, state);
-                        let param_types =
-                            resolve_params_for_typeassert(&entries[1].node.value, state);
-                        let required_count = param_types.len();
-                        let params: Vec<(Option<String>, Type)> =
-                            param_types.into_iter().map(|ty| (None, ty)).collect();
-                        return Type::Function {
-                            params,
-                            ret: Box::new(ret_ty),
-                            variadic: false,
-                            required_count,
-                        };
-                    }
-                }
-            }
-            state.fresh_type_var(&ann.span)
-        }
-        Annotation::Annotated(name, _) => {
-            resolve_simple_type_name_for_typeassert(name.as_str(), state)
-        }
-    }
-}
-
-/// Resolve parameter types from a params bracket like `[Int Int]` (parsed as Call).
-/// `[Int Int]` → Call{func: VarRef("Int"), args: [VarRef("Int")]} → [Int, Int]
-/// `[Int]` → Call{func: VarRef("Int"), args: []} → [Int]
-/// `[[input: String ...r]]` → Dict with one positional entry [input: String ...r] → [Record({input: Str})]
-fn resolve_params_for_typeassert(node: &Arc<SurfaceNode>, state: &mut InferState) -> Vec<Type> {
-    match &node.expr {
-        SurfaceExpression::Call { func, args, .. } => {
-            let mut types = vec![resolve_surface_node_as_type(func, state)];
-            for arg in args {
-                types.push(resolve_surface_node_as_type(arg, state));
-            }
-            types
-        }
-        SurfaceExpression::VarRef { name, .. } => {
-            vec![resolve_simple_type_name_for_typeassert(name, state)]
-        }
-        SurfaceExpression::Dict(entries) if entries.is_empty() => vec![],
-        SurfaceExpression::Dict(entries) => {
-            // Non-empty Dict: each positional (keyless) entry is a parameter type.
-            // This handles `[[input: String ...r]]` (Dict with one keyless entry whose value
-            // is `[input: String ...r]`, a record type) producing [Record({input: Str})].
-            // Use resolve_type_node_for_typeassert so that record-dict entries (keyed dicts)
-            // are correctly interpreted as Record types.
-            entries
-                .iter()
-                .filter(|e| e.node.key.is_none())
-                .map(|e| resolve_type_node_for_typeassert(&e.node.value, state))
-                .collect()
-        }
-        _ => vec![state.fresh_type_var(&node.span)],
-    }
-}
-
-fn resolve_surface_node_as_type(node: &Arc<SurfaceNode>, state: &mut InferState) -> Type {
-    match &node.expr {
-        SurfaceExpression::VarRef {
-            name,
-            annotation: None,
-            ..
-        } => resolve_simple_type_name_for_typeassert(name, state),
-        SurfaceExpression::VarRef {
-            annotation: Some(ann),
-            ..
-        } => resolve_simple_annotation_for_typeassert(ann, state),
-        _ => state.fresh_type_var(&node.span),
     }
 }
 

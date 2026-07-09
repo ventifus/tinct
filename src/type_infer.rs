@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use crate::ast::Span;
-use crate::types::{Constraint, Kind, Row, Type, TypeError};
+use crate::types::{Constraint, Kind, Row, Type};
 
 /// All per-TypeVar metadata in one place.
 /// IndexMap preserves insertion order (= TypeVar creation order via monotonic counter),
@@ -314,18 +314,6 @@ pub struct InferState {
     /// Type constructor environment (from HEAD~1 design).
     /// Maps type constructor names to their TyConDef.
     pub tycon_env: std::collections::HashMap<String, std::sync::Arc<crate::type_def::TyConDef>>,
-    /// Side-channel error accumulator for sync annotation resolution.
-    ///
-    /// The sync annotation resolve functions (`resolve_type_node_for_typeassert`,
-    /// `resolve_simple_annotation_for_typeassert`, etc.) return `Type` rather than
-    /// `Result<Type, _>`. When these functions detect malformed annotations (e.g.
-    /// `@[type: 42]`, `@[type: [Fn@Int]]` with only 1 entry), they push errors here
-    /// instead of propagating them via the return value.
-    ///
-    /// Callers (the `Fn` and `TypeAssert` arms of `infer_surface_expr`) drain this
-    /// field after each annotation resolution call and fold the collected errors
-    /// into the expression result.
-    pub annotation_errors: Vec<TypeError>,
 }
 
 impl InferState {
@@ -370,7 +358,6 @@ impl InferState {
             fd_in_progress: std::collections::HashSet::new(),
             tycon_env: std::collections::HashMap::new(),
             expansion_stack: Vec::new(),
-            annotation_errors: Vec::new(),
         }
     }
 
