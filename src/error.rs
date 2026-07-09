@@ -1657,7 +1657,7 @@ fn write_frame_snippet(f: &mut fmt::Formatter<'_>, span: &Span) -> fmt::Result {
 
 impl fmt::Display for EvalError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Primary error line: "[EXXX] kind-message (defined at file:line:col)"
+        // Primary error line: "kind-message (defined at file:line:col)"
         // File path comes from the embedded SourceFile in definition_span, not a separate field.
         write!(
             f,
