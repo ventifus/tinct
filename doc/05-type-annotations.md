@@ -68,7 +68,7 @@ Config: [type [record
 
 - **`Value::Function` values**: `FnAnnotation.extra: IndexMap<String, Value>` alongside existing `doc`, `return_type`, and params fields. All annotation fields — well-known and custom — are stored here uniformly; `annotation-of` reads `extra` as the canonical annotation dict.
 - **All other values** (`Value::String`, `Value::Int`, `Value::Dict`, etc.): `Value::Annotated { inner: ThunkId, annotation: Box<Value> }` wraps any non-function value with its annotation dict. All other Value operations unwrap `Annotated` transparently (T-1123 tracks making Display/Debug/to_tinct/value_to_json transparent).
-- **Type-level positions** (type alias declarations, record field type annotations): `TyConDef.annotation: IndexMap<String, Value>` for type-level positions. Record field type annotations are stored in `TypeNode.Record.field_annotations`. _(Current state: `TyConDef.annotation` and `field_annotations` fields exist but are always `None`/empty until T-1122 (eval_type_stage_expr evaluation) lands.)_
+- **Type-level positions** (type alias declarations, record field type annotations): `TyConDef.annotation: IndexMap<String, Value>` for type-level positions. Record field type annotations are stored in `TypeNode.Dict.field_annotations`. _(Current state: `TyConDef.annotation` and `field_annotations` fields exist but are always `None`/empty until T-1122 (eval_type_stage_expr evaluation) lands.)_
 
 **`annotation-of` is a Rust builtin** that reads from all three storage sites uniformly, returning the annotation dict or an empty dict when no annotation is present. It is available at both runtime and in the type-stage evaluator.
 
@@ -851,7 +851,7 @@ Note: A `CheckerType` newtype wrapping `TypeNode` values as the type checker's p
 | Constructor | Fields | Role |
 |-------------|--------|------|
 | `TypeNode.Int`, `.Float`, `.String`, `.Bool`, `.Absent`, `.Unknown`, `.Never` | — | Primitive leaf |
-| `TypeNode.Record` | `fields@Child: [Map String TypeNode]`, `open: Bool` | Structural record |
+| `TypeNode.Dict` | `fields@Child: [Map String TypeNode]`, `open: Bool` | Structural dict |
 | `TypeNode.Union` | `types@Child: [Seq TypeNode]` | Union (BAS ∨) |
 | `TypeNode.Intersect` | `types@Child: [Seq TypeNode]` | Intersection (BAS ∧) |
 | `TypeNode.Arrow` | `params@Child: [Seq TypeNode]`, `result@Child: TypeNode` | Function type |

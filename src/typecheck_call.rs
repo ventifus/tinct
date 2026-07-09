@@ -44,13 +44,13 @@ pub(crate) fn widen_literal_types(ty: Type) -> Type {
     match ty {
         Type::IntLiteral(_) => Type::Int,
         Type::StringLiteral(_) => Type::Str,
-        Type::Record(row) => {
+        Type::Dict(row) => {
             let widened_fields = row
                 .fields
                 .into_iter()
                 .map(|(k, v)| (k, widen_literal_types(v)))
                 .collect();
-            Type::Record(Row {
+            Type::Dict(Row {
                 fields: widened_fields,
                 tail: row.tail,
             })
@@ -127,7 +127,7 @@ pub(crate) async fn check_dot_access(
         expanded.unwrap_or(target_ty)
     };
     match target_ty {
-        Type::Record(Row { ref fields, .. }) => match fields.get(field_str) {
+        Type::Dict(Row { ref fields, .. }) => match fields.get(field_str) {
             Some(ty) => Ok(ty.clone()),
             // Gradual: BAS width subtyping — field not found in known fields, return Unknown
             // (the field may be present in the concrete value via extra fields)
@@ -144,7 +144,7 @@ pub(crate) async fn check_dot_access(
             // Build the record type to unify α with (BAS: no RowVar tail)
             let mut fields = indexmap::IndexMap::new();
             fields.insert(field_str.to_string(), beta.clone());
-            let record_ty = Type::Record(Row {
+            let record_ty = Type::Dict(Row {
                 fields,
                 tail: crate::type_def::RowTail::Empty,
             });
@@ -168,7 +168,7 @@ pub(crate) async fn check_dot_access(
         // full constraint propagation into each member's row variable).
         Type::Intersection(ref members) => {
             for member in members {
-                if let Type::Record(Row { ref fields, .. }) = member {
+                if let Type::Dict(Row { ref fields, .. }) = member {
                     if let Some(ty) = fields.get(field_str) {
                         return Ok(ty.clone());
                     }
@@ -195,7 +195,7 @@ pub(crate) async fn check_dot_access(
             let mut all_unknown = true;
             for member in members {
                 let member_field = match member {
-                    Type::Record(Row { ref fields, .. }) => {
+                    Type::Dict(Row { ref fields, .. }) => {
                         fields.get(field_str).cloned().unwrap_or(Type::Unknown)
                     }
                     Type::NominalVariant { ref fields, .. } => fields
@@ -240,7 +240,7 @@ pub(crate) async fn check_dot_access_int(
     let field_name = index.to_string();
 
     match &target_ty {
-        Type::Record(Row { ref fields, .. }) => {
+        Type::Dict(Row { ref fields, .. }) => {
             if let Some(ty) = fields.get(field_name.as_str()) {
                 return Ok(ty.clone());
             }
@@ -256,7 +256,7 @@ pub(crate) async fn check_dot_access_int(
 
             let mut fields = indexmap::IndexMap::new();
             fields.insert(field_name, beta.clone());
-            let record_ty = Type::Record(Row {
+            let record_ty = Type::Dict(Row {
                 fields,
                 tail: crate::type_def::RowTail::Empty,
             });
@@ -273,7 +273,7 @@ pub(crate) async fn check_dot_access_int(
         // Intersection type: search each member for the numeric field.
         Type::Intersection(ref members) => {
             for member in members {
-                if let Type::Record(Row { ref fields, .. }) = member {
+                if let Type::Dict(Row { ref fields, .. }) = member {
                     if let Some(ty) = fields.get(field_name.as_str()) {
                         return Ok(ty.clone());
                     }
@@ -302,7 +302,7 @@ pub(crate) fn is_concrete_type(ty: &Type) -> bool {
         Type::Function { params, ret, .. } => {
             params.iter().all(|(_, p)| is_concrete_type(p)) && is_concrete_type(ret)
         }
-        Type::Record(row) => row.fields.values().all(is_concrete_type),
+        Type::Dict(row) => row.fields.values().all(is_concrete_type),
         Type::App(f, arg) => is_concrete_type(f) && is_concrete_type(arg),
         Type::TyCon(_) => true, // TyCon is always concrete
         Type::Union(types) => types.iter().all(is_concrete_type),
@@ -811,7 +811,7 @@ async fn check_call_args(
         // against the variadic param element type.
         if variadic && arg_types.len() > non_variadic_param_count {
             if let Some((_, variadic_param_ty)) = params.last() {
-                let elem_ty: Option<Type> = if let Type::Record(row) = variadic_param_ty {
+                let elem_ty: Option<Type> = if let Type::Dict(row) = variadic_param_ty {
                     match &row.tail {
                         crate::type_def::RowTail::Uniform { value, .. } => Some(*value.clone()),
                         _ => None,
@@ -938,7 +938,7 @@ async fn check_call_args(
         // Now handle variadic extra args (they were inferred but not checked above).
         if variadic && args.len() > non_variadic_param_count {
             let last_seq_elem = params.last().and_then(|(_, t)| {
-                if let Type::Record(row) = t {
+                if let Type::Dict(row) = t {
                     if let crate::type_def::RowTail::Uniform { value, .. } = &row.tail {
                         return Some(*value.clone());
                     }

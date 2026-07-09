@@ -118,7 +118,7 @@ fn rename_single_type_var(ty: &Type, old_name: &str, fresh_name: &str, level: u3
     match ty {
         Type::TypeVar(name, _) if name == old_name => Type::TypeVar(fresh_name.to_owned(), level),
         Type::TypeVar(_, _) => ty.clone(),
-        Type::Record(row) => Type::Record(rename_single_type_var_in_row(
+        Type::Dict(row) => Type::Dict(rename_single_type_var_in_row(
             row, old_name, fresh_name, level,
         )),
         Type::Function {
@@ -1080,7 +1080,7 @@ fn collect_pretty_type_vars(ty: &Type, seen: &mut Vec<String>) {
             }
             collect_pretty_type_vars(ret, seen);
         }
-        Type::Record(row) => {
+        Type::Dict(row) => {
             for v in row.fields.values() {
                 collect_pretty_type_vars(v, seen);
             }
@@ -1110,9 +1110,9 @@ fn format_type_pretty(ty: &Type, rename: &HashMap<String, String>) -> String {
         // Use the tinct annotation names for user-facing display.
         Type::Unknown => "Unknown".to_string(), // annotation: @Unknown or @_
         Type::Any => "Any".to_string(),         // annotation: @Any
-        Type::Record(row) if row.fields.is_empty() => "Dict".to_string(), // annotation: @Dict
+        Type::Dict(row) if row.fields.is_empty() => "Dict".to_string(), // annotation: @Dict
         Type::TypeVar(name, _) => rename.get(name).cloned().unwrap_or_else(|| name.clone()),
-        Type::Record(row) => {
+        Type::Dict(row) => {
             let mut fields: Vec<_> = row.fields.iter().collect();
             fields.sort_by_key(|(k, _)| k.as_str());
             let inner = fields

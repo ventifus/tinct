@@ -107,7 +107,7 @@ fn walk_polarity(
                 }
             }
         }
-        Type::Record(row) => {
+        Type::Dict(row) => {
             // Record fields are in covariant (positive) position.
             for t in row.fields.values() {
                 walk_polarity(t, pol, params, pos_seen, neg_seen, type_env);
@@ -1959,7 +1959,7 @@ fn apply_type_alias_substitution(
                 Type::TypeVar(name.clone(), level)
             }
         }
-        Type::Record(row) => {
+        Type::Dict(row) => {
             let new_fields: indexmap::IndexMap<String, Type> = row
                 .fields
                 .iter()
@@ -1976,7 +1976,7 @@ fn apply_type_alias_substitution(
                 }
                 other => other.clone(),
             };
-            Type::Record(Row {
+            Type::Dict(Row {
                 fields: new_fields,
                 tail: new_tail,
             })
@@ -2407,7 +2407,7 @@ fn expand_alias_body_guarded(
 
     // Recursively expand the type structure
     let result = match ty {
-        Type::Record(row) => {
+        Type::Dict(row) => {
             let mut new_fields = indexmap::IndexMap::new();
             for (k, v) in &row.fields {
                 new_fields.insert(
@@ -2425,7 +2425,7 @@ fn expand_alias_body_guarded(
                     )?,
                 );
             }
-            Ok(Type::Record(Row {
+            Ok(Type::Dict(Row {
                 fields: new_fields,
                 tail: crate::type_def::RowTail::Empty,
             }))
@@ -2729,7 +2729,7 @@ async fn resolve_type_dict_with_guard(
                     .map(|(k, v)| {
                         let mut member_fields = indexmap::IndexMap::new();
                         member_fields.insert(k, v);
-                        Type::Record(Row {
+                        Type::Dict(Row {
                             fields: member_fields,
                             tail: crate::type_def::RowTail::Empty,
                         })
@@ -2739,7 +2739,7 @@ async fn resolve_type_dict_with_guard(
             }
         }
 
-        let ty = Type::Record(Row {
+        let ty = Type::Dict(Row {
             fields,
             tail: crate::type_def::RowTail::Empty,
         });
@@ -3988,7 +3988,7 @@ pub(crate) async fn resolve_type_dict(
                     // openness. Each single-field member uses a closed (Empty) row tail.
                     let mut member_fields = indexmap::IndexMap::new();
                     member_fields.insert(k, v);
-                    Type::Record(Row {
+                    Type::Dict(Row {
                         fields: member_fields,
                         tail: crate::type_def::RowTail::Empty,
                     })
@@ -3998,7 +3998,7 @@ pub(crate) async fn resolve_type_dict(
         }
     }
 
-    let ty = Type::Record(Row {
+    let ty = Type::Dict(Row {
         fields,
         tail: effective_tail,
     });
@@ -4189,7 +4189,7 @@ fn typenode_value_to_type<'a>(
                     // Distinct from TypeNode.Unknown (the gradual ? type, not in the subtype lattice).
                     "TypeNode.Top" => Some(Type::Any),
                     "TypeNode.Never" => Some(Type::Never),
-                    "TypeNode.Absent" => Some(Type::Record(Row {
+                    "TypeNode.Absent" => Some(Type::Dict(Row {
                         fields: indexmap::IndexMap::new(),
                         tail: crate::type_def::RowTail::Empty,
                     })),
@@ -4236,10 +4236,10 @@ fn typenode_value_to_type<'a>(
                         Some(Type::Negation(Box::new(inner_type)))
                     }
 
-                    // ── Record ───────────────────────────────────────────────────────────
-                    // TypeNode.Record { fields: [Map String TypeNode], open: Bool }
-                    // → Type::Record(Row { fields: BTreeMap<String, Type>, tail: Empty | Uniform })
-                    "TypeNode.Record" => {
+                    // ── Dict ─────────────────────────────────────────────────────────────
+                    // TypeNode.Dict { fields: [Map String TypeNode], open: Bool }
+                    // → Type::Dict(Row { fields: BTreeMap<String, Type>, tail: Empty | Uniform })
+                    "TypeNode.Dict" => {
                         let payload_fields = variant_payload_dict(val, ctx).await?;
                         let fields_val = payload_fields.get("fields")?.clone();
                         let open_val = payload_fields.get("open")?.clone();
@@ -4275,7 +4275,7 @@ fn typenode_value_to_type<'a>(
                             crate::type_def::RowTail::Empty
                         };
 
-                        Some(Type::Record(Row {
+                        Some(Type::Dict(Row {
                             fields: record_fields,
                             tail,
                         }))
@@ -4321,7 +4321,7 @@ fn typenode_value_to_type<'a>(
                             "String" | "Str" => Some(Type::Str),
                             "Unknown" => Some(Type::Unknown),
                             "Never" => Some(Type::Never),
-                            "Absent" => Some(Type::Record(Row {
+                            "Absent" => Some(Type::Dict(Row {
                                 fields: indexmap::IndexMap::new(),
                                 tail: crate::type_def::RowTail::Empty,
                             })),
@@ -4822,7 +4822,7 @@ pub(crate) fn body_contains_tycon_ref(ty: &Type) -> bool {
     match ty {
         Type::TyCon(_) => true,
         Type::App(f, arg) => body_contains_tycon_ref(f) || body_contains_tycon_ref(arg),
-        Type::Record(row) => {
+        Type::Dict(row) => {
             if row.fields.values().any(body_contains_tycon_ref) {
                 return true;
             }
@@ -4881,7 +4881,7 @@ pub(crate) fn contains_recvar(ty: &Type, var: &str) -> bool {
     match ty {
         Type::TypeVar(name, _) => name == var,
         Type::App(f, arg) => contains_recvar(f, var) || contains_recvar(arg, var),
-        Type::Record(row) => {
+        Type::Dict(row) => {
             if row.fields.values().any(|t| contains_recvar(t, var)) {
                 return true;
             }
@@ -5212,7 +5212,7 @@ pub(crate) fn expand_all_tycon_apps(ty: &Type, env: &TypeEnv, state: &mut InferS
         }
 
         // Structural recursion for all other type forms.
-        Type::Record(row) => {
+        Type::Dict(row) => {
             let new_fields: indexmap::IndexMap<String, Type> = row
                 .fields
                 .iter()
@@ -5229,7 +5229,7 @@ pub(crate) fn expand_all_tycon_apps(ty: &Type, env: &TypeEnv, state: &mut InferS
                 }
                 other => other.clone(),
             };
-            Type::Record(Row {
+            Type::Dict(Row {
                 fields: new_fields,
                 tail: new_tail,
             })

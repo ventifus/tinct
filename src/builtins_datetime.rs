@@ -1684,7 +1684,7 @@ pub fn datetime_type_env(env: &mut TypeEnv) {
         "timestamp-parts".to_string(),
         Type::Function {
             params: vec![(None, Type::Timestamp)],
-            ret: Box::new(Type::Record(Row {
+            ret: Box::new(Type::Dict(Row {
                 fields: indexmap::IndexMap::from_iter([
                     ("year".to_string(), Type::Int),
                     ("month".to_string(), Type::Int),
@@ -1744,7 +1744,7 @@ pub fn datetime_type_env(env: &mut TypeEnv) {
         "timestamp-in-tz".to_string(),
         Type::Function {
             params: vec![(None, Type::Timestamp), (None, Type::Timezone)],
-            ret: Box::new(Type::Record(Row {
+            ret: Box::new(Type::Dict(Row {
                 fields: indexmap::IndexMap::from_iter([
                     ("year".to_string(), Type::Int),
                     ("month".to_string(), Type::Int),

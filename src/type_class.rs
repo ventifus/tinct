@@ -367,7 +367,7 @@ impl InstanceEnv {
         } else {
             // Multi-parameter class: extract types at determining positions from the Record
             match &inst.instance_type {
-                Type::Record(row) => inst
+                Type::Dict(row) => inst
                     .det_positions
                     .iter()
                     .map(|&pos| {
@@ -542,7 +542,7 @@ impl InstanceEnv {
             } else {
                 // Multi-parameter class: extract types at determining positions
                 match &freshened_instance_type {
-                    Type::Record(row) => inst
+                    Type::Dict(row) => inst
                         .det_positions
                         .iter()
                         .filter_map(|&pos| row.fields.get(&pos.to_string()).cloned())
@@ -659,7 +659,7 @@ impl InstanceEnv {
             // Extract the determined-position types from the freshened instance.
             // For multi-param instances, instance_type is a Record with numbered fields.
             let instance_ded_types: Vec<Type> = match &freshened_instance_type {
-                Type::Record(row) => ded_positions
+                Type::Dict(row) => ded_positions
                     .iter()
                     .filter_map(|&pos| row.fields.get(&pos.to_string()).cloned())
                     .collect(),
@@ -709,7 +709,7 @@ impl InstanceEnv {
                 // unification. Capture BEFORE restoring state.
                 let det_position_indices: Vec<usize> = inst.det_positions.clone();
                 let determining_types: Vec<Type> = match &freshened_instance_type {
-                    Type::Record(row) => det_position_indices
+                    Type::Dict(row) => det_position_indices
                         .iter()
                         .filter_map(|&pos| row.fields.get(&pos.to_string()).cloned())
                         .map(|ty| state.apply(&ty))
@@ -1001,7 +1001,7 @@ fn count_unresolved_vars(
             count_unresolved_vars(f, type_vars) + count_unresolved_vars(a, type_vars)
         }
         Type::TyCon(_) => 0, // TyCon has no vars
-        Type::Record(row) => row
+        Type::Dict(row) => row
             .fields
             .values()
             .map(|field_ty| count_unresolved_vars(field_ty, type_vars))

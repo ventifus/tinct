@@ -1,6 +1,6 @@
 # T-1481: field_annotations unimplemented — test pins current Boolean.False behavior
 # Named-field constructor with @Child on [Map K V] type produces role "MapValues".
-# This is the pattern used by TypeNode.Record in prelude.llt:
+# This is the pattern used by TypeNode.Dict in prelude.llt:
 #   [Record@[as-type: [fn [let r] r]  guarding: True]
 #     fields@Child: [Map String TypeNode]
 #     open:         Bool]

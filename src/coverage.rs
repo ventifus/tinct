@@ -250,7 +250,7 @@ impl ConstructorSignature {
         let mut skipped_any = false;
         for member in members {
             match member {
-                Type::Record(row) => {
+                Type::Dict(row) => {
                     // Structural variant — discriminated by the key set.
                     // Each key in the record becomes the constructor tag.
                     // For single-key records (the common case for discriminated unions),
@@ -1674,11 +1674,11 @@ mod tests {
     #[test]
     fn test_sig_from_union_record_variants() {
         let union_members = vec![
-            Type::Record(Row {
+            Type::Dict(Row {
                 fields: [("ok".to_string(), Type::Unknown)].into_iter().collect(),
                 tail: crate::type_def::RowTail::Empty,
             }),
-            Type::Record(Row {
+            Type::Dict(Row {
                 fields: [("err".to_string(), Type::Str)].into_iter().collect(),
                 tail: crate::type_def::RowTail::Empty,
             }),

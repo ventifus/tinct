@@ -709,7 +709,7 @@ pub(crate) async fn infer_fn(
     for (i, param) in params.iter().enumerate() {
         if param.node.variadic {
             let elem_ty = state.fresh_type_var(&param.span);
-            let variadic_ty = Type::Record(crate::type_def::Row {
+            let variadic_ty = Type::Dict(crate::type_def::Row {
                 fields: indexmap::IndexMap::new(),
                 tail: crate::type_def::RowTail::Uniform {
                     key: None,

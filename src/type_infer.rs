@@ -100,7 +100,7 @@ impl Substitution {
                 var: var.clone(),
                 body: Box::new(Self::apply_inner(body, map)),
             },
-            Type::Record(row) => Type::Record(Self::apply_row(row, map)),
+            Type::Dict(row) => Type::Dict(Self::apply_row(row, map)),
             Type::Union(types) => {
                 Type::Union(types.iter().map(|t| Self::apply_inner(t, map)).collect())
             }

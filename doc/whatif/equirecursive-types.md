@@ -107,7 +107,7 @@ Config: [type [record
 
 - **`Value::Function` values**: `FnAnnotation.extra: IndexMap<String, Value>` alongside existing `doc`, `return_type`, and params fields. Functions currently carry `FnAnnotation`; all annotation fields — well-known and custom — now live there uniformly.
 - **All other values** (`Value::String`, `Value::Int`, `Value::Dict`, etc.): A new `Value::Annotated { inner: ThunkId, annotation: Box<Value> }` wrapper carries the annotation. `inner` is lazy (ThunkId); `annotation` is materialized at annotation time. `annotation-of` dispatches on both `Value::Function` (reads `FnAnnotation`) and `Value::Annotated` (reads `.annotation`). Values without annotations return an empty dict.
-- **Type-level positions** (type alias declarations, record field type annotations): The annotation is part of the type representation. `TyConDef` gains `annotation: IndexMap<String, Value>`. Record field type annotations are stored in `TypeNode.Record.field_annotations: Map String TypeNode` (each entry maps a field name to its annotation dict TypeNode, alongside the type in `fields`).
+- **Type-level positions** (type alias declarations, record field type annotations): The annotation is part of the type representation. `TyConDef` gains `annotation: IndexMap<String, Value>`. Record field type annotations are stored in `TypeNode.Dict.field_annotations: Map String TypeNode` (each entry maps a field name to its annotation dict TypeNode, alongside the type in `fields`).
 
 **`annotation-of` is a Rust builtin** that reads from all three storage sites uniformly, returning the annotation dict or an empty dict if no annotation is present. It is available at both runtime and in the type-stage evaluator.
 
@@ -126,7 +126,7 @@ TypeNode.Recursive {
   var:  "𝜇ꜱʏᴍ⧼lst⧽42"
   body: TypeNode.Union types: [
     TypeNode.Absent
-    TypeNode.Record fields: {
+    TypeNode.Dict fields: {
       "head": TypeNode.Int
       "tail": TypeNode.RecursiveRef name: "𝜇ꜱʏᴍ⧼lst⧽42"  # self-reference
     }  open: false
@@ -148,7 +148,7 @@ eval_type_stage_expr([mu [fn [let self] ...]], type_stage_env)
 TypeNode.Recursive {
   var:  "𝜇ꜱʏᴍ⧼rec⧽0",
   body: TypeNode.Union [TypeNode.Absent,
-          TypeNode.Record {head: TypeNode.Int,
+          TypeNode.Dict {head: TypeNode.Int,
                            tail: TypeNode.RecursiveRef "𝜇ꜱʏᴍ⧼rec⧽0"}]}
            ↓
 CheckerType::Node(the above) — concrete TypeNode passed directly to type checker
@@ -306,7 +306,7 @@ annotation-of(TypeNode.Union) → {
 child-fields:  [fn [let ctor] [keys [annotation-of ctor | .field-annotations]]]
 child-role:    [fn [let ctor field] [[annotation-of ctor | .field-annotations | field] .role]]
 child-field?:  [fn [let ctor field] [has? [annotation-of ctor | .field-annotations] field]]
-``` (stored in `TypeNode.Record.field_annotations` per the General Annotation Syntax section above). `variant` is a Rust builtin that creates a `Value::Variant` with a given tag string and payload dict — enabling generic reconstruction without enumerating constructors.
+``` (stored in `TypeNode.Dict.field_annotations` per the General Annotation Syntax section above). `variant` is a Rust builtin that creates a `Value::Variant` with a given tag string and payload dict — enabling generic reconstruction without enumerating constructors.
 
 **Role inference from field type**: the `child-role` function inspects the declared field type (from the TyConDef field annotation) to determine whether the child role is `One` (field type is `TypeNode`), `Seq` (field type is `[Seq TypeNode]`), or `MapValues` (field type is `[Map K TypeNode]`).
 
@@ -555,7 +555,7 @@ No name-based special-casing exists in any path. `or`, `record`, `mu`, and user-
 
 ### Contractiveness
 
-A recursive type `μa.T` is **contractive** iff every path in `T` from the root to an occurrence of `RecursiveRef(a)` passes through at least one guarding constructor. Guarding constructors are: `TypeNode.Record`, `TypeNode.Arrow`, `TypeNode.TypeApplication(TypeConstructor, _)`. `TypeNode.Union` and `TypeNode.Intersect` are **not** guarding — they are logical combinators that do not structurally interpose between the binder and its reference.
+A recursive type `μa.T` is **contractive** iff every path in `T` from the root to an occurrence of `RecursiveRef(a)` passes through at least one guarding constructor. Guarding constructors are: `TypeNode.Dict`, `TypeNode.Arrow`, `TypeNode.TypeApplication(TypeConstructor, _)`. `TypeNode.Union` and `TypeNode.Intersect` are **not** guarding — they are logical combinators that do not structurally interpose between the binder and its reference.
 
 Non-contractive types — where the body IS the RecursiveRef, or where the RecursiveRef is reachable without passing through a guard — diverge under S-Exp even with S-Assum, because after unfolding the non-Recursive side of the check prevents the sigma hypothesis from firing.
 
@@ -817,7 +817,7 @@ Explicit `mu` in annotation positions uses `[fn [let self] ...]` with `self` as 
 
 3. `TyConDef` gains `annotation: IndexMap<String, Value>` — for type alias and type constructor declaration annotations. `annotation-of` on a TyConDef reference returns this dict.
 
-4. `TypeNode.Record` gains `field_annotations: Map String TypeNode` — each key maps a field name to its annotation dict expressed as a TypeNode dict. Used by record field type declarations (`host@[required: true]: String`).
+4. `TypeNode.Dict` gains `field_annotations: Map String TypeNode` — each key maps a field name to its annotation dict expressed as a TypeNode dict. Used by record field type declarations (`host@[required: true]: String`).
 
 **Impact:** Moderate — new Value variant (transparent in most match arms); FnAnnotation extension; TyConDef annotation field; parser/desugar changes at each annotatable grammar position.
 

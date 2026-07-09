@@ -297,7 +297,7 @@ impl fmt::Display for Type {
             Type::Str => write!(f, "String"),
             Type::StringLiteral(s) => write!(f, "\"{}\"", s),
             Type::Bytes => write!(f, "Bytes"),
-            Type::Record(row) => {
+            Type::Dict(row) => {
                 write!(f, "[")?;
                 let mut sorted: Vec<_> = row.fields.iter().collect();
                 sorted.sort_by_key(|(k, _)| *k);

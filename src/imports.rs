@@ -250,7 +250,7 @@ fn erase_type_vars(ty: &crate::types::Type) -> crate::types::Type {
             variadic: *variadic,
             required_count: *required_count,
         },
-        Type::Record(row) => Type::Record(Row {
+        Type::Dict(row) => Type::Dict(Row {
             fields: row
                 .fields
                 .iter()
@@ -739,7 +739,7 @@ async fn resolve_includes(
 /// Walks the Surface AST to capture call-site spans. For each `[include %cap "path"]` call:
 ///
 /// 1. Looks up `args[1].span` (the path string's span) in `include_bindings`.
-/// 2. If found, constructs `Type::Record(Row { fields })` from the contributed bindings.
+/// 2. If found, constructs `Type::Dict(Row { fields })` from the contributed bindings.
 /// 3. Inserts the Record type at the call expression's span `(start_offset, end_offset)`
 ///    in `type_map`.
 ///
@@ -789,7 +789,7 @@ fn apply_include_type_to_node(
                                     .iter()
                                     .map(|(name, ty)| (name.clone(), ty.clone()))
                                     .collect();
-                                let record_ty = Type::Record(Row { fields, tail: crate::type_def::RowTail::Empty });
+                                let record_ty = Type::Dict(Row { fields, tail: crate::type_def::RowTail::Empty });
                                 // Store at the call expression's span
                                 let key = (node.span.start.offset, node.span.end.offset);
                                 type_map.insert(key, record_ty);
@@ -931,7 +931,7 @@ pub async fn build_type_env_with_cap(
             caps.insert("Text".to_string(), Type::Any);
             guard.insert(
                 "%stdin".to_string(),
-                Type::handle(Type::Record(Row {
+                Type::handle(Type::Dict(Row {
                     fields: caps,
                     tail: crate::type_def::RowTail::Empty,
                 })),
@@ -944,21 +944,21 @@ pub async fn build_type_env_with_cap(
             let mut caps: indexmap::IndexMap<String, Type> = indexmap::IndexMap::new();
             caps.insert(
                 "__cap_flag_writable".to_string(),
-                Type::Record(Row {
+                Type::Dict(Row {
                     fields: indexmap::IndexMap::new(),
                     tail: crate::type_def::RowTail::Empty,
                 }),
             );
             caps.insert(
                 "__cap_flag_text".to_string(),
-                Type::Record(Row {
+                Type::Dict(Row {
                     fields: indexmap::IndexMap::new(),
                     tail: crate::type_def::RowTail::Empty,
                 }),
             );
             guard.insert(
                 "%stdout".to_string(),
-                Type::handle(Type::Record(Row {
+                Type::handle(Type::Dict(Row {
                     fields: caps,
                     tail: crate::type_def::RowTail::Empty,
                 })),
@@ -1176,7 +1176,7 @@ mod tests {
 
         // Check the injected type is a Record with the expected fields.
         match injected.unwrap() {
-            Type::Record(Row { fields, .. }) => {
+            Type::Dict(Row { fields, .. }) => {
                 assert_eq!(
                     fields.get("foo"),
                     Some(&Type::Int),
@@ -1246,9 +1246,9 @@ mod tests {
         );
 
         // The injected value should be a Record with a "read" field.
-        let record_found = type_map.values().any(
-            |ty| matches!(ty, Type::Record(Row { fields, .. }) if fields.contains_key("read")),
-        );
+        let record_found = type_map
+            .values()
+            .any(|ty| matches!(ty, Type::Dict(Row { fields, .. }) if fields.contains_key("read")));
         assert!(
             record_found,
             "expected a Record with 'read' field in type_map; got: {:?}",

@@ -825,11 +825,11 @@ pub fn ground_type_of(v: &Value) -> Type {
         Value::Float(_) => Type::Float,
         Value::String { .. } => Type::Str,
         Value::Bytes { .. } => Type::Bytes,
-        Value::Dict(map) => Type::Record(extract_row(map)),
+        Value::Dict(map) => Type::Dict(extract_row(map)),
         // Overlay is a lazy right-biased merge: key set cannot be read without forcing.
         // Return a closed empty record — required-field checks correctly fail,
         // consistent with Overlay field validation being static-only.
-        Value::Overlay(..) => Type::Record(Row {
+        Value::Overlay(..) => Type::Dict(Row {
             fields: indexmap::IndexMap::new(),
             tail: crate::type_def::RowTail::Empty,
         }),
@@ -986,7 +986,7 @@ pub(crate) fn pattern_type_matches(value: &Value, expected: &Type, ctx: &Arc<Eva
         Type::Bytes => matches!(value, Value::Bytes { .. }),
         Type::Proxy => matches!(value, Value::Proxy { .. }),
         // Record / Dict: any dict-like value satisfies an empty record annotation.
-        Type::Record(_) => matches!(value, Value::Dict(_) | Value::Overlay(..)),
+        Type::Dict(_) => matches!(value, Value::Dict(_) | Value::Overlay(..)),
         // @Fn (variadic, 0 required params): matches any callable including Builtin.
         Type::Function {
             variadic,
@@ -1047,11 +1047,11 @@ pub(crate) fn format_type_for_assert(ty: &Type) -> String {
 /// are all Records.  Returns `None` for anything else (scalar types, Union, etc.).
 pub(crate) fn as_record_row_merged(expected: &Type) -> Option<Cow<'_, Row>> {
     match expected {
-        Type::Record(row) => Some(Cow::Borrowed(row)),
-        Type::Intersection(members) if members.iter().all(|m| matches!(m, Type::Record(_))) => {
+        Type::Dict(row) => Some(Cow::Borrowed(row)),
+        Type::Intersection(members) if members.iter().all(|m| matches!(m, Type::Dict(_))) => {
             let mut merged_fields: indexmap::IndexMap<String, Type> = indexmap::IndexMap::new();
             for m in members {
-                if let Type::Record(row) = m {
+                if let Type::Dict(row) = m {
                     for (k, v) in &row.fields {
                         merged_fields.entry(k.clone()).or_insert_with(|| v.clone());
                     }
@@ -4938,7 +4938,7 @@ mod tests {
             CoreExpr::TypeAssert {
                 annotation: sp(Annotation::PropertyDict(entries)),
                 expr: Arc::new(Spanned::new(CoreExpr::Int(42), span.clone())),
-                resolved_type: Type::Record(crate::type_def::Row {
+                resolved_type: Type::Dict(crate::type_def::Row {
                     fields: indexmap::indexmap! { "name".to_string() => Type::Str },
                     tail: crate::type_def::RowTail::Empty,
                 }),
@@ -4994,7 +4994,7 @@ mod tests {
             CoreExpr::TypeAssert {
                 annotation: sp(Annotation::PropertyDict(entries)),
                 expr: Arc::new(Spanned::new(CoreExpr::Int(42), span.clone())),
-                resolved_type: Type::Record(crate::type_def::Row {
+                resolved_type: Type::Dict(crate::type_def::Row {
                     fields: indexmap::indexmap! { "name".to_string() => Type::Str },
                     tail: crate::type_def::RowTail::Empty,
                 }),
@@ -6721,12 +6721,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_typeassert_structural_record_shape_check() {
-        // Structural path: resolved_type = Some(Type::Record(..., Open))
+        // Structural path: resolved_type = Some(Type::Dict(..., Open))
         // Dict has required field "name" -> pass.
         // The record type check is immediate (shape check), field guard wrapping deferred.
         let mut fields = indexmap::IndexMap::new();
         fields.insert("name".to_string(), Type::Str);
-        let record_type = Type::Record(Row {
+        let record_type = Type::Dict(Row {
             fields,
             tail: crate::type_def::RowTail::Empty,
         });
@@ -6791,7 +6791,7 @@ mod tests {
         // TypeAssert is lazy in CEK model: type error fires on materialize(), not eval()
         let mut fields = indexmap::IndexMap::new();
         fields.insert("id".to_string(), Type::Int);
-        let record_type = Type::Record(Row {
+        let record_type = Type::Dict(Row {
             fields,
             tail: crate::type_def::RowTail::Empty,
         });
@@ -6840,7 +6840,7 @@ mod tests {
         // because the annotation only constrains what it declares.
         let mut fields = indexmap::IndexMap::new();
         fields.insert("x".to_string(), Type::Int);
-        let record_type = Type::Record(Row {
+        let record_type = Type::Dict(Row {
             fields,
             tail: crate::type_def::RowTail::Empty,
         });
@@ -6902,7 +6902,7 @@ mod tests {
         // Structural path: closed record, dict has exactly the required fields -> pass
         let mut fields = indexmap::IndexMap::new();
         fields.insert("x".to_string(), Type::Int);
-        let record_type = Type::Record(Row {
+        let record_type = Type::Dict(Row {
             fields,
             tail: crate::type_def::RowTail::Empty,
         });
@@ -6945,11 +6945,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_typeassert_structural_record_non_dict_fails() {
-        // Structural path: resolved_type = Some(Type::Record(...)), value is Int -> error
+        // Structural path: resolved_type = Some(Type::Dict(...)), value is Int -> error
         // TypeAssert is lazy in CEK model: type error fires on materialize(), not eval()
         let mut fields = indexmap::IndexMap::new();
         fields.insert("x".to_string(), Type::Int);
-        let record_type = Type::Record(Row {
+        let record_type = Type::Dict(Row {
             fields,
             tail: crate::type_def::RowTail::Empty,
         });
@@ -7113,12 +7113,12 @@ mod tests {
     async fn test_elaboration_gap_structural_annotation_non_dict_with_default() {
         // [@[name: String  default: []] 42] — structural record annotation with default.
         // Value is Int (not a Dict), so the record shape check fails and the default is used.
-        // Use eval_core_for_test with resolved_type: Type::Record({name: Str}) so the
+        // Use eval_core_for_test with resolved_type: Type::Dict({name: Str}) so the
         // as_record_row_merged path fires. With resolved_type=Unknown (from eval_str),
         // is_consistent_subtype(Int, Unknown)=true and the TypeAssert passes trivially.
         let mut fields = indexmap::IndexMap::new();
         fields.insert("name".to_string(), Type::Str);
-        let record_type = Type::Record(Row {
+        let record_type = Type::Dict(Row {
             fields,
             tail: crate::type_def::RowTail::Empty,
         });
@@ -7309,8 +7309,8 @@ mod tests {
         // is_consistent_subtype. Record type checks are now structural:
         //
         // - Non-Dict values: ground_type_of(Int) = Type::Int, which is NOT a consistent
-        //   subtype of Type::Record({x: Int}) — Int and Record are disjoint.
-        // - Dict values: ground_type_of(Dict({})) = Type::Record({}) (empty row).
+        //   subtype of Type::Dict({x: Int}) — Int and Record are disjoint.
+        // - Dict values: ground_type_of(Dict({})) = Type::Dict({}) (empty row).
         //   is_consistent_subtype(Record({}), Record({x: Int})) checks field presence:
         //   field "x" required in sup but absent in empty sub → returns false.
         //
@@ -7319,7 +7319,7 @@ mod tests {
         // is only called for non-record types.
         let mut fields = indexmap::IndexMap::new();
         fields.insert("x".to_string(), Type::Int);
-        let record_type = Type::Record(Row {
+        let record_type = Type::Dict(Row {
             fields,
             tail: crate::type_def::RowTail::Empty,
         });

@@ -98,7 +98,7 @@ pub(crate) fn extract_narrowings(cond: &Arc<SurfaceNode>) -> Vec<Narrowing> {
                             // dict? narrows to open record with no fields
                             return vec![Narrowing::TypeOf {
                                 var: var_name.clone(),
-                                ty: Type::Record(Row {
+                                ty: Type::Dict(Row {
                                     fields: indexmap::IndexMap::new(),
                                     tail: crate::type_def::RowTail::Empty,
                                 }),
@@ -139,7 +139,7 @@ pub(crate) fn extract_narrowings(cond: &Arc<SurfaceNode>) -> Vec<Narrowing> {
                             // null? narrows to empty closed record
                             return vec![Narrowing::TypeOf {
                                 var: var_name.clone(),
-                                ty: Type::Record(Row {
+                                ty: Type::Dict(Row {
                                     fields: indexmap::IndexMap::new(),
                                     tail: crate::type_def::RowTail::Empty,
                                 }),
@@ -230,10 +230,6 @@ pub(crate) fn try_type_of(left: &Arc<SurfaceNode>, right: &Arc<SurfaceNode>) -> 
                                 "Float" => Some(Type::Float),
                                 "String" => Some(Type::Str),
                                 "Bool" => Some(Type::TyCon("Boolean".to_string())),
-                                "Dict" => Some(Type::Record(Row {
-                                    fields: indexmap::IndexMap::new(),
-                                    tail: crate::type_def::RowTail::Empty,
-                                })),
                                 "Seq" => Some(Type::App(
                                     Box::new(Type::TyCon("Seq".to_string())),
                                     Box::new(Type::Unknown),
@@ -296,18 +292,18 @@ pub(crate) fn apply_narrowings(
                 // BAS: all tails are Empty. Merge existing record fields if present.
                 // Width subtyping handles the openness — the record is known to have the
                 // key at runtime, and may have additional fields beyond those annotated.
-                let new_ty = if let Some(Type::Record(current_row)) = current_ty {
+                let new_ty = if let Some(Type::Dict(current_row)) = current_ty {
                     // Merge existing fields with the new constraint
                     for (k, v) in current_row.fields {
                         fields.insert(k, v);
                     }
-                    Type::Record(Row {
+                    Type::Dict(Row {
                         fields,
                         tail: crate::type_def::RowTail::Empty,
                     })
                 } else {
                     // Create a fresh record with just the key constraint
-                    Type::Record(Row {
+                    Type::Dict(Row {
                         fields,
                         tail: crate::type_def::RowTail::Empty,
                     })
@@ -356,13 +352,13 @@ pub(crate) fn collect_pattern_bindings(
                 // Narrow the sub-pattern's scrutinee type using the record field type.
                 let field_ty = match scrutinee_ty {
                     // Gradual: field not in known set — Unknown for missing field in pattern
-                    Type::Record(row) => row.fields.get(key).cloned().unwrap_or(Type::Unknown),
+                    Type::Dict(row) => row.fields.get(key).cloned().unwrap_or(Type::Unknown),
                     // Union: if all members that are Records agree on the field type, use it.
                     Type::Union(members) => {
                         // Collect field types from all Record members
                         let mut field_types = Vec::new();
                         for member in members {
-                            if let Type::Record(row) = member {
+                            if let Type::Dict(row) = member {
                                 if let Some(ty) = row.fields.get(key) {
                                     field_types.push(ty.clone());
                                 }
@@ -426,7 +422,7 @@ pub(crate) fn collect_pattern_bindings(
                         // against a scrutinee whose declared type is `NominalVariant{Some, {}}`,
                         // we cannot statically determine the payload type from the declaration alone.
                         //
-                        // Returning `Type::Record({})` (empty record) was wrong: it falsely asserts
+                        // Returning `Type::Dict({})` (empty record) was wrong: it falsely asserts
                         // that `v` is an empty record, causing spurious type errors when `v` is used
                         // as an Int, Str, etc.
                         //
@@ -453,10 +449,10 @@ pub(crate) fn collect_pattern_bindings(
                                 .unwrap_or(Type::Unknown)
                         } else {
                             // Named field, binding name doesn't match: keep as record for field access
-                            Type::Record(fields.clone())
+                            Type::Dict(fields.clone())
                         }
                     } else {
-                        Type::Record(fields.clone())
+                        Type::Dict(fields.clone())
                     }
                 };
 

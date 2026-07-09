@@ -216,7 +216,7 @@ pub fn to_rdnf(ty: &Type) -> Rdnf {
         // - Empty record {} — has structural identity distinct from Top
         // - Records with RowTail::Uniform — infinitary field constraint, cannot be expressed
         //   as a finite intersection of single-field records
-        Type::Record(row) => {
+        Type::Dict(row) => {
             // Records with Uniform tails cannot be decomposed — treat as atom
             if !matches!(row.tail, RowTail::Empty) {
                 return vec![vec![SignedAtom::Pos(Atom::Record(row.clone()))]];
@@ -239,7 +239,7 @@ pub fn to_rdnf(ty: &Type) -> Rdnf {
                     .fields
                     .iter()
                     .map(|(k, v)| {
-                        Type::Record(Row {
+                        Type::Dict(Row {
                             fields: {
                                 let mut m = IndexMap::new();
                                 m.insert(k.clone(), v.clone());
@@ -756,7 +756,7 @@ fn atom_to_type(atom: &Atom) -> Type {
             LiteralAtom::IntLiteral(n) => Type::IntLiteral(*n),
             LiteralAtom::StringLiteral(s) => Type::StringLiteral(s.clone()),
         },
-        Atom::SingleFieldRecord { key, value } => Type::Record(Row {
+        Atom::SingleFieldRecord { key, value } => Type::Dict(Row {
             fields: {
                 let mut m = IndexMap::new();
                 m.insert(key.clone(), *value.clone());
@@ -791,7 +791,7 @@ fn atom_to_type(atom: &Atom) -> Type {
             fn_name: fn_name.clone(),
             args: args.clone(),
         },
-        Atom::Record(row) => Type::Record(row.clone()),
+        Atom::Record(row) => Type::Dict(row.clone()),
     }
 }
 
@@ -1357,7 +1357,7 @@ mod tests {
     #[test]
     fn test_rdnf_multi_field_record() {
         // {x: Int, y: Str} → {x: Int} & {y: Str} → [[Pos({x:Int}), Pos({y:Str})]]
-        let ty = Type::Record(Row {
+        let ty = Type::Dict(Row {
             fields: {
                 let mut m = IndexMap::new();
                 m.insert("x".to_string(), Type::Int);
@@ -1757,7 +1757,7 @@ mod tests {
         // {x: Int, y: Str} <: {x: Int}
         // Under BAS: {x:Int} & {y:Str} & ~{x:Int} = {x:Int} & {y:Str} & ~{x:Int}
         // The {x:Int} and ~{x:Int} cancel → empty
-        let sub = Type::Record(Row {
+        let sub = Type::Dict(Row {
             fields: {
                 let mut m = IndexMap::new();
                 m.insert("x".to_string(), Type::Int);
@@ -1766,7 +1766,7 @@ mod tests {
             },
             tail: RowTail::Empty,
         });
-        let sup = Type::Record(Row {
+        let sup = Type::Dict(Row {
             fields: {
                 let mut m = IndexMap::new();
                 m.insert("x".to_string(), Type::Int);
@@ -2229,7 +2229,7 @@ mod tests {
     /// producing [[Pos(Atom::Record(...))]] — a single conjunction with one atom.
     #[test]
     fn test_rdnf_uniform_tailed_record_is_single_atom() {
-        let uniform_record = Type::Record(Row {
+        let uniform_record = Type::Dict(Row {
             fields: {
                 let mut m = IndexMap::new();
                 m.insert("x".to_string(), Type::Int);
@@ -2264,7 +2264,7 @@ mod tests {
     /// Even with no explicit fields, the Uniform tail prevents decomposition.
     #[test]
     fn test_rdnf_empty_fields_uniform_tailed_record_is_single_atom() {
-        let empty_uniform = Type::Record(Row {
+        let empty_uniform = Type::Dict(Row {
             fields: IndexMap::new(),
             tail: RowTail::Uniform {
                 key: None,

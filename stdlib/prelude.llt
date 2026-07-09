@@ -21,7 +21,7 @@
   # Naming:
   #   Int, Str, Bool, Float, Never — leaf TypeNode constructors (no payload)
   #   Any     — TypeNode.Top (the sound lattice top — τ <: Top for all τ)
-  #   Null    — TypeNode.Record with empty fields (empty record = null / [])
+  #   Null    — TypeNode.Dict with empty fields (empty record = null / [])
   #   Seq     — TypeNode.TypeApplication of TypeNode.TypeConstructor "Seq"
   #   Map     — TypeNode.TypeApplication of TypeNode.TypeConstructor "Map"
   #   union   — TypeNode.Union
@@ -45,8 +45,8 @@
   Fn:      TypeNode.AnyFn
   # Named-field TypeNode constructors: accessed via qualified TypeNode.X names.
   # TypeNode is declared in this same letrec dict, so it is in scope via letrec mutual recursion.
-  Null:    [TypeNode.Record fields: []  open: False]
-  Dict:    [TypeNode.Record fields: []  open: True]
+  Null:    [TypeNode.Dict fields: []  open: False]
+  Dict:    [TypeNode.Dict fields: []  open: True]
   # Any handle — Handle applied to Unknown capability row
   Handle:  [TypeNode.TypeApplication
     ctor: [TypeNode.TypeConstructor name: "Handle"]
@@ -324,8 +324,8 @@
     #   "MapValues" — Map of TypeNode values: map f over values, preserve keys
     map-children: [fn [let f t]
       [match t
-        [case [let p] [TypeNode.Record p]
-          [TypeNode.Record
+        [case [let p] [TypeNode.Dict p]
+          [TypeNode.Dict
             fields: [object-map p.fields [fn [let k v] [f v]]]
             open:   p.open]]
         [case [let p] [TypeNode.Union p]

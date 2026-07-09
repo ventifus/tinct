@@ -69,7 +69,7 @@ use crate::types::Type;
 pub(crate) fn stq_contains_unknown(ty: &Type) -> bool {
     match ty {
         Type::Unknown => true,
-        Type::Record(row) => row.fields.values().any(stq_contains_unknown),
+        Type::Dict(row) => row.fields.values().any(stq_contains_unknown),
         Type::Function { params, ret, .. } => {
             params.iter().any(|(_, t)| stq_contains_unknown(t)) || stq_contains_unknown(ret)
         }

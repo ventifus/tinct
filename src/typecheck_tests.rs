@@ -91,7 +91,7 @@ async fn doc_env_with_prelude(input: &str) -> Arc<RwLock<crate::env::Env>> {
     )));
     let mut state = InferState::with_env(std::sync::Arc::clone(&child_env));
     // TypeAnnotationTable removed — inline writes on AST nodes.
-    let empty_pipeline = Type::Record(Row {
+    let empty_pipeline = Type::Dict(Row {
         fields: IndexMap::new(),
         tail: crate::type_def::RowTail::Empty,
     });
@@ -121,7 +121,7 @@ async fn result_type(input: &str) -> Type {
 
 async fn result_field(input: &str, field: &str) -> Type {
     match result_type(input).await {
-        Type::Record(Row { fields, .. }) => fields.get(field).cloned().unwrap(),
+        Type::Dict(Row { fields, .. }) => fields.get(field).cloned().unwrap(),
         other => panic!("expected Record for %, got {other}"),
     }
 }
@@ -131,10 +131,10 @@ async fn result_field(input: &str, field: &str) -> Type {
 /// This helper searches all members and returns the first matching field type found.
 fn type_get_field<'a>(ty: &'a Type, field: &str) -> Option<&'a Type> {
     match ty {
-        Type::Record(Row { fields, .. }) => fields.get(field),
+        Type::Dict(Row { fields, .. }) => fields.get(field),
         Type::Intersection(members) => {
             for m in members {
-                if let Type::Record(Row { fields, .. }) = m {
+                if let Type::Dict(Row { fields, .. }) = m {
                     if let Some(v) = fields.get(field) {
                         return Some(v);
                     }
@@ -173,7 +173,7 @@ async fn doc_tycon_env(
         std::sync::Arc::clone(&arc_env),
     )));
     let mut state = InferState::with_env(std::sync::Arc::clone(&child_env));
-    let empty_pipeline = Type::Record(Row {
+    let empty_pipeline = Type::Dict(Row {
         fields: IndexMap::new(),
         tail: crate::type_def::RowTail::Empty,
     });
@@ -205,7 +205,7 @@ async fn file_env_impl(input: &str) -> Arc<RwLock<crate::env::Env>> {
     let mut state = InferState::new();
     // TypeAnnotationTable removed — inline writes on AST nodes.
     let mut named_types: HashMap<String, Type> = HashMap::new();
-    let mut pipeline_type = Type::Record(Row {
+    let mut pipeline_type = Type::Dict(Row {
         fields: IndexMap::new(),
         tail: crate::type_def::RowTail::Empty,
     });
@@ -294,7 +294,7 @@ async fn test_dict_auto_indexed() {
     // Dict fields preserve literal types.
     let ty = infer("[\"foo\" \"bar\" \"baz\"]").await;
     match ty {
-        Type::Record(Row { fields, .. }) => {
+        Type::Dict(Row { fields, .. }) => {
             assert_eq!(fields.get("0"), Some(&Type::StringLiteral("foo".into())));
             assert_eq!(fields.get("1"), Some(&Type::StringLiteral("bar".into())));
             assert_eq!(fields.get("2"), Some(&Type::StringLiteral("baz".into())));
@@ -307,10 +307,10 @@ async fn test_dict_auto_indexed() {
 async fn test_dict_nested() {
     let ty = infer("[outer: [inner: 42]]").await;
     match ty {
-        Type::Record(Row { fields, .. }) => {
+        Type::Dict(Row { fields, .. }) => {
             let inner = fields.get("outer").unwrap();
             match inner {
-                Type::Record(Row {
+                Type::Dict(Row {
                     fields: inner_fields,
                     ..
                 }) => {
@@ -327,7 +327,7 @@ async fn test_dict_nested() {
 async fn test_dict_letrec_forward_ref() {
     let ty = infer("[a: $b  b: 42]").await;
     match ty {
-        Type::Record(Row { fields, .. }) => {
+        Type::Dict(Row { fields, .. }) => {
             // Forward references unify: $b resolves to 42, so both a and b have IntLiteral(42).
             assert_eq!(fields.get("a"), Some(&Type::IntLiteral(42)));
             assert_eq!(fields.get("b"), Some(&Type::IntLiteral(42)));
@@ -625,7 +625,7 @@ async fn test_dot_access_typevar_generates_constraint_verified() {
     let env: Arc<RwLock<crate::env::Env>> = Arc::new(RwLock::new(crate::env::Env::new()));
     let mut state = InferState::new();
     // TypeAnnotationTable removed — inline writes on AST nodes.
-    let empty_pipeline = Type::Record(Row {
+    let empty_pipeline = Type::Dict(Row {
         fields: IndexMap::new(),
         tail: crate::type_def::RowTail::Empty,
     });
@@ -1013,67 +1013,12 @@ async fn test_check_call_with_scheme_non_function_scheme() {
 // test_annotation_bare — deleted: covered by corpus tests
 // test_annotation_with_element_type — deleted: covered by corpus tests
 
-#[tokio::test]
-async fn test_null_annotation_bare() {
-    // Bare @Null resolves to Type::Record(Row::Empty) in resolve_type_name
-    let ty = infer("[fn [let x@Null] $x]").await;
-    match ty {
-        Type::Function { params, .. } => match &params[0].1 {
-            Type::Record(Row { fields, .. }) => {
-                assert!(fields.is_empty());
-            }
-            other => panic!("expected Record(Row::empty), got {other}"),
-        },
-        other => panic!("expected Function, got {other}"),
-    }
-}
+// test_null_annotation_bare — deleted: Null is now defined in the type-stage prelude,
+// not as a hardcoded Rust type name. Covered by corpus tests with prelude loaded.
 
-#[tokio::test]
-async fn test_null_annotation_in_type_assert() {
-    // [@Null []] should succeed (empty dict matches Null)
-    let ty = infer("[@Null []]").await;
-    match ty {
-        Type::Record(Row { fields, .. }) => {
-            assert!(fields.is_empty());
-        }
-        other => panic!("expected Record(Row::empty), got {other}"),
-    }
-}
+// test_null_annotation_in_type_assert — deleted: same reason.
 
-#[tokio::test]
-async fn test_null_return_annotation() {
-    // [fn@Null [s@String] []] exercises the resolve_annotation(Simple("Null")) path
-    // in infer_fn for the return annotation.
-    // Null resolves to Type::Record(Row { fields: {} }), so check_expr checks
-    // that the body [] (empty dict) satisfies that type.
-    // The function return type should be the declared Null type (empty record).
-    let ty = result_field("[f: [fn@Null [let s@String] []]]", "f").await;
-    match ty {
-        Type::Function { params, ret, .. } => {
-            // Parameter should be String
-            assert_eq!(
-                params[0].1,
-                Type::Str,
-                "param @String should resolve to Type::Str, got {:?}",
-                params[0].1
-            );
-            // Return type should be Null = empty record
-            match *ret {
-                Type::Record(Row { ref fields, .. }) => {
-                    assert!(
-                        fields.is_empty(),
-                        "fn@Null return type should have no fields, got {:?}",
-                        fields
-                    );
-                }
-                other => {
-                    panic!("fn@Null return type should be Record(Row::empty), got {other}")
-                }
-            }
-        }
-        other => panic!("expected Function type for [fn@Null [s@String] []], got {other}"),
-    }
-}
+// test_null_return_annotation — deleted: same reason.
 
 // test_builtin_collect_returns_record — deleted: prelude-dependent, type-foundations sprint.
 
@@ -1102,10 +1047,10 @@ async fn test_pipeline_percent() {
     let env = file_env("[x: 42]\n---\n[y: %]").await;
     let result = env_get(&env, "%").unwrap().body.clone();
     match result {
-        Type::Record(Row { fields, .. }) => {
+        Type::Dict(Row { fields, .. }) => {
             let y = fields.get("y").expect("field 'y' should exist");
             assert!(
-                matches!(y, Type::Record(..)),
+                matches!(y, Type::Dict(..)),
                 "expected % to be Record, got {y}"
             );
         }
@@ -1118,7 +1063,7 @@ async fn test_pipeline_percent_type() {
     let env = file_env("[x: 1]\n---\n[y: %.x]").await;
     let result = env_get(&env, "%").unwrap().body.clone();
     match result {
-        Type::Record(Row { fields, .. }) => {
+        Type::Dict(Row { fields, .. }) => {
             let y = fields.get("y").expect("field 'y' should exist");
             // x has type IntLiteral(1), so %.x has type IntLiteral(1)
             assert_eq!(
@@ -1579,7 +1524,7 @@ async fn test_annotation_composite_type_in_type_assert() {
     )
     .await;
     let result_ty = match ty {
-        Type::Record(row) => row.fields.get("result").cloned(),
+        Type::Dict(row) => row.fields.get("result").cloned(),
         other => panic!("expected Record, got {other}"),
     };
     match result_ty {
@@ -1816,7 +1761,7 @@ async fn test_call_polymorphic_multiple_calls_different_types() {
     let ty =
         result_type("[id: [fn [let x@a] $x]]\n[r1: [call $id 42]  r2: [call $id \"hello\"]]").await;
     match ty {
-        Type::Record(Row { fields, .. }) => {
+        Type::Dict(Row { fields, .. }) => {
             assert_eq!(fields.get("r1"), Some(&Type::IntLiteral(42)));
             assert_eq!(fields.get("r2"), Some(&Type::StringLiteral("hello".into())));
         }
@@ -2017,7 +1962,7 @@ async fn test_type_expr_open_record() {
     )
     .await;
     match ty {
-        Type::Record(Row { fields, .. }) => {
+        Type::Dict(Row { fields, .. }) => {
             // BAS: all records are closed; field "name" should be String
             assert_eq!(fields.get("name"), Some(&Type::Str));
         }
@@ -2035,7 +1980,7 @@ async fn test_type_expr_row_var_record() {
     )
     .await;
     match ty {
-        Type::Record(Row { fields, .. }) => {
+        Type::Dict(Row { fields, .. }) => {
             assert_eq!(fields.get("name"), Some(&Type::Str));
         }
         other => panic!("expected record, got {other}"),
@@ -2051,7 +1996,7 @@ async fn test_type_expr_closed_record() {
     )
     .await;
     match ty {
-        Type::Record(_) => {}
+        Type::Dict(_) => {}
         other => panic!("expected Record, got {other}"),
     }
 }
@@ -2073,12 +2018,12 @@ async fn test_anonymous_open_record_annotations_get_fresh_vars() {
         Type::Function { params, .. } => {
             // BAS: both params should be record types
             assert!(
-                matches!(&params[0].1, Type::Record(_)),
+                matches!(&params[0].1, Type::Dict(_)),
                 "x param should be Record type, got {:?}",
                 params[0].1
             );
             assert!(
-                matches!(&params[1].1, Type::Record(_)),
+                matches!(&params[1].1, Type::Dict(_)),
                 "y param should be Record type, got {:?}",
                 params[1].1
             );
@@ -2131,12 +2076,12 @@ async fn test_named_row_var_level_monotonicity() {
     match ty {
         Type::Function { params, .. } => {
             assert!(
-                matches!(&params[0].1, Type::Record(_)),
+                matches!(&params[0].1, Type::Dict(_)),
                 "x param should be Record, got {:?}",
                 params[0].1
             );
             assert!(
-                matches!(&params[1].1, Type::Record(_)),
+                matches!(&params[1].1, Type::Dict(_)),
                 "y param should be Record, got {:?}",
                 params[1].1
             );
@@ -2175,14 +2120,14 @@ async fn test_type_assert_open_record_requires_fields() {
 #[tokio::test]
 async fn test_data_dict_always_closed() {
     let ty = infer("[a: 1  b: 2]").await;
-    assert!(matches!(ty, Type::Record(_)), "expected Record, got {ty}");
+    assert!(matches!(ty, Type::Dict(_)), "expected Record, got {ty}");
 }
 
 #[tokio::test]
 async fn test_rest_in_data_dict_ignored() {
     let ty = infer("[a: 1 ...]").await;
     match ty {
-        Type::Record(Row { fields, .. }) => {
+        Type::Dict(Row { fields, .. }) => {
             assert_eq!(fields.len(), 1);
             assert_eq!(fields.get("a"), Some(&Type::IntLiteral(1)));
         }
@@ -2203,7 +2148,7 @@ async fn test_let_gen_varref_instantiation() {
     )
     .await;
     match ty {
-        Type::Record(Row { fields, .. }) => {
+        Type::Dict(Row { fields, .. }) => {
             assert_eq!(fields.get("a"), Some(&Type::IntLiteral(42)));
             assert_eq!(fields.get("b"), Some(&Type::StringLiteral("hello".into())));
         }
@@ -2216,7 +2161,7 @@ async fn test_let_gen_forward_ref_unification() {
     // Forward reference $b should unify with 42
     let ty = infer("[a: $b  b: 42]").await;
     match ty {
-        Type::Record(Row { fields, .. }) => {
+        Type::Dict(Row { fields, .. }) => {
             // Both a and b resolve to IntLiteral(42) via letrec unification
             assert_eq!(fields.get("a"), Some(&Type::IntLiteral(42)));
             assert_eq!(fields.get("b"), Some(&Type::IntLiteral(42)));
@@ -2239,7 +2184,7 @@ async fn test_let_gen_nested_dicts_level_increment() {
     let outer_scheme = env_get(&env, "outer").expect("outer should be in env");
 
     match &outer_scheme.body {
-        Type::Record(Row {
+        Type::Dict(Row {
             fields: outer_fields,
             ..
         }) => {
@@ -2299,7 +2244,7 @@ async fn test_let_gen_mutual_recursion() {
     // Mutual recursion within a dict should work with monomorphic inference
     let ty = infer("[a: $b  b: $a  c: 42]").await;
     match ty {
-        Type::Record(Row { fields, .. }) => {
+        Type::Dict(Row { fields, .. }) => {
             assert!(fields.contains_key("a"));
             assert!(fields.contains_key("b"));
             // c has literal type IntLiteral(42)
@@ -2346,7 +2291,7 @@ async fn test_let_gen_typevar_in_dot_access() {
     // infer_dict processing `data: [x: 1]`), resolving β → IntLiteral(1).
     let ty = infer("[result: $data.x  data: [x: 1]]").await;
     match ty {
-        Type::Record(Row { fields, .. }) => {
+        Type::Dict(Row { fields, .. }) => {
             // result is the resolved type of x (IntLiteral(1)), not Any and not TypeVar.
             // Pass 3b constraint unification resolves β through the γ_data collision.
             let result_ty = fields.get("result").expect("field 'result' should exist");
@@ -2385,7 +2330,7 @@ async fn test_let_gen_nested_dicts_level_correct() {
     // Nested dict [outer: [inner: 42]] should infer correct types
     let ty = result_field("[outer: [inner: 42]]\n[result: $outer]", "result").await;
     match ty {
-        Type::Record(Row { fields, .. }) => {
+        Type::Dict(Row { fields, .. }) => {
             // inner field preserves literal type
             assert_eq!(
                 fields.get("inner"),
@@ -3052,7 +2997,7 @@ async fn test_annotation_fresh_vars_are_independent_across_siblings() {
     // The @a in id and the @a in const42 must not interfere with each other.
     let ty = infer("[id: [fn [let x@a] $x]  const42: [fn [let y@a] 42]]").await;
     match ty {
-        Type::Record(Row { fields, .. }) => {
+        Type::Dict(Row { fields, .. }) => {
             // Verify both functions exist
             assert!(fields.contains_key("id"), "should have 'id' field");
             assert!(
@@ -3091,7 +3036,7 @@ async fn test_annotation_level_monotonicity() {
     // Case 1: Two params share the same annotation name
     let ty = infer("[f: [fn [let x@a y@a] $x]]").await;
     match ty {
-        Type::Record(Row { fields, .. }) => {
+        Type::Dict(Row { fields, .. }) => {
             match fields.get("f") {
                 Some(Type::Function { params, .. }) => {
                     // Both params should unify to the same type variable
@@ -3112,7 +3057,7 @@ async fn test_annotation_level_monotonicity() {
     // Case 2: Return annotation reuses param annotation
     let ty = infer("[f: [fn@a [let x@a] $x]]").await;
     match ty {
-        Type::Record(Row { fields, .. }) => {
+        Type::Dict(Row { fields, .. }) => {
             match fields.get("f") {
                 Some(Type::Function {
                     params,
@@ -3154,7 +3099,7 @@ async fn test_polymorphic_function_call_no_double_instantiation() {
         result_type("[id: [fn [let x@a] $x]]\n[r1: [call $id 42]  r2: [call $id \"hello\"]]").await;
 
     match ty {
-        Type::Record(Row { fields, .. }) => {
+        Type::Dict(Row { fields, .. }) => {
             // r1 should be IntLiteral(42) due to polymorphic instantiation
             assert_eq!(
                 fields.get("r1"),
@@ -3461,7 +3406,7 @@ async fn test_variadic_param_type_is_any() {
         Type::Function { params, .. } => {
             assert_eq!(params.len(), 1, "variadic function should have 1 param");
             assert!(
-                matches!(&params[0].1, Type::Record(row) if matches!(&row.tail, crate::type_def::RowTail::Uniform { .. })),
+                matches!(&params[0].1, Type::Dict(row) if matches!(&row.tail, crate::type_def::RowTail::Uniform { .. })),
                 "variadic param should have type Record(Uniform), got: {:?}",
                 params[0]
             );
@@ -3481,7 +3426,7 @@ async fn test_variadic_param_type_is_any() {
                 params[0]
             );
             assert!(
-                matches!(&params[2].1, Type::Record(row) if matches!(&row.tail, crate::type_def::RowTail::Uniform { .. })),
+                matches!(&params[2].1, Type::Dict(row) if matches!(&row.tail, crate::type_def::RowTail::Uniform { .. })),
                 "variadic param 'rest' should have type Record(Uniform), got: {:?}",
                 params[2]
             );
@@ -3501,7 +3446,7 @@ async fn test_variadic_param_env_binding_is_record() {
     match ty {
         Type::Function { ret, .. } => {
             assert!(
-                matches!(ret.as_ref(), Type::Record(row) if matches!(&row.tail, crate::type_def::RowTail::Uniform { .. })),
+                matches!(ret.as_ref(), Type::Dict(row) if matches!(&row.tail, crate::type_def::RowTail::Uniform { .. })),
                 "function returning variadic param should have Record(Uniform) return type, got: {ret:?}"
             );
         }
@@ -3558,7 +3503,7 @@ async fn test_call_poly_subst_seeded_and_merged() {
     )
     .await;
     match ty {
-        Type::Record(Row { ref fields, .. }) => {
+        Type::Dict(Row { ref fields, .. }) => {
             // Polymorphic call preserves literal type for record fields
             assert_eq!(
                 fields.get("name"),
@@ -3675,7 +3620,7 @@ async fn test_check_call_nonscheme_poly_subst_seeded_and_merged() {
     )
     .await;
     match ty {
-        Type::Record(Row { ref fields, .. }) => {
+        Type::Dict(Row { ref fields, .. }) => {
             // Polymorphic call preserves literal type in record field
             assert_eq!(
                 fields.get("name"),
@@ -3786,7 +3731,7 @@ async fn test_level_restored_after_non_dict_record_error() {
     let mut state = InferState::new();
     // TypeAnnotationTable removed — inline writes on AST nodes.
     let named_types: HashMap<String, Type> = HashMap::new();
-    let mut pipeline_type = Type::Record(Row {
+    let mut pipeline_type = Type::Dict(Row {
         fields: IndexMap::new(),
         tail: crate::type_def::RowTail::Empty,
     });
@@ -4117,7 +4062,7 @@ async fn test_apply_type_alias_substitution_preserves_row_tail_uniform() {
     // Alias body should be a Record with RowTail::Uniform.
     // Currently, uniform dict syntax may not be fully supported, producing Unknown.
     match &alias.body {
-        Type::Record(row) => {
+        Type::Dict(row) => {
             // Before B-356 fix, tail would be Empty (hardcoded)
             // After fix, tail should be Uniform with TypeVar placeholders
             match &row.tail {
@@ -4173,7 +4118,7 @@ async fn test_expression_type_return_ann_registered() {
 
     // program_type is an open record with `documents: App(TyCon, document_type)`.
     let doc_collection_type = match &program_type {
-        Type::Record(row) => row
+        Type::Dict(row) => row
             .fields
             .get("documents")
             .cloned()
@@ -4196,7 +4141,7 @@ async fn test_expression_type_return_ann_registered() {
 
     // document_type is an open record with `expressions: App(TyCon, expression_type)`.
     let expr_collection_type = match &document_type {
-        Type::Record(row) => row
+        Type::Dict(row) => row
             .fields
             .get("expressions")
             .cloned()
@@ -4220,7 +4165,7 @@ async fn test_expression_type_return_ann_registered() {
     // "Annotation" type name (RA violation). Pattern match narrowing still works via
     // TyCon expansion in typecheck.rs when Annotation is in state.tycon_env.
     let return_ann_type = match &expression_type {
-        Type::Record(row) => row.fields.get("return-ann").cloned().expect(
+        Type::Dict(row) => row.fields.get("return-ann").cloned().expect(
             "expression_type must have 'return-ann' field — T-1272 fix registers \
                  Expression as open record with return-ann: Any",
         ),
@@ -4236,7 +4181,7 @@ async fn test_expression_type_return_ann_registered() {
 
     // Also verify `params` field is a parameterized collection type over Any.
     let params_type = match &expression_type {
-        Type::Record(row) => row
+        Type::Dict(row) => row
             .fields
             .get("params")
             .cloned()
@@ -4251,7 +4196,7 @@ async fn test_expression_type_return_ann_registered() {
 
     // Verify the open row tail (Uniform with Any value) allows unknown field access.
     match &expression_type {
-        Type::Record(row) => match &row.tail {
+        Type::Dict(row) => match &row.tail {
             RowTail::Uniform { key, value } => {
                 assert!(
                     key.is_none(),
@@ -4425,7 +4370,7 @@ async fn test_check_call_with_scheme_records_func_span_in_type_map() {
     let mut type_map = TypeMap::new();
     // TypeAnnotationTable removed — inline writes on AST nodes.
     let named_types: HashMap<String, Type> = HashMap::new();
-    let mut pipeline_type = Type::Record(Row {
+    let mut pipeline_type = Type::Dict(Row {
         fields: IndexMap::new(),
         tail: crate::type_def::RowTail::Empty,
     });
@@ -4874,12 +4819,12 @@ async fn test_type_assert_named_row_var_shared_within_annotation() {
     match ty {
         Type::Function { params, ret, .. } => {
             assert!(
-                matches!(&params[0].1, Type::Record(_)),
+                matches!(&params[0].1, Type::Dict(_)),
                 "param should be Record type, got {:?}",
                 params[0].1
             );
             assert!(
-                matches!(ret.as_ref(), Type::Record(_)),
+                matches!(ret.as_ref(), Type::Dict(_)),
                 "return should be Record type, got {ret}"
             );
         }
@@ -4996,7 +4941,7 @@ async fn test_union_type_assert_failure_float() {
 #[tokio::test]
 async fn test_union_nullable_pattern() {
     // Union(Int, Record(Empty)) — nullable integer pattern
-    let null_type = Type::Record(Row {
+    let null_type = Type::Dict(Row {
         fields: IndexMap::new(),
         tail: crate::type_def::RowTail::Empty,
     });
@@ -5035,7 +4980,7 @@ async fn test_narrowing_type_map_hover() {
     let mut state = InferState::new();
     let mut type_map = TypeMap::new();
     // TypeAnnotationTable removed — inline writes on AST nodes.
-    let empty_pipeline = Type::Record(Row {
+    let empty_pipeline = Type::Dict(Row {
         fields: IndexMap::new(),
         tail: crate::type_def::RowTail::Empty,
     });
@@ -5106,7 +5051,7 @@ async fn test_narrowing_dict_predicate() {
     // After `[dict? x]`, the true branch knows `x : Record(open)`
     let env = doc_env_with_builtins("[x: [a: 1]]\n[result: [if [dict? x] x []]]").await;
     match env_get(&env, "result").map(|s| s.body) {
-        Some(Type::Record(_)) => {}
+        Some(Type::Dict(_)) => {}
         Some(other) => panic!("expected Record for dict? narrowing, got {other}"),
         None => panic!("field 'result' not found in env"),
     }
@@ -5119,7 +5064,7 @@ async fn test_narrowing_null_predicate() {
     // After `[null? x]`, the true branch knows `x : Record(Empty)` (Null = empty closed record)
     let env = doc_env_with_builtins("[x: []]\n[result: [if [null? x] x []]]").await;
     match env_get(&env, "result").map(|s| s.body) {
-        Some(Type::Record(_)) => {}
+        Some(Type::Dict(_)) => {}
         Some(other) => panic!("expected closed Record for null? narrowing, got {other}"),
         None => panic!("field 'result' not found in env"),
     }
@@ -5719,7 +5664,7 @@ async fn test_collect_pattern_bindings_pin() {
 async fn test_collect_pattern_bindings_dict_field_narrowed() {
     // Unit test: Dict pattern on a concrete Record type — Pin sub-pattern produces no binding.
     // (Pin compares against an existing variable in scope; it does not introduce a new binding.)
-    let scrutinee = Type::Record(Row {
+    let scrutinee = Type::Dict(Row {
         fields: {
             let mut m = IndexMap::new();
             m.insert("ok".into(), Type::Int);
@@ -5749,7 +5694,7 @@ async fn test_collect_pattern_bindings_dict_field_narrowed() {
 async fn test_collect_pattern_bindings_dict_missing_field_falls_back_to_unknown() {
     // Dict pattern with key not present in Record — Pin sub-pattern produces no binding.
     // (Verifies the Dict arm recurses without panic even when key is absent from Record.)
-    let scrutinee = Type::Record(Row {
+    let scrutinee = Type::Dict(Row {
         fields: IndexMap::new(),
         tail: crate::type_def::RowTail::Empty,
     });
@@ -6024,7 +5969,7 @@ async fn test_check_get_optional_record_known_field_returns_field_type_or_null()
              [result: [get? \"a\" rec]]",
     )
     .await;
-    let null_ty = Type::Record(Row {
+    let null_ty = Type::Dict(Row {
         fields: IndexMap::new(),
         tail: crate::type_def::RowTail::Empty,
     });
@@ -6124,7 +6069,7 @@ async fn test_get_in_empty_path_returns_dict_unchanged() {
     )
     .await;
     match env_get(&env, "result").map(|s| s.body) {
-        Some(Type::Record(_)) => {}
+        Some(Type::Dict(_)) => {}
         Some(other) => panic!("expected Record from get-in with empty path, got {other}"),
         None => panic!("field 'result' not found"),
     }
@@ -6614,7 +6559,7 @@ async fn test_do_infer_resolve_monad_from_record_with_ok_field() {
     // Unit test for resolve_monad_from_type: a Record with 'ok' field → "result".
     let mut fields = IndexMap::new();
     fields.insert("ok".to_string(), Type::Int);
-    let ty = Type::Record(Row {
+    let ty = Type::Dict(Row {
         fields,
         tail: crate::type_def::RowTail::Empty,
     });
@@ -6632,7 +6577,7 @@ async fn test_do_infer_resolve_monad_from_record_with_err_field() {
     // Unit test for resolve_monad_from_type: a Record with 'err' field → "result".
     let mut fields = IndexMap::new();
     fields.insert("err".to_string(), Type::Str);
-    let ty = Type::Record(Row {
+    let ty = Type::Dict(Row {
         fields,
         tail: crate::type_def::RowTail::Empty,
     });
@@ -6659,7 +6604,7 @@ async fn test_do_infer_resolve_monad_from_union_with_ok_member() {
     let mut ok_fields = IndexMap::new();
     ok_fields.insert("ok".to_string(), Type::Int);
     let ty = Type::Union(vec![
-        Type::Record(Row {
+        Type::Dict(Row {
             fields: ok_fields,
             tail: crate::type_def::RowTail::Empty,
         }),
@@ -7445,7 +7390,7 @@ async fn test_is_subtype_recursive_isomorphic_terminates() {
     // μa.{x: a} — infinite record {x: {x: {x: ...}}}
     let rec_a = Type::Recursive {
         var: "a".to_string(),
-        body: Box::new(Type::Record(crate::type_def::Row {
+        body: Box::new(Type::Dict(crate::type_def::Row {
             fields: [("x".to_string(), Type::TypeVar("a".to_string(), 0))].into(),
             tail: crate::type_def::RowTail::Empty,
         })),
@@ -7453,7 +7398,7 @@ async fn test_is_subtype_recursive_isomorphic_terminates() {
     // μb.{x: b} — same structure, different binder name
     let rec_b = Type::Recursive {
         var: "b".to_string(),
-        body: Box::new(Type::Record(crate::type_def::Row {
+        body: Box::new(Type::Dict(crate::type_def::Row {
             fields: [("x".to_string(), Type::TypeVar("b".to_string(), 0))].into(),
             tail: crate::type_def::RowTail::Empty,
         })),
@@ -7500,7 +7445,7 @@ async fn test_is_subtype_recursive_union_terminates() {
         var: "a".to_string(),
         body: Box::new(Type::Union(vec![
             Type::Int,
-            Type::Record(crate::type_def::Row {
+            Type::Dict(crate::type_def::Row {
                 fields: [("x".to_string(), Type::TypeVar("a".to_string(), 0))].into(),
                 tail: crate::type_def::RowTail::Empty,
             }),
@@ -7511,7 +7456,7 @@ async fn test_is_subtype_recursive_union_terminates() {
         var: "b".to_string(),
         body: Box::new(Type::Union(vec![
             Type::Int,
-            Type::Record(crate::type_def::Row {
+            Type::Dict(crate::type_def::Row {
                 fields: [("x".to_string(), Type::TypeVar("b".to_string(), 0))].into(),
                 tail: crate::type_def::RowTail::Empty,
             }),
@@ -7532,7 +7477,7 @@ async fn test_is_subtype_recursive_union_terminates() {
 async fn test_unfold_once_basic() {
     let rec = Type::Recursive {
         var: "a".to_string(),
-        body: Box::new(Type::Record(crate::type_def::Row {
+        body: Box::new(Type::Dict(crate::type_def::Row {
             fields: [("x".to_string(), Type::TypeVar("a".to_string(), 0))].into(),
             tail: crate::type_def::RowTail::Empty,
         })),
@@ -7540,7 +7485,7 @@ async fn test_unfold_once_basic() {
     let unfolded = crate::type_def::unfold_once(&rec);
     // Must be a Record (one unfold), not Recursive.
     match &unfolded {
-        Type::Record(row) => {
+        Type::Dict(row) => {
             let x_ty = row
                 .fields
                 .get("x")
@@ -7567,7 +7512,7 @@ async fn test_is_subtype_recursive_incompatible_returns_false() {
     // μa.{x: Int, y: a}
     let rec_a = Type::Recursive {
         var: "a".to_string(),
-        body: Box::new(Type::Record(crate::type_def::Row {
+        body: Box::new(Type::Dict(crate::type_def::Row {
             fields: [
                 ("x".to_string(), Type::Int),
                 ("y".to_string(), Type::TypeVar("a".to_string(), 0)),
@@ -7579,7 +7524,7 @@ async fn test_is_subtype_recursive_incompatible_returns_false() {
     // μb.{x: Str, y: b}
     let rec_b = Type::Recursive {
         var: "b".to_string(),
-        body: Box::new(Type::Record(crate::type_def::Row {
+        body: Box::new(Type::Dict(crate::type_def::Row {
             fields: [
                 ("x".to_string(), Type::Str),
                 ("y".to_string(), Type::TypeVar("b".to_string(), 0)),
@@ -7608,7 +7553,7 @@ async fn test_is_subtype_recursive_structural_mismatch_returns_false() {
     // μb.{x: b} — wraps a record
     let rec_b = Type::Recursive {
         var: "b".to_string(),
-        body: Box::new(Type::Record(crate::type_def::Row {
+        body: Box::new(Type::Dict(crate::type_def::Row {
             fields: [("x".to_string(), Type::TypeVar("b".to_string(), 0))].into(),
             tail: crate::type_def::RowTail::Empty,
         })),
@@ -7628,7 +7573,7 @@ async fn test_is_subtype_recursive_different_field_names_returns_false() {
     // μa.{x: a}
     let rec_a = Type::Recursive {
         var: "a".to_string(),
-        body: Box::new(Type::Record(crate::type_def::Row {
+        body: Box::new(Type::Dict(crate::type_def::Row {
             fields: [("x".to_string(), Type::TypeVar("a".to_string(), 0))].into(),
             tail: crate::type_def::RowTail::Empty,
         })),
@@ -7636,7 +7581,7 @@ async fn test_is_subtype_recursive_different_field_names_returns_false() {
     // μb.{y: b} — same structure but different field name
     let rec_b = Type::Recursive {
         var: "b".to_string(),
-        body: Box::new(Type::Record(crate::type_def::Row {
+        body: Box::new(Type::Dict(crate::type_def::Row {
             fields: [("y".to_string(), Type::TypeVar("b".to_string(), 0))].into(),
             tail: crate::type_def::RowTail::Empty,
         })),
@@ -7692,11 +7637,11 @@ async fn test_is_contractive_type_union_no_selfref_true() {
     );
 }
 
-/// T-1166d: is_contractive_type(&Type::Record({x: TypeVar("a")}), "a") → true
+/// T-1166d: is_contractive_type(&Type::Dict({x: TypeVar("a")}), "a") → true
 /// Rule 3: Record is a guarding constructor, so even with a self-ref field it's contractive.
 #[tokio::test]
 async fn test_is_contractive_type_record_with_selfref_true() {
-    let ty = Type::Record(crate::type_def::Row {
+    let ty = Type::Dict(crate::type_def::Row {
         fields: [("x".to_string(), Type::TypeVar("a".to_string(), 0))].into(),
         tail: crate::type_def::RowTail::Empty,
     });

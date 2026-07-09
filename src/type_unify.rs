@@ -639,7 +639,7 @@ async fn improve_functional_dependency_inner(
 
             match (container_ty, key_ty) {
                 (
-                    Type::Record(_) | Type::Intersection(_) | Type::Any,
+                    Type::Dict(_) | Type::Intersection(_) | Type::Any,
                     Type::StringLiteral(field_name),
                 ) => {
                     // Route through resolve_has_field to apply [HAS-FIELD-REC],
@@ -668,10 +668,7 @@ async fn improve_functional_dependency_inner(
                         .collect();
                     Some(Type::normalize_union(field_types))
                 }
-                (
-                    Type::Record(_) | Type::Union(_) | Type::Intersection(_) | Type::Any,
-                    Type::Str,
-                ) => {
+                (Type::Dict(_) | Type::Union(_) | Type::Intersection(_) | Type::Any, Type::Str) => {
                     // Str key (from promoted StringLiteral) — can't resolve statically
                     Some(Type::Unknown)
                 }
@@ -745,7 +742,7 @@ async fn improve_functional_dependency_inner(
                             inst.det_positions.iter().copied().collect();
 
                         match &inst.instance_type {
-                            Type::Record(row) => {
+                            Type::Dict(row) => {
                                 // Find the first field index not in the determining set
                                 let total_params = row.fields.len();
                                 let determined_pos =
@@ -1015,7 +1012,7 @@ pub fn resolve_has_field(
 
     match &dict_type {
         // [HAS-FIELD-REC]: Record with matching field → return field type
-        Type::Record(row) => {
+        Type::Dict(row) => {
             if let Some(field_ty) = row.fields.get(&label_str) {
                 Ok(field_ty.clone())
             } else {
@@ -1155,9 +1152,9 @@ pub fn apply_type_with_visited<'a>(
                 None => Cow::Owned(Type::TypeVar(name.clone(), *level)),
             }
         }
-        Type::Record(row) => {
+        Type::Dict(row) => {
             let applied_row = apply_row_with_visited(row, type_vars, depth + 1, visited_types);
-            Cow::Owned(Type::Record(applied_row))
+            Cow::Owned(Type::Dict(applied_row))
         }
         Type::Function {
             params,
@@ -1396,8 +1393,8 @@ async fn unify_rows(
                 // Both rows have concrete field types and no shared fields: structurally incompatible.
                 return Err(TypeError::from(TypeErrorTyped::UnificationFailure(
                     UnificationFailure {
-                        expected: Type::Record(row1.clone()),
-                        got: Type::Record(row2.clone()),
+                        expected: Type::Dict(row1.clone()),
+                        got: Type::Dict(row2.clone()),
                         span,
                         notes: vec![],
                         call_stack: vec![],
@@ -1562,7 +1559,7 @@ fn lower_levels_check_occurs(
             state.set_level(name.clone(), current_level.min(cap_level));
             found
         }
-        Type::Record(row) => {
+        Type::Dict(row) => {
             let mut found = false;
             for ty in row.fields.values() {
                 found |= lower_levels_check_occurs(ty, occurs_name, cap_level, state);
@@ -2544,7 +2541,10 @@ pub async fn unify(
             if let Some(def) = state.tycon_env.get(n.as_str()) {
                 let body = def.body.clone();
                 let tycon_env = Some(&state.tycon_env);
-                if members.iter().all(|m| Type::is_subtype(m, &body, tycon_env)) {
+                if members
+                    .iter()
+                    .all(|m| Type::is_subtype(m, &body, tycon_env))
+                {
                     Ok(())
                 } else {
                     Err(TypeError::from(TypeErrorTyped::UnificationFailure(
@@ -2575,7 +2575,10 @@ pub async fn unify(
             if let Some(def) = state.tycon_env.get(n.as_str()) {
                 let body = def.body.clone();
                 let tycon_env = Some(&state.tycon_env);
-                if members.iter().all(|m| Type::is_subtype(m, &body, tycon_env)) {
+                if members
+                    .iter()
+                    .all(|m| Type::is_subtype(m, &body, tycon_env))
+                {
                     Ok(())
                 } else {
                     Err(TypeError::from(TypeErrorTyped::UnificationFailure(
@@ -2747,7 +2750,7 @@ pub async fn unify(
         }
 
         // Record unification: delegate to row unification
-        (Type::Record(row1), Type::Record(row2)) => {
+        (Type::Dict(row1), Type::Dict(row2)) => {
             unify_rows(row1, row2, state, constraints, span).await
         }
 
@@ -2778,7 +2781,7 @@ pub async fn unify(
         }
 
         // NominalVariant vs Record: never unifiable (nominal vs structural distinction)
-        (Type::NominalVariant { tag, .. }, Type::Record(_)) => {
+        (Type::NominalVariant { tag, .. }, Type::Dict(_)) => {
             Err(TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
                 message: format!(
                     "cannot unify nominal variant {} with structural record",
@@ -2789,7 +2792,7 @@ pub async fn unify(
                 call_stack: vec![],
             })))
         }
-        (Type::Record(_), Type::NominalVariant { tag, .. }) => {
+        (Type::Dict(_), Type::NominalVariant { tag, .. }) => {
             Err(TypeError::from(TypeErrorTyped::Generic(GenericTypeError {
                 message: format!(
                     "cannot unify structural record with nominal variant {}",
@@ -2814,8 +2817,8 @@ pub async fn unify(
         // members contain RowVar tails (which are inference variables).  Additionally,
         // C-Var2 only handles intersections with exactly one TypeVar — not the all-Record
         // intersection shape we are handling here.
-        (Type::Record(_), Type::Intersection(members))
-            if members.iter().all(|m| matches!(m, Type::Record(_))) =>
+        (Type::Dict(_), Type::Intersection(members))
+            if members.iter().all(|m| matches!(m, Type::Dict(_))) =>
         {
             let members = members.clone();
             for member in &members {
@@ -2823,8 +2826,8 @@ pub async fn unify(
             }
             Ok(())
         }
-        (Type::Intersection(members), Type::Record(_))
-            if members.iter().all(|m| matches!(m, Type::Record(_))) =>
+        (Type::Intersection(members), Type::Dict(_))
+            if members.iter().all(|m| matches!(m, Type::Dict(_))) =>
         {
             let members = members.clone();
             for member in &members {

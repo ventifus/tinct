@@ -48,7 +48,7 @@ async fn test_resolve_has_field_depth_overflow_errors() {
     // Create a simple record to test depth overflow
     let mut fields = IndexMap::new();
     fields.insert("x".to_string(), Type::Int);
-    let record_ty = Type::Record(Row {
+    let record_ty = Type::Dict(Row {
         fields,
         tail: crate::type_def::RowTail::Empty,
     });
@@ -74,14 +74,14 @@ async fn test_resolve_has_field_depth_overflow_errors() {
 async fn test_types_are_disjoint_single_field_records() {
     let mut fields1 = IndexMap::new();
     fields1.insert("x".to_string(), Type::Int);
-    let rec1 = Type::Record(Row {
+    let rec1 = Type::Dict(Row {
         fields: fields1,
         tail: crate::type_def::RowTail::Empty,
     });
 
     let mut fields2 = IndexMap::new();
     fields2.insert("y".to_string(), Type::Str);
-    let rec2 = Type::Record(Row {
+    let rec2 = Type::Dict(Row {
         fields: fields2,
         tail: crate::type_def::RowTail::Empty,
     });
@@ -97,14 +97,14 @@ async fn test_types_are_disjoint_single_field_records() {
 async fn test_types_are_not_disjoint_same_key_records() {
     let mut fields1 = IndexMap::new();
     fields1.insert("x".to_string(), Type::Int);
-    let rec1 = Type::Record(Row {
+    let rec1 = Type::Dict(Row {
         fields: fields1,
         tail: crate::type_def::RowTail::Empty,
     });
 
     let mut fields2 = IndexMap::new();
     fields2.insert("x".to_string(), Type::Str);
-    let rec2 = Type::Record(Row {
+    let rec2 = Type::Dict(Row {
         fields: fields2,
         tail: crate::type_def::RowTail::Empty,
     });
@@ -121,7 +121,7 @@ async fn test_types_are_not_disjoint_multi_field_records() {
     let mut fields1 = IndexMap::new();
     fields1.insert("x".to_string(), Type::Int);
     fields1.insert("a".to_string(), Type::TyCon("Boolean".to_string()));
-    let rec1 = Type::Record(Row {
+    let rec1 = Type::Dict(Row {
         fields: fields1,
         tail: crate::type_def::RowTail::Empty,
     });
@@ -129,7 +129,7 @@ async fn test_types_are_not_disjoint_multi_field_records() {
     let mut fields2 = IndexMap::new();
     fields2.insert("y".to_string(), Type::Str);
     fields2.insert("b".to_string(), Type::Float);
-    let rec2 = Type::Record(Row {
+    let rec2 = Type::Dict(Row {
         fields: fields2,
         tail: crate::type_def::RowTail::Empty,
     });
@@ -666,7 +666,7 @@ async fn test_types_are_disjoint_function_vs_record() {
 
     let mut fields = IndexMap::new();
     fields.insert("x".to_string(), Type::Int);
-    let record_ty = Type::Record(Row {
+    let record_ty = Type::Dict(Row {
         fields,
         tail: crate::type_def::RowTail::Empty,
     });
@@ -704,7 +704,7 @@ async fn test_apply_type_recursive_does_not_bind_var_name() {
     // The binder "μ_var" is a μ-name, not in subst.type_map
     let rec_ty = Type::Recursive {
         var: "μ_var".to_string(),
-        body: Box::new(Type::Record(Row {
+        body: Box::new(Type::Dict(Row {
             fields: {
                 let mut m = IndexMap::new();
                 m.insert("elem".to_string(), Type::TypeVar("_t0".to_string(), 0));
@@ -723,7 +723,7 @@ async fn test_apply_type_recursive_does_not_bind_var_name() {
             assert_eq!(var, "μ_var", "μ-binder name must not change after apply");
             // _t0 inside body should be substituted to Int
             let body_record = match body.as_ref() {
-                Type::Record(r) => r,
+                Type::Dict(r) => r,
                 other => panic!("Expected Record body, got {:?}", other),
             };
             let elem_ty = body_record.fields.get("elem").expect("elem field missing");
@@ -748,7 +748,7 @@ async fn test_unify_recursive_recursive_isomorphic() {
     // μ_a. {head: Int, tail: TypeVar("_a", 0)}
     let rec_a = Type::Recursive {
         var: "_a".to_string(),
-        body: Box::new(Type::Record(Row {
+        body: Box::new(Type::Dict(Row {
             fields: {
                 let mut m = IndexMap::new();
                 m.insert("head".to_string(), Type::Int);
@@ -762,7 +762,7 @@ async fn test_unify_recursive_recursive_isomorphic() {
     // μ_b. {head: Int, tail: TypeVar("_b", 0)} — same shape, different binder name
     let rec_b = Type::Recursive {
         var: "_b".to_string(),
-        body: Box::new(Type::Record(Row {
+        body: Box::new(Type::Dict(Row {
             fields: {
                 let mut m = IndexMap::new();
                 m.insert("head".to_string(), Type::Int);
@@ -792,7 +792,7 @@ async fn test_unify_recursive_recursive_incompatible_fields() {
     // μ_a. {head: Int, tail: TypeVar("_a", 0)}
     let rec_int = Type::Recursive {
         var: "_a".to_string(),
-        body: Box::new(Type::Record(Row {
+        body: Box::new(Type::Dict(Row {
             fields: {
                 let mut m = IndexMap::new();
                 m.insert("head".to_string(), Type::Int);
@@ -806,7 +806,7 @@ async fn test_unify_recursive_recursive_incompatible_fields() {
     // μ_b. {head: Str, tail: TypeVar("_b", 0)} — different head type
     let rec_str = Type::Recursive {
         var: "_b".to_string(),
-        body: Box::new(Type::Record(Row {
+        body: Box::new(Type::Dict(Row {
             fields: {
                 let mut m = IndexMap::new();
                 m.insert("head".to_string(), Type::Str);
@@ -839,7 +839,7 @@ async fn test_unify_typevar_binds_to_recursive_type() {
     let tv = Type::TypeVar("_t0".to_string(), 1);
     let rec_ty = Type::Recursive {
         var: "_μ".to_string(),
-        body: Box::new(Type::Record(Row {
+        body: Box::new(Type::Dict(Row {
             fields: {
                 let mut m = IndexMap::new();
                 m.insert("x".to_string(), Type::Int);
@@ -884,7 +884,7 @@ async fn test_unify_recursive_left_with_typevar_right() {
     // the opened body is just {x: Int}, which unifies with the right side.
     let rec_ty = Type::Recursive {
         var: "_r".to_string(),
-        body: Box::new(Type::Record(Row {
+        body: Box::new(Type::Dict(Row {
             fields: {
                 let mut m = IndexMap::new();
                 m.insert("x".to_string(), Type::Int);
@@ -894,7 +894,7 @@ async fn test_unify_recursive_left_with_typevar_right() {
         })),
     };
 
-    let record_ty = Type::Record(Row {
+    let record_ty = Type::Dict(Row {
         fields: {
             let mut m = IndexMap::new();
             m.insert("x".to_string(), Type::Int);
@@ -919,7 +919,7 @@ async fn test_unify_concrete_left_with_recursive_right() {
 
     let span = rust_span!();
 
-    let record_ty = Type::Record(Row {
+    let record_ty = Type::Dict(Row {
         fields: {
             let mut m = IndexMap::new();
             m.insert("x".to_string(), Type::Int);
@@ -930,7 +930,7 @@ async fn test_unify_concrete_left_with_recursive_right() {
 
     let rec_ty = Type::Recursive {
         var: "_r".to_string(),
-        body: Box::new(Type::Record(Row {
+        body: Box::new(Type::Dict(Row {
             fields: {
                 let mut m = IndexMap::new();
                 m.insert("x".to_string(), Type::Int);
@@ -1093,7 +1093,7 @@ async fn test_reverse_fd_back_propagates_determining_type() {
     let mut instance_fields = IndexMap::new();
     instance_fields.insert("0".to_string(), Type::Int); // pos 0 = Int (determining)
     instance_fields.insert("1".to_string(), Type::Str); // pos 1 = Str (determined)
-    let instance_type = Type::Record(Row {
+    let instance_type = Type::Dict(Row {
         fields: instance_fields,
         tail: crate::type_def::RowTail::Empty,
     });
@@ -1178,7 +1178,7 @@ async fn test_reverse_fd_does_not_fire_when_not_injective() {
     let mut instance_fields = IndexMap::new();
     instance_fields.insert("0".to_string(), Type::Int);
     instance_fields.insert("1".to_string(), Type::Str);
-    let instance_type = Type::Record(Row {
+    let instance_type = Type::Dict(Row {
         fields: instance_fields,
         tail: crate::type_def::RowTail::Empty,
     });
@@ -1379,7 +1379,7 @@ async fn test_fd_in_progress_terminates_mutual_recursion() {
     let mut instance_fields = IndexMap::new();
     instance_fields.insert("0".to_string(), Type::Int);
     instance_fields.insert("1".to_string(), Type::Str);
-    let instance_type = Type::Record(Row {
+    let instance_type = Type::Dict(Row {
         fields: instance_fields,
         tail: crate::type_def::RowTail::Empty,
     });
@@ -1626,8 +1626,8 @@ async fn test_unify_uniform_same_value_type_records_ok() {
             value: Box::new(Type::Int),
         },
     };
-    let rec1 = Type::Record(row.clone());
-    let rec2 = Type::Record(row);
+    let rec1 = Type::Dict(row.clone());
+    let rec2 = Type::Dict(row);
 
     let result = unify_sync(&rec1, &rec2, &mut state, &mut Vec::new(), span).await;
 
@@ -1663,8 +1663,8 @@ async fn test_unify_uniform_inconsistent_named_field_type_errors() {
         fields: IndexMap::new(),
         tail: crate::type_def::RowTail::Empty,
     };
-    let rec1 = Type::Record(row1);
-    let rec2 = Type::Record(row2);
+    let rec1 = Type::Dict(row1);
+    let rec2 = Type::Dict(row2);
 
     let result = unify_sync(&rec1, &rec2, &mut state, &mut Vec::new(), span).await;
 
@@ -1708,8 +1708,8 @@ async fn test_unify_empty_uniform_typevar_join() {
         },
     };
 
-    let rec_lhs = Type::Record(row_lhs);
-    let rec_rhs = Type::Record(row_rhs);
+    let rec_lhs = Type::Dict(row_lhs);
+    let rec_rhs = Type::Dict(row_rhs);
 
     let result = unify_sync(&rec_lhs, &rec_rhs, &mut state, &mut Vec::new(), span).await;
     assert!(
@@ -1753,8 +1753,8 @@ async fn test_unify_empty_uniform_concrete_subtype_fail() {
         },
     };
 
-    let rec_lhs = Type::Record(row_lhs);
-    let rec_rhs = Type::Record(row_rhs);
+    let rec_lhs = Type::Dict(row_lhs);
+    let rec_rhs = Type::Dict(row_rhs);
 
     let result = unify_sync(&rec_lhs, &rec_rhs, &mut state, &mut Vec::new(), span).await;
     assert!(
@@ -1850,7 +1850,7 @@ async fn test_infer_variance_uniform_tail_covariant() {
     // in positive position, so inferred variance should be Covariant.
     let mut fields = IndexMap::new();
     fields.insert("x".to_string(), Type::TypeVar("_t0".to_string(), 0));
-    let body = Type::Record(crate::type_def::Row {
+    let body = Type::Dict(crate::type_def::Row {
         fields,
         tail: crate::type_def::RowTail::Uniform {
             key: None,

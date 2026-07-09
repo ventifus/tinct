@@ -1460,7 +1460,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
         Type::Function {
             params: vec![(
                 None,
-                Type::Record(Row {
+                Type::Dict(Row {
                     fields: indexmap::IndexMap::new(),
                     tail: crate::type_def::RowTail::Empty,
                 }),
@@ -1492,20 +1492,20 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![
                 (
                     None,
-                    Type::Record(Row {
+                    Type::Dict(Row {
                         fields: indexmap::IndexMap::new(),
                         tail: crate::type_def::RowTail::Empty,
                     }),
                 ),
                 (
                     None,
-                    Type::Record(Row {
+                    Type::Dict(Row {
                         fields: indexmap::IndexMap::new(),
                         tail: crate::type_def::RowTail::Empty,
                     }),
                 ),
             ],
-            ret: Box::new(Type::Record(Row {
+            ret: Box::new(Type::Dict(Row {
                 fields: indexmap::IndexMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             })),
@@ -1521,14 +1521,14 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![
                 (
                     None,
-                    Type::Record(Row {
+                    Type::Dict(Row {
                         fields: indexmap::IndexMap::new(),
                         tail: crate::type_def::RowTail::Empty,
                     }),
                 ),
                 (None, Type::Any),
             ],
-            ret: Box::new(Type::Record(Row {
+            ret: Box::new(Type::Dict(Row {
                 fields: indexmap::IndexMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             })),
@@ -1966,7 +1966,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
     // ── Output — builtin-emit ─────────────────────────────────────────────────
     // builtin-emit: Top → {}
     // Writes value to stdout. Side effect; returns null (empty dict).
-    let null_ty = Type::Record(Row {
+    let null_ty = Type::Dict(Row {
         fields: indexmap::IndexMap::new(),
         tail: crate::type_def::RowTail::Empty,
     });
@@ -2058,7 +2058,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![
                 (
                     None,
-                    Type::Record(Row {
+                    Type::Dict(Row {
                         fields: indexmap::IndexMap::new(),
                         tail: crate::type_def::RowTail::Empty,
                     }),
@@ -2285,7 +2285,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
         "builtin-stat-symlink".to_string(),
         Type::Function {
             params: vec![(None, Type::DirCap), (None, Type::Str)],
-            ret: Box::new(Type::Record(Row {
+            ret: Box::new(Type::Dict(Row {
                 fields: indexmap::IndexMap::from_iter([
                     ("name".to_string(), Type::Str),
                     ("kind".to_string(), Type::Str),
@@ -2308,8 +2308,8 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 (None, Type::DirCap),
                 (None, Type::Str),
             ],
-            // Null — Type::Record(Row::Empty)
-            ret: Box::new(Type::Record(Row {
+            // Null — Type::Dict(Row::Empty)
+            ret: Box::new(Type::Dict(Row {
                 fields: indexmap::IndexMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             })),
@@ -2323,8 +2323,8 @@ pub fn core_type_env(env: &mut TypeEnv) {
         "builtin-symlink".to_string(),
         Type::Function {
             params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Str)],
-            // Null — Type::Record(Row::Empty)
-            ret: Box::new(Type::Record(Row {
+            // Null — Type::Dict(Row::Empty)
+            ret: Box::new(Type::Dict(Row {
                 fields: indexmap::IndexMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             })),
@@ -2338,8 +2338,8 @@ pub fn core_type_env(env: &mut TypeEnv) {
         "builtin-set-permissions".to_string(),
         Type::Function {
             params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Int)],
-            // Null — Type::Record(Row::Empty)
-            ret: Box::new(Type::Record(Row {
+            // Null — Type::Dict(Row::Empty)
+            ret: Box::new(Type::Dict(Row {
                 fields: indexmap::IndexMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             })),
@@ -2369,8 +2369,8 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 (None, Type::Str),
                 (None, Type::Str),
             ],
-            // Null — Type::Record(Row::Empty)
-            ret: Box::new(Type::Record(Row {
+            // Null — Type::Dict(Row::Empty)
+            ret: Box::new(Type::Dict(Row {
                 fields: indexmap::IndexMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             })),
@@ -2384,8 +2384,8 @@ pub fn core_type_env(env: &mut TypeEnv) {
         "builtin-remove-xattr".to_string(),
         Type::Function {
             params: vec![(None, Type::DirCap), (None, Type::Str), (None, Type::Str)],
-            // Null — Type::Record(Row::Empty)
-            ret: Box::new(Type::Record(Row {
+            // Null — Type::Dict(Row::Empty)
+            ret: Box::new(Type::Dict(Row {
                 fields: indexmap::IndexMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             })),
@@ -2408,8 +2408,8 @@ pub fn core_type_env(env: &mut TypeEnv) {
         "builtin-remove".to_string(),
         Type::Function {
             params: vec![(None, Type::DirCap), (None, Type::Str)],
-            // Null — Type::Record(Row::Empty)
-            ret: Box::new(Type::Record(Row {
+            // Null — Type::Dict(Row::Empty)
+            ret: Box::new(Type::Dict(Row {
                 fields: indexmap::IndexMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             })),
@@ -2460,7 +2460,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
         "builtin-build-dict".to_string(),
         Type::Function {
             params: vec![(None, Type::Any)],
-            ret: Box::new(Type::Record(Row {
+            ret: Box::new(Type::Dict(Row {
                 fields: indexmap::IndexMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             })),
@@ -2665,7 +2665,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                     None,
                     Type::Union(vec![
                         tycon_app("Seq", Type::TypeVar("T".to_string(), 0)),
-                        Type::Record(Row {
+                        Type::Dict(Row {
                             fields: indexmap::IndexMap::new(),
                             tail: crate::type_def::RowTail::Empty,
                         }),
@@ -2673,7 +2673,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 )],
                 ret: Box::new(Type::Union(vec![
                     tycon_app("Seq", Type::TypeVar("T".to_string(), 0)),
-                    Type::Record(Row {
+                    Type::Dict(Row {
                         fields: indexmap::IndexMap::new(),
                         tail: crate::type_def::RowTail::Empty,
                     }),
@@ -2696,12 +2696,12 @@ pub fn core_type_env(env: &mut TypeEnv) {
         Type::Function {
             params: vec![(
                 None,
-                Type::Record(Row {
+                Type::Dict(Row {
                     fields: indexmap::IndexMap::new(),
                     tail: crate::type_def::RowTail::Empty,
                 }),
             )],
-            ret: Box::new(Type::Record(Row {
+            ret: Box::new(Type::Dict(Row {
                 fields: indexmap::IndexMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             })),
@@ -2836,7 +2836,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
                 ],
                 ret: Box::new(Type::normalize_union(vec![
                     Type::TypeVar("v".to_string(), 0),
-                    Type::Record(Row {
+                    Type::Dict(Row {
                         fields: indexmap::IndexMap::new(),
                         tail: crate::type_def::RowTail::Empty,
                     }),
@@ -3376,7 +3376,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
         let mut fields = indexmap::IndexMap::new();
         fields.insert(
             format!("__cap_flag_{}", flag_name.to_lowercase()),
-            Type::Record(Row {
+            Type::Dict(Row {
                 fields: indexmap::IndexMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             }),
@@ -3385,7 +3385,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             flag_name.to_string(),
             Arc::new(TyConDef {
                 params: vec![],
-                body: Type::Record(Row {
+                body: Type::Dict(Row {
                     fields,
                     tail: crate::type_def::RowTail::Empty,
                 }),
@@ -3415,7 +3415,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
         let mut fields = indexmap::IndexMap::new();
         fields.insert(
             format!("__cap_flag_{}", flag_name.to_lowercase()),
-            Type::Record(Row {
+            Type::Dict(Row {
                 fields: indexmap::IndexMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             }),
@@ -3424,7 +3424,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             flag_name.to_string(),
             Arc::new(TyConDef {
                 params: vec![],
-                body: Type::Record(Row {
+                body: Type::Dict(Row {
                     fields,
                     tail: crate::type_def::RowTail::Empty,
                 }),
@@ -3892,7 +3892,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
         "builtin-builder-finish".to_string(),
         Type::Function {
             params: vec![(None, Type::Any)],
-            ret: Box::new(Type::Record(Row {
+            ret: Box::new(Type::Dict(Row {
                 fields: indexmap::IndexMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             })),
@@ -3905,7 +3905,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
         "builtin-builder-snapshot".to_string(),
         Type::Function {
             params: vec![(None, Type::Any)],
-            ret: Box::new(Type::Record(Row {
+            ret: Box::new(Type::Dict(Row {
                 fields: indexmap::IndexMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             })),
@@ -3956,7 +3956,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
 
     // ── I/O — missing entries ─────────────────────────────────────────────────
     // Null type helper reused across multiple I/O return types.
-    let null_record = Type::Record(Row {
+    let null_record = Type::Dict(Row {
         fields: indexmap::IndexMap::new(),
         tail: crate::type_def::RowTail::Empty,
     });
@@ -3967,7 +3967,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
         "builtin-stat".to_string(),
         Type::Function {
             params: vec![(None, Type::DirCap), (None, Type::Str)],
-            ret: Box::new(Type::Record(Row {
+            ret: Box::new(Type::Dict(Row {
                 fields: indexmap::IndexMap::from_iter([
                     ("name".to_string(), Type::Str),
                     ("kind".to_string(), Type::Str),
@@ -3986,7 +3986,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
             params: vec![(None, Type::DirCap), (None, Type::Str)],
             ret: Box::new(tycon_app(
                 "Seq",
-                Type::Record(Row {
+                Type::Dict(Row {
                     fields: indexmap::IndexMap::from_iter([
                         ("name".to_string(), Type::Str),
                         ("kind".to_string(), Type::Str),
@@ -4153,7 +4153,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
         tycon_app("Seq", Type::Any), // Seq[Parameter] — Parameter is Top for now
     );
     expr_fields.insert("span".to_string(), Type::Any); // Span — open row tail covers this too
-    let expression_type = Type::Record(Row {
+    let expression_type = Type::Dict(Row {
         fields: expr_fields,
         tail: crate::type_def::RowTail::Uniform {
             key: None,
@@ -4170,7 +4170,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
     doc_fields.insert("name".to_string(), Type::Any); // Named/Unnamed variant
     doc_fields.insert("stage".to_string(), Type::Any); // DocStage.Type / DocStage.Runtime
     doc_fields.insert("uses".to_string(), tycon_app("Seq", Type::Str)); // Seq[String] module names
-    let document_type = Type::Record(Row {
+    let document_type = Type::Dict(Row {
         fields: doc_fields,
         tail: crate::type_def::RowTail::Uniform {
             key: None,
@@ -4184,7 +4184,7 @@ pub fn core_type_env(env: &mut TypeEnv) {
         "documents".to_string(),
         tycon_app("Seq", document_type.clone()),
     );
-    let program_type = Type::Record(Row {
+    let program_type = Type::Dict(Row {
         fields: prog_fields,
         tail: crate::type_def::RowTail::Uniform {
             key: None,

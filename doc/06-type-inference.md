@@ -665,7 +665,7 @@ Arms 2 and 3 (TypeVar binding) must appear before Arms 4 and 5 (asymmetric Recur
 
 ## Contractiveness
 
-A recursive type `TypeNode.Recursive { var, body }` is **contractive** iff every path in `body` from the root to an occurrence of `RecursiveRef(var)` passes through at least one guarding constructor. Guarding constructors are those whose `@[guarding: true]` annotation is set: `TypeNode.Record`, `TypeNode.Arrow`, `TypeNode.TypeApplication`. Non-guarding constructors — `TypeNode.Union`, `TypeNode.Intersect` — are logical combinators that do not structurally interpose between the binder and its reference.
+A recursive type `TypeNode.Recursive { var, body }` is **contractive** iff every path in `body` from the root to an occurrence of `RecursiveRef(var)` passes through at least one guarding constructor. Guarding constructors are those whose `@[guarding: true]` annotation is set: `TypeNode.Dict`, `TypeNode.Arrow`, `TypeNode.TypeApplication`. Non-guarding constructors — `TypeNode.Union`, `TypeNode.Intersect` — are logical combinators that do not structurally interpose between the binder and its reference.
 
 ### The `is_contractive` Check
 

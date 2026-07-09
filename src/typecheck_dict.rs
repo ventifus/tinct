@@ -1076,7 +1076,7 @@ pub(crate) async fn infer_dict(
             (k, resolved)
         })
         .collect();
-    let record_type = Type::Record(Row {
+    let record_type = Type::Dict(Row {
         fields: resolved_field_types,
         tail: crate::type_def::RowTail::Empty,
     });

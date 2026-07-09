@@ -107,7 +107,7 @@ pub async fn typecheck_surface_program_annotation_table(
     ));
 
     let mut named_types: HashMap<String, Type> = HashMap::new();
-    let mut pipeline_type = Type::Record(Row {
+    let mut pipeline_type = Type::Dict(Row {
         fields: indexmap::IndexMap::new(),
         tail: crate::type_def::RowTail::Empty,
     });
@@ -264,7 +264,7 @@ pub async fn typecheck_surface_program_with_env(
     // Populated when enable_scheme_map is true (i.e., LSP path), empty otherwise.
     let mut type_map_inner = TypeMap::new();
     let mut named_types: HashMap<String, Type> = HashMap::new();
-    let mut pipeline_type = Type::Record(Row {
+    let mut pipeline_type = Type::Dict(Row {
         fields: indexmap::IndexMap::new(),
         tail: crate::type_def::RowTail::Empty,
     });
@@ -525,7 +525,7 @@ async fn typecheck_surface_document(
         env = Arc::new(RwLock::new(env_inner));
     }
 
-    let mut result_type = Type::Record(Row {
+    let mut result_type = Type::Dict(Row {
         fields: indexmap::IndexMap::new(),
         tail: crate::type_def::RowTail::Empty,
     });
@@ -706,14 +706,14 @@ async fn typecheck_surface_document(
                         result_type = ty.clone();
                         last_node = Some(Arc::clone(surface_node));
                         // Track last non-dict Record for cross-document field threading.
-                        if matches!(&ty, Type::Record(_)) {
+                        if matches!(&ty, Type::Dict(_)) {
                             last_record_type = Some((ty, enclosing_level));
                         }
                     } else {
                         // Intermediate expressions must be record types.
                         // Mirrors typecheck_document line 1097.
                         match &ty {
-                            Type::Record(Row { fields, .. }) => {
+                            Type::Dict(Row { fields, .. }) => {
                                 let mut new_env_inner = Env::with_parent(Arc::clone(&env));
                                 for (name, field_ty) in fields {
                                     let scheme = generalize(enclosing_level, field_ty, state);
@@ -764,7 +764,7 @@ async fn typecheck_surface_document(
     }
     // If the last expression was a non-dict Record, generalize and thread its fields.
     // Mirrors typecheck_document lines 1137-1142.
-    if let Some((Type::Record(Row { fields, .. }), enclosing_level)) = last_record_type {
+    if let Some((Type::Dict(Row { fields, .. }), enclosing_level)) = last_record_type {
         for (name, field_ty) in fields {
             let scheme = generalize(enclosing_level, &field_ty, state);
             result_env_inner.insert_scheme(name, scheme);
@@ -814,7 +814,7 @@ pub(crate) async fn typecheck_surface_document_native(
     type_map: &mut TypeAnnotationTable,
     env: &Arc<RwLock<Env>>,
 ) -> Result<(), Vec<TypeError>> {
-    let pipeline_type = Type::Record(Row {
+    let pipeline_type = Type::Dict(Row {
         fields: indexmap::IndexMap::new(),
         tail: crate::type_def::RowTail::Empty,
     });
@@ -1387,7 +1387,7 @@ pub(crate) async fn infer_surface_expr(
             // in an earlier step retains its polymorphic scheme `forall a. a -> a`, so
             // later steps can instantiate it at different types (Damas & Milner, 1982).
             if exprs.is_empty() {
-                return Ok(Type::Record(Row {
+                return Ok(Type::Dict(Row {
                     fields: indexmap::IndexMap::new(),
                     tail: crate::type_def::RowTail::Empty,
                 }));
@@ -1420,7 +1420,7 @@ pub(crate) async fn infer_surface_expr(
                         return Err(dict_errs);
                     }
 
-                    if let Type::Record(_) = &dict_ty {
+                    if let Type::Dict(_) = &dict_ty {
                         let mut child_env_inner = Env::with_parent(Arc::clone(&current_env));
 
                         // Insert schemes (preserving polymorphism) for entries
@@ -1450,7 +1450,7 @@ pub(crate) async fn infer_surface_expr(
                     // let-polymorphism for downstream bindings.  Without
                     // generalization, `id` would be inserted as a monomorphic
                     // entry and could only be used at a single type.
-                    if let Type::Record(row) = expr_ty {
+                    if let Type::Dict(row) = expr_ty {
                         let mut child_env_inner = Env::with_parent(Arc::clone(&current_env));
 
                         for (field_name, field_ty) in &row.fields {
@@ -1577,7 +1577,7 @@ pub(crate) async fn infer_surface_expr(
                     let key_resolved = state.subst.apply(&key_ty);
 
                     // When the key is a string literal and container is a Record, resolve the field type.
-                    let field_ty = if let (Type::StringLiteral(field_name), Type::Record(row)) =
+                    let field_ty = if let (Type::StringLiteral(field_name), Type::Dict(row)) =
                         (&key_resolved, &container_resolved)
                     {
                         row.fields
@@ -1591,7 +1591,7 @@ pub(crate) async fn infer_surface_expr(
                         let field_types: Vec<Type> = members
                             .iter()
                             .filter_map(|m| {
-                                if let Type::Record(row) = m {
+                                if let Type::Dict(row) = m {
                                     row.fields.get(field_name.as_str()).cloned()
                                 } else {
                                     None
@@ -1609,7 +1609,7 @@ pub(crate) async fn infer_surface_expr(
 
                     return if name == "get?" {
                         // get? returns the field type or Null (empty record)
-                        let null_ty = Type::Record(Row {
+                        let null_ty = Type::Dict(Row {
                             fields: indexmap::IndexMap::new(),
                             tail: crate::type_def::RowTail::Empty,
                         });
@@ -1670,7 +1670,7 @@ pub(crate) async fn infer_surface_expr(
                                 for key in &keys {
                                     current = state.subst.apply(&current);
                                     match &current {
-                                        Type::Record(row) => {
+                                        Type::Dict(row) => {
                                             if let Some(field_ty) = row.fields.get(key.as_str()) {
                                                 current = field_ty.clone();
                                             } else {
@@ -2286,7 +2286,7 @@ pub(crate) async fn infer_surface_expr(
                         // Variadic params collect positional args into an open integer-keyed record.
                         // Mirrors the infer_fn (async) treatment of variadic params.
                         let elem_ty = state.fresh_type_var(&p.span);
-                        Type::Record(Row {
+                        Type::Dict(Row {
                             fields: indexmap::IndexMap::new(),
                             tail: crate::type_def::RowTail::Uniform {
                                 key: None,
@@ -2559,7 +2559,7 @@ pub(crate) async fn infer_surface_expr(
         // VarRef with annotation: handled by the VarRef arm above.
         SurfaceExpression::Quote(_inner) => {
             // [quote expr] produces a dict representing the AST.
-            Ok(Type::Record(Row {
+            Ok(Type::Dict(Row {
                 fields: indexmap::IndexMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             }))
@@ -2863,7 +2863,7 @@ pub(crate) async fn infer_surface_expr(
                     // Look up the field type from the record type (or Unknown for gradual).
                     let resolved_base = state.subst.apply(&base_ty);
                     match &resolved_base {
-                        Type::Record(row) => {
+                        Type::Dict(row) => {
                             let key = match field {
                                 crate::ast::DotKey::Ident(s) => s.clone(),
                                 crate::ast::DotKey::Int(n) => n.to_string(),
@@ -2877,7 +2877,7 @@ pub(crate) async fn infer_surface_expr(
                                 crate::ast::DotKey::Int(n) => n.to_string(),
                             };
                             for m in members {
-                                if let Type::Record(row) = m {
+                                if let Type::Dict(row) = m {
                                     if let Some(ty) = row.fields.get(&key) {
                                         return Ok(ty.clone());
                                     }
@@ -3076,7 +3076,7 @@ fn infer_class_decl_from_surface(
         }
     }
 
-    Ok(Type::Record(Row {
+    Ok(Type::Dict(Row {
         fields: indexmap::IndexMap::new(),
         tail: crate::type_def::RowTail::Empty,
     }))
@@ -3098,7 +3098,7 @@ async fn infer_instance_decl_from_surface(
     use crate::types::InstanceDecl;
 
     if arms.is_empty() {
-        return Ok(Type::Record(Row {
+        return Ok(Type::Dict(Row {
             fields: indexmap::IndexMap::new(),
             tail: crate::type_def::RowTail::Empty,
         }));
@@ -3255,7 +3255,7 @@ async fn infer_instance_decl_from_surface(
         let inst_type = if pattern_types.len() == 1 {
             pattern_types[0].clone()
         } else {
-            Type::Record(Row {
+            Type::Dict(Row {
                 fields: pattern_types
                     .iter()
                     .enumerate()
@@ -3349,7 +3349,7 @@ async fn infer_instance_decl_from_surface(
             .insert_instance(mangled, instance_decl);
     }
 
-    Ok(Type::Record(Row {
+    Ok(Type::Dict(Row {
         fields: indexmap::IndexMap::new(),
         tail: crate::type_def::RowTail::Empty,
     }))
@@ -3385,7 +3385,7 @@ fn contains_unknown_or_top(ty: &Type) -> bool {
             params.iter().any(|(_, t)| contains_unknown_or_top(t)) || contains_unknown_or_top(ret)
         }
         Type::App(f, a) => contains_unknown_or_top(f) || contains_unknown_or_top(a),
-        Type::Record(row) => row.fields.values().any(contains_unknown_or_top),
+        Type::Dict(row) => row.fields.values().any(contains_unknown_or_top),
         Type::Union(members) => members.iter().any(contains_unknown_or_top),
         _ => false,
     }
@@ -3745,7 +3745,7 @@ fn resolve_typeassert_annotation_sync(
                     }
                 }
                 if !fields.is_empty() {
-                    return Some(Type::Record(Row {
+                    return Some(Type::Dict(Row {
                         fields,
                         tail: crate::type_def::RowTail::Empty,
                     }));
@@ -3955,7 +3955,7 @@ fn resolve_type_node_for_typeassert(node: &Arc<SurfaceNode>, state: &mut InferSt
                 }
             }
             if has_keys && !fields.is_empty() {
-                Type::Record(Row {
+                Type::Dict(Row {
                     fields,
                     tail: crate::type_def::RowTail::Empty,
                 })
@@ -4009,10 +4009,6 @@ fn resolve_simple_type_name_for_typeassert(name: &str, state: &mut InferState) -
         "Any" => Type::Any,
         "Unknown" => Type::Unknown,
         "Never" => Type::Never,
-        "Null" => Type::Record(Row {
-            fields: indexmap::IndexMap::new(),
-            tail: crate::type_def::RowTail::Empty,
-        }),
         // Bare `@Fn` or `@Function` — the top of the function lattice: "any callable".
         // Equivalent to `Function { params: [], ret: Top, variadic: true, required_count: 0 }`.
         // This allows unification with any concrete function type via subtyping.
@@ -4241,7 +4237,7 @@ fn resolve_simple_annotation_for_typeassert(
                     }
                 }
                 if !fields.is_empty() {
-                    return Type::Record(Row {
+                    return Type::Dict(Row {
                         fields,
                         tail: crate::type_def::RowTail::Empty,
                     });
@@ -4350,7 +4346,7 @@ pub(crate) fn resolve_monad_from_type(ty: &Type, _state: &InferState) -> Option<
                 None
             }
         }
-        Type::Record(Row { fields, .. }) => {
+        Type::Dict(Row { fields, .. }) => {
             if fields.contains_key("ok") || fields.contains_key("err") {
                 Some("result".to_string())
             } else {

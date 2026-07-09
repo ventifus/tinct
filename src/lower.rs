@@ -100,18 +100,13 @@ pub(crate) fn lower_inner(
 /// entry (which is always the case currently, as populate is not yet wired up).
 /// Unknown is the accept-all fallback for unrecognized names (--no-typecheck, macros).
 pub(crate) fn annotation_name_to_type(name: &str) -> crate::type_def::Type {
-    use crate::type_def::{Row, RowTail, Type};
+    use crate::type_def::Type;
     match name {
         "Int" => Type::Int,
         "Float" => Type::Float,
         "String" | "Str" => Type::Str,
         "Bytes" => Type::Bytes,
         "Proxy" => Type::Proxy,
-        // Empty record = "any dict" under BAS width subtyping.
-        "Dict" => Type::Record(Row {
-            fields: indexmap::IndexMap::new(),
-            tail: RowTail::Empty,
-        }),
         // Variadic 0-required-param function = any callable (Function or Builtin).
         "Fn" | "Function" | "Builtin" => Type::Function {
             params: vec![],

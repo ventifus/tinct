@@ -529,7 +529,7 @@ TypeNode.Recursive {
   var:  "𝜇ꜱʏᴍ⧼lst⧽42"
   body: TypeNode.Union types: [
     TypeNode.Absent
-    TypeNode.Record fields: {
+    TypeNode.Dict fields: {
       "head": TypeNode.Int
       "tail": TypeNode.RecursiveRef name: "𝜇ꜱʏᴍ⧼lst⧽42"
     }  open: false

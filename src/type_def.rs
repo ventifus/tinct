@@ -271,7 +271,7 @@ pub enum Type {
     Str,
     StringLiteral(String),
     Bytes,
-    Record(Row),
+    Dict(Row),
     Function {
         params: Vec<(Option<String>, Type)>, // (param_name, param_type) — None = positional-only
         ret: Box<Type>,
@@ -422,7 +422,7 @@ impl PartialEq for Type {
             (Type::Str, Type::Str) => true,
             (Type::StringLiteral(s1), Type::StringLiteral(s2)) => s1 == s2,
             (Type::Bytes, Type::Bytes) => true,
-            (Type::Record(row1), Type::Record(row2)) => row1 == row2,
+            (Type::Dict(row1), Type::Dict(row2)) => row1 == row2,
             (
                 Type::Function {
                     params: p1,
@@ -530,7 +530,7 @@ impl std::hash::Hash for Type {
             Type::Error(_) => {}
             Type::IntLiteral(v) => v.hash(state),
             Type::StringLiteral(s) => s.hash(state),
-            Type::Record(row) => {
+            Type::Dict(row) => {
                 // Delegate to Row::hash which is order-independent (sorted by key).
                 row.hash(state);
             }
@@ -618,7 +618,7 @@ pub(crate) fn substitute_recvar(ty: &Type, var_name: &str, replacement: &Type) -
         },
 
         // Compound types: recurse structurally into all sub-terms.
-        Type::Record(row) => Type::Record(substitute_recvar_row(row, var_name, replacement)),
+        Type::Dict(row) => Type::Dict(substitute_recvar_row(row, var_name, replacement)),
         Type::Function {
             params,
             ret,
@@ -972,7 +972,7 @@ impl Type {
                 Self::is_consistent_subtype(f1, f2) && Self::is_consistent_subtype(a1, a2)
             }
             (Type::TyCon(n1), Type::TyCon(n2)) => n1 == n2,
-            (Type::Record(sub_row), Type::Record(sup_row)) => {
+            (Type::Dict(sub_row), Type::Dict(sup_row)) => {
                 // Width subtyping: sub must supply every field sup requires.
                 // Field types use consistent subtyping: Unknown field ~<: any annotation.
                 sup_row.fields.iter().all(|(field, sup_ty)| {
@@ -1094,14 +1094,14 @@ impl Type {
             (Type::Bytes, Type::Str | Type::StringLiteral(_)) => true,
 
             // Record vs any primitive is disjoint
-            (Type::Record(_), Type::Int | Type::IntLiteral(_)) => true,
-            (Type::Record(_), Type::Float) => true,
-            (Type::Record(_), Type::Str | Type::StringLiteral(_)) => true,
-            (Type::Record(_), Type::Bytes) => true,
-            (Type::Int | Type::IntLiteral(_), Type::Record(_)) => true,
-            (Type::Float, Type::Record(_)) => true,
-            (Type::Str | Type::StringLiteral(_), Type::Record(_)) => true,
-            (Type::Bytes, Type::Record(_)) => true,
+            (Type::Dict(_), Type::Int | Type::IntLiteral(_)) => true,
+            (Type::Dict(_), Type::Float) => true,
+            (Type::Dict(_), Type::Str | Type::StringLiteral(_)) => true,
+            (Type::Dict(_), Type::Bytes) => true,
+            (Type::Int | Type::IntLiteral(_), Type::Dict(_)) => true,
+            (Type::Float, Type::Dict(_)) => true,
+            (Type::Str | Type::StringLiteral(_), Type::Dict(_)) => true,
+            (Type::Bytes, Type::Dict(_)) => true,
 
             // Function vs primitives (for precise false-branch narrowing after function predicate guards)
             (Type::Function { .. }, Type::Int | Type::IntLiteral(_)) => true,
@@ -1114,10 +1114,10 @@ impl Type {
             (Type::Bytes, Type::Function { .. }) => true,
 
             // Function vs structural types (Record, NominalVariant, App)
-            (Type::Function { .. }, Type::Record(_)) => true,
+            (Type::Function { .. }, Type::Dict(_)) => true,
             (Type::Function { .. }, Type::App(_, _)) => true,
             (Type::Function { .. }, Type::NominalVariant { .. }) => true,
-            (Type::Record(_), Type::Function { .. }) => true,
+            (Type::Dict(_), Type::Function { .. }) => true,
             (Type::App(_, _), Type::Function { .. }) => true,
             (Type::NominalVariant { .. }, Type::Function { .. }) => true,
 
@@ -1148,7 +1148,7 @@ impl Type {
             // satisfy both field requirements. This improves Negation subtyping precision
             // without requiring full RDNF normalization.
             // Records with Uniform tails are open and do not satisfy S-RcdTop disjointness.
-            (Type::Record(row1), Type::Record(row2))
+            (Type::Dict(row1), Type::Dict(row2))
                 if row1.fields.len() == 1
                     && row2.fields.len() == 1
                     && row1.tail == RowTail::Empty
@@ -1166,8 +1166,8 @@ impl Type {
                 tag1 != tag2
             }
             // NominalVariant vs Record (both directions)
-            (Type::NominalVariant { .. }, Type::Record(_)) => true,
-            (Type::Record(_), Type::NominalVariant { .. }) => true,
+            (Type::NominalVariant { .. }, Type::Dict(_)) => true,
+            (Type::Dict(_), Type::NominalVariant { .. }) => true,
             // Conservative: assume all other combinations might overlap
             _ => false,
         }
@@ -1237,7 +1237,7 @@ impl Type {
                         .all(|((_n1, ty1), (_n2, ty2))| Type::is_consistent(ty1, ty2))
                     && Type::is_consistent(r1, r2)
             }
-            (Type::Record(row1), Type::Record(row2)) => {
+            (Type::Dict(row1), Type::Dict(row2)) => {
                 // Shared fields must be consistent
                 for (k, ty1) in &row1.fields {
                     if let Some(ty2) = row2.fields.get(k) {
@@ -1288,9 +1288,9 @@ impl Type {
             // when all intersection members' known fields are individually consistent with
             // the corresponding record fields.  This mirrors the `Record ~ Record` case
             // (which only checks shared fields) applied per member.
-            (Type::Record(row), Type::Intersection(members))
-            | (Type::Intersection(members), Type::Record(row)) => members.iter().all(|m| {
-                if let Type::Record(mrow) = m {
+            (Type::Dict(row), Type::Intersection(members))
+            | (Type::Intersection(members), Type::Dict(row)) => members.iter().all(|m| {
+                if let Type::Dict(mrow) = m {
                     // Check shared fields between the record and this member
                     for (k, mt) in &mrow.fields {
                         if let Some(rt) = row.fields.get(k) {
@@ -1303,7 +1303,7 @@ impl Type {
                     true
                 } else {
                     // Non-Record member — fall back to structural consistency
-                    Type::is_consistent(&Type::Record(row.clone()), m)
+                    Type::is_consistent(&Type::Dict(row.clone()), m)
                 }
             }),
             // Literal types are consistent with their parent types (similar to subtyping)
@@ -1374,7 +1374,7 @@ impl Type {
         let single_field_keys: Vec<&str> = members
             .iter()
             .map(|m| {
-                if let Type::Record(row) = m {
+                if let Type::Dict(row) = m {
                     if row.fields.len() == 1 && row.tail == RowTail::Empty {
                         return row.fields.keys().next().map(|k| k.as_str());
                     }
@@ -1408,7 +1408,7 @@ impl Type {
         let single_field_keys: Option<Vec<&str>> = members
             .iter()
             .map(|m| {
-                if let Type::Record(row) = m {
+                if let Type::Dict(row) = m {
                     if row.fields.len() == 1 && row.tail == RowTail::Empty {
                         return row.fields.keys().next().map(|k| k.as_str());
                     }
@@ -1436,7 +1436,7 @@ impl Type {
             Type::TypeVar(name, _) => {
                 vars.insert(name.clone());
             }
-            Type::Record(row) => {
+            Type::Dict(row) => {
                 for ty in row.fields.values() {
                     ty.collect_type_vars(vars);
                 }
@@ -1492,7 +1492,7 @@ impl Type {
     pub fn has_inference_vars(&self) -> bool {
         match self {
             Type::TypeVar(_, _) => true,
-            Type::Record(row) => {
+            Type::Dict(row) => {
                 row.fields.values().any(|ty| ty.has_inference_vars())
                     || match &row.tail {
                         RowTail::Empty => false,
@@ -1536,7 +1536,7 @@ impl Type {
     pub fn has_type_stage_app(&self) -> bool {
         match self {
             Type::TypeStageApp { .. } => true,
-            Type::Record(row) => {
+            Type::Dict(row) => {
                 row.fields.values().any(|ty| ty.has_type_stage_app())
                     || match &row.tail {
                         RowTail::Empty => false,
@@ -1575,7 +1575,7 @@ impl Type {
             Type::TypeVar(name, _) => {
                 type_vars.insert(name.clone());
             }
-            Type::Record(row) => {
+            Type::Dict(row) => {
                 for ty in row.fields.values() {
                     ty.collect_all_vars(type_vars);
                 }
@@ -1653,7 +1653,7 @@ impl Type {
                 type_vars.insert(name.clone());
                 found
             }
-            Type::Record(row) => {
+            Type::Dict(row) => {
                 let mut found = false;
                 for ty in row.fields.values() {
                     found |= ty.collect_all_vars_check_occurs(occurs_name, type_vars);
@@ -1740,7 +1740,7 @@ impl Type {
             Type::TypeVar(name, _) => {
                 type_vars.push(name.clone());
             }
-            Type::Record(row) => {
+            Type::Dict(row) => {
                 for ty in row.fields.values() {
                     ty.collect_all_vars_vec(type_vars);
                 }
@@ -1836,7 +1836,7 @@ impl Type {
             Type::Operator(name) => {
                 operator_names.insert(name.clone());
             }
-            Type::Record(row) => {
+            Type::Dict(row) => {
                 for ty in row.fields.values() {
                     ty.collect_operator_names(operator_names);
                 }
@@ -2204,13 +2204,13 @@ impl Type {
                 Type::Intersection(members.into_iter().map(Type::simplify_type).collect())
             }
             Type::Negation(inner) => Type::Negation(Box::new(Type::simplify_type(*inner))),
-            Type::Record(row) => {
+            Type::Dict(row) => {
                 let fields = row
                     .fields
                     .into_iter()
                     .map(|(k, v)| (k, Type::simplify_type(v)))
                     .collect();
-                Type::Record(Row {
+                Type::Dict(Row {
                     fields,
                     tail: RowTail::Empty,
                 })
@@ -2330,7 +2330,7 @@ fn type_order(ty: &Type) -> u8 {
         Type::Str => 3,
         Type::StringLiteral(_) => 4,
         Type::Bytes => 6,
-        Type::Record(_) => 8,
+        Type::Dict(_) => 8,
         Type::Function { .. } => 9,
         Type::Proxy => 12,
         Type::TypeVar(_, _) => 13,
@@ -2402,7 +2402,7 @@ pub(crate) fn type_payload_cmp(a: &Type, b: &Type) -> std::cmp::Ordering {
         }
         // For complex types (Record, Function, App), use Display representation
         // This is not ideal but ensures stability
-        (Type::Record(_), Type::Record(_))
+        (Type::Dict(_), Type::Dict(_))
         | (Type::Function { .. }, Type::Function { .. })
         | (Type::App(_, _), Type::App(_, _)) => a.to_string().cmp(&b.to_string()),
         _ => Ordering::Equal,
@@ -2463,7 +2463,7 @@ pub fn check_kind_wellformed(
             }
             check_kind_wellformed(ret, kind_env, span)
         }
-        Type::Record(row) => {
+        Type::Dict(row) => {
             for field_ty in row.fields.values() {
                 check_kind_wellformed(field_ty, kind_env, span.clone())?;
             }
@@ -2654,7 +2654,7 @@ mod tests {
             var: "a".to_string(),
             body: Box::new(Type::Union(vec![
                 Type::Int,
-                Type::Record(Row {
+                Type::Dict(Row {
                     fields: [("x".to_string(), Type::TypeVar("a".to_string(), 0))].into(),
                     tail: RowTail::Empty,
                 }),
@@ -2664,7 +2664,7 @@ mod tests {
             var: "b".to_string(),
             body: Box::new(Type::Union(vec![
                 Type::Int,
-                Type::Record(Row {
+                Type::Dict(Row {
                     fields: [("x".to_string(), Type::TypeVar("b".to_string(), 0))].into(),
                     tail: RowTail::Empty,
                 }),
@@ -2795,7 +2795,7 @@ mod tests {
         // When both sides are the same Recursive type, PartialEq fires at (a, b) if a == b.
         let rec = Type::Recursive {
             var: "a".to_string(),
-            body: Box::new(Type::Record(Row {
+            body: Box::new(Type::Dict(Row {
                 fields: [("x".to_string(), Type::TypeVar("a".to_string(), 0))].into(),
                 tail: RowTail::Empty,
             })),
@@ -2959,7 +2959,7 @@ mod tests {
     #[test]
     fn test_bas_record_width_subtyping() {
         // {x: Int, y: Str} <: {x: Int} — width subtyping
-        let sub = Type::Record(Row {
+        let sub = Type::Dict(Row {
             fields: {
                 let mut m = IndexMap::new();
                 m.insert("x".into(), Type::Int);
@@ -2968,7 +2968,7 @@ mod tests {
             },
             tail: RowTail::Empty,
         });
-        let sup = Type::Record(Row {
+        let sup = Type::Dict(Row {
             fields: {
                 let mut m = IndexMap::new();
                 m.insert("x".into(), Type::Int);
@@ -2982,7 +2982,7 @@ mod tests {
     #[test]
     fn test_bas_record_width_not_reverse() {
         // {x: Int} NOT <: {x: Int, y: Str} — missing field y
-        let sub = Type::Record(Row {
+        let sub = Type::Dict(Row {
             fields: {
                 let mut m = IndexMap::new();
                 m.insert("x".into(), Type::Int);
@@ -2990,7 +2990,7 @@ mod tests {
             },
             tail: RowTail::Empty,
         });
-        let sup = Type::Record(Row {
+        let sup = Type::Dict(Row {
             fields: {
                 let mut m = IndexMap::new();
                 m.insert("x".into(), Type::Int);
@@ -3005,7 +3005,7 @@ mod tests {
     #[test]
     fn test_bas_record_field_depth_subtyping() {
         // {x: IntLiteral(42)} <: {x: Int} — depth subtyping on field value
-        let sub = Type::Record(Row {
+        let sub = Type::Dict(Row {
             fields: {
                 let mut m = IndexMap::new();
                 m.insert("x".into(), Type::IntLiteral(42));
@@ -3013,7 +3013,7 @@ mod tests {
             },
             tail: RowTail::Empty,
         });
-        let sup = Type::Record(Row {
+        let sup = Type::Dict(Row {
             fields: {
                 let mut m = IndexMap::new();
                 m.insert("x".into(), Type::Int);
@@ -3031,7 +3031,7 @@ mod tests {
         // returned true for {x:T} vs {y:U} (different keys), which made the conjunction
         // [Pos({x:Int}), Pos({y:Str}), Neg({x:Int}), Neg({y:Float})] appear empty via
         // disjointness before the subtype check fired, incorrectly returning true.
-        let sub = Type::Record(Row {
+        let sub = Type::Dict(Row {
             fields: {
                 let mut m = IndexMap::new();
                 m.insert("x".into(), Type::Int);
@@ -3040,7 +3040,7 @@ mod tests {
             },
             tail: RowTail::Empty,
         });
-        let sup = Type::Record(Row {
+        let sup = Type::Dict(Row {
             fields: {
                 let mut m = IndexMap::new();
                 m.insert("x".into(), Type::Int);
@@ -3230,7 +3230,7 @@ mod tests {
         // So: {x: Int} | {y: Str} <: Top → true
         // And: Top <: {x: Int} | {y: Str} → true (they're equivalent)
         let union = Type::Union(vec![
-            Type::Record(Row {
+            Type::Dict(Row {
                 fields: {
                     let mut m = IndexMap::new();
                     m.insert("x".into(), Type::Int);
@@ -3238,7 +3238,7 @@ mod tests {
                 },
                 tail: RowTail::Empty,
             }),
-            Type::Record(Row {
+            Type::Dict(Row {
                 fields: {
                     let mut m = IndexMap::new();
                     m.insert("y".into(), Type::Str);
@@ -3294,7 +3294,7 @@ mod tests {
     fn test_bas_record_uniform_tail_subtype() {
         // {x: Int, Uniform(None, Int)} <: {Uniform(None, Int)}
         // Record with named fields + uniform tail is subtype of just the uniform tail
-        let sub = Type::Record(Row {
+        let sub = Type::Dict(Row {
             fields: {
                 let mut m = IndexMap::new();
                 m.insert("x".into(), Type::Int);
@@ -3305,7 +3305,7 @@ mod tests {
                 value: Box::new(Type::Int),
             },
         });
-        let sup = Type::Record(Row {
+        let sup = Type::Dict(Row {
             fields: IndexMap::new(),
             tail: RowTail::Uniform {
                 key: None,

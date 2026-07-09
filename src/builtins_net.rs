@@ -2903,12 +2903,12 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
         let mut fields = indexmap::IndexMap::new();
         fields.insert(
             format!("__cap_flag_{}", flag_name.to_lowercase()),
-            Type::Record(Row {
+            Type::Dict(Row {
                 fields: indexmap::IndexMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             }),
         );
-        Type::Record(Row {
+        Type::Dict(Row {
             fields,
             tail: crate::type_def::RowTail::Empty,
         })
@@ -2967,7 +2967,7 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
                 (None, Type::Str), // sni
                 (
                     None,
-                    Type::Record(Row {
+                    Type::Dict(Row {
                         fields: indexmap::IndexMap::new(),
                         tail: crate::type_def::RowTail::Empty,
                     }),
@@ -2986,7 +2986,7 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
         "builtin-tls-peer-cert".to_string(),
         Type::Function {
             params: vec![(None, Type::handle(cap_flag("readable")))],
-            ret: Box::new(Type::Record(Row {
+            ret: Box::new(Type::Dict(Row {
                 fields: indexmap::IndexMap::from_iter([
                     ("subject".to_string(), Type::Str),
                     ("issuer".to_string(), Type::Str),
@@ -3016,7 +3016,7 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
                     Type::normalize_union(vec![Type::DatagramHandle, Type::QuicDatagramHandle]),
                 ),
             ],
-            ret: Box::new(Type::Record(Row {
+            ret: Box::new(Type::Dict(Row {
                 fields: indexmap::IndexMap::new(),
                 tail: crate::type_def::RowTail::Empty,
             })),
@@ -3033,7 +3033,7 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
                 None,
                 Type::normalize_union(vec![Type::DatagramHandle, Type::QuicDatagramHandle]),
             )],
-            ret: Box::new(Type::Record(Row {
+            ret: Box::new(Type::Dict(Row {
                 fields: indexmap::IndexMap::from_iter([
                     ("data".to_string(), Type::Bytes),
                     ("addr".to_string(), Type::Str),
@@ -3056,7 +3056,7 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
                 (None, Type::Int),
                 (
                     None,
-                    Type::Record(Row {
+                    Type::Dict(Row {
                         fields: indexmap::IndexMap::new(),
                         tail: crate::type_def::RowTail::Empty,
                     }),
@@ -3099,7 +3099,7 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
                 (None, Type::Str), // base_url
                 (
                     None,
-                    Type::Record(Row {
+                    Type::Dict(Row {
                         fields: indexmap::IndexMap::new(),
                         tail: crate::type_def::RowTail::Empty,
                     }),
@@ -3137,7 +3137,7 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
                 (None, Type::Str), // path
                 (
                     None,
-                    Type::Record(Row {
+                    Type::Dict(Row {
                         fields: indexmap::IndexMap::new(),
                         tail: crate::type_def::RowTail::Empty,
                     }),
@@ -3162,10 +3162,10 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
                 (None, Type::Int), // timeout_ms
             ],
             ret: Box::new(Type::normalize_union(vec![
-                Type::Record(Row {
+                Type::Dict(Row {
                     fields: indexmap::IndexMap::from_iter([(
                         "ok".to_string(),
-                        Type::Record(Row {
+                        Type::Dict(Row {
                             fields: indexmap::IndexMap::from_iter([(
                                 "latency-ms".to_string(),
                                 Type::Int,
@@ -3175,7 +3175,7 @@ pub fn populate_net_type_env(env: &mut TypeEnv) {
                     )]),
                     tail: crate::type_def::RowTail::Empty,
                 }),
-                Type::Record(Row {
+                Type::Dict(Row {
                     fields: indexmap::IndexMap::from_iter([("err".to_string(), Type::Str)]),
                     tail: crate::type_def::RowTail::Empty,
                 }),
