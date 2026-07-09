@@ -148,7 +148,7 @@ pub use error::{
 pub use types::{format_type_error, TypeError};
 
 /// Formatter: canonical source reformatter.
-pub use formatter::{format_source, format_source_tinct, format_source_tinct_with_dir};
+pub use formatter::{format_source_tinct, format_source_tinct_with_dir};
 
 #[cfg(feature = "lsp")]
 pub use lsp::run_lsp;

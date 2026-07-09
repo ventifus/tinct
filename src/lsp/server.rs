@@ -1185,19 +1185,6 @@ mod tests {
     // --- document formatting tests ---
 
     #[tokio::test]
-    async fn test_formatting_produces_valid_text_edit() {
-        // Verify that the Rust formatter (still used in formatter.rs unit tests) can
-        // parse and reformat a simple document. The LSP path uses format_source_tinct,
-        // but format_source is still available for unit testing.
-        let source = "[x:1  y:2]";
-        let result = crate::formatter::format_source(source);
-        assert!(result.is_ok(), "formatter should succeed on valid source");
-        let formatted = result.unwrap();
-        // The formatter should produce something (possibly identical, possibly normalized).
-        assert!(!formatted.is_empty());
-    }
-
-    #[tokio::test]
     async fn test_formatting_end_position() {
         // Verify the end-position calculation used by the Formatting handler.
         let text = "line1\nline2\nline3";
