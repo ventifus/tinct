@@ -173,7 +173,7 @@ pub async fn typecheck_surface_program(
     Vec<crate::error::TypeDiagnostic>,
 ) {
     let (errors, type_map, doc_map, scheme_map, diagnostics, _state, _env, _annotation_table) =
-        typecheck_surface_program_with_env(program, parent_env, true, None).await;
+        typecheck_surface_program_with_env(program, parent_env, true, None, None).await;
     // type_map is now populated during inference (enable_scheme_map=true path).
     (errors, type_map, doc_map, scheme_map, diagnostics)
 }
@@ -201,6 +201,12 @@ pub async fn typecheck_surface_program(
 ///   runtime eval env (from `builtin-typecheck env: <env>`), which contains instance
 ///   bindings that the type-only `parent_env` does not. When `None`, falls back to
 ///   `parent_env` for resolver seeding (the prior behavior).
+/// - `type_stage_env`: Optional type-stage evaluation environment. When `Some`, stored on
+///   `state.type_stage_env` so that `eval_type_stage_expr` and `call_type_stage_fn` can
+///   evaluate user-defined type-stage functions (e.g. TypeNode constructors, `or`, `all`).
+///   Populated from `TypeContextData.type_stage_env` by `builtin-typecheck`. `None` at all
+///   bootstrap call sites (prelude, stdlib includes, LSP path) where the type-stage env
+///   has not yet been built.
 ///
 /// # Returns
 ///
@@ -214,6 +220,7 @@ pub async fn typecheck_surface_program_with_env(
     parent_env: Arc<RwLock<Env>>,
     enable_scheme_map: bool,
     resolver_seed_env: Option<Arc<RwLock<Env>>>,
+    type_stage_env: Option<Arc<RwLock<Env>>>,
 ) -> (
     Vec<TypeError>,
     TypeMap,
@@ -231,6 +238,11 @@ pub async fn typecheck_surface_program_with_env(
     let child_env = Arc::new(RwLock::new(Env::with_parent(Arc::clone(&parent_env))));
     let mut env: Arc<RwLock<Env>> = Arc::clone(&child_env);
     let mut state = InferState::with_env(Arc::clone(&child_env));
+    // Wire type_stage_env from the TypeContext so eval_type_stage_expr can evaluate
+    // user-defined type-stage functions (TypeNode constructors, `or`, `all`, etc.).
+    // When None (bootstrap/LSP paths), type_stage_env stays None — primitive types are
+    // resolved directly in resolve_type_name without a type-stage env call.
+    state.type_stage_env = type_stage_env;
     // Seed the resolver so that instance binding names (ɪ-prefixed) are visible
     // in scope and method_to_instance can resolve class method VarRefs (cast, +, -, etc.)
     // to their letrec slots. When a resolver_seed_env is provided (typically the full

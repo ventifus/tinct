@@ -2247,11 +2247,19 @@ pub(crate) fn builtin_typecheck(
                 warnings: _,
             } => {
                 // Seed from the accumulated inference_env stored in the TypeContext.
-                // Lock, clone the Arc, then drop the lock before the async typecheck call.
-                let parent_env: Arc<std::sync::RwLock<crate::env::Env>> = {
+                // Also extract type_stage_env so eval_type_stage_expr can resolve
+                // user-defined type-stage functions (TypeNode constructors, etc.).
+                // Lock once, clone both Arcs, then drop the lock before the async call.
+                let (parent_env, type_stage_env): (
+                    Arc<std::sync::RwLock<crate::env::Env>>,
+                    Option<Arc<std::sync::RwLock<crate::env::Env>>>,
+                ) = {
                     let guard = ctx.type_context.lock().unwrap();
                     match guard.as_ref() {
-                        Some(tc) => Arc::clone(&tc.inference_env),
+                        Some(tc) => (
+                            Arc::clone(&tc.inference_env),
+                            Some(Arc::clone(&tc.type_stage_env)),
+                        ),
                         None => {
                             return Err(EvalError::internal(
                                 "builtin-typecheck: TypeContext not initialized — \
@@ -2270,6 +2278,8 @@ pub(crate) fn builtin_typecheck(
                 // also visible to the type checker's name resolution pass. Without this,
                 // method VarRefs (cast, +, -, etc.) produce false-positive "undefined variable"
                 // warnings because the type-only parent_env lacks ɪ-prefixed instance bindings.
+                // Pass type_stage_env from the TypeContext so that eval_type_stage_expr can
+                // evaluate user-defined TypeNode functions and type-stage combinators.
                 let (
                     errors,
                     _type_map,
@@ -2284,6 +2294,7 @@ pub(crate) fn builtin_typecheck(
                     parent_env,
                     false, // enable_scheme_map
                     resolver_seed_env,
+                    type_stage_env,
                 )
                 .await;
 
@@ -2370,11 +2381,16 @@ pub(crate) fn builtin_get_type_context(
             }
             None => {
                 drop(tc_guard);
-                Err(EvalError::user_error(
-                    "TypeContext not initialized: call builtin-make-type-ctx first".to_string(),
-                    call_span,
-                )
-                .into())
+                // Auto-initialize: first call to builtin-get-type-context bootstraps the
+                // TypeContext so loader.llt doesn't need an explicit builtin-make-type-ctx call.
+                let tc = TypeContextData {
+                    type_stage_env: Arc::new(RwLock::new(Env::new())),
+                    inference_env: crate::imports::get_builtin_core_type_env()
+                        .await
+                        .expect("builtin_core type env unavailable"),
+                };
+                ctx.init_type_context(tc.clone());
+                ok_val(Value::TypeContext(Arc::new(Mutex::new(tc))), call_span)
             }
         }
     })
