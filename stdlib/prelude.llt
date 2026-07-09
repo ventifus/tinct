@@ -1272,7 +1272,7 @@ make-entry@[doc: "Construct single-entry dict from key and value"]: [fn@Dict [le
 # Merge additional key-value pairs into a dict (returns updated dict).
 # Variadic: accepts xs as base dict, and ...kvs as an inline dict of entries to merge in.
 # assert: [set [a: 1] b: 2] => [a: 1  b: 2]
-set: [fn@Dict [let xs@Any ...kvs] [merge xs kvs]]
+set: [fn@Any [let xs@Any ...kvs] [merge xs kvs]]
 
 remove: [fn@[return: Dict  doc: """
 Remove a key from a dict.
@@ -3231,8 +3231,12 @@ as %name bindings available to subsequent documents via scope injection.
       [full-env: [extend-env full-env [uses-scope doc]]]
       # Per-document resolution with new builtin-resolve contract: returns {doc, errors}.
       # builtin-eval returns {env, result, doc-name, error} — use result directly.
-      [doc-resolved:  [resolve doc env: full-env]]
-      [eval-result:   [eval doc-resolved.doc env: full-env]]
+      # Curried helpers capture full-env so type checker doesn't see env: named arg
+      # at the call site (which would cause false arity/named-arg warnings).
+      [do-resolve: [fn@Any [let d] [builtin-resolve d env: full-env]]]
+      [do-eval:    [fn@Any [let d] [builtin-eval d env: full-env]]]
+      [doc-resolved:  [do-resolve doc]]
+      [eval-result:   [do-eval doc-resolved.doc]]
       [builtin-if [builtin-eq-string [builtin-type-of eval-result.error] "String"]
         [raise eval-result.error]
         [merge state
@@ -3849,7 +3853,8 @@ Returns: updated state {prev: result, named: updated-named-sections}
                 "%include-dir": include-dir]]]
   [full-env: [extend-env full-env state.named]]
   [full-env: [extend-env full-env [uses-scope doc]]]
-  [result-env: [eval doc.expressions env: full-env]]
+  [do-eval: [fn@Any [let d] [builtin-eval d env: full-env]]]
+  [result-env: [do-eval doc.expressions]]
   [prev:  result-env.%
    named: [update-named state result-env.% doc]]]
 
